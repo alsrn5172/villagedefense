@@ -36,6 +36,17 @@ git check-attr merge -- map/map01.map
 git config core.hooksPath .githooks
 ```
 
+## AI 와 사람의 경계
+
+| | AI | 사람 |
+|---|:--:|:--:|
+| 브랜치 · 커밋 · push | O | O |
+| **PR 생성** | **X** | **O** |
+| **머지** | **X** | **O** |
+
+AI 는 push 까지만 하고 멈춘다. PR 은 "`main` 에 넣겠다"는 의사결정이라 사람이 한다.
+전체: [`Docs/협업-규칙.md` 3-1-1](Docs/협업-규칙.md)
+
 ## 🔴 자주 밟는 함정 3개
 
 | 함정 | 결과 |
