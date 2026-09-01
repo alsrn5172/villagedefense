@@ -1,0 +1,217 @@
+@Component
+script TurretAI extends Component
+
+	property string StandRUID = ""
+
+	property string AttackRUID = ""
+
+	property string DieRUID = ""
+
+	property number AttackRange = 3.0
+
+	property number AttackCooldown = 1.5
+
+	property number AttackMotionTime = 0.5
+
+	property number RetargetInterval = 0.3
+
+	@HideFromInspector
+	property string CurrentState = "IDLE"
+
+	@HideFromInspector
+	property number MotionTimer = 0
+
+	@HideFromInspector
+	property number AttackTimer = 0
+
+	@HideFromInspector
+	property number RetargetTimer = 0
+
+	@HideFromInspector
+	property boolean DeathPlayed = false
+
+	@HideFromInspector
+	property any TargetEntity = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 평상시 스프라이트로 시작한다.
+		self:SetSprite(self.StandRUID)
+		self.CurrentState = "IDLE"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetSprite(string ruid)
+		-- 스프라이트를 교체한다. 빈 RUID 는 무시해 기존 그림을 유지한다.
+		if ruid == nil or ruid == "" then
+			return
+		end
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			sprite.SpriteRUID = ruid
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FaceTo(number dir)
+		-- 목표 방향으로 돌아선다.
+		-- ⚠ FlipX 가 아니라 Scale.x 부호를 뒤집는다. FactionAttack.DoAttack 이 Scale.x 로
+		--   공격 방향을 판단하므로, 그림과 공격 방향이 항상 같이 움직인다.
+		--   스프라이트 기본이 왼쪽이라 오른쪽(+1)을 볼 때 Scale.x 가 음수가 된다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		
+		local s = transform.Scale
+		transform.Scale = Vector3(math.abs(s.x) * -dir, s.y, s.z)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsDeadEntity(Entity target)
+		-- 죽은 대상인지 확인한다. Monster 가 없는 대상(플레이어 등)은 살아있는 것으로 본다.
+		---@type Monster
+		local monster = target:GetComponent("script.Monster")
+		if isvalid(monster) then
+			return monster.IsDead
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity FindNearestEnemy()
+		-- 사거리 안에서 나와 적대 관계인 가장 가까운 대상을 반환한다. 없으면 nil.
+		-- 충돌 그룹 조회 대신 맵 자식 순회를 쓴다 — 충돌 매트릭스 설정에 의존하지 않는다.
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return nil
+		end
+		
+		local myTransform = self.Entity.TransformComponent
+		if not isvalid(myTransform) then
+			return nil
+		end
+		local myPos = myTransform.WorldPosition
+		
+		local candidates = {}
+		
+		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
+		if factions ~= nil then
+			for _, comp in ipairs(factions) do
+				if isvalid(comp) and isvalid(comp.Entity) then
+					table.insert(candidates, comp.Entity)
+				end
+			end
+		end
+		
+		local mapComp = map.MapComponent
+		if isvalid(mapComp) then
+			local users = _UserService:GetUsersByMapComponent(mapComp)
+			if users ~= nil then
+				for _, user in ipairs(users) do
+					if isvalid(user) then
+						table.insert(candidates, user)
+					end
+				end
+			end
+		end
+		
+		local best = nil
+		local bestDist = self.AttackRange * self.AttackRange
+		
+		for _, cand in ipairs(candidates) do
+			if cand ~= self.Entity and _FactionLogic:IsEnemy(self.Entity, cand) then
+				if not self:IsDeadEntity(cand) then
+					local t = cand.TransformComponent
+					if isvalid(t) then
+						local p = t.WorldPosition
+						local dx = p.x - myPos.x
+						local dy = p.y - myPos.y
+						local d = dx * dx + dy * dy
+						if d < bestDist then
+							bestDist = d
+							best = cand
+						end
+					end
+				end
+			end
+		end
+		
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 사거리 안 적을 향해 돌아서서 쿨타임마다 공격한다. 이동은 하지 않는다.
+		
+		-- 1) 파괴: 부서진 그림 1회만 재생하고 이후 아무것도 하지 않는다.
+		---@type Monster
+		local monster = self.Entity:GetComponent("script.Monster")
+		if isvalid(monster) and monster.IsDead then
+			if not self.DeathPlayed then
+				self.DeathPlayed = true
+				self:SetSprite(self.DieRUID)
+			end
+			return
+		end
+		
+		-- 리스폰되면 다시 평상시 상태로 되돌린다.
+		if self.DeathPlayed then
+			self.DeathPlayed = false
+			self:SetSprite(self.StandRUID)
+			self.CurrentState = "IDLE"
+		end
+		
+		-- 2) 타이머 감소
+		if self.AttackTimer > 0 then
+			self.AttackTimer = self.AttackTimer - delta
+		end
+		if self.MotionTimer > 0 then
+			self.MotionTimer = self.MotionTimer - delta
+		end
+		self.RetargetTimer = self.RetargetTimer - delta
+		
+		-- 3) 공격 모션이 끝나면 평상시 스프라이트로 복귀
+		if self.CurrentState == "ATTACK" and self.MotionTimer <= 0 then
+			self.CurrentState = "IDLE"
+			self:SetSprite(self.StandRUID)
+		end
+		
+		-- 4) 주기적으로 적 재탐색
+		if self.RetargetTimer <= 0 then
+			self.RetargetTimer = self.RetargetInterval
+			self.TargetEntity = self:FindNearestEnemy()
+		end
+		
+		local target = self.TargetEntity
+		if not isvalid(target) or self:IsDeadEntity(target) then
+			return
+		end
+		
+		-- 5) 적 방향으로 돌아선다
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local tPos = target.TransformComponent.WorldPosition
+		local dir = 1
+		if tPos.x < myPos.x then
+			dir = -1
+		end
+		self:FaceTo(dir)
+		
+		-- 6) 쿨타임이 돌았으면 공격
+		if self.AttackTimer <= 0 then
+			self.CurrentState = "ATTACK"
+			self.MotionTimer = self.AttackMotionTime
+			self.AttackTimer = self.AttackCooldown
+			self:SetSprite(self.AttackRUID)
+		
+			---@type FactionAttack
+			local attack = self.Entity:GetComponent("script.FactionAttack")
+			if isvalid(attack) then
+				attack:DoAttack()
+			end
+		end
+	end
+
+end

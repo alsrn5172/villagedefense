@@ -1,0 +1,355 @@
+@Component
+script FarmPatrol extends Component
+
+	property number Speed = 1.0
+
+	property number DecisionInterval = 1.0
+
+	property number StopChance = 0.2
+
+	property number EdgeMargin = 0.4
+
+	property boolean UseSpecialMovement = false
+
+	property number HopIntervalMin = 0.9
+
+	property number HopIntervalMax = 1.6
+
+	property number HopChance = 0.8
+
+	property string MoveRUID = ""
+
+	property string StandRUID = ""
+
+	property string HopRUID = ""
+
+	property string DieRUID = ""
+
+	@HideFromInspector
+	property number Direction = 1
+
+	@HideFromInspector
+	property number DecisionTimer = 0
+
+	@HideFromInspector
+	property number MinX = 0
+
+	@HideFromInspector
+	property number MaxX = 0
+
+	@HideFromInspector
+	property boolean BoundsReady = false
+
+	@HideFromInspector
+	property string VisualState = ""
+
+	@HideFromInspector
+	property boolean DeathShown = false
+
+	@HideFromInspector
+	property number HopTimer = 0
+
+	@HideFromInspector
+	property boolean IsHopping = false
+
+	@HideFromInspector
+	property boolean HopLeftGround = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 모델 기본값을 폴백으로 쓰되, MonsterInfo.csv 값이 있으면 그것을 우선한다.
+		self:ApplyMovementStats()
+		self.IsHopping = false
+		self.HopLeftGround = false
+		self.DecisionTimer = 0
+		self:PickAction()
+		self.HopTimer = self:NextHopDelay()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyMovementStats()
+		local mv = self.Entity.MovementComponent
+		if not isvalid(mv) then
+			return
+		end
+		
+		local speed = self.Speed
+		local jumpForce = mv.JumpForce
+		---@type FarmReward
+		local reward = self.Entity:GetComponent("script.FarmReward")
+		if isvalid(reward) and reward.MonsterId > 0 and _MonsterCatalog ~= nil then
+			local csvSpeed = _MonsterCatalog:GetMoveSpeed(reward.MonsterId)
+			if csvSpeed >= 0 then
+				speed = csvSpeed
+			end
+		
+			local csvJumpForce = _MonsterCatalog:GetJumpForce(reward.MonsterId)
+			if csvJumpForce >= 0 then
+				jumpForce = csvJumpForce
+			end
+		end
+		
+		self.Speed = speed
+		mv.InputSpeed = speed
+		mv.JumpForce = jumpForce
+		log("[FarmPatrol] " .. self.Entity.Name .. " movement speed=" .. tostring(speed) .. " jump=" .. tostring(jumpForce))
+	end
+
+	method number NextHopDelay()
+		local minDelay = math.max(0.1, self.HopIntervalMin)
+		local maxDelay = math.max(minDelay, self.HopIntervalMax)
+		return minDelay + _UtilLogic:RandomDouble() * (maxDelay - minDelay)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TryHop()
+		-- 이동 중이고 발판 위에 있을 때만 점프한다.
+		if self.UseSpecialMovement == false or self.Direction == 0 or self.IsHopping then
+			return
+		end
+		if _UtilLogic:RandomDouble() > self.HopChance then
+			return
+		end
+		
+		local rigid = self.Entity.RigidbodyComponent
+		local movement = self.Entity.MovementComponent
+		if isvalid(rigid) and rigid:IsOnGround() and isvalid(movement) then
+			if movement:Jump() then
+				self.IsHopping = true
+				self.HopLeftGround = false
+				self:SetVisual("hop")
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateHopState()
+		-- Jump() 직후 한 프레임은 아직 OnGround일 수 있다.
+		-- 따라서 실제로 공중에 나간 뒤 다시 접지한 경우에만 점프 상태를 끝낸다.
+		if not self.IsHopping then
+			return
+		end
+		local rigid = self.Entity.RigidbodyComponent
+		if not isvalid(rigid) then
+			return
+		end
+		if not rigid:IsOnGround() then
+			self.HopLeftGround = true
+			return
+		end
+		if self.HopLeftGround then
+			self.IsHopping = false
+			self.HopLeftGround = false
+			self.VisualState = ""
+			if self.Direction == 0 then
+				self:SetVisual("stand")
+			else
+				self:SetVisual("move")
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PickAction()
+		-- 정지 StopChance, 나머지를 좌/우가 절반씩(기본 정지20/좌40/우40).
+		local r = _UtilLogic:RandomDouble()
+		if r < self.StopChance then
+			self.Direction = 0
+		elseif r < self.StopChance + (1 - self.StopChance) * 0.5 then
+			self.Direction = -1
+		else
+			self.Direction = 1
+		end
+		
+		if self.Direction == 0 then
+			self:SetVisual("stand")
+		else
+			self:SetVisual("move")
+			self:Face(self.Direction)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetVisual(string state)
+		-- 상태가 바뀔 때만 스프라이트를 교체해 애니메이션이 매 프레임 리셋되지 않게 한다.
+		-- 공중에서는 행동 재결정/끝 반전이 있어도 점프 애니메이션을 유지한다.
+		if self.IsHopping and state ~= "hop" and state ~= "die" then
+			return
+		end
+		if state == self.VisualState then
+			return
+		end
+		self.VisualState = state
+		
+		local ruid = self.MoveRUID
+		if state == "stand" then
+			ruid = self.StandRUID
+		elseif state == "hop" then
+			ruid = self.HopRUID
+			if ruid == nil or ruid == "" then
+				ruid = self.MoveRUID
+			end
+		elseif state == "die" then
+			ruid = self.DieRUID
+		end
+		
+		if ruid == nil or ruid == "" then
+			return
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			sprite.SpriteRUID = ruid
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Face(number dir)
+		-- 진행 방향으로 돌아선다. 스프라이트 기본이 왼쪽이라 오른쪽(+1)일 때 Scale.x 가 음수.
+		if dir == 0 then
+			return
+		end
+		local t = self.Entity.TransformComponent
+		if not isvalid(t) then
+			return
+		end
+		local s = t.Scale
+		t.Scale = Vector3(math.abs(s.x) * -dir, s.y, s.z)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ComputeBounds()
+		-- 현재 밟은 발판에서 같은 높이로 이어진 수평 발판 체인 전체의 좌/우 끝을 구한다.
+		local rb = self.Entity.RigidbodyComponent
+		if not isvalid(rb) or not rb:IsOnGround() then
+			return false
+		end
+		local cur = rb:GetCurrentFoothold()
+		if cur == nil then
+			return false
+		end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return false
+		end
+		local fhc = map.FootholdComponent
+		if not isvalid(fhc) then
+			return false
+		end
+		
+		local y0 = cur.StartPoint.y
+		local minX = math.min(cur.StartPoint.x, cur.EndPoint.x)
+		local maxX = math.max(cur.StartPoint.x, cur.EndPoint.x)
+		
+		-- 오른쪽으로 이어진 세그먼트를 따라간다.
+		local f = cur
+		for i = 1, 300 do
+			local nf = fhc:GetFoothold(f.NextFootholdId)
+			if nf == nil then break end
+			if math.abs(nf.StartPoint.y - nf.EndPoint.y) > 0.05 then break end   -- 수직(벽)이면 중단
+			if math.abs(nf.StartPoint.y - y0) > 0.2 then break end               -- 다른 높이면 중단
+			local nmax = math.max(nf.StartPoint.x, nf.EndPoint.x)
+			if nmax <= maxX then break end                                        -- 더 안 늘면(루프) 중단
+			maxX = nmax
+			f = nf
+		end
+		
+		-- 왼쪽으로 이어진 세그먼트를 따라간다.
+		f = cur
+		for i = 1, 300 do
+			local pf = fhc:GetFoothold(f.PreviousFootholdId)
+			if pf == nil then break end
+			if math.abs(pf.StartPoint.y - pf.EndPoint.y) > 0.05 then break end
+			if math.abs(pf.StartPoint.y - y0) > 0.2 then break end
+			local pmin = math.min(pf.StartPoint.x, pf.EndPoint.x)
+			if pmin >= minX then break end
+			minX = pmin
+			f = pf
+		end
+		
+		self.MinX = minX
+		self.MaxX = maxX
+		log("[FarmPatrol] " .. self.Entity.Name .. " bounds x=[" .. string.format("%.2f", minX) .. "," .. string.format("%.2f", maxX) .. "]")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 1) 사망: 죽는 그림 1회 + 정지. 리스폰되면 다시 걷는다.
+		---@type Monster
+		local monster = self.Entity:GetComponent("script.Monster")
+		if isvalid(monster) and monster.IsDead then
+			if not self.DeathShown then
+				self.DeathShown = true
+				self.IsHopping = false
+				self.HopLeftGround = false
+				self:SetVisual("die")
+				local mv = self.Entity.MovementComponent
+				if isvalid(mv) then
+					mv:Stop()
+				end
+			end
+			return
+		end
+		if self.DeathShown then
+			self.DeathShown = false
+			self.VisualState = ""
+			self.IsHopping = false
+			self.HopLeftGround = false
+			self.HopTimer = self:NextHopDelay()
+			self:PickAction()
+		end
+		
+		-- 2) 홉 애니메이션은 실제 착지 이후에만 이동/대기 애니메이션으로 되돌린다.
+		self:UpdateHopState()
+		
+		-- 3) 착지 후 발판 범위를 1회 계산한다(공중이면 다음 프레임 재시도).
+		if not self.BoundsReady then
+			if self:ComputeBounds() then
+				self.BoundsReady = true
+			end
+		end
+		
+		-- 4) 1초마다 행동 재결정
+		self.DecisionTimer = self.DecisionTimer - delta
+		if self.DecisionTimer <= 0 then
+			self.DecisionTimer = self.DecisionInterval
+			self:PickAction()
+		end
+		
+		-- 5) 발판 끝에 닿으면 즉시 반전(재결정 뒤에 두어 이번 프레임 최종 결정권을 가짐).
+		if self.Direction ~= 0 and self.BoundsReady then
+			local x = self.Entity.TransformComponent.WorldPosition.x
+			if self.Direction < 0 and x <= self.MinX + self.EdgeMargin then
+				self.Direction = 1
+				self.DecisionTimer = self.DecisionInterval
+				self:Face(1)
+				self:SetVisual("move")
+			elseif self.Direction > 0 and x >= self.MaxX - self.EdgeMargin then
+				self.Direction = -1
+				self.DecisionTimer = self.DecisionInterval
+				self:Face(-1)
+				self:SetVisual("move")
+			end
+		end
+		
+		-- 6) 특수 이동을 켠 모델만 간헐적으로 실제 점프한다.
+		if self.UseSpecialMovement and self.Direction ~= 0 and not self.IsHopping then
+			self.HopTimer = self.HopTimer - delta
+			if self.HopTimer <= 0 then
+				self:TryHop()
+				self.HopTimer = self:NextHopDelay()
+			end
+		end
+		
+		-- 7) 이동 / 정지
+		local mv = self.Entity.MovementComponent
+		if isvalid(mv) then
+			if self.Direction ~= 0 then
+				mv:MoveToDirection(Vector2(self.Direction, 0), 0)
+			else
+				mv:Stop()
+			end
+		end
+	end
+
+end

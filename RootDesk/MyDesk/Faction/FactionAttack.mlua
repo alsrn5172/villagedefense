@@ -1,0 +1,92 @@
+@Component
+script FactionAttack extends AttackComponent
+
+	property number BaseDamage = 15
+
+	property Vector2 AttackBoxSize = Vector2(1.2, 1.2)
+
+	property number AttackReach = 0.5
+
+	@HideFromInspector
+	property any Shape = nil
+
+	@HideFromInspector
+	property any SwingHits = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 공격 도형과 중복타 방지 테이블을 준비한다.
+		self.Shape = BoxShape(Vector2.zero, self.AttackBoxSize, 0)
+		self.SwingHits = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoAttack()
+		-- 바라보는 방향 앞쪽에 공격 판정을 낸다. FactionAI 의 ATTACK 상태 진입 시 호출된다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) or self.Shape == nil then
+			return
+		end
+		
+		-- 몬스터 스프라이트는 기본적으로 왼쪽을 보므로, Scale.x 가 음수일 때 오른쪽을 향한다.
+		local dir = -1
+		if transform.Scale.x < 0 then
+			dir = 1
+		end
+		
+		local pos = transform.WorldPosition
+		self.Shape.Position = Vector2(pos.x + self.AttackReach * dir, pos.y + 0.5)
+		self.Shape.Size = self.AttackBoxSize
+		self.Shape.Angle = 0
+		
+		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다.
+		self.SwingHits = {}
+		self:Attack(self.Shape, "faction", CollisionGroups.Monster)
+		self:Attack(self.Shape, "faction", CollisionGroups.Player)
+	end
+
+	method boolean IsAttackTarget(Entity defender, string attackInfo)
+		-- 진영 필터: 적군만 공격 대상으로 인정한다. 아군/중립/자기자신은 여기서 전부 걸러진다.
+		-- ⚠ @ExecSpace 금지 (부모에 없음 → LEA-3014 SignatureMismatch)
+		if not isvalid(defender) then
+			return false
+		end
+		
+		if defender == self.Entity then
+			return false
+		end
+		
+		-- 그룹별 2회 호출로 같은 대상이 중복 판정되는 것을 막는다.
+		local key = defender.Id
+		if self.SwingHits ~= nil and self.SwingHits[key] == true then
+			return false
+		end
+		
+		if _FactionLogic:GetRelation(self.Entity, defender) ~= "ENEMY" then
+			return false
+		end
+		
+		if self.SwingHits ~= nil then
+			self.SwingHits[key] = true
+		end
+		
+		log("[FactionAttack] " .. self.Entity.Name .. " -> ENEMY " .. defender.Name)
+		
+		return __base:IsAttackTarget(defender, attackInfo)
+	end
+
+	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
+		-- 최종 데미지 = BaseDamage * 공격력 버프 배율.
+		-- ⚠ 반환 타입은 부모와 동일한 integer 여야 한다 (number/int 로 쓰면 시그니처 불일치).
+		local mul = 1.0
+		
+		---@type Buff
+		local buff = self.Entity:GetComponent("script.Buff")
+		if isvalid(buff) then
+			mul = buff.AtkMul
+		end
+		
+		return math.floor(self.BaseDamage * mul)
+	end
+
+end

@@ -1,0 +1,131 @@
+@Component
+script FarmReward extends Component
+
+	property integer MonsterId = 0
+
+	property integer ExpAmount = 1
+
+	property integer CoinMin = 1
+
+	property integer CoinMax = 2
+
+	property string CoinModelId = "mesocoin"
+
+	@HideFromInspector
+	property any LastAttacker = nil
+
+	@HideFromInspector
+	property boolean Rewarded = false
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- Monster.IsDead 의 상승엣지를 감지해 보상을 1회 지급하고, 리스폰되면 리셋한다.
+		---@type Monster
+		local monster = self.Entity:GetComponent("script.Monster")
+		if not isvalid(monster) then
+			return
+		end
+		
+		if monster.IsDead then
+			if not self.Rewarded then
+				self.Rewarded = true
+				self:GiveRewards()
+			end
+			return
+		end
+		
+		-- 살아 있음: 리스폰 직후 다음 죽음을 위해 플래그를 리셋한다.
+		if self.Rewarded then
+			self.Rewarded = false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer EffectiveExp()
+		-- 도감(MonsterInfo)에서 exp 를 읽는다. 도감에 없으면 인스펙터 폴백(ExpAmount).
+		if self.MonsterId > 0 and _MonsterCatalog ~= nil then
+			local v = _MonsterCatalog:GetExp(self.MonsterId)
+			if v >= 0 then
+				return v
+			end
+		end
+		return self.ExpAmount
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer EffectiveCoinMin()
+		-- 도감에서 동전 최소 개수를 읽는다. 없으면 폴백(CoinMin).
+		if self.MonsterId > 0 and _MonsterCatalog ~= nil then
+			local v = _MonsterCatalog:GetCoinMin(self.MonsterId)
+			if v >= 0 then
+				return v
+			end
+		end
+		return self.CoinMin
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer EffectiveCoinMax()
+		-- 도감에서 동전 최대 개수를 읽는다. 없으면 폴백(CoinMax).
+		if self.MonsterId > 0 and _MonsterCatalog ~= nil then
+			local v = _MonsterCatalog:GetCoinMax(self.MonsterId)
+			if v >= 0 then
+				return v
+			end
+		end
+		return self.CoinMax
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GiveRewards()
+		-- 마지막 공격자가 플레이어면 exp 지급, 그리고 동전을 떨군다.
+		local attacker = self.LastAttacker
+		if isvalid(attacker) and isvalid(attacker.PlayerComponent) then
+			if _SummonManager ~= nil then
+				_SummonManager:GrantKillReward(attacker, self:EffectiveExp())
+			end
+		end
+		
+		self:DropCoins()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DropCoins()
+		-- CoinMin~CoinMax 개의 메소 동전을 몸 주변에 떨군다.
+		local map = self.Entity.CurrentMap
+		local transform = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(transform) then
+			return
+		end
+		
+		local base = transform.WorldPosition
+		local coinMin = self:EffectiveCoinMin()
+		local coinMax = self:EffectiveCoinMax()
+		local count = coinMin
+		if coinMax > coinMin then
+			count = _UtilLogic:RandomIntegerRange(coinMin, coinMax)
+		end
+		
+		for i = 1, count do
+			-- 약간 좌우로 흩뿌려 스폰한다(동전 스크립트가 팝 + 낙하 처리).
+			local ox = (_UtilLogic:RandomDouble() - 0.5) * 0.6
+			local pos = Vector3(base.x + ox, base.y + 0.3, 0)
+			local coin = _SpawnService:SpawnByModelId(self.CoinModelId, "Meso", pos, map)
+			if coin == nil then
+				log_error("[FarmReward] 동전 스폰 실패 — modelId=" .. self.CoinModelId)
+			end
+		end
+		
+		log("[FarmReward] " .. self.Entity.Name .. " dropped " .. tostring(count) .. " coins")
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleHitEvent(HitEvent event)
+		-- 마지막 공격자만 기록한다. HP 는 Monster 가 깎으므로 여기서 건드리지 않는다.
+		if isvalid(event.AttackerEntity) then
+			self.LastAttacker = event.AttackerEntity
+		end
+	end
+
+end

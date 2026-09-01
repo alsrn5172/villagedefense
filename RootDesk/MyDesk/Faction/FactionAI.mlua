@@ -1,0 +1,309 @@
+@Component
+script FactionAI extends Component
+
+	property string StandRUID = ""
+
+	property string MoveRUID = ""
+
+	property string AttackRUID = ""
+
+	property string DieRUID = ""
+
+	property number DetectRange = 6.0
+
+	property number AttackRange = 1.1
+
+	property number AttackCooldown = 1.2
+
+	property number AttackMotionTime = 0.6
+
+	property number RetargetInterval = 0.3
+
+	property number AdvanceDir = 0
+
+	@HideFromInspector
+	property number ResolvedDir = 0
+
+	@HideFromInspector
+	property string CurrentAIState = "ADVANCE"
+
+	@HideFromInspector
+	property number StateTimer = 0
+
+	@HideFromInspector
+	property number AttackTimer = 0
+
+	@HideFromInspector
+	property number RetargetTimer = 0
+
+	@HideFromInspector
+	property boolean DeathPlayed = false
+
+	@HideFromInspector
+	property any TargetEntity = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 팀에 따라 전진 방향을 정하고 전진 상태로 시작한다.
+		self.ResolvedDir = self:ResolveDir()
+		self.CurrentAIState = "ADVANCE"
+		if self.ResolvedDir == 0 then
+			self:SetSprite(self.StandRUID)
+		else
+			self:SetSprite(self.MoveRUID)
+			self:FaceTo(self.ResolvedDir)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ResolveDir()
+		-- AdvanceDir 이 지정돼 있으면 그대로 쓰고, 아니면 Faction.Team 으로 자동 결정한다.
+		if self.AdvanceDir ~= 0 then
+			return self.AdvanceDir
+		end
+		---@type Faction
+		local faction = self.Entity:GetComponent("script.Faction")
+		if isvalid(faction) then
+			if faction.Team == "TeamA" then
+				return 1
+			elseif faction.Team == "TeamB" then
+				return -1
+			end
+		end
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetSprite(string ruid)
+		-- 스프라이트를 교체한다. 빈 RUID 는 무시하고, 같은 그림이면 재설정하지 않는다.
+		-- ⚠ 매 프레임 호출돼도 같은 RUID 면 건너뛰어 애니메이션이 리셋되지 않게 한다.
+		if ruid == nil or ruid == "" then
+			return
+		end
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			if sprite.SpriteRUID == ruid then
+				return
+			end
+			sprite.SpriteRUID = ruid
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FaceTo(number dir)
+		-- 바라보는 방향을 바꾼다.
+		-- ⚠ FlipX 가 아니라 Scale.x 부호를 뒤집는다. 그래야 스프라이트와 콜라이더가 같이 뒤집힌다.
+		--   몬스터 스프라이트는 기본이 왼쪽 방향이라 오른쪽(+1)을 볼 때 Scale.x 가 음수가 된다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		
+		local s = transform.Scale
+		transform.Scale = Vector3(math.abs(s.x) * -dir, s.y, s.z)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StopMovement()
+		-- 이동을 멈춘다. 넉백 경직 중에는 호출하면 안 된다(넉백 속도까지 0이 됨).
+		local movement = self.Entity.MovementComponent
+		if isvalid(movement) then
+			movement:Stop()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnterState(string newState)
+		-- 공격 진입만 처리한다(이동/전진은 OnUpdate 에서 직접 다룬다).
+		self.CurrentAIState = newState
+		
+		if newState == "ATTACK" then
+			self.StateTimer = self.AttackMotionTime
+			self:SetSprite(self.AttackRUID)
+			self:StopMovement()
+		
+			---@type FactionAttack
+			local attack = self.Entity:GetComponent("script.FactionAttack")
+			if isvalid(attack) then
+				attack:DoAttack()
+			end
+		
+			self.AttackTimer = self.AttackCooldown
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity FindNearestEnemy()
+		-- 같은 맵에서 나와 적대 관계인 가장 가까운 대상을 반환한다. 없으면 nil.
+		-- ⚠ 충돌 그룹 조회(OverlapAll) 대신 맵 자식 순회를 쓴다.
+		--   충돌 매트릭스 설정에 의존하지 않아 "조용히 아무도 못 찾는" 실패를 피할 수 있다.
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return nil
+		end
+		
+		local myTransform = self.Entity.TransformComponent
+		if not isvalid(myTransform) then
+			return nil
+		end
+		local myPos = myTransform.WorldPosition
+		
+		-- 후보 수집: 팩션 몬스터 + 이 맵의 플레이어
+		local candidates = {}
+		
+		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
+		if factions ~= nil then
+			for _, comp in ipairs(factions) do
+				if isvalid(comp) and isvalid(comp.Entity) then
+					table.insert(candidates, comp.Entity)
+				end
+			end
+		end
+		
+		local mapComp = map.MapComponent
+		if isvalid(mapComp) then
+			local users = _UserService:GetUsersByMapComponent(mapComp)
+			if users ~= nil then
+				for _, user in ipairs(users) do
+					if isvalid(user) then
+						table.insert(candidates, user)
+					end
+				end
+			end
+		end
+		
+		-- 적대 관계 + 살아있음 + 사거리 안 중 가장 가까운 대상 선택 (제곱거리 비교)
+		local best = nil
+		local bestDist = self.DetectRange * self.DetectRange
+		
+		for _, cand in ipairs(candidates) do
+			if cand ~= self.Entity and _FactionLogic:IsEnemy(self.Entity, cand) then
+				if not self:IsDeadEntity(cand) then
+					local t = cand.TransformComponent
+					if isvalid(t) then
+						local p = t.WorldPosition
+						local dx = p.x - myPos.x
+						local dy = p.y - myPos.y
+						local d = dx * dx + dy * dy
+						if d < bestDist then
+							bestDist = d
+							best = cand
+						end
+					end
+				end
+			end
+		end
+		
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsDeadEntity(Entity target)
+		-- 대상이 죽은 몬스터인지 확인한다. 플레이어처럼 Monster 가 없으면 살아있는 것으로 본다.
+		---@type Monster
+		local monster = target:GetComponent("script.Monster")
+		if isvalid(monster) then
+			return monster.IsDead
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 상태를 갱신한다.
+		-- ⚠ 이동은 반드시 매 프레임 처리한다. 타이머로 옮기면 6~10Hz 순간이동처럼 보인다.
+		
+		-- 1) 사망: 죽는 그림 1회만 재생하고 이후 아무것도 하지 않는다.
+		---@type Monster
+		local monster = self.Entity:GetComponent("script.Monster")
+		if isvalid(monster) and monster.IsDead then
+			if not self.DeathPlayed then
+				self.DeathPlayed = true
+				self:SetSprite(self.DieRUID)
+				self:StopMovement()
+			end
+			return
+		end
+		self.DeathPlayed = false
+		
+		-- 2) 넉백 경직 게이트.
+		-- ⚠ 이 구간에서 MoveToDirection / Stop 을 호출하면 AddForce 로 준 넉백이
+		--   다음 프레임에 그대로 덮어써져 "밀리지 않는" 것처럼 보인다. 둘 다 건너뛴다.
+		---@type MonsterHit
+		local hit = self.Entity:GetComponent("script.MonsterHit")
+		if isvalid(hit) and _UtilLogic.ElapsedSeconds < hit.StaggerUntil then
+			return
+		end
+		
+		-- 3) 타이머 감소
+		if self.AttackTimer > 0 then
+			self.AttackTimer = self.AttackTimer - delta
+		end
+		if self.StateTimer > 0 then
+			self.StateTimer = self.StateTimer - delta
+		end
+		self.RetargetTimer = self.RetargetTimer - delta
+		
+		-- 4) 공격 모션 중에는 다른 판단을 하지 않는다.
+		if self.CurrentAIState == "ATTACK" then
+			if self.StateTimer <= 0 then
+				self:EnterState("STAND")
+			end
+			return
+		end
+		
+		-- 5) 주기적으로 적 재탐색
+		if self.RetargetTimer <= 0 then
+			self.RetargetTimer = self.RetargetInterval
+			self.TargetEntity = self:FindNearestEnemy()
+		end
+		
+		local target = self.TargetEntity
+		
+		-- 6) 사거리 안 적이 있으면 그 자리에서 공격한다(전진보다 우선).
+		if isvalid(target) and not self:IsDeadEntity(target) then
+			local myPos = self.Entity.TransformComponent.WorldPosition
+			local tPos = target.TransformComponent.WorldPosition
+			local dx = tPos.x - myPos.x
+			local dy = tPos.y - myPos.y
+			local dist = math.sqrt(dx * dx + dy * dy)
+		
+			if dist <= self.AttackRange then
+				-- 사거리 안: 적을 향해 돌아서서 쿨타임마다 공격
+				local dir = 1
+				if dx < 0 then
+					dir = -1
+				end
+				self:FaceTo(dir)
+		
+				if self.AttackTimer <= 0 then
+					self:EnterState("ATTACK")
+				else
+					self:StopMovement()
+				end
+				return
+			end
+		end
+		
+		-- 7) 사거리 안 적이 없으면 목표(적 포탑) 방향으로 계속 전진한다.
+		--    중립(ResolvedDir==0)은 그 자리에 정지한다.
+		self.CurrentAIState = "ADVANCE"
+		
+		if self.ResolvedDir == 0 then
+			self:SetSprite(self.StandRUID)
+			self:StopMovement()
+			return
+		end
+		
+		self:SetSprite(self.MoveRUID)
+		self:FaceTo(self.ResolvedDir)
+		
+		local movement = self.Entity.MovementComponent
+		if isvalid(movement) then
+			movement:MoveToDirection(Vector2(self.ResolvedDir, 0), 0)
+		end
+	end
+
+end

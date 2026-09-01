@@ -1,0 +1,549 @@
+@Logic
+script SummonManager extends Logic
+
+	property integer ExpPerLevel = 10
+
+	property integer BaseMaxHp = 1000
+
+	property integer BaseMaxMp = 100
+
+	property string LevelUpEffectRUID = "032cf0ab86d6431a92fe6b352b110724"
+
+	property string LevelUpSoundRUID = "0ec9de7090264d85ae9a03d5f6f59093"
+
+	property Vector3 TeamASpawnPos = Vector3(-8.6, 0.1, 0)
+
+	property Vector3 TeamBSpawnPos = Vector3(7.7, 0.1, 0)
+
+	@HideFromInspector
+	property any econ = nil
+
+	@HideFromInspector
+	property any teamAConfig = nil
+
+	@HideFromInspector
+	property any teamBConfig = nil
+
+	@HideFromInspector
+	property any regionConfig = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 서버에서 경제 테이블과 소환 설정을 준비하고, 입장 유저를 초기화한다.
+		self.econ = {}
+		
+		-- TeamA: 해금 레벨 = 소환 메소 코스트(사용자 확정 규칙). 전부 튜닝 가능.
+		self.teamAConfig = {
+			slime = { modelId = "factionmonstera",      unlockLevel = 1, mesoCost = 1, scale = 0.6 },
+			stump = { modelId = "factionmonsterastump", unlockLevel = 2, mesoCost = 2, scale = 0.6 },
+			boar  = { modelId = "factionmonsteraboar",  unlockLevel = 3, mesoCost = 3, scale = 0.6 },
+		}
+		
+		-- TeamB: 제한 없는 리모컨. 코스트/레벨 개념 없음.
+		self.teamBConfig = {
+			snail    = { modelId = "factionmonsterbsnail",    scale = 0.6 },
+			mushroom = { modelId = "factionmonsterbmushroom", scale = 0.6 },
+			pig      = { modelId = "factionmonsterbpig",      scale = 0.6 },
+		}
+		
+		-- 월드맵 파병 지역: 3맵 모두 같은 룸에 공동로드됨(Phase0 실측). TeamA 터렛 위치에 스폰.
+		self.regionConfig = {
+			region1 = { mapPath = "/maps/map01", turretName = "TurretA" },
+			region2 = { mapPath = "/maps/map02", turretName = "TurretA" },
+			region3 = { mapPath = "/maps/map03", turretName = "TurretA" },
+		}
+		
+		-- 입장 유저 초기화(입장 이벤트).
+		_UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+		
+		-- 이미 들어와 있는 유저도 초기화(에디터 플레이는 보통 여기 걸림).
+		for _, user in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(user) and isvalid(user.PlayerComponent) then
+				self:EnsureUser(user.PlayerComponent.UserId)
+			end
+		end
+		
+		log("[Summon] manager ready")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserEnter(UserEnterEvent event)
+		-- 새로 입장한 유저의 경제 항목을 만들고 초기 HUD 를 밀어 준다.
+		local uid = event.UserId
+		if uid ~= nil and uid ~= "" then
+			self:EnsureUser(uid)
+			self:Push(uid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any EnsureUser(string userId)
+		-- 유저 경제 항목을 반환한다. 없으면 기본값으로 생성한다.
+		if userId == nil or userId == "" then
+			return nil
+		end
+		if self.econ[userId] == nil then
+			self.econ[userId] = {
+				exp = 0, level = 1, meso = 0,
+				mp = self.BaseMaxMp, maxMp = self.BaseMaxMp,
+				ap = 0, sp = 0,
+			}
+		end
+		return self.econ[userId]
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer LevelFromExp(integer exp)
+		-- 누적 경험치로부터 레벨을 계산한다. LevelTable(도감)이 단일 진상이고, 없으면 폴백.
+		if _MonsterCatalog ~= nil then
+			local r = _MonsterCatalog:ResolveLevel(exp)
+			if r ~= nil then
+				return r.level
+			end
+		end
+		return math.floor(exp / self.ExpPerLevel) + 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ExpProgress(integer exp)
+		-- EXP 바 표시용 { level, within, need }. 도감이 없으면 폴백 규칙으로 계산.
+		if _MonsterCatalog ~= nil then
+			local r = _MonsterCatalog:ResolveLevel(exp)
+			if r ~= nil then
+				return r
+			end
+		end
+		local level = math.floor(exp / self.ExpPerLevel) + 1
+		return { level = level, within = exp - (level - 1) * self.ExpPerLevel, need = self.ExpPerLevel }
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GrantKillReward(Entity player, integer exp)
+		-- 파밍 처치 보상: 경험치를 더하고 레벨을 재계산해 HUD 로 밀어 준다.
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then
+			return
+		end
+		local uid = player.PlayerComponent.UserId
+		local e = self:EnsureUser(uid)
+		if e == nil then
+			return
+		end
+		
+		local before = e.level
+		e.exp = e.exp + exp
+		e.level = self:LevelFromExp(e.exp)
+		
+		-- 레벨이 올랐으면 오른 만큼 각각 보상을 준다(한 번에 여러 레벨 오를 수 있다).
+		if e.level > before then
+			for lv = before, e.level - 1 do
+				self:ApplyLevelUpRewards(player, e, lv)
+			end
+			self:OnLevelUp(player, uid, e.level)
+		end
+		
+		self:Push(uid)
+		
+		log("[Summon] +exp " .. tostring(exp) .. " -> exp=" .. tostring(e.exp)
+			.. " level=" .. tostring(e.level) .. " (" .. uid .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyLevelUpRewards(Entity player, any e, integer fromLevel)
+		-- fromLevel -> fromLevel+1 로 올라갈 때의 보상(LevelTable 의 그 행)을 적용한다.
+		local addHp = 0
+		local addMp = 0
+		local ap = 0
+		local sp = 0
+		
+		if _MonsterCatalog ~= nil then
+			local row = _MonsterCatalog:GetLevelRow(fromLevel)
+			if row ~= nil then
+				addHp = row.addMaxHp
+				addMp = row.addMaxMp
+				ap = row.ap
+				sp = row.sp
+			end
+		end
+		
+		-- 최대 HP 는 네이티브 PlayerComponent 가 들고 있다.
+		local pc = player.PlayerComponent
+		if isvalid(pc) and addHp > 0 then
+			pc.MaxHp = pc.MaxHp + addHp
+		end
+		
+		-- MP 는 엔진에 없어 여기(서버 econ)가 진상.
+		e.maxMp = e.maxMp + addMp
+		e.ap = e.ap + ap
+		e.sp = e.sp + sp
+		
+		log("[Summon] levelup reward Lv" .. tostring(fromLevel) .. "->" .. tostring(fromLevel + 1)
+			.. " +hp" .. tostring(addHp) .. " +mp" .. tostring(addMp)
+			.. " +ap" .. tostring(ap) .. " +sp" .. tostring(sp))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLevelUp(Entity player, string userId, integer newLevel)
+		-- 레벨업 마무리: HP/MP 를 가득 채우고 클라에 연출을 요청한다.
+		local pc = player.PlayerComponent
+		if isvalid(pc) then
+			pc.Hp = pc.MaxHp
+		end
+		
+		local e = self.econ[userId]
+		if e ~= nil then
+			e.mp = e.maxMp
+		end
+		
+		if _StatusHUDController ~= nil then
+			_StatusHUDController:PlayLevelUp(newLevel, self.LevelUpEffectRUID, self.LevelUpSoundRUID, userId)
+		end
+		
+		log("[Summon] LEVEL UP -> Lv" .. tostring(newLevel) .. " (" .. userId .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GrantMeso(Entity player, integer amount)
+		-- 동전 획득: 메소를 더하고 HUD 로 밀어 준다.
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then
+			return
+		end
+		local uid = player.PlayerComponent.UserId
+		local e = self:EnsureUser(uid)
+		if e == nil then
+			return
+		end
+		
+		e.meso = e.meso + amount
+		self:Push(uid)
+		
+		log("[Summon] +meso " .. tostring(amount) .. " -> meso=" .. tostring(e.meso) .. " (" .. uid .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Push(string userId)
+		-- 소유 클라이언트의 HUD 컨트롤러들로 최신 값을 보낸다.
+		-- ⚠ 컨트롤러가 아직 없을 수 있으므로 nil 가드.
+		local e = self.econ[userId]
+		if e == nil then
+			return
+		end
+		
+		-- 레벨이 LevelTable 기반이라 진척도를 서버에서 계산해 그대로 넘긴다.
+		-- ⚠ PushEconomy 의 1·4번째 인자는 "구간 내 진척 exp / 구간 필요 exp" 다(누적 exp 가 아니다).
+		local p = self:ExpProgress(e.exp)
+		
+		if _BattleHUDController ~= nil then
+			_BattleHUDController:PushEconomy(p.within, e.level, e.meso, p.need, userId)
+		end
+		
+		-- 하단 상태창(HP/MP/EXP/레벨/AP/SP).
+		if _StatusHUDController ~= nil then
+			_StatusHUDController:PushStats(e.level, p.within, p.need, e.mp, e.maxMp, e.ap, e.sp, userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSummonTeamA(string key)
+		-- 클라 버튼 → 서버. 레벨 해금 + 메소 코스트를 검증하고 좌측 벽에서 소환한다.
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(player) then
+			return
+		end
+		
+		local cfg = self.teamAConfig[key]
+		if cfg == nil then
+			log_warning("[Summon] unknown TeamA key: " .. tostring(key))
+			return
+		end
+		
+		local e = self:EnsureUser(senderUserId)
+		if e == nil then
+			return
+		end
+		
+		-- 해금 레벨 검증
+		if e.level < cfg.unlockLevel then
+			log("[Summon] TeamA " .. key .. " locked (need Lv" .. tostring(cfg.unlockLevel)
+				.. ", have Lv" .. tostring(e.level) .. ")")
+			return
+		end
+		
+		-- 메소 검증 + 차감
+		if e.meso < cfg.mesoCost then
+			log("[Summon] TeamA " .. key .. " not enough meso (need " .. tostring(cfg.mesoCost)
+				.. ", have " .. tostring(e.meso) .. ")")
+			return
+		end
+		e.meso = e.meso - cfg.mesoCost
+		self:Push(senderUserId)
+		
+		self:SpawnUnit(cfg.modelId, "SummonA_" .. key, self.TeamASpawnPos, cfg.scale, player)
+		log("[Summon] TeamA " .. key .. " spawned (-meso " .. tostring(cfg.mesoCost) .. ")")
+	end
+
+	@ExecSpace("Server")
+	method void RequestSummonTeamB(string key)
+		-- 클라 버튼 → 서버. 제한 없이 우측 벽에서 소환한다(리모컨).
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(player) then
+			return
+		end
+		
+		local cfg = self.teamBConfig[key]
+		if cfg == nil then
+			log_warning("[Summon] unknown TeamB key: " .. tostring(key))
+			return
+		end
+		
+		self:SpawnUnit(cfg.modelId, "SummonB_" .. key, self.TeamBSpawnPos, cfg.scale, player)
+		log("[Summon] TeamB " .. key .. " spawned")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnUnit(string modelId, string name, Vector3 pos, number scale, Entity player)
+		-- 유닛을 소환해 플레이어가 있는 맵에 붙이고, 지정 배율로 축소한다.
+		local map = player.CurrentMap
+		if not isvalid(map) then
+			log_error("[Summon] player has no CurrentMap")
+			return
+		end
+		
+		local unit = _SpawnService:SpawnByModelId(modelId, name, pos, map)
+		if unit == nil then
+			log_error("[Summon] SpawnByModelId 실패 — modelId=" .. tostring(modelId))
+			return
+		end
+		
+		local t = unit.TransformComponent
+		if isvalid(t) then
+			t.Scale = Vector3(scale, scale, scale)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestDispatch(string regionKey, string unitKey)
+		-- 클라 월드맵 → 서버. 레벨해금+메소 검증·차감 후, 지정 지역(맵)의 TeamA 터렛 위치에 원격 스폰.
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(player) then
+			return
+		end
+		
+		local rcfg = self.regionConfig[regionKey]
+		if rcfg == nil then
+			log_warning("[Dispatch] unknown region: " .. tostring(regionKey))
+			return
+		end
+		
+		local cfg = self.teamAConfig[unitKey]
+		if cfg == nil then
+			log_warning("[Dispatch] unknown unit: " .. tostring(unitKey))
+			return
+		end
+		
+		local e = self:EnsureUser(senderUserId)
+		if e == nil then
+			return
+		end
+		
+		-- 해금 레벨 검증(RequestSummonTeamA 와 동일 규칙).
+		if e.level < cfg.unlockLevel then
+			log("[Dispatch] " .. unitKey .. " locked (need Lv" .. tostring(cfg.unlockLevel)
+				.. ", have Lv" .. tostring(e.level) .. ")")
+			return
+		end
+		
+		-- 메소 검증 + 차감.
+		if e.meso < cfg.mesoCost then
+			log("[Dispatch] " .. unitKey .. " not enough meso (need " .. tostring(cfg.mesoCost)
+				.. ", have " .. tostring(e.meso) .. ")")
+			return
+		end
+		e.meso = e.meso - cfg.mesoCost
+		self:Push(senderUserId)
+		
+		-- 대상 맵 + 터렛 위치 조회(플레이어가 없어도 해석됨 — Phase0 실측).
+		local map = _EntityService:GetEntityByPath(rcfg.mapPath)
+		if not isvalid(map) then
+			log_error("[Dispatch] map not found: " .. rcfg.mapPath)
+			return
+		end
+		
+		local pos = self.TeamASpawnPos
+		local turret = _EntityService:GetEntityByPath(rcfg.mapPath .. "/" .. rcfg.turretName)
+		if isvalid(turret) and isvalid(turret.TransformComponent) then
+			local tp = turret.TransformComponent.WorldPosition
+			pos = Vector3(tp.x, tp.y + 0.3, 0)
+		end
+		
+		self:SpawnUnitInMap(cfg.modelId, "Dispatch_" .. regionKey .. "_" .. unitKey, pos, cfg.scale, map)
+		log("[Dispatch] " .. unitKey .. " -> " .. regionKey .. " at ("
+			.. tostring(pos.x) .. "," .. tostring(pos.y) .. ") -meso " .. tostring(cfg.mesoCost))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ResolveUnit(string key)
+		-- 파병 유닛 정보를 SummonUnits 표(단일 진상)에서 찾고, 표가 없으면 teamAConfig 폴백.
+		if _MonsterCatalog ~= nil then
+			local u = _MonsterCatalog:GetSummonUnit(key)
+			if u ~= nil then
+				return { modelId = u.modelId, unlockLevel = u.level, mesoCost = u.meso, name = u.name, scale = 0.6 }
+			end
+		end
+		local c = self.teamAConfig[key]
+		if c == nil then
+			return nil
+		end
+		return { modelId = c.modelId, unlockLevel = c.unlockLevel, mesoCost = c.mesoCost, name = key, scale = c.scale }
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ParseCart(string payload)
+		-- "slime:5,stump:1" → { {key="slime", qty=5}, ... }
+		local cart = {}
+		if payload == nil or payload == "" then
+			return cart
+		end
+		for chunk in string.gmatch(payload, "([^,]+)") do
+			local sep, sepEnd = string.find(chunk, ":", 1, true)
+			if sep ~= nil then
+				local key = string.sub(chunk, 1, sep - 1)
+				local qty = math.floor(tonumber(string.sub(chunk, sepEnd + 1)) or 0)
+				if key ~= "" and qty > 0 then
+					table.insert(cart, { key = key, qty = qty })
+				end
+			end
+		end
+		return cart
+	end
+
+	@ExecSpace("Server")
+	method void RequestDispatchBatch(string regionKey, string payload)
+		-- 영수증(카트) 전체를 한 번에 파병한다. payload = "slime:5,stump:1,boar:1"
+		-- ⚠ 카트를 table(any) 로 넘기면 [LEA-3036] InvalidCast 가 난다 —
+		--   any 타입은 ExecSpace 를 넘을 수 없다(실측). 그래서 문자열로 직렬화해 보낸다.
+		-- ⚠ 부분 전송하지 않는다: 레벨 미달/메소 부족이면 전체를 거부한다(영수증 개념과 일치).
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(player) then
+			return
+		end
+		local cart = self:ParseCart(payload)
+		
+		local rcfg = self.regionConfig[regionKey]
+		if rcfg == nil then
+			self:ReportDispatch(senderUserId, false, "알 수 없는 지역", 0, 0)
+			return
+		end
+		
+		local e = self:EnsureUser(senderUserId)
+		if e == nil then
+			return
+		end
+		
+		if cart == nil or #cart == 0 then
+			self:ReportDispatch(senderUserId, false, "영수증이 비어 있습니다", 0, 0)
+			return
+		end
+		
+		-- 1) 검증 + 총액 합산
+		local total = 0
+		local count = 0
+		for _, item in ipairs(cart) do
+			local qty = math.floor(tonumber(item.qty) or 0)
+			if qty > 0 then
+				local cfg = self:ResolveUnit(item.key)
+				if cfg == nil then
+					self:ReportDispatch(senderUserId, false, "알 수 없는 유닛: " .. tostring(item.key), 0, 0)
+					return
+				end
+				if e.level < cfg.unlockLevel then
+					self:ReportDispatch(senderUserId, false, cfg.name .. " 는 Lv" .. tostring(cfg.unlockLevel) .. " 필요", 0, 0)
+					return
+				end
+				total = total + cfg.mesoCost * qty
+				count = count + qty
+			end
+		end
+		
+		if count == 0 then
+			self:ReportDispatch(senderUserId, false, "수량이 0 입니다", 0, 0)
+			return
+		end
+		if e.meso < total then
+			self:ReportDispatch(senderUserId, false, "메소 부족 (" .. tostring(total) .. " 필요 / " .. tostring(e.meso) .. " 보유)", 0, total)
+			return
+		end
+		
+		-- 2) 대상 맵 + 스폰 위치
+		local map = _EntityService:GetEntityByPath(rcfg.mapPath)
+		if not isvalid(map) then
+			self:ReportDispatch(senderUserId, false, "맵을 찾을 수 없음: " .. rcfg.mapPath, 0, total)
+			return
+		end
+		
+		local base = self.TeamASpawnPos
+		local turret = _EntityService:GetEntityByPath(rcfg.mapPath .. "/" .. rcfg.turretName)
+		if isvalid(turret) and isvalid(turret.TransformComponent) then
+			local tp = turret.TransformComponent.WorldPosition
+			base = Vector3(tp.x, tp.y + 0.3, 0)
+		end
+		
+		-- 3) 메소는 1회만 차감
+		e.meso = e.meso - total
+		
+		-- 4) 수량만큼 스폰. 같은 자리에 겹치지 않게 좌우로 살짝 흩뿌린다.
+		local spawned = 0
+		for _, item in ipairs(cart) do
+			local qty = math.floor(tonumber(item.qty) or 0)
+			if qty > 0 then
+				local cfg = self:ResolveUnit(item.key)
+				for i = 1, qty do
+					-- ⚠ 한 프레임 안에서 _UtilLogic:RandomDouble() 은 거의 같은 값을 돌려준다(실측:
+					--   3마리가 x=3.81/3.82/3.82 로 겹쳤다). 그래서 순번 기반으로 확정 분산한다.
+					local slot = spawned % 7
+					local ox = (slot - 3) * 0.28
+					local pos = Vector3(base.x + ox, base.y, 0)
+					self:SpawnUnitInMap(cfg.modelId, "Dispatch_" .. regionKey .. "_" .. item.key .. "_" .. tostring(i),
+						pos, cfg.scale, map)
+					spawned = spawned + 1
+				end
+			end
+		end
+		
+		self:Push(senderUserId)
+		self:ReportDispatch(senderUserId, true, "파병 완료", spawned, total)
+		log("[Dispatch] batch -> " .. regionKey .. " units=" .. tostring(spawned)
+			.. " cost=" .. tostring(total) .. " (" .. senderUserId .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReportDispatch(string userId, boolean ok, string message, integer spawned, integer cost)
+		-- 파병 결과를 요청한 클라이언트에게만 알린다.
+		if _WorldMapController ~= nil then
+			_WorldMapController:OnDispatchResult(ok, message, spawned, cost, userId)
+		end
+		if not ok then
+			log("[Dispatch] 거부 — " .. message .. " (" .. userId .. ")")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnUnitInMap(string modelId, string name, Vector3 pos, number scale, Entity mapEntity)
+		-- 지정 맵 엔티티를 parent 로 유닛을 원격 스폰하고 배율 축소(크로스맵 파병).
+		if not isvalid(mapEntity) then
+			log_error("[Dispatch] SpawnUnitInMap: invalid map")
+			return
+		end
+		
+		local unit = _SpawnService:SpawnByModelId(modelId, name, pos, mapEntity)
+		if unit == nil then
+			log_error("[Dispatch] SpawnByModelId 실패 — modelId=" .. tostring(modelId))
+			return
+		end
+		
+		local t = unit.TransformComponent
+		if isvalid(t) then
+			t.Scale = Vector3(scale, scale, scale)
+		end
+	end
+
+end

@@ -1,0 +1,204 @@
+@Component
+script AuraEmitter extends Component
+
+	property string AuraModelId = "auracircle"
+
+	property number FallbackWidth = 8.0
+
+	property number FallbackHeight = 3.0
+
+	property number FallbackOffsetY = 1.5
+
+	property integer AuraOrderInLayer = 3
+
+	property Color TeamAColor = Color(0.3, 0.65, 1.0, 0.75)
+
+	property Color TeamBColor = Color(1.0, 0.35, 0.3, 0.75)
+
+	@HideFromInspector
+	property any AuraEntity = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 팀 색상의 직사각형 오라를 실제 버프 범위와 같은 크기로 붙인다.
+		local team = self:GetTeamName()
+		
+		-- 중립은 버프도 디버프도 주지 않으므로 오라를 표시하지 않는다.
+		if team == "Neutral" then
+			return
+		end
+		
+		local aura = _SpawnService:SpawnByModelId(
+			self.AuraModelId,
+			"AuraRect",
+			Vector3(0, 0, 0),
+			self.Entity                      -- 소스의 자식으로 붙어 같이 움직인다
+		)
+		
+		if aura == nil then
+			log_error("[AuraEmitter] SpawnByModelId 실패 — modelId=" .. self.AuraModelId)
+			return
+		end
+		
+		self.AuraEntity = aura
+		self:ApplySize(aura)
+		self:ApplyColor(aura, team)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 스폰한 오라 그림은 자동으로 사라지지 않으므로 직접 제거한다.
+		if isvalid(self.AuraEntity) then
+			self.AuraEntity:Destroy()
+		end
+		self.AuraEntity = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplySize(Entity aura)
+		-- 직사각형의 가로/세로를 실제 버프 판정 범위와 정확히 맞추고, pivot 을 보정한다.
+		local renderer = aura.SpriteRendererComponent
+		local transform = aura.TransformComponent
+		if not isvalid(renderer) or not isvalid(transform) then
+			return
+		end
+		
+		local w = self:ResolveAuraWidth()
+		local h = self:ResolveAuraHeight()
+		
+		local sprite = self:LoadSpriteMetrics(renderer.SpriteRUID)
+		if sprite == nil or sprite.PixelPerUnit <= 0 then
+			log_warning("[AuraEmitter] 스프라이트 정보를 못 읽어 크기 보정을 건너뜀 — ruid=" .. tostring(renderer.SpriteRUID))
+			return
+		end
+		
+		-- 배율 1 일 때의 월드 크기 = 픽셀 크기 / PixelPerUnit
+		local nativeW = sprite.Width / sprite.PixelPerUnit
+		local nativeH = sprite.Height / sprite.PixelPerUnit
+		if nativeW <= 0 or nativeH <= 0 then
+			return
+		end
+		
+		transform.Scale = Vector3(w / nativeW, h / nativeH, 1)
+		
+		-- 세로 위치 = 판정 사각형 중심(AuraOffsetY) + pivot 보정.
+		-- pivot 이 아래쪽(ny<0.5)이면 그림이 위로만 뻗으므로 그만큼 내려서 중심을 맞춘다.
+		local pivotY = sprite.PivotPixel:ToVector2().y
+		local ny = pivotY / sprite.Height
+		local offsetY = self:ResolveAuraOffsetY()
+		local localY = offsetY + h * (ny - 0.5)
+		transform.Position = Vector3(0, localY, 0)
+		
+		-- 지형 타일보다 위에 그려야 띠가 보인다. 반투명이라 몬스터를 가리지 않는다.
+		renderer.OrderInLayer = self.AuraOrderInLayer
+		
+		log("[AuraEmitter] " .. self.Entity.Name
+			.. " rect=" .. string.format("%.1f x %.1f", w, h)
+			.. " native=" .. string.format("%.2f x %.2f", nativeW, nativeH)
+			.. " ny=" .. string.format("%.3f", ny)
+			.. " offsetY=" .. string.format("%.2f", offsetY)
+			.. " localY=" .. string.format("%.2f", localY))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any LoadSpriteMetrics(string ruid)
+		-- 크기 계산에 쓸 원본 Sprite 정보를 반환한다. sprite / animationclip 둘 다 지원.
+		--
+		-- ⚠ SpriteRUID 는 두 종류를 다 받는데 로딩 API 가 다르다:
+		--     sprite        → LoadSpriteAndWait
+		--     animationclip → LoadAnimationClipAndWait 후 Frames[1].FrameSprite
+		--   타입을 안 가리고 한쪽 API 만 부르면 nil 이 돌아와 크기 보정이 통째로 실패한다.
+		--   (멀티레이어 이펙트는 프레임 한 장만 sprite 로 쓰면 화면에 아무것도 안 나온다 —
+		--    그래서 실제 사용값은 animationclip 쪽이다.)
+		if ruid == nil or ruid == "" then
+			return nil
+		end
+		
+		local rtype = _ResourceService:GetTypeAndWait(ruid)
+		
+		if rtype == ResourceType.AnimationClip then
+			local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+			if clip == nil or clip.Frames == nil or #clip.Frames == 0 then
+				return nil
+			end
+			return clip.Frames[1].FrameSprite
+		end
+		
+		return _ResourceService:LoadSpriteAndWait(ruid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyColor(Entity aura, string team)
+		-- 팀 색을 입힌다. Color 는 @Sync 라 서버에서 지정하면 클라이언트로 전달된다.
+		local renderer = aura.SpriteRendererComponent
+		if not isvalid(renderer) then
+			return
+		end
+		
+		if team == "TeamB" then
+			renderer.Color = self.TeamBColor
+		else
+			renderer.Color = self.TeamAColor
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetTeamName()
+		-- 자기 팀 문자열을 반환한다. Faction 이 없으면 중립으로 본다.
+		---@type Faction
+		local faction = self.Entity:GetComponent("script.Faction")
+		if isvalid(faction) then
+			return faction.Team
+		end
+		
+		return "Neutral"
+	end
+
+	@ExecSpace("ServerOnly")
+	method FactionAuraController FindController()
+		-- 실제 버프 판정을 담당하는 맵 엔티티의 컨트롤러를 찾는다.
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return nil
+		end
+		
+		---@type FactionAuraController
+		local controller = map:GetComponent("script.FactionAuraController")
+		return controller
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ResolveAuraWidth()
+		-- 판정에 쓰이는 가로 길이를 컨트롤러에서 직접 읽어온다(값 중복 방지).
+		local controller = self:FindController()
+		if isvalid(controller) then
+			return controller.AuraWidth
+		end
+		
+		return self.FallbackWidth
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ResolveAuraHeight()
+		-- 판정에 쓰이는 세로 길이를 컨트롤러에서 직접 읽어온다(값 중복 방지).
+		local controller = self:FindController()
+		if isvalid(controller) then
+			return controller.AuraHeight
+		end
+		
+		return self.FallbackHeight
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ResolveAuraOffsetY()
+		-- 판정 사각형 중심이 발밑에서 얼마나 위인지를 컨트롤러에서 읽어온다.
+		-- 이 값이 어긋나면 화면의 띠와 실제 버프 범위가 위아래로 밀린다.
+		local controller = self:FindController()
+		if isvalid(controller) then
+			return controller.AuraOffsetY
+		end
+		
+		return self.FallbackOffsetY
+	end
+
+end

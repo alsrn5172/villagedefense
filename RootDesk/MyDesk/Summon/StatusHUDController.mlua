@@ -1,0 +1,149 @@
+@Logic
+script StatusHUDController extends Logic
+
+	property UITransformComponent hpBar = "ac41e37e-0395-4490-b80c-f442b70e1192"
+
+	property TextComponent hpText = "04c39d3b-2dbb-418e-aa44-22e7635d60cc"
+
+	property UITransformComponent mpBar = "ac608ae7-7e6e-48a4-962e-c1f0230c97ec"
+
+	property TextComponent mpText = "4f8f61db-9252-43e3-8dbf-cf40eaa00a8d"
+
+	property UITransformComponent expBar = "a4d2bbf1-dce9-4f82-bfcf-b9923c7a6517"
+
+	property TextComponent expText = "488d069c-ce84-4b06-9f35-f2d884fd5f1b"
+
+	property TextComponent nameText = "d05d21eb-80a0-41e3-8aeb-b7d687c6e0d9"
+
+	property TextComponent levelText = "51cabeb3-63eb-40ec-8d10-2a922b54d926"
+
+	property TextGUIRendererComponent apSpText = "f0971615-825a-44ec-aef8-8648353f640d"
+
+	@HideFromInspector
+	property number hpFullWidth = 0
+
+	@HideFromInspector
+	property number mpFullWidth = 0
+
+	@HideFromInspector
+	property number expFullWidth = 0
+
+	@HideFromInspector
+	property integer curLevel = 1
+
+	@HideFromInspector
+	property integer curWithin = 0
+
+	@HideFromInspector
+	property integer curNeed = 1
+
+	@HideFromInspector
+	property integer curMp = 0
+
+	@HideFromInspector
+	property integer curMaxMp = 0
+
+	@HideFromInspector
+	property integer curAp = 0
+
+	@HideFromInspector
+	property integer curSp = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 바 원본 폭을 캐시하고 초기 표시를 그린다.
+		if isvalid(self.hpBar) then self.hpFullWidth = self.hpBar.RectSize.x end
+		if isvalid(self.mpBar) then self.mpFullWidth = self.mpBar.RectSize.x end
+		if isvalid(self.expBar) then self.expFullWidth = self.expBar.RectSize.x end
+		
+		local lp = _UserService.LocalPlayer
+		if isvalid(lp) and isvalid(lp.PlayerComponent) and isvalid(self.nameText) then
+			self.nameText.Text = lp.PlayerComponent.Nickname
+		end
+		
+		self:RefreshStats()
+		log("[Status] StatusHUDController ready (client) widths hp=" .. tostring(self.hpFullWidth)
+			.. " mp=" .. tostring(self.mpFullWidth) .. " exp=" .. tostring(self.expFullWidth))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- HP 는 네이티브 값이라 여기서 직접 읽어 매 프레임 반영한다(피격 즉시 반응).
+		local lp = _UserService.LocalPlayer
+		if not isvalid(lp) then
+			return
+		end
+		local pc = lp.PlayerComponent
+		if not isvalid(pc) then
+			return
+		end
+		self:SetBar(self.hpBar, self.hpText, pc.Hp, pc.MaxHp, self.hpFullWidth, false)
+	end
+
+	@ExecSpace("Client")
+	method void PushStats(integer level, integer within, integer need, integer mp, integer maxMp, integer ap, integer sp)
+		-- 서버가 값이 바뀔 때마다 소유 클라이언트로만 보낸다(호출부 마지막 인자 = targetUserId).
+		self.curLevel = level
+		self.curWithin = within
+		self.curNeed = need
+		self.curMp = mp
+		self.curMaxMp = maxMp
+		self.curAp = ap
+		self.curSp = sp
+		self:RefreshStats()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshStats()
+		-- MP / EXP 바 + 레벨 + AP·SP 텍스트를 캐시값으로 갱신한다(HP 는 OnUpdate 담당).
+		self:SetBar(self.mpBar, self.mpText, self.curMp, self.curMaxMp, self.mpFullWidth, false)
+		self:SetBar(self.expBar, self.expText, self.curWithin, self.curNeed, self.expFullWidth, true)
+		
+		if isvalid(self.levelText) then
+			self.levelText.Text = "Lv " .. tostring(self.curLevel)
+		end
+		if isvalid(self.apSpText) then
+			self.apSpText.Text = "AP " .. tostring(self.curAp) .. "  ·  SP " .. tostring(self.curSp)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBar(UITransformComponent bar, TextComponent label, number cur, number max, number fullWidth, boolean asPercent)
+		-- 게이지 폭을 비율만큼 줄이고 숫자를 쓴다. max 가 0 이면 0% 로 처리한다.
+		local ratio = 0
+		if max > 0 then
+			ratio = cur / max
+		end
+		if ratio < 0 then ratio = 0 end
+		if ratio > 1 then ratio = 1 end
+		
+		if isvalid(bar) and fullWidth > 0 then
+			bar.RectSize = Vector2(fullWidth * ratio, bar.RectSize.y)
+		end
+		
+		if isvalid(label) then
+			if asPercent then
+				label.Text = string.format("%d%%  (%d / %d)", math.floor(ratio * 100), math.floor(cur), math.floor(max))
+			else
+				label.Text = string.format("%d / %d", math.floor(cur), math.floor(max))
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayLevelUp(integer newLevel, string effectRuid, string soundRuid)
+		-- 레벨업 연출: 소리 + 플레이어에 붙는 이펙트. RUID 가 비어 있으면 그 부분만 건너뛴다.
+		if soundRuid ~= nil and soundRuid ~= "" then
+			_SoundService:PlaySound(soundRuid, 1.0)
+		end
+		
+		local lp = _UserService.LocalPlayer
+		if effectRuid ~= nil and effectRuid ~= "" and isvalid(lp) then
+			-- 캐릭터 발밑 기준으로 살짝 위에서 1회 재생.
+			_EffectService:PlayEffectAttached(effectRuid, lp, Vector3(0, 0.5, 0), 0, Vector3(1, 1, 1), false)
+		end
+		
+		log("[Status] LEVEL UP 연출 Lv" .. tostring(newLevel))
+	end
+
+end
