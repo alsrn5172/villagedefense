@@ -27,6 +27,16 @@ git check-attr merge -- map/map01.map
 5. Maker에서 이 월드 최초 입장 → 폴더 선택창에서 clone 폴더 지정
 6. `Reimport All` → 빌드 로그 기준선 기록
 
+## 훅 설치 (clone 후 1회)
+
+GitHub Free는 비공개 저장소에 **브랜치 보호를 걸 수 없습니다.** 대신 로컬 훅으로 `main` 직접 push를 막습니다.
+
+```bash
+git config core.hooksPath .githooks
+```
+
+이걸 안 하면 실수로 `main` 에 바로 push됩니다. 합류 절차에 포함돼 있습니다.
+
 ## 🔴 자주 밟는 함정 3개
 
 | 함정 | 결과 |
@@ -34,6 +44,19 @@ git check-attr merge -- map/map01.map
 | **git 조작 전에 Maker를 안 껐다** | Maker가 메모리 내용으로 디스크를 되쓴다 → 받아온 변경이 사라진다 |
 | **`git checkout --ours/--theirs` 를 썼다** | rebase 중에는 의미가 뒤집힌다. `.map` 은 통째로 고르는 파일이라 **하루치가 날아간다.** 브랜치명을 명시할 것 |
 | **`.mcp.json` 을 커밋했다** | API 토큰 유출. 히스토리를 지워도 **재발급해야 한다** |
+
+## 이름이 세 개인 이유
+
+셋은 **일부러 다르다.** 게임 이름은 플레이어에게 보이므로 한글, 코드·경로·URL 식별자는 영어를 쓴다.
+
+| 무엇 | 이름 | 성격 |
+|---|---|---|
+| 게임 / MSW 월드 | **강화하고살아남기** | 플레이어에게 보이는 이름 |
+| 로컬 폴더 | `강화하고살아남기` | LocalWorkspace 저장 위치일 뿐. Maker는 **경로만** 기억한다 |
+| GitHub 저장소 | `villagedefense` | URL·clone 경로에 안전한 영문 |
+| 문서 파일명 | `VillageDefense-*` | 좌동 |
+
+> 🔴 **폴더 이름을 바꾸지 마세요.** 바꾸면 Maker가 LocalWorkspace 경로를 잃고 재지정이 필요해집니다 — 동기화 사고가 나기 쉬운 구간입니다. 게임 이름을 바꾸고 싶으면 **Maker/홈페이지에서 월드 이름만** 바꾸면 되고, 폴더는 그대로 두면 됩니다.
 
 ## 담당
 
