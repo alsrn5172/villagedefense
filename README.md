@@ -29,8 +29,8 @@ git check-attr merge -- map/map01.map
 
 ## `main` 보호
 
-**서버에서 막습니다** — `main` 직접 push 금지, PR 필수, force push·삭제 차단.
-관리자(그룹장)만 비상시 우회할 수 있으므로, 관리자는 아래 훅을 함께 설치한다.
+**서버에서 막습니다 — 예외 없습니다.** `main` 직접 push 금지, PR 필수(승인 0), force push·삭제 차단.
+그룹장도 막힙니다. 로컬 훅은 서버에 닿기 전에 잡아주므로 함께 설치합니다.
 
 ```bash
 git config core.hooksPath .githooks
