@@ -27,15 +27,14 @@ git check-attr merge -- map/map01.map
 5. Maker에서 이 월드 최초 입장 → 폴더 선택창에서 clone 폴더 지정
 6. `Reimport All` → 빌드 로그 기준선 기록
 
-## 훅 설치 (clone 후 1회)
+## `main` 보호
 
-GitHub Free는 비공개 저장소에 **브랜치 보호를 걸 수 없습니다.** 대신 로컬 훅으로 `main` 직접 push를 막습니다.
+**서버에서 막습니다** — `main` 직접 push 금지, PR 필수, force push·삭제 차단.
+관리자(그룹장)만 비상시 우회할 수 있으므로, 관리자는 아래 훅을 함께 설치한다.
 
 ```bash
 git config core.hooksPath .githooks
 ```
-
-이걸 안 하면 실수로 `main` 에 바로 push됩니다. 합류 절차에 포함돼 있습니다.
 
 ## 🔴 자주 밟는 함정 3개
 
