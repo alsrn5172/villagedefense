@@ -14,6 +14,9 @@ script MonsterCatalog extends Logic
 	property string SummonTableName = "SummonUnits"
 
 	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
 	property any summonUnits = nil
 
 	@HideFromInspector
@@ -30,7 +33,7 @@ script MonsterCatalog extends Logic
 
 	method void OnBeginPlay()
 		-- 서버·클라 각자 자기 쪽에서 도감을 적재한다.
-		self:Load()
+		self:EnsureLoaded()
 	end
 
 	method string Key(any id)
@@ -45,27 +48,55 @@ script MonsterCatalog extends Logic
 		return tostring(math.floor(n))
 	end
 
+	method boolean ParseEnabled(any value)
+		-- Enabled 열을 boolean 으로 읽는다. 빈칸은 기본값 true(구형 행 호환).
+		if value == nil or tostring(value) == "" then
+			return true
+		end
+		local text = string.lower(tostring(value))
+		return text == "true" or text == "1" or text == "yes" or text == "y"
+	end
+
+	method void EnsureLoaded()
+		-- 아직 안 읽었으면 한 번만 읽는다. 어느 Get* 을 먼저 불러도 안전하다.
+		if self.loaded then
+			return
+		end
+		self:Load()
+	end
+
 	method void Load()
-		-- 두 데이터셋을 읽어 메모리 테이블로 만든다. 데이터셋이 없어도 죽지 않게 방어한다.
+		-- 데이터셋 4종을 읽어 메모리 테이블로 만든다. 표가 없어도 죽지 않게 방어한다.
+		self.loaded = true
 		self.infoById = {}
 		self.spawnsByMap = {}
-		
+
 		local infoRows = 0
 		local info = _DataService:GetTable(self.InfoTableName)
 		if info ~= nil then
 			for i = 1, info:GetRowCount() do
 				local key = self:Key(info:GetCell(i, "Id"))
 				if key ~= "" then
+					-- MaxHp 가 비었거나 0 이하면 스폰이 즉사한다. 100 으로 막고 경고를 남긴다.
+					local maxHp = tonumber(info:GetCell(i, "MaxHp"))
+					if maxHp == nil or maxHp <= 0 then
+						log_warning("[Catalog] invalid MaxHp for MonsterId=" .. key .. "; using 100")
+						maxHp = 100
+					end
+
 					self.infoById[key] = {
 						id = key,
 						name = info:GetCell(i, "Name"),
 						level = tonumber(info:GetCell(i, "Level")) or 0,
+						maxHp = maxHp,
 						exp = tonumber(info:GetCell(i, "Exp")) or 0,
-					coinMin = tonumber(info:GetCell(i, "CoinMin")) or 0,
-					coinMax = tonumber(info:GetCell(i, "CoinMax")) or 0,
-					modelId = info:GetCell(i, "ModelId"),
-					moveSpeed = tonumber(info:GetCell(i, "MoveSpeed")) or -1,
-					jumpForce = tonumber(info:GetCell(i, "JumpForce")) or -1,
+						coinMin = tonumber(info:GetCell(i, "CoinMin")) or 0,
+						coinMax = tonumber(info:GetCell(i, "CoinMax")) or 0,
+						modelId = info:GetCell(i, "ModelId"),
+						moveType = info:GetCell(i, "MoveType") or "",
+						aiType = info:GetCell(i, "AiType") or "",
+						moveSpeed = tonumber(info:GetCell(i, "MoveSpeed")) or -1,
+						jumpForce = tonumber(info:GetCell(i, "JumpForce")) or -1,
 					}
 					infoRows = infoRows + 1
 				end
@@ -73,21 +104,70 @@ script MonsterCatalog extends Logic
 		else
 			log_warning("[Catalog] dataset not found: " .. self.InfoTableName)
 		end
-		
+
 		local spawnRows = 0
+		local skippedRows = 0
+		local duplicateKeys = {}
 		local maps = _DataService:GetTable(self.MapTableName)
 		if maps ~= nil then
 			for i = 1, maps:GetRowCount() do
-				local mapName = maps:GetCell(i, "MapName")
+				local mapName = maps:GetCell(i, "MapName") or ""
 				local key = self:Key(maps:GetCell(i, "MonsterId"))
-				if mapName ~= nil and mapName ~= "" and key ~= "" then
+				local spawnerId = maps:GetCell(i, "SpawnerId") or ""
+
+				-- SpawnId 는 슬롯의 고유 키다. 구형 행에는 없으므로 행 번호로 만들어 준다.
+				local spawnId = maps:GetCell(i, "SpawnId") or ""
+				if spawnId == "" then
+					spawnId = "Legacy_" .. tostring(i)
+				end
+
+				local rowSpawnCount = tonumber(maps:GetCell(i, "SpawnCount"))
+				if rowSpawnCount == nil then
+					rowSpawnCount = 1
+				end
+				rowSpawnCount = math.floor(rowSpawnCount)
+
+				local respawnSeconds = tonumber(maps:GetCell(i, "RespawnSeconds"))
+				if respawnSeconds == nil then
+					respawnSeconds = 0
+				end
+
+				local enabled = self:ParseEnabled(maps:GetCell(i, "Enabled"))
+				local duplicateKey = mapName .. ":" .. spawnId
+				local infoRow = self.infoById[key]
+
+				-- 아래 분기는 전부 "조용히 안 도는" 사고를 시끄럽게 만들기 위한 것이다.
+				if mapName == "" or key == "" then
+					log_warning("[Catalog] invalid map/monster at row " .. tostring(i))
+					skippedRows = skippedRows + 1
+				elseif infoRow == nil then
+					log_warning("[Catalog] unknown MonsterId=" .. key .. " at row " .. tostring(i))
+					skippedRows = skippedRows + 1
+				elseif infoRow.modelId == nil or infoRow.modelId == "" then
+					log_warning("[Catalog] empty ModelId for MonsterId=" .. key)
+					skippedRows = skippedRows + 1
+				elseif duplicateKeys[duplicateKey] then
+					log_warning("[Catalog] duplicate SpawnId=" .. duplicateKey)
+					skippedRows = skippedRows + 1
+				elseif rowSpawnCount < 0 or respawnSeconds < 0 then
+					log_warning("[Catalog] negative spawn value at row " .. tostring(i))
+					skippedRows = skippedRows + 1
+				else
+					duplicateKeys[duplicateKey] = true
 					if self.spawnsByMap[mapName] == nil then
 						self.spawnsByMap[mapName] = {}
 					end
 					table.insert(self.spawnsByMap[mapName], {
 						id = key,
+						modelId = infoRow.modelId,
+						maxHp = infoRow.maxHp,
 						x = tonumber(maps:GetCell(i, "X")) or 0,
 						y = tonumber(maps:GetCell(i, "Y")) or 0,
+						spawnerId = spawnerId,
+						spawnId = spawnId,
+						spawnCount = rowSpawnCount,
+						respawnSeconds = respawnSeconds,
+						enabled = enabled,
 						note = maps:GetCell(i, "#Note") or "",
 					})
 					spawnRows = spawnRows + 1
@@ -96,7 +176,7 @@ script MonsterCatalog extends Logic
 		else
 			log_warning("[Catalog] dataset not found: " .. self.MapTableName)
 		end
-		
+
 		-- 레벨 성장표(필요 경험치 / 레벨업 보상).
 		self.levelRows = {}
 		self.maxLevel = 1
@@ -121,7 +201,7 @@ script MonsterCatalog extends Logic
 		else
 			log_warning("[Catalog] dataset not found: " .. self.LevelTableName)
 		end
-		
+
 		-- 파병 가능 유닛 목록(월드맵 파병 UI + 서버 검증 공용).
 		self.summonUnits = {}
 		local su = _DataService:GetTable(self.SummonTableName)
@@ -141,29 +221,37 @@ script MonsterCatalog extends Logic
 		else
 			log_warning("[Catalog] dataset not found: " .. self.SummonTableName)
 		end
-		
+
 		log("[Catalog] loaded monsters=" .. tostring(infoRows) .. " spawns=" .. tostring(spawnRows)
+			.. " skipped=" .. tostring(skippedRows)
 			.. " levels=" .. tostring(self.maxLevel) .. " summonUnits=" .. tostring(#self.summonUnits))
 	end
 
 	method any GetInfo(any id)
 		-- 고유번호로 도감 항목을 반환한다. 없으면 nil.
-		if self.infoById == nil then
-			self:Load()
-		end
+		self:EnsureLoaded()
 		return self.infoById[self:Key(id)]
 	end
 
 	method any GetMapSpawns(string mapName)
-		-- 해당 맵의 스폰 자리 목록 { {id, x, y, note}, ... }. 없으면 빈 배열.
-		if self.spawnsByMap == nil then
-			self:Load()
-		end
+		-- 해당 맵의 스폰 자리 목록. 없으면 빈 배열.
+		self:EnsureLoaded()
 		local list = self.spawnsByMap[mapName]
 		if list == nil then
 			return {}
 		end
 		return list
+	end
+
+	method any GetSpawnerEntries(string mapName, string spawnerId)
+		-- 한 스포너가 책임지는 행만 골라 준다. MonsterSpawner 가 자기 몫만 스폰할 때 쓴다.
+		local result = {}
+		for _, row in ipairs(self:GetMapSpawns(mapName)) do
+			if row.spawnerId == spawnerId then
+				table.insert(result, row)
+			end
+		end
+		return result
 	end
 
 	method any GetMapMonsterIds(string mapName)
@@ -181,7 +269,7 @@ script MonsterCatalog extends Logic
 	end
 
 	method string GetModelId(any id)
-		-- 이 몹을 스폰할 때 쓸 모델 id(예: "farmmobt2"). 없으면 빈 문자열.
+		-- 이 몹을 스폰할 때 쓸 모델 id. 없으면 빈 문자열.
 		local e = self:GetInfo(id)
 		if e == nil or e.modelId == nil then
 			return ""
@@ -198,8 +286,35 @@ script MonsterCatalog extends Logic
 		return e.name
 	end
 
+	method number GetMaxHp(any id)
+		-- 최대 체력. 도감에 없으면 100.
+		local e = self:GetInfo(id)
+		if e == nil then
+			return 100
+		end
+		return e.maxHp
+	end
+
+	method string GetMoveType(any id)
+		-- hop / walk / fly / stay. 기록용이며 없으면 빈 문자열.
+		local e = self:GetInfo(id)
+		if e == nil then
+			return ""
+		end
+		return e.moveType
+	end
+
+	method string GetAiType(any id)
+		-- wander / chase / static. 어느 모델 템플릿을 썼는지 알려주는 값이다.
+		local e = self:GetInfo(id)
+		if e == nil then
+			return ""
+		end
+		return e.aiType
+	end
+
 	method number GetMoveSpeed(any id)
-		-- CSV 이동 속도. 열/행이 없으면 -1을 반환해 모델 기본값을 쓴다.
+		-- CSV 이동 속도. 열/행이 비면 -1을 반환해 모델 기본값을 쓴다.
 		local e = self:GetInfo(id)
 		if e == nil then
 			return -1
@@ -254,9 +369,7 @@ script MonsterCatalog extends Logic
 
 	method any GetSummonUnits()
 		-- 파병 가능 유닛 목록(CSV 순서). 표가 없으면 빈 배열.
-		if self.summonUnits == nil then
-			self:Load()
-		end
+		self:EnsureLoaded()
 		return self.summonUnits
 	end
 
@@ -273,9 +386,7 @@ script MonsterCatalog extends Logic
 
 	method any GetLevelRow(integer level)
 		-- 해당 레벨의 성장표 행. 표를 넘어가면 마지막 행으로 고정한다.
-		if self.levelRows == nil then
-			self:Load()
-		end
+		self:EnsureLoaded()
 		local row = self.levelRows[level]
 		if row == nil then
 			row = self.levelRows[self.maxLevel]
@@ -294,25 +405,21 @@ script MonsterCatalog extends Logic
 
 	method integer GetMaxLevel()
 		-- 성장표에 정의된 최대 레벨.
-		if self.levelRows == nil then
-			self:Load()
-		end
+		self:EnsureLoaded()
 		return self.maxLevel
 	end
 
 	method any ResolveLevel(integer totalExp)
 		-- 누적 경험치로 레벨과 구간 진척도를 계산한다.
 		-- 반환 { level, within, need } — within/need 는 EXP 바 표시용.
-		if self.levelRows == nil then
-			self:Load()
-		end
-		
+		self:EnsureLoaded()
+
 		local level = 1
 		local remain = totalExp
 		if remain < 0 then
 			remain = 0
 		end
-		
+
 		-- 필요치를 차례로 깎아 나가며 레벨을 올린다(최대 레벨에서 멈춘다).
 		while level < self.maxLevel do
 			local need = self:GetNeedExp(level)
@@ -322,14 +429,14 @@ script MonsterCatalog extends Logic
 			remain = remain - need
 			level = level + 1
 		end
-		
+
 		local need = self:GetNeedExp(level)
 		if level >= self.maxLevel then
 			-- 만레벨: 바를 가득 채워 보여준다.
 			need = self:GetNeedExp(self.maxLevel)
 			remain = need
 		end
-		
+
 		return { level = level, within = remain, need = need }
 	end
 
