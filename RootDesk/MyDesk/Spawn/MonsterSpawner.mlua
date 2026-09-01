@@ -1,0 +1,192 @@
+@Component
+script MonsterSpawner extends Component
+
+	property string SpawnerId = ""
+
+	property number LeftDistance = 0.5
+
+	property number RightDistance = 0.5
+
+	property boolean LogSpawn = true
+
+	@HideFromInspector
+	property any slots = nil
+
+	@HideFromInspector
+	property number elapsed = 0
+
+	@HideFromInspector
+	property number updateAccumulator = 0
+
+	@HideFromInspector
+	property boolean initialized = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		self:InitializeSpawner()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitializeSpawner()
+		if self.initialized then
+			return
+		end
+		self.initialized = true
+		self.slots = {}
+
+		if self.SpawnerId == "" then
+			log_warning("[MonsterSpawner] empty SpawnerId at " .. self.Entity.Path)
+			return
+		end
+		if self.LeftDistance < 0 or self.RightDistance < 0 then
+			log_warning("[MonsterSpawner] negative distance: " .. self.SpawnerId)
+			return
+		end
+
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			log_error("[MonsterSpawner] current map missing: " .. self.SpawnerId)
+			return
+		end
+		if _MonsterCatalog == nil then
+			log_error("[MonsterSpawner] MonsterCatalog missing: " .. self.SpawnerId)
+			return
+		end
+
+		local entries = _MonsterCatalog:GetSpawnerEntries(map.Name, self.SpawnerId)
+		if #entries == 0 then
+			log_warning("[MonsterSpawner] no CSV entry: " .. map.Name .. "/" .. self.SpawnerId)
+			return
+		end
+
+		local initialSpawned = 0
+		for _, entry in ipairs(entries) do
+			if entry.enabled and entry.spawnCount > 0 then
+				for index = 1, entry.spawnCount do
+					local slot = {
+						entry = entry,
+						index = index,
+						entity = nil,
+						deadSeen = false,
+						respawnAt = -1,
+						stopped = false
+					}
+					table.insert(self.slots, slot)
+					if self:SpawnSlot(slot) then
+						initialSpawned = initialSpawned + 1
+					end
+				end
+			end
+		end
+
+		log("[MonsterSpawner] ready map=" .. map.Name .. " id=" .. self.SpawnerId
+			.. " spawned=" .. tostring(initialSpawned) .. "/" .. tostring(#self.slots))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpawnSlot(any slot)
+		local map = self.Entity.CurrentMap
+		local transform = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(transform) then
+			slot.stopped = true
+			log_error("[MonsterSpawner] map/transform missing: " .. self.SpawnerId)
+			return false
+		end
+
+		local center = transform.WorldPosition
+		local minX = center.x - self.LeftDistance
+		local maxX = center.x + self.RightDistance
+		local x = minX + (maxX - minX) * _UtilLogic:RandomDouble()
+		local name = "Monster_" .. slot.entry.spawnId .. "_" .. tostring(slot.index)
+		local position = Vector3(x, center.y, center.z)
+		local unit = _SpawnService:SpawnByModelId(slot.entry.modelId, name, position, map)
+		if not isvalid(unit) then
+			slot.stopped = true
+			log_error("[MonsterSpawner] spawn failed model=" .. tostring(slot.entry.modelId)
+				.. " spawnId=" .. tostring(slot.entry.spawnId))
+			return false
+		end
+
+		local maxHp = tonumber(slot.entry.maxHp) or 100
+		if maxHp <= 0 then
+			maxHp = 100
+		end
+
+		local monster = unit.Monster
+		if isvalid(monster) then
+			monster.MaxHp = maxHp
+			monster.Hp = maxHp
+			monster.RespawnOn = false
+		end
+
+		slot.entity = unit
+		slot.deadSeen = false
+		slot.respawnAt = -1
+
+		if self.LogSpawn then
+			log("[MonsterSpawner] spawn id=" .. slot.entry.spawnId
+				.. " x=" .. tostring(x) .. " y=" .. tostring(center.y)
+				.. " hp=" .. tostring(maxHp))
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		if not self.initialized or self.slots == nil then
+			return
+		end
+
+		self.elapsed = self.elapsed + delta
+		self.updateAccumulator = self.updateAccumulator + delta
+		if self.updateAccumulator < 0.2 then
+			return
+		end
+		self.updateAccumulator = 0
+
+		for _, slot in ipairs(self.slots) do
+			if not slot.stopped then
+				local entityValid = isvalid(slot.entity)
+				local dead = false
+				if entityValid then
+					local monster = slot.entity.Monster
+					dead = isvalid(monster) and monster.IsDead
+				end
+
+				if (dead or not entityValid) and not slot.deadSeen then
+					slot.deadSeen = true
+					if slot.entry.respawnSeconds > 0 then
+						slot.respawnAt = self.elapsed + slot.entry.respawnSeconds
+					else
+						slot.stopped = true
+					end
+				end
+
+				if slot.deadSeen and slot.respawnAt >= 0 and self.elapsed >= slot.respawnAt then
+					if isvalid(slot.entity) then
+						slot.entity:Destroy()
+					end
+					slot.entity = nil
+					self:SpawnSlot(slot)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		if self.slots == nil then
+			return
+		end
+		for _, slot in ipairs(self.slots) do
+			if isvalid(slot.entity) then
+				slot.entity:Destroy()
+			end
+		end
+		self.slots = {}
+		self.initialized = false
+		self.elapsed = 0
+		self.updateAccumulator = 0
+	end
+
+end
