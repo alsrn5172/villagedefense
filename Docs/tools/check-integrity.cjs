@@ -85,7 +85,8 @@ const CANONICAL = {
     "ProjectileRUID,HitEffectRUID,RecoverTime," +
     "CastEffectRUID,CastEffectBehind,CastSoundRUID,HitSoundRUID," +
     "CastEffectOffsetX,CastEffectOffsetY,CastEffectScale,CastPlayRate," +
-    "CastRUID2,CastDelay2,#Note",
+    "CastRUID2,CastDelay2,CastHitFrame,CastEffectAtStart,CastEffectPlayRate," +
+    "CastEffectStartFrame,CastEffectEndFrame,#Note",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
     "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
