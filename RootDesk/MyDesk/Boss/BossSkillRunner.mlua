@@ -4,11 +4,15 @@ script BossSkillRunner extends AttackComponent
 	-- 보스 스킬 실행기. BossSkills.csv 를 그대로 돌린다.
 	--
 	-- 한 사이클:
-	--   쿨다운 대기 -> 현재 HP% 로 후보 필터(페이즈 게이트) -> Priority 최고 선택
-	--   -> 시전 모션(SpriteRUID 직접 대입) -> CastDelay 대기 -> 판정 -> 모션 복원
+	--   스킬당 쿨다운 감소 -> 준비된 것 중 선택 -> 시전 모션(SpriteRUID 직접 대입)
+	--   -> CastDelay 대기 -> 판정 -> 모션 복원
 	--
-	-- 🔴 CalcDamage / IsAttackTarget / GetDisplayHitCount 에 @ExecSpace 를 붙이면
-	--    부모가 미지정이라 런타임 LEA-3014 SignatureMismatch 가 난다.
+	-- 🔴 쿨다운은 스킬마다 따로 둔다.
+	--    하나만 두면 매번 우선순위 최고를 골라 같은 스킬만 무한 반복한다.
+	--    페이즈 게이트가 후보를 갈라줄 때는 안 보이지만, 게이트를 안 쓰면 바로 드러난다.
+	--
+	-- 🔴 CalcDamage / IsAttackTarget / GetDisplayHitCount / OnAttack 에 @ExecSpace 를
+	--    붙이면 부모가 미지정이라 런타임 LEA-3014 SignatureMismatch 가 난다.
 
 	property string BossId = ""
 
@@ -17,7 +21,7 @@ script BossSkillRunner extends AttackComponent
 	property boolean LogSkill = true
 
 	@HideFromInspector
-	property number cooldownLeft = 0
+	property any cooldowns = nil
 
 	@HideFromInspector
 	property number castLeft = -1
@@ -37,10 +41,18 @@ script BossSkillRunner extends AttackComponent
 	@HideFromInspector
 	property string restoreRuid = ""
 
+	-- target 판정 2패스용. PlayerAttack 과 같은 방식이다.
+	@HideFromInspector
+	property table Candidates = {}
+
+	@HideFromInspector
+	property any CurrentTarget = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 판정 도형은 하나만 만들고 매 시전마다 위치·크기를 갱신해 재사용한다.
 		self.Shape = BoxShape(Vector2.zero, Vector2(1, 1), 0)
+		self.cooldowns = {}
 
 		local sprite = self.Entity.SpriteRendererComponent
 		if isvalid(sprite) then
@@ -89,6 +101,15 @@ script BossSkillRunner extends AttackComponent
 			return
 		end
 
+		-- 쿨다운은 시전 중에도 계속 돈다.
+		if self.cooldowns ~= nil then
+			for k, v in pairs(self.cooldowns) do
+				if v > 0 then
+					self.cooldowns[k] = v - delta
+				end
+			end
+		end
+
 		-- 시전 중이면 CastDelay 를 소진하고 끝나면 판정한다.
 		if self.castLeft >= 0 then
 			self.castLeft = self.castLeft - delta
@@ -96,11 +117,6 @@ script BossSkillRunner extends AttackComponent
 				self.castLeft = -1
 				self:FireSkill()
 			end
-			return
-		end
-
-		if self.cooldownLeft > 0 then
-			self.cooldownLeft = self.cooldownLeft - delta
 			return
 		end
 
@@ -114,17 +130,47 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
-	method void PickAndCast()
-		-- 지금 HP% 에서 쓸 수 있는 스킬 중 Priority 최고를 고른다.
+	method any PickSkill()
+		-- HP% 구간에 맞고 + 쿨다운이 준비된 스킬 중에서 고른다.
+		-- Priority 최고를 고르되 동률이면 랜덤 — 같은 순서 반복을 막는다.
 		if _BossCatalog == nil then
-			return
+			return nil
 		end
 		local usable = _BossCatalog:GetSkillsForHp(self.BossId, self:GetHpPercent())
-		if #usable == 0 then
-			return
+
+		local ready = {}
+		local bestPriority = nil
+		for _, s in ipairs(usable) do
+			local cd = self.cooldowns[s.skillId]
+			if cd == nil or cd <= 0 then
+				if bestPriority == nil or s.priority > bestPriority then
+					bestPriority = s.priority
+					ready = { s }
+				elseif s.priority == bestPriority then
+					table.insert(ready, s)
+				end
+			end
 		end
 
-		local skill = usable[1]
+		if #ready == 0 then
+			return nil
+		end
+		if #ready == 1 then
+			return ready[1]
+		end
+		local pick = math.floor(_UtilLogic:RandomDouble() * #ready) + 1
+		if pick > #ready then
+			pick = #ready
+		end
+		return ready[pick]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PickAndCast()
+		local skill = self:PickSkill()
+		if skill == nil then
+			return
+		end
 		self.pendingSkill = skill
 
 		-- 시전 모션 — SpriteRUID 직접 대입(Pattern A).
@@ -153,39 +199,99 @@ script BossSkillRunner extends AttackComponent
 			return
 		end
 
-		self.cooldownLeft = skill.cooldown
+		-- 이 스킬만 쿨다운에 들어간다. 다른 스킬은 계속 준비 상태다.
+		self.cooldowns[skill.skillId] = skill.cooldown
 
 		if skill.shapeType == "projectile" then
 			self:FireProjectile(skill)
+		elseif skill.shapeType == "target" then
+			self:FireTargeted(skill)
 		else
-			self:FireMelee(skill)
+			self:FireArea(skill)
 		end
 
 		self:RestoreSprite()
 	end
 
 	@ExecSpace("ServerOnly")
-	method void FireMelee(any skill)
-		-- box 와 ground 는 같은 박스로 때린다. 차이는 IsAttackTarget 에서 갈린다.
+	method void SetShapeFor(any skill)
+		-- 전방으로 오프셋을 준 판정 박스를 만든다. 보는 방향으로 X 부호가 뒤집힌다.
 		local transform = self.Entity.TransformComponent
 		if not isvalid(transform) then
 			return
 		end
 		local pos = transform.WorldPosition
 		local facing = self:GetFacing()
-
 		self.Shape.Position = Vector2(pos.x + skill.offsetX * facing, pos.y + skill.offsetY)
 		self.Shape.Size = Vector2(skill.rangeX, skill.rangeY)
 		self.Shape.Angle = 0
+	end
 
-		-- activeSkill 은 CalcDamage / IsAttackTarget 이 읽는다. 판정 동안만 세운다.
+	@ExecSpace("ServerOnly")
+	method void FireArea(any skill)
+		-- box 와 ground 는 같은 박스로 때린다. 차이는 IsAttackTarget 에서 갈린다.
+		-- attackInfo 로 ShapeType 을 실어 보내 거기서 읽는다.
+		if not isvalid(self.Entity.TransformComponent) then
+			return
+		end
+		self:SetShapeFor(skill)
+
 		self.activeSkill = skill
 		self:AttackFast(self.Shape, skill.shapeType, CollisionGroups.Player)
 		self.activeSkill = nil
 
 		if self.LogSkill then
 			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
-				.. " shape=" .. skill.shapeType
+				.. " shape=" .. skill.shapeType .. " dmg=" .. tostring(skill.damage))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireTargeted(any skill)
+		-- 전방 최근접 1명만 때린다. PlayerAttack 과 같은 2패스 방식이다.
+		-- AttackFast 는 반환이 없어 2패스에 못 쓴다. Attack 을 쓴다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		local myPos = transform.WorldPosition
+		self:SetShapeFor(skill)
+
+		self.activeSkill = skill
+
+		-- 1패스: 데미지 없이 후보만 수집한다.
+		self.Candidates = {}
+		self.CurrentTarget = nil
+		self:Attack(self.Shape, "probe", CollisionGroups.Player)
+
+		-- 제곱거리로 최근접 선택(루트 불필요).
+		local closest = nil
+		local best = math.huge
+		for _, def in ipairs(self.Candidates) do
+			if isvalid(def) then
+				local p = def.TransformComponent.WorldPosition
+				local dx = p.x - myPos.x
+				local dy = p.y - myPos.y
+				local d = dx * dx + dy * dy
+				if d < best then
+					best = d
+					closest = def
+				end
+			end
+		end
+		self.CurrentTarget = closest
+
+		-- 2패스: 그 하나만 실제 타격.
+		if isvalid(self.CurrentTarget) then
+			self:Attack(self.Shape, "target", CollisionGroups.Player)
+		end
+
+		self.activeSkill = nil
+		self.CurrentTarget = nil
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=target candidates=" .. tostring(#self.Candidates)
 				.. " dmg=" .. tostring(skill.damage))
 		end
 	end
@@ -233,8 +339,8 @@ script BossSkillRunner extends AttackComponent
 		end
 
 		if self.LogSkill then
-			log("[BossSkillRunner] " .. self.BossId .. " projectile=" .. skill.skillId
-				.. " speed=" .. tostring(skill.projectileSpeed))
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=projectile speed=" .. tostring(skill.projectileSpeed))
 		end
 	end
 
@@ -276,17 +382,33 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	method boolean IsAttackTarget(Entity defender, string attackInfo)
-		-- ground 판정은 "바닥에 서 있는 대상만" 맞춘다 = 점프로 회피 가능한 지진형.
-		-- attackInfo 에 ShapeType 을 실어 보냈다(FireMelee 참조).
+		-- attackInfo 에 ShapeType(또는 "probe")을 실어 보냈다.
+		if not isvalid(defender) then
+			return false
+		end
 		if isvalid(defender.PlayerComponent) == false then
 			return false
 		end
+
+		-- 탐색 패스 — 후보만 모으고 아무도 안 맞는다.
+		if attackInfo == "probe" then
+			table.insert(self.Candidates, defender)
+			return false
+		end
+
+		-- 최근접 1명만.
+		if attackInfo == "target" then
+			return defender == self.CurrentTarget
+		end
+
+		-- 지진형 — 바닥에 서 있어야 맞는다. 점프로 회피 가능하다.
 		if attackInfo == "ground" then
 			local body = defender.RigidbodyComponent
 			if isvalid(body) and body:IsOnGround() == false then
 				return false
 			end
 		end
+
 		return __base:IsAttackTarget(defender, attackInfo)
 	end
 
