@@ -80,7 +80,8 @@ const CANONICAL = {
     "RangeX,RangeY,OffsetX,OffsetY," +
     "CastDelay,Cooldown,Damage,HitCount,MinHpPercent,MaxHpPercent," +
     "ProjectileModelId,ProjectileSpeed,CastRUID,Enabled," +
-    "ProjectileRUID,HitEffectRUID,RecoverTime,#Note",
+    "ProjectileRUID,HitEffectRUID,RecoverTime," +
+    "CastEffectRUID,CastEffectBehind,#Note",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
     "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
