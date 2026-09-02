@@ -69,6 +69,28 @@ const CANONICAL = {
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
   PortalRoutes: "RouteId,FromMap,FromPortal,ToMap,ToPortal,Enabled,#Note",
+
+  // 보스 — 계약서 A-2-11 기준. 정의/스킬/보상을 축별로 나눈다.
+  BossInfo:
+    "BossId,Name,Level,MaxHp,ModelId,MoveType,AiType," +
+    "AttackPower,Defense,KnockbackResist,MoveSpeed," +
+    "MapName,SpawnX,SpawnY,RespawnSeconds,Enabled,#Note",
+  BossSkills:
+    "BossId,SkillId,SkillName,Priority,ShapeType," +
+    "RangeX,RangeY,OffsetX,OffsetY," +
+    "CastDelay,Cooldown,Damage,HitCount,MinHpPercent,MaxHpPercent," +
+    "ProjectileModelId,ProjectileSpeed,CastRUID,Enabled,#Note",
+  BossReward:
+    "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
+    "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
+
+  // 엘리트 — 구조만. 로스터는 미정(로드맵 미정 #4)
+  EliteMonsterInfo:
+    "EliteId,Name,BaseMonsterId,Level,MaxHp,ModelId,MoveType,AiType," +
+    "AttackPower,Defense,KnockbackResist,MoveSpeed," +
+    "MaterialId,MaterialMin,MaterialMax,Exp,Meso,Enabled,#Note",
+  EliteSpawnTable: "MapName,BaseMonsterId,EliteId,Chance,Enabled,#Note",
+  EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -91,20 +113,25 @@ for (const [name, expect] of Object.entries(CANONICAL)) {
 // ─────────────────────────────────────────────────────────
 console.log("\nC2. MapName ↔ 실제 맵");
 const maps = new Set(mapNames());
-for (const [name, col] of [["MapMonsters", "MapName"], ["MapNpcs", "MapName"]]) {
+for (const [name, col] of [["MapMonsters", "MapName"], ["MapNpcs", "MapName"], ["BossInfo", "MapName"], ["EliteSpawnTable", "MapName"]]) {
   const t = readCsv(name);
   if (!t) continue;
   const i = t.header.indexOf(col);
-  const dead = new Map();
+  const iEn = t.header.indexOf("Enabled");
+  const dead = new Map();     // 살아있는 행이 없는 맵을 가리킨다 — 진짜 고장
+  const deadOff = new Map();  // Enabled=false — 아직 안 켠 행
   for (const r of t.rows) {
     const v = (r[i] || "").trim();
-    if (v && !maps.has(v)) dead.set(v, (dead.get(v) || 0) + 1);
+    if (!v || maps.has(v)) continue;
+    const on = iEn < 0 || String(r[iEn] || "").trim().toLowerCase() !== "false";
+    const bucket = on ? dead : deadOff;
+    bucket.set(v, (bucket.get(v) || 0) + 1);
   }
-  if (dead.size) {
-    for (const [v, n] of dead) fail("C2", `${name}: "${v}" 에 해당하는 맵이 없다 (${n}행) — 스포너가 조용히 안 돈다`);
-  } else {
-    ok("C2", `${name} 전 행이 실제 맵을 가리킨다`);
-  }
+  for (const [v, n] of dead)
+    fail("C2", `${name}: "${v}" 에 해당하는 맵이 없다 (${n}행) — 스포너가 조용히 안 돈다`);
+  for (const [v, n] of deadOff)
+    warn("C2", `${name}: "${v}" 맵이 아직 없다 (${n}행) — Enabled=false 라 런타임 영향 없음`);
+  if (!dead.size && !deadOff.size) ok("C2", `${name} 전 행이 실제 맵을 가리킨다`);
 }
 // PortalRoutes 는 From/To 양쪽
 {
@@ -136,6 +163,12 @@ const PK = {
   LevelTable: ["Level"],
   SummonUnits: ["Key"],
   WorldMapNodes: ["MapName"],
+  BossInfo: ["BossId"],
+  BossReward: ["BossId"],
+  BossSkills: ["BossId", "SkillId"],
+  EliteMonsterInfo: ["EliteId"],
+  EliteSpawnTable: ["MapName", "BaseMonsterId"],
+  EliteMaterialInfo: ["MaterialId"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);
@@ -261,16 +294,24 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
   const loaderExists = (globs) =>
     globs.some((g) => fs.existsSync(path.join(ROOT, g)));
 
+  // 표마다 기본 키 열 이름이 다르다 (Id / BossId / EliteId)
+  const idColOf = { BossInfo: "BossId", EliteMonsterInfo: "EliteId" };
+
   for (const [name, col, spawnTable, spawnIdCol, loaders] of [
     ["MonsterInfo", "ModelId", "MapMonsters", "MonsterId",
       ["RootDesk/MyDesk/Spawn/MonsterSpawner.mlua", "RootDesk/MyDesk/Catalog/MonsterCatalog.mlua"]],
     ["NpcInfo", "ModelId", "MapNpcs", "NpcId",
       ["RootDesk/MyDesk/Spawn/NpcSpawner.mlua", "RootDesk/MyDesk/Catalog/NpcCatalog.mlua"]],
+    // 보스는 스폰 좌표가 자기 표 안에 있어 스폰표가 곧 자기 자신이다.
+    ["BossInfo", "ModelId", "BossInfo", "BossId",
+      ["RootDesk/MyDesk/Boss/BossSpawner.mlua", "RootDesk/MyDesk/Catalog/BossCatalog.mlua"]],
+    ["EliteMonsterInfo", "ModelId", "EliteSpawnTable", "EliteId",
+      ["RootDesk/MyDesk/Spawn/EliteSpawner.mlua", "RootDesk/MyDesk/Catalog/EliteCatalog.mlua"]],
   ]) {
     const t = readCsv(name);
     if (!t) continue;
     const i = t.header.indexOf(col);
-    const iId = t.header.indexOf("Id");
+    const iId = t.header.indexOf(idColOf[name] || "Id");
     const iNm = t.header.indexOf("Name");
     const wired = loaderExists(loaders);
     const used = wired ? referenced(spawnTable, spawnIdCol) : new Set();
