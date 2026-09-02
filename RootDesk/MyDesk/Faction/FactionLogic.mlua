@@ -1,11 +1,121 @@
 @Logic
 script FactionLogic extends Logic
 
+	-- 진영 번호 체계 (사용자 확정)
+	--   1~5    플레이어 캐릭터. 오직 캐릭터 본인만 들어간다
+	--   11~15  미니언. 11 은 "플레이어 1 을 치러 온 미니언" 이다
+	--   21~25  방어시설·자기 유닛. 21 은 "플레이어 1 의 터렛·수비 유닛" 이다
+	--   Monster 야생 몹 · 보스 · 파밍 몹 공통 진영
+	--   Neutral 그 외 전부. 공격도 버프도 안 통한다
+	--
+	-- 소유자 = 번호 % 10 (1 도 11 도 21 도 전부 플레이어 1 의 것).
+	--
+	-- 🔴 규칙 두 개가 일반 규칙(팀 다르면 적대)을 덮는다.
+	--    (1) 플레이어 캐릭터끼리는 절대 못 때린다. 경쟁은 사냥 스틸로만 한다.
+	--        단 남의 방어시설(21~25)은 때릴 수 있다 — 보정은 시설 쪽이 갖는다.
+	--    (2) 미니언은 지정 대상의 것만 친다. 11 은 1·21 하고만 적대하고
+	--        2~5 · 22~25 와는 아군이다.
+	--    같은 미니언이 상대에 따라 적/아군이 갈리므로 팀 문자열 비교로는 표현이 안 된다.
 	@Sync
-	property string PlayerTeam = "TeamA"
+	property string PlayerTeam = "1"
 
 	@HideFromInspector
 	property string NeutralTeam = "Neutral"
+
+	-- 🔴 공통 몬스터 진영. 야생 몹 · 보스 · 파밍 몹을 하나로 묶는다.
+	--    이게 없으면 script.Faction 이 없는 엔티티가 전부 Neutral 로 떨어져
+	--    GetRelation 이 NEUTRAL 을 주고, 플레이어가 아무도 못 때린다.
+	--    (Models/Monsters 82종 중 script.Faction 보유 0종이었다)
+	@HideFromInspector
+	property string MonsterTeam = "Monster"
+
+	method string NormalizeTeam(string team)
+		-- 예전 이름(TeamA/TeamB) 호환. 모델 10종을 전부 고치지 않아도 되게 여기서 흡수한다.
+		-- TeamA = 플레이어 1 의 유닛·터렛 -> 21 (캐릭터가 아니라 방어시설 대역이다)
+		-- TeamB = 플레이어 1 을 치러 온 미니언 -> 11
+		if team == "TeamA" then
+			return "21"
+		end
+		if team == "TeamB" then
+			return "11"
+		end
+		return team
+	end
+
+	method integer TeamOwner(string team)
+		-- 그 진영이 누구 것인지(플레이어 번호 1~5). 해당 없으면 0.
+		-- 1 / 11 / 21 은 전부 플레이어 1 의 것이다.
+		local n = tonumber(team)
+		if n == nil then
+			return 0
+		end
+		local owner = n % 10
+		if owner < 1 or owner > 5 then
+			return 0
+		end
+		if n >= 1 and n <= 5 then
+			return owner
+		end
+		if n >= 11 and n <= 15 then
+			return owner
+		end
+		if n >= 21 and n <= 25 then
+			return owner
+		end
+		return 0
+	end
+
+	method boolean IsPlayerTeam(string team)
+		-- 플레이어 캐릭터 1~5.
+		local n = tonumber(team)
+		return n ~= nil and n >= 1 and n <= 5
+	end
+
+	method boolean IsMinionTeam(string team)
+		-- 미니언 11~15. 지정 대상은 TeamOwner 로 나온다.
+		-- 즉 "지정 대상"은 별도 칸이 아니라 팀 번호 자체에 저장된다.
+		local n = tonumber(team)
+		return n ~= nil and n >= 11 and n <= 15
+	end
+
+	method boolean IsDefenseTeam(string team)
+		-- 방어시설·자기 유닛 21~25.
+		local n = tonumber(team)
+		return n ~= nil and n >= 21 and n <= 25
+	end
+
+	method string BandRelation(string x, string y)
+		-- 번호 대역 특례. 해당 없으면 "" 를 주고 호출부가 일반 규칙으로 넘어간다.
+		local ox = self:TeamOwner(x)
+		local oy = self:TeamOwner(y)
+		if ox == 0 or oy == 0 then
+			return ""
+		end
+
+		-- (1) 플레이어 캐릭터끼리는 절대 못 때린다.
+		if self:IsPlayerTeam(x) and self:IsPlayerTeam(y) then
+			return "ALLY"
+		end
+
+		-- (2) 미니언은 지정 대상의 것만 친다.
+		local mx = self:IsMinionTeam(x)
+		local my = self:IsMinionTeam(y)
+		if mx and my then
+			return "ALLY"
+		end
+		if mx or my then
+			if ox == oy then
+				return "ENEMY"
+			end
+			return "ALLY"
+		end
+
+		-- 방어시설 ↔ 플레이어 캐릭터: 주인이면 아군, 남이면 적. 남의 시설은 때릴 수 있다.
+		if ox == oy then
+			return "ALLY"
+		end
+		return "ENEMY"
+	end
 
 	method string GetTeam(Entity target)
 		-- 엔티티의 소속 팀 문자열을 반환한다. 판정할 수 없으면 중립으로 본다.
@@ -17,14 +127,22 @@ script FactionLogic extends Logic
 		---@type Faction
 		local faction = target:GetComponent("script.Faction")
 		if isvalid(faction) then
-			return faction.Team
+			return self:NormalizeTeam(faction.Team)
 		end
 		
 		-- 2순위: 플레이어는 PlayerTeam 소속 (DefaultPlayer.model 무수정 처리)
 		if isvalid(target.PlayerComponent) then
 			return self.PlayerTeam
 		end
-		
+
+		-- 3순위: 공통 몬스터 진영 — 야생 몹 · 보스 · 파밍 몹을 하나로 묶는다.
+		-- script.Faction 을 일일이 붙이는 대신 여기서 한 번에 판정한다.
+		-- (모델 110종 중 script.Faction 보유는 미니언 7 + 터렛 2 + 중립 1 = 10종뿐)
+		if isvalid(target:GetComponent("script.Monster"))
+			or isvalid(target:GetComponent("script.FarmReward")) then
+			return self.MonsterTeam
+		end
+
 		-- 그 외(장식물, 트리거 등)는 전부 중립
 		return self.NeutralTeam
 	end
@@ -52,7 +170,15 @@ script FactionLogic extends Logic
 		if teamA == teamB then
 			return "ALLY"
 		end
-		
+
+		-- 🔴 번호 대역 특례가 일반 규칙보다 먼저다.
+		--    플레이어 캐릭터끼리 아군 / 미니언은 지정 대상의 것만 / 방어시설은 주인만 아군.
+		local bandRel = self:BandRelation(teamA, teamB)
+		if bandRel ~= "" then
+			return bandRel
+		end
+
+		-- 나머지는 팀이 다르면 적대. 야생 몹(Monster)은 여기서 전원과 적대가 된다.
 		return "ENEMY"
 	end
 

@@ -74,14 +74,16 @@ const CANONICAL = {
   BossInfo:
     "BossId,Name,Level,MaxHp,ModelId,MoveType,AiType," +
     "AttackPower,Defense,KnockbackResist,MoveSpeed," +
-    "MapName,SpawnX,SpawnY,RespawnSeconds,Enabled,#Note",
+    "MapName,SpawnX,SpawnY,RespawnSeconds,Enabled," +
+    "DamagedSoundRUID,DieSoundRUID,#Note",
   BossSkills:
     "BossId,SkillId,SkillName,Priority,ShapeType," +
     "RangeX,RangeY,OffsetX,OffsetY," +
     "CastDelay,Cooldown,Damage,HitCount,MinHpPercent,MaxHpPercent," +
     "ProjectileModelId,ProjectileSpeed,CastRUID,Enabled," +
     "ProjectileRUID,HitEffectRUID,RecoverTime," +
-    "CastEffectRUID,CastEffectBehind,#Note",
+    "CastEffectRUID,CastEffectBehind,CastSoundRUID,HitSoundRUID," +
+    "CastEffectOffsetX,CastEffectOffsetY,CastEffectScale,#Note",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
     "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",

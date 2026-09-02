@@ -32,6 +32,13 @@ script BossSkillRunner extends AttackComponent
 	-- BossSpawner 가 BossInfo.AttackPower 를 넣어준다. 접촉 데미지가 이 값을 쓴다.
 	property number AttackPower = 1
 
+	-- 시전 중 제자리에 서 있는 시간. StateChaseMonster.CastFreezeLeft 로 넘긴다.
+	-- 쿨다운 중이거나 사거리 밖이면 이 값이 안 걸려 계속 추격한다.
+	property number CastFreezeSeconds = 2.0
+
+	-- 투사체 사거리 배수. 실제 사거리 = ProjectileSpeed x 이 값.
+	property number ProjectileRangeFactor = 1.5
+
 	@HideFromInspector
 	property any ContactShape = nil
 
@@ -192,16 +199,50 @@ script BossSkillRunner extends AttackComponent
 
 	@ExecSpace("ServerOnly")
 	method number GetFacing()
-		-- 스프라이트 원본이 왼쪽을 보므로 Scale.x 가 음수면 오른쪽을 본다.
-		-- 이동·공격·조준이 전부 이 한 규칙을 쓴다.
-		local transform = self.Entity.TransformComponent
-		if not isvalid(transform) then
-			return -1
+		-- 🔴 Scale.x 로 판정하면 안 된다.
+		--    StateTypeChase 는 방향을 sprite.FlipX 로 표현하고 Scale.x 는 건드리지 않는다.
+		--    Scale.x 를 보면 값이 안 변해서 스킬이 항상 한쪽으로만 나간다.
+		--
+		-- 추격 대상이 있으면 그쪽을 본다. 이게 가장 확실하다.
+		local target = self:GetChaseTarget()
+		local myTr = self.Entity.TransformComponent
+		if isvalid(target) and isvalid(myTr) then
+			local tTr = target.TransformComponent
+			if isvalid(tTr) then
+				if tTr.WorldPosition.x < myTr.WorldPosition.x then
+					return -1
+				end
+				return 1
+			end
 		end
-		if transform.Scale.x < 0 then
+
+		-- 대상이 없으면 스프라이트가 보고 있는 쪽을 따른다.
+		-- StateTypeChase: FlipX = goingLeft ~= SpriteFacesLeftByDefault
+		-- 기본값(SpriteFacesLeftByDefault=true)에서 FlipX=true 는 오른쪽을 뜻한다.
+		local sprite = self.Entity.SpriteRendererComponent
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(sprite) then
+			local facesLeft = true
+			if isvalid(chase) then
+				facesLeft = chase.SpriteFacesLeftByDefault
+			end
+			local goingLeft = (sprite.FlipX ~= facesLeft)
+			if goingLeft then
+				return -1
+			end
 			return 1
 		end
 		return -1
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetChaseTarget()
+		-- StateChaseMonster 가 잡고 있는 추격 대상. 없으면 nil.
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if not isvalid(chase) then
+			return nil
+		end
+		return chase:GetCurrentTarget()
 	end
 
 	@ExecSpace("ServerOnly")
@@ -249,19 +290,61 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method number SkillReach(any skill)
+		-- 그 스킬이 닿는 거리. 사거리 밖이면 쓰지 않고 계속 쫓아간다.
+		--
+		-- 소환은 거리와 무관하다. 추격 대상만 있으면 쓴다.
+		-- (대상은 DetectionRange 안에서만 잡히므로 이것만으로 충분히 제한된다)
+		if skill.shapeType == "summon" then
+			return 99998
+		end
+		-- 🔴 페이크는 흉내내는 진짜 스킬과 같은 거리에서 나와야 속는다.
+		--    원거리를 흉내내는 행은 ProjectileSpeed 를 남겨둔다(투사체는 안 나간다).
+		if skill.shapeType == "projectile"
+			or (skill.shapeType == "fake" and skill.projectileSpeed > 0) then
+			return skill.projectileSpeed * self.ProjectileRangeFactor
+		end
+		-- 🔴 박스는 중심이 offsetX 이고 폭이 rangeX 다. 즉 바깥 끝은 offsetX + rangeX/2.
+		--    offsetX + rangeX 로 잡으면 실제로 안 닿는 거리에서도 시전한다.
+		return skill.offsetX + skill.rangeX * 0.5
+	end
+
+	@ExecSpace("ServerOnly")
+	method number DistanceToTarget()
+		-- 추격 대상까지의 거리. 대상이 없으면 매우 큰 값을 준다.
+		local target = self:GetChaseTarget()
+		if not isvalid(target) then
+			return 99999
+		end
+		local myTr = self.Entity.TransformComponent
+		local tTr = target.TransformComponent
+		if not isvalid(myTr) or not isvalid(tTr) then
+			return 99999
+		end
+		local a = myTr.WorldPosition
+		local b = tTr.WorldPosition
+		local dx = b.x - a.x
+		local dy = b.y - a.y
+		return math.sqrt(dx * dx + dy * dy)
+	end
+
+	@ExecSpace("ServerOnly")
 	method any PickSkill()
-		-- HP% 구간에 맞고 + 쿨다운이 준비된 스킬 중에서 고른다.
+		-- HP% 구간에 맞고 + 쿨다운이 준비됐고 + 사거리 안에 대상이 있는 스킬만 고른다.
 		-- Priority 최고를 고르되 동률이면 랜덤 — 같은 순서 반복을 막는다.
 		if _BossCatalog == nil then
 			return nil
 		end
 		local usable = _BossCatalog:GetSkillsForHp(self.BossId, self:GetHpPercent())
 
+		-- 대상이 아예 없으면 아무것도 안 쓴다. 허공에 시전하던 문제를 막는다.
+		local dist = self:DistanceToTarget()
+
 		local ready = {}
 		local bestPriority = nil
 		for _, s in ipairs(usable) do
 			local cd = self.cooldowns[s.skillId]
-			if cd == nil or cd <= 0 then
+			if (cd == nil or cd <= 0) and dist <= self:SkillReach(s) then
 				if bestPriority == nil or s.priority > bestPriority then
 					bestPriority = s.priority
 					ready = { s }
@@ -292,6 +375,10 @@ script BossSkillRunner extends AttackComponent
 		end
 		self.pendingSkill = skill
 
+		-- 시전하는 동안 제자리에 선다. 걸어다니면서 스킬을 쓰면 모션이 겉돈다.
+		-- 쿨다운 중이거나 사거리 밖이면 여기까지 안 오므로 그때는 계속 추격한다.
+		self:FreezeMovement(skill.castDelay + skill.recoverTime)
+
 		-- 시전 모션 — SpriteRUID 직접 대입(Pattern A).
 		-- ChangeState("ATTACK") 은 ATTACK 이 자동 등록되지 않아 LEA-3005 가 난다.
 		if skill.castRuid ~= "" then
@@ -302,7 +389,14 @@ script BossSkillRunner extends AttackComponent
 			end
 		end
 
-		self:PlayCastEffect(skill)
+		-- 시전음은 모션과 같이 시작해야 한다. 페이크 모션도 소리를 내야 속는다.
+		self:PlayBossSound(skill.castSoundRuid)
+
+		-- 뒤에 까는 이펙트(마법진 등)는 "예고"다. 시전 시작에 띄워야 경고가 된다.
+		-- 앞에 뜨는 이펙트(휘두르는 궤적 등)는 "타격"이라 판정 순간에 띄운다 -> FireSkill.
+		if skill.castEffectBehind then
+			self:PlayCastEffect(skill)
+		end
 
 		if skill.castDelay > 0 then
 			self.castLeft = skill.castDelay
@@ -323,7 +417,22 @@ script BossSkillRunner extends AttackComponent
 		-- 이 스킬만 쿨다운에 들어간다. 다른 스킬은 계속 준비 상태다.
 		self.cooldowns[skill.skillId] = skill.cooldown
 
-		if skill.shapeType == "projectile" then
+		-- 앞에 뜨는 이펙트는 타격 궤적이다. 판정과 같은 순간에 띄워야 맞는 느낌이 난다.
+		-- (시전 시작에 띄우면 이펙트만 먼저 나오고 한참 뒤에 맞는다)
+		if not skill.castEffectBehind then
+			self:PlayCastEffect(skill)
+		end
+
+		if skill.shapeType == "fake" then
+			-- 페이크 모션. 판정을 아예 내지 않는다.
+			-- 시전 모션과 소리는 진짜와 같고, 발사되는 순간 아무 일도 안 일어난다.
+			-- RecoverTime 0 이라 여기서 바로 idle 로 돌아가 "끊긴" 느낌을 준다.
+			if self.LogSkill then
+				log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId .. " shape=fake")
+			end
+		elseif skill.shapeType == "summon" then
+			self:FireSummon(skill)
+		elseif skill.shapeType == "projectile" then
 			self:FireProjectile(skill)
 		elseif skill.shapeType == "target" then
 			self:FireTargeted(skill)
@@ -424,6 +533,100 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method void FireSummon(any skill)
+		-- 부하 소환. ProjectileModelId 가 소환할 모델, HitCount 가 마리 수,
+		-- RangeX 가 좌우로 퍼지는 폭이다(좌 · 중앙 · 우).
+		-- 소환수 능력치는 BossInfo 를 그대로 쓴다 — 마노면 진짜 마노가 나온다.
+		if skill.projectileModelId == "" then
+			log_warning("[BossSkillRunner] summon skill without ProjectileModelId: "
+				.. self.BossId .. "/" .. skill.skillId)
+			return
+		end
+		local map = self.Entity.CurrentMap
+		local transform = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(transform) then
+			return
+		end
+
+		local count = math.floor(skill.hitCount)
+		if count < 1 then
+			count = 1
+		end
+		local pos = transform.WorldPosition
+
+		-- 소환수 원본 BossInfo. 모델 id 로 역인덱스가 없어 #Note 대신 SkillName 규칙 대신
+		-- ProjectileModelId 의 "monster<id>" 에서 뽑는다.
+		-- string.gsub 은 (문자열, 치환횟수) 두 값을 준다. 하나만 받으면 경고가 난다.
+		local summonId, replaced = string.gsub(skill.projectileModelId, "monster", "")
+		local info = nil
+		if _BossCatalog ~= nil then
+			info = _BossCatalog:GetInfo(summonId)
+		end
+
+		for i = 1, count do
+			-- count=1 이면 중앙, 3 이면 -RangeX / 0 / +RangeX.
+			local t = 0.0
+			if count > 1 then
+				t = (i - 1) / (count - 1) * 2.0 - 1.0
+			end
+			local sx = pos.x + t * skill.rangeX
+			local spawnPos = Vector3(sx, pos.y + skill.offsetY, pos.z)
+
+			-- 소환진을 그 자리에 깐다. 원본 이펙트라 pivot 에 위치가 박혀 있어 오프셋 없이 놓는다.
+			if skill.castEffectRuid ~= "" then
+				local opt = {}
+				opt["SortingLayer"] = "MapLayer0"
+				opt["OrderInLayer"] = 1
+				local es = skill.castEffectScale
+				_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
+					Vector3(sx + skill.castEffectOffsetX, pos.y + skill.castEffectOffsetY, pos.z),
+					0, Vector3(es, es, 1), false, opt)
+			end
+
+			local name = "BossSummon_" .. self.BossId .. "_" .. skill.skillId .. "_" .. tostring(i)
+			local unit = _SpawnService:SpawnByModelId(skill.projectileModelId, name, spawnPos, map)
+			if isvalid(unit) then
+				self:SetupSummon(unit, summonId, info)
+			else
+				log_error("[BossSkillRunner] summon spawn failed model=" .. tostring(skill.projectileModelId))
+			end
+		end
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=summon model=" .. skill.projectileModelId .. " count=" .. tostring(count))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetupSummon(Entity unit, string summonId, any info)
+		-- 소환수를 원본 보스와 같은 능력치로 세운다.
+		-- BossSpawner 를 안 거치므로 여기서 직접 넣어야 한다. 안 넣으면 모델 기본값(HP 100)이 된다.
+		local monster = unit.Monster
+		if isvalid(monster) and info ~= nil then
+			monster.MaxHp = info.maxHp
+			monster.Hp = info.maxHp
+			-- 소환수는 죽으면 그냥 사라진다. 부활하면 무한 증식이다.
+			monster.RespawnOn = false
+			monster.DamagedSoundRUID = info.damagedSoundRuid
+			monster.DieSoundRUID = info.dieSoundRuid
+		end
+
+		local runner = unit:GetComponent("script.BossSkillRunner")
+		if isvalid(runner) and info ~= nil then
+			runner.BossId = summonId
+			runner.AttackPower = info.attackPower
+		end
+
+		if info ~= nil and info.moveSpeed >= 0 then
+			local mv = unit.MovementComponent
+			if isvalid(mv) then
+				mv.InputSpeed = info.moveSpeed
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
 	method void FireProjectile(any skill)
 		-- 투사체는 별도 엔티티로 띄운다. 명중 판정은 그쪽이 갖는다.
 		if skill.projectileModelId == "" then
@@ -462,7 +665,9 @@ script BossSkillRunner extends AttackComponent
 
 		local mover = proj:GetComponent("script.BossProjectile")
 		if isvalid(mover) then
-			mover.DirectionX = facing
+			-- SetDirection 을 써야 그림도 같이 뒤집힌다.
+			-- DirectionX 에 직접 대입하면 이동만 바뀌고 그림은 스폰 때 방향에 머문다.
+			mover:SetDirection(facing)
 			mover.Speed = skill.projectileSpeed
 		end
 
@@ -478,6 +683,29 @@ script BossSkillRunner extends AttackComponent
 		if self.LogSkill then
 			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
 				.. " shape=projectile speed=" .. tostring(skill.projectileSpeed))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FreezeMovement(number seconds)
+		-- StateTypeChase 가 매 프레임 MoveToDirection 을 부르므로,
+		-- 여기서 Stop() 만 불러봐야 다음 프레임에 덮어써진다.
+		-- StateChaseMonster 에 플래그를 세워 그쪽이 이동을 건너뛰게 한다.
+		--
+		-- 🔴 고정 2초로 잡으면 안 된다. CastDelay + RecoverTime 이 2초를 넘으면
+		--    정지가 먼저 풀려서 보스가 "공격 자세인 채로 걸어다닌다".
+		--    최소 CastFreezeSeconds 는 보장하되, 실제 시전 길이만큼 잡는다.
+		local hold = seconds
+		if hold < self.CastFreezeSeconds then
+			hold = self.CastFreezeSeconds
+		end
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(chase) then
+			chase.CastFreezeLeft = hold
+		end
+		local mv = self.Entity.MovementComponent
+		if isvalid(mv) then
+			mv:MoveToDirection(Vector2(0, 0), 0)
 		end
 	end
 
@@ -505,9 +733,28 @@ script BossSkillRunner extends AttackComponent
 		end
 		options["FlipX"] = (facing > 0)
 
+		-- 🔴 판정 박스의 OffsetX/Y 를 쓰면 안 된다. 이펙트 전용 좌표를 따로 둔다.
+		--    원본 이펙트는 pivot 에 위치가 박혀 있는데 그 기준이 자산마다 다르다.
+		--    attack2/info/effect 는 pivot (-55,-57) 이라 원점에 놓으면 손 높이에 맞고,
+		--    attack3/info/effect 는 pivot (138,-27) 이라 원점에 놓으면 몸통에 겹친다.
+		--    그래서 하나의 규칙으로는 못 맞추고 자산별로 실측해서 넣는다.
+		local s = skill.castEffectScale
 		_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
-			Vector3(p.x + skill.offsetX * facing, p.y + skill.offsetY, p.z),
-			0, Vector3(1, 1, 1), false, options)
+			Vector3(p.x + skill.castEffectOffsetX * facing, p.y + skill.castEffectOffsetY, p.z),
+			0, Vector3(s, s, 1), false, options)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayBossSound(string ruid)
+		-- 소리 송출은 script.Monster 가 갖고 있다(맵 안 전원에게 보낸다).
+		-- 여기서 다시 구현하면 같은 코드가 두 벌이 된다.
+		if ruid == nil or ruid == "" then
+			return
+		end
+		local monster = self.Entity.Monster
+		if isvalid(monster) then
+			monster:PlaySoundToMap(ruid, monster.SoundVolume)
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -528,6 +775,13 @@ script BossSkillRunner extends AttackComponent
 		if self.activeSkill == nil or not isvalid(defender) then
 			return
 		end
+		-- 맞은 소리(_audio/CharDamN). 이펙트가 없어도 소리는 난다.
+		-- ⚠️ 이 훅은 ExecSpace=All 이라 클라에서도 돌 수 있다.
+		--    PlayBossSound 는 ServerOnly 라 서버일 때만 부른다.
+		if self:IsServer() then
+			self:PlayBossSound(self.activeSkill.hitSoundRuid)
+		end
+
 		local ruid = self.activeSkill.hitEffectRuid
 		if ruid == nil or ruid == "" then
 			return
@@ -598,6 +852,16 @@ script BossSkillRunner extends AttackComponent
 		if attackInfo == "ground" then
 			local body = defender.RigidbodyComponent
 			if isvalid(body) and body:IsOnGround() == false then
+				return false
+			end
+		end
+
+		-- 상단 휘두르기 — 숙이면 피한다.
+		-- 🔴 박스 높이로는 못 만든다. 플레이어 HitComponent 는 CROUCH 여도 안 줄어든다.
+		--    (CROUCH 는 애니메이션만 바꾼다) 그래서 상태를 직접 본다.
+		if attackInfo == "crouchable" then
+			local sc = defender.StateComponent
+			if isvalid(sc) and sc.CurrentStateName == "CROUCH" then
 				return false
 			end
 		end
