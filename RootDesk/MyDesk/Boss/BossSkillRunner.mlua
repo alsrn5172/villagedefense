@@ -29,6 +29,22 @@ script BossSkillRunner extends AttackComponent
 	@MinValue(0)
 	property number ContactInterval = 0.03
 
+	-- 🔴 접촉 박스는 스프라이트 "전체 크기"에서 뽑는다. 그런데 원본 스프라이트에는
+	--    더듬이 · 꼬리 · 여백이 같이 들어 있어서 실제 몸통보다 훨씬 크게 잡힌다.
+	--    (킹슬라임 208x144 중 몸통은 가로 70% · 세로 83% 뿐이고 나머지는 더듬이다)
+	--    BossInfo 에서 보스마다 보정한다. 1.0 이면 예전 그대로다.
+	property number ContactScaleX = 1
+
+	property number ContactScaleY = 1
+
+	-- 몸통이 스프라이트 중앙에 있지 않을 때 좌우로 밀어준다(월드 단위).
+	property number ContactOffsetX = 0
+
+	-- 평상시(이동·대기) 애니메이션 재생 속도.
+	-- 🔴 이동 속도와 애니메이션 속도가 어긋나면 제자리에서 발버둥치는 것처럼 보인다.
+	--    킹슬라임은 한 번 뛰는 데 0.77초인데 실제로는 0.32 유닛밖에 못 가서 어색했다.
+	property number MovePlayRate = 1
+
 	-- BossSpawner 가 BossInfo.AttackPower 를 넣어준다. 접촉 데미지가 이 값을 쓴다.
 	property number AttackPower = 1
 
@@ -56,6 +72,11 @@ script BossSkillRunner extends AttackComponent
 
 	@HideFromInspector
 	property number castLeft = -1
+
+	-- 2단 시전 잔여 시간. 점프 공격처럼 "준비 -> 도약 -> 착지 판정" 인 기술에 쓴다.
+	-- CastRUID2 가 비어 있으면 이 구간을 건너뛴다.
+	@HideFromInspector
+	property number castLeft2 = -1
 
 	-- 판정 후 시전 자세를 붙잡는 잔여 시간. 0 이하가 되면 idle 로 복원한다.
 	@HideFromInspector
@@ -92,6 +113,7 @@ script BossSkillRunner extends AttackComponent
 		local sprite = self.Entity.SpriteRendererComponent
 		if isvalid(sprite) then
 			self.restoreRuid = sprite.SpriteRUID
+			sprite.PlayRate = self.MovePlayRate
 		end
 
 		if self.ContactDamageOn then
@@ -130,8 +152,11 @@ script BossSkillRunner extends AttackComponent
 			end
 			local sizePx = Vector2(frame.Width, frame.Height)
 			local ppu = frame.PixelPerUnit
-			self.SpriteSize = sizePx / ppu
-			self.PositionOffset = (sizePx / 2 - frame.PivotPixel:ToVector2()) / ppu
+			-- 몸통 비율만큼 줄이고, 좌우 치우침을 보정한다.
+			local full = sizePx / ppu
+			self.SpriteSize = Vector2(full.x * self.ContactScaleX, full.y * self.ContactScaleY)
+			local center = (sizePx / 2 - frame.PivotPixel:ToVector2()) / ppu
+			self.PositionOffset = Vector2(center.x + self.ContactOffsetX, center.y * self.ContactScaleY)
 
 			self.contactTimerId = _TimerService:SetTimerRepeat(function()
 				if monster.IsDead == false then
@@ -156,9 +181,21 @@ script BossSkillRunner extends AttackComponent
 		local pos = transform.WorldPosition
 		local sx = transform.Scale.x
 		local sy = transform.Scale.y
+
+		-- 🔴 오프셋은 보는 방향을 따라 뒤집혀야 한다.
+		--    몸통이 스프라이트 중앙에 없는 몹(킹슬라임은 더듬이가 오른쪽에 붙어 있다)은
+		--    PositionOffset.x 가 0 이 아닌데, 방향 전환은 Scale.x 가 아니라 sprite.FlipX 로 한다.
+		--    그래서 반전을 안 하면 한쪽을 볼 때만 박스가 앞으로 튀어나온다.
+		local flip = 1
+		local renderer = self.Entity.SpriteRendererComponent
+		if isvalid(renderer) and renderer.FlipX then
+			flip = -1
+		end
+
 		local rad = math.rad(transform.ZRotation)
-		local ox = math.cos(rad) * self.PositionOffset.x * sx - math.sin(rad) * self.PositionOffset.y * sy
-		local oy = math.sin(rad) * self.PositionOffset.x * sx + math.cos(rad) * self.PositionOffset.y * sy
+		local px = self.PositionOffset.x * sx * flip
+		local ox = math.cos(rad) * px - math.sin(rad) * self.PositionOffset.y * sy
+		local oy = math.sin(rad) * px + math.cos(rad) * self.PositionOffset.y * sy
 
 		self.ContactShape.Size = Vector2(self.SpriteSize.x * math.abs(sx), self.SpriteSize.y * math.abs(sy))
 		self.ContactShape.Position = Vector2(pos.x + ox, pos.y + oy)
@@ -300,11 +337,21 @@ script BossSkillRunner extends AttackComponent
 			end
 		end
 
-		-- 시전 중이면 CastDelay 를 소진하고 끝나면 판정한다.
+		-- 1단 시전(준비 동작). 끝나면 2단으로 넘기거나 바로 판정한다.
 		if self.castLeft >= 0 then
 			self.castLeft = self.castLeft - delta
 			if self.castLeft <= 0 then
 				self.castLeft = -1
+				self:BeginCastPhase2()
+			end
+			return
+		end
+
+		-- 2단 시전(도약 자세 등). 이 구간이 끝나는 순간이 착지 = 판정 시점이다.
+		if self.castLeft2 >= 0 then
+			self.castLeft2 = self.castLeft2 - delta
+			if self.castLeft2 <= 0 then
+				self.castLeft2 = -1
 				self:FireSkill()
 			end
 			return
@@ -417,7 +464,7 @@ script BossSkillRunner extends AttackComponent
 
 		-- 시전하는 동안 제자리에 선다. 걸어다니면서 스킬을 쓰면 모션이 겉돈다.
 		-- 쿨다운 중이거나 사거리 밖이면 여기까지 안 오므로 그때는 계속 추격한다.
-		self:FreezeMovement(skill.castDelay + skill.recoverTime)
+		self:FreezeMovement(skill.castDelay + skill.castDelay2 + skill.recoverTime)
 
 		-- 시전 모션 — SpriteRUID 직접 대입(Pattern A).
 		-- ChangeState("ATTACK") 은 ATTACK 이 자동 등록되지 않아 LEA-3005 가 난다.
@@ -426,6 +473,9 @@ script BossSkillRunner extends AttackComponent
 			if isvalid(sprite) then
 				self.restoreRuid = sprite.SpriteRUID
 				sprite.SpriteRUID = skill.castRuid
+				-- 재생 속도. 클립을 복제해 프레임을 늘릴 필요가 없다 —
+				-- SpriteRendererComponent 에 PlayRate 가 있다. 1 미만이면 느려진다.
+				sprite.PlayRate = skill.castPlayRate
 			end
 		end
 
@@ -443,6 +493,25 @@ script BossSkillRunner extends AttackComponent
 		else
 			self:FireSkill()
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginCastPhase2()
+		-- 준비 동작이 끝난 시점. 2단 그림이 있으면 그걸로 바꾸고 그 시간만큼 더 끈다.
+		-- 킹슬라임: attack1(웅크림) -> jump(눈 부릅뜨고 도약) -> 착지에서 판정.
+		-- 2단이 없으면(대부분의 스킬) 여기서 바로 판정한다.
+		local skill = self.pendingSkill
+		if skill == nil or skill.castRuid2 == "" or skill.castDelay2 <= 0 then
+			self:FireSkill()
+			return
+		end
+
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			sprite.SpriteRUID = skill.castRuid2
+			sprite.PlayRate = skill.castPlayRate
+		end
+		self.castLeft2 = skill.castDelay2
 	end
 
 	@ExecSpace("ServerOnly")
@@ -678,6 +747,15 @@ script BossSkillRunner extends AttackComponent
 			runner.AttackPower = info.attackPower
 		end
 
+		-- 소환수도 한 번 붙으면 놓지 않는다. 안 그러면 소환해놓고 그 자리에 서 있는다.
+		local chase = unit:GetComponent("script.StateChaseMonster")
+		if isvalid(chase) then
+			chase.KeepTargetForever = true
+			if info.detectionRange ~= nil and info.detectionRange >= 0 then
+				chase.DetectionRange = info.detectionRange
+			end
+		end
+
 		if info.moveSpeed ~= nil and info.moveSpeed >= 0 then
 			local mv = unit.MovementComponent
 			if isvalid(mv) then
@@ -798,6 +876,11 @@ script BossSkillRunner extends AttackComponent
 		--    attack2/info/effect 는 pivot (-55,-57) 이라 원점에 놓으면 손 높이에 맞고,
 		--    attack3/info/effect 는 pivot (138,-27) 이라 원점에 놓으면 몸통에 겹친다.
 		--    그래서 하나의 규칙으로는 못 맞추고 자산별로 실측해서 넣는다.
+		-- [임시 진단] 충격파가 두 번 보인다는 지적. 호출이 실제로 몇 번인지 센다.
+		log("[castFX] " .. self.BossId .. "/" .. skill.skillId
+			.. " behind=" .. tostring(skill.castEffectBehind)
+			.. " t=" .. tostring(_UtilLogic.ElapsedSeconds))
+
 		local s = skill.castEffectScale
 		_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
 			Vector3(p.x + skill.castEffectOffsetX * facing, p.y + skill.castEffectOffsetY, p.z),
@@ -820,11 +903,35 @@ script BossSkillRunner extends AttackComponent
 	@ExecSpace("ServerOnly")
 	method void RestoreSprite()
 		-- 시전 모션을 원래 클립으로 되돌린다.
-		if self.restoreRuid == "" then
+		-- ⚠️ PlayRate 는 클립과 별개로 남는다. 안 되돌리면 이동 모션까지 느려진다.
+		local sprite = self.Entity.SpriteRendererComponent
+		if not isvalid(sprite) then
 			return
 		end
-		local sprite = self.Entity.SpriteRendererComponent
-		if isvalid(sprite) then
+		-- 시전 속도가 아니라 평상시 속도로 되돌린다. 1 로 고정하면 이동이 다시 어색해진다.
+		sprite.PlayRate = self.MovePlayRate
+
+		-- 🔴 저장해둔 RUID 로 되돌리면 안 된다.
+		--    StateAnimationComponent 는 "상태가 바뀔 때"만 클립을 적용한다(ReceiveStateChangeEvent).
+		--    시전 중에는 상태가 CHASE 그대로라 다시 적용될 일이 없고,
+		--    그래서 여기서 쓴 값이 그대로 눌러앉아 이동해도 그 그림만 나온다
+		--    (킹슬라임이 stand 자세로 미끄러지던 원인).
+		--    현재 상태에 맞는 클립을 ActionSheet 에서 직접 찾아 넣는다.
+		local anim = self.Entity.StateAnimationComponent
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(anim) and isvalid(chase) then
+			local key = anim:StateStringToAnimationKey(chase.CurrentStateName)
+			if key ~= nil and key ~= "" then
+				local ruid = anim.ActionSheet[key]
+				if ruid ~= nil and ruid ~= "" then
+					sprite.SpriteRUID = ruid
+					return
+				end
+			end
+		end
+
+		-- ActionSheet 를 못 읽는 몹(Pattern A 전용)만 예전 방식으로 되돌린다.
+		if self.restoreRuid ~= "" then
 			sprite.SpriteRUID = self.restoreRuid
 		end
 	end
