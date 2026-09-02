@@ -263,3 +263,71 @@ If none of the above resolves the issue, tell the user:
 >
 > **https://discord.com/invite/maplestoryworlds**
 <!-- <<< managed by mswai <<< -->
+
+---
+
+# 프로젝트 오버라이드 — 강화하고살아남기
+
+> 🔴 **위 `managed by mswai` 구간은 도구가 재생성한다. 손으로 고치지 말 것.**
+> 프로젝트 고유 규칙은 **이 마커 아래에만** 쓴다. 위와 아래가 충돌하면 **아래가 이긴다.**
+>
+> 이 절은 2026-09-02 상대 개발자 측 리뷰에서 "AI가 협업 규칙을 따르면 개발 규칙을 위반한다"는
+> 지적이 확인되어 추가됐다. 근거: `Docs/협업-규칙.md`
+
+## O-1. 🔴 편집 가능한 파일 — 위 "Editable" 목록을 대체한다
+
+위 관리 구간은 `.mlua` / `.model` / `.ui` / `.map` **만** 편집 가능하고 나머지는 읽기 전용이라고 쓴다.
+**이 프로젝트에서는 틀렸다.** 그대로 따르면 CSV 한 줄도 못 고치고, 협업 규칙이 요구하는 작업이
+전부 규칙 위반이 된다.
+
+| 대상 | 편집 | 방법 |
+|---|:--:|---|
+| `.mlua` | O | 직접. 쌍인 `.codeblock` 은 **절대 손대지 않는다** (Maker Refresh 생성물) |
+| `.model` `.ui` `.map` | O | **빌더로만** (`ModelBuilder` / `UIBuilder` / `MapBuilder`) |
+| **`.csv`** | **O** | 직접. 헤더는 `Docs/스키마-계약.md` 가 정본. **중간 열 삽입 금지, 뒤에 추가만** |
+| **`.userdataset`** | **O** | `.csv` 와 **반드시 쌍**. 없으면 런타임이 표를 못 읽는다 |
+| **`Docs/**`** | **O** | 계약서·규칙서는 변경 전 공지 |
+| **`Global/SectorConfig.config`** | **O (`entries` 만)** | 맵 등록/해제. 편집 직후 **곧바로 `refresh`** (Maker 되쓰기 사고 이력) |
+| `Global/*.model` | O (기존 파일만) | `ModelBuilder` + Refresh. **새 파일 생성 금지** — Maker 가 `RootDesk/` 만 스캔한다 |
+| `.github/**` `.gitattributes` `.gitignore` `.githooks/**` | O | 저장소 운영 파일 |
+| `Environment/**` (`.d.mlua`) | **X** | 엔진 API 정의. 읽기 전용 |
+| `.codeblock` `.directory` | **X** | Maker Refresh 생성물 |
+| `Global/common.gamelogic` · `common` 엔티티 | **X** | |
+| **이 마커 위 관리 구간** | **X** | mswai 가 덮어쓴다 |
+
+## O-2. Foundation 로딩은 온디맨드 — 허브 규칙을 따른다
+
+위 관리 구간은 "매 세션 Foundation 스킬 2개 + 레퍼런스 4개 전부 로드"를 요구한다.
+**작업을 시작하기도 전에 수만 토큰을 태운다. 이 프로젝트에서는 폐기한다.**
+
+정본은 **허브 `메월드폴더/AGENTS.md`** 의 온디맨드 규칙이다. 요약:
+
+- 질문·설명·`.md` 편집·읽기 전용 작업 → **아무것도 로드하지 않는다**
+- MSW 파일을 이번 세션에서 처음 수정할 때 → `msw-general`
+- 좌표·물리·Body·spawn 이 걸릴 때 → `platform.md` (+ 해당 map-type 파일)
+- `.mlua` 를 쓸 때 → `msw-scripting` + `verify-checklist.md`
+- `.model` / `.map` / `.ui` 를 건드릴 때 → 해당 `builder-protocol-*.md`
+- **걸리지도 않는 걸 "혹시 몰라서" 읽는 것도 위반이다.** 애매하면 읽지 말고 한 줄로 물어본다
+
+단, **읽기로 정한 스킬·레퍼런스는 전문으로 읽는다.** 부분 읽기는 조용한 오답을 만든다.
+
+## O-3. 도구 이름은 에이전트마다 다르다
+
+위 관리 구간은 `Skill` / `Glob` / `Read` / `Grep` / `TodoWrite` 를 이름으로 강제한다.
+이건 **Claude Code 의 도구명**이다. Codex 등 다른 에이전트에는 없다.
+
+**규칙의 실제 내용은 이것이다:**
+
+- 워크스페이스 탐색·읽기·검색은 **셸(`ls`/`cat`/`grep`/`dir`/`Get-ChildItem`) 대신 에이전트 내장 도구**로 한다
+  — 셸은 Windows/macOS 간 경로·이스케이프·인코딩이 달라 조용히 깨진다
+  (bash 에서 `D:\foo\bar` 는 `D:foobar` 로 붕괴한다)
+- 셸은 **실제 프로그램**(`git` `npm` `node` MCP)에만 쓴다. 이때도 경로는 정슬래시 + 큰따옴표
+- 스킬·레퍼런스는 **경로로 직접 읽지 말고** 에이전트의 스킬 로딩 기능을 쓴다
+
+도구명은 **예시일 뿐이다.** 자기 에이전트의 동등한 도구를 쓰면 된다.
+
+## O-4. 런타임 결과는 MCP 호출 없이 주장하지 않는다
+
+이 규칙만은 위 관리 구간과 동일하며, **에이전트 종류와 무관하게 지킨다.**
+
+`play` 없이 "동작 확인", `logs` 없이 "에러 없음", `mouse_input` 없이 "클릭했다" 는 환각이다.

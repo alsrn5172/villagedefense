@@ -240,23 +240,62 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
   walk(path.join(ROOT, "RootDesk/MyDesk/Models"));
   walk(path.join(ROOT, "Global"));
 
-  for (const [name, col] of [["MonsterInfo", "ModelId"], ["NpcInfo", "ModelId"]]) {
+  // 모델이 없어도 "실제로 스폰되는지"에 따라 심각도가 다르다.
+  // 스폰표가 그 Id 를 참조하면 런타임에 SpawnByModelId 가 nil 을 반환한다 -> FAIL.
+  // 아무도 참조하지 않으면 아직 안 붙은 데이터일 뿐이다 -> WARN.
+  const referenced = (spawnTable, idCol) => {
+    const s = readCsv(spawnTable);
+    const set = new Set();
+    if (!s) return set;
+    const i = s.header.indexOf(idCol);
+    if (i < 0) return set;
+    for (const r of s.rows) {
+      const v = (r[i] || "").trim();
+      if (v) set.add(v);
+    }
+    return set;
+  };
+
+  // 스폰표에 행이 있어도 그걸 읽는 스포너가 없으면 아무 일도 안 일어난다.
+  // 로더가 생기는 순간 이 검사는 저절로 FAIL 로 바뀌어 모델을 요구한다.
+  const loaderExists = (globs) =>
+    globs.some((g) => fs.existsSync(path.join(ROOT, g)));
+
+  for (const [name, col, spawnTable, spawnIdCol, loaders] of [
+    ["MonsterInfo", "ModelId", "MapMonsters", "MonsterId",
+      ["RootDesk/MyDesk/Spawn/MonsterSpawner.mlua", "RootDesk/MyDesk/Catalog/MonsterCatalog.mlua"]],
+    ["NpcInfo", "ModelId", "MapNpcs", "NpcId",
+      ["RootDesk/MyDesk/Spawn/NpcSpawner.mlua", "RootDesk/MyDesk/Catalog/NpcCatalog.mlua"]],
+  ]) {
     const t = readCsv(name);
     if (!t) continue;
     const i = t.header.indexOf(col);
     const iId = t.header.indexOf("Id");
     const iNm = t.header.indexOf("Name");
-    const miss = t.rows.filter((r) => {
-      const v = (r[i] || "").trim().toLowerCase();
-      return v && !keys.has(v);
-    });
-    if (miss.length) {
-      for (const r of miss.slice(0, 8))
-        fail("C6", `${name}: ${r[iId]} ${r[iNm]} -> "${r[i]}" 모델이 없다 (SpawnByModelId 가 nil 을 반환한다)`);
-      if (miss.length > 8) fail("C6", `${name}: 그 외 ${miss.length - 8}건 더`);
-    } else {
-      ok("C6", `${name} 전 행에 모델이 있다`);
+    const wired = loaderExists(loaders);
+    const used = wired ? referenced(spawnTable, spawnIdCol) : new Set();
+    if (!wired) {
+      warn("C6", `${name}: ${spawnTable} 를 읽는 스포너/카탈로그가 아직 없다 — 이 표는 런타임에 안 돈다`);
     }
+
+    const live = [];   // 스폰표가 가리키는데 모델이 없다 — 진짜 고장
+    const dormant = []; // 도감에만 있고 아무도 안 쓴다
+    for (const r of t.rows) {
+      const v = (r[i] || "").trim().toLowerCase();
+      if (!v || keys.has(v)) continue;
+      (used.has((r[iId] || "").trim()) ? live : dormant).push(r);
+    }
+
+    for (const r of live.slice(0, 8))
+      fail("C6", `${name}: ${r[iId]} ${r[iNm]} -> "${r[i]}" 모델이 없는데 ${spawnTable} 가 스폰한다 (SpawnByModelId 가 nil 을 반환한다)`);
+    if (live.length > 8) fail("C6", `${name}: 그 외 ${live.length - 8}건 더`);
+
+    if (dormant.length) {
+      const sample = dormant.slice(0, 3).map((r) => `${r[iId]} ${r[iNm]}`).join(" / ");
+      warn("C6", `${name}: 모델 없는 행 ${dormant.length}건 — 단 ${spawnTable} 가 참조하지 않아 런타임 영향 없음 (${sample}${dormant.length > 3 ? " …" : ""})`);
+    }
+    if (!live.length && !dormant.length) ok("C6", `${name} 전 행에 모델이 있다`);
+    else if (!live.length) ok("C6", `${name} 스폰되는 행은 전부 모델이 있다`);
   }
 }
 
