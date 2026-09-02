@@ -20,11 +20,39 @@ script BossSkillRunner extends AttackComponent
 
 	property boolean LogSkill = true
 
+	-- 접촉 데미지 — 원본 몹 데이터가 전부 isBodyAttack=true 다.
+	-- MonsterAttack 이 하던 일인데, 보스는 그걸 못 단다
+	-- (둘 다 AttackComponent 파생이라 한 엔티티에 공존하면 LWA-3048).
+	-- 그래서 여기로 흡수했다.
+	property boolean ContactDamageOn = true
+
+	@MinValue(0)
+	property number ContactInterval = 0.03
+
+	-- BossSpawner 가 BossInfo.AttackPower 를 넣어준다. 접촉 데미지가 이 값을 쓴다.
+	property number AttackPower = 1
+
+	@HideFromInspector
+	property any ContactShape = nil
+
+	@HideFromInspector
+	property Vector2 SpriteSize = Vector2(0, 0)
+
+	@HideFromInspector
+	property Vector2 PositionOffset = Vector2(0, 0)
+
+	@HideFromInspector
+	property integer contactTimerId = 0
+
 	@HideFromInspector
 	property any cooldowns = nil
 
 	@HideFromInspector
 	property number castLeft = -1
+
+	-- 판정 후 시전 자세를 붙잡는 잔여 시간. 0 이하가 되면 idle 로 복원한다.
+	@HideFromInspector
+	property number recoverLeft = -1
 
 	@HideFromInspector
 	property number thinkAccumulator = 0
@@ -57,6 +85,87 @@ script BossSkillRunner extends AttackComponent
 		local sprite = self.Entity.SpriteRendererComponent
 		if isvalid(sprite) then
 			self.restoreRuid = sprite.SpriteRUID
+		end
+
+		if self.ContactDamageOn then
+			self:StartContactDamage()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartContactDamage()
+		-- 몸통 크기의 판정 박스를 짧은 간격으로 계속 때린다 = 접촉 데미지.
+		-- 박스는 스프라이트 실제 크기에서 뽑는다(MonsterAttack 과 같은 방식).
+		local monster = self.Entity.Monster
+		local renderer = self.Entity.SpriteRendererComponent
+		if not isvalid(monster) or not isvalid(renderer) then
+			return
+		end
+		if renderer.SpriteRUID == nil or renderer.SpriteRUID == "" or renderer.SpriteRUID == "null" then
+			log_warning("[BossSkillRunner] SpriteRUID missing: " .. self.Entity.Name)
+			return
+		end
+
+		self.ContactShape = BoxShape(Vector2.zero, Vector2.one, 0)
+		local standRuid = renderer.SpriteRUID
+
+		-- 동기 로드는 서버를 한 프레임 멈춘다. 프리로드 뒤에 한 번만 읽는다.
+		_ResourceService:PreloadAsync({standRuid}, function()
+			local clip = _ResourceService:LoadAnimationClipAndWait(standRuid)
+			if clip == nil or clip.Frames == nil or clip.Frames[1] == nil then
+				log_warning("[BossSkillRunner] animation clip missing: " .. self.Entity.Name)
+				return
+			end
+			local frame = clip.Frames[1].FrameSprite
+			if frame == nil or frame.PixelPerUnit <= 0 then
+				log_warning("[BossSkillRunner] invalid first frame: " .. self.Entity.Name)
+				return
+			end
+			local sizePx = Vector2(frame.Width, frame.Height)
+			local ppu = frame.PixelPerUnit
+			self.SpriteSize = sizePx / ppu
+			self.PositionOffset = (sizePx / 2 - frame.PivotPixel:ToVector2()) / ppu
+
+			self.contactTimerId = _TimerService:SetTimerRepeat(function()
+				if monster.IsDead == false then
+					self:AttackContact()
+				end
+			end, self.ContactInterval)
+
+			log("[BossSkillRunner] " .. self.BossId .. " contact ready size="
+				.. tostring(self.SpriteSize.x) .. "x" .. tostring(self.SpriteSize.y)
+				.. " dmg=" .. tostring(self.AttackPower))
+		end)
+	end
+
+	method void AttackContact()
+		-- 회전·스케일을 반영해 매 틱 몸통 박스를 다시 만든다.
+		-- ⚠️ @ExecSpace 를 붙이지 않는다 — 이 안에서 부르는 AttackFast 의
+		--    판정 훅들이 부모 시그니처를 따라야 한다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) or self.ContactShape == nil then
+			return
+		end
+		local pos = transform.WorldPosition
+		local sx = transform.Scale.x
+		local sy = transform.Scale.y
+		local rad = math.rad(transform.ZRotation)
+		local ox = math.cos(rad) * self.PositionOffset.x * sx - math.sin(rad) * self.PositionOffset.y * sy
+		local oy = math.sin(rad) * self.PositionOffset.x * sx + math.cos(rad) * self.PositionOffset.y * sy
+
+		self.ContactShape.Size = Vector2(self.SpriteSize.x * math.abs(sx), self.SpriteSize.y * math.abs(sy))
+		self.ContactShape.Position = Vector2(pos.x + ox, pos.y + oy)
+		self.ContactShape.Angle = transform.ZRotation
+
+		self:AttackFast(self.ContactShape, "contact", CollisionGroups.Player)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 타이머를 안 걷으면 엔티티가 사라진 뒤에도 계속 돈다.
+		if self.contactTimerId ~= 0 then
+			_TimerService:ClearTimer(self.contactTimerId)
+			self.contactTimerId = 0
 		end
 	end
 
@@ -116,6 +225,16 @@ script BossSkillRunner extends AttackComponent
 			if self.castLeft <= 0 then
 				self.castLeft = -1
 				self:FireSkill()
+			end
+			return
+		end
+
+		-- 판정이 끝난 뒤 시전 자세를 붙잡는 구간. 여기서 다음 스킬을 고르지 않는다.
+		if self.recoverLeft >= 0 then
+			self.recoverLeft = self.recoverLeft - delta
+			if self.recoverLeft <= 0 then
+				self.recoverLeft = -1
+				self:RestoreSprite()
 			end
 			return
 		end
@@ -210,7 +329,13 @@ script BossSkillRunner extends AttackComponent
 			self:FireArea(skill)
 		end
 
-		self:RestoreSprite()
+		-- 🔴 여기서 바로 복원하면 판정 순간에 모션이 끊겨 idle 로 튄다.
+		--    RecoverTime 만큼 시전 자세를 붙잡았다가 되돌린다.
+		if skill.recoverTime > 0 then
+			self.recoverLeft = skill.recoverTime
+		else
+			self:RestoreSprite()
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -324,6 +449,15 @@ script BossSkillRunner extends AttackComponent
 
 		-- ---@type 캐스트는 빼둔다. 빌드 시점에 사용자 타입을 못 찾아 LEA-1118 이 난다.
 		-- 대신 LIA-1114 안내가 뜨는데 그건 정적 분석 잡음이고 동작에는 영향이 없다.
+		-- 스킬마다 자기 스프라이트를 쓴다. 비면 모델 기본값이 그대로 남는다.
+		-- (범용 구체를 쓰면 발록이 파란 구슬을 던지는 사고가 난다)
+		if skill.projectileRuid ~= "" then
+			local sr = proj.SpriteRendererComponent
+			if isvalid(sr) then
+				sr.SpriteRUID = skill.projectileRuid
+			end
+		end
+
 		local mover = proj:GetComponent("script.BossProjectile")
 		if isvalid(mover) then
 			mover.DirectionX = facing
@@ -336,6 +470,7 @@ script BossSkillRunner extends AttackComponent
 			atk.HitCount = skill.hitCount
 			atk.RangeX = skill.rangeX
 			atk.RangeY = skill.rangeY
+			atk.HitEffectRUID = skill.hitEffectRuid
 		end
 
 		if self.LogSkill then
@@ -356,13 +491,35 @@ script BossSkillRunner extends AttackComponent
 		end
 	end
 
-	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
-		-- 이 스킬의 Damage 를 쓴다. BossInfo.AttackPower 와는 별개다.
+	method void OnAttack(Entity defender)
+		-- 명중 직후, 맞은 플레이어 자리에 타격 이펙트를 띄운다.
 		-- ⚠️ 부모에 @ExecSpace 가 없다. 붙이면 LEA-3014.
-		if self.activeSkill == nil then
-			return 1
+		if self.activeSkill == nil or not isvalid(defender) then
+			return
 		end
-		local d = math.floor(self.activeSkill.damage)
+		local ruid = self.activeSkill.hitEffectRuid
+		if ruid == nil or ruid == "" then
+			return
+		end
+		local t = defender.TransformComponent
+		if not isvalid(t) then
+			return
+		end
+		-- 발밑이 아니라 몸통 높이에 뜨게 살짝 올린다.
+		local p = t.WorldPosition
+		_EffectService:PlayEffect(ruid, self.Entity,
+			Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+	end
+
+	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
+		-- 접촉은 BossInfo.AttackPower, 스킬은 그 스킬의 Damage 를 쓴다.
+		-- ⚠️ 부모에 @ExecSpace 가 없다. 붙이면 LEA-3014.
+		local d = 1
+		if attackInfo == "contact" then
+			d = math.floor(self.AttackPower)
+		elseif self.activeSkill ~= nil then
+			d = math.floor(self.activeSkill.damage)
+		end
 		if d < 1 then
 			return 1
 		end
@@ -382,12 +539,17 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	method boolean IsAttackTarget(Entity defender, string attackInfo)
-		-- attackInfo 에 ShapeType(또는 "probe")을 실어 보냈다.
+		-- attackInfo 에 ShapeType / "probe" / "contact" 를 실어 보냈다.
 		if not isvalid(defender) then
 			return false
 		end
 		if isvalid(defender.PlayerComponent) == false then
 			return false
+		end
+
+		-- 접촉은 몸통에 닿은 플레이어 전원. 무적시간은 방어자 쪽 HitComponent 가 갖는다.
+		if attackInfo == "contact" then
+			return __base:IsAttackTarget(defender, attackInfo)
 		end
 
 		-- 탐색 패스 — 후보만 모으고 아무도 안 맞는다.

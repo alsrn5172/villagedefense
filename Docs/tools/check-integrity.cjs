@@ -79,7 +79,8 @@ const CANONICAL = {
     "BossId,SkillId,SkillName,Priority,ShapeType," +
     "RangeX,RangeY,OffsetX,OffsetY," +
     "CastDelay,Cooldown,Damage,HitCount,MinHpPercent,MaxHpPercent," +
-    "ProjectileModelId,ProjectileSpeed,CastRUID,Enabled,#Note",
+    "ProjectileModelId,ProjectileSpeed,CastRUID,Enabled," +
+    "ProjectileRUID,HitEffectRUID,RecoverTime,#Note",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
     "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
