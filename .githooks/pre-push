@@ -1,24 +1,52 @@
 #!/bin/sh
-# main 직접 push 차단 (GitHub Free는 브랜치 보호가 안 되므로 로컬에서 막는다)
-# 규칙: Docs/협업-규칙.md 3-1
-# 정말 필요하면: git push --no-verify
+# push 전 로컬 방어선 — 규칙: Docs/협업-규칙.md 3-1 / 11
+#
+#   1) main 직접 push 차단
+#   2) 정합성 검사 (Docs/tools/check-integrity.cjs)
+#
+# 이건 보조 수단이다. 정본은 GitHub Actions(.github/workflows/integrity.yml)이며
+# 그쪽은 우회할 수 없다. 이 훅은 서버에 닿기 전에 빠르게 잡아주는 역할만 한다.
 
-while read -r local_ref _ remote_ref _; do
+fail=0
+
+# ── 1) main 직접 push 차단 ───────────────────────────────
+while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/main)
       echo ""
       echo "  main 브랜치에 직접 push하려 했습니다."
       echo ""
       echo "  이 저장소는 PR로만 main에 반영합니다 (협업-규칙 3-1)."
-      echo "  브랜치를 만들어 push하세요:"
+      echo "  서버에서도 막히므로 여기서 멈추는 편이 빠릅니다."
       echo ""
       echo "      git switch -c a/작업이름"
       echo "      git push -u origin a/작업이름"
       echo ""
-      echo "  (의도한 것이라면 --no-verify 로 우회할 수 있습니다)"
-      echo ""
-      exit 1
+      fail=1
       ;;
   esac
 done
+
+[ "$fail" -eq 1 ] && exit 1
+
+# ── 2) 정합성 검사 ───────────────────────────────────────
+# CSV 는 merge=union 이라 git 이 "성공적으로" 머지하면서 중복 키·깨진 참조를
+# 만들 수 있다. 이 검사가 없으면 union 은 순손해다 (협업-규칙 11).
+if [ -f "Docs/tools/check-integrity.cjs" ]; then
+  if command -v node >/dev/null 2>&1; then
+    echo "정합성 검사 중..."
+    if ! node Docs/tools/check-integrity.cjs; then
+      echo ""
+      echo "  정합성 검사 실패 — push를 멈춥니다."
+      echo "  위 FAIL 항목을 고친 뒤 다시 push하세요."
+      echo ""
+      echo "  검사 항목: Docs/협업-규칙.md 11"
+      echo ""
+      exit 1
+    fi
+  else
+    echo "  (node 가 없어 정합성 검사를 건너뜁니다 — GitHub Actions가 대신 잡습니다)"
+  fi
+fi
+
 exit 0

@@ -1,0 +1,66 @@
+name: 정합성 검사
+
+# 왜 필요한가 — .gitattributes 가 모든 CSV 에 merge=union 을 건다.
+# git 이 "성공적으로" 머지하면서 중복 키와 깨진 참조를 조용히 만들 수 있다.
+# 사람 눈으로는 안 잡힌다. 이 워크플로가 없으면 union 은 순손해다.
+# 규칙: Docs/협업-규칙.md 11
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    name: check-integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 정합성 검사 실행
+        run: node Docs/tools/check-integrity.cjs
+
+      - name: 커밋되면 안 되는 파일 검사
+        run: |
+          # API 토큰이 평문으로 들어가는 파일. 한 번 올라가면 히스토리를
+          # 지워도 재발급해야 한다 (협업-규칙 1-6).
+          if git ls-files --error-unmatch .mcp.json >/dev/null 2>&1; then
+            echo "::error::.mcp.json 이 추적되고 있습니다 — API 토큰이 노출됩니다"
+            exit 1
+          fi
+          if git ls-files | grep -q '^\.mswai/'; then
+            echo "::error::.mswai/ 가 추적되고 있습니다 (LSP 런타임)"
+            exit 1
+          fi
+          echo "OK — .mcp.json / .mswai 미추적"
+
+      - name: 머지 정책 적용 확인
+        run: |
+          # .gitattributes 가 안 먹으면 .map 이 조용히 자동 머지된다.
+          # "성공한 머지"가 오히려 파일을 깨뜨리는 구간이다 (협업-규칙 5).
+          fail=0
+          for f in map/*.map; do
+            [ -e "$f" ] || continue
+            r=$(git check-attr merge -- "$f" | sed 's/.*merge: //')
+            if [ "$r" != "unset" ]; then
+              echo "::error::$f 의 merge 속성이 '$r' 입니다 (unset 이어야 함)"
+              fail=1
+            fi
+            break
+          done
+          for f in RootDesk/MyDesk/*.csv; do
+            [ -e "$f" ] || continue
+            r=$(git check-attr merge -- "$f" | sed 's/.*merge: //')
+            if [ "$r" != "union" ]; then
+              echo "::error::$f 의 merge 속성이 '$r' 입니다 (union 이어야 함)"
+              fail=1
+            fi
+            break
+          done
+          [ "$fail" -eq 0 ] && echo "OK — .map=unset / .csv=union"
+          exit $fail
