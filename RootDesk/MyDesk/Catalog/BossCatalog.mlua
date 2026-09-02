@@ -1,0 +1,290 @@
+@Logic
+script BossCatalog extends Logic
+
+	@HideFromInspector
+	property string InfoTableName = "BossInfo"
+
+	@HideFromInspector
+	property string SkillTableName = "BossSkills"
+
+	@HideFromInspector
+	property string RewardTableName = "BossReward"
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
+	property any infoById = nil
+
+	@HideFromInspector
+	property any skillsById = nil
+
+	@HideFromInspector
+	property any rewardById = nil
+
+	@HideFromInspector
+	property any bossesByMap = nil
+
+	method void OnBeginPlay()
+		-- 서버·클라 각자 자기 쪽에서 적재한다. MonsterCatalog 와 같은 규약.
+		self:EnsureLoaded()
+	end
+
+	method string Key(any id)
+		-- 고유번호를 테이블 키로 쓸 정수 문자열로 정규화한다. nil 이면 빈 문자열.
+		if id == nil then
+			return ""
+		end
+		local n = tonumber(id)
+		if n == nil then
+			return tostring(id)
+		end
+		return tostring(math.floor(n))
+	end
+
+	method boolean ParseEnabled(any value)
+		-- Enabled 열을 boolean 으로 읽는다. 빈칸은 기본값 true.
+		if value == nil or tostring(value) == "" then
+			return true
+		end
+		local text = string.lower(tostring(value))
+		return text == "true" or text == "1" or text == "yes" or text == "y"
+	end
+
+	method void EnsureLoaded()
+		-- 아직 안 읽었으면 한 번만 읽는다.
+		if self.loaded then
+			return
+		end
+		self:Load()
+	end
+
+	method void Load()
+		-- 보스 3표를 읽어 메모리 테이블로 만든다. 표가 없어도 죽지 않게 방어한다.
+		self.loaded = true
+		self.infoById = {}
+		self.skillsById = {}
+		self.rewardById = {}
+		self.bossesByMap = {}
+
+		local bossRows = 0
+		local skipped = 0
+
+		local info = _DataService:GetTable(self.InfoTableName)
+		if info == nil then
+			log_warning("[BossCatalog] dataset not found: " .. self.InfoTableName)
+		else
+			for i = 1, info:GetRowCount() do
+				local id = self:Key(info:GetCell(i, "BossId"))
+				local mapName = info:GetCell(i, "MapName") or ""
+				local modelId = info:GetCell(i, "ModelId") or ""
+				local enabled = self:ParseEnabled(info:GetCell(i, "Enabled"))
+
+				-- MaxHp 가 비면 스폰 즉시 죽는다. 보스는 폴백을 크게 잡는다.
+				local maxHp = tonumber(info:GetCell(i, "MaxHp"))
+				if maxHp == nil or maxHp <= 0 then
+					log_warning("[BossCatalog] invalid MaxHp for BossId=" .. id .. "; using 100000")
+					maxHp = 100000
+				end
+
+				-- 아래 분기는 "조용히 안 뜨는" 사고를 시끄럽게 만들기 위한 것이다.
+				if id == "" then
+					log_warning("[BossCatalog] empty BossId at row " .. tostring(i))
+					skipped = skipped + 1
+				elseif self.infoById[id] ~= nil then
+					log_warning("[BossCatalog] duplicate BossId=" .. id)
+					skipped = skipped + 1
+				elseif modelId == "" then
+					log_warning("[BossCatalog] empty ModelId for BossId=" .. id)
+					skipped = skipped + 1
+				elseif mapName == "" then
+					log_warning("[BossCatalog] empty MapName for BossId=" .. id)
+					skipped = skipped + 1
+				elseif not enabled then
+					-- 꺼진 보스는 오류가 아니다. 맵이 아직 없는 경우 등.
+					skipped = skipped + 1
+				else
+					local row = {
+						id = id,
+						name = info:GetCell(i, "Name") or "",
+						level = tonumber(info:GetCell(i, "Level")) or 0,
+						maxHp = maxHp,
+						modelId = modelId,
+						moveType = info:GetCell(i, "MoveType") or "",
+						aiType = info:GetCell(i, "AiType") or "",
+						attackPower = tonumber(info:GetCell(i, "AttackPower")) or 0,
+						defense = tonumber(info:GetCell(i, "Defense")) or 0,
+						knockbackResist = tonumber(info:GetCell(i, "KnockbackResist")) or 0,
+						moveSpeed = tonumber(info:GetCell(i, "MoveSpeed")) or -1,
+						mapName = mapName,
+						-- 좌표가 비면 기존 배치를 그대로 쓴다는 뜻이다(피아누스).
+						hasSpawnPos = tostring(info:GetCell(i, "SpawnX") or "") ~= "",
+						spawnX = tonumber(info:GetCell(i, "SpawnX")) or 0,
+						spawnY = tonumber(info:GetCell(i, "SpawnY")) or 0,
+						respawnSeconds = tonumber(info:GetCell(i, "RespawnSeconds")) or 0,
+						note = info:GetCell(i, "#Note") or ""
+					}
+					self.infoById[id] = row
+					if self.bossesByMap[mapName] == nil then
+						self.bossesByMap[mapName] = {}
+					end
+					table.insert(self.bossesByMap[mapName], row)
+					bossRows = bossRows + 1
+				end
+			end
+		end
+
+		local skillRows = 0
+		local skills = _DataService:GetTable(self.SkillTableName)
+		if skills == nil then
+			log_warning("[BossCatalog] dataset not found: " .. self.SkillTableName)
+		else
+			local seenSkill = {}
+			for i = 1, skills:GetRowCount() do
+				local bossId = self:Key(skills:GetCell(i, "BossId"))
+				local skillId = self:Key(skills:GetCell(i, "SkillId"))
+				local dupKey = bossId .. ":" .. skillId
+
+				if bossId == "" or skillId == "" then
+					log_warning("[BossCatalog] invalid BossId/SkillId at skill row " .. tostring(i))
+					skipped = skipped + 1
+				elseif seenSkill[dupKey] then
+					log_warning("[BossCatalog] duplicate skill " .. dupKey)
+					skipped = skipped + 1
+				elseif not self:ParseEnabled(skills:GetCell(i, "Enabled")) then
+					skipped = skipped + 1
+				elseif self.infoById[bossId] == nil then
+					log_warning("[BossCatalog] skill points to unknown/disabled BossId=" .. bossId)
+					skipped = skipped + 1
+				else
+					seenSkill[dupKey] = true
+					if self.skillsById[bossId] == nil then
+						self.skillsById[bossId] = {}
+					end
+					table.insert(self.skillsById[bossId], {
+						bossId = bossId,
+						skillId = skillId,
+						name = skills:GetCell(i, "SkillName") or "",
+						priority = tonumber(skills:GetCell(i, "Priority")) or 0,
+						shapeType = string.lower(tostring(skills:GetCell(i, "ShapeType") or "box")),
+						rangeX = tonumber(skills:GetCell(i, "RangeX")) or 1,
+						rangeY = tonumber(skills:GetCell(i, "RangeY")) or 1,
+						offsetX = tonumber(skills:GetCell(i, "OffsetX")) or 0,
+						offsetY = tonumber(skills:GetCell(i, "OffsetY")) or 0,
+						castDelay = tonumber(skills:GetCell(i, "CastDelay")) or 0,
+						cooldown = tonumber(skills:GetCell(i, "Cooldown")) or 1,
+						damage = tonumber(skills:GetCell(i, "Damage")) or 0,
+						hitCount = tonumber(skills:GetCell(i, "HitCount")) or 1,
+						-- 페이즈 게이트. 빈칸이면 전 구간에서 쓴다.
+						minHpPercent = tonumber(skills:GetCell(i, "MinHpPercent")) or 0,
+						maxHpPercent = tonumber(skills:GetCell(i, "MaxHpPercent")) or 100,
+						projectileModelId = skills:GetCell(i, "ProjectileModelId") or "",
+						projectileSpeed = tonumber(skills:GetCell(i, "ProjectileSpeed")) or 0,
+						castRuid = skills:GetCell(i, "CastRUID") or "",
+						note = skills:GetCell(i, "#Note") or ""
+					})
+					skillRows = skillRows + 1
+				end
+			end
+		end
+
+		local rewardRows = 0
+		local rewards = _DataService:GetTable(self.RewardTableName)
+		if rewards == nil then
+			log_warning("[BossCatalog] dataset not found: " .. self.RewardTableName)
+		else
+			for i = 1, rewards:GetRowCount() do
+				local bossId = self:Key(rewards:GetCell(i, "BossId"))
+				if bossId ~= "" and self:ParseEnabled(rewards:GetCell(i, "Enabled")) then
+					self.rewardById[bossId] = {
+						bossId = bossId,
+						topDamageItemId = rewards:GetCell(i, "TopDamageItemId") or "",
+						topDamageMeso = tonumber(rewards:GetCell(i, "TopDamageMeso")) or 0,
+						firstClaimItemId = rewards:GetCell(i, "FirstClaimItemId") or "",
+						firstClaimMeso = tonumber(rewards:GetCell(i, "FirstClaimMeso")) or 0,
+						firstClaimOnce = self:ParseEnabled(rewards:GetCell(i, "FirstClaimOnce"))
+					}
+					rewardRows = rewardRows + 1
+				end
+			end
+		end
+
+		log("[BossCatalog] loaded bosses=" .. tostring(bossRows)
+			.. " skills=" .. tostring(skillRows)
+			.. " rewards=" .. tostring(rewardRows)
+			.. " skipped=" .. tostring(skipped))
+	end
+
+	method any GetInfo(any bossId)
+		-- 보스 정의 1건. 없거나 꺼져 있으면 nil.
+		self:EnsureLoaded()
+		return self.infoById[self:Key(bossId)]
+	end
+
+	method any GetMapBosses(string mapName)
+		-- 그 맵에 뜨는 보스 목록. 없으면 빈 배열.
+		self:EnsureLoaded()
+		local list = self.bossesByMap[mapName]
+		if list == nil then
+			return {}
+		end
+		return list
+	end
+
+	method any GetSkills(any bossId)
+		-- 그 보스의 스킬 전부(Enabled 만). 없으면 빈 배열.
+		self:EnsureLoaded()
+		local list = self.skillsById[self:Key(bossId)]
+		if list == nil then
+			return {}
+		end
+		return list
+	end
+
+	method any GetSkillsForHp(any bossId, number hpPercent)
+		-- 지금 HP% 구간에서 쓸 수 있는 스킬만 골라 Priority 내림차순으로 준다.
+		-- 페이즈 게이트가 여기서 걸린다.
+		local usable = {}
+		for _, s in ipairs(self:GetSkills(bossId)) do
+			if hpPercent >= s.minHpPercent and hpPercent <= s.maxHpPercent then
+				table.insert(usable, s)
+			end
+		end
+		table.sort(usable, function(a, b) return a.priority > b.priority end)
+		return usable
+	end
+
+	method any GetReward(any bossId)
+		-- 보상 정의 1건. 없으면 nil.
+		self:EnsureLoaded()
+		return self.rewardById[self:Key(bossId)]
+	end
+
+	method number GetMaxHp(any bossId)
+		-- 최대 체력. 없으면 100000.
+		local e = self:GetInfo(bossId)
+		if e == nil then
+			return 100000
+		end
+		return e.maxHp
+	end
+
+	method string GetName(any bossId)
+		-- 표시용 이름. 없으면 "보스 <id>".
+		local e = self:GetInfo(bossId)
+		if e == nil then
+			return "보스 " .. self:Key(bossId)
+		end
+		return e.name
+	end
+
+	method string GetModelId(any bossId)
+		-- 스폰에 쓸 모델 id. 없으면 빈 문자열.
+		local e = self:GetInfo(bossId)
+		if e == nil then
+			return ""
+		end
+		return e.modelId
+	end
+
+end

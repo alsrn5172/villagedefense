@@ -1,0 +1,210 @@
+@Component
+script BossSpawner extends Component
+
+	-- 보스 전용 스포너. 일반 MonsterSpawner 와 나눈 이유:
+	--   * 범위 랜덤이 없다 — 보스는 정해진 자리에 정확히 1마리
+	--   * BossInfo 가 스폰 좌표를 직접 갖는다 (스포너 엔티티 Transform 이 아니라)
+	--   * MaxHp/AttackPower/Defense/KnockbackResist 를 스폰 직후 주입한다
+	--   * 좌표가 비면 스폰을 건너뛴다 (피아누스처럼 이미 배치된 보스)
+
+	property string BossId = ""
+
+	property boolean LogSpawn = true
+
+	@HideFromInspector
+	property any bossRow = nil
+
+	@HideFromInspector
+	property any bossEntity = nil
+
+	@HideFromInspector
+	property number elapsed = 0
+
+	@HideFromInspector
+	property number updateAccumulator = 0
+
+	@HideFromInspector
+	property number respawnAt = -1
+
+	@HideFromInspector
+	property boolean deadSeen = false
+
+	@HideFromInspector
+	property boolean initialized = false
+
+	@HideFromInspector
+	property boolean stopped = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		self:InitializeSpawner()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitializeSpawner()
+		-- 표를 읽어 자기 보스 1건을 잡고 즉시 스폰한다.
+		if self.initialized then
+			return
+		end
+		self.initialized = true
+
+		if self.BossId == "" then
+			log_warning("[BossSpawner] empty BossId at " .. self.Entity.Path)
+			self.stopped = true
+			return
+		end
+		if _BossCatalog == nil then
+			log_error("[BossSpawner] BossCatalog missing: " .. self.BossId)
+			self.stopped = true
+			return
+		end
+
+		local row = _BossCatalog:GetInfo(self.BossId)
+		if row == nil then
+			-- 표에 없거나 Enabled=false 다. 오류가 아니라 "아직 안 켬"일 수 있다.
+			log_warning("[BossSpawner] BossId=" .. self.BossId .. " not in BossInfo (or disabled)")
+			self.stopped = true
+			return
+		end
+
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			log_error("[BossSpawner] current map missing: " .. self.BossId)
+			self.stopped = true
+			return
+		end
+		-- 스포너를 엉뚱한 맵에 붙여두면 조용히 안 뜬다. 시끄럽게 만든다.
+		if row.mapName ~= map.Name then
+			log_warning("[BossSpawner] map mismatch: BossInfo=" .. row.mapName
+				.. " but placed on " .. map.Name)
+			self.stopped = true
+			return
+		end
+		if not row.hasSpawnPos then
+			log("[BossSpawner] " .. self.BossId .. " has no SpawnX — 기존 배치를 그대로 쓴다")
+			self.stopped = true
+			return
+		end
+
+		self.bossRow = row
+		self:SpawnBoss()
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpawnBoss()
+		-- BossInfo 좌표에 1마리 띄우고 밸런싱 값을 주입한다.
+		local row = self.bossRow
+		if row == nil then
+			return false
+		end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			log_error("[BossSpawner] map missing on spawn: " .. self.BossId)
+			self.stopped = true
+			return false
+		end
+
+		local name = "Boss_" .. row.id
+		local position = Vector3(row.spawnX, row.spawnY, 0)
+		local unit = _SpawnService:SpawnByModelId(row.modelId, name, position, map)
+		if not isvalid(unit) then
+			log_error("[BossSpawner] spawn failed model=" .. tostring(row.modelId)
+				.. " bossId=" .. tostring(row.id))
+			self.stopped = true
+			return false
+		end
+
+		local monster = unit.Monster
+		if isvalid(monster) then
+			monster.MaxHp = row.maxHp
+			monster.Hp = row.maxHp
+			-- 재생성은 이 스포너가 단독으로 소유한다. script.Monster 쪽은 끈다.
+			monster.RespawnOn = false
+		else
+			log_warning("[BossSpawner] script.Monster missing on " .. name)
+		end
+
+		-- 이동 속도. 음수면 모델 기본값을 그대로 둔다.
+		if row.moveSpeed >= 0 then
+			local movement = unit.MovementComponent
+			if isvalid(movement) then
+				movement.InputSpeed = row.moveSpeed
+			end
+		end
+
+		-- 스킬 실행기에 자기 BossId 를 알려준다. 이게 없으면 스킬이 안 돈다.
+		---@type BossSkillRunner
+		local runner = unit:GetComponent("script.BossSkillRunner")
+		if isvalid(runner) then
+			runner.BossId = row.id
+		end
+
+		self.bossEntity = unit
+		self.deadSeen = false
+		self.respawnAt = -1
+
+		if self.LogSpawn then
+			log("[BossSpawner] spawn boss=" .. row.id .. " (" .. row.name .. ")"
+				.. " map=" .. row.mapName
+				.. " x=" .. tostring(row.spawnX) .. " y=" .. tostring(row.spawnY)
+				.. " hp=" .. tostring(row.maxHp))
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		if self.stopped or not self.initialized or self.bossRow == nil then
+			return
+		end
+
+		self.elapsed = self.elapsed + delta
+		self.updateAccumulator = self.updateAccumulator + delta
+		-- 보스는 1마리뿐이라 일반 스포너보다 느리게 봐도 된다.
+		if self.updateAccumulator < 0.5 then
+			return
+		end
+		self.updateAccumulator = 0
+
+		local entityValid = isvalid(self.bossEntity)
+		local dead = false
+		if entityValid then
+			local monster = self.bossEntity.Monster
+			dead = isvalid(monster) and monster.IsDead
+		end
+
+		if (dead or not entityValid) and not self.deadSeen then
+			self.deadSeen = true
+			if self.bossRow.respawnSeconds > 0 then
+				self.respawnAt = self.elapsed + self.bossRow.respawnSeconds
+			else
+				self.stopped = true
+			end
+		end
+
+		if self.deadSeen and self.respawnAt >= 0 and self.elapsed >= self.respawnAt then
+			if isvalid(self.bossEntity) then
+				self.bossEntity:Destroy()
+			end
+			self.bossEntity = nil
+			self:SpawnBoss()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 맵을 나가면 만든 것을 치우고 초기화 상태로 되돌린다.
+		if isvalid(self.bossEntity) then
+			self.bossEntity:Destroy()
+		end
+		self.bossEntity = nil
+		self.bossRow = nil
+		self.initialized = false
+		self.stopped = false
+		self.deadSeen = false
+		self.respawnAt = -1
+		self.elapsed = 0
+		self.updateAccumulator = 0
+	end
+
+end

@@ -1,0 +1,219 @@
+@Logic
+script EliteCatalog extends Logic
+
+	-- 엘리트 몬스터 카탈로그 — 구조만 세워둔 상태다.
+	--
+	-- 표 3종은 만들어져 있으나 행이 0개다. 어느 몹을 엘리트로 삼을지,
+	-- 재료 재화가 몇 종인지는 미정이다 (로드맵 미정 #4).
+	-- 스포너(EliteSpawner)도 아직 없다 — 이 카탈로그는 읽기만 한다.
+	--
+	-- 구조를 먼저 둔 이유: 각자 붙일 때 스키마가 갈리지 않게 하기 위해서다.
+	-- 계약서 A-2-15 참조.
+
+	@HideFromInspector
+	property string InfoTableName = "EliteMonsterInfo"
+
+	@HideFromInspector
+	property string SpawnTableName = "EliteSpawnTable"
+
+	@HideFromInspector
+	property string MaterialTableName = "EliteMaterialInfo"
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
+	property any infoById = nil
+
+	@HideFromInspector
+	property any spawnByMap = nil
+
+	@HideFromInspector
+	property any materialById = nil
+
+	method void OnBeginPlay()
+		self:EnsureLoaded()
+	end
+
+	method string Key(any id)
+		-- 문자열 키로 정규화한다. 엘리트 ID 는 숫자일 수도, 열거값 문자열일 수도 있다.
+		if id == nil then
+			return ""
+		end
+		local n = tonumber(id)
+		if n == nil then
+			return tostring(id)
+		end
+		return tostring(math.floor(n))
+	end
+
+	method boolean ParseEnabled(any value)
+		if value == nil or tostring(value) == "" then
+			return true
+		end
+		local text = string.lower(tostring(value))
+		return text == "true" or text == "1" or text == "yes" or text == "y"
+	end
+
+	method void EnsureLoaded()
+		if self.loaded then
+			return
+		end
+		self:Load()
+	end
+
+	method void Load()
+		self.loaded = true
+		self.infoById = {}
+		self.spawnByMap = {}
+		self.materialById = {}
+
+		local eliteRows = 0
+		local skipped = 0
+
+		local info = _DataService:GetTable(self.InfoTableName)
+		if info == nil then
+			log_warning("[EliteCatalog] dataset not found: " .. self.InfoTableName)
+		else
+			for i = 1, info:GetRowCount() do
+				local id = self:Key(info:GetCell(i, "EliteId"))
+				local modelId = info:GetCell(i, "ModelId") or ""
+
+				local maxHp = tonumber(info:GetCell(i, "MaxHp"))
+				if maxHp == nil or maxHp <= 0 then
+					maxHp = 100
+				end
+
+				if id == "" then
+					skipped = skipped + 1
+				elseif self.infoById[id] ~= nil then
+					log_warning("[EliteCatalog] duplicate EliteId=" .. id)
+					skipped = skipped + 1
+				elseif modelId == "" then
+					log_warning("[EliteCatalog] empty ModelId for EliteId=" .. id)
+					skipped = skipped + 1
+				elseif not self:ParseEnabled(info:GetCell(i, "Enabled")) then
+					skipped = skipped + 1
+				else
+					self.infoById[id] = {
+						id = id,
+						name = info:GetCell(i, "Name") or "",
+						baseMonsterId = self:Key(info:GetCell(i, "BaseMonsterId")),
+						level = tonumber(info:GetCell(i, "Level")) or 0,
+						maxHp = maxHp,
+						modelId = modelId,
+						moveType = info:GetCell(i, "MoveType") or "",
+						aiType = info:GetCell(i, "AiType") or "",
+						attackPower = tonumber(info:GetCell(i, "AttackPower")) or 0,
+						defense = tonumber(info:GetCell(i, "Defense")) or 0,
+						knockbackResist = tonumber(info:GetCell(i, "KnockbackResist")) or 0,
+						moveSpeed = tonumber(info:GetCell(i, "MoveSpeed")) or -1,
+						materialId = info:GetCell(i, "MaterialId") or "",
+						materialMin = tonumber(info:GetCell(i, "MaterialMin")) or 0,
+						materialMax = tonumber(info:GetCell(i, "MaterialMax")) or 0,
+						exp = tonumber(info:GetCell(i, "Exp")) or 0,
+						meso = tonumber(info:GetCell(i, "Meso")) or 0
+					}
+					eliteRows = eliteRows + 1
+				end
+			end
+		end
+
+		local spawnRows = 0
+		local spawns = _DataService:GetTable(self.SpawnTableName)
+		if spawns == nil then
+			log_warning("[EliteCatalog] dataset not found: " .. self.SpawnTableName)
+		else
+			for i = 1, spawns:GetRowCount() do
+				local mapName = spawns:GetCell(i, "MapName") or ""
+				local baseId = self:Key(spawns:GetCell(i, "BaseMonsterId"))
+				local eliteId = self:Key(spawns:GetCell(i, "EliteId"))
+				local chance = tonumber(spawns:GetCell(i, "Chance")) or 0
+
+				if mapName == "" or baseId == "" or eliteId == "" then
+					skipped = skipped + 1
+				elseif not self:ParseEnabled(spawns:GetCell(i, "Enabled")) then
+					skipped = skipped + 1
+				elseif self.infoById[eliteId] == nil then
+					log_warning("[EliteCatalog] unknown EliteId=" .. eliteId .. " at spawn row " .. tostring(i))
+					skipped = skipped + 1
+				elseif chance <= 0 or chance > 1 then
+					log_warning("[EliteCatalog] Chance must be 0~1: " .. tostring(chance))
+					skipped = skipped + 1
+				else
+					if self.spawnByMap[mapName] == nil then
+						self.spawnByMap[mapName] = {}
+					end
+					table.insert(self.spawnByMap[mapName], {
+						mapName = mapName,
+						baseMonsterId = baseId,
+						eliteId = eliteId,
+						chance = chance
+					})
+					spawnRows = spawnRows + 1
+				end
+			end
+		end
+
+		local materialRows = 0
+		local mats = _DataService:GetTable(self.MaterialTableName)
+		if mats == nil then
+			log_warning("[EliteCatalog] dataset not found: " .. self.MaterialTableName)
+		else
+			for i = 1, mats:GetRowCount() do
+				local id = mats:GetCell(i, "MaterialId") or ""
+				if id ~= "" and self:ParseEnabled(mats:GetCell(i, "Enabled")) then
+					self.materialById[id] = {
+						id = id,
+						name = mats:GetCell(i, "Name") or "",
+						description = mats:GetCell(i, "Description") or "",
+						iconRuid = mats:GetCell(i, "IconRUID") or ""
+					}
+					materialRows = materialRows + 1
+				end
+			end
+		end
+
+		log("[EliteCatalog] loaded elites=" .. tostring(eliteRows)
+			.. " spawnRules=" .. tostring(spawnRows)
+			.. " materials=" .. tostring(materialRows)
+			.. " skipped=" .. tostring(skipped))
+	end
+
+	method any GetInfo(any eliteId)
+		-- 엘리트 정의 1건. 없으면 nil.
+		self:EnsureLoaded()
+		return self.infoById[self:Key(eliteId)]
+	end
+
+	method any GetSpawnRules(string mapName)
+		-- 그 맵의 엘리트 확률 규칙. 없으면 빈 배열.
+		self:EnsureLoaded()
+		local list = self.spawnByMap[mapName]
+		if list == nil then
+			return {}
+		end
+		return list
+	end
+
+	method any RollElite(string mapName, any baseMonsterId)
+		-- 일반 몹 자리에 엘리트가 대신 뜰지 추첨한다. 안 뜨면 nil.
+		-- 스포너가 스폰 직전에 부르는 것을 전제로 만들었다.
+		local baseKey = self:Key(baseMonsterId)
+		for _, rule in ipairs(self:GetSpawnRules(mapName)) do
+			if rule.baseMonsterId == baseKey then
+				if _UtilLogic:RandomDouble() < rule.chance then
+					return self:GetInfo(rule.eliteId)
+				end
+			end
+		end
+		return nil
+	end
+
+	method any GetMaterial(string materialId)
+		-- 재료 재화 정의 1건. 없으면 nil.
+		self:EnsureLoaded()
+		return self.materialById[materialId]
+	end
+
+end
