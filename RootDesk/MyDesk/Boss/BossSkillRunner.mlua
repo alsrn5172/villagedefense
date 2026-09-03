@@ -65,6 +65,15 @@ script BossSkillRunner extends AttackComponent
 
 	property integer ProjectileOrderInLayer = 100
 
+	-- 🔴 피격 이펙트가 그려질 레이어.
+	--    OnAttack 이 PlayEffect 를 옵션 없이 불러서 모델 기본값 "Default" 로 그려졌다.
+	--    "Default" 는 맵의 MapLayer0~7 보다 뒤라 배경에도 가린다 - 맞아도 아무것도 안 보였다.
+	--    캐릭터·몹이 전부 MapLayer7 이므로 같은 레이어에 두되 순서를 위로 올려 앞에 그린다.
+	--    (시전 이펙트가 MapLayer0 / 1~3 인 것과 다르다 - 그건 보스 뒤에 까는 게 의도다)
+	property string HitEffectSortingLayer = "MapLayer7"
+
+	property integer HitEffectOrderInLayer = 200
+
 	@HideFromInspector
 	property any ContactShape = nil
 
@@ -90,6 +99,12 @@ script BossSkillRunner extends AttackComponent
 	-- 시전 클립 길이 실측 캐시 (skillId -> 초). CastDelay 가 음수인 스킬이 이 값을 쓴다.
 	@HideFromInspector
 	property any clipLen = nil
+
+	-- 2단 시전(CastRUID2)의 클립 길이. 1단(clipLen)과 반드시 따로 잰다 -
+	-- 합쳐서 재면 런타임이 castDelay2 를 또 더해 2단이 두 번 계산된다.
+	@HideFromInspector
+	property any clipLen2 = nil
+
 
 	-- 2단 시전 잔여 시간. 점프 공격처럼 "준비 -> 도약 -> 착지 판정" 인 기술에 쓴다.
 	-- CastRUID2 가 비어 있으면 이 구간을 건너뛴다.
@@ -147,6 +162,7 @@ script BossSkillRunner extends AttackComponent
 		self.Shape = BoxShape(Vector2.zero, Vector2(1, 1), 0)
 		self.cooldowns = {}
 		self.clipLen = {}
+		self.clipLen2 = {}
 		self.buffed = {}
 
 		local sprite = self.Entity.SpriteRendererComponent
@@ -191,8 +207,12 @@ script BossSkillRunner extends AttackComponent
 		_ResourceService:PreloadAsync(ruids, function()
 			for _, sk in ipairs(skills) do
 				-- CastHitFrame 이 0 보다 크면 그 프레임까지만 센다(착지 시점).
+				-- 🔴 1단과 2단을 합산하면 안 된다. castLeft(1단) 이 끝난 뒤 castLeft2(2단) 가
+				--    따로 도는 구조라, 합쳐 넣으면 2단 길이가 두 번 들어간다.
 				local seconds = self:ClipSecondsUpTo(sk.castRuid, sk.castHitFrame)
-					+ self:ClipSeconds(sk.castRuid2)
+				if sk.castRuid2 ~= "" then
+					self.clipLen2[sk.skillId] = self:ClipSeconds(sk.castRuid2)
+				end
 				if seconds > 0 then
 					self.clipLen[sk.skillId] = seconds
 					log("[BossSkillRunner] " .. self.BossId .. "/" .. sk.skillId
@@ -258,6 +278,25 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method number EffectiveCastDelay2(any skill)
+		-- 2단도 1단과 같은 규칙 - CastDelay2 가 음수면 2단 클립을 실측해서 쓴다.
+		if skill.castRuid2 == "" then
+			return 0
+		end
+		if skill.castDelay2 >= 0 then
+			return skill.castDelay2
+		end
+		local measured = self.clipLen2[skill.skillId]
+		if measured == nil or measured <= 0 then
+			return 0
+		end
+		local rate = skill.castPlayRate
+		if rate <= 0 then
+			rate = 1
+		end
+		return measured / rate
+	end
+
 	method number EffectiveCastDelay(any skill)
 		-- CastDelay 가 음수면 "실측 클립 한 바퀴" 를 쓴다.
 		if skill.castDelay >= 0 then
@@ -630,7 +669,7 @@ script BossSkillRunner extends AttackComponent
 
 		-- 시전하는 동안 제자리에 선다. 걸어다니면서 스킬을 쓰면 모션이 겉돈다.
 		-- 쿨다운 중이거나 사거리 밖이면 여기까지 안 오므로 그때는 계속 추격한다.
-		self:FreezeMovement(self:EffectiveCastDelay(skill) + skill.castDelay2 + skill.recoverTime)
+		self:FreezeMovement(self:EffectiveCastDelay(skill) + self:EffectiveCastDelay2(skill) + skill.recoverTime)
 
 		-- 시전 모션 — SpriteRUID 직접 대입(Pattern A).
 		-- ChangeState("ATTACK") 은 ATTACK 이 자동 등록되지 않아 LEA-3005 가 난다.
@@ -713,7 +752,12 @@ script BossSkillRunner extends AttackComponent
 		-- 킹슬라임: attack1(웅크림) -> jump(눈 부릅뜨고 도약) -> 착지에서 판정.
 		-- 2단이 없으면(대부분의 스킬) 여기서 바로 판정한다.
 		local skill = self.pendingSkill
-		if skill == nil or skill.castRuid2 == "" or skill.castDelay2 <= 0 then
+		if skill == nil or skill.castRuid2 == "" then
+			self:FireSkill()
+			return
+		end
+		local delay2 = self:EffectiveCastDelay2(skill)
+		if delay2 <= 0 then
 			self:FireSkill()
 			return
 		end
@@ -723,7 +767,7 @@ script BossSkillRunner extends AttackComponent
 			sprite.SpriteRUID = skill.castRuid2
 			sprite.PlayRate = skill.castPlayRate
 		end
-		self.castLeft2 = skill.castDelay2
+		self.castLeft2 = delay2
 	end
 
 	@ExecSpace("ServerOnly")
@@ -1495,8 +1539,12 @@ script BossSkillRunner extends AttackComponent
 		end
 		-- 발밑이 아니라 몸통 높이에 뜨게 살짝 올린다.
 		local p = t.WorldPosition
+		-- 레이어를 안 주면 모델 기본 "Default" 로 그려져 캐릭터 뒤에 숨는다.
+		local opt = {}
+		opt["SortingLayer"] = self.HitEffectSortingLayer
+		opt["OrderInLayer"] = self.HitEffectOrderInLayer
 		_EffectService:PlayEffect(ruid, self.Entity,
-			Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+			Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false, opt)
 	end
 
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
