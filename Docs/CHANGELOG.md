@@ -7,6 +7,62 @@
 
 ---
 
+## 2026-09-04 (23차) — 🔴 피아누스가 아예 스폰되지 않고 있었다
+
+22차에서 스킬·박스를 다 맞춰 놓고도 정작 보스가 안 떴다. 사용자가 *"피아누스가 스폰이 안돼"* 로 잡아냈다.
+
+### 원인 — 7개 보스맵 중 피아누스 맵에만 `BossSpawner` 가 없었다
+
+| 맵 | 스포너 |
+|---|---|
+| `Ellinia_Boss_Ephenia` | `BossSpawner_5250007` |
+| `Henesys_Boss_Mushmom` | `BossSpawner_6130101` (+ 일반 몹 스포너 20개) |
+| `KerningCity_Boss_KingSlime` | `BossSpawner_9300003` |
+| `LithHarbor_Boss_Mano` | `BossSpawner_2220000` (+ `BossSpawner_1` = 좀비머쉬맘 2400572) |
+| `Perion_Boss_Stumpy` | `BossSpawner_3220000` |
+| `Sleepywood_Boss_JrBalrog` | `BossSpawner_8130100` |
+| **`Nautilus_Boss_Pianus`** | **🔴 없음** — `MonsterSpawner` 2개뿐 |
+
+맵에 있던 `BOSS_CaveOfPianus_SP001/SP002` 는 `script.MonsterSpawner` 라 `MapMonsters.csv` 를 읽는데,
+그 맵 행이 **0개**다. 즉 두 스포너 모두 아무것도 안 띄우고 있었다.
+
+`BossSpawner` 는 `BossInfo.csv` 를 읽는 별개 스크립트다 — 이름이 `BOSS_` 로 시작한다고 보스 스포너가 아니다.
+
+### 조치
+
+다른 6개 맵의 `BossSpawner` 를 그대로 본떠 `BossSpawner_8510000` 을 추가했다.
+`TransformComponent` + `script.BossSpawner`(`BossId=8510000` · `LogSpawn=true`) 2개 컴포넌트뿐이다.
+위치는 `BossInfo` 의 스폰 좌표(5.68 · −1.33) — 스폰 좌표는 CSV 에서 읽으므로 엔티티 위치는 표시용이다.
+
+> 기존 `BossSpawner` 들은 `elapsed` `respawnAt` `deadSeen` `initialized` `stopped` 같은
+> **런타임 상태가 맵에 박혀 있다.** 새로 만든 것은 넣지 않았고 정상 동작했다 —
+> 스크립트 선언 기본값으로 채워진다. (`Global/DefaultPlayer.model` 이 `Hp=0` 을 굽고 있던 것과 같은 성격)
+
+### 검증
+
+```
+[BossSpawner] spawn boss=8510000 (피아누스 (Pianus)) map=Nautilus_Boss_Pianus x=5.68 y=-1.33 hp=40000
+[BossSkillRunner] 8510000 contact ready size=3.8272x3.2032 dmg=330.0
+[BossSkillRunner] 8510000/S1 클립 실측 0.72초
+[BossSkillRunner] 8510000 cast=S1~S6 shape=box
+```
+
+- 스폰 위치 (5.68 · −1.38) · HP 40000/40000
+- `HitComponent` **3.60 × 3.00** offset (−0.09 · 1.45) — 22차 모델 수정이 런타임에 반영됨
+- 접촉 박스 **3.83 × 3.20** — 22차 계산과 일치
+- S1~S6 이 실제로 시전됨 (전부 `box`)
+
+> 교훈: **CSV 와 모델을 아무리 정확히 맞춰도 맵에 스포너가 없으면 아무 일도 안 일어난다.**
+> 보스 작업을 시작할 때 맵의 `BossSpawner` 존재부터 확인한다. 22차 검증이 카탈로그 로드까지만
+> 보고 "실제로 떴는지" 를 안 봤다.
+
+### 부수 확인
+
+- `LithHarbor_Boss_Mano` 의 `BossSpawner_1` 은 `BossId=2400572`(**좀비머쉬맘**)다.
+  마노 맵에 좀비머쉬맘이 같이 뜬다 — 의도한 테스트 배치인지 확인 필요.
+- 피아누스 맵의 `BOSS_CaveOfPianus_SP001/SP002` 는 아무것도 안 띄우는 빈 스포너다. 정리할지 판단 필요.
+
+---
 ## 2026-09-04 (22차) — 피아누스 확정 (D단계 3/3 · 보스 7종 완료)
 
 ### 🔴 다른 6종과 구조가 근본적으로 다르다
