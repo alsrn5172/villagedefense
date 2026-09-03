@@ -7,6 +7,58 @@
 
 ---
 
+## 2026-09-03 (21차) — Sleepywood 포탈 노선 연결 (18차 확인 대기 해소)
+
+18차에 *"`Sleepywood_Boss_JrBalrog` 에 작동하는 포탈이 없다"* 로 적어 둔 항목을 해결했다.
+포탈 오브젝트는 사용자가 배치했고 CSV 와 실제 연결을 맡았다.
+
+### 연결 구조
+
+```
+여섯갈래길(1층 중앙) <--> Sleepywood 마을(좌측) ... Sleepywood 마을(우측) <--> 주니어 발록 보스맵
+```
+
+| RouteId | 방향 |
+|---|---|
+| `S01A/B` | `Sleepywood_Village_MinimiMain` (우측 x=7.19) ↔ `Sleepywood_Boss_JrBalrog` |
+| `S02A/B` | `Sleepywood_Village_MinimiMain` (좌측 x=−14.25) ↔ `SixPathCrossway` (1층 중앙 x=−6.11) |
+
+`S` 접두는 비어 있었다(기존은 E·H·K·L·N·P). 다른 지역과 같이 **왕복 2행씩** 넣었다.
+`PortalRoutes.userdataset` 은 스키마만 들고 있어 행 추가로는 수정이 필요 없다(헤더 변경 때만).
+
+### 🔴 포탈 이름을 규칙에 맞췄다 — `portal-1` 이 두 맵에서 서로 반대 뜻이었다
+
+`PortalNetwork.mlua:101` 이 `MoveToEntityByPath("/maps/<ToMap>/<ToPortal>")` 로 목적지를 찾는다.
+**이름이 곧 주소다.** 그런데 Maker 가 자동으로 붙인 이름이 이대로 남아 있었다:
+
+| 맵 | 이전 | 이후 |
+|---|---|---|
+| `Sleepywood_Boss_JrBalrog` | `Portal` | `P_To_Sleepywood_Village_MinimiMain` |
+| `Sleepywood_Village_MinimiMain` | `portal-6` | `P_To_Sleepywood_Boss_JrBalrog` |
+| `Sleepywood_Village_MinimiMain` | `portal-1` | `P_To_SixPathCrossway` |
+| `SixPathCrossway` | `portal-1` | `P_To_Sleepywood_Village_MinimiMain` |
+
+`portal-1` 이 마을에서는 "여섯갈래길로", 여섯갈래길에서는 "마을로" 를 뜻해 정반대였다.
+나머지 전 맵이 쓰는 `P_To_<대상맵>` 규칙으로 통일했다.
+
+### 전수 검사
+
+`PortalRoutes.csv` **68행 전부**를 `.map` 실물과 대조했다 — `FromPortal`/`ToPortal` 이
+해당 맵에 실재하는지. **깨진 노선 0.** 런타임에서도 S01A~S02B 4행의 출발·도착 엔티티가
+`isvalid=true` 로 확인됐다.
+
+> 이름 오타는 조용히 실패한다 — 위 화살표를 눌러도 아무 일도 안 일어날 뿐 경고가 없다.
+> 노선을 추가하면 **반드시 전수 대조**한다.
+
+### 확인 대기 — 노선에 안 쓰이는 포탈 23개
+
+맵에는 있는데 `PortalRoutes` 에 없는 포탈이 23개다. 대부분 원본 맵을 임포트할 때 딸려온
+`Portal_2` `Portal_3` 같은 장식이라 문제는 아니다. 다만 아래 둘은 의도 확인이 필요하다:
+
+- `Ellinia_Boss_Ephenia / portal-6` — 사용자가 빨간 포탈 견본으로 놓은 것
+- `LithHarbor_Boss_Mano / Portal` — `Enable=false` 인 잔재
+
+---
 ## 2026-09-03 (20차) — 에피네아 스킬 이름을 실제 이펙트로 확정
 
 `에피네아 1번` ~ `8번` 자리표시자로 남아 있던 이름을 **눈으로 확인한 이펙트** 기준으로 지었다.
