@@ -519,7 +519,7 @@
 | `AccountProfile` | 계정 영구 | 계정 레벨, 해금, 계정 재화, 도감, 업적 | DataStorage / 공식 패키지 코어 통합 |
 | `MatchLobbyState` | 매칭 성립 전 | ticketId, 참가자, 준비 상태, 만료 시각, roomKey | 서버 메모리, 성립·취소 후 폐기 |
 | `MatchSession` | 한 Room의 한 매치 | MatchId, 참가자, 마을 점유 현황, **현재 미니언 페이즈·경과 시간**, 생존자, 발록 선취 여부 | 서버 메모리, 종료 시 폐기 |
-| `MatchPlayerState` | 한 매치 | 매치 레벨, 장비, 재료, 물약, 방어 성공·실패, 파병 횟수, 보스 처치, 몬스터 처치 | 서버 메모리, 종료 시 폐기 |
+| `MatchPlayerState` | 한 매치 | 매치 레벨, `match_stats`, `match_inventory`, `match_equipped`, `match_ap`, `match_sp`, 재료, 물약, 방어 성공·실패, 파병 횟수, 보스 처치, 몬스터 처치 | 서버 메모리, 종료 시 폐기 |
 | `VillageMatchState` | 한 매치 | 마을 성장, 창고, 시설 레벨·HP·파괴 상태, 몬스터 개체·HP, 병과 훈련, **전선 위치·코어 상태** | 서버 메모리, 종료 시 폐기 |
 | `MinionFlowState` | 매치 | 현재 페이즈, HP·공격력 배율, 마을별 전선 위치, 접수된 파병 | 서버 메모리 |
 
@@ -545,13 +545,14 @@
 - NPC는 `.map`에 직접 중복 배치하지 않고 CSV 기반 스포너 하나로 생성한다.
 - `안농/RootDesk/MyDesk/NpcInfo.csv`는 NPC ID·이름·모델 원본이다. (2026-08-27 기준 **68행**)
 - `안농/RootDesk/MyDesk/MapNpcs.csv`는 맵별 NPC 위치의 단일 기준이다. (2026-08-27 기준 **82행**)
-- 신규 `FunctionalNpcCatalog.csv`는 `CatalogNpcId,RoleKey,UiRoute,ActionRoute,OwnershipMode`를 가진 기능 계약의 단일 기준이다.
-- **기존 `MapNpcs.csv` 행은 전부 보존하고**, 기능 NPC 행은 헤더 규칙에 맞춰 추가한다. 행 수는 통합 시점에 다시 실측한다.
+- 신규 `FunctionalNpcCatalog.csv`는 `CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder`를 가진 기능 계약의 단일 기준이다.
+- **기존 `MapNpcs.csv` 행은 전부 보존한다.** 기능 NPC의 기본 위치는 `VillageNpcSector` 앵커 + `SlotOrder`이며, 개별 위치가 필요한 경우에만 선택적 `MapNpcs_Village.csv` 오버라이드를 추가한다.
 - 기존 장식 NPC는 `FunctionalNpcCatalog`에 행이 없으므로 기능 상호작용 대상으로 취급하지 않는다.
 - 기능 NPC 키는 네이티브 숫자 ID를 재사용하지 않고 `VD_` 접두사의 문자열을 쓴다. 예: `VD_WORKSHOP_CRAFT`, `VD_COMMON_DISPATCH`.
 - **BL-009의 `NpcCatalog`/`NpcSpawner`가 이 명세의 NPC 생성 기반이다.** 현재 "표까지만" 지시로 스포너가 미구현 상태이며, Phase 1에서 이 잠금을 해제해야 한다.
 - 역할 10개를 6개 마을에 배치하므로 기능 NPC 런타임 인스턴스 목표는 **60개**다.
-- 맵마다 구역 앵커는 달라도, 한 구역 안의 NPC 순서와 가까운 역할 묶음은 동일하게 유지한다.
+- 마을은 `WORKSHOP`·`LIFE`·`RECORD`·`DEFENSE` 4구역으로 나누고, 맵마다 구역 앵커는 달라도 한 구역 안의 NPC 순서와 가까운 역할 묶음은 동일하게 유지한다.
+- 좌표 해석은 **개별 `MapNpcs_Village` 오버라이드 → `VillageNpcSector` 앵커 계산 → 스폰 건너뜀+경고 로그** 순서다. 공용 NPC 2종은 앵커 대신 개별 오버라이드로 배치한다.
 - `SpawnByModelId`의 parent는 반드시 대상 맵 엔티티다. `nil`을 넘기지 않는다.
 
 ### 4.12 기록 구역
@@ -600,6 +601,28 @@
 
 > ⚠️ **UI 클릭 함정**: `.ui` 클릭 버튼을 UIGroup 루트 직속에 두면 실제 클릭이 먹지 않는다. 반드시 컨테이너에 중첩한다.
 
+- 모든 신규 창은 1920×1080 `DefaultType(1)` 그룹, `GroupOrder=2`, `DefaultShow=false`의 공통 셸을 쓴다. `BattleHUD=0 < StatusHUD=1 < 신규 창=2 < PopupGroup=3 < ToastGroup=6` 순서를 유지한다.
+- 창 루트에는 입력을 막는 `Dimmer`를 두고, 닫기·탭·실행 버튼은 반드시 `Window` 아래에 중첩한다. 한 번에 하나의 NPC/캐릭터 창만 열 수 있다.
+- `NpcOpenedEvent`의 `UiGroupName`/`UiRoute`를 받는 ClientOnly 라우터 하나가 열기·라우트 전환·다른 창 닫기를 소유한다. NPC가 늘어도 라우터 분기를 추가하지 않는다.
+- 서버 왕복 직전 실행 버튼을 끄고, 응답 이벤트가 올 때만 UI를 갱신한다. 클라이언트 낙관적 성공 처리와 `any` payload는 금지한다.
+- 장비·보석 아이콘은 `ItemInfo.IconRUID`/`GemInfo.IconRUID`로 런타임 주입한다. 빈 RUID는 오류 없이 안 보이므로 PR에 미주입 노드를 적는다.
+
+### 4.14 플레이어 스탯과 전투
+
+- 최종 스탯은 서버 `StatService` 한 곳에서만 `BaseStat + EquipStat + EnhanceStat + BuffStat` 순으로 합산한다. `BaseStat`은 직업 기본치와 레벨업 AP 자동 분배 누적이며, Buff는 스킬 도메인 예약값이다.
+- 스탯 13종은 STR·DEX·INT·LUK·공격력·마력·방어력·이동속도·점프력·명중·회피·최대 HP·최대 MP다. 보석 12종은 방어력을 제외한 능력치와 1:1이고, 방어력은 방어구 고유값과 강화 `AddDefense`로 올린다.
+- 물리 데미지는 `(주스탯 × 4 + 부스탯) × 총공격력 ÷ 100`을 기준으로 무기 숙련도 범위 안에서 무작위로 정한다. 명중 실패는 0, 방어 감산은 `max(1, Raw × (1 - Defense / (Defense + DefenseK)))`이며 난이도 배수는 서버 한 지점에서만 적용한다.
+- `PlayerAttack.CalcDamage`의 고정값과 항상 참인 크리티컬 판정은 스탯·확률 기반 계산으로 교체한다. 스킬 계수 해석과 `JobInfo`의 주/부스탯·AP 비율은 B와 확정한 계약만 사용한다.
+- AP는 레벨업 때 직업 비율로 자동 분배한다. SP는 `match_sp` 원장을 A가 보유하고 B가 `SpSpentEvent`로 소비를 통보한다.
+- 이동속도와 점프력은 플레이어 컴포넌트가 현재 맵 물리 규칙에 맞춰 반영한다. MapleTile의 체감 계수는 구현 전 실제 플랫폼 규칙으로 확인하며 숫자를 추측해 넣지 않는다.
+
+### 4.15 아이템 · 장비 · 강화
+
+- 장비 슬롯은 `WEAPON`·`HAT`·`TOP`·`BOTTOM`·`SHOES`·`GLOVES` 여섯 개다. `ItemInstance`는 `InstanceId`·`ItemId`·`EnhanceLevel`·`Durability`·`AppliedGemsCsv`를 가지며 매치 종료 시 폐기된다.
+- `ItemInfo`는 장비 기본 스탯·요구 조건·내구도·숙련도·아이콘의 단일 기준이다. 장착/해제는 서버에서 슬롯·직업·레벨을 검증하고 `EquipChangedEvent` 뒤에 스탯을 재계산한다.
+- M1 강화는 1~3단계, 성공률 100%, 파괴율 0으로 시작한다. 보석 선택이 오르는 능력치를 정하며, 강화 성공은 `ItemEnhancedEvent` → `GemSpentEvent` → `StatRecalculatedEvent` 순서로 화면과 상태를 갱신한다.
+- 인벤토리·장비·강화 목록은 RPC 경계에서 table을 보내지 않고 문자열로 직렬화한다. 강화 미리보기는 클라이언트 예상값일 뿐, 최종값은 서버 응답이 정한다.
+
 ---
 
 ## 5. 시스템 ↔ MSW 구현 매핑
@@ -615,12 +638,14 @@
 | 매치 플레이어 상태 | `MatchPlayerStateService` | `@Logic`, ServerOnly, 매치 수명 | MatchId별 테이블, 탈락·EndMatch에서 폐기 |
 | 마을 상태 | `VillageStateService` | `@Logic`, ServerOnly, 매치 수명 | 시설·창고·몬스터·훈련·전선·코어의 권위 상태 |
 | NPC 목록 | `NpcInfo` + `FunctionalNpcCatalog` + CSV | 데이터 주도 | 외형 원본과 기능 계약 분리, `VD_` 키 사용 |
-| NPC 생성 | `NpcSpawnerComponent` | 마을 맵 `@Component` | OnBeginPlay에 MapNpcs 조회, 현재 맵 parent로 Spawn (BL-009) |
+| NPC 생성 | `NpcSpawnerComponent` | 마을 맵 `@Component` | OnBeginPlay에 카탈로그·섹터 앵커·선택적 좌표 오버라이드를 조회, 현재 맵 parent로 Spawn (BL-009). `staticnpc` 모델 유효성 선검증 |
 | NPC 상호작용 | `VillageNpcInteractorComponent` | NPC 엔티티 `@Component` | 서버 생성 `NpcInstanceKey`로 `TryOpenNpc` 요청 |
-| **매치 레벨·경험치** | `MatchPlayerStateService` + `MatchLevelCurve` | ServerOnly | 10레벨 전직 시 코어 연결 자격, 21레벨 시 마을 침범 자격 부여 |
+| **매치 레벨·경험치** | `MatchPlayerStateService` + `LevelTable` | ServerOnly | 10레벨 전직 시 코어 연결 자격, 21레벨 시 마을 침범 자격 부여 |
+| **플레이어 스탯·데미지** | `StatService` + `StatApplyComponent` | ServerOnly 합산 + 플레이어 `@Component` 반영 | Base·장비·강화·버프를 한 곳에서 합산하고 공격·이동·점프에 반영 |
+| **인벤토리·장비·강화** | `InventoryService` + `EquipService` + `EnhanceService` | ServerOnly | 6슬롯·내구도·보석 소비·강화 결과를 검증하고 이벤트로 UI 갱신 |
 | **마을 코어** | `VillageCoreComponent` | 마을 맵 엔티티 `@Component` | 선착순 연결 검증, 노출 상태, HP, 파괴 시 `VillageFallenEvent` |
 | **포탑·억제기** | `LaneTowerComponent` | 레인 맵 `@Component` | 1차/2차/억제기 공통. 파괴 시 1회성 이벤트 발행 |
-| **보석 드롭·소모** | `GemInfo` + `GemDropTable` + 강화 NPC | 데이터 주도 | 12종. 소모처는 로드맵 미정 #6 확정 후 배선 |
+| **보석 드롭·소모** | `GemInfo` + `GemDropTable` + 강화 NPC | 데이터 주도 | 12종. 장비 강화에만 쓰며 강화 결과는 서버가 확정 |
 | 마을 맵 | 기존 6개 `.map` | `MapleTile(0)` | 정적 기능 건물 추가 없음. **코어 앵커 + 하단 미니언 길** 추가 |
 | 레인 사냥터 | 기존 12개 `.map` (마을당 2개) | `MapleTile(0)` | **하단 1자 길 + 밧줄 + 포탑 슬롯** 추가. 발판 저작은 Maker UI 작업 |
 | 미니언·수비 몬스터 | 몬스터 모델 + 전투 컴포넌트 | 엔티티 수명 | `RigidbodyComponent`, 팀(미니언/수비) 판정, 건물 표적 계층 |
@@ -628,7 +653,7 @@
 | 레인 끝 트리거 | Trigger 엔티티 + `LaneEndTriggerComponent` | 각 레인 맵 | 전선을 다음 맵으로 넘긴다. 1회성 |
 | 공유 사냥터 스폰 | `MonsterCatalog` + `MonsterSpawner` (안농 기존) | 맵 `@Component` | CSV 단일 진상. 채널 분리 없음 |
 | 보스 피해 원장 | `BossDamageLedgerComponent` | 보스 엔티티 `@Component` | userId별 누적 피해, 처치 시 최다 피해자에게 보상 |
-| 레인 HUD·NPC 팝업 | `.ui` + ClientOnly UI 컴포넌트 | 클라이언트 | UIBuilder 사용, 서버 DTO만 표시 |
+| 레인 HUD·NPC·캐릭터 팝업 | `.ui` + ClientOnly UI 컴포넌트 | 클라이언트 | UIBuilder 사용, 서버 DTO만 표시. 한 번에 하나의 창과 S1→S2→S3 UI 릴레이 |
 | 영구 저장 | `_DataStorageService` | ServerOnly | AccountProfile만 저장 |
 
 `StateChaseMonster:SetTarget`은 `안농`에만 있고, 통합 대상의 기존 `FactionAI`/`FactionLogic`은 `TeamA/TeamB`와 고정 좌우 전진을 전제로 한다. **레인 전투는 정확히 "한 방향으로 전진하는 침공군 vs 고정 수비"** 구조이므로 기존 `FactionAI`가 오히려 잘 맞는다. Phase 0에서 CoreVersion 호환성을 확인한 뒤, `TeamA/TeamB`를 `MINION/DEFENDER` 팀 계약 + 건물 표적 계층으로 일반화한다.
@@ -688,9 +713,18 @@ EliteSpawn
 
 GemStack
   GemId              (DIAMOND / SAPPHIRE / AMETHYST / AQUAMARINE / GARNET / OPAL
-                      / TOPAZ / EMERALD / STR_CRYSTAL / DEX_CRYSTAL
-                      / LUK_CRYSTAL / INT_CRYSTAL)
+                       / TOPAZ / EMERALD / STR_CRYSTAL / DEX_CRYSTAL
+                       / LUK_CRYSTAL / INT_CRYSTAL)
   Count
+
+PlayerStatState
+  BaseStat / EquipStat / EnhanceStat / BuffStat / FinalStat
+  STR / DEX / INT / LUK / ATTACK / MAGIC / DEFENSE
+  SPEED / JUMP / ACCURACY / AVOID / MAX_HP / MAX_MP
+
+ItemInstance
+  InstanceId / ItemId / EnhanceLevel / Durability / AppliedGemsCsv
+  EquippedSlot       (WEAPON / HAT / TOP / BOTTOM / SHOES / GLOVES 또는 nil)
 
 EliteMaterialStack                                      -- 보석과 별개. 소모처 미정 #4
   MaterialId / Count
@@ -761,6 +795,13 @@ DispatchService.GetDispatchCap(matchId, targetVillageId)
 VillageNpcService.TryOpenNpc(userId, npcInstanceKey)
 VillageNpcService.ExecuteAction(userId, npcInstanceKey, actionId, payload)
 
+StatService.Recalculate(userId, source)                  -- Base + Equip + Enhance + Buff의 유일한 합산 지점
+StatService.CalcPlayerDamage(userId, targetState)        -- 숙련도 범위·명중·방어 감산
+InventoryService.GetSnapshot(userId)                     -- 문자열 직렬화 DTO
+EquipService.RequestEquip(userId, instanceId)
+EquipService.RequestUnequip(userId, equipSlot)
+EnhanceService.RequestEnhance(userId, instanceId, gemIdsCsv)
+
 BossService.RegisterDamage(bossEntityId, userId, amount)   -- 서버 내부
 BossService.ResolveKill(bossEntityId)                      -- 최다 피해자 판정
 BossService.ClaimFirstKill(bossId, userId)                 -- 마노 선취 보상 1회
@@ -790,13 +831,17 @@ BossService.ClaimFirstKill(bossId, userId)                 -- 마노 선취 보�
 | **`DifficultyConfig`** | **`DifficultyLevel`** | **매치 전체 난이도 1~5. 몬스터·미니언·보상·비용 배수를 이 표에만 둔다** |
 | **`EliteSpawnTable`** | **`MapName + BaseMonsterId`** | **일반 몹 자리에 엘리트가 대신 뜰 확률, 엘리트 종, 전용 재료 드롭** |
 | **`EliteMaterialInfo`** | **`MaterialId`** | **엘리트 전용 재료 재화 정의.** ⚠️ 종수·소모처는 로드맵 미정 #4 |
+| **`ItemInfo`** | **`ItemId`** | **장비·소비·재료·보석의 요구 조건, 기본 스탯, 내구도, 숙련도, 런타임 아이콘** |
+| **`EnhanceTable`** | **`EnhanceLevel`** | **강화 비용·보석 수·성공/파괴/하락 확률·방어력 보너스** |
 | **`GemInfo`** | **`GemId`** | **보석 12종 — 대응 능력치, 단계별 상승치, 소모 규칙** |
-| **`GemDropTable`** | **`MonsterId` 또는 `BossId`** | **어떤 몹이 어떤 보석을 얼마나 떨구는가** |
+| **`GemDropTable`** | **`SourceKind + SourceId + GemId`** | **몬스터·엘리트·보스가 어떤 보석을 얼마나 떨구는가** |
 | **`BossReward`** | **`BossId`** | **최다피해 처치 보상 + 선취 1인 보상**(마노 = 10렙제 체력 갑옷 + 메소) |
 | **`BalrogChallenge`** | — | **도전 메소 비용, 개인 채널 규칙, 선취 승리 판정** |
 | `NpcInfo` | `NpcId` | 표시 이름과 모델 원본 |
-| `FunctionalNpcCatalog` | `VD_ CatalogNpcId` | 역할, UI 그룹, UI route, 액션 route, 소유권 모드 |
-| `MapNpcs` | `MapName + NpcId` | NPC 월드 좌표와 비고 |
+| `FunctionalNpcCatalog` | `VD_ CatalogNpcId` | 역할, UI 그룹·route, 액션 route, 소유권, 섹터, 슬롯 순서 |
+| `VillageNpcSector` | `VillageId + SectorId` | 마을 4섹터의 앵커와 슬롯 오프셋. 6마을 × 4행 |
+| `MapNpcs` | `MapName + NpcId` | 기존 장식 NPC 월드 좌표와 비고 |
+| `MapNpcs_Village` *(선택)* | `MapName + NpcId` | 섹터 계산을 덮는 기능 NPC 개별 좌표 |
 | `MatchRouteConfig` | `MatchRouteId` | 마을·SixPathCrossway·사냥터·보스맵 allowlist와 이동 계약 |
 | **`DispatchRule`** | **`Phase`** | **파병 비용, 마을당 동시 상한, 취소 기한** |
 | `CraftRecipe` | `RecipeId` | 투입 재료, 비용, 결과 아이템 |
@@ -834,6 +879,9 @@ BossService.ClaimFirstKill(bossId, userId)                 -- 마노 선취 보�
 - **`LaneConfig`는 여섯 마을 전부에 대해 레인 3맵의 하단 길 x범위와 4개 슬롯 좌표를 가져야 한다.**
 - **`DifficultyConfig`는 1~5 다섯 행이 모두 있어야 하고, 배수 적용은 서버 한 곳에서만 한다** (각자 곱하면 이중 적용·누락이 생긴다).
 - 상시 전투 구조이므로 "전투 결과 스냅샷" 개념은 없다. 대신 **포탑 파괴와 전선 이동은 각각 1회성 이벤트**이며 같은 것을 두 번 반영하지 않는다.
+- `FunctionalNpcCatalog`의 마을 역할은 각 `SectorId`와 양의 `SlotOrder`를 가져야 하며, 같은 마을·섹터에서 계산된 좌표가 겹치면 시작 시 경고한다. 공용 역할은 명시적 개별 좌표 없이는 스폰하지 않는다.
+- `ItemInfo`의 장비 슬롯은 `EQUIP` 행에서만 유효하고, `EnhanceTable`의 강화 단계는 중복되지 않아야 한다. 인벤토리·장비 목록 DTO는 ExecSpace 경계에서 문자열이어야 한다.
+- `GemInfo.StatId`는 `StatId` 13종 중 하나여야 하며, `GemDropTable`의 `SourceKind`·`SourceId`는 실제 몬스터·엘리트·보스를 가리켜야 한다.
 
 ---
 
@@ -865,13 +913,15 @@ BossService.ClaimFirstKill(bossId, userId)                 -- 마노 선취 보�
 
 - ⬜ `VillageConfig` 6개(마을 + 레인 2맵 + 후방 지선 + 보스맵)와 명시적 allowlist 작성
 - ⬜ `MatchLobbyGateway`의 참가·취소·준비 확인과 2~6인 가변 시작 계약 구현
-- ⬜ **매치 레벨·경험치와 `MatchLevelCurve` 구현. 전원 1레벨 시작, 10레벨 전직·21레벨 게이트 검증**
+- ⬜ **매치 레벨·경험치와 기존 `LevelTable` 구현. 전원 1레벨 시작, 10레벨 전직·21레벨 게이트 검증**
+- ⬜ **플레이어 스탯·데미지 골격 구현** — 직업 기본치 + AP 자동 분배, `PlayerAttack`의 고정 피해·상시 크리티컬 제거, 장비·강화 기여분을 제외해도 성장 곡선이 검증 가능해야 한다
 - ⬜ **한 마을의 레인 3맵에 하단 1자 길 + 밧줄 지형 작업** (Maker UI — 발판 저작은 빌더 밖)
 - ⬜ **`VillageCoreComponent` 구현 — 10레벨 전직 자격 검사, 선착순 연결, 중복 점유 거절**
 - ⬜ **코어 연결 시 포탑 3종 + 기능 NPC 10종이 열리는 잠금 해제 흐름 구현**
 - ⬜ `MatchSessionLogic`의 소유권 조회·패배·종료 계약 구현 (주인 없는 마을은 미니언·파병 대상 제외)
 - ⬜ BL-009 잠금 해제: `NpcCatalog`/`NpcSpawner` 구현
 - ⬜ `NpcRole` 10종 + 공용 역할 2종의 `FunctionalNpcCatalog`/스포너 골격 구현
+- ⬜ `VillageNpcSector` 4구역 앵커와 선택적 개별 좌표 오버라이드로 기능 NPC를 배치하고, 좌표·모델 미설정은 경고 로그로 드러낸다
 - ⬜ 서버 생성 `NpcInstanceKey`와 물리 NPC 인스턴스 기반 권한 검증 구현
 - ⬜ **`MinionFlowService` 구현: 4페이즈 시계(시간 기준), HP·공격력 배율 적용**
 - ⬜ **`LaneController` 구현: 미니언 투입, 하단 길 전진, 레인 끝 트리거로 전선 이동**
@@ -888,12 +938,13 @@ BossService.ClaimFirstKill(bossId, userId)                 -- 마노 선취 보�
 
 목표: 한 마을에서 10개 NPC의 실제 기능이 모두 연결되고 매치 경제가 한 바퀴 돈다.
 
-- ⬜ `MatchPlayerState`, `VillageMatchState`, 메소·경험치·보석·재료 원장 구현
+- ⬜ `MatchPlayerState`, `VillageMatchState`, 메소·경험치·보석·재료 원장과 `match_stats`·`match_inventory`·`match_equipped`·`match_ap`·`match_sp` 구현
 - ⬜ `m1-balance-01` 최소 콘텐츠 행과 모든 가격·시간·성장 포인트 작성
-- ⬜ **`MatchLevelCurve` 작성 — 페이즈 기대 시각에 10/16/21레벨이 실제로 나오는지 실측**
+- ⬜ **`LevelTable` 값 작성 — 페이즈 기대 시각에 10/16/21레벨이 실제로 나오는지 실측**
 - ⬜ **`MinionPhaseConfig`/`MinionComposition` 4페이즈 데이터 작성. 총 20~25분에 들어가는지 검증**
 - ⬜ **엘리트 몬스터 확률 스폰 구현 + 전용 재료 재화 드롭** (도감 기존 변종 5종 활용)
-- ⬜ **보석 12종 `GemInfo`/`GemDropTable` 작성과 소모처 배선** (소모처는 로드맵 미정 #6 확정 후)
+- ⬜ **초기 장비 6종·`ItemInfo`·인벤토리·6슬롯 장착과 `CharacterGroup` 구현** — 장착/해제 전후 스탯 합산과 아이콘 런타임 주입 검증
+- ⬜ **보석 12종 `GemInfo`/`GemDropTable`·`EnhanceTable` 작성과 강화 소모처 배선** — M1은 1~3단계·성공률 100%·파괴율 0으로 검증
 - ⬜ **마노 선취 보상(10렙제 체력 갑옷 + 메소) 구현 — 선착순 1회 검증**
 - ⬜ 공유 사냥터 몬스터·미니언 처치 보상을 원장에 연결
 - ⬜ **보스 누적 피해 원장과 최다 피해자 처치 판정 구현**
@@ -1016,7 +1067,7 @@ M1 구현은 위 항목을 추측해 선행하지 않는다. 필요한 입력·�
 | 🔴 **개인 채널(발록 솔플) 구현 방식 미검증** | 승리 조건이 통째로 막힌다 | Phase 3 착수 전에 MSW에서 인스턴스 격리가 가능한지 먼저 조사한다 |
 | **6개 레인 동시 진행 부하** | 미니언이 6곳에서 상시 걸어다니면 서버 프레임 저하 | Phase 5에서 실측. 필요 시 미니언 투입 간격·동시 개체 수 상한으로 조절 |
 | **`@Logic`에 `OnMapEnter`가 오지 않음** | 레인 맵 진입·정리 로직이 조용히 죽은 코드가 됨 | 맵 런타임은 반드시 레인 맵 엔티티 `@Component`로. `MinionFlowService`는 시계만 소유 |
-| **20~25분에 다 안 들어감** | 1페이즈 개척 + 3페이즈를 욱여넣다 보면 각 구간이 너무 짧아 결정할 시간이 없어짐 | Phase 2에서 `MatchLevelCurve`와 `MinionPhaseConfig`를 함께 실측. 안 맞으면 전직 레벨선을 낮춘다 |
+| **20~25분에 다 안 들어감** | 1페이즈 개척 + 3페이즈를 욱여넣다 보면 각 구간이 너무 짧아 결정할 시간이 없어짐 | Phase 2에서 `LevelTable`과 `MinionPhaseConfig`를 함께 실측. 안 맞으면 전직 레벨선을 낮춘다 |
 | **1차포탑이 안 부서짐** | 전선이 안 밀려 판이 끝나지 않는다 | 3페이즈 강도를 "1차포탑이 거의 반드시 부서지는" 수준으로 잡는 것이 기획 의도. Phase 3 실측으로 확인 |
 | **억제기 역설이 지배 전략이 됨** | 전원이 억제기를 일부러 버리면 방어 설계가 무의미해진다 | 강화 배율을 경험치 상승분보다 확실히 크게. Phase 2 밸런스에서 감시 |
 | **마을 선점 레이스가 싱겁다** | 마을 6개 ≥ 인원 6명이라 전원이 그냥 하나씩 가져가면 경쟁이 없다 | 레인 난이도·사냥터 효율 편차를 `LaneConfig`로 의도적으로 두어 좋은 마을이 먼저 팔리게 한다 |
@@ -1027,6 +1078,7 @@ M1 구현은 위 항목을 추측해 선행하지 않는다. 필요한 입력·�
 
 | 날짜 | 변경 | 이유 |
 |---|---|---|
+| **2026-09-03** | **[추가] 플레이어 스탯·장비·강화·기능 NPC 섹터·UI 계약.** 13스탯·6장비 슬롯·강화 3표·자동 AP/직접 SP·데미지 공식, 4섹터 앵커와 선택적 개별 NPC 좌표, 공통 UI 셸·라우터·릴레이를 명시 | 고정 피해·상시 크리티컬로는 1→10레벨 성장과 장비 파밍이 성립하지 않고, 기능 NPC·UI도 데이터/소유권 계약 없이는 구현을 시작할 수 없었다 |
 | **2026-08-29** | **[정정] §5.1 공개 타입 · §5.2 서비스 계약 · §6.1 데이터 표 · §6.3 정합성 규칙을 §4 기준으로 동기화** | 8-28 개정이 §4 중심으로 이뤄지면서 뒤쪽 명세가 못 따라왔다. 폐기된 `DefenseMapName`·`DEFENSE_TURRET/BUNKER/ARTILLERY`·`GreatTurretState`·`WaveState` 잔존, `MatchPhase` 에 `PHASE1` 중복·2.5 누락, **`MinionPhaseConfig`↔`WavePhaseConfig` 및 `MinionComposition`↔`WaveComposition` 신구 이름 동시 존재**, `WaveService.*` 잔존, `BossService` 중복 나열. 이 상태로 계약서를 쓰면 어느 쪽을 따를지 알 수 없다 |
 | **2026-08-29** | **[정정] 마을 맵 이름 6개를 실제 루트 엔티티 이름으로** (`MinimiHenesys` → `Henesys_Village_MinimiMain` 등) | §3과 §4.1이 같은 문서 안에서 서로 다른 이름을 쓰고 있었다. **`MapName` 은 맵 루트 엔티티 이름과 글자 단위로 일치해야 스포너가 돈다** — 안 맞으면 에러 없이 조용히 안 돈다(같은 원인으로 이미 32건이 죽어 있다) |
 | **2026-08-29** | **[정정] CoreVersion 서술** — "밍키타 1.21.0.0"은 틀린 숫자. 실측은 `WorldConfig.config` 밍키타 `26.5.0.0` / 안농 `26.7.0.0`, `Environment/config` 는 양쪽 `26.7.0.0` | 승격 대상이 **월드 데이터 쪽**임을 명확히 하기 위해 |
