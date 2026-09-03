@@ -105,6 +105,11 @@ script BossSkillRunner extends AttackComponent
 	@HideFromInspector
 	property any clipLen2 = nil
 
+	-- 시전 클립의 "전체" 길이. clipLen 은 CastHitFrame 까지만 재므로 꼬리를 모른다.
+	-- RecoverTime -1(자동)이 남은 꼬리를 계산할 때 쓴다.
+	@HideFromInspector
+	property any clipFull = nil
+
 
 	-- 2단 시전 잔여 시간. 점프 공격처럼 "준비 -> 도약 -> 착지 판정" 인 기술에 쓴다.
 	-- CastRUID2 가 비어 있으면 이 구간을 건너뛴다.
@@ -163,6 +168,7 @@ script BossSkillRunner extends AttackComponent
 		self.cooldowns = {}
 		self.clipLen = {}
 		self.clipLen2 = {}
+		self.clipFull = {}
 		self.buffed = {}
 
 		local sprite = self.Entity.SpriteRendererComponent
@@ -210,6 +216,7 @@ script BossSkillRunner extends AttackComponent
 				-- 🔴 1단과 2단을 합산하면 안 된다. castLeft(1단) 이 끝난 뒤 castLeft2(2단) 가
 				--    따로 도는 구조라, 합쳐 넣으면 2단 길이가 두 번 들어간다.
 				local seconds = self:ClipSecondsUpTo(sk.castRuid, sk.castHitFrame)
+				self.clipFull[sk.skillId] = self:ClipSeconds(sk.castRuid)
 				if sk.castRuid2 ~= "" then
 					self.clipLen2[sk.skillId] = self:ClipSeconds(sk.castRuid2)
 				end
@@ -278,6 +285,37 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method number EffectiveRecoverTime(any skill)
+		-- 🔴 RecoverTime 이 음수면 "클립이 끝까지 돌 만큼" 붙잡는다.
+		--    이걸 손으로 넣으면 클립보다 짧게 잡히고, 그러면 RestoreSprite 가
+		--    모션 도중에 끼어들어 애니메이션이 중간에 끊긴다.
+		--    (에피네아 S3: 클립 3.27초인데 0.36+0.7=1.06초만 붙잡아 32% 만 보였다)
+		--    시전 구간이 이미 먹은 시간을 빼고 남은 꼬리만 돌려준다.
+		if skill.recoverTime >= 0 then
+			return skill.recoverTime
+		end
+		local full = self.clipFull[skill.skillId]
+		if full == nil or full <= 0 then
+			return 0
+		end
+		local rate = skill.castPlayRate
+		if rate <= 0 then
+			rate = 1
+		end
+		local total = full / rate
+		if skill.castRuid2 ~= "" then
+			local tail = self.clipLen2[skill.skillId]
+			if tail ~= nil and tail > 0 then
+				total = total + tail / rate
+			end
+		end
+		local left = total - self:EffectiveCastDelay(skill) - self:EffectiveCastDelay2(skill)
+		if left <= 0 then
+			return 0
+		end
+		return left
+	end
+
 	method number EffectiveCastDelay2(any skill)
 		-- 2단도 1단과 같은 규칙 - CastDelay2 가 음수면 2단 클립을 실측해서 쓴다.
 		if skill.castRuid2 == "" then
@@ -587,7 +625,10 @@ script BossSkillRunner extends AttackComponent
 		if skill.reach >= 0 then
 			return skill.reach
 		end
-		if skill.shapeType == "summon" or skill.shapeType == "buff" then
+		-- 텔레포트도 거리와 무관하다. 플레이어가 멀리 유인했을 때 둥지로 돌아가는 게 목적이라
+		-- 오히려 멀수록 써야 한다. 몸통 크기(1.95)로 사거리를 잡으면 붙어 있을 때만 쓴다.
+		if skill.shapeType == "summon" or skill.shapeType == "buff"
+			or skill.shapeType == "teleport" then
 			return 99998
 		end
 		-- 🔴 페이크는 흉내내는 진짜 스킬과 같은 거리에서 나와야 속는다.
@@ -669,7 +710,8 @@ script BossSkillRunner extends AttackComponent
 
 		-- 시전하는 동안 제자리에 선다. 걸어다니면서 스킬을 쓰면 모션이 겉돈다.
 		-- 쿨다운 중이거나 사거리 밖이면 여기까지 안 오므로 그때는 계속 추격한다.
-		self:FreezeMovement(self:EffectiveCastDelay(skill) + self:EffectiveCastDelay2(skill) + skill.recoverTime)
+		self:FreezeMovement(self:EffectiveCastDelay(skill) + self:EffectiveCastDelay2(skill)
+			+ self:EffectiveRecoverTime(skill))
 
 		-- 시전 모션 — SpriteRUID 직접 대입(Pattern A).
 		-- ChangeState("ATTACK") 은 ATTACK 이 자동 등록되지 않아 LEA-3005 가 난다.
@@ -747,6 +789,33 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method void DoTeleport(any skill)
+		-- 둥지 중앙(= BossInfo 의 스폰 좌표)으로 순간이동한다.
+		-- 🔴 판정을 내지 않는다. 에피네아 S7 은 공격이 아니라 이동기다 -
+		--    S1~S6 을 전부 끄고 확인했더니 폭이 stand(1.87)와 같은 1.95 뿐이었다.
+		-- 스폰 좌표는 보스가 실제로 태어난 자리라 지형이 안전한 것이 보장된다.
+		if _BossCatalog == nil then
+			return
+		end
+		local info = _BossCatalog:GetInfo(self.BossId)
+		if info == nil or info.hasSpawnPos == false then
+			log_warning("[BossSkillRunner] teleport: 스폰 좌표 없음 " .. self.BossId)
+			return
+		end
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		local from = transform.WorldPosition
+		transform.WorldPosition = Vector3(info.spawnX, info.spawnY, from.z)
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " teleport=" .. skill.skillId
+				.. " (" .. tostring(from.x) .. "," .. tostring(from.y) .. ")"
+				.. " -> (" .. tostring(info.spawnX) .. "," .. tostring(info.spawnY) .. ")")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
 	method void BeginCastPhase2()
 		-- 준비 동작이 끝난 시점. 2단 그림이 있으면 그걸로 바꾸고 그 시간만큼 더 끈다.
 		-- 킹슬라임: attack1(웅크림) -> jump(눈 부릅뜨고 도약) -> 착지에서 판정.
@@ -760,6 +829,13 @@ script BossSkillRunner extends AttackComponent
 		if delay2 <= 0 then
 			self:FireSkill()
 			return
+		end
+
+		-- 🔴 텔레포트는 두 클립 "사이" 에서 옮긴다.
+		--    1단(모으기)에서 사라지고 2단(나타나기)에서 새 자리에 뜨는 그림이 된다.
+		--    끝에서 옮기면 두 클립을 옛 자리에서 다 돌고 마지막에 툭 순간이동한다.
+		if skill.shapeType == "teleport" then
+			self:DoTeleport(skill)
 		end
 
 		local sprite = self.Entity.SpriteRendererComponent
@@ -795,6 +871,12 @@ script BossSkillRunner extends AttackComponent
 			if self.LogSkill then
 				log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId .. " shape=fake")
 			end
+		elseif skill.shapeType == "teleport" then
+			-- 판정 없음. 2단 시전이 있으면 이미 BeginCastPhase2 에서 옮겼다.
+			-- 2단이 없는 설정이면 여기서 옮긴다.
+			if skill.castRuid2 == "" then
+				self:DoTeleport(skill)
+			end
 		elseif skill.shapeType == "summon" then
 			self:FireSummon(skill)
 		elseif skill.shapeType == "buff" then
@@ -809,8 +891,9 @@ script BossSkillRunner extends AttackComponent
 
 		-- 🔴 여기서 바로 복원하면 판정 순간에 모션이 끊겨 idle 로 튄다.
 		--    RecoverTime 만큼 시전 자세를 붙잡았다가 되돌린다.
-		if skill.recoverTime > 0 then
-			self.recoverLeft = skill.recoverTime
+		local recover = self:EffectiveRecoverTime(skill)
+		if recover > 0 then
+			self.recoverLeft = recover
 		else
 			self:RestoreSprite()
 		end
