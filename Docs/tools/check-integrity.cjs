@@ -102,6 +102,14 @@ const CANONICAL = {
     "MaterialId,MaterialMin,MaterialMax,Exp,Meso,Enabled,#Note",
   EliteSpawnTable: "MapName,BaseMonsterId,EliteId,Chance,Enabled,#Note",
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
+
+  // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
+  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note",
+  EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
+  GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
+  GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",
+  VillageNpcSector: "VillageId,SectorId,AnchorX,AnchorY,SlotDX,SlotDY,SlotPerRow,FlipX,Enabled,#Note",
+  FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -180,6 +188,12 @@ const PK = {
   EliteMonsterInfo: ["EliteId"],
   EliteSpawnTable: ["MapName", "BaseMonsterId"],
   EliteMaterialInfo: ["MaterialId"],
+  ItemInfo: ["ItemId"],
+  EnhanceTable: ["EnhanceLevel"],
+  GemInfo: ["GemId"],
+  GemDropTable: ["SourceKind", "SourceId", "GemId"],
+  VillageNpcSector: ["VillageId", "SectorId"],
+  FunctionalNpcCatalog: ["CatalogNpcId"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);
