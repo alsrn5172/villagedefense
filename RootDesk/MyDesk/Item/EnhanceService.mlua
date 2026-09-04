@@ -1,0 +1,121 @@
+@Logic
+script EnhanceService extends Logic
+
+	-- 장비 강화 (서버). 계획서 §2-3 · §5-3. 보석 = 인벤토리 MATERIAL(GEM_{GemId}) 스택, 비용 = 메소 카운터.
+	-- 성공: 인스턴스 enh+1 · 보석 기록 → 보석·메소 차감 → ItemEnhancedEvent → 장착 중이면 ENHANCE 레이어 재계산 → 클라 갱신.
+	-- ⚠ 난이도·직업(연성) 배율 적용점(Economy/CostResolver · B 의 GetJobCostMul)은 아직 없다 — MesoCost 를 그대로 쓴다. 생기면 여기 한 곳만 바꾼다.
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 상태 없음.
+		log("[Item] EnhanceService ready (server)")
+	end
+
+	@ExecSpace("Server")
+	method void RequestEnhance(string instanceId, string gemIdsCsv)
+		-- 클라 요청. gemIdsCsv = "DIAMOND+DIAMOND". 검증 실패는 Deny 로 돌려보낸다(아무것도 안 바꿈).
+		local userId = senderUserId
+		local it = _InventoryService:Find(userId, instanceId)
+		if it == nil then
+			self:Deny(userId, instanceId, "장비를 찾을 수 없습니다")
+			return
+		end
+		local def = _ItemCatalog:Get(it.itemId)
+		if def == nil or def.type ~= "EQUIP" then
+			self:Deny(userId, instanceId, "장비만 강화할 수 있습니다")
+			return
+		end
+		local cur = it.enh or 0
+		if cur >= def.maxEnhance then
+			self:Deny(userId, instanceId, "최대 강화 단계입니다")
+			return
+		end
+		local row = _ItemCatalog:GetEnhanceRow(cur + 1)
+		if row == nil then
+			self:Deny(userId, instanceId, "강화표에 다음 단계가 없습니다")
+			return
+		end
+
+		local gems = {}
+		if gemIdsCsv ~= nil and gemIdsCsv ~= "" then
+			for g in string.gmatch(gemIdsCsv, "[^+]+") do
+				table.insert(gems, g)
+			end
+		end
+		if #gems ~= row.gemCount then
+			self:Deny(userId, instanceId, "보석 " .. tostring(row.gemCount) .. "개가 필요합니다")
+			return
+		end
+		local need = {}
+		for _, g in ipairs(gems) do
+			if _ItemCatalog:GetGem(g) == nil then
+				self:Deny(userId, instanceId, "알 수 없는 보석: " .. tostring(g))
+				return
+			end
+			need[g] = (need[g] or 0) + 1
+		end
+		for g, n in pairs(need) do
+			if _InventoryService:CountItem(userId, "GEM_" .. g) < n then
+				self:Deny(userId, instanceId, _ItemCatalog:GetGem(g).name .. " 이(가) 부족합니다")
+				return
+			end
+		end
+		local cost = row.mesoCost
+		local econ = _SummonManager:GetEcon(userId)
+		if econ == nil or econ.meso < cost then
+			self:Deny(userId, instanceId, "메소가 부족합니다 (" .. tostring(cost) .. ")")
+			return
+		end
+
+		-- 판정 (M1 은 100%)
+		if _UtilLogic:RandomDouble() >= row.successRate then
+			-- 실패: 재료는 소모, 단계 유지 (파괴/하락은 M1 에서 0)
+			for g, n in pairs(need) do _InventoryService:RemoveItem(userId, "GEM_" .. g, n) end
+			_SummonManager:SpendMeso(userId, cost)
+			_InventoryService:PushInventory(userId)
+			self:Result(userId, instanceId, false, "강화 실패", cur)
+			return
+		end
+
+		-- 성공
+		for g, n in pairs(need) do _InventoryService:RemoveItem(userId, "GEM_" .. g, n) end
+		_SummonManager:SpendMeso(userId, cost)
+		_InventoryService:ApplyEnhance(userId, instanceId, cur + 1, gems)
+
+		local ev = ItemEnhancedEvent()
+		ev.UserId = userId
+		ev.ItemId = it.itemId
+		ev.GemId = gems[1]
+		ev.NewLevel = cur + 1
+		ev.InstanceId = instanceId
+		ev.GemIdsCsv = gemIdsCsv
+		self:SendEvent(ev)
+
+		if _EquipService:IsEquipped(userId, instanceId) then
+			_EquipService:RecalcLayer(userId)      -- ItemEnhancedEvent → StatRecalculatedEvent 순서
+			_EquipService:PushEquipped(userId)
+		end
+		_InventoryService:PushInventory(userId)
+		log("[Item] enhance OK " .. it.itemId .. " +" .. tostring(cur + 1) .. " gems=" .. gemIdsCsv .. " meso-" .. tostring(cost) .. " (" .. userId .. ")")
+		self:Result(userId, instanceId, true, "강화 성공! +" .. tostring(cur + 1), cur + 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string instanceId, string reason)
+		-- 거절: 토스트 + 공방 창 상태줄. 아무것도 바꾸지 않았다.
+		log("[Item] enhance denied (" .. userId .. "): " .. reason)
+		self:Result(userId, instanceId, false, reason, -1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Result(string userId, string instanceId, boolean ok, string message, integer newLevel)
+		-- 소유 클라에만 결과를 보낸다 (토스트 재사용 + 공방 창).
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(message, userId)
+		end
+		if _WorkshopUIController ~= nil then
+			_WorkshopUIController:SetEnhanceResult(ok, message, newLevel, instanceId, userId)
+		end
+	end
+
+end
