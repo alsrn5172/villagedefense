@@ -47,6 +47,17 @@ WO-011 ⑤. 설계 정본은 계획서 `npc-hidden-koala.md` §4-1(셸) · §4-1
 - 🔴 WO-011 §4 의 `[LEA-3015]` 블로커 해소: 원인은 당시 `.directory` 깨짐. `Stat.directory` 가 정상 등록된 뒤에는 손으로 쓴 `@Event` 가 refresh 만으로 로드됨(Maker `Create EventType` 불필요). 검증: 빌드 42→42 · Play 에서 클라·서버 양쪽 4종 생성·필드 접근 OK · 런타임 Error 0
 - 구독자는 아직 없음(③ `StatService` 가 첫 구독자). 정의가 먼저 머지되는 순서는 유지됨
 
+**③ 스탯·데미지 — 이 PR 에 합류 (2026-09-05 · 경계면 파일 없음)**
+
+- 🔴 **플레이어 공격 파이프라인은 A 가 개발하지 않는다** (사용자 결정 2026-09-05). `PlayerAttack.mlua` 수정은 되돌렸다. A 는 계산 API 만 제공한다 — B 가 자기 공격/스킬 파이프라인에서 `_StatService:CalcPlayerDamage(attacker, defender)`(MISS 면 0) 와 `_StatService:RollCritical(attacker)` 를 부르면 된다. 검증은 `execute_script` 로 API 를 직접 호출해 했다.
+
+- 신규 `Stat/StatService.mlua`(`@Logic` 서버) — 유저별 원장 `base/equip/enhance/buff → final` 13종(계약서 `StatId`). 초보자 기본치 STR12 DEX5 INT4 LUK4 · 기본 명중 20 · 이동/점프 100%. 레벨업 AP 는 직업 비율(NOVICE 폴백 STR 6:DEX 4, `JobInfo.csv` 있으면 `PrimaryStat/SecondaryStat/ApRatio*` 읽음)로 **자동 분배** 후 `ApAllocatedEvent` → `Recalculate` → `StatRecalculatedEvent` → 소유 클라 캐릭터 창 갱신(`SetStatsCsv`/`SetCurrency`). 레이어 교체 API `SetLayerCsv(userId, "EQUIP|ENHANCE|BUFF", "str=1;attack=5")` · `SetMastery` · `SetJob` (⑥⑦·B 용). 이동속도·점프력은 `MovementComponent.InputSpeed/JumpForce` 에 원본×(stat/100), 최대 HP 보너스는 `PlayerComponent.MaxHp` 델타로 직접 반영 — **`StatApplyComponent` 는 두지 않음**(DefaultPlayer 모델 수정 회피). 무기 없을 때 임시 총공격력 `10 + (레벨−1)`, 숙련도 0.15
+- 신규 `Stat/DamageFormula.mlua`(`@Logic` 순수식) — 메이플 원본식: `StatValue=주×4+부`, `Max=StatValue×공격력÷100`, `Min=Max×숙련도(0.15~0.9)`, 균등 랜덤, 방어 감산 `Raw×(1−Def/(Def+100))` 최소 1, 명중 임시식 `필요=2×대상Lv+대상회피` (비율 바닥 0.2), 크리 `5%+LUK×0.1%`(상한 50%), 파생 명중 `DEX×0.8+LUK×0.5` · 회피 `DEX×0.25+LUK×0.5`
+- `Summon/SummonManager.mlua` — `ApplyLevelUpRewards` 에서 AP 를 `_StatService:GrantAp` 로 즉시 분배(원장엔 남는 0만) · `Push` 에서 `SetLevel`+`PushToClient` · `GetEcon` 게터 추가
+- `Stat/StatUIController.mlua` — `SetStatsCsv`/`SetCurrency` 를 `@ExecSpace("Client")` 로(서버→소유 클라) · `Open()` 때 `_StatService:RequestStats()`
+- ⚠ 미구현·보류: `EventBus`(계약서 B-1) 가 없어 이벤트는 `StatService` Logic 의 `SendEvent` 로 발행(구독은 `@EventSender("Logic","StatService")`) · `LevelTable` 임시 곡선은 현행 자리표시자(NeedExp=Level)로 검증 가능해 WP1 로 · 난이도 배수 적용점 없음(WP0) · 일반 몹 방어·회피 0(`MonsterInfo` 열 없음)
+- 검증: 빌드 42→42 · 런타임 Error 0 · `[Stat] recalculated INIT` → Lv1 범위 1~5 · 20회 굴림 전부 [1,5] 안·MISS 0 (수정 전 기본 명중 0 은 Lv1 몹도 50% MISS → 기본 명중 20·HitBase 0 으로) · 크리 4/100 · `+3exp` → Lv3, AP 5×2 자동분배 `str+3 dex+2` ×2 → STR18 DEX9, 범위 1~9 · 캐릭터 창에 초보자/Lv3/0÷3/SP6/STR18…/공격력 1~9/명중 9/회피 4 표시(스크린샷) · InputSpeed 2.0·JumpForce 0.9 유지(100%)
+
 **후속 수정 2건 (검증 중 발견 · `ui/CharacterGroup.ui` 만 · 좌표 규격 동일)**
 
 - 버튼 글씨가 흰 버튼 위 흰색(기본 FontColor)이라 안 보임 → `BtnClose` · `Tab0~2` · `BtnSkill` FontColor `#33334D`. 칩 라벨은 어두운 칩 위 진한 색이라 `#F4F4F8` (Chip 14 + `MesoIcon`/`CoinIcon`)
