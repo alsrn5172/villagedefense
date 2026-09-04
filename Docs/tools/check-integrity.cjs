@@ -90,7 +90,7 @@ const CANONICAL = {
     "CastEffectStartFrame,CastEffectEndFrame," +
     "ShotCount,ShotInterval,AimAtTarget,BuffMoveRate,BuffDuration," +
     "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,#Note," +
-    "CrouchBand",
+    "CrouchBand,FireEffectRUID,FireEffectScale,FireEffectFloors,FireEffectTiles",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
     "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
