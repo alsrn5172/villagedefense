@@ -1,0 +1,143 @@
+@Component
+script VillageNpcInteractor extends Component
+
+	@Sync
+	property string NpcInstanceKey = ""
+
+	@Sync
+	property string CatalogNpcId = ""
+
+	@Sync
+	property string VillageId = ""
+
+	@Sync
+	property string DisplayName = ""
+
+	@Sync
+	property string OwnershipMode = "PUBLIC"
+
+	@Sync
+	property string UiGroupName = ""
+
+	@Sync
+	property string UiRoute = ""
+
+	@Sync
+	property string ActionRoute = ""
+
+	property number MaxUseDistance = 2.5
+
+	property number RequestCooldown = 0.35
+
+	@HideFromInspector
+	property any lastRequestAt = nil
+
+	method void OnBeginPlay()
+		if self:IsServer() then
+			self.lastRequestAt = {}
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		if self.NpcInstanceKey == "" then
+			log_warning("[VillageNpcInteractor] instance key not synchronized: " .. self.Entity.Name)
+			return
+		end
+		self:RequestOpen(self.NpcInstanceKey)
+	end
+
+	@ExecSpace("Server")
+	method void RequestOpen(string requestedKey)
+		if senderUserId == nil then
+			self:Deny("", "INVALID_SENDER")
+			return
+		end
+		local userId = tostring(senderUserId)
+		if requestedKey == "" or requestedKey ~= self.NpcInstanceKey then
+			self:Deny(userId, "INVALID_INSTANCE")
+			return
+		end
+
+		local now = _UtilLogic.ElapsedSeconds
+		-- 동적 AddComponent 직후에도 안전하게 요청 캐시를 보장한다.
+		if self.lastRequestAt == nil then
+			self.lastRequestAt = {}
+		end
+		local previous = self.lastRequestAt[userId]
+		if previous ~= nil and now - previous < self.RequestCooldown then
+			self:Deny(userId, "TOO_FAST")
+			return
+		end
+		self.lastRequestAt[userId] = now
+
+		local user = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(user) or not isvalid(user.CurrentMap) or not isvalid(self.Entity.CurrentMap) then
+			self:Deny(userId, "USER_NOT_FOUND")
+			return
+		end
+		if user.CurrentMap ~= self.Entity.CurrentMap then
+			self:Deny(userId, "WRONG_MAP")
+			return
+		end
+
+		local userTransform = user.TransformComponent
+		local npcTransform = self.Entity.TransformComponent
+		if not isvalid(userTransform) or not isvalid(npcTransform) then
+			self:Deny(userId, "TRANSFORM_MISSING")
+			return
+		end
+		local userPosition = userTransform.WorldPosition
+		local npcPosition = npcTransform.WorldPosition
+		local dx = userPosition.x - npcPosition.x
+		local dy = userPosition.y - npcPosition.y
+		if dx * dx + dy * dy > self.MaxUseDistance * self.MaxUseDistance then
+			self:Deny(userId, "TOO_FAR")
+			return
+		end
+
+		if _NpcCatalog == nil or _NpcCatalog:GetFunctional(self.CatalogNpcId) == nil then
+			self:Deny(userId, "CATALOG_MISSING")
+			return
+		end
+		if not _NpcCatalog:CanUse(userId, self.VillageId, self.CatalogNpcId) then
+			if self.OwnershipMode == "OWNER_ONLY" and not _NpcCatalog:HasOwnershipResolver() then
+				self:Deny(userId, "OWNER_CONTEXT_UNAVAILABLE")
+			else
+				self:Deny(userId, "ACCESS_DENIED")
+			end
+			return
+		end
+
+		log("[VillageNpcInteractor] approved user=" .. userId .. " npc=" .. self.CatalogNpcId
+			.. " key=" .. self.NpcInstanceKey)
+		self:NotifyOpenApproved(self.NpcInstanceKey, self.CatalogNpcId, userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string reason)
+		log_warning("[VillageNpcInteractor] denied user=" .. tostring(userId)
+			.. " npc=" .. self.CatalogNpcId .. " reason=" .. reason)
+		if userId ~= "" then
+			self:NotifyOpenDenied(self.NpcInstanceKey, self.CatalogNpcId, reason, userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void NotifyOpenApproved(string instanceKey, string catalogNpcId)
+		if _VillageNpcUIController == nil then
+			log_warning("[VillageNpcInteractor] UI bridge missing for " .. catalogNpcId)
+			return
+		end
+		_VillageNpcUIController:ReceiveNpcOpen(instanceKey, catalogNpcId)
+	end
+
+	@ExecSpace("Client")
+	method void NotifyOpenDenied(string instanceKey, string catalogNpcId, string reason)
+		if _VillageNpcUIController ~= nil then
+			_VillageNpcUIController:ReceiveNpcDenied(instanceKey, catalogNpcId, reason)
+		end
+	end
+
+end

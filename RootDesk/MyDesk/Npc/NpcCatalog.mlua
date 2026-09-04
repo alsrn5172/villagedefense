@@ -1,0 +1,401 @@
+@Logic
+script NpcCatalog extends Logic
+
+	@HideFromInspector
+	property string InfoTableName = "NpcInfo"
+
+	@HideFromInspector
+	property string FunctionalTableName = "FunctionalNpcCatalog"
+
+	@HideFromInspector
+	property string SectorTableName = "VillageNpcSector"
+
+	@HideFromInspector
+	property string VillageTableName = "VillageConfig"
+
+	@HideFromInspector
+	property string MapTableName = "MapNpcs"
+
+	@HideFromInspector
+	property string OverrideMapTableName = "MapNpcs_Village"
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
+	property any infoById = nil
+
+	@HideFromInspector
+	property any functionalById = nil
+
+	@HideFromInspector
+	property any functionalRows = nil
+
+	@HideFromInspector
+	property any sectorByKey = nil
+
+	@HideFromInspector
+	property any villageByMap = nil
+
+	@HideFromInspector
+	property any explicitByMap = nil
+
+	@HideFromInspector
+	property any explicitIndex = nil
+
+	@HideFromInspector
+	property any ownershipResolver = nil
+
+	method void OnBeginPlay()
+		self:EnsureLoaded()
+	end
+
+	method string Text(any value)
+		if value == nil then
+			return ""
+		end
+		return tostring(value)
+	end
+
+	method string NumericKey(any value)
+		local text = self:Text(value)
+		local numberValue = tonumber(text)
+		if numberValue == nil then
+			return text
+		end
+		return tostring(math.floor(numberValue))
+	end
+
+	method boolean ParseEnabled(any value)
+		local text = string.lower(self:Text(value))
+		if text == "" then
+			return true
+		end
+		return text == "true" or text == "1" or text == "yes" or text == "y"
+	end
+
+	method void EnsureLoaded()
+		if self.loaded then
+			return
+		end
+		self:Load()
+	end
+
+	method void Load()
+		self.loaded = true
+		self.infoById = {}
+		self.functionalById = {}
+		self.functionalRows = {}
+		self.sectorByKey = {}
+		self.villageByMap = {}
+		self.explicitByMap = {}
+		self.explicitIndex = {}
+
+		local infoCount = self:LoadInfo()
+		local functionalCount = self:LoadFunctional()
+		local sectorCount = self:LoadSectors()
+		local villageCount = self:LoadVillages()
+		local mapCount = self:LoadMapTable(self.MapTableName, false)
+		local overrideCount = self:LoadMapTable(self.OverrideMapTableName, true)
+
+		log("[NpcCatalog] loaded info=" .. tostring(infoCount)
+			.. " functional=" .. tostring(functionalCount)
+			.. " sectors=" .. tostring(sectorCount)
+			.. " villages=" .. tostring(villageCount)
+			.. " mapRows=" .. tostring(mapCount)
+			.. " overrides=" .. tostring(overrideCount))
+	end
+
+	method integer LoadInfo()
+		local tableData = _DataService:GetTable(self.InfoTableName)
+		if tableData == nil then
+			log_warning("[NpcCatalog] dataset not found: " .. self.InfoTableName)
+			return 0
+		end
+
+		local count = 0
+		for i = 1, tableData:GetRowCount() do
+			local id = self:NumericKey(tableData:GetCell(i, "Id"))
+			local modelId = self:Text(tableData:GetCell(i, "ModelId"))
+			if id == "" or modelId == "" then
+				log_warning("[NpcCatalog] invalid NpcInfo row=" .. tostring(i))
+			else
+				self.infoById[id] = {
+					id = id,
+					name = self:Text(tableData:GetCell(i, "Name")),
+					modelId = modelId
+				}
+				count = count + 1
+			end
+		end
+		return count
+	end
+
+	method integer LoadFunctional()
+		local tableData = _DataService:GetTable(self.FunctionalTableName)
+		if tableData == nil then
+			log_warning("[NpcCatalog] dataset not found: " .. self.FunctionalTableName)
+			return 0
+		end
+
+		local count = 0
+		for i = 1, tableData:GetRowCount() do
+			local id = self:Text(tableData:GetCell(i, "CatalogNpcId"))
+			local roleKey = self:Text(tableData:GetCell(i, "RoleKey"))
+			local ownershipMode = self:Text(tableData:GetCell(i, "OwnershipMode"))
+			local enabled = self:ParseEnabled(tableData:GetCell(i, "Enabled"))
+			local slotOrder = math.floor(tonumber(tableData:GetCell(i, "SlotOrder")) or 0)
+			if not enabled then
+				-- 꺼진 행은 런타임 카탈로그에서 제외한다.
+			elseif id == "" or roleKey == "" or (ownershipMode ~= "PUBLIC" and ownershipMode ~= "OWNER_ONLY") then
+				log_warning("[NpcCatalog] invalid functional row=" .. tostring(i))
+			elseif self.functionalById[id] ~= nil then
+				log_warning("[NpcCatalog] duplicate CatalogNpcId=" .. id)
+			else
+				local row = {
+					catalogNpcId = id,
+					roleKey = roleKey,
+					displayName = self:Text(tableData:GetCell(i, "DisplayName")),
+					uiGroupName = self:Text(tableData:GetCell(i, "UiGroupName")),
+					uiRoute = self:Text(tableData:GetCell(i, "UiRoute")),
+					actionRoute = self:Text(tableData:GetCell(i, "ActionRoute")),
+					ownershipMode = ownershipMode,
+					sectorId = self:Text(tableData:GetCell(i, "SectorId")),
+					slotOrder = slotOrder,
+					modelId = string.lower(id),
+					functional = true
+				}
+				self.functionalById[id] = row
+				table.insert(self.functionalRows, row)
+				count = count + 1
+			end
+		end
+		return count
+	end
+
+	method integer LoadSectors()
+		local tableData = _DataService:GetTable(self.SectorTableName)
+		if tableData == nil then
+			log_warning("[NpcCatalog] dataset not found: " .. self.SectorTableName)
+			return 0
+		end
+
+		local count = 0
+		for i = 1, tableData:GetRowCount() do
+			if self:ParseEnabled(tableData:GetCell(i, "Enabled")) then
+				local villageId = self:Text(tableData:GetCell(i, "VillageId"))
+				local sectorId = self:Text(tableData:GetCell(i, "SectorId"))
+				local anchorX = tonumber(tableData:GetCell(i, "AnchorX"))
+				local anchorY = tonumber(tableData:GetCell(i, "AnchorY"))
+				local slotPerRow = math.floor(tonumber(tableData:GetCell(i, "SlotPerRow")) or 1)
+				if slotPerRow < 1 then
+					slotPerRow = 1
+				end
+				if villageId ~= "" and sectorId ~= "" then
+					self.sectorByKey[villageId .. ":" .. sectorId] = {
+						anchorX = anchorX,
+						anchorY = anchorY,
+						slotDX = tonumber(tableData:GetCell(i, "SlotDX")) or 0,
+						slotDY = tonumber(tableData:GetCell(i, "SlotDY")) or 0,
+						slotPerRow = slotPerRow,
+						flipX = string.lower(self:Text(tableData:GetCell(i, "FlipX"))) == "true"
+					}
+					count = count + 1
+				end
+			end
+		end
+		return count
+	end
+
+	method integer LoadVillages()
+		local tableData = _DataService:GetTable(self.VillageTableName)
+		if tableData == nil then
+			log_warning("[NpcCatalog] optional dataset not found: " .. self.VillageTableName .. " (owner NPC auto-layout waits)")
+			return 0
+		end
+
+		local count = 0
+		for i = 1, tableData:GetRowCount() do
+			if self:ParseEnabled(tableData:GetCell(i, "Enabled")) then
+				local villageId = self:Text(tableData:GetCell(i, "VillageId"))
+				local mapName = self:Text(tableData:GetCell(i, "VillageMapName"))
+				if villageId ~= "" and mapName ~= "" then
+					self.villageByMap[mapName] = villageId
+					count = count + 1
+				end
+			end
+		end
+		return count
+	end
+
+	method void UpsertExplicit(any row)
+		if self.explicitByMap[row.mapName] == nil then
+			self.explicitByMap[row.mapName] = {}
+		end
+		local list = self.explicitByMap[row.mapName]
+		local key = row.mapName .. ":" .. row.id
+		local index = self.explicitIndex[key]
+		if index == nil then
+			table.insert(list, row)
+			self.explicitIndex[key] = #list
+		else
+			list[index] = row
+		end
+	end
+
+	method integer LoadMapTable(string tableName, boolean isOverride)
+		local tableData = _DataService:GetTable(tableName)
+		if tableData == nil then
+			if not isOverride then
+				log_warning("[NpcCatalog] dataset not found: " .. tableName)
+			end
+			return 0
+		end
+
+		local count = 0
+		for i = 1, tableData:GetRowCount() do
+			local mapName = self:Text(tableData:GetCell(i, "MapName"))
+			local rawId = self:Text(tableData:GetCell(i, "NpcId"))
+			local x = tonumber(tableData:GetCell(i, "X"))
+			local y = tonumber(tableData:GetCell(i, "Y"))
+			local functional = self.functionalById[rawId]
+			local row = nil
+
+			if mapName == "" or rawId == "" or x == nil or y == nil then
+				log_warning("[NpcCatalog] invalid " .. tableName .. " row=" .. tostring(i))
+			elseif functional ~= nil then
+				row = {
+					id = rawId,
+					catalogNpcId = functional.catalogNpcId,
+					displayName = functional.displayName,
+					modelId = functional.modelId,
+					ownershipMode = functional.ownershipMode,
+					uiGroupName = functional.uiGroupName,
+					uiRoute = functional.uiRoute,
+					actionRoute = functional.actionRoute,
+					villageId = self.villageByMap[mapName] or "",
+					mapName = mapName,
+					x = x,
+					y = y,
+					functional = true
+				}
+			else
+				local id = self:NumericKey(rawId)
+				local info = self.infoById[id]
+				if info == nil then
+					log_warning("[NpcCatalog] unknown NpcId=" .. rawId .. " at " .. tableName .. " row=" .. tostring(i))
+				elseif info.modelId == "" then
+					log_warning("[NpcCatalog] empty ModelId for NpcId=" .. id)
+				else
+					row = {
+						id = id,
+						catalogNpcId = "",
+						displayName = info.name,
+						modelId = info.modelId,
+						ownershipMode = "PUBLIC",
+						uiGroupName = "",
+						uiRoute = "",
+						actionRoute = "",
+						villageId = "",
+						mapName = mapName,
+						x = x,
+						y = y,
+						functional = false
+					}
+				end
+			end
+
+			if row ~= nil then
+				self:UpsertExplicit(row)
+				count = count + 1
+			end
+		end
+		return count
+	end
+
+	method any GetFunctional(string catalogNpcId)
+		self:EnsureLoaded()
+		return self.functionalById[catalogNpcId]
+	end
+
+	method any GetMapSpawns(string mapName)
+		self:EnsureLoaded()
+		local result = {}
+		local seen = {}
+		local explicit = self.explicitByMap[mapName]
+		if explicit ~= nil then
+			for _, row in ipairs(explicit) do
+				table.insert(result, row)
+				seen[row.id] = true
+			end
+		end
+
+		local villageId = self.villageByMap[mapName]
+		if villageId == nil or villageId == "" then
+			return result
+		end
+
+		for _, functional in ipairs(self.functionalRows) do
+			if functional.ownershipMode == "OWNER_ONLY" and not seen[functional.catalogNpcId] then
+				local sector = self.sectorByKey[villageId .. ":" .. functional.sectorId]
+				if sector == nil or sector.anchorX == nil or sector.anchorY == nil then
+					log_warning("[NpcCatalog] missing sector anchor " .. villageId .. ":" .. functional.sectorId
+						.. " for " .. functional.catalogNpcId)
+				else
+					local slot = math.max(1, functional.slotOrder) - 1
+					local column = slot % sector.slotPerRow
+					local rowIndex = math.floor(slot / sector.slotPerRow)
+					local direction = 1
+					if sector.flipX then
+						direction = -1
+					end
+					table.insert(result, {
+						id = functional.catalogNpcId,
+						catalogNpcId = functional.catalogNpcId,
+						displayName = functional.displayName,
+						modelId = functional.modelId,
+						ownershipMode = functional.ownershipMode,
+						uiGroupName = functional.uiGroupName,
+						uiRoute = functional.uiRoute,
+						actionRoute = functional.actionRoute,
+						villageId = villageId,
+						mapName = mapName,
+						x = sector.anchorX + direction * sector.slotDX * column,
+						y = sector.anchorY + sector.slotDY * rowIndex,
+						functional = true
+					})
+				end
+			end
+		end
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetOwnershipResolver(any resolver)
+		-- Match/Village 소유권 서비스가 준비되면 서버 콜백을 등록한다.
+		-- signature: resolver(userId, villageId, catalogNpcId) -> boolean
+		self.ownershipResolver = resolver
+		log("[NpcCatalog] ownership resolver connected")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanUse(string userId, string villageId, string catalogNpcId)
+		local row = self:GetFunctional(catalogNpcId)
+		if row == nil then
+			return false
+		end
+		if row.ownershipMode == "PUBLIC" then
+			return true
+		end
+		if self.ownershipResolver == nil then
+			return false
+		end
+		return self.ownershipResolver(userId, villageId, catalogNpcId) == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HasOwnershipResolver()
+		return self.ownershipResolver ~= nil
+	end
+
+end

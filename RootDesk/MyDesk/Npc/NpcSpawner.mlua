@@ -1,0 +1,129 @@
+@Component
+script NpcSpawner extends Component
+
+	property string MapNameOverride = ""
+
+	property string MatchId = ""
+
+	property boolean SpawnDecorativeNpcs = true
+
+	property boolean LogSpawn = true
+
+	@HideFromInspector
+	property boolean initialized = false
+
+	@HideFromInspector
+	property any spawned = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		self:InitializeSpawner()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitializeSpawner()
+		if self.initialized then
+			return
+		end
+		self.initialized = true
+		self.spawned = {}
+
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			log_error("[NpcSpawner] current map missing at " .. self.Entity.Path)
+			return
+		end
+		if _NpcCatalog == nil then
+			log_error("[NpcSpawner] NpcCatalog missing at " .. map.Name)
+			return
+		end
+
+		local mapName = self.MapNameOverride
+		if mapName == "" then
+			mapName = map.Name
+		end
+		local entries = _NpcCatalog:GetMapSpawns(mapName)
+		local spawnedCount = 0
+		for ordinal, entry in ipairs(entries) do
+			if entry.functional or self.SpawnDecorativeNpcs then
+				if self:SpawnEntry(entry, ordinal) then
+					spawnedCount = spawnedCount + 1
+				end
+			end
+		end
+
+		log("[NpcSpawner] ready map=" .. mapName .. " spawned=" .. tostring(spawnedCount)
+			.. "/" .. tostring(#entries))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpawnEntry(any entry, integer ordinal)
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return false
+		end
+		if entry.modelId == nil or entry.modelId == "" then
+			log_warning("[NpcSpawner] empty model id=" .. tostring(entry.id))
+			return false
+		end
+
+		local name = "Npc_" .. tostring(entry.id) .. "_" .. tostring(ordinal)
+		local position = Vector3(entry.x, entry.y, 0)
+		local npc = _SpawnService:SpawnByModelId(entry.modelId, name, position, map)
+		if not isvalid(npc) then
+			log_error("[NpcSpawner] spawn failed model=" .. tostring(entry.modelId)
+				.. " map=" .. tostring(entry.mapName) .. " id=" .. tostring(entry.id))
+			return false
+		end
+
+		if entry.functional then
+			local interaction = npc:AddComponent("script.VillageNpcInteractor")
+			if not isvalid(interaction) then
+				interaction = npc:GetComponent("script.VillageNpcInteractor")
+			end
+			if not isvalid(interaction) then
+				npc:Destroy()
+				log_error("[NpcSpawner] VillageNpcInteractor add failed id=" .. tostring(entry.id))
+				return false
+			end
+
+			local matchId = self.MatchId
+			if matchId == "" then
+				matchId = "UNBOUND"
+			end
+			local villageKey = entry.villageId
+			if villageKey == nil or villageKey == "" then
+				villageKey = entry.mapName
+			end
+			interaction.NpcInstanceKey = matchId .. ":" .. villageKey .. ":" .. entry.catalogNpcId .. ":" .. tostring(ordinal)
+			interaction.CatalogNpcId = entry.catalogNpcId
+			interaction.VillageId = entry.villageId or ""
+			interaction.DisplayName = entry.displayName or ""
+			interaction.OwnershipMode = entry.ownershipMode or "PUBLIC"
+			interaction.UiGroupName = entry.uiGroupName or ""
+			interaction.UiRoute = entry.uiRoute or ""
+			interaction.ActionRoute = entry.actionRoute or ""
+		end
+
+		table.insert(self.spawned, npc)
+		if self.LogSpawn then
+			log("[NpcSpawner] spawn id=" .. tostring(entry.id) .. " model=" .. tostring(entry.modelId)
+				.. " x=" .. tostring(entry.x) .. " y=" .. tostring(entry.y))
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		if self.spawned ~= nil then
+			for _, npc in ipairs(self.spawned) do
+				if isvalid(npc) then
+					npc:Destroy()
+				end
+			end
+		end
+		self.spawned = {}
+		self.initialized = false
+	end
+
+end
