@@ -1,0 +1,129 @@
+@Logic
+script SpectateUIController extends Logic
+
+	-- 관전 HUD(SpectateGroup.ui) 클라 컨트롤러 — WO-011 ⑧ S1 뼈대 (계획서 §4-5). 탈락자용.
+	-- 카메라 사양(자율 이동 범위·전환)은 미결(`구현항목-결정.md` §5) — 카메라 로직은 `Match/` 가 소유.
+	-- 여기서는 탭 전환·자유 토글·나가기 버튼만. 대상 목록은 SetTargetsCsv 로 서버가 준다.
+
+	property Entity topBar = "c5c65c63-e16a-45de-bff2-2ba84abeac29"
+
+	property ButtonComponent tab0 = "ae55c5fb-671e-4f10-946a-14ae342d8a2e"
+
+	property ButtonComponent tab1 = "12f078f1-85ec-4054-9bf1-7d3ca7b4b95a"
+
+	property ButtonComponent tab2 = "90150d88-b312-48ff-8a48-5df5cec64519"
+
+	property ButtonComponent tab3 = "aae30272-8a4a-4b8b-ba68-65671ca39ad9"
+
+	property ButtonComponent btnFreeCam = "a72be280-f898-41bb-be60-e95632eacba3"
+
+	property ButtonComponent btnLeave = "999058f4-0c35-4508-8623-86c51e0a76dd"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property boolean freeCam = false
+
+	@HideFromInspector
+	property any targets = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · 숨김으로 시작.
+		self.targets = {}
+		self.handlers = {}
+		local function bind(btn, fn)
+			if isvalid(btn) then
+				table.insert(self.handlers, { btn = btn, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+			end
+		end
+		bind(self.tab0, function() self:OnClickTab(1) end)
+		bind(self.tab1, function() self:OnClickTab(2) end)
+		bind(self.tab2, function() self:OnClickTab(3) end)
+		bind(self.tab3, function() self:OnClickTab(4) end)
+		bind(self.btnFreeCam, function() self:OnClickFreeCam() end)
+		bind(self.btnLeave, function() self:OnClickLeave() end)
+		self:SetOpen(false)
+		log("[Spectate] SpectateUIController ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- 상단 바만 켜고 끈다 (HUD 층 · GroupOrder 1).
+		self.isOpen = open
+		if isvalid(self.topBar) then self.topBar.Enable = open end
+		log("[Spectate] open=" .. tostring(open))
+	end
+
+	@ExecSpace("Client")
+	method void SetTargetsCsv(string csv)
+		-- 서버 → 클라. "이름1|이름2|이름3" (생존자 최대 4). 빈 문자열이면 숨긴다.
+		self.targets = {}
+		if csv ~= nil and csv ~= "" then
+			for name in string.gmatch(csv, "[^|]+") do table.insert(self.targets, name) end
+		end
+		local tabs = { self.tab0, self.tab1, self.tab2, self.tab3 }
+		for i = 1, 4 do
+			local t = tabs[i]
+			if isvalid(t) then
+				local name = self.targets[i]
+				t.Entity.Enable = (name ~= nil)
+				if name ~= nil and t.Entity.TextGUIRendererComponent ~= nil then
+					t.Entity.TextGUIRendererComponent.Text = name
+				end
+			end
+		end
+		self:SetOpen(#self.targets > 0)
+		log("[Spectate] targets=" .. tostring(#self.targets))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickTab(integer idx)
+		-- 관전 대상 전환.
+		local name = self.targets[idx]
+		if name == nil then return end
+		if _SpectateService ~= nil then
+			_SpectateService:SetSpectateTarget(name)
+		else
+			log("[Spectate] SetSpectateTarget(" .. name .. ") — SpectateService 없음 (WP4)")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickFreeCam()
+		-- 자율 카메라 토글.
+		self.freeCam = not self.freeCam
+		if isvalid(self.btnFreeCam) and self.btnFreeCam.Entity.TextGUIRendererComponent ~= nil then
+			self.btnFreeCam.Entity.TextGUIRendererComponent.Text = self.freeCam and "자유 ●" or "자유"
+		end
+		if _SpectateService ~= nil then
+			_SpectateService:SetFreeCam(self.freeCam)
+		else
+			log("[Spectate] SetFreeCam(" .. tostring(self.freeCam) .. ") — SpectateService 없음 (WP4)")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickLeave()
+		-- 나가기 → 로비 (확인 팝업은 WP4 에서 PopupGroup 재사용). 원래 매치는 계속.
+		if _MatchSessionLogic ~= nil then
+			_MatchSessionLogic:LeaveToLobby()
+		else
+			log("[Spectate] LeaveToLobby — MatchSessionLogic 없음 (WP1)")
+		end
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		for _, h in ipairs(self.handlers) do
+			if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
+		end
+	end
+
+end

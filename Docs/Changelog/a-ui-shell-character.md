@@ -76,6 +76,13 @@ WO-011 ⑤. 설계 정본은 계획서 `npc-hidden-koala.md` §4-1(셸) · §4-1
 - 검증: 빌드 **69 → 68 (Warning 0, 전부 Info)** · 런타임 Error 0 · 메소 5000 지급 → E 로 열림(`route=enhance`, 인벤 8) → 검 장착(EQUIP attack 27) → `OnPickCell(i1)`+`OnGemPicked(DIAMOND)` → 버튼 활성 → `OnPrimary` → `-meso 1000 → 4000` · `enhance OK +1` · **ENHANCE 레이어 attack 27→29 · defense 0→1** · 결과 `ok=true level=1` · 스크린샷: "나무 검 +1 → 나무 검 +2", 상승 능력치 방어력 +2(다음 단계 미리보기), 보석 칸 2/3 활성, 100%, "메소 3000 · 보석 0 / 2", 강화 버튼 비활성(S1 상태)
 - 미검증·보류: 실클릭(마우스 툴 한계) · NPC 클릭 → `Pending*` 경로(④ 스포너가 마을 앵커 확정 후 활성) · 강화 실패/파괴 분기(M1 100%) · craft/repair/potion/shop_equip 라우트 내용(WP2) · 보석 아이콘 RUID(S2)
 
+**⑧ 로비·결과·관전 S1 뼈대 — 이 PR 에 합류 (2026-09-05)**
+
+- 신규 `ui/LobbyGroup.ui` **43 엔티티**(GroupOrder 2 · 불투명 `Bg` #101820 · Window 980×720: TitleBar "매치 로비" · X · `Players` 5행(Avatar·Name·HeartCount·ReadyMark) · `Difficulty`(DiffTitle · Star_1~5 72×72 · DiffDesc · GateWarn 빨강) · Footer CostLabel "준비 n / m" + BtnPrimary "준비"/"준비 취소") · `ui/MatchResultGroup.ui` **52 엔티티**(GroupOrder **5** — 새 창 2·팝업 3 위, 토스트 6 아래 · Bg 0.85 · TitleBar(제목 가변) · ReasonText · RankHeader 5열(순위·이름·발록 피해·넥서스 HP·레벨 = 순위 기준 순서) · RankRow_0~4 + EliminatedMark · MyReward · Footer "로비로") · `ui/SpectateGroup.ui` **9 엔티티**(GroupOrder **1** HUD 층 · TopBar 900×64 alpha 0.7: "관전 중" · Tab_0~3 · 자유 · 나가기)
+- 신규 `Match/LobbyUIController.mlua` · `Match/MatchResultUIController.mlua` · `Match/SpectateUIController.mlua`(전부 `@Logic` 클라, 바인딩 14/7/7) — 서버 문자열만 그린다: `SetLobbyCsv("ready=2 / 4;diff=3;host=1;me=1;desc=…;warn=…;p0=이름|심장|준비;…")` · `SetResultCsv("title=…;reason=…;reward=…;me=0;r0=순위|이름|발록피해|넥서스HP|레벨|탈락;…")` · `SetTargetsCsv("이름|이름|…")`. 버튼(별·준비·큐 취소·로비로·탭·자유·나가기)은 `_MatchLobbyGateway` / `_MatchSessionLogic` / `_SpectateService` 가 있으면 호출, 없으면 로그 (전부 WP1/WP4 · `Match/` A 소유). 방장만 별 활성. `Match.directory` 는 refresh 생성물
+- 검증: 빌드 **68 → 83 (Warning 0 · 전부 Info — 미래 Logic 심볼 LIA-1113 15건)** · 런타임 Error 0 · `execute_script` 로 샘플 문자열을 넣어 세 화면 스크린샷: 로비(4명·준비 2·★3·경고·준비 취소) · 결과(4행·내 행 ▶·3위 탈락·보상·로비로) · 관전(탭 3·자유·나가기)
+- 보류: 로비 안내 NPC → `LobbyGroup` 라우팅(NPC 라우터 `Pending*` 소비는 공방과 같은 패턴으로 WP1 에서) · 큐 취소·나가기 확인 팝업(`PopupGroup` 재사용) · 관전 카메라 사양 미결 · `RankReward`·`DifficultyConfig` 표(WP0)
+
 **후속 수정 2건 (검증 중 발견 · `ui/CharacterGroup.ui` 만 · 좌표 규격 동일)**
 
 - 버튼 글씨가 흰 버튼 위 흰색(기본 FontColor)이라 안 보임 → `BtnClose` · `Tab0~2` · `BtnSkill` FontColor `#33334D`. 칩 라벨은 어두운 칩 위 진한 색이라 `#F4F4F8` (Chip 14 + `MesoIcon`/`CoinIcon`)
