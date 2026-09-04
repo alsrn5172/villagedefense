@@ -41,6 +41,12 @@ WO-011 ⑤. 설계 정본은 계획서 `npc-hidden-koala.md` §4-1(셸) · §4-1
 - hover 툴팁 배경 `Tooltip` Color alpha 1 → **0.8** (0.7 을 보고 0.8 로 · 색 (0.02,0.03,0.05) 그대로 · 사용자 요청 2026-09-05)
 - 검증: 런타임에서 노드 스프라이트를 잠깐 켜 그려진 점 33개와 전부 겹침(스크린샷) · 깃발이 허브 점 위에 절반 크기로 · `ShowTooltipAt(14)` 로 띄운 툴팁 타이틀이 잘리지 않음(스크린샷) · `here marker at SixPathCrossway` 위치 일치 · `execute_script` 로 `OnRegionClick(14)` 호출해 선택 링·파병 리모컨 비활성 유지 확인 · 빌드 42→42. ℹ 기존 상태: `infoPanel`/`infoTitle`/`infoBody` 바인딩 대상(하단 정보 박스)은 `.ui` 에 이미 없어 런타임 nil — 컨트롤러가 `isvalid` 로 가드하고 있어 동작엔 영향 없음(이번 변경 아님). ⚠ `maker_mouse_input` 은 이 화면에서 클릭을 전달하지 못해 노드 실클릭은 사용자 확인(hover 툴팁·클릭 링 동작은 사용자가 이미 확인)
 
+**② 이벤트 정의 4종 — 이 PR 에 합류 (사용자 결정 2026-09-05)**
+
+- 신규 `Stat/StatRecalculatedEvent.mlua`(UserId, FinalStatsCsv, Source) · `Stat/ApAllocatedEvent.mlua`(UserId, AllocatedStatsCsv, RemainingAp) · `Stat/SpSpentEvent.mlua`(UserId, SkillId, Amount, RemainingSp) · `Item/EquipChangedEvent.mlua`(UserId, EquipSlot, PrevInstanceId, NewInstanceId) — 계약서 B-3 행 그대로. payload 는 문자열·정수만. `.codeblock` 4개 + `Item.directory` 는 refresh 생성물 그대로 커밋
+- 🔴 WO-011 §4 의 `[LEA-3015]` 블로커 해소: 원인은 당시 `.directory` 깨짐. `Stat.directory` 가 정상 등록된 뒤에는 손으로 쓴 `@Event` 가 refresh 만으로 로드됨(Maker `Create EventType` 불필요). 검증: 빌드 42→42 · Play 에서 클라·서버 양쪽 4종 생성·필드 접근 OK · 런타임 Error 0
+- 구독자는 아직 없음(③ `StatService` 가 첫 구독자). 정의가 먼저 머지되는 순서는 유지됨
+
 **후속 수정 2건 (검증 중 발견 · `ui/CharacterGroup.ui` 만 · 좌표 규격 동일)**
 
 - 버튼 글씨가 흰 버튼 위 흰색(기본 FontColor)이라 안 보임 → `BtnClose` · `Tab0~2` · `BtnSkill` FontColor `#33334D`. 칩 라벨은 어두운 칩 위 진한 색이라 `#F4F4F8` (Chip 14 + `MesoIcon`/`CoinIcon`)
