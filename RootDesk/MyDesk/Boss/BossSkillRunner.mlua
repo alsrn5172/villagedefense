@@ -1634,44 +1634,70 @@ script BossSkillRunner extends AttackComponent
 		end
 		local atan = math.atan2 or math.atan
 
+		-- 1) 판정 박스에 걸리는 세그먼트 후보를 모은다 (박스 폭으로 잘라서).
+		local cands = {}
 		local all = fh:GetFootholdAll()
 		if all ~= nil then
 			for _, f in ipairs(all) do
-				if placed < MAX_PLACED and isvalid(f) and f:GetWidth() > 0.05 then
+				if isvalid(f) and f:GetWidth() > 0.05 then
 					local a = f.StartPoint
 					local b = f.EndPoint
-					local x0 = math.min(a.x, b.x)
-					local x1 = math.max(a.x, b.x)
-					-- 세그먼트를 판정 박스 가로 범위로 자른다. 긴 1층은 여기서 잘린다.
-					local cx0 = math.max(x0, boxL)
-					local cx1 = math.min(x1, boxR)
+					local cx0 = math.max(math.min(a.x, b.x), boxL)
+					local cx1 = math.min(math.max(a.x, b.x), boxR)
 					if cx1 - cx0 > 0.2 then
 						local y0 = f:GetYByX(cx0)
 						local y1 = f:GetYByX(cx1)
 						local ym = (y0 + y1) * 0.5
-						-- 세로로도 판정 박스 안에 있는 발판만
 						if ym >= boxB and ym <= boxT then
-							local w = cx1 - cx0
-							local sx = w / nativeW
-							if sx < 0.3 then
-								sx = 0.3
-							end
-							-- 경사면이면 발판 각도로 눕힌다.
-							local ang = 0
-							if atan ~= nil then
-								ang = math.deg(atan(y1 - y0, cx1 - cx0))
-							end
-							_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
-								Vector3((cx0 + cx1) * 0.5, ym, p.z), ang, Vector3(sx, s, 1), false, o)
-							placed = placed + 1
+							table.insert(cands, { x0 = cx0, x1 = cx1, y0 = y0, y1 = y1 })
 						end
 					end
 				end
 			end
 		end
+
+		-- 2) 수평 run 병합: 같은 높이(0.05)이고 끝이 맞닿는(0.08) 수평 세그먼트는 한 줄로 합친다.
+		--    1층 바닥이 0.90 짜리 8조각이라 sx 0.36 으로 눌린 이펙트 8장이 늘어섰다 -> 7.2 폭 한 장.
+		--    경사 세그먼트(양 끝 y 차 0.05 초과)는 각도가 있어 합치지 않는다.
+		table.sort(cands, function(u, v)
+			if math.abs(u.y0 - v.y0) > 0.05 then
+				return u.y0 < v.y0
+			end
+			return u.x0 < v.x0
+		end)
+		local runs = {}
+		for _, c in ipairs(cands) do
+			local flat = math.abs(c.y1 - c.y0) <= 0.05
+			local last = runs[#runs]
+			if flat and last ~= nil and last.flat
+				and math.abs(last.y0 - c.y0) <= 0.05
+				and c.x0 - last.x1 <= 0.08 and c.x0 - last.x1 >= -0.08 then
+				last.x1 = c.x1
+			else
+				table.insert(runs, { x0 = c.x0, x1 = c.x1, y0 = c.y0, y1 = c.y1, flat = flat })
+			end
+		end
+
+		-- 3) run 마다 길이에 맞춰 가로만 늘린 이펙트 1장.
+		for _, rn in ipairs(runs) do
+			if placed < MAX_PLACED then
+				local w = rn.x1 - rn.x0
+				local sx = w / nativeW
+				if sx < 0.3 then
+					sx = 0.3
+				end
+				local ang = 0
+				if not rn.flat and atan ~= nil then
+					ang = math.deg(atan(rn.y1 - rn.y0, w))
+				end
+				_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
+					Vector3((rn.x0 + rn.x1) * 0.5, (rn.y0 + rn.y1) * 0.5, p.z), ang, Vector3(sx, s, 1), false, o)
+				placed = placed + 1
+			end
+		end
 		if self.LogSkill then
 			log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId
-				.. " mode=segment placed=" .. tostring(placed) .. " nativeW=" .. string.format("%.2f", nativeW)
+				.. " mode=segment cands=" .. tostring(#cands) .. " runs=" .. tostring(#runs) .. " placed=" .. tostring(placed) .. " nativeW=" .. string.format("%.2f", nativeW)
 				.. " box x " .. string.format("%.2f", boxL) .. "~" .. string.format("%.2f", boxR))
 		end
 	end
