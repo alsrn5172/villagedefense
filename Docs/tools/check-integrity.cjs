@@ -89,7 +89,8 @@ const CANONICAL = {
     "CastRUID2,CastDelay2,CastHitFrame,CastEffectAtStart,CastEffectPlayRate," +
     "CastEffectStartFrame,CastEffectEndFrame," +
     "ShotCount,ShotInterval,AimAtTarget,BuffMoveRate,BuffDuration," +
-    "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,#Note",
+    "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,#Note," +
+    "CrouchBand",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
     "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
