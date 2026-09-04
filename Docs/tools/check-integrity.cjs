@@ -68,6 +68,7 @@ const CANONICAL = {
   MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,#Note",
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
+  MapNpcs_Village: "MapName,NpcId,X,Y,#Note",
   PortalRoutes: "RouteId,FromMap,FromPortal,ToMap,ToPortal,Enabled,#Note",
 
   // 보스 — 계약서 A-2-11 기준. 정의/스킬/보상을 축별로 나눈다.
@@ -132,7 +133,7 @@ for (const [name, expect] of Object.entries(CANONICAL)) {
 // ─────────────────────────────────────────────────────────
 console.log("\nC2. MapName ↔ 실제 맵");
 const maps = new Set(mapNames());
-for (const [name, col] of [["MapMonsters", "MapName"], ["MapNpcs", "MapName"], ["BossInfo", "MapName"], ["EliteSpawnTable", "MapName"]]) {
+for (const [name, col] of [["MapMonsters", "MapName"], ["MapNpcs", "MapName"], ["MapNpcs_Village", "MapName"], ["BossInfo", "MapName"], ["EliteSpawnTable", "MapName"]]) {
   const t = readCsv(name);
   if (!t) continue;
   const i = t.header.indexOf(col);
@@ -177,6 +178,7 @@ console.log("\nC3. 기본 키 중복");
 const PK = {
   MonsterInfo: ["Id"],
   NpcInfo: ["Id"],
+  MapNpcs_Village: ["MapName", "NpcId"],
   PortalRoutes: ["RouteId"],
   MapMonsters: ["MapName", "SpawnId"],
   LevelTable: ["Level"],
@@ -240,6 +242,7 @@ console.log("\nC5. 이중 스폰 (맵 박제 ↔ CSV)");
 {
   const mm = readCsv("MapMonsters");
   const mn = readCsv("MapNpcs");
+  const mnVillage = readCsv("MapNpcs_Village");
   const csvCount = (t, prefixCol) => {
     const m = new Map();
     if (!t) return m;
@@ -252,6 +255,8 @@ console.log("\nC5. 이중 스폰 (맵 박제 ↔ CSV)");
   };
   const monCsv = csvCount(mm, "MapName");
   const npcCsv = csvCount(mn, "MapName");
+  for (const [mapName, count] of csvCount(mnVillage, "MapName"))
+    npcCsv.set(mapName, (npcCsv.get(mapName) || 0) + count);
 
   let any = false;
   for (const name of mapNames()) {
@@ -297,19 +302,23 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
   };
   walk(path.join(ROOT, "RootDesk/MyDesk/Models"));
   walk(path.join(ROOT, "Global"));
+  // Maker NativeModel 의 정적 NPC 기본 모델. 프로젝트 파일로 복사되지 않아도 런타임에서 유효하다.
+  keys.add("staticnpc");
 
   // 모델이 없어도 "실제로 스폰되는지"에 따라 심각도가 다르다.
   // 스폰표가 그 Id 를 참조하면 런타임에 SpawnByModelId 가 nil 을 반환한다 -> FAIL.
   // 아무도 참조하지 않으면 아직 안 붙은 데이터일 뿐이다 -> WARN.
-  const referenced = (spawnTable, idCol) => {
-    const s = readCsv(spawnTable);
+  const referenced = (spawnTables, idCol) => {
     const set = new Set();
-    if (!s) return set;
-    const i = s.header.indexOf(idCol);
-    if (i < 0) return set;
-    for (const r of s.rows) {
-      const v = (r[i] || "").trim();
-      if (v) set.add(v);
+    for (const spawnTable of [].concat(spawnTables)) {
+      const s = readCsv(spawnTable);
+      if (!s) continue;
+      const i = s.header.indexOf(idCol);
+      if (i < 0) continue;
+      for (const r of s.rows) {
+        const v = (r[i] || "").trim();
+        if (v) set.add(v);
+      }
     }
     return set;
   };
@@ -325,8 +334,8 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
   for (const [name, col, spawnTable, spawnIdCol, loaders] of [
     ["MonsterInfo", "ModelId", "MapMonsters", "MonsterId",
       ["RootDesk/MyDesk/Spawn/MonsterSpawner.mlua", "RootDesk/MyDesk/Catalog/MonsterCatalog.mlua"]],
-    ["NpcInfo", "ModelId", "MapNpcs", "NpcId",
-      ["RootDesk/MyDesk/Spawn/NpcSpawner.mlua", "RootDesk/MyDesk/Catalog/NpcCatalog.mlua"]],
+    ["NpcInfo", "ModelId", ["MapNpcs", "MapNpcs_Village"], "NpcId",
+      ["RootDesk/MyDesk/Npc/NpcSpawner.mlua", "RootDesk/MyDesk/Npc/NpcCatalog.mlua"]],
     // 보스는 스폰 좌표가 자기 표 안에 있어 스폰표가 곧 자기 자신이다.
     ["BossInfo", "ModelId", "BossInfo", "BossId",
       ["RootDesk/MyDesk/Boss/BossSpawner.mlua", "RootDesk/MyDesk/Catalog/BossCatalog.mlua"]],
@@ -362,6 +371,21 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
     }
     if (!live.length && !dormant.length) ok("C6", `${name} 전 행에 모델이 있다`);
     else if (!live.length) ok("C6", `${name} 스폰되는 행은 전부 모델이 있다`);
+  }
+
+  // 기능 NPC 모델 id 는 CatalogNpcId 의 소문자형으로 고정한다.
+  const functional = readCsv("FunctionalNpcCatalog");
+  if (functional) {
+    const iId = functional.header.indexOf("CatalogNpcId");
+    const iEn = functional.header.indexOf("Enabled");
+    const missing = [];
+    for (const r of functional.rows) {
+      const enabled = iEn < 0 || String(r[iEn] || "").trim().toLowerCase() !== "false";
+      const id = (r[iId] || "").trim();
+      if (enabled && id && !keys.has(id.toLowerCase())) missing.push(id);
+    }
+    for (const id of missing) fail("C6", `FunctionalNpcCatalog: ${id} -> "${id.toLowerCase()}" 모델이 없다`);
+    if (!missing.length) ok("C6", "기능 NPC 전 행에 역할별 모델이 있다");
   }
 }
 
