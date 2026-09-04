@@ -11,6 +11,75 @@ script StateChaseMonster extends StateComponent
 
 	property number DetectionRange = 5
 
+	-- 🔴 한 번 붙으면 절대 놓지 않는다(사용자 확정 · 보스 전용).
+	--    DetectionRange 는 "처음 발견하는 거리"로만 쓰이고, 그 뒤로는 거리 검사를 건너뛴다.
+	--    IsChaseNearPlayer=false 로 잠그면 애초에 탐색을 안 해서 대상을 못 잡으므로
+	--    별도 플래그로 나눈다. 일반 몹은 false 라 예전 동작 그대로다.
+	property boolean KeepTargetForever = false
+
+	-- 🔴 추격 중 위층으로 점프한다(보스 전용).
+	--    StateTypeChase 는 MoveToDirection 만 불러서 발판이 끊기면 못 넘어간다.
+	--    변수명이 jumpTimeLeft/jumpArmed 라 점프처럼 보이지만 그건 "걷다 쉬는" 타이머다.
+	--    일반 몹 76종은 false 라 예전 동작 그대로다.
+	property boolean CanJumpToTarget = false
+
+	-- 🔴 발판 끝에서 아래로 떨어질 수 있는지.
+	--    RigidbodyComponent.IsolatedMove 가 true 면 "발판 끝에 도달해도 떨어지지 않는다"
+	--    (엔진 문서 원문). 추격 몹은 전부 true 로 시작하므로 아래층으로 못 내려간다.
+	--    보스·소환수만 false 로 풀어 대상을 따라 내려가게 한다.
+	--    일반 몹 74종은 예전처럼 자기 발판을 지킨다.
+	property boolean CanFallOffLedge = false
+
+	-- 🔴 점프력. 기본값 0 이면 MovementComponent.Jump() 가 조용히 아무 일도 안 한다.
+	--    ("보스가 안 뛴다"의 진짜 원인이었다 — 조건은 다 통과하는데 힘이 0이었다)
+	--
+	-- 🔴 처음엔 맵에 박힌 몹들의 값 6 을 그대로 가져왔는데, 그 몹들은 Jump() 를
+	--    한 번도 부른 적이 없어서 검증된 적 없는 값이었다.
+	--    로그 실측 결과 6 은 한 번에 6 유닛(화면 세로의 대부분)을 솟는다.
+	--    -> 낮은 턱을 넘으려다 하늘로 날아가 안전망에 걸렸다.
+	--    실측상 도달 높이 ≒ JumpForce 라 1.5 면 1.5 유닛쯤 뜬다.
+	--    통통 튀는 몹 목표치는 도달 높이 0.9 유닛(사용자 확정).
+	--    ⚠️ "도달 높이 ≒ JumpForce" 는 6 -> 6.0~6.6 관측 한 점에서 뽑은 선형 추정이고,
+	--       그 값도 안전망이 6.0 을 넘는 순간 찍은 거라 실제 정점은 더 높았을 수 있다.
+	--       아래 착지 로그로 실측한 뒤 확정한다.
+	property number JumpForce = 0.9
+
+	-- 점프 재시도 간격. 매 프레임 뛰면 제자리에서 통통 튄다.
+	@HideFromInspector
+	property number jumpCooldownLeft = 0
+
+	-- 정체 감지용. 턱·경사에 걸려 앞으로 못 나아가는 상태를 잡아 점프로 뚫는다.
+	-- PredictFootholdEnd 만으로는 "발판은 이어져 있는데 턱이 있어 못 오르는" 경우를 놓친다.
+	@HideFromInspector
+	property number lastStuckX = 0
+
+	@HideFromInspector
+	property number stuckTime = 0
+
+	-- 헛점프 누적. 뛰었는데도 x 가 안 늘면 벽에 비비고 있는 것이다.
+	@HideFromInspector
+	property number jumpTryCount = 0
+
+	@HideFromInspector
+	property number jumpBlockLeft = 0
+
+	-- 물리 이탈 복구용. 스폰 지점 y 를 기억해 두고, 너무 높이 뜬 채로 오래 있으면 되돌린다.
+	@HideFromInspector
+	property number homeY = 0
+
+	@HideFromInspector
+	property number homeX = 0
+
+	@HideFromInspector
+	property number airTime = 0
+
+	-- 직전 프레임의 y. 엔진 속도 프로퍼티를 못 믿을 때 상승 여부를 직접 잰다.
+	@HideFromInspector
+	property number lastY = 0
+
+	@HideFromInspector
+	property boolean homeSet = false
+
 	property boolean SpriteFacesLeftByDefault = true
 
 	@HideFromInspector
@@ -34,6 +103,11 @@ script StateChaseMonster extends StateComponent
 	@HideFromInspector
 	property any currentTarget = nil
 
+	-- 시전 중 이동 정지용. 0 보다 크면 StateTypeChase 가 이동을 건너뛴다.
+	-- 보스(BossSkillRunner)가 세운다. 일반 몹은 0 이라 동작이 그대로다.
+	@HideFromInspector
+	property number CastFreezeLeft = 0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- Bootstrap only. Transitions live in the StateSet (StateSetId).
@@ -47,23 +121,51 @@ script StateChaseMonster extends StateComponent
 		
 		local rigidInit = self.Entity.RigidbodyComponent
 		if isvalid(rigidInit) then
-			rigidInit.IsolatedMove = true
+			rigidInit.IsolatedMove = not self.CanFallOffLedge
 		end
 		
 		local mvInit = self.Entity.MovementComponent
 		if isvalid(mvInit) then
 			mvInit.InputSpeed = mvInit.InputSpeed * self.MoveSpeedFactor
+			-- 점프를 쓰는 개체만 손댄다. 일반 몹은 예전 값 그대로다.
+			if self.CanJumpToTarget and mvInit.JumpForce <= 0 then
+				mvInit.JumpForce = self.JumpForce
+			end
 		end
 		
 		if isvalid(self.TargetEntityRef) then
 			self.currentTarget = self.TargetEntityRef
 		end
+
+		self.lastStuckX = pos.x
+		self.lastY = pos.y
 	end
 
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- Feed currentTarget for ConditionHasTarget / ConditionNoTarget; never ChangeState.
 		local state = self.CurrentStateName
+
+		-- 🔴 시전 정지 시간은 상태와 무관하게 흘러야 한다.
+		--    StateTypeChase.OnUpdate 에서만 줄이면 CHASE 를 벗어난 순간 멈춰 버린다.
+		--    (대상이 사거리 밖으로 나가 IDLE 이 되면 남은 정지 시간이 그대로 보존되고,
+		--     다시 CHASE 로 들어올 때 그만큼 또 서 있는다 = "한참 뒤에야 쫓아온다")
+		if self.CastFreezeLeft > 0 then
+			self.CastFreezeLeft = self.CastFreezeLeft - delta
+			if self.CastFreezeLeft < 0 then
+				self.CastFreezeLeft = 0
+			end
+		end
+
+		if self.jumpCooldownLeft > 0 then
+			self.jumpCooldownLeft = self.jumpCooldownLeft - delta
+		end
+		if self.jumpBlockLeft > 0 then
+			self.jumpBlockLeft = self.jumpBlockLeft - delta
+		end
+		if self.CanJumpToTarget then
+			self:GuardAgainstFlyAway(delta)
+		end
 		if state == "DEAD" or state == "HIT" then
 			return
 		end
@@ -99,7 +201,12 @@ script StateChaseMonster extends StateComponent
 		if not self.IsChaseNearPlayer then
 			return true
 		end
-		
+
+		-- 전투가 시작되면 거리와 무관하게 계속 쫓는다.
+		if self.KeepTargetForever then
+			return true
+		end
+
 		local myPos = myTr.WorldPosition
 		local tPos = tTr.WorldPosition
 		local dx = tPos.x - myPos.x
@@ -140,6 +247,94 @@ script StateChaseMonster extends StateComponent
 			end
 		end
 		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GuardAgainstFlyAway(number delta)
+		-- 🔴 물리 이탈 안전망 + 계측.
+		--    예전 판(공중 3초 AND 높이 6)은 한 번도 안 걸렸다. 즉 올라가는 동안에도
+		--    IsOnGround() 가 참일 수 있다는 뜻이다. 공중 판정을 신뢰하지 않고
+		--    "스폰보다 얼마나 높은가" 하나로만 판단한다.
+		local rb = self.Entity.RigidbodyComponent
+		local tr = self.Entity.TransformComponent
+		if not isvalid(rb) or not isvalid(tr) then
+			return
+		end
+		local pos = tr.WorldPosition
+
+		-- 🔴 복귀 지점은 OnBeginPlay 의 좌표를 쓰면 안 된다.
+		--    스포너가 위치를 넣기 전에 OnBeginPlay 가 돌면 (0,0) 이 박히고,
+		--    그러면 복귀가 오히려 보스를 맵 위 허공으로 쏘아 올린다.
+		--    "마지막으로 땅을 밟고 있던 자리"를 계속 갱신해 그걸 복귀점으로 쓴다.
+		if rb:IsOnGround() then
+			if self.homeSet == false or (pos.y - self.homeY) < 3.0 then
+				self.homeX = pos.x
+				self.homeY = pos.y
+				self.homeSet = true
+			end
+		end
+		if self.homeSet == false then
+			return
+		end
+
+		local up = pos.y - self.homeY
+
+		-- 점프 정점 실측. 공중에 있는 동안 최고점을 들고 있다가 착지할 때 한 번만 남긴다.
+		-- 점프 1회에 1줄이라 로그가 폭주하지 않는다. 값이 확정되면 지운다.
+		if rb:IsOnGround() == false then
+			if up > self.airTime then
+				self.airTime = up
+			end
+		elseif self.airTime > 0.05 then
+			log("[JumpApex] " .. self.Entity.Name
+				.. " force=" .. tostring(self.JumpForce)
+				.. " apex=" .. tostring(self.airTime))
+			self.airTime = 0
+		else
+			self.airTime = 0
+		end
+
+		-- ⚠️ 0.5초 주기 샘플러가 여기 있었는데 지웠다.
+		--    런타임 로그가 폭주해서 maker_logs(kind="normal") 응답이 너무 커지고
+		--    조회 자체가 끊겼다. 진단 로그가 진단을 막았다.
+		--    필요하면 다시 넣되 반드시 횟수 상한을 둘 것.
+		-- 위로 솟구친 경우뿐 아니라 맵 아래로 빠진 경우도 잡는다.
+		-- IsolatedMove 를 풀면 발판 밖으로 걸어 나가 끝없이 떨어질 수 있다.
+		if up < 6.0 and up > -6.0 then
+			return
+		end
+		log_warning("[FlyAway] " .. self.Entity.Name
+			.. " 물리 이탈 - 스폰 지점으로 되돌린다 up=" .. tostring(up))
+		rb:SetWorldPosition(Vector2(self.homeX, self.homeY))
+		self.airTime = 0
+		self.jumpBlockLeft = 3.0
+		self.jumpTryCount = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnableFallOff()
+		-- 발판 끝에서 떨어지게 한다. EnableJump 와 같은 이유로 별도 메서드다 —
+		-- 스포너가 스폰 직후에 켜므로 OnBeginPlay 의 초기화가 이미 지나가 있다.
+		self.CanFallOffLedge = true
+		local rb = self.Entity.RigidbodyComponent
+		if isvalid(rb) then
+			rb.IsolatedMove = false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnableJump()
+		-- 🔴 CanJumpToTarget 을 밖에서 그냥 대입하면 안 된다.
+		--    스폰 직후에 켜는 경우 OnBeginPlay 의 JumpForce 보정이 이미 지나간 뒤라
+		--    JumpForce 가 0 인 채로 남고, Jump() 가 조용히 아무 일도 안 한다.
+		--    켜는 시점에 힘까지 같이 넣는다.
+		self.CanJumpToTarget = true
+		-- 🔴 "0 일 때만" 채우면 안 된다. 모델에 6 이 박혀 있으면 그게 그대로 살아남아
+		--    여기서 아무리 값을 낮춰도 반영되지 않는다. 항상 덮어쓴다.
+		local mv = self.Entity.MovementComponent
+		if isvalid(mv) then
+			mv.JumpForce = self.JumpForce
+		end
 	end
 
 	@ExecSpace("ServerOnly")

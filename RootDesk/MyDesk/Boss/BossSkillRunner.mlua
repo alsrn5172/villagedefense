@@ -1,0 +1,1925 @@
+@Component
+script BossSkillRunner extends AttackComponent
+
+	-- 보스 스킬 실행기. BossSkills.csv 를 그대로 돌린다.
+	--
+	-- 한 사이클:
+	--   스킬당 쿨다운 감소 -> 준비된 것 중 선택 -> 시전 모션(SpriteRUID 직접 대입)
+	--   -> CastDelay 대기 -> 판정 -> 모션 복원
+	--
+	-- 🔴 쿨다운은 스킬마다 따로 둔다.
+	--    하나만 두면 매번 우선순위 최고를 골라 같은 스킬만 무한 반복한다.
+	--    페이즈 게이트가 후보를 갈라줄 때는 안 보이지만, 게이트를 안 쓰면 바로 드러난다.
+	--
+	-- 🔴 CalcDamage / IsAttackTarget / GetDisplayHitCount / OnAttack 에 @ExecSpace 를
+	--    붙이면 부모가 미지정이라 런타임 LEA-3014 SignatureMismatch 가 난다.
+
+	property string BossId = ""
+
+	property number ThinkInterval = 0.25
+
+	property boolean LogSkill = true
+
+	-- 접촉 데미지 — 원본 몹 데이터가 전부 isBodyAttack=true 다.
+	-- MonsterAttack 이 하던 일인데, 보스는 그걸 못 단다
+	-- (둘 다 AttackComponent 파생이라 한 엔티티에 공존하면 LWA-3048).
+	-- 그래서 여기로 흡수했다.
+	property boolean ContactDamageOn = true
+
+	@MinValue(0)
+	property number ContactInterval = 0.03
+
+	-- 🔴 접촉 박스는 스프라이트 "전체 크기"에서 뽑는다. 그런데 원본 스프라이트에는
+	--    더듬이 · 꼬리 · 여백이 같이 들어 있어서 실제 몸통보다 훨씬 크게 잡힌다.
+	--    (킹슬라임 208x144 중 몸통은 가로 70% · 세로 83% 뿐이고 나머지는 더듬이다)
+	--    BossInfo 에서 보스마다 보정한다. 1.0 이면 예전 그대로다.
+	property number ContactScaleX = 1
+
+	property number ContactScaleY = 1
+
+	-- 몸통이 스프라이트 중앙에 있지 않을 때 좌우로 밀어준다(월드 단위).
+	property number ContactOffsetX = 0
+
+	-- 평상시(이동·대기) 애니메이션 재생 속도.
+	-- 🔴 이동 속도와 애니메이션 속도가 어긋나면 제자리에서 발버둥치는 것처럼 보인다.
+	--    킹슬라임은 한 번 뛰는 데 0.77초인데 실제로는 0.32 유닛밖에 못 가서 어색했다.
+	property number MovePlayRate = 1
+
+	-- BossSpawner 가 BossInfo.AttackPower 를 넣어준다. 접촉 데미지가 이 값을 쓴다.
+	property number AttackPower = 1
+
+	-- 시전 중 제자리에 서 있는 최소 시간.
+	-- 🔴 기본 0 이다. 정지는 "실제 시전 길이"만큼만 건다.
+	--    예전엔 2.0 이 최소값이라, 시전이 끝나 판정이 났는데도 남은 시간 동안
+	--    보스가 멀뚱히 서 있었다("착지하고 가만히 있다가 공격하는 것처럼 보인다").
+	property number CastFreezeSeconds = 0
+
+	-- 투사체 사거리 배수. 실제 사거리 = ProjectileSpeed x 이 값.
+	property number ProjectileRangeFactor = 1.5
+
+	-- 🔴 투사체가 그려질 레이어.
+	--    모델 기본값 "Default" 는 맵의 MapLayer0~7 보다 뒤라 배경에 가린다.
+	--    보스 자신의 레이어를 복사하는 것으로는 부족했다 — 보스 모델도 낮은 레이어를 쓴다.
+	--    이 프로젝트에서 맵에 배치된 몹·캐릭터는 전부 MapLayer7(최상단)이다. 거기에 맞춘다.
+	property string ProjectileSortingLayer = "MapLayer7"
+
+	property integer ProjectileOrderInLayer = 100
+
+	-- 🔴 피격 이펙트가 그려질 레이어.
+	--    OnAttack 이 PlayEffect 를 옵션 없이 불러서 모델 기본값 "Default" 로 그려졌다.
+	--    "Default" 는 맵의 MapLayer0~7 보다 뒤라 배경에도 가린다 - 맞아도 아무것도 안 보였다.
+	--    캐릭터·몹이 전부 MapLayer7 이므로 같은 레이어에 두되 순서를 위로 올려 앞에 그린다.
+	--    (시전 이펙트가 MapLayer0 / 1~3 인 것과 다르다 - 그건 보스 뒤에 까는 게 의도다)
+	property string HitEffectSortingLayer = "MapLayer7"
+
+	property integer HitEffectOrderInLayer = 200
+
+	-- 🔴 시전 이펙트가 앞에 그려질 레이어.
+	--    예전에는 MapLayer0 / order 3 고정이었다. 보스가 MapLayer0 / order 2 라 한 칸 차이뿐이라
+	--    확실하게 앞이라고 보장되지 않았다(사용자 관측 - 일부 스킬이 몬스터 뒤로 나온다).
+	--    투사체(MapLayer7/100)·피격 이펙트(MapLayer7/200)는 같은 방식으로 이미 해결했다.
+	--    CastEffectBehind=true 인 행(소환진 등)은 여전히 보스 뒤에 깔아야 하므로 건드리지 않는다.
+	property string CastEffectSortingLayer = "MapLayer7"
+
+	property integer CastEffectOrderInLayer = 150
+
+	@HideFromInspector
+	property any ContactShape = nil
+
+	@HideFromInspector
+	property Vector2 SpriteSize = Vector2(0, 0)
+
+	@HideFromInspector
+	property Vector2 PositionOffset = Vector2(0, 0)
+
+	@HideFromInspector
+	property integer contactTimerId = 0
+
+	@HideFromInspector
+	property any cooldowns = nil
+
+	@HideFromInspector
+	property number castLeft = -1
+
+	-- 시전 시작 시점의 상태 이름. 이게 바뀌면 시전 모션이 갈아치워진 것이므로 되돌린다.
+	@HideFromInspector
+	property string castHoldState = ""
+
+	-- 시전 클립 길이 실측 캐시 (skillId -> 초). CastDelay 가 음수인 스킬이 이 값을 쓴다.
+	@HideFromInspector
+	property any clipLen = nil
+
+	-- 2단 시전(CastRUID2)의 클립 길이. 1단(clipLen)과 반드시 따로 잰다 -
+	-- 합쳐서 재면 런타임이 castDelay2 를 또 더해 2단이 두 번 계산된다.
+	@HideFromInspector
+	property any clipLen2 = nil
+
+	-- 시전 클립의 "전체" 길이. clipLen 은 CastHitFrame 까지만 재므로 꼬리를 모른다.
+	-- RecoverTime -1(자동)이 남은 꼬리를 계산할 때 쓴다.
+	@HideFromInspector
+	property any clipFull = nil
+
+	-- 타격 이펙트(FireEffectRUID)의 원본 폭(유닛). foothold 세그먼트 길이에 맞춰 가로 배율을 낼 때 쓴다.
+	@HideFromInspector
+	property any fireEffectWidth = nil
+
+
+	-- 2단 시전 잔여 시간. 점프 공격처럼 "준비 -> 도약 -> 착지 판정" 인 기술에 쓴다.
+	-- CastRUID2 가 비어 있으면 이 구간을 건너뛴다.
+	@HideFromInspector
+	property number castLeft2 = -1
+
+	-- 판정 후 시전 자세를 붙잡는 잔여 시간. 0 이하가 되면 idle 로 복원한다.
+	@HideFromInspector
+	property number recoverLeft = -1
+
+	@HideFromInspector
+	property number thinkAccumulator = 0
+
+	@HideFromInspector
+	property any pendingSkill = nil
+
+	@HideFromInspector
+	property any activeSkill = nil
+
+	@HideFromInspector
+	property any Shape = nil
+
+	@HideFromInspector
+	property string restoreRuid = ""
+
+	-- 연사 상태. FireProjectile 이 첫 발을 쏘고 나머지를 여기에 예약한다.
+	-- 🔴 시전(castLeft) / 복귀(recoverLeft) 구간이 끝난 뒤에도 계속 나가야 하므로
+	--    OnUpdate 의 early-return 보다 앞에서 돈다.
+	@HideFromInspector
+	property any burstSkill = nil
+
+	@HideFromInspector
+	property number burstLeft = 0
+
+	@HideFromInspector
+	property number burstTimer = 0
+
+	-- 이동속도 버프를 건 대상들. {entity, baseSpeed, left} 배열.
+	-- 🔴 버프를 건 쪽이 원복까지 책임진다. 대상에 컴포넌트를 붙이면 일반 몹 76종의
+	--    모델을 전부 건드려야 하고, FactionAuraController 가 도는 맵에서는
+	--    다음 틱에 InputSpeed 를 덮어써 버려 서로 싸운다.
+	@HideFromInspector
+	property any buffed = nil
+
+	-- target 판정 2패스용. PlayerAttack 과 같은 방식이다.
+	@HideFromInspector
+	property table Candidates = {}
+
+	@HideFromInspector
+	property any CurrentTarget = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 판정 도형은 하나만 만들고 매 시전마다 위치·크기를 갱신해 재사용한다.
+		self.Shape = BoxShape(Vector2.zero, Vector2(1, 1), 0)
+		self.cooldowns = {}
+		self.clipLen = {}
+		self.clipLen2 = {}
+		self.clipFull = {}
+		self.fireEffectWidth = {}
+		self.buffed = {}
+
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			self.restoreRuid = sprite.SpriteRUID
+			sprite.PlayRate = self.MovePlayRate
+		end
+
+		if self.ContactDamageOn then
+			self:StartContactDamage()
+		end
+
+		-- BossId 는 BossSpawner 가 스폰 직후에 넣는다. 한 박자 뒤에 재야 값이 들어와 있다.
+		_TimerService:SetTimerOnce(function()
+			self:MeasureCastClips()
+		end, 0.5)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MeasureCastClips()
+		-- 🔴 시전 클립의 실제 길이를 재서 캐시한다.
+		--    Frame.Delay 를 합치면 정확한 길이가 나온다 — 추측할 필요가 없다.
+		--    CastDelay 를 음수로 두면 이 값 / CastPlayRate 를 시전 시간으로 쓴다.
+		--    (프레임 지연을 몰라서 1.0 -> 1.25 -> 1.6 으로 헤매던 문제를 없앤다)
+		if self.BossId == "" or _BossCatalog == nil then
+			return
+		end
+		local skills = _BossCatalog:GetSkills(self.BossId)
+		if skills == nil then
+			return
+		end
+
+		local ruids = {}
+		for _, sk in ipairs(skills) do
+			if sk.castRuid ~= "" then table.insert(ruids, sk.castRuid) end
+			if sk.castRuid2 ~= "" then table.insert(ruids, sk.castRuid2) end
+			if sk.fireEffectRuid ~= nil and sk.fireEffectRuid ~= "" then table.insert(ruids, sk.fireEffectRuid) end
+		end
+		if #ruids == 0 then
+			return
+		end
+
+		_ResourceService:PreloadAsync(ruids, function()
+			for _, sk in ipairs(skills) do
+				-- CastHitFrame 이 0 보다 크면 그 프레임까지만 센다(착지 시점).
+				-- 🔴 1단과 2단을 합산하면 안 된다. castLeft(1단) 이 끝난 뒤 castLeft2(2단) 가
+				--    따로 도는 구조라, 합쳐 넣으면 2단 길이가 두 번 들어간다.
+				local seconds = self:ClipSecondsUpTo(sk.castRuid, sk.castHitFrame)
+				self.clipFull[sk.skillId] = self:ClipSeconds(sk.castRuid)
+				-- 타격 이펙트 원본 폭. 첫 프레임 스프라이트 Width / PixelPerUnit.
+				if sk.fireEffectRuid ~= nil and sk.fireEffectRuid ~= "" then
+					local fc = _ResourceService:LoadAnimationClipAndWait(sk.fireEffectRuid)
+					if fc ~= nil and fc.Frames ~= nil and fc.Frames[1] ~= nil and fc.Frames[1].FrameSprite ~= nil then
+						local sp = fc.Frames[1].FrameSprite
+						if sp.PixelPerUnit > 0 then
+							self.fireEffectWidth[sk.skillId] = sp.Width / sp.PixelPerUnit
+						end
+					end
+				end
+				if sk.castRuid2 ~= "" then
+					self.clipLen2[sk.skillId] = self:ClipSeconds(sk.castRuid2)
+				end
+				if seconds > 0 then
+					self.clipLen[sk.skillId] = seconds
+					log("[BossSkillRunner] " .. self.BossId .. "/" .. sk.skillId
+						.. " 클립 실측 " .. tostring(seconds) .. "초"
+						.. " -> 재생 " .. tostring(sk.castPlayRate) .. "배에서 "
+						.. tostring(seconds / sk.castPlayRate) .. "초")
+				end
+			end
+		end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ClipSecondsUpTo(string ruid, number frameCount)
+		-- 앞에서 frameCount 개 프레임까지의 누적 시간.
+		-- 🔴 점프 클립은 마지막 프레임이 "착지 후 복귀 자세"라 길다.
+		--    클립 전체 길이로 판정을 걸면 바닥에 닿은 뒤에도 한참 기다린다.
+		--    CastHitFrame 으로 착지 프레임을 지정하면 그 시점에 판정이 난다.
+		if ruid == nil or ruid == "" then
+			return 0
+		end
+		local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+		if clip == nil or clip.Frames == nil then
+			return 0
+		end
+		local n = #clip.Frames
+		if frameCount < 0 or frameCount > n then
+			frameCount = n
+		end
+		local total = 0
+		for i = 1, frameCount do
+			local f = clip.Frames[i]
+			if f ~= nil and f.Delay ~= nil then
+				total = total + f.Delay
+			end
+		end
+		if total > 20 then
+			total = total / 1000
+		end
+		return total
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ClipSeconds(string ruid)
+		-- 프레임 지연 합계. 단위가 ms 로 오는 경우가 있어 큰 값이면 나눠준다.
+		if ruid == nil or ruid == "" then
+			return 0
+		end
+		local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+		if clip == nil or clip.Frames == nil then
+			return 0
+		end
+		local total = 0
+		for i = 1, #clip.Frames do
+			local f = clip.Frames[i]
+			if f ~= nil and f.Delay ~= nil then
+				total = total + f.Delay
+			end
+		end
+		if total > 20 then
+			total = total / 1000
+		end
+		return total
+	end
+
+	@ExecSpace("ServerOnly")
+	method number EffectiveRecoverTime(any skill)
+		-- 🔴 RecoverTime 이 음수면 "클립이 끝까지 돌 만큼" 붙잡는다.
+		--    이걸 손으로 넣으면 클립보다 짧게 잡히고, 그러면 RestoreSprite 가
+		--    모션 도중에 끼어들어 애니메이션이 중간에 끊긴다.
+		--    (에피네아 S3: 클립 3.27초인데 0.36+0.7=1.06초만 붙잡아 32% 만 보였다)
+		--    시전 구간이 이미 먹은 시간을 빼고 남은 꼬리만 돌려준다.
+		if skill.recoverTime >= 0 then
+			return skill.recoverTime
+		end
+		local full = self.clipFull[skill.skillId]
+		if full == nil or full <= 0 then
+			return 0
+		end
+		local rate = skill.castPlayRate
+		if rate <= 0 then
+			rate = 1
+		end
+		local total = full / rate
+		if skill.castRuid2 ~= "" then
+			local tail = self.clipLen2[skill.skillId]
+			if tail ~= nil and tail > 0 then
+				total = total + tail / rate
+			end
+		end
+		local left = total - self:EffectiveCastDelay(skill) - self:EffectiveCastDelay2(skill)
+		if left <= 0 then
+			return 0
+		end
+		return left
+	end
+
+	method number EffectiveCastDelay2(any skill)
+		-- 2단도 1단과 같은 규칙 - CastDelay2 가 음수면 2단 클립을 실측해서 쓴다.
+		if skill.castRuid2 == "" then
+			return 0
+		end
+		if skill.castDelay2 >= 0 then
+			return skill.castDelay2
+		end
+		local measured = self.clipLen2[skill.skillId]
+		if measured == nil or measured <= 0 then
+			return 0
+		end
+		local rate = skill.castPlayRate
+		if rate <= 0 then
+			rate = 1
+		end
+		return measured / rate
+	end
+
+	method number EffectiveCastDelay(any skill)
+		-- CastDelay 가 음수면 "실측 클립 한 바퀴" 를 쓴다.
+		if skill.castDelay >= 0 then
+			return skill.castDelay
+		end
+		local measured = self.clipLen[skill.skillId]
+		if measured == nil or measured <= 0 then
+			return 1.0
+		end
+		local rate = skill.castPlayRate
+		if rate <= 0 then
+			rate = 1
+		end
+		return measured / rate
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartContactDamage()
+		-- 몸통 크기의 판정 박스를 짧은 간격으로 계속 때린다 = 접촉 데미지.
+		-- 박스는 스프라이트 실제 크기에서 뽑는다(MonsterAttack 과 같은 방식).
+		local monster = self.Entity.Monster
+		local renderer = self.Entity.SpriteRendererComponent
+		if not isvalid(monster) or not isvalid(renderer) then
+			return
+		end
+		if renderer.SpriteRUID == nil or renderer.SpriteRUID == "" or renderer.SpriteRUID == "null" then
+			log_warning("[BossSkillRunner] SpriteRUID missing: " .. self.Entity.Name)
+			return
+		end
+
+		self.ContactShape = BoxShape(Vector2.zero, Vector2.one, 0)
+		local standRuid = renderer.SpriteRUID
+
+		-- 동기 로드는 서버를 한 프레임 멈춘다. 프리로드 뒤에 한 번만 읽는다.
+		_ResourceService:PreloadAsync({standRuid}, function()
+			local clip = _ResourceService:LoadAnimationClipAndWait(standRuid)
+			if clip == nil or clip.Frames == nil or clip.Frames[1] == nil then
+				log_warning("[BossSkillRunner] animation clip missing: " .. self.Entity.Name)
+				return
+			end
+			local frame = clip.Frames[1].FrameSprite
+			if frame == nil or frame.PixelPerUnit <= 0 then
+				log_warning("[BossSkillRunner] invalid first frame: " .. self.Entity.Name)
+				return
+			end
+			local sizePx = Vector2(frame.Width, frame.Height)
+			local ppu = frame.PixelPerUnit
+			-- 몸통 비율만큼 줄이고, 좌우 치우침을 보정한다.
+			local full = sizePx / ppu
+			self.SpriteSize = Vector2(full.x * self.ContactScaleX, full.y * self.ContactScaleY)
+			local center = (sizePx / 2 - frame.PivotPixel:ToVector2()) / ppu
+			self.PositionOffset = Vector2(center.x + self.ContactOffsetX, center.y * self.ContactScaleY)
+
+			self.contactTimerId = _TimerService:SetTimerRepeat(function()
+				if monster.IsDead == false then
+					self:AttackContact()
+				end
+			end, self.ContactInterval)
+
+			log("[BossSkillRunner] " .. self.BossId .. " contact ready size="
+				.. tostring(self.SpriteSize.x) .. "x" .. tostring(self.SpriteSize.y)
+				.. " dmg=" .. tostring(self.AttackPower))
+		end)
+	end
+
+	method void AttackContact()
+		-- 회전·스케일을 반영해 매 틱 몸통 박스를 다시 만든다.
+		-- ⚠️ @ExecSpace 를 붙이지 않는다 — 이 안에서 부르는 AttackFast 의
+		--    판정 훅들이 부모 시그니처를 따라야 한다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) or self.ContactShape == nil then
+			return
+		end
+		local pos = transform.WorldPosition
+		local sx = transform.Scale.x
+		local sy = transform.Scale.y
+
+		-- 🔴 오프셋은 보는 방향을 따라 뒤집혀야 한다.
+		--    몸통이 스프라이트 중앙에 없는 몹(킹슬라임은 더듬이가 오른쪽에 붙어 있다)은
+		--    PositionOffset.x 가 0 이 아닌데, 방향 전환은 Scale.x 가 아니라 sprite.FlipX 로 한다.
+		--    그래서 반전을 안 하면 한쪽을 볼 때만 박스가 앞으로 튀어나온다.
+		local flip = 1
+		local renderer = self.Entity.SpriteRendererComponent
+		if isvalid(renderer) and renderer.FlipX then
+			flip = -1
+		end
+
+		local rad = math.rad(transform.ZRotation)
+		local px = self.PositionOffset.x * sx * flip
+		local ox = math.cos(rad) * px - math.sin(rad) * self.PositionOffset.y * sy
+		local oy = math.sin(rad) * px + math.cos(rad) * self.PositionOffset.y * sy
+
+		self.ContactShape.Size = Vector2(self.SpriteSize.x * math.abs(sx), self.SpriteSize.y * math.abs(sy))
+		self.ContactShape.Position = Vector2(pos.x + ox, pos.y + oy)
+		self.ContactShape.Angle = transform.ZRotation
+
+		self:AttackFast(self.ContactShape, "contact", CollisionGroups.Player)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 타이머를 안 걷으면 엔티티가 사라진 뒤에도 계속 돈다.
+		if self.contactTimerId ~= 0 then
+			_TimerService:ClearTimer(self.contactTimerId)
+			self.contactTimerId = 0
+		end
+		-- 버프를 건 채로 죽으면 대상 속도가 영구히 올라간 채 남는다.
+		self:ClearAllBuffs()
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsDead()
+		-- script.Monster 가 사망 권위를 갖는다.
+		local monster = self.Entity.Monster
+		return isvalid(monster) and monster.IsDead
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GetHpPercent()
+		-- 페이즈 게이트 입력. Monster 가 없으면 100 으로 본다.
+		local monster = self.Entity.Monster
+		if not isvalid(monster) then
+			return 100
+		end
+		local maxHp = monster.MaxHp
+		if maxHp == nil or maxHp <= 0 then
+			return 100
+		end
+		return (monster.Hp / maxHp) * 100
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GetFacing()
+		-- 🔴 Scale.x 로 판정하면 안 된다.
+		--    StateTypeChase 는 방향을 sprite.FlipX 로 표현하고 Scale.x 는 건드리지 않는다.
+		--    Scale.x 를 보면 값이 안 변해서 스킬이 항상 한쪽으로만 나간다.
+		--
+		-- 추격 대상이 있으면 그쪽을 본다. 이게 가장 확실하다.
+		local target = self:GetChaseTarget()
+		local myTr = self.Entity.TransformComponent
+		if isvalid(target) and isvalid(myTr) then
+			local tTr = target.TransformComponent
+			if isvalid(tTr) then
+				if tTr.WorldPosition.x < myTr.WorldPosition.x then
+					return -1
+				end
+				return 1
+			end
+		end
+
+		-- 대상이 없으면 스프라이트가 보고 있는 쪽을 따른다.
+		-- StateTypeChase: FlipX = goingLeft ~= SpriteFacesLeftByDefault
+		-- 기본값(SpriteFacesLeftByDefault=true)에서 FlipX=true 는 오른쪽을 뜻한다.
+		local sprite = self.Entity.SpriteRendererComponent
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(sprite) then
+			local facesLeft = true
+			if isvalid(chase) then
+				facesLeft = chase.SpriteFacesLeftByDefault
+			end
+			local goingLeft = (sprite.FlipX ~= facesLeft)
+			if goingLeft then
+				return -1
+			end
+			return 1
+		end
+		return -1
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetChaseTarget()
+		-- StateChaseMonster 가 잡고 있는 추격 대상.
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(chase) then
+			local t = chase:GetCurrentTarget()
+			if isvalid(t) then
+				return t
+			end
+		end
+		-- 🔴 정지형 보스는 추격 대상이 영원히 nil 이다.
+		--    피아누스는 IsChaseNearPlayer=false 라 자동 탐색을 안 한다.
+		--    그러면 DistanceToTarget 이 99999 를 줘서 스킬이 하나도 안 나간다.
+		--    대상이 없을 때만 직접 훑는다. 사거리 제한은 SkillReach 가 그대로 건다.
+		return self:FindNearestPlayer()
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FindNearestPlayer()
+		-- 같은 맵의 최근접 플레이어. 없으면 nil.
+		local map = self.Entity.CurrentMap
+		local myTr = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(myTr) then
+			return nil
+		end
+		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		if users == nil then
+			return nil
+		end
+		local myPos = myTr.WorldPosition
+		local best = nil
+		local bestDist = math.huge
+		for _, u in ipairs(users) do
+			if isvalid(u) then
+				local utr = u.TransformComponent
+				if isvalid(utr) then
+					local p = utr.WorldPosition
+					local dx = p.x - myPos.x
+					local dy = p.y - myPos.y
+					local d = dx * dx + dy * dy
+					if d < bestDist then
+						bestDist = d
+						best = u
+					end
+				end
+			end
+		end
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		if self.BossId == "" or self:IsDead() then
+			return
+		end
+
+		-- 쿨다운은 시전 중에도 계속 돈다.
+		if self.cooldowns ~= nil then
+			for k, v in pairs(self.cooldowns) do
+				if v > 0 then
+					self.cooldowns[k] = v - delta
+				end
+			end
+		end
+
+		-- 🔴 연사와 버프 만료는 시전/복귀 구간의 early-return 보다 앞에서 돈다.
+		--    뒤에 두면 2발째부터 영영 안 나가고, 버프도 안 풀린다.
+		self:TickBurst(delta)
+		self:TickBuffs(delta)
+
+		-- 1단 시전(준비 동작). 끝나면 2단으로 넘기거나 바로 판정한다.
+		if self.castLeft >= 0 then
+			self:HoldCastSprite(self.pendingSkill)
+			self.castLeft = self.castLeft - delta
+			if self.castLeft <= 0 then
+				self.castLeft = -1
+				self:BeginCastPhase2()
+			end
+			return
+		end
+
+		-- 2단 시전(도약 자세 등). 이 구간이 끝나는 순간이 착지 = 판정 시점이다.
+		if self.castLeft2 >= 0 then
+			self:HoldCastSprite(self.pendingSkill)
+			self.castLeft2 = self.castLeft2 - delta
+			if self.castLeft2 <= 0 then
+				self.castLeft2 = -1
+				self:FireSkill()
+			end
+			return
+		end
+
+		-- 판정이 끝난 뒤 시전 자세를 붙잡는 구간. 여기서 다음 스킬을 고르지 않는다.
+		if self.recoverLeft >= 0 then
+			self.recoverLeft = self.recoverLeft - delta
+			if self.recoverLeft <= 0 then
+				self.recoverLeft = -1
+				self:RestoreSprite()
+			end
+			return
+		end
+
+		self.thinkAccumulator = self.thinkAccumulator + delta
+		if self.thinkAccumulator < self.ThinkInterval then
+			return
+		end
+		self.thinkAccumulator = 0
+
+		self:PickAndCast()
+	end
+
+	@ExecSpace("ServerOnly")
+	method number SkillReach(any skill)
+		-- 그 스킬이 닿는 거리. 사거리 밖이면 쓰지 않고 계속 쫓아간다.
+		--
+		-- 소환은 거리와 무관하다. 추격 대상만 있으면 쓴다.
+		-- (대상은 DetectionRange 안에서만 잡히므로 이것만으로 충분히 제한된다)
+		-- CSV 가 사거리를 직접 지정했으면 그게 최우선이다.
+		if skill.reach >= 0 then
+			return skill.reach
+		end
+		-- 텔레포트도 거리와 무관하다. 플레이어가 멀리 유인했을 때 둥지로 돌아가는 게 목적이라
+		-- 오히려 멀수록 써야 한다. 몸통 크기(1.95)로 사거리를 잡으면 붙어 있을 때만 쓴다.
+		if skill.shapeType == "summon" or skill.shapeType == "buff"
+			or skill.shapeType == "teleport" then
+			return 99998
+		end
+		-- 🔴 페이크는 흉내내는 진짜 스킬과 같은 거리에서 나와야 속는다.
+		--    원거리를 흉내내는 행은 ProjectileSpeed 를 남겨둔다(투사체는 안 나간다).
+		if skill.shapeType == "projectile"
+			or (skill.shapeType == "fake" and skill.projectileSpeed > 0) then
+			return skill.projectileSpeed * self.ProjectileRangeFactor
+		end
+		-- 🔴 박스는 중심이 offsetX 이고 폭이 rangeX 다. 즉 바깥 끝은 offsetX + rangeX/2.
+		--    offsetX + rangeX 로 잡으면 실제로 안 닿는 거리에서도 시전한다.
+		return skill.offsetX + skill.rangeX * 0.5
+	end
+
+	@ExecSpace("ServerOnly")
+	method number DistanceToTarget()
+		-- 추격 대상까지의 거리. 대상이 없으면 매우 큰 값을 준다.
+		local target = self:GetChaseTarget()
+		if not isvalid(target) then
+			return 99999
+		end
+		local myTr = self.Entity.TransformComponent
+		local tTr = target.TransformComponent
+		if not isvalid(myTr) or not isvalid(tTr) then
+			return 99999
+		end
+		local a = myTr.WorldPosition
+		local b = tTr.WorldPosition
+		local dx = b.x - a.x
+		local dy = b.y - a.y
+		return math.sqrt(dx * dx + dy * dy)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PickSkill()
+		-- HP% 구간에 맞고 + 쿨다운이 준비됐고 + 사거리 안에 대상이 있는 스킬만 고른다.
+		-- Priority 최고를 고르되 동률이면 랜덤 — 같은 순서 반복을 막는다.
+		if _BossCatalog == nil then
+			return nil
+		end
+		local usable = _BossCatalog:GetSkillsForHp(self.BossId, self:GetHpPercent())
+
+		-- 대상이 아예 없으면 아무것도 안 쓴다. 허공에 시전하던 문제를 막는다.
+		local dist = self:DistanceToTarget()
+
+		local ready = {}
+		local bestPriority = nil
+		for _, s in ipairs(usable) do
+			local cd = self.cooldowns[s.skillId]
+			if (cd == nil or cd <= 0) and dist <= self:SkillReach(s) then
+				if bestPriority == nil or s.priority > bestPriority then
+					bestPriority = s.priority
+					ready = { s }
+				elseif s.priority == bestPriority then
+					table.insert(ready, s)
+				end
+			end
+		end
+
+		if #ready == 0 then
+			return nil
+		end
+		if #ready == 1 then
+			return ready[1]
+		end
+		local pick = math.floor(_UtilLogic:RandomDouble() * #ready) + 1
+		if pick > #ready then
+			pick = #ready
+		end
+		return ready[pick]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PickAndCast()
+		local skill = self:PickSkill()
+		if skill == nil then
+			return
+		end
+		self.pendingSkill = skill
+
+		-- 시전하는 동안 제자리에 선다. 걸어다니면서 스킬을 쓰면 모션이 겉돈다.
+		-- 쿨다운 중이거나 사거리 밖이면 여기까지 안 오므로 그때는 계속 추격한다.
+		self:FreezeMovement(self:EffectiveCastDelay(skill) + self:EffectiveCastDelay2(skill)
+			+ self:EffectiveRecoverTime(skill))
+
+		-- 시전 모션 — SpriteRUID 직접 대입(Pattern A).
+		-- ChangeState("ATTACK") 은 ATTACK 이 자동 등록되지 않아 LEA-3005 가 난다.
+		if skill.castRuid ~= "" then
+			local sprite = self.Entity.SpriteRendererComponent
+			if isvalid(sprite) then
+				self.restoreRuid = sprite.SpriteRUID
+				-- 🔴 이전 스킬이 좁혀둔 프레임 창을 반드시 푼다.
+				--    안 풀면 다음 클립이 남의 구간에 갇혀 몇 프레임만 깜빡인다.
+				sprite.StartFrameIndex = 0
+				sprite.EndFrameIndex = 2147483647
+				sprite.SpriteRUID = skill.castRuid
+				-- 재생 속도. 클립을 복제해 프레임을 늘릴 필요가 없다 —
+				-- SpriteRendererComponent 에 PlayRate 가 있다. 1 미만이면 느려진다.
+				sprite.PlayRate = skill.castPlayRate
+			end
+		end
+
+		-- 시전음은 모션과 같이 시작해야 한다. 페이크 모션도 소리를 내야 속는다.
+		self:PlayBossSound(skill.castSoundRuid)
+
+		-- 뒤에 까는 이펙트(마법진 등)는 "예고"다. 시전 시작에 띄워야 경고가 된다.
+		-- 앞에 뜨는 이펙트(휘두르는 궤적 등)는 "타격"이라 판정 순간에 띄운다 -> FireSkill.
+		if skill.castEffectAtStart then
+			self:PlayCastEffect(skill)
+		end
+
+		local chaseNow = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(chaseNow) then
+			self.castHoldState = chaseNow.CurrentStateName
+		end
+
+		local delay = self:EffectiveCastDelay(skill)
+		if delay > 0 then
+			self.castLeft = delay
+		else
+			self:FireSkill()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void HoldCastSprite(any skill)
+		-- 시전 중에 상태가 바뀌면(HIT 피격 등) StateAnimationComponent 가 그 상태의 클립으로
+		-- 갈아치워서 시전 모션이 사라진다. 상태가 바뀐 순간에만 되돌린다.
+		--
+		-- 🔴 sprite.SpriteRUID 를 읽어서 비교하면 안 된다. @Sync 프로퍼티라 방금 쓴 값이
+		--    바로 읽히지 않아 비교가 늘 "다르다"가 되고, 매 프레임 재대입 -> 클립이 계속
+		--    처음부터 다시 돌아 첫 프레임에서 얼어붙는다.
+		--    ("머쉬맘이 눈만 번쩍이고 점프를 안 한다"의 원인이었다)
+		if skill == nil then
+			return
+		end
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if not isvalid(chase) then
+			return
+		end
+		local state = chase.CurrentStateName
+		if state == self.castHoldState then
+			return
+		end
+		self.castHoldState = state
+
+		local ruid = skill.castRuid
+		if self.castLeft2 >= 0 and skill.castRuid2 ~= "" then
+			ruid = skill.castRuid2
+		end
+		if ruid == "" then
+			return
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			sprite.SpriteRUID = ruid
+			sprite.PlayRate = skill.castPlayRate
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoTeleport(any skill)
+		-- 둥지 중앙(= BossInfo 의 스폰 좌표)으로 순간이동한다.
+		-- 🔴 판정을 내지 않는다. 에피네아 S7 은 공격이 아니라 이동기다 -
+		--    S1~S6 을 전부 끄고 확인했더니 폭이 stand(1.87)와 같은 1.95 뿐이었다.
+		-- 스폰 좌표는 보스가 실제로 태어난 자리라 지형이 안전한 것이 보장된다.
+		if _BossCatalog == nil then
+			return
+		end
+		local info = _BossCatalog:GetInfo(self.BossId)
+		if info == nil or info.hasSpawnPos == false then
+			log_warning("[BossSkillRunner] teleport: 스폰 좌표 없음 " .. self.BossId)
+			return
+		end
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		local from = transform.WorldPosition
+
+		-- 🔴 TransformComponent.WorldPosition 직접 대입은 안 된다.
+		--    Rigidbody 가 자기 위치를 따로 들고 있어서, 쓴 그 프레임에는 값이 바뀌지만
+		--    다음 프레임에 물리가 옛 좌표로 정확히 되돌려 놓는다.
+		--    실측: 쓰기전 (-5.534,-1.499) -> 쓴직후 (-0.450,-1.100) -> 0.1초후 (-5.534,-1.499).
+		--    StateChaseMonster 가 물리 이탈 복구에 쓰는 rb:SetWorldPosition 이 정답이다.
+		local rb = self.Entity.RigidbodyComponent
+		if isvalid(rb) then
+			rb:SetWorldPosition(Vector2(info.spawnX, info.spawnY))
+		else
+			-- Rigidbody 가 없는 보스(정지형 등)는 Transform 이 물리에 안 묶여 직접 대입이 먹는다.
+			transform.WorldPosition = Vector3(info.spawnX, info.spawnY, from.z)
+		end
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " teleport=" .. skill.skillId
+				.. " (" .. tostring(from.x) .. "," .. tostring(from.y) .. ")"
+				.. " -> (" .. tostring(info.spawnX) .. "," .. tostring(info.spawnY) .. ")")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginCastPhase2()
+		-- 준비 동작이 끝난 시점. 2단 그림이 있으면 그걸로 바꾸고 그 시간만큼 더 끈다.
+		-- 킹슬라임: attack1(웅크림) -> jump(눈 부릅뜨고 도약) -> 착지에서 판정.
+		-- 2단이 없으면(대부분의 스킬) 여기서 바로 판정한다.
+		local skill = self.pendingSkill
+		if skill == nil or skill.castRuid2 == "" then
+			self:FireSkill()
+			return
+		end
+		local delay2 = self:EffectiveCastDelay2(skill)
+		if delay2 <= 0 then
+			self:FireSkill()
+			return
+		end
+
+		-- 🔴 텔레포트는 두 클립 "사이" 에서 옮긴다.
+		--    1단(모으기)에서 사라지고 2단(나타나기)에서 새 자리에 뜨는 그림이 된다.
+		--    끝에서 옮기면 두 클립을 옛 자리에서 다 돌고 마지막에 툭 순간이동한다.
+		if skill.shapeType == "teleport" then
+			self:DoTeleport(skill)
+		end
+
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			sprite.SpriteRUID = skill.castRuid2
+			sprite.PlayRate = skill.castPlayRate
+		end
+		self.castLeft2 = delay2
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireSkill()
+		-- CastDelay 가 끝난 시점. 실제 판정을 낸다.
+		local skill = self.pendingSkill
+		self.pendingSkill = nil
+		if skill == nil then
+			return
+		end
+
+		-- 이 스킬만 쿨다운에 들어간다. 다른 스킬은 계속 준비 상태다.
+		self.cooldowns[skill.skillId] = skill.cooldown
+
+		-- 앞에 뜨는 이펙트는 타격 궤적이다. 판정과 같은 순간에 띄워야 맞는 느낌이 난다.
+		-- (시전 시작에 띄우면 이펙트만 먼저 나오고 한참 뒤에 맞는다)
+		if not skill.castEffectAtStart then
+			self:PlayCastEffect(skill)
+		end
+
+		if skill.shapeType == "fake" then
+			-- 페이크 모션. 판정을 아예 내지 않는다.
+			-- 시전 모션과 소리는 진짜와 같고, 발사되는 순간 아무 일도 안 일어난다.
+			-- RecoverTime 0 이라 여기서 바로 idle 로 돌아가 "끊긴" 느낌을 준다.
+			if self.LogSkill then
+				log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId .. " shape=fake")
+			end
+		elseif skill.shapeType == "teleport" then
+			-- 판정 없음. 2단 시전이 있으면 이미 BeginCastPhase2 에서 옮겼다.
+			-- 2단이 없는 설정이면 여기서 옮긴다.
+			if skill.castRuid2 == "" then
+				self:DoTeleport(skill)
+			end
+		elseif skill.shapeType == "summon" then
+			self:FireSummon(skill)
+		elseif skill.shapeType == "buff" then
+			self:FireBuff(skill)
+		elseif skill.shapeType == "projectile" then
+			self:FireProjectile(skill)
+		elseif skill.shapeType == "target" then
+			self:FireTargeted(skill)
+		else
+			self:FireArea(skill)
+		end
+
+		-- 🔴 여기서 바로 복원하면 판정 순간에 모션이 끊겨 idle 로 튄다.
+		--    RecoverTime 만큼 시전 자세를 붙잡았다가 되돌린다.
+		-- 판정 순간에 바닥마다 띄우는 두 번째 이펙트 (예고는 CastEffect · 타격은 FireEffect).
+		-- 피아누스 S7: 크림빛 대파동이 예고로 뜬 뒤 여기서 노란 전기가 모든 층에 깔린다.
+		self:PlayFireEffects(skill)
+
+		local recover = self:EffectiveRecoverTime(skill)
+		if recover > 0 then
+			self.recoverLeft = recover
+		else
+			self:RestoreSprite()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetShapeFor(any skill)
+		-- 전방으로 오프셋을 준 판정 박스를 만든다. 보는 방향으로 X 부호가 뒤집힌다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		local pos = transform.WorldPosition
+		local facing = self:GetFacing()
+		self.Shape.Position = Vector2(pos.x + skill.offsetX * facing, pos.y + skill.offsetY)
+		self.Shape.Size = Vector2(skill.rangeX, skill.rangeY)
+		self.Shape.Angle = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireArea(any skill)
+		-- box 와 ground 는 같은 박스로 때린다. 차이는 IsAttackTarget 에서 갈린다.
+		-- attackInfo 로 ShapeType 을 실어 보내 거기서 읽는다.
+		if not isvalid(self.Entity.TransformComponent) then
+			return
+		end
+		self:SetShapeFor(skill)
+
+		self.activeSkill = skill
+		self:AttackFast(self.Shape, skill.shapeType, CollisionGroups.Player)
+		self.activeSkill = nil
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=" .. skill.shapeType .. " dmg=" .. tostring(skill.damage))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireTargeted(any skill)
+		-- 전방 최근접 1명만 때린다. PlayerAttack 과 같은 2패스 방식이다.
+		-- AttackFast 는 반환이 없어 2패스에 못 쓴다. Attack 을 쓴다.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then
+			return
+		end
+		local myPos = transform.WorldPosition
+		self:SetShapeFor(skill)
+
+		self.activeSkill = skill
+
+		-- 1패스: 데미지 없이 후보만 수집한다.
+		self.Candidates = {}
+		self.CurrentTarget = nil
+		self:Attack(self.Shape, "probe", CollisionGroups.Player)
+
+		-- 제곱거리로 최근접 선택(루트 불필요).
+		local closest = nil
+		local best = math.huge
+		for _, def in ipairs(self.Candidates) do
+			if isvalid(def) then
+				local p = def.TransformComponent.WorldPosition
+				local dx = p.x - myPos.x
+				local dy = p.y - myPos.y
+				local d = dx * dx + dy * dy
+				if d < best then
+					best = d
+					closest = def
+				end
+			end
+		end
+		self.CurrentTarget = closest
+
+		-- 2패스: 그 하나만 실제 타격.
+		if isvalid(self.CurrentTarget) then
+			self:Attack(self.Shape, "target", CollisionGroups.Player)
+		end
+
+		self.activeSkill = nil
+		self.CurrentTarget = nil
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=target candidates=" .. tostring(#self.Candidates)
+				.. " dmg=" .. tostring(skill.damage))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireBuff(any skill)
+		-- 범위 안 아군 몬스터(보스 포함)의 이동속도를 올린다.
+		-- 🔴 부여형이 아니라 범위형이다(사용자 확정). 시전 순간 범위에 있던 개체만 받는다.
+		local map = self.Entity.CurrentMap
+		local myTr = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(myTr) then
+			return
+		end
+		local center = myTr.WorldPosition
+		local radius = skill.rangeX
+		local rate = skill.buffMoveRate
+		local seconds = skill.buffDuration
+		if rate <= 0 or seconds <= 0 then
+			return
+		end
+
+		local monsters = map:GetChildComponentsByTypeName("script.Monster", true)
+		if monsters == nil then
+			return
+		end
+
+		local count = 0
+		for _, comp in ipairs(monsters) do
+			if isvalid(comp) and isvalid(comp.Entity) then
+				local e = comp.Entity
+				local tr = e.TransformComponent
+				if isvalid(tr) and comp.IsDead == false then
+					local p = tr.WorldPosition
+					local dx = p.x - center.x
+					local dy = p.y - center.y
+					if math.sqrt(dx * dx + dy * dy) <= radius then
+						if self:ApplyMoveBuff(e, rate, seconds) then
+							count = count + 1
+						end
+					end
+				end
+			end
+		end
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=buff rate=" .. tostring(rate)
+				.. " sec=" .. tostring(seconds) .. " targets=" .. tostring(count))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ApplyMoveBuff(Entity target, number rate, number seconds)
+		-- 이미 걸려 있으면 시간만 갱신한다. 배율을 다시 곱하면 눈덩이처럼 불어난다.
+		local mv = target.MovementComponent
+		if not isvalid(mv) then
+			return false
+		end
+		for _, b in ipairs(self.buffed) do
+			if b.entity == target then
+				b.left = seconds
+				mv.InputSpeed = b.baseSpeed * rate
+				return true
+			end
+		end
+		table.insert(self.buffed, {
+			entity = target,
+			baseSpeed = mv.InputSpeed,
+			left = seconds
+		})
+		mv.InputSpeed = mv.InputSpeed * rate
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickBuffs(number delta)
+		-- 만료된 버프를 원복한다. 뒤에서부터 지워야 인덱스가 밀리지 않는다.
+		if self.buffed == nil or #self.buffed == 0 then
+			return
+		end
+		for i = #self.buffed, 1, -1 do
+			local b = self.buffed[i]
+			b.left = b.left - delta
+			if b.left <= 0 or not isvalid(b.entity) then
+				if isvalid(b.entity) then
+					local mv = b.entity.MovementComponent
+					if isvalid(mv) then
+						mv.InputSpeed = b.baseSpeed
+					end
+				end
+				table.remove(self.buffed, i)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllBuffs()
+		if self.buffed == nil then
+			return
+		end
+		for _, b in ipairs(self.buffed) do
+			if isvalid(b.entity) then
+				local mv = b.entity.MovementComponent
+				if isvalid(mv) then
+					mv.InputSpeed = b.baseSpeed
+				end
+			end
+		end
+		self.buffed = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GroundYAt(Entity map, number x, number fallbackY)
+		-- x 지점 바로 위에서 아래로 레이를 쏴 발판 높이를 구한다.
+		-- 못 찾으면 보스 자신의 y 를 그대로 쓴다(평지에서는 결과가 같다).
+		local fh = self:FindFootholdComponent(map)
+		if not isvalid(fh) then
+			return fallbackY
+		end
+		-- 보스보다 조금 위에서 시작해 아래로 훑는다. 경사·계단을 다 잡는다.
+		local hit = fh:Raycast(Vector2(x, fallbackY + 1.5), Vector2(0, -1), 8.0)
+		if hit == nil then
+			return fallbackY
+		end
+		local a = hit.StartPoint
+		local b = hit.EndPoint
+		local dx = b.x - a.x
+		if dx > -0.001 and dx < 0.001 then
+			-- 세로 발판. 위쪽 끝을 바닥으로 본다.
+			if a.y > b.y then
+				return a.y
+			end
+			return b.y
+		end
+		-- 경사면이면 x 위치에 맞춰 선형보간한다.
+		local t = (x - a.x) / dx
+		if t < 0 then t = 0 end
+		if t > 1 then t = 1 end
+		return a.y + (b.y - a.y) * t
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FindFootholdComponent(Entity map)
+		-- FootholdComponent 는 맵 엔티티에 있는 게 보통이지만, 타일맵 자식에 달린 경우도 있다.
+		local direct = map.FootholdComponent
+		if isvalid(direct) then
+			return direct
+		end
+		local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+		if found ~= nil then
+			for _, c in ipairs(found) do
+				if isvalid(c) then
+					return c
+				end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireSummon(any skill)
+		-- 부하 소환. ProjectileModelId 가 소환할 모델, HitCount 가 마리 수,
+		-- RangeX 가 좌우로 퍼지는 폭이다(좌 · 중앙 · 우).
+		-- 소환수 능력치는 BossInfo 를 그대로 쓴다 — 마노면 진짜 마노가 나온다.
+		if skill.projectileModelId == "" then
+			log_warning("[BossSkillRunner] summon skill without ProjectileModelId: "
+				.. self.BossId .. "/" .. skill.skillId)
+			return
+		end
+		local map = self.Entity.CurrentMap
+		local transform = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(transform) then
+			return
+		end
+
+		local count = math.floor(skill.hitCount)
+		if count < 1 then
+			count = 1
+		end
+		local pos = transform.WorldPosition
+
+		-- 소환수 원본 BossInfo. 모델 id 로 역인덱스가 없어 #Note 대신 SkillName 규칙 대신
+		-- ProjectileModelId 의 "monster<id>" 에서 뽑는다.
+		-- string.gsub 은 (문자열, 치환횟수) 두 값을 준다. 하나만 받으면 경고가 난다.
+		local summonId, replaced = string.gsub(skill.projectileModelId, "monster", "")
+		local info = nil
+		if _BossCatalog ~= nil then
+			info = _BossCatalog:GetInfo(summonId)
+		end
+		-- 보스가 아니면 일반 도감에서 찾는다(스텀프 · 달팽이 · 슬라임 · 페어리 · 주황버섯).
+		-- 이게 없으면 소환수가 모델 기본값(HP 100)으로 뜬다.
+		if info == nil and _MonsterCatalog ~= nil then
+			info = _MonsterCatalog:GetInfo(summonId)
+		end
+		if info == nil then
+			log_warning("[BossSkillRunner] summon target not in catalog: " .. tostring(summonId))
+		end
+
+		for i = 1, count do
+			-- count=1 이면 중앙, 3 이면 -RangeX / 0 / +RangeX.
+			local t = 0.0
+			if count > 1 then
+				t = (i - 1) / (count - 1) * 2.0 - 1.0
+			end
+			local sx = pos.x + t * skill.rangeX
+			-- 🔴 보스의 y 를 그대로 쓰면 안 된다. 경사면에서는 좌우로 벌린 자리의 지형 높이가
+			--    보스와 달라서, 소환수가 허공에 떠 스폰됐다가 아래로 떨어져 사라진다.
+			--    그 x 바로 아래의 발판을 찾아 그 위 0.2 에 놓는다.
+			local groundY = self:GroundYAt(map, sx, pos.y)
+			local spawnPos = Vector3(sx, groundY + 0.2 + skill.offsetY, pos.z)
+
+			-- 소환진을 그 자리에 깐다. 원본 이펙트라 pivot 에 위치가 박혀 있어 오프셋 없이 놓는다.
+			if skill.castEffectRuid ~= "" then
+				local opt = {}
+				opt["SortingLayer"] = "MapLayer0"
+				opt["OrderInLayer"] = 1
+				local es = skill.castEffectScale
+				_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
+					Vector3(sx + skill.castEffectOffsetX, groundY + skill.castEffectOffsetY, pos.z),
+					0, Vector3(es, es, 1), false, opt)
+			end
+
+			local name = "BossSummon_" .. self.BossId .. "_" .. skill.skillId .. "_" .. tostring(i)
+			local unit = _SpawnService:SpawnByModelId(skill.projectileModelId, name, spawnPos, map)
+			if isvalid(unit) then
+				self:SetupSummon(unit, summonId, info)
+			else
+				log_error("[BossSkillRunner] summon spawn failed model=" .. tostring(skill.projectileModelId))
+			end
+		end
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=summon model=" .. skill.projectileModelId .. " count=" .. tostring(count))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetupSummon(Entity unit, string summonId, any info)
+		-- 소환수를 도감 능력치로 세운다.
+		-- BossSpawner 를 안 거치므로 여기서 직접 넣어야 한다. 안 넣으면 모델 기본값(HP 100)이 된다.
+		--
+		-- ⚠️ info 는 BossInfo 행일 수도 MonsterInfo 행일 수도 있다.
+		--    MonsterInfo 에는 attackPower · 사운드 칸이 없으므로 있는 것만 골라 넣는다.
+		if info == nil then
+			return
+		end
+
+		local monster = unit.Monster
+		if isvalid(monster) then
+			monster.MaxHp = info.maxHp
+			monster.Hp = info.maxHp
+			-- 소환수는 죽으면 그냥 사라진다. 부활하면 무한 증식이다.
+			monster.RespawnOn = false
+			if info.damagedSoundRuid ~= nil then
+				monster.DamagedSoundRUID = info.damagedSoundRuid
+			end
+			if info.dieSoundRuid ~= nil then
+				monster.DieSoundRUID = info.dieSoundRuid
+			end
+		end
+
+		-- 보스를 소환한 경우에만 스킬 실행기가 붙어 있다(일반 몹 모델엔 없다).
+		local runner = unit:GetComponent("script.BossSkillRunner")
+		if isvalid(runner) and info.attackPower ~= nil then
+			runner.BossId = summonId
+			runner.AttackPower = info.attackPower
+		end
+
+		-- 소환수도 한 번 붙으면 놓지 않는다. 안 그러면 소환해놓고 그 자리에 서 있는다.
+		local chase = unit:GetComponent("script.StateChaseMonster")
+		if isvalid(chase) then
+			chase.KeepTargetForever = true
+			-- 소환수도 아래층으로 따라 내려간다.
+			chase:EnableFallOff()
+			-- 🔴 소환수도 기본은 점프 없음이다.
+			--    도감(MonsterInfo/BossInfo)의 JumpForce 가 양수인 몹만 통통 튄다.
+			--    (주황버섯 · 파란버섯 · 슬라임 · 좀비버섯)
+			if info.jumpForce ~= nil and info.jumpForce > 0 then
+				chase.JumpForce = info.jumpForce
+				chase:EnableJump()
+			end
+			if info.detectionRange ~= nil and info.detectionRange >= 0 then
+				chase.DetectionRange = info.detectionRange
+			end
+		end
+
+		if info.moveSpeed ~= nil and info.moveSpeed >= 0 then
+			local mv = unit.MovementComponent
+			if isvalid(mv) then
+				mv.InputSpeed = info.moveSpeed
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireProjectile(any skill)
+		-- 첫 발을 즉시 쏘고, 남은 발수를 예약한다.
+		-- ShotCount 1 이면 예전과 완전히 같다.
+		self:SpawnOneProjectile(skill)
+
+		local n = math.floor(skill.shotCount)
+		if n > 1 then
+			self.burstSkill = skill
+			self.burstLeft = n - 1
+			self.burstTimer = skill.shotInterval
+			-- 쏘는 동안은 "입을 벌린 채" 구간만 반복한다.
+			self:ApplyLoopWindow(skill)
+		end
+
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " cast=" .. skill.skillId
+				.. " shape=projectile shots=" .. tostring(n)
+				.. " interval=" .. tostring(skill.shotInterval)
+				.. " speed=" .. tostring(skill.projectileSpeed)
+				.. " aim=" .. tostring(skill.aimAtTarget))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickBurst(number delta)
+		-- 예약된 연사를 흘려보낸다. 보스가 죽으면 즉시 끊는다.
+		if self.burstLeft <= 0 or self.burstSkill == nil then
+			return
+		end
+		if self:IsDead() then
+			self.burstLeft = 0
+			self.burstSkill = nil
+			return
+		end
+		self.burstTimer = self.burstTimer - delta
+		if self.burstTimer > 0 then
+			return
+		end
+		local sk = self.burstSkill
+		self:SpawnOneProjectile(sk)
+		self.burstLeft = self.burstLeft - 1
+		if self.burstLeft <= 0 then
+			-- 마지막 발이 나갔다. 입을 닫으며 끝낸다.
+			self:ApplyCloseWindow(sk)
+			self.burstSkill = nil
+		else
+			self.burstTimer = self.burstTimer + self.burstSkill.shotInterval
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyLoopWindow(any skill)
+		-- 연사 중 반복 재생할 구간을 건다. 한 바퀴 = ShotInterval 이 되도록 재생속도를 맞춘다.
+		-- 🔴 SpriteRUID 를 다시 대입하면 안 된다(@Sync 라 즉시 안 읽히고, 매번 첫 프레임에서 얼어붙는다).
+		--    이미 그 클립이 돌고 있으므로 창만 좁힌다.
+		if skill.loopStartFrame < 0 or skill.loopEndFrame <= skill.loopStartFrame then
+			return
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		if not isvalid(sprite) then
+			return
+		end
+		sprite.StartFrameIndex = math.floor(skill.loopStartFrame)
+		sprite.EndFrameIndex = math.floor(skill.loopEndFrame)
+
+		local span = self:ClipSecondsRange(skill.castRuid, skill.loopStartFrame, skill.loopEndFrame)
+		if span > 0 and skill.shotInterval > 0 then
+			sprite.PlayRate = span / skill.shotInterval
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyCloseWindow(any skill)
+		-- 연사가 끝난 뒤 한 번 재생할 마무리 구간(입 닫기).
+		if skill.closeEndFrame < 0 or skill.closeEndFrame <= skill.loopEndFrame then
+			return
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		if not isvalid(sprite) then
+			return
+		end
+		sprite.StartFrameIndex = math.floor(skill.loopEndFrame) + 1
+		sprite.EndFrameIndex = math.floor(skill.closeEndFrame)
+		sprite.PlayRate = skill.castPlayRate
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ClipSecondsRange(string ruid, number fromIdx, number toIdx)
+		-- 0-based 프레임 구간(양끝 포함)의 길이(초).
+		-- 🔴 ClipSecondsUpTo 두 번을 빼서 구하면 안 된다. 각각 ms/s 변환을 따로 해서
+		--    한쪽만 ms 로 남는 경우가 생긴다. 여기서 한 번만 변환한다.
+		if ruid == nil or ruid == "" then
+			return 0
+		end
+		local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+		if clip == nil or clip.Frames == nil then
+			return 0
+		end
+		local n = #clip.Frames
+		local a = math.floor(fromIdx) + 1
+		local b = math.floor(toIdx) + 1
+		if a < 1 then a = 1 end
+		if b > n then b = n end
+		local total = 0
+		for i = a, b do
+			local f = clip.Frames[i]
+			if f ~= nil and f.Delay ~= nil then
+				total = total + f.Delay
+			end
+		end
+		if total > 20 then
+			total = total / 1000
+		end
+		return total
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnOneProjectile(any skill)
+		-- 투사체는 별도 엔티티로 띄운다. 명중 판정은 그쪽이 갖는다.
+		if skill.projectileModelId == "" then
+			log_warning("[BossSkillRunner] projectile skill without ProjectileModelId: "
+				.. self.BossId .. "/" .. skill.skillId)
+			return
+		end
+		local map = self.Entity.CurrentMap
+		local transform = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(transform) then
+			return
+		end
+
+		local pos = transform.WorldPosition
+		local facing = self:GetFacing()
+		local spawnPos = Vector3(pos.x + skill.offsetX * facing, pos.y + skill.offsetY, pos.z)
+		local name = "BossProj_" .. self.BossId .. "_" .. skill.skillId
+
+		local proj = _SpawnService:SpawnByModelId(skill.projectileModelId, name, spawnPos, map)
+		if not isvalid(proj) then
+			log_error("[BossSkillRunner] projectile spawn failed model="
+				.. tostring(skill.projectileModelId))
+			return
+		end
+
+		-- ---@type 캐스트는 빼둔다. 빌드 시점에 사용자 타입을 못 찾아 LEA-1118 이 난다.
+		-- 대신 LIA-1114 안내가 뜨는데 그건 정적 분석 잡음이고 동작에는 영향이 없다.
+		-- 스킬마다 자기 스프라이트를 쓴다. 비면 모델 기본값이 그대로 남는다.
+		-- (범용 구체를 쓰면 발록이 파란 구슬을 던지는 사고가 난다)
+		local sr = proj.SpriteRendererComponent
+		if isvalid(sr) then
+			if skill.projectileRuid ~= "" then
+				sr.SpriteRUID = skill.projectileRuid
+			end
+			-- 🔴 모델 기본 SortingLayer 가 "Default" 라 맵의 MapLayerN 배경 뒤로 숨는다.
+			--    보스 레이어를 복사하는 방식은 실패했다 — 보스 모델 자체가 낮은 레이어라
+			--    앞쪽 장식(MapLayer4~7)에 그대로 가렸다. 몹·캐릭터 레이어에 직접 못 박는다.
+			sr.SortingLayer = self.ProjectileSortingLayer
+			sr.OrderInLayer = self.ProjectileOrderInLayer
+			-- 맵 레이어 가시성 필터에도 걸리지 않게 한다. 투사체는 항상 보여야 한다.
+			sr.IgnoreMapLayerCheck = true
+		end
+
+		local mover = proj:GetComponent("script.BossProjectile")
+		if isvalid(mover) then
+			-- SetDirection / SetDirectionVec 을 써야 그림도 같이 뒤집힌다.
+			-- DirectionX 에 직접 대입하면 이동만 바뀌고 그림은 스폰 때 방향에 머문다.
+			if skill.aimAtTarget then
+				local aim = self:AimVector(spawnPos, facing)
+				mover:SetDirectionVec(aim.x, aim.y)
+			else
+				mover:SetDirection(facing)
+			end
+			mover.Speed = skill.projectileSpeed
+		end
+
+		local atk = proj:GetComponent("script.BossProjectileAttack")
+		if isvalid(atk) then
+			atk.Damage = skill.damage
+			atk.HitCount = skill.hitCount
+			atk.RangeX = skill.rangeX
+			atk.RangeY = skill.rangeY
+			atk.HitEffectRUID = skill.hitEffectRuid
+		end
+
+	end
+
+	@ExecSpace("ServerOnly")
+	method Vector2 AimVector(Vector3 from, number facing)
+		-- 발사 시점의 플레이어 좌표를 정확히 겨눈 정규화 벡터.
+		-- 🔴 유도가 아니다. 쏜 뒤에는 직진한다(사용자 확정: "타겟팅이 아니라 위치로 정확하게").
+		local target = self:GetChaseTarget()
+		if not isvalid(target) then
+			return Vector2(facing, 0)
+		end
+		local t = target.TransformComponent
+		if not isvalid(t) then
+			return Vector2(facing, 0)
+		end
+		local p = t.WorldPosition
+		-- 발밑이 아니라 몸통을 겨눈다. 안 그러면 바닥을 스치듯 지나간다.
+		local dx = p.x - from.x
+		local dy = (p.y + 0.4) - from.y
+		local d = math.sqrt(dx * dx + dy * dy)
+		if d < 0.001 then
+			return Vector2(facing, 0)
+		end
+		return Vector2(dx / d, dy / d)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FreezeMovement(number seconds)
+		-- StateTypeChase 가 매 프레임 MoveToDirection 을 부르므로,
+		-- 여기서 Stop() 만 불러봐야 다음 프레임에 덮어써진다.
+		-- StateChaseMonster 에 플래그를 세워 그쪽이 이동을 건너뛰게 한다.
+		--
+		-- 🔴 고정 2초로 잡으면 안 된다. CastDelay + RecoverTime 이 2초를 넘으면
+		--    정지가 먼저 풀려서 보스가 "공격 자세인 채로 걸어다닌다".
+		--    최소 CastFreezeSeconds 는 보장하되, 실제 시전 길이만큼 잡는다.
+		local hold = seconds
+		if hold < self.CastFreezeSeconds then
+			hold = self.CastFreezeSeconds
+		end
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(chase) then
+			chase.CastFreezeLeft = hold
+		end
+		local mv = self.Entity.MovementComponent
+		if isvalid(mv) then
+			mv:MoveToDirection(Vector2(0, 0), 0)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayFireEffects(any skill)
+		-- 판정 순간에 바닥마다 띄우는 타격 이펙트 (FireEffectRUID). 피아누스 S7 의 노란 전기.
+		-- 🔴 foothold 세그먼트 단위로 깐다(사용자 관측 - 2층 발판 2개·3층 1개가 짧은데 타일이 허공까지 나갔다).
+		--    X 를 샘플링하면 발판 길이를 모른다. 대신 판정 박스에 걸리는 세그먼트를 전부 열거해
+		--    세그먼트마다 "그 길이에 딱 맞게 가로만 늘린" 이펙트 1장을 놓는다 (PlayEffect 는 X·Y 배율이 따로다).
+		--    긴 1층은 박스 폭으로 잘리고, 짧은 2·3층은 발판 길이만큼만, 경사는 각도까지 맞춘다.
+		--    FireEffectFloors 가 비어 있지 않으면 예전 고정 오프셋 모드(보스 y 기준 ; 목록 · Tiles 장 균등 배치).
+		if skill.fireEffectRuid == nil or skill.fireEffectRuid == "" then
+			return
+		end
+		local t = self.Entity.TransformComponent
+		if not isvalid(t) then
+			return
+		end
+		local p = t.WorldPosition
+		local facing = self:GetFacing()
+		local s = skill.fireEffectScale
+		if s == nil or s <= 0 then
+			s = 1
+		end
+		local o = {}
+		o["SortingLayer"] = self.CastEffectSortingLayer
+		o["OrderInLayer"] = self.CastEffectOrderInLayer
+		o["FlipX"] = (facing > 0)
+		local placed = 0
+		local MAX_PLACED = 24
+
+		-- 고정 오프셋 모드
+		local fixedFloors = {}
+		for token in string.gmatch(tostring(skill.fireEffectFloors or ""), "[^;]+") do
+			local v = tonumber(token)
+			if v ~= nil then
+				table.insert(fixedFloors, v)
+			end
+		end
+		if #fixedFloors > 0 then
+			local tiles = math.floor(skill.fireEffectTiles or 1)
+			if tiles < 1 then
+				tiles = 1
+			end
+			local left = p.x + (skill.offsetX - skill.rangeX * 0.5) * facing
+			local step = skill.rangeX / tiles
+			for _, fy in ipairs(fixedFloors) do
+				for i = 1, tiles do
+					if placed < MAX_PLACED then
+						_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
+							Vector3(left + (i - 0.5) * step * facing, p.y + fy, p.z), 0, Vector3(s, s, 1), false, o)
+						placed = placed + 1
+					end
+				end
+			end
+			if self.LogSkill then
+				log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId .. " mode=fixed placed=" .. tostring(placed))
+			end
+			return
+		end
+
+		-- foothold 세그먼트 모드
+		local map = self.Entity.CurrentMap
+		local fh = nil
+		if isvalid(map) then
+			fh = self:FindFootholdComponent(map)
+		end
+		if not isvalid(fh) then
+			-- 발판 정보가 없으면 보스 발 높이에 한 장.
+			_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
+				Vector3(p.x + skill.offsetX * facing, p.y, p.z), 0, Vector3(s, s, 1), false, o)
+			if self.LogSkill then
+				log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId .. " mode=none placed=1")
+			end
+			return
+		end
+
+		-- 판정 박스의 월드 범위 (facing 에 따라 좌우가 뒤집히므로 min/max 로 정리)
+		local e1 = p.x + (skill.offsetX - skill.rangeX * 0.5) * facing
+		local e2 = p.x + (skill.offsetX + skill.rangeX * 0.5) * facing
+		local boxL = math.min(e1, e2)
+		local boxR = math.max(e1, e2)
+		local boxB = p.y + skill.offsetY - skill.rangeY * 0.5
+		local boxT = p.y + skill.offsetY + skill.rangeY * 0.5
+
+		-- 이펙트 원본 폭. MeasureCastClips 가 실측해 둔다. 없으면 이 자산(292px)의 2.92 를 쓴다.
+		local nativeW = self.fireEffectWidth[skill.skillId]
+		if nativeW == nil or nativeW <= 0 then
+			nativeW = 2.92
+		end
+		local atan = math.atan2 or math.atan
+
+		-- 1) 판정 박스에 걸리는 세그먼트 후보를 모은다 (박스 폭으로 잘라서).
+		local cands = {}
+		local all = fh:GetFootholdAll()
+		if all ~= nil then
+			for _, f in ipairs(all) do
+				if isvalid(f) and f:GetWidth() > 0.05 then
+					local a = f.StartPoint
+					local b = f.EndPoint
+					local cx0 = math.max(math.min(a.x, b.x), boxL)
+					local cx1 = math.min(math.max(a.x, b.x), boxR)
+					if cx1 - cx0 > 0.2 then
+						local y0 = f:GetYByX(cx0)
+						local y1 = f:GetYByX(cx1)
+						local ym = (y0 + y1) * 0.5
+						if ym >= boxB and ym <= boxT then
+							table.insert(cands, { x0 = cx0, x1 = cx1, y0 = y0, y1 = y1 })
+						end
+					end
+				end
+			end
+		end
+
+		-- 2) 수평 run 병합: 같은 높이(0.05)이고 끝이 맞닿는(0.08) 수평 세그먼트는 한 줄로 합친다.
+		--    1층 바닥이 0.90 짜리 8조각이라 sx 0.36 으로 눌린 이펙트 8장이 늘어섰다 -> 7.2 폭 한 장.
+		--    경사 세그먼트(양 끝 y 차 0.05 초과)는 각도가 있어 합치지 않는다.
+		table.sort(cands, function(u, v)
+			if math.abs(u.y0 - v.y0) > 0.05 then
+				return u.y0 < v.y0
+			end
+			return u.x0 < v.x0
+		end)
+		local runs = {}
+		for _, c in ipairs(cands) do
+			local flat = math.abs(c.y1 - c.y0) <= 0.05
+			local last = runs[#runs]
+			if flat and last ~= nil and last.flat
+				and math.abs(last.y0 - c.y0) <= 0.05
+				and c.x0 - last.x1 <= 0.08 and c.x0 - last.x1 >= -0.08 then
+				last.x1 = c.x1
+			else
+				table.insert(runs, { x0 = c.x0, x1 = c.x1, y0 = c.y0, y1 = c.y1, flat = flat })
+			end
+		end
+
+		-- 3) run 마다 길이에 맞춰 가로만 늘린 이펙트 1장.
+		for _, rn in ipairs(runs) do
+			if placed < MAX_PLACED then
+				local w = rn.x1 - rn.x0
+				local sx = w / nativeW
+				if sx < 0.3 then
+					sx = 0.3
+				end
+				local ang = 0
+				if not rn.flat and atan ~= nil then
+					ang = math.deg(atan(rn.y1 - rn.y0, w))
+				end
+				_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
+					Vector3((rn.x0 + rn.x1) * 0.5, (rn.y0 + rn.y1) * 0.5, p.z), ang, Vector3(sx, s, 1), false, o)
+				placed = placed + 1
+			end
+		end
+		if self.LogSkill then
+			log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId
+				.. " mode=segment cands=" .. tostring(#cands) .. " runs=" .. tostring(#runs) .. " placed=" .. tostring(placed) .. " nativeW=" .. string.format("%.2f", nativeW)
+				.. " box x " .. string.format("%.2f", boxL) .. "~" .. string.format("%.2f", boxR))
+		end
+	end
+	@ExecSpace("ServerOnly")
+	method void PlayCastEffect(any skill)
+		-- 시전 중 보스 주변에 띄우는 이펙트. 투사체와 달리 제자리에 있다.
+		-- 마법진처럼 보스 뒤에 깔아야 하는 것은 CastEffectBehind=true 로 둔다.
+		if skill.castEffectRuid == nil or skill.castEffectRuid == "" then
+			return
+		end
+		local t = self.Entity.TransformComponent
+		if not isvalid(t) then
+			return
+		end
+		local p = t.WorldPosition
+		local facing = self:GetFacing()
+
+		-- 보스는 OrderInLayer 2 다. 뒤로 깔려면 그보다 낮게, 배경보다는 높게 둔다.
+		local options = {}
+		if skill.castEffectBehind then
+			-- 보스 뒤에 까는 게 의도인 행(소환진 등). 보스 order 2 보다 낮게, 배경보다는 높게.
+			options["SortingLayer"] = "MapLayer0"
+			options["OrderInLayer"] = 1
+		else
+			options["SortingLayer"] = self.CastEffectSortingLayer
+			options["OrderInLayer"] = self.CastEffectOrderInLayer
+		end
+		options["FlipX"] = (facing > 0)
+		options["PlayRate"] = skill.castEffectPlayRate
+		-- 원본 이펙트에 폭발이 여러 번 들어 있으면 구간을 잘라 한 번만 쓴다.
+		if skill.castEffectStartFrame > 0 then
+			options["StartFrameIndex"] = skill.castEffectStartFrame
+		end
+		if skill.castEffectEndFrame >= 0 then
+			options["EndFrameIndex"] = skill.castEffectEndFrame
+		end
+
+		-- 🔴 판정 박스의 OffsetX/Y 를 쓰면 안 된다. 이펙트 전용 좌표를 따로 둔다.
+		--    원본 이펙트는 pivot 에 위치가 박혀 있는데 그 기준이 자산마다 다르다.
+		--    attack2/info/effect 는 pivot (-55,-57) 이라 원점에 놓으면 손 높이에 맞고,
+		--    attack3/info/effect 는 pivot (138,-27) 이라 원점에 놓으면 몸통에 겹친다.
+		--    그래서 하나의 규칙으로는 못 맞추고 자산별로 실측해서 넣는다.
+		local s = skill.castEffectScale
+		_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
+			Vector3(p.x + skill.castEffectOffsetX * facing, p.y + skill.castEffectOffsetY, p.z),
+			0, Vector3(s, s, 1), false, options)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayBossSound(string ruid)
+		-- 소리 송출은 script.Monster 가 갖고 있다(맵 안 전원에게 보낸다).
+		-- 여기서 다시 구현하면 같은 코드가 두 벌이 된다.
+		if ruid == nil or ruid == "" then
+			return
+		end
+		local monster = self.Entity.Monster
+		if isvalid(monster) then
+			monster:PlaySoundToMap(ruid, monster.SoundVolume)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RestoreSprite()
+		-- 시전 모션을 원래 클립으로 되돌린다.
+		-- ⚠️ PlayRate 는 클립과 별개로 남는다. 안 되돌리면 이동 모션까지 느려진다.
+		local sprite = self.Entity.SpriteRendererComponent
+		if not isvalid(sprite) then
+			return
+		end
+		-- 시전 속도가 아니라 평상시 속도로 되돌린다. 1 로 고정하면 이동이 다시 어색해진다.
+		sprite.PlayRate = self.MovePlayRate
+		-- 연사 중 좁혀둔 프레임 창을 원상복구한다. 이걸 빼먹으면 이동 모션이 몇 프레임만 반복된다.
+		sprite.StartFrameIndex = 0
+		sprite.EndFrameIndex = 2147483647
+
+		-- 🔴 저장해둔 RUID 로 되돌리면 안 된다.
+		--    StateAnimationComponent 는 "상태가 바뀔 때"만 클립을 적용한다(ReceiveStateChangeEvent).
+		--    시전 중에는 상태가 CHASE 그대로라 다시 적용될 일이 없고,
+		--    그래서 여기서 쓴 값이 그대로 눌러앉아 이동해도 그 그림만 나온다
+		--    (킹슬라임이 stand 자세로 미끄러지던 원인).
+		--    현재 상태에 맞는 클립을 ActionSheet 에서 직접 찾아 넣는다.
+		local anim = self.Entity.StateAnimationComponent
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if isvalid(anim) and isvalid(chase) then
+			local key = anim:StateStringToAnimationKey(chase.CurrentStateName)
+			if key ~= nil and key ~= "" then
+				local ruid = anim.ActionSheet[key]
+				if ruid ~= nil and ruid ~= "" then
+					sprite.SpriteRUID = ruid
+					return
+				end
+			end
+		end
+
+		-- ActionSheet 를 못 읽는 몹(Pattern A 전용)만 예전 방식으로 되돌린다.
+		if self.restoreRuid ~= "" then
+			sprite.SpriteRUID = self.restoreRuid
+		end
+	end
+
+	method void OnAttack(Entity defender)
+		-- 명중 직후, 맞은 플레이어 자리에 타격 이펙트를 띄운다.
+		-- ⚠️ 부모에 @ExecSpace 가 없다. 붙이면 LEA-3014.
+		if self.activeSkill == nil or not isvalid(defender) then
+			return
+		end
+		-- 맞은 소리(_audio/CharDamN). 이펙트가 없어도 소리는 난다.
+		-- ⚠️ 이 훅은 ExecSpace=All 이라 클라에서도 돌 수 있다.
+		--    PlayBossSound 는 ServerOnly 라 서버일 때만 부른다.
+		if self:IsServer() then
+			self:PlayBossSound(self.activeSkill.hitSoundRuid)
+		end
+
+		local ruid = self.activeSkill.hitEffectRuid
+		if ruid == nil or ruid == "" then
+			return
+		end
+		local t = defender.TransformComponent
+		if not isvalid(t) then
+			return
+		end
+		-- 발밑이 아니라 몸통 높이에 뜨게 살짝 올린다.
+		local p = t.WorldPosition
+		-- 레이어를 안 주면 모델 기본 "Default" 로 그려져 캐릭터 뒤에 숨는다.
+		local opt = {}
+		opt["SortingLayer"] = self.HitEffectSortingLayer
+		opt["OrderInLayer"] = self.HitEffectOrderInLayer
+		_EffectService:PlayEffect(ruid, self.Entity,
+			Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false, opt)
+	end
+
+	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
+		-- 접촉은 BossInfo.AttackPower, 스킬은 그 스킬의 Damage 를 쓴다.
+		-- ⚠️ 부모에 @ExecSpace 가 없다. 붙이면 LEA-3014.
+		local d = 1
+		if attackInfo == "contact" then
+			d = math.floor(self.AttackPower)
+		elseif self.activeSkill ~= nil then
+			d = math.floor(self.activeSkill.damage)
+		end
+		if d < 1 then
+			return 1
+		end
+		return d
+	end
+
+	method int32 GetDisplayHitCount(string attackInfo)
+		-- 다단히트 표시 수.
+		if self.activeSkill == nil then
+			return 1
+		end
+		local n = math.floor(self.activeSkill.hitCount)
+		if n < 1 then
+			return 1
+		end
+		return n
+	end
+
+	method boolean IsAttackTarget(Entity defender, string attackInfo)
+		-- attackInfo 에 ShapeType / "probe" / "contact" 를 실어 보냈다.
+		if not isvalid(defender) then
+			return false
+		end
+		if isvalid(defender.PlayerComponent) == false then
+			return false
+		end
+
+		-- 접촉은 몸통에 닿은 플레이어 전원. 무적시간은 방어자 쪽 HitComponent 가 갖는다.
+		if attackInfo == "contact" then
+			return __base:IsAttackTarget(defender, attackInfo)
+		end
+
+		-- 탐색 패스 — 후보만 모으고 아무도 안 맞는다.
+		if attackInfo == "probe" then
+			table.insert(self.Candidates, defender)
+			return false
+		end
+
+		-- 최근접 1명만.
+		if attackInfo == "target" then
+			return defender == self.CurrentTarget
+		end
+
+		-- 지진형 — 바닥에 서 있어야 맞는다. 점프로 회피 가능하다.
+		if attackInfo == "ground" then
+			local body = defender.RigidbodyComponent
+			if isvalid(body) and body:IsOnGround() == false then
+				return false
+			end
+		end
+
+		-- 상단 휘두르기 — 숙이면 피한다.
+		-- 🔴 박스 높이로는 못 만든다. 플레이어 HitComponent 는 CROUCH 여도 안 줄어든다.
+		--    (CROUCH 는 애니메이션만 바꾼다) 그래서 상태를 직접 본다.
+		if attackInfo == "crouchable" then
+			local sc = defender.StateComponent
+			if isvalid(sc) and sc.CurrentStateName == "CROUCH" then
+				-- 🔴 숙이기는 "공격의 아래 구간" 에서만 통한다.
+				--    예전에는 위치를 안 보고 CROUCH 이기만 하면 면제했다. 그래서 이펙트 한가운데
+				--    2층에 서 있어도 숙이면 무조건 안 맞았다(사용자 관측).
+				--    CrouchBand 는 판정 박스 아래끝에서 위로 몇 유닛까지 숙이기가 통하는지다.
+				--    음수면 박스 전체 = 기존 동작(회귀 없음).
+				local band = -1
+				if self.activeSkill ~= nil then
+					band = self.activeSkill.crouchBand
+				end
+				if band == nil or band < 0 then
+					return false
+				end
+				local dt = defender.TransformComponent
+				if isvalid(dt) and self.Shape ~= nil then
+					local bottom = self.Shape.Position.y - self.Shape.Size.y * 0.5
+					if dt.WorldPosition.y <= bottom + band then
+						return false
+					end
+				else
+					return false
+				end
+			end
+		end
+
+		return __base:IsAttackTarget(defender, attackInfo)
+	end
+
+end

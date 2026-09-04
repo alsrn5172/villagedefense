@@ -1,0 +1,379 @@
+@Logic
+script BossCatalog extends Logic
+
+	@HideFromInspector
+	property string InfoTableName = "BossInfo"
+
+	@HideFromInspector
+	property string SkillTableName = "BossSkills"
+
+	@HideFromInspector
+	property string RewardTableName = "BossReward"
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
+	property any infoById = nil
+
+	@HideFromInspector
+	property any skillsById = nil
+
+	@HideFromInspector
+	property any rewardById = nil
+
+	@HideFromInspector
+	property any bossesByMap = nil
+
+	method void OnBeginPlay()
+		-- 서버·클라 각자 자기 쪽에서 적재한다. MonsterCatalog 와 같은 규약.
+		self:EnsureLoaded()
+	end
+
+	method string Key(any id)
+		-- 고유번호를 테이블 키로 쓸 정수 문자열로 정규화한다. nil 이면 빈 문자열.
+		if id == nil then
+			return ""
+		end
+		local n = tonumber(id)
+		if n == nil then
+			return tostring(id)
+		end
+		return tostring(math.floor(n))
+	end
+
+	method boolean ParseEnabled(any value)
+		-- Enabled 열을 boolean 으로 읽는다. 빈칸은 기본값 true.
+		if value == nil or tostring(value) == "" then
+			return true
+		end
+		local text = string.lower(tostring(value))
+		return text == "true" or text == "1" or text == "yes" or text == "y"
+	end
+
+	method void EnsureLoaded()
+		-- 아직 안 읽었으면 한 번만 읽는다.
+		if self.loaded then
+			return
+		end
+		self:Load()
+	end
+
+	method void Load()
+		-- 보스 3표를 읽어 메모리 테이블로 만든다. 표가 없어도 죽지 않게 방어한다.
+		self.loaded = true
+		self.infoById = {}
+		self.skillsById = {}
+		self.rewardById = {}
+		self.bossesByMap = {}
+
+		local bossRows = 0
+		local skipped = 0
+
+		local info = _DataService:GetTable(self.InfoTableName)
+		if info == nil then
+			log_warning("[BossCatalog] dataset not found: " .. self.InfoTableName)
+		else
+			for i = 1, info:GetRowCount() do
+				local id = self:Key(info:GetCell(i, "BossId"))
+				local mapName = info:GetCell(i, "MapName") or ""
+				local modelId = info:GetCell(i, "ModelId") or ""
+				local enabled = self:ParseEnabled(info:GetCell(i, "Enabled"))
+
+				-- MaxHp 가 비면 스폰 즉시 죽는다. 보스는 폴백을 크게 잡는다.
+				local maxHp = tonumber(info:GetCell(i, "MaxHp"))
+				if maxHp == nil or maxHp <= 0 then
+					log_warning("[BossCatalog] invalid MaxHp for BossId=" .. id .. "; using 100000")
+					maxHp = 100000
+				end
+
+				-- 아래 분기는 "조용히 안 뜨는" 사고를 시끄럽게 만들기 위한 것이다.
+				if id == "" then
+					log_warning("[BossCatalog] empty BossId at row " .. tostring(i))
+					skipped = skipped + 1
+				elseif self.infoById[id] ~= nil then
+					log_warning("[BossCatalog] duplicate BossId=" .. id)
+					skipped = skipped + 1
+				elseif modelId == "" then
+					log_warning("[BossCatalog] empty ModelId for BossId=" .. id)
+					skipped = skipped + 1
+				elseif mapName == "" then
+					log_warning("[BossCatalog] empty MapName for BossId=" .. id)
+					skipped = skipped + 1
+				elseif not enabled then
+					-- 꺼진 보스는 오류가 아니다. 맵이 아직 없는 경우 등.
+					skipped = skipped + 1
+				else
+					local row = {
+						id = id,
+						name = info:GetCell(i, "Name") or "",
+						level = tonumber(info:GetCell(i, "Level")) or 0,
+						maxHp = maxHp,
+						modelId = modelId,
+						moveType = info:GetCell(i, "MoveType") or "",
+						aiType = info:GetCell(i, "AiType") or "",
+						attackPower = tonumber(info:GetCell(i, "AttackPower")) or 0,
+						defense = tonumber(info:GetCell(i, "Defense")) or 0,
+						knockbackResist = tonumber(info:GetCell(i, "KnockbackResist")) or 0,
+						moveSpeed = tonumber(info:GetCell(i, "MoveSpeed")) or -1,
+						-- 원본 팩의 피격음 · 사망음. script.Monster 로 넘어간다.
+						damagedSoundRuid = info:GetCell(i, "DamagedSoundRUID") or "",
+						dieSoundRuid = info:GetCell(i, "DieSoundRUID") or "",
+						-- 접촉 판정 박스 보정. 원본 스프라이트에는 더듬이·꼬리·여백이 같이 들어 있어
+						-- 그대로 쓰면 실제 몸통보다 훨씬 크게 잡힌다. 1.0 이면 예전 그대로다.
+						contactScaleX = tonumber(info:GetCell(i, "ContactScaleX")) or 1,
+						contactScaleY = tonumber(info:GetCell(i, "ContactScaleY")) or 1,
+						contactOffsetX = tonumber(info:GetCell(i, "ContactOffsetX")) or 0,
+						-- 평상시(이동·대기) 애니메이션 속도. 이동 속도와 어긋나면 제자리 발버둥처럼 보인다.
+						movePlayRate = tonumber(info:GetCell(i, "MovePlayRate")) or 1,
+						-- 추격 감지 거리. 스크립트 기본값 5 는 화면 폭(12.8)의 40% 뿐이라 보스가 늦게 반응한다.
+						detectionRange = tonumber(info:GetCell(i, "DetectionRange")) or -1,
+						-- 점프력. 음수면 StateChaseMonster 기본값을 쓴다.
+						-- 실측상 도달 높이 ≒ 이 값(유닛). 6 이면 화면 밖으로 날아간다.
+						jumpForce = tonumber(info:GetCell(i, "JumpForce")) or -1,
+						mapName = mapName,
+						-- 좌표가 비면 기존 배치를 그대로 쓴다는 뜻이다(피아누스).
+						hasSpawnPos = tostring(info:GetCell(i, "SpawnX") or "") ~= "",
+						spawnX = tonumber(info:GetCell(i, "SpawnX")) or 0,
+						spawnY = tonumber(info:GetCell(i, "SpawnY")) or 0,
+						respawnSeconds = tonumber(info:GetCell(i, "RespawnSeconds")) or 0,
+						note = info:GetCell(i, "#Note") or ""
+					}
+					self.infoById[id] = row
+					if self.bossesByMap[mapName] == nil then
+						self.bossesByMap[mapName] = {}
+					end
+					table.insert(self.bossesByMap[mapName], row)
+					bossRows = bossRows + 1
+				end
+			end
+		end
+
+		local skillRows = 0
+		local skills = _DataService:GetTable(self.SkillTableName)
+		if skills == nil then
+			log_warning("[BossCatalog] dataset not found: " .. self.SkillTableName)
+		else
+			local seenSkill = {}
+			for i = 1, skills:GetRowCount() do
+				local bossId = self:Key(skills:GetCell(i, "BossId"))
+				local skillId = self:Key(skills:GetCell(i, "SkillId"))
+				local dupKey = bossId .. ":" .. skillId
+
+				if bossId == "" or skillId == "" then
+					log_warning("[BossCatalog] invalid BossId/SkillId at skill row " .. tostring(i))
+					skipped = skipped + 1
+				elseif seenSkill[dupKey] then
+					log_warning("[BossCatalog] duplicate skill " .. dupKey)
+					skipped = skipped + 1
+				elseif not self:ParseEnabled(skills:GetCell(i, "Enabled")) then
+					skipped = skipped + 1
+				elseif self.infoById[bossId] == nil then
+					log_warning("[BossCatalog] skill points to unknown/disabled BossId=" .. bossId)
+					skipped = skipped + 1
+				else
+					seenSkill[dupKey] = true
+					if self.skillsById[bossId] == nil then
+						self.skillsById[bossId] = {}
+					end
+					table.insert(self.skillsById[bossId], {
+						bossId = bossId,
+						skillId = skillId,
+						name = skills:GetCell(i, "SkillName") or "",
+						priority = tonumber(skills:GetCell(i, "Priority")) or 0,
+						shapeType = string.lower(tostring(skills:GetCell(i, "ShapeType") or "box")),
+						rangeX = tonumber(skills:GetCell(i, "RangeX")) or 1,
+						rangeY = tonumber(skills:GetCell(i, "RangeY")) or 1,
+						offsetX = tonumber(skills:GetCell(i, "OffsetX")) or 0,
+						offsetY = tonumber(skills:GetCell(i, "OffsetY")) or 0,
+						castDelay = tonumber(skills:GetCell(i, "CastDelay")) or 0,
+						cooldown = tonumber(skills:GetCell(i, "Cooldown")) or 1,
+						damage = tonumber(skills:GetCell(i, "Damage")) or 0,
+						hitCount = tonumber(skills:GetCell(i, "HitCount")) or 1,
+						-- 페이즈 게이트. 빈칸이면 전 구간에서 쓴다.
+						minHpPercent = tonumber(skills:GetCell(i, "MinHpPercent")) or 0,
+						maxHpPercent = tonumber(skills:GetCell(i, "MaxHpPercent")) or 100,
+						projectileModelId = skills:GetCell(i, "ProjectileModelId") or "",
+						projectileSpeed = tonumber(skills:GetCell(i, "ProjectileSpeed")) or 0,
+						castRuid = skills:GetCell(i, "CastRUID") or "",
+						-- 투사체 스프라이트. 비면 모델 기본값을 쓴다.
+						projectileRuid = skills:GetCell(i, "ProjectileRUID") or "",
+						-- 명중 시 맞은 대상 위치에 띄울 이펙트.
+						hitEffectRuid = skills:GetCell(i, "HitEffectRUID") or "",
+						-- 판정 후 시전 모션을 이만큼 더 붙잡는다. 0 이면 즉시 idle 로 돌아간다.
+						recoverTime = tonumber(skills:GetCell(i, "RecoverTime")) or 0,
+						-- 시전 중 보스 주변에 띄우는 이펙트. 투사체와 달리 날아가지 않는다.
+						castEffectRuid = skills:GetCell(i, "CastEffectRUID") or "",
+						-- true 면 보스보다 뒤(배경보다는 앞)에 깐다. 마법진 같은 것.
+						castEffectBehind = self:ParseEnabled(skills:GetCell(i, "CastEffectBehind"))
+							and (tostring(skills:GetCell(i, "CastEffectBehind")) ~= ""),
+						-- 시전 순간 나는 소리(원본 팩 _audio/AttackN · _audio/SkillN).
+						castSoundRuid = skills:GetCell(i, "CastSoundRUID") or "",
+						-- 플레이어가 맞았을 때 나는 소리(원본 팩 _audio/CharDamN).
+						hitSoundRuid = skills:GetCell(i, "HitSoundRUID") or "",
+						-- 🔴 이펙트 전용 좌표. 판정 박스의 OffsetX/Y 와 별개다.
+						--    원본 이펙트마다 pivot 기준이 달라서 하나의 규칙으로 못 맞춘다.
+						castEffectOffsetX = tonumber(skills:GetCell(i, "CastEffectOffsetX")) or 0,
+						castEffectOffsetY = tonumber(skills:GetCell(i, "CastEffectOffsetY")) or 0,
+						castEffectScale = tonumber(skills:GetCell(i, "CastEffectScale")) or 1,
+						-- 시전 모션 재생 속도. 1 미만이면 느리게 돈다.
+						-- 클립을 복제해 늘릴 필요 없이 SpriteRendererComponent.PlayRate 로 조절한다.
+						castPlayRate = tonumber(skills:GetCell(i, "CastPlayRate")) or 1,
+						-- 2단 시전. 준비 동작 뒤에 다른 그림을 한 번 더 끼운다.
+						-- 판정은 CastDelay + CastDelay2 가 다 지난 뒤에 난다(점프면 착지 시점).
+						castRuid2 = skills:GetCell(i, "CastRUID2") or "",
+						castDelay2 = tonumber(skills:GetCell(i, "CastDelay2")) or 0,
+						-- 판정이 나는 프레임 수(앞에서부터). 점프 클립은 마지막 프레임이 복귀 자세라 길어서,
+						-- 클립 전체로 재면 착지 뒤에도 한참 기다린다. 0 이하면 클립 전체를 쓴다.
+						castHitFrame = tonumber(skills:GetCell(i, "CastHitFrame")) or 0,
+						-- 🔴 이펙트를 "시전 시작"에 틀지 "판정 순간"에 틀지. 레이어(CastEffectBehind)와 별개다.
+						--    원본 이펙트에 도입 구간이 있으면(머쉬맘 지진파는 f0~f7 이 잔먼지) 시작에 틀어야
+						--    착지 시점에 본 장면이 나온다.
+						castEffectAtStart = self:ParseEnabled(skills:GetCell(i, "CastEffectAtStart"))
+							and (tostring(skills:GetCell(i, "CastEffectAtStart")) ~= ""),
+						-- 이펙트 재생 속도. 1 보다 크면 빠르게 감긴다.
+						-- 여러 단계로 된 이펙트가 "두 번 터지는 것처럼" 보일 때 뭉쳐준다.
+						castEffectPlayRate = tonumber(skills:GetCell(i, "CastEffectPlayRate")) or 1,
+						-- 이펙트 재생 구간. 원본 이펙트에 폭발이 여러 번 들어 있을 때 한 번만 쓴다.
+						-- EndFrame 이 음수면 끝까지.
+						castEffectStartFrame = tonumber(skills:GetCell(i, "CastEffectStartFrame")) or 0,
+						castEffectEndFrame = tonumber(skills:GetCell(i, "CastEffectEndFrame")) or -1,
+						-- 연사. 1 이면 예전처럼 한 발만 나간다.
+						-- ShotInterval 은 발과 발 사이 간격(초). 6발 x 0.333 = 2초 동안 초당 3발.
+						shotCount = tonumber(skills:GetCell(i, "ShotCount")) or 1,
+						shotInterval = tonumber(skills:GetCell(i, "ShotInterval")) or 0.2,
+						-- true 면 발사 시점의 플레이어 좌표를 정확히 겨눈다(유도 아님 — 쏜 뒤엔 직진).
+						-- false 면 예전처럼 보는 방향으로 수평 발사한다.
+						aimAtTarget = self:ParseEnabled(skills:GetCell(i, "AimAtTarget"))
+							and (tostring(skills:GetCell(i, "AimAtTarget")) ~= ""),
+						-- 사거리 직접 지정. 0 이상이면 이 값을 그대로 쓴다.
+						-- 🔴 투사체 사거리를 ProjectileSpeed x 배수로만 뽑으면, 느린 투사체가
+						--    자동으로 근거리 스킬이 돼 버린다(속도 1.5 -> 사거리 2.25).
+						reach = tonumber(skills:GetCell(i, "Reach")) or -1,
+						-- 연사 중 반복할 프레임 구간(0-based, 양끝 포함). 한 바퀴가 ShotInterval 과 같아지도록
+						-- 재생속도를 자동 계산한다 -> 입을 오므렸다 열 때마다 한 발이 나간다.
+						loopStartFrame = tonumber(skills:GetCell(i, "LoopStartFrame")) or -1,
+						loopEndFrame = tonumber(skills:GetCell(i, "LoopEndFrame")) or -1,
+						-- 연사가 끝난 뒤 한 번 재생할 마무리 구간의 끝 프레임(입 닫기).
+						closeEndFrame = tonumber(skills:GetCell(i, "CloseEndFrame")) or -1,
+						-- 🔴 shapeType=crouchable 전용. 판정 박스 "아래끝에서 이만큼" 안에서만 숙이기가 통한다.
+						--    음수면 박스 전체(기존 동작). 이게 없으면 이펙트 한가운데 2층에 서 있어도
+						--    숙이기만 하면 무조건 면제된다 - 숙이기가 위치와 무관한 전역 상태 검사이기 때문이다.
+						crouchBand = tonumber(skills:GetCell(i, "CrouchBand")) or -1,
+						-- 판정 순간에 바닥마다 띄우는 두 번째 이펙트. CastEffect 가 예고, FireEffect 가 타격이다.
+						-- FireEffectFloors 는 보스 y 기준 바닥 오프셋을 ; 로 나열한 문자열("0;0.6"). 러너가 쪼갠다.
+						-- FireEffectTiles 는 tile 자산을 판정 폭에 가로로 몇 장 이어 붙일지.
+						fireEffectRuid = tostring(skills:GetCell(i, "FireEffectRUID") or ""),
+						fireEffectScale = tonumber(skills:GetCell(i, "FireEffectScale")) or 1,
+						fireEffectFloors = tostring(skills:GetCell(i, "FireEffectFloors") or ""),
+						fireEffectTiles = tonumber(skills:GetCell(i, "FireEffectTiles")) or 1,
+						-- shapeType=buff 전용. 범위 안 아군 몬스터의 이동속도 배율과 지속시간.
+						buffMoveRate = tonumber(skills:GetCell(i, "BuffMoveRate")) or 1,
+						buffDuration = tonumber(skills:GetCell(i, "BuffDuration")) or 5,
+						note = skills:GetCell(i, "#Note") or ""
+					})
+					skillRows = skillRows + 1
+				end
+			end
+		end
+
+		local rewardRows = 0
+		local rewards = _DataService:GetTable(self.RewardTableName)
+		if rewards == nil then
+			log_warning("[BossCatalog] dataset not found: " .. self.RewardTableName)
+		else
+			for i = 1, rewards:GetRowCount() do
+				local bossId = self:Key(rewards:GetCell(i, "BossId"))
+				if bossId ~= "" and self:ParseEnabled(rewards:GetCell(i, "Enabled")) then
+					self.rewardById[bossId] = {
+						bossId = bossId,
+						topDamageItemId = rewards:GetCell(i, "TopDamageItemId") or "",
+						topDamageMeso = tonumber(rewards:GetCell(i, "TopDamageMeso")) or 0,
+						firstClaimItemId = rewards:GetCell(i, "FirstClaimItemId") or "",
+						firstClaimMeso = tonumber(rewards:GetCell(i, "FirstClaimMeso")) or 0,
+						firstClaimOnce = self:ParseEnabled(rewards:GetCell(i, "FirstClaimOnce"))
+					}
+					rewardRows = rewardRows + 1
+				end
+			end
+		end
+
+		log("[BossCatalog] loaded bosses=" .. tostring(bossRows)
+			.. " skills=" .. tostring(skillRows)
+			.. " rewards=" .. tostring(rewardRows)
+			.. " skipped=" .. tostring(skipped))
+	end
+
+	method any GetInfo(any bossId)
+		-- 보스 정의 1건. 없거나 꺼져 있으면 nil.
+		self:EnsureLoaded()
+		return self.infoById[self:Key(bossId)]
+	end
+
+	method any GetMapBosses(string mapName)
+		-- 그 맵에 뜨는 보스 목록. 없으면 빈 배열.
+		self:EnsureLoaded()
+		local list = self.bossesByMap[mapName]
+		if list == nil then
+			return {}
+		end
+		return list
+	end
+
+	method any GetSkills(any bossId)
+		-- 그 보스의 스킬 전부(Enabled 만). 없으면 빈 배열.
+		self:EnsureLoaded()
+		local list = self.skillsById[self:Key(bossId)]
+		if list == nil then
+			return {}
+		end
+		return list
+	end
+
+	method any GetSkillsForHp(any bossId, number hpPercent)
+		-- 지금 HP% 구간에서 쓸 수 있는 스킬만 골라 Priority 내림차순으로 준다.
+		-- 페이즈 게이트가 여기서 걸린다.
+		local usable = {}
+		for _, s in ipairs(self:GetSkills(bossId)) do
+			if hpPercent >= s.minHpPercent and hpPercent <= s.maxHpPercent then
+				table.insert(usable, s)
+			end
+		end
+		table.sort(usable, function(a, b) return a.priority > b.priority end)
+		return usable
+	end
+
+	method any GetReward(any bossId)
+		-- 보상 정의 1건. 없으면 nil.
+		self:EnsureLoaded()
+		return self.rewardById[self:Key(bossId)]
+	end
+
+	method number GetMaxHp(any bossId)
+		-- 최대 체력. 없으면 100000.
+		local e = self:GetInfo(bossId)
+		if e == nil then
+			return 100000
+		end
+		return e.maxHp
+	end
+
+	method string GetName(any bossId)
+		-- 표시용 이름. 없으면 "보스 <id>".
+		local e = self:GetInfo(bossId)
+		if e == nil then
+			return "보스 " .. self:Key(bossId)
+		end
+		return e.name
+	end
+
+	method string GetModelId(any bossId)
+		-- 스폰에 쓸 모델 id. 없으면 빈 문자열.
+		local e = self:GetInfo(bossId)
+		if e == nil then
+			return ""
+		end
+		return e.modelId
+	end
+
+end
