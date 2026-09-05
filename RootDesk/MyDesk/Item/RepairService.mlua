@@ -1,0 +1,94 @@
+@Logic
+script RepairService extends Logic
+
+	-- 수리 장인 (RepairConfig · 메소 · 계약서 A-2-8c). 장착 슬롯 하나 또는 전부. 수리비 = (최대 − 현재 내구도) × 티어 계수.
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 준비 로그.
+		log("[Item] RepairService ready (server)")
+	end
+
+	@ExecSpace("Server")
+	method void RequestRepair(string slot)
+		-- 슬롯 하나 수리.
+		self:RepairSlots(senderUserId, { slot }, slot)
+	end
+
+	@ExecSpace("Server")
+	method void RequestRepairAll()
+		-- 장착 6슬롯 전부 (손상된 것만 비용에 들어간다).
+		self:RepairSlots(senderUserId, { "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }, "ALL")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RepairSlots(string userId, any slots, string label)
+		-- 공통: 대상 수집 → 총비용 → 메소 검증 → 내구도 복구 → 슬롯마다 ItemRepairedEvent → 갱신.
+		local e = _EquipService:EnsureUser(userId)
+		if e == nil then
+			self:Deny(userId, label, "장비 정보를 찾을 수 없습니다")
+			return
+		end
+		local targets = {}
+		local total = 0
+		for _, s in ipairs(slots) do
+			local iid = e[s] or ""
+			if iid ~= "" then
+				local it = _InventoryService:Find(userId, iid)
+				local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+				if it ~= nil and def ~= nil then
+					local cost = _ItemCatalog:GetRepairCost(def, it.dur or 0)
+					if cost > 0 then
+						table.insert(targets, { slot = s, it = it, def = def, cost = cost })
+						total = total + cost
+					end
+				end
+			end
+		end
+		if #targets == 0 then
+			self:Deny(userId, label, "수리할 장비가 없습니다")
+			return
+		end
+		local econ = _SummonManager:GetEcon(userId)
+		if econ == nil or econ.meso < total then
+			self:Deny(userId, label, "메소가 부족합니다 (" .. tostring(total) .. ")")
+			return
+		end
+		_SummonManager:SpendMeso(userId, total)
+		for _, t in ipairs(targets) do
+			local restored = t.def.maxDurability - (t.it.dur or 0)
+			t.it.dur = t.def.maxDurability
+			local ev = ItemRepairedEvent()
+			ev.UserId = userId
+			ev.ItemId = t.it.itemId
+			ev.InstanceId = t.it.iid
+			ev.Slot = t.slot
+			ev.Restored = restored
+			ev.Cost = t.cost
+			self:SendEvent(ev)
+		end
+		_InventoryService:PushInventory(userId)
+		_EquipService:PushEquipped(userId)
+		log("[Item] repair OK " .. label .. " slots=" .. tostring(#targets) .. " meso-" .. tostring(total) .. " (" .. userId .. ")")
+		self:Result(userId, label, true, "수리 완료 (메소 " .. tostring(total) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string label, string reason)
+		-- 거절: 아무것도 바꾸지 않았다.
+		log("[Item] repair denied (" .. userId .. "): " .. reason)
+		self:Result(userId, label, false, reason)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Result(string userId, string label, boolean ok, string message)
+		-- 소유 클라에만 결과.
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(message, userId)
+		end
+		if _WorkshopUIController ~= nil then
+			_WorkshopUIController:SetTradeResult("repair", ok, message, label, userId)
+		end
+	end
+
+end

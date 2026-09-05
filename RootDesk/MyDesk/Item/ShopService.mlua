@@ -1,0 +1,73 @@
+@Logic
+script ShopService extends Logic
+
+	-- 물약 상인 (ShopItem · 메소 결제 · 계약서 A-2-8c). 서버 권한: 검증 → 메소 차감 → 지급 → ItemPurchasedEvent → 인벤토리 갱신 → 결과 RPC.
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 준비 로그.
+		log("[Item] ShopService ready (server)")
+	end
+
+	@ExecSpace("Server")
+	method void RequestBuy(string shopItemId, integer count)
+		-- 클라 요청. count 는 1..MaxCount.
+		local userId = senderUserId
+		local row = _ItemCatalog:GetShopItem(shopItemId)
+		if row == nil then
+			self:Deny(userId, shopItemId, "상품을 찾을 수 없습니다")
+			return
+		end
+		local n = math.floor(count or 0)
+		if n < 1 or n > row.maxCount then
+			self:Deny(userId, shopItemId, "수량은 1~" .. tostring(row.maxCount) .. "개입니다")
+			return
+		end
+		local def = _ItemCatalog:Get(row.itemId)
+		if def == nil then
+			self:Deny(userId, shopItemId, "아이템 정의가 없습니다: " .. row.itemId)
+			return
+		end
+		local cost = row.priceMeso * n
+		local econ = _SummonManager:GetEcon(userId)
+		if cost > 0 and (econ == nil or econ.meso < cost) then
+			self:Deny(userId, shopItemId, "메소가 부족합니다 (" .. tostring(cost) .. ")")
+			return
+		end
+		if cost > 0 then
+			_SummonManager:SpendMeso(userId, cost)
+		end
+		local given = _InventoryService:GiveItem(userId, row.itemId, n)
+
+		local ev = ItemPurchasedEvent()
+		ev.UserId = userId
+		ev.ShopItemId = shopItemId
+		ev.ItemId = row.itemId
+		ev.Count = given
+		ev.Cost = cost
+		self:SendEvent(ev)
+
+		_InventoryService:PushInventory(userId)
+		log("[Item] buy OK " .. shopItemId .. " x" .. tostring(given) .. " meso-" .. tostring(cost) .. " (" .. userId .. ")")
+		self:Result(userId, shopItemId, true, def.name .. " ×" .. tostring(given) .. " 구매")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string shopItemId, string reason)
+		-- 거절: 아무것도 바꾸지 않았다.
+		log("[Item] buy denied (" .. userId .. "): " .. reason)
+		self:Result(userId, shopItemId, false, reason)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Result(string userId, string shopItemId, boolean ok, string message)
+		-- 소유 클라에만 결과.
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(message, userId)
+		end
+		if _WorkshopUIController ~= nil then
+			_WorkshopUIController:SetTradeResult("potion", ok, message, shopItemId, userId)
+		end
+	end
+
+end

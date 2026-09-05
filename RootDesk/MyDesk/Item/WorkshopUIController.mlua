@@ -2,7 +2,7 @@
 script WorkshopUIController extends Logic
 
 	-- 공방 창(VillageWorkshopGroup.ui) 클라 컨트롤러 — WO-011 ⑦ (S1). 계획서 §4-3 · §5-3 (강화 3상태 기계) · §5-6 (라우터).
-	-- 라우트: enhance / enhance_pick / enhance_gempick 은 동작, craft / repair / potion / shop_equip 은 자리만 (WP2).
+	-- 라우트: enhance / enhance_pick / enhance_gempick · craft(=shop_equip · CraftRecipe) / potion(ShopItem) / repair(RepairConfig) — 2026-09-06 전부 동작.
 	-- 인벤토리 캐시는 InventoryUIController.items 를 같이 쓴다 (서버가 밀어준 문자열만).
 	-- UUID 는 UIBuilder write({bind}) 가 주입한다.
 
@@ -68,6 +68,22 @@ script WorkshopUIController extends Logic
 	-- ── enhance_pick / enhance_gempick ─────────────────────────
 	property GridViewComponent pickGrid = "307cf906-5df1-411a-a8e7-0c32212335e3"
 
+	-- craft(= shop_equip) · potion · repair 블록 (2026-09-06 · UIBuilder 바인딩 주입)
+	property GridViewComponent craftGrid = "938f148b-53ca-4f68-9b34-5b6f62d1e64e"
+
+	property Entity craftTemplate = "715cad98-12e9-4984-9ed3-ad0e2fda2b08"
+
+	property Entity craftDetail = "194add28-c0ce-43eb-8f59-639183fd282a"
+
+	property GridViewComponent potionGrid = "de25413b-7906-4ba9-af70-6e9ad4137d9b"
+
+	property Entity potionTemplate = "f2adba73-487a-4e87-b9b0-817b30a72c95"
+
+	property Entity potionDetail = "6de4b9b2-618e-40e1-9c32-c951ea7fa7ba"
+
+	-- 탭 4개(강화 · 제작·장비 · 물약 · 수리) — NPC 없이도 라우트 전환 (사용자 지적 2026-09-06 "제작 물약 수리는 어디있냐")
+	property Entity tabBar = "afb039e1-eda6-4e01-8bcc-c1254cd9f8f7"
+
 	property Entity pickTemplate = "542a1732-726a-4b4d-9547-721f8fdadcf2"
 
 	property ButtonComponent btnPickBack = "800a8f9b-d038-4231-97c3-d3716146e05d"
@@ -99,6 +115,25 @@ script WorkshopUIController extends Logic
 
 	@HideFromInspector
 	property any gemHandlers = nil
+
+	-- craft / potion / repair 상태 (2026-09-06)
+	@HideFromInspector
+	property any craftView = nil
+
+	@HideFromInspector
+	property string craftSel = ""
+
+	@HideFromInspector
+	property any potionView = nil
+
+	@HideFromInspector
+	property string potionSel = ""
+
+	@HideFromInspector
+	property integer potionQty = 1
+
+	@HideFromInspector
+	property any tradeHandlers = nil
 
 	@HideFromInspector
 	property boolean waiting = false
@@ -135,6 +170,45 @@ script WorkshopUIController extends Logic
 			self.pickGrid.OnClear = function(index, entity) self:ClearPickCell(index, entity) end
 			self.pickGrid.TotalCount = 0
 			self.pickGrid:Refresh(true, true)
+		end
+
+		-- craft(=shop_equip) · potion 카드 그리드 + 물약 수량 버튼 + 수리 6행 버튼 (자식은 이름으로 찾는다 — 바인딩 최소화)
+		self.craftView = {}
+		self.potionView = {}
+		self.tradeHandlers = {}
+		if isvalid(self.craftGrid) then
+			if isvalid(self.craftTemplate) then self.craftGrid.ItemEntity = self.craftTemplate end
+			self.craftGrid.OnRefresh = function(index, entity) self:FillCraftCell(index, entity) end
+			self.craftGrid.OnClear = function(index, entity) self:ClearTradeCell(entity) end
+			self.craftGrid.TotalCount = 0
+			self.craftGrid:Refresh(true, true)
+		end
+		if isvalid(self.potionGrid) then
+			if isvalid(self.potionTemplate) then self.potionGrid.ItemEntity = self.potionTemplate end
+			self.potionGrid.OnRefresh = function(index, entity) self:FillPotionCell(index, entity) end
+			self.potionGrid.OnClear = function(index, entity) self:ClearTradeCell(entity) end
+			self.potionGrid.TotalCount = 0
+			self.potionGrid:Refresh(true, true)
+		end
+		local function bindChild(root, name, fn)
+			if not isvalid(root) then return end
+			local c = root:GetChildByName(name)
+			if isvalid(c) then
+				table.insert(self.tradeHandlers, { ent = c, h = c:ConnectEvent(ButtonClickEvent, fn) })
+			end
+		end
+		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
+		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
+		for _, r in ipairs({ "enhance", "craft", "potion", "repair" }) do
+			local route = r
+			bindChild(self.tabBar, "Tab_" .. r, function() self:GoRoute(route) end)
+		end
+		if isvalid(self.contentRepair) then
+			for _, slot in ipairs({ "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }) do
+				local row = self.contentRepair:GetChildByName("Row_" .. slot)
+				local s = slot
+				bindChild(row, "BtnRepair", function() self:OnRepairRow(s) end)
+			end
 		end
 
 		-- 보석 12칸: Slot_{GemId} 자식을 이름으로 찾아 연결한다 (바인딩 36개 대신)
@@ -191,6 +265,9 @@ script WorkshopUIController extends Logic
 		self:SetOpen(true)
 		self.targetIid = ""
 		self.chosenGems = {}
+		self.craftSel = ""
+		self.potionSel = ""
+		self.potionQty = 1
 		self.waiting = false
 		if isvalid(self.titleText) then self.titleText.Text = "공방" end
 		self:GoRoute(route)
@@ -224,17 +301,42 @@ script WorkshopUIController extends Logic
 		show(self.contentEnhance, route == "enhance")
 		show(self.contentPick, route == "enhance_pick")
 		show(self.contentGemPick, route == "enhance_gempick")
-		show(self.contentCraft, route == "craft")
+		-- craft 와 shop_equip 은 같은 블록(Content/Craft · CraftRecipe 표) — 사용자 결정 2026-09-06 "장비 구입 = 제작". ShopEquip 컨테이너는 비워 둔다
+		show(self.contentCraft, route == "craft" or route == "shop_equip")
 		show(self.contentRepair, route == "repair")
 		show(self.contentPotion, route == "potion")
-		show(self.contentShopEquip, route == "shop_equip")
-		show(self.footer, route == "enhance")
+		show(self.contentShopEquip, false)
+		show(self.footer, route == "enhance" or route == "craft" or route == "shop_equip" or route == "potion" or route == "repair")
+		-- 탭 강조: 현재 라우트의 탭만 밝게 (enhance_pick/gempick 은 강화 탭 · shop_equip 은 제작 탭)
+		if isvalid(self.tabBar) then
+			local active = route
+			if route == "enhance_pick" or route == "enhance_gempick" then active = "enhance" end
+			if route == "shop_equip" then active = "craft" end
+			for _, r in ipairs({ "enhance", "craft", "potion", "repair" }) do
+				local tab = self.tabBar:GetChildByName("Tab_" .. r)
+				if isvalid(tab) and tab.SpriteGUIRendererComponent ~= nil then
+					if r == active then
+						tab.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
+						if tab.TextGUIRendererComponent ~= nil then tab.TextGUIRendererComponent.FontColor = Color(0.18, 0.18, 0.26, 1) end
+					else
+						tab.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1)
+						if tab.TextGUIRendererComponent ~= nil then tab.TextGUIRendererComponent.FontColor = Color(1, 1, 1, 1) end
+					end
+				end
+			end
+		end
 		if route == "enhance" then
 			self:RefreshEnhance()
 		elseif route == "enhance_pick" then
 			self:RebuildPick()
 		elseif route == "enhance_gempick" then
 			self:RefreshGemPick()
+		elseif route == "craft" or route == "shop_equip" then
+			self:RefreshCraft()
+		elseif route == "potion" then
+			self:RefreshPotion()
+		elseif route == "repair" then
+			self:RefreshRepair()
 		end
 		log("[Workshop] route=" .. route)
 	end
@@ -343,6 +445,9 @@ script WorkshopUIController extends Logic
 			local rows = {}
 			local sum = {}
 			-- ⑫ B안: 다음 단계 = 고정치(방어구 방어) + 고른 보석마다 그 스탯(양은 EnhanceSlotBonus · GemInfo.AddPerLevel 은 안 쓴다)
+			-- 제목 줄에 "이번 단계 기본 상승(보석 무관) · 보석 1개당 양" 을 항상 적는다 (사용자 지적 2026-09-06: 보석 없이 오르는 기본치가 안 보였다)
+			local title = self.previewRoot:GetChildByName("PreviewTitle")
+			local titleText = "상승 능력치"
 			if def ~= nil and row ~= nil then
 				local nextLv = (it.enh or 0) + 1
 				local fixed = _ItemCatalog:GetSlotBonus(def.slot, def.reqLevel, nextLv)
@@ -352,7 +457,20 @@ script WorkshopUIController extends Logic
 					local amt = _ItemCatalog:GemAmount(def, nextLv, g)
 					if gem ~= nil and amt ~= 0 then sum[gem.statKey] = (sum[gem.statKey] or 0) + amt end
 				end
+				local base = "기본 상승 없음"
+				if fixed ~= nil and (fixed.defense or 0) ~= 0 then base = "기본 방어력 +" .. tostring(fixed.defense) end
+				local per = ""
+				if fixed ~= nil then
+					if (fixed.attack or 0) ~= 0 then
+						per = "다이아 1개 = 공격력 +" .. tostring(fixed.attack)
+					elseif (fixed.str or 0) ~= 0 then
+						per = "힘의 결정 1개 = STR +" .. tostring(fixed.str)
+					end
+				end
+				titleText = "+" .. tostring(nextLv) .. " · " .. base
+				if per ~= "" then titleText = titleText .. " · " .. per end
 			end
+			if isvalid(title) and title.TextGUIRendererComponent ~= nil then title.TextGUIRendererComponent.Text = titleText end
 			for _, k in ipairs({ "attack", "magic", "defense", "str", "dex", "int", "luk", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
 				if (sum[k] or 0) ~= 0 and #rows < 4 then
 					table.insert(rows, { label = self:StatLabel(k), value = "+" .. tostring(sum[k]) })
@@ -390,6 +508,21 @@ script WorkshopUIController extends Logic
 		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = (ready and not self.waiting) end
 	end
 
+	@ExecSpace("Client")
+	method void SetTradeResult(string kind, boolean ok, string message, string key)
+		-- 서버 결과 (craft / potion / repair). 화면은 이 응답으로만 갱신한다 (§5-5 규칙 2). 인벤토리·메소는 PushInventory 로 따로 온다.
+		self.waiting = false
+		log("[Workshop] " .. kind .. " result ok=" .. tostring(ok) .. " key=" .. key .. " msg=" .. message)
+		if isvalid(self.costLabel) then self.costLabel.Text = message end
+		if kind == "craft" then
+			self:RefreshCraft()
+		elseif kind == "potion" then
+			self:RefreshPotion()
+		elseif kind == "repair" then
+			self:RefreshRepair()
+		end
+	end
+
 	@ExecSpace("ClientOnly")
 	method void OnGemSlot(integer idx)
 		-- 채워져 있으면 비운다, 비었으면 보석 선택 라우트로.
@@ -403,13 +536,33 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnPrimary()
-		-- 🔴 강화 요청. 연타 방지: 응답 올 때까지 버튼 비활성 (§5-5 규칙 1). 화면은 응답으로만 바뀐다 (규칙 2).
-		if self.targetIid == "" or #self.chosenGems == 0 or self.waiting then return end
-		self.waiting = true
-		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
-		if isvalid(self.statusText) then self.statusText.Text = "강화 중..." end
-		_EnhanceService:RequestEnhance(self.targetIid, table.concat(self.chosenGems, "+"))
-		log("[Workshop] enhance requested " .. self.targetIid .. " gems=" .. table.concat(self.chosenGems, "+"))
+		-- 🔴 Footer 버튼 = 라우트별 서버 요청. 연타 방지: 응답 올 때까지 버튼 비활성 (§5-5 규칙 1). 화면은 응답으로만 바뀐다 (규칙 2).
+		if self.waiting then return end
+		if self.route == "enhance" then
+			if self.targetIid == "" or #self.chosenGems == 0 then return end
+			self.waiting = true
+			if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+			if isvalid(self.statusText) then self.statusText.Text = "강화 중..." end
+			_EnhanceService:RequestEnhance(self.targetIid, table.concat(self.chosenGems, "+"))
+			log("[Workshop] enhance requested " .. self.targetIid .. " gems=" .. table.concat(self.chosenGems, "+"))
+		elseif self.route == "craft" or self.route == "shop_equip" then
+			if self.craftSel == "" then return end
+			self.waiting = true
+			if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+			_CraftService:RequestCraft(self.craftSel)
+			log("[Workshop] craft requested " .. self.craftSel)
+		elseif self.route == "potion" then
+			if self.potionSel == "" then return end
+			self.waiting = true
+			if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+			_ShopService:RequestBuy(self.potionSel, self.potionQty)
+			log("[Workshop] buy requested " .. self.potionSel .. " x" .. tostring(self.potionQty))
+		elseif self.route == "repair" then
+			self.waiting = true
+			if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+			_RepairService:RequestRepairAll()
+			log("[Workshop] repair-all requested")
+		end
 	end
 
 	@ExecSpace("Client")
@@ -531,6 +684,296 @@ script WorkshopUIController extends Logic
 		self:GoRoute("enhance")
 	end
 
+	-- ── craft (= shop_equip) ───────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method string ShopKey()
+		-- 지금 서 있는 맵의 지역 → CraftRecipe.ShopKey (서버도 같은 규칙으로 검증 · VillageConfig 전 임시).
+		local p = _UserService.LocalPlayer
+		local mapName = ""
+		if isvalid(p) and isvalid(p.CurrentMap) then mapName = p.CurrentMap.Name end
+		return _ItemCatalog:ShopKeyOfMap(mapName)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string JobLabel(string reqJob)
+		-- ReqJob 임시 열거값 → 표시명. 빈칸 = 전직업.
+		if reqJob == "WARRIOR" then return "전사" elseif reqJob == "MAGICIAN" then return "마법사" elseif reqJob == "ARCHER" then return "궁수"
+		elseif reqJob == "THIEF" then return "도적" elseif reqJob == "PIRATE" then return "해적" elseif reqJob == "" then return "전직업" end
+		return reqJob
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer CountItem(string itemId)
+		-- 인벤토리 캐시의 스택 합.
+		local n = 0
+		for _, it in ipairs(self:Items()) do
+			if it.itemId == itemId then n = n + it.count end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method string PriceText(any recipe)
+		-- "포자 5 · 메소 300" (재료명은 앞 2글자만 — 카드 폭)
+		local parts = {}
+		for _, m in ipairs(recipe.mats) do
+			local md = _ItemCatalog:Get(m.itemId)
+			local nm = (md ~= nil) and md.name or m.itemId
+			table.insert(parts, nm .. " " .. tostring(m.count))
+		end
+		if recipe.mesoCost > 0 then table.insert(parts, "메소 " .. tostring(recipe.mesoCost)) end
+		return table.concat(parts, " · ")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCraft()
+		-- 이 지역 레시피 목록 → 카드 그리드. 선택된 것이 있으면 상세·재료·Footer 갱신.
+		local key = self:ShopKey()
+		self.craftView = _ItemCatalog:GetRecipes(key)
+		if isvalid(self.craftGrid) then
+			self.craftGrid.TotalCount = #self.craftView
+			self.craftGrid:Refresh(true, true)
+		end
+		local sel = (self.craftSel ~= "") and _ItemCatalog:GetRecipe(self.craftSel) or nil
+		if sel ~= nil and sel.shopKey ~= key then sel = nil self.craftSel = "" end
+		local d = self.craftDetail
+		if isvalid(d) then
+			local empty = d:GetChildByName("Empty")
+			if isvalid(empty) then empty.Enable = (sel == nil) end
+			local def = (sel ~= nil) and _ItemCatalog:Get(sel.resultItemId) or nil
+			local icon = d:GetChildByName("Icon")
+			local name = d:GetChildByName("Name")
+			local req = d:GetChildByName("Req")
+			local statList = d:GetChildByName("StatList")
+			if _InventoryUIController ~= nil then
+				local eq = nil
+				if def ~= nil then eq = { iid = "", itemId = def.id, enh = 0, dur = def.maxDurability, gems = "" } end
+				_InventoryUIController:FillItemView(eq, "", isvalid(icon) and icon.SpriteGUIRendererComponent or nil, isvalid(name) and name.TextGUIRendererComponent or nil, isvalid(req) and req.TextGUIRendererComponent or nil, statList, nil, nil, 0)
+			end
+			local mt = d:GetChildByName("MatTitle")
+			if isvalid(mt) then mt.Enable = (sel ~= nil) end
+			local rows = {}
+			if sel ~= nil then
+				for _, m in ipairs(sel.mats) do
+					local md = _ItemCatalog:Get(m.itemId)
+					table.insert(rows, { label = (md ~= nil) and md.name or m.itemId, value = tostring(self:CountItem(m.itemId)) .. " / " .. tostring(m.count) })
+				end
+				if sel.mesoCost > 0 then table.insert(rows, { label = "메소", value = tostring(sel.mesoCost) }) end
+			end
+			for i = 0, 1 do
+				local r = d:GetChildByName("Mat" .. tostring(i))
+				if isvalid(r) then
+					local data = rows[i + 1]
+					r.Enable = (data ~= nil)
+					if data ~= nil then
+						local chip = r:GetChildByName("Chip")
+						local cell = r:GetChildByName("Cell")
+						if isvalid(chip) and chip.TextGUIRendererComponent ~= nil then chip.TextGUIRendererComponent.Text = data.label end
+						if isvalid(cell) and cell.TextGUIRendererComponent ~= nil then cell.TextGUIRendererComponent.Text = data.value end
+					end
+				end
+			end
+		end
+		-- Footer: 비용 + 제작/구매 버튼 (재료·메소는 서버가 최종 판정 · 재료 부족은 여기서 먼저 막는다)
+		local ready = false
+		local cost = "장비를 고르세요"
+		if sel ~= nil then
+			ready = true
+			for _, m in ipairs(sel.mats) do
+				if self:CountItem(m.itemId) < m.count then ready = false end
+			end
+			cost = self:PriceText(sel)
+			if key == "" then ready = false cost = "이 맵에서는 거래할 수 없습니다" end
+		end
+		if isvalid(self.costLabel) then self.costLabel.Text = cost end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = (ready and not self.waiting)
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.Text = (self.route == "craft") and "제작" or "구매" end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillCraftCell(integer index, Entity cell)
+		-- 카드 = 아이콘 · 이름 · 가격 · 직업. 클릭 → 선택.
+		local r = self.craftView[index + 1]
+		if r == nil or not isvalid(cell) then return end
+		local def = _ItemCatalog:Get(r.resultItemId)
+		local name = cell:GetChildByName("Name")
+		if isvalid(name) and name.TextGUIRendererComponent ~= nil then name.TextGUIRendererComponent.Text = (def ~= nil) and def.name or r.resultItemId end
+		local price = cell:GetChildByName("Price")
+		if isvalid(price) and price.TextGUIRendererComponent ~= nil then price.TextGUIRendererComponent.Text = self:PriceText(r) end
+		local job = cell:GetChildByName("Job")
+		if isvalid(job) and job.TextGUIRendererComponent ~= nil then job.TextGUIRendererComponent.Text = (def ~= nil) and (self:JobLabel(def.reqJob) .. " Lv" .. tostring(def.reqLevel)) or "" end
+		local icon = cell:GetChildByName("Icon")
+		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+			local ruid = (def ~= nil) and def.icon or ""
+			icon.SpriteGUIRendererComponent.ImageRUID = ruid
+			icon.Enable = (ruid ~= "")
+		end
+		local key = cell.Id
+		if self.cellHandlers[key] ~= nil then cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key]) end
+		local rid = r.id
+		self.cellHandlers[key] = cell:ConnectEvent(ButtonClickEvent, function() self.craftSel = rid self:RefreshCraft() end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearTradeCell(Entity cell)
+		-- 재사용 셀 핸들러 해제 (craft · potion 공용).
+		if not isvalid(cell) then return end
+		local key = cell.Id
+		if self.cellHandlers[key] ~= nil then
+			cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key])
+			self.cellHandlers[key] = nil
+		end
+	end
+
+	-- ── potion ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RefreshPotion()
+		-- 물약 상인 상품 → 카드. 선택된 것이 있으면 수량·총액·보유 표시.
+		self.potionView = _ItemCatalog:GetShopItems("POTION")
+		if isvalid(self.potionGrid) then
+			self.potionGrid.TotalCount = #self.potionView
+			self.potionGrid:Refresh(true, true)
+		end
+		local sel = (self.potionSel ~= "") and _ItemCatalog:GetShopItem(self.potionSel) or nil
+		local def = (sel ~= nil) and _ItemCatalog:Get(sel.itemId) or nil
+		if sel ~= nil and self.potionQty > sel.maxCount then self.potionQty = sel.maxCount end
+		if self.potionQty < 1 then self.potionQty = 1 end
+		local d = self.potionDetail
+		if isvalid(d) then
+			local function setText(name, s)
+				local e = d:GetChildByName(name)
+				if isvalid(e) and e.TextGUIRendererComponent ~= nil then e.TextGUIRendererComponent.Text = s end
+			end
+			local empty = d:GetChildByName("Empty")
+			if isvalid(empty) then empty.Enable = (sel == nil) end
+			for _, n in ipairs({ "Name", "Desc", "BtnMinus", "QtyText", "BtnPlus", "TotalText", "HaveText" }) do
+				local e = d:GetChildByName(n)
+				if isvalid(e) then e.Enable = (sel ~= nil) end
+			end
+			local icon = d:GetChildByName("Icon")
+			if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+				local ruid = (def ~= nil) and def.icon or ""
+				icon.SpriteGUIRendererComponent.ImageRUID = ruid
+				icon.Enable = (ruid ~= "")
+			end
+			if sel ~= nil then
+				local c = _ItemCatalog:GetConsume(sel.itemId)
+				setText("Name", (def ~= nil) and def.name or sel.itemId)
+				setText("Desc", (c ~= nil) and ("HP +" .. tostring(c.healHp)) or "")
+				setText("QtyText", tostring(self.potionQty))
+				setText("TotalText", "총 " .. tostring(sel.priceMeso * self.potionQty) .. " 메소")
+				setText("HaveText", "보유 " .. tostring(self:CountItem(sel.itemId)) .. "개 · 개당 " .. tostring(sel.priceMeso) .. " 메소")
+			end
+		end
+		if isvalid(self.costLabel) then
+			self.costLabel.Text = (sel ~= nil) and ("메소 " .. tostring(sel.priceMeso * self.potionQty) .. " (" .. tostring(self.potionQty) .. "개)") or "물약을 고르세요"
+		end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = (sel ~= nil and not self.waiting)
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.Text = "구매" end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillPotionCell(integer index, Entity cell)
+		-- 카드 = 아이콘 · 이름 · 가격. 클릭 → 선택(수량 1 로).
+		local s = self.potionView[index + 1]
+		if s == nil or not isvalid(cell) then return end
+		local def = _ItemCatalog:Get(s.itemId)
+		local name = cell:GetChildByName("Name")
+		if isvalid(name) and name.TextGUIRendererComponent ~= nil then name.TextGUIRendererComponent.Text = (def ~= nil) and def.name or s.itemId end
+		local price = cell:GetChildByName("Price")
+		if isvalid(price) and price.TextGUIRendererComponent ~= nil then price.TextGUIRendererComponent.Text = "메소 " .. tostring(s.priceMeso) end
+		local job = cell:GetChildByName("Job")
+		if isvalid(job) and job.TextGUIRendererComponent ~= nil then job.TextGUIRendererComponent.Text = "" end
+		local icon = cell:GetChildByName("Icon")
+		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+			local ruid = (def ~= nil) and def.icon or ""
+			icon.SpriteGUIRendererComponent.ImageRUID = ruid
+			icon.Enable = (ruid ~= "")
+		end
+		local key = cell.Id
+		if self.cellHandlers[key] ~= nil then cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key]) end
+		local sid = s.id
+		self.cellHandlers[key] = cell:ConnectEvent(ButtonClickEvent, function() self.potionSel = sid self.potionQty = 1 self:RefreshPotion() end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPotionQty(integer delta)
+		-- 수량 −/+ (1 ~ MaxCount).
+		self.potionQty = self.potionQty + delta
+		self:RefreshPotion()
+	end
+
+	-- ── repair ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRepair()
+		-- 장착 6슬롯: 이름 · 내구도 바(폭) · 비용 · 개별 수리 버튼. Footer = 전체 수리 합계.
+		local total = 0
+		local eqMap = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
+		if isvalid(self.contentRepair) then
+			for _, slot in ipairs({ "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }) do
+				local row = self.contentRepair:GetChildByName("Row_" .. slot)
+				if isvalid(row) then
+					local eq = (eqMap ~= nil) and eqMap[slot] or nil
+					local def = (eq ~= nil) and _ItemCatalog:Get(eq.itemId) or nil
+					local cost = (def ~= nil) and _ItemCatalog:GetRepairCost(def, eq.dur or 0) or 0
+					total = total + cost
+					local function setText(name, s)
+						local e = row:GetChildByName(name)
+						if isvalid(e) and e.TextGUIRendererComponent ~= nil then e.TextGUIRendererComponent.Text = s end
+					end
+					if def ~= nil then
+						setText("Name", def.name .. (((eq.enh or 0) > 0) and (" +" .. tostring(eq.enh)) or ""))
+						setText("DurText", tostring(eq.dur or 0) .. " / " .. tostring(def.maxDurability))
+						setText("CostText", (cost > 0) and ("메소 " .. tostring(cost)) or "손상 없음")
+					else
+						setText("Name", "(비어 있음)")
+						setText("DurText", "")
+						setText("CostText", "")
+					end
+					local bar = row:GetChildByName("Bar")
+					local fill = isvalid(bar) and bar:GetChildByName("Fill") or nil
+					if isvalid(fill) and fill.UITransformComponent ~= nil then
+						local ratio = 0
+						if def ~= nil and def.maxDurability > 0 then ratio = (eq.dur or 0) / def.maxDurability end
+						if ratio < 0 then ratio = 0 end
+						if ratio > 1 then ratio = 1 end
+						local t = fill.UITransformComponent
+						t.RectSize = Vector2(200 * ratio, t.RectSize.y)
+					end
+					local btn = row:GetChildByName("BtnRepair")
+					if isvalid(btn) and btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = (cost > 0 and not self.waiting) end
+				end
+			end
+		end
+		if isvalid(self.costLabel) then
+			self.costLabel.Text = (total > 0) and ("전체 수리 메소 " .. tostring(total)) or "수리할 장비가 없습니다"
+		end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = (total > 0 and not self.waiting)
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.Text = "전체 수리" end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnRepairRow(string slot)
+		-- 슬롯 하나 수리 요청 (응답 올 때까지 버튼 비활성).
+		if self.waiting then return end
+		self.waiting = true
+		self:RefreshRepair()
+		_RepairService:RequestRepair(slot)
+		log("[Workshop] repair requested " .. slot)
+	end
+
 	@ExecSpace("ClientOnly")
 	method string StatLabel(string key)
 		-- 스탯 키 → 표시 라벨.
@@ -548,6 +991,9 @@ script WorkshopUIController extends Logic
 			if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
 		end
 		for _, h in ipairs(self.gemHandlers) do
+			if isvalid(h.ent) then h.ent:DisconnectEvent(ButtonClickEvent, h.h) end
+		end
+		for _, h in ipairs(self.tradeHandlers or {}) do
 			if isvalid(h.ent) then h.ent:DisconnectEvent(ButtonClickEvent, h.h) end
 		end
 		if self.hKey ~= nil then _InputService:DisconnectEvent(KeyDownEvent, self.hKey) end
