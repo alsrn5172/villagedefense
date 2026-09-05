@@ -1,0 +1,415 @@
+@Logic
+script StatService extends Logic
+
+	-- 플레이어 스탯 원장 + 3층 합산 + 데미지 계산의 단일 진상 (계획서 §1, 계약서 Stat/).
+	--   FinalStat = Base(직업 기본치 + 레벨업 AP 자동분배) + Equip(⑥) + Enhance(⑦) + Buff(B)
+	-- 🔴 합산은 여기 한 곳에서만 한다. 각 레이어는 SetLayerCsv 로 "str=1;attack=5" 문자열로 들어온다 (LEA-3036 회피).
+	-- 레벨·EXP·SP·메소 원장은 SummonManager.econ 이 그대로 갖고, 여기서는 읽기만 한다.
+	-- ⚠ StatApplyComponent(플레이어 @Component) 는 두지 않았다 — DefaultPlayer 모델 수정 없이 서버가 엔티티에 직접 적용한다.
+	-- ⚠ EventBus(계약서 B-1) 가 아직 없어 이벤트는 이 Logic 의 SendEvent 로 발행한다. 구독은 @EventSender("Logic", "StatService").
+
+	-- 직업표 이름 (B 소유 · 아직 없음 → NOVICE 폴백)
+	property string JobTableName = "JobInfo"
+
+	-- 무기 없을 때 임시 총공격력 = BaseAttack + AttackPerLevel × (레벨−1). 무기(⑥)가 생기면 EQUIP 레이어가 대신한다.
+	property integer BaseAttack = 10
+
+	property integer AttackPerLevel = 1
+
+	-- 무기 없을 때 숙련도
+	property number DefaultMastery = 0.15
+
+	-- 데미지 로그 (검증용 · 튜닝이 끝나면 false 로)
+	property boolean LogDamage = true
+
+	@HideFromInspector
+	property any users = nil
+
+	@HideFromInspector
+	property any jobs = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 원장 준비 + 직업표 로드(없으면 NOVICE 폴백만).
+		self.users = {}
+		self.jobs = {}
+		self:LoadJobs()
+		log("[Stat] StatService ready (server) jobs=" .. tostring(self:CountJobs()))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadJobs()
+		-- B 의 JobInfo.csv 가 있으면 읽는다. 열 이름은 계획서 §10 요청안(PrimaryStat/SecondaryStat/ApRatio*).
+		local t = _DataService:GetTable(self.JobTableName)
+		if t == nil then
+			log("[Stat] optional dataset not found: " .. self.JobTableName .. " (NOVICE fallback)")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local id = t:GetCell(i, "JobId") or ""
+			if id ~= "" then
+				self.jobs[id] = {
+					name = t:GetCell(i, "Name") or id,
+					primary = string.lower(t:GetCell(i, "PrimaryStat") or "STR"),
+					secondary = string.lower(t:GetCell(i, "SecondaryStat") or "DEX"),
+					ratio = {
+						str = tonumber(t:GetCell(i, "ApRatioStr")) or 0,
+						dex = tonumber(t:GetCell(i, "ApRatioDex")) or 0,
+						int = tonumber(t:GetCell(i, "ApRatioInt")) or 0,
+						luk = tonumber(t:GetCell(i, "ApRatioLuk")) or 0,
+					},
+				}
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CountJobs()
+		-- 로드된 직업 수.
+		local n = 0
+		for _ in pairs(self.jobs) do n = n + 1 end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetJob(string jobId)
+		-- 직업 정의. 없으면 NOVICE 폴백 (주 STR · 부 DEX · AP 6:4).
+		local j = self.jobs[jobId]
+		if j ~= nil then
+			return j
+		end
+		return {
+			name = "초보자",
+			primary = "str",
+			secondary = "dex",
+			ratio = { str = 0.6, dex = 0.4, int = 0, luk = 0 },
+		}
+	end
+
+	@ExecSpace("ServerOnly")
+	method any EnsureUser(string userId)
+		-- 유저 스탯 원장을 반환한다. 없으면 초보자 1레벨 기본치로 만든다.
+		if userId == nil or userId == "" then
+			return nil
+		end
+		local u = self.users[userId]
+		if u == nil then
+			u = {
+				level = 1,
+				job = "NOVICE",
+				-- accuracy 20 = 기본 명중(레벨 무관). 파생치(DEX·LUK)는 Recalculate 에서 더해진다. 첫 검증에서 0 이면 Lv1 몹도 50% 빗나갔다.
+				base = { str = 12, dex = 5, int = 4, luk = 4, attack = self.BaseAttack, magic = 0, defense = 0,
+					speed = 100, jump = 100, accuracy = 20, avoid = 0, maxhp = 0, maxmp = 0 },
+				equip = {}, enhance = {}, buff = {}, dev = {},
+				final = {},
+				mastery = self.DefaultMastery,
+				speedBase = -1, jumpBase = -1, walkBase = -1,
+				hpBonusApplied = 0,
+			}
+			self.users[userId] = u
+			self:Recalculate(userId, "INIT")
+		end
+		return u
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLevel(string userId, integer level)
+		-- 레벨 원장(SummonManager)이 바뀌었을 때 호출. 임시 총공격력이 레벨을 따른다.
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		u.level = level
+		u.base.attack = self.BaseAttack + self.AttackPerLevel * (level - 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetJob(string userId, string jobId)
+		-- 전직(B 의 JobChangedEvent) 시 호출. 주스탯이 바뀌므로 재계산.
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		u.job = jobId
+		self:Recalculate(userId, "JOB")
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GrantAp(string userId, integer ap, integer newLevel)
+		-- 레벨업 AP 를 직업 비율로 자동 분배한다 (사용자 결정: AP 자동). 남는 AP 는 0 (전부 주스탯으로 몰아 준다).
+		local u = self:EnsureUser(userId)
+		if u == nil or ap <= 0 then
+			return 0
+		end
+		self:SetLevel(userId, newLevel)
+		local job = self:GetJob(u.job)
+		local alloc = { str = 0, dex = 0, int = 0, luk = 0 }
+		local given = 0
+		for _, k in ipairs({ "str", "dex", "int", "luk" }) do
+			local n = math.floor(ap * (job.ratio[k] or 0))
+			alloc[k] = n
+			given = given + n
+		end
+		alloc[job.primary] = alloc[job.primary] + (ap - given)   -- 나머지는 주스탯
+		for k, n in pairs(alloc) do
+			u.base[k] = (u.base[k] or 0) + n
+		end
+
+		local ev = ApAllocatedEvent()
+		ev.UserId = userId
+		ev.AllocatedStatsCsv = self:TableToCsv(alloc)
+		ev.RemainingAp = 0
+		self:SendEvent(ev)
+		log("[Stat] AP " .. tostring(ap) .. " auto-allocated (" .. userId .. ") " .. ev.AllocatedStatsCsv)
+
+		self:Recalculate(userId, "LEVEL_UP")
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLayerCsv(string userId, string layer, string csv)
+		-- EQUIP / ENHANCE / BUFF / DEV 레이어를 통째로 교체한다 ("str=1;attack=5" · 빈 문자열 = 전부 0).
+		-- DEV 는 개발용 리모컨(DevStatRemote · ⑩) 전용. BUFF 는 B 의 스킬·버프 몫이라 리모컨이 건드리지 않는다.
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		local key = string.lower(layer)
+		if key ~= "equip" and key ~= "enhance" and key ~= "buff" and key ~= "dev" then
+			log_warning("[Stat] unknown layer: " .. tostring(layer))
+			return
+		end
+		u[key] = self:CsvToTable(csv)
+		self:Recalculate(userId, string.upper(key))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetMastery(string userId, number mastery)
+		-- 무기 숙련도 (⑥ 장착 무기의 ItemInfo.Mastery). 무기 없으면 DefaultMastery.
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		u.mastery = mastery
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Recalculate(string userId, string source)
+		-- 3층 합산 → 파생치 → 엔티티 반영 → 이벤트 → 클라 UI.
+		local u = self.users[userId]
+		if u == nil then return end
+		local f = {}
+		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "magic", "defense", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
+			f[k] = (u.base[k] or 0) + (u.equip[k] or 0) + (u.enhance[k] or 0) + (u.buff[k] or 0) + (u.dev[k] or 0)
+		end
+		f.accuracy = f.accuracy + _DamageFormula:DerivedAccuracy(f.dex, f.luk)
+		f.avoid = f.avoid + _DamageFormula:DerivedAvoid(f.dex, f.luk)
+		u.final = f
+
+		self:ApplyToEntity(userId, u)
+
+		local ev = StatRecalculatedEvent()
+		ev.UserId = userId
+		ev.FinalStatsCsv = self:TableToCsv(f)
+		ev.Source = source
+		self:SendEvent(ev)
+		log("[Stat] recalculated (" .. userId .. ") source=" .. source .. " " .. ev.FinalStatsCsv)
+
+		self:PushToClient(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyToEntity(string userId, any u)
+		-- 이동속도·점프력·최대 HP 보너스를 실제 엔티티에 반영한다. 기준값(모델 원본)은 처음 볼 때 한 번 저장한다.
+		-- 🔴 ⑩ 실측 (2026-09-05 · DefaultPlayer · MapleTile):
+		--   · 플레이어 걷기 속도는 MovementComponent.InputSpeed 가 아니라 RigidbodyComponent.WalkSpeed 가 정한다
+		--     (InputSpeed 2→4 에도 최고 속도 7.2/s 그대로 · WalkSpeed 1.4→2.8 이면 7.2→14.2/s 정확히 2배).
+		--     WalkSpeed 는 @Sync 가 아니라 서버 값이 클라(로컬 플레이어 물리 주체)에 안 간다 → Client RPC 로 같이 보낸다.
+		--   · 점프는 JumpForce 가 먹지만 높이 ∝ JumpForce² (0.9→0.97 · 1.35→2.15) → "점프력 150% = 1.5배 높이" 가 되도록 √(jump/100).
+		-- 레벨업 AddMaxHp 는 SummonManager 가 따로 더한다.
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) then
+			return
+		end
+		local speedMul = (u.final.speed or 100) / 100
+		local jumpMul = math.sqrt(math.max(0, (u.final.jump or 100) / 100))
+		local walk = -1
+		local jf = -1
+		local mv = player.MovementComponent
+		if isvalid(mv) then
+			if u.speedBase < 0 then u.speedBase = mv.InputSpeed end
+			if u.jumpBase < 0 then u.jumpBase = mv.JumpForce end
+			mv.InputSpeed = u.speedBase * speedMul
+			mv.JumpForce = u.jumpBase * jumpMul
+			jf = mv.JumpForce
+		end
+		local rb = player.RigidbodyComponent
+		if isvalid(rb) then
+			if u.walkBase < 0 then u.walkBase = rb.WalkSpeed end
+			rb.WalkSpeed = u.walkBase * speedMul
+			walk = rb.WalkSpeed
+		end
+		self:ApplyMovementOnClient(walk, jf, userId)
+		local pc = player.PlayerComponent
+		if isvalid(pc) then
+			local bonus = u.final.maxhp
+			local delta = bonus - u.hpBonusApplied
+			if delta ~= 0 then
+				pc.MaxHp = pc.MaxHp + delta
+				if pc.Hp > pc.MaxHp then pc.Hp = pc.MaxHp end
+				u.hpBonusApplied = bonus
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyMovementOnClient(number walkSpeed, number jumpForce)
+		-- 서버가 계산한 걷기 속도·점프력을 소유 클라의 로컬 플레이어에 쓴다 (RigidbodyComponent.WalkSpeed 는 @Sync 가 아니다). 음수는 건너뛴다.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) then return end
+		if walkSpeed >= 0 and isvalid(p.RigidbodyComponent) then
+			p.RigidbodyComponent.WalkSpeed = walkSpeed
+		end
+		if jumpForce >= 0 and isvalid(p.MovementComponent) then
+			p.MovementComponent.JumpForce = jumpForce
+		end
+		log("[Stat] client movement applied walk=" .. tostring(walkSpeed) .. " jump=" .. tostring(jumpForce))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetLedger(string userId)
+		-- 개발용 리모컨(DevStatRemote) 이 읽는 원장 참조. 쓰기는 SetLayerCsv 로만.
+		return self:EnsureUser(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetRange(string userId)
+		-- 현재 데미지 범위 { min, max }.
+		local u = self:EnsureUser(userId)
+		if u == nil then
+			return { min = 1, max = 1 }
+		end
+		local job = self:GetJob(u.job)
+		local sv = _DamageFormula:StatValue(u.final[job.primary] or 0, u.final[job.secondary] or 0)
+		return _DamageFormula:CalcRange(sv, u.final.attack or 0, u.mastery)
+	end
+
+	method integer CalcPlayerDamage(Entity attacker, Entity defender)
+		-- PlayerAttack.CalcDamage 가 부른다. 명중 실패면 0 (MISS). 서버 원장이 없으면(클라) 1.
+		if self.users == nil or not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
+			return 1
+		end
+		local userId = attacker.PlayerComponent.UserId
+		local u = self:EnsureUser(userId)
+		if u == nil then
+			return 1
+		end
+		local range = self:GetRange(userId)
+
+		-- 대상 레벨·회피·방어: 일반 몹은 MonsterInfo 레벨만 (Defense 열 없음 → 0, 회피 0)
+		local targetLevel = 1
+		local targetAvoid = 0
+		local targetDefense = 0
+		if isvalid(defender) then
+			local fr = defender.FarmReward
+			if fr ~= nil and _MonsterCatalog ~= nil then
+				local lv = _MonsterCatalog:GetLevel(fr.MonsterId)
+				if lv > 0 then targetLevel = lv end
+			end
+		end
+
+		if not _DamageFormula:HitCheck(u.final.accuracy or 0, targetLevel, targetAvoid) then
+			if self.LogDamage then
+				log("[Stat] MISS acc=" .. tostring(u.final.accuracy) .. " vs Lv" .. tostring(targetLevel))
+			end
+			return 0
+		end
+
+		local raw = _DamageFormula:Roll(range.min, range.max)
+		local final = _DamageFormula:ApplyDefense(raw, targetDefense)
+		if self.LogDamage then
+			log("[Stat] dmg " .. tostring(final) .. " (range " .. tostring(range.min) .. "~" .. tostring(range.max) .. ", raw " .. tostring(raw) .. ", targetLv " .. tostring(targetLevel) .. ")")
+		end
+		return final
+	end
+
+	method boolean RollCritical(Entity attacker)
+		-- PlayerAttack.CalcCritical 이 부른다. LUK 기반 확률.
+		if self.users == nil or not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
+			return false
+		end
+		local u = self:EnsureUser(attacker.PlayerComponent.UserId)
+		if u == nil then
+			return false
+		end
+		return _UtilLogic:RandomDouble() < _DamageFormula:CritRate(u.final.luk or 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildUiCsv(string userId)
+		-- 캐릭터 창(StatUIController.SetStatsCsv) 용 한 줄. 레벨·EXP·SP 는 SummonManager 원장에서 읽는다.
+		local u = self:EnsureUser(userId)
+		if u == nil then return "" end
+		local f = u.final
+		local job = self:GetJob(u.job)
+		local range = self:GetRange(userId)
+
+		local level = u.level
+		local expText = "-"
+		local sp = 0
+		if _SummonManager ~= nil then
+			local e = _SummonManager:GetEcon(userId)
+			if e ~= nil then
+				level = e.level
+				sp = e.sp
+				local p = _SummonManager:ExpProgress(e.exp)
+				expText = tostring(p.within) .. " / " .. tostring(p.need)
+			end
+		end
+
+		return "job=" .. job.name .. ";level=" .. tostring(level) .. ";exp=" .. expText .. ";sp=" .. tostring(sp)
+			.. ";str=" .. tostring(f.str) .. ";dex=" .. tostring(f.dex) .. ";int=" .. tostring(f.int) .. ";luk=" .. tostring(f.luk)
+			.. ";attack=" .. tostring(range.min) .. " ~ " .. tostring(range.max)
+			.. ";defense=" .. tostring(f.defense) .. ";speed=" .. tostring(f.speed) .. ";jump=" .. tostring(f.jump)
+			.. ";accuracy=" .. tostring(f.accuracy) .. ";avoid=" .. tostring(f.avoid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushToClient(string userId)
+		-- 소유 클라의 캐릭터 창을 갱신한다 (스탯 + Footer 재화).
+		if _StatUIController == nil then
+			return
+		end
+		_StatUIController:SetStatsCsv(self:BuildUiCsv(userId), userId)
+		local meso = 0
+		if _SummonManager ~= nil then
+			local e = _SummonManager:GetEcon(userId)
+			if e ~= nil then meso = e.meso end
+		end
+		_StatUIController:SetCurrency(meso, 0, userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestStats()
+		-- 클라(캐릭터 창 열 때)가 부른다. 호출자 본인 것만 보낸다.
+		self:EnsureUser(senderUserId)
+		self:PushToClient(senderUserId)
+	end
+
+	method any CsvToTable(string csv)
+		-- "str=1;attack=5" → { str=1, attack=5 } (키 소문자 · 값 숫자).
+		local t = {}
+		if csv == nil or csv == "" then
+			return t
+		end
+		for key, val in string.gmatch(csv, "([^;=]+)=([^;]*)") do
+			t[string.lower(key)] = tonumber(val) or 0
+		end
+		return t
+	end
+
+	method string TableToCsv(any t)
+		-- { str=1, ... } → "str=1;..." (키 정렬 · 결정론적).
+		local keys = {}
+		for k in pairs(t) do table.insert(keys, k) end
+		table.sort(keys)
+		local parts = {}
+		for _, k in ipairs(keys) do
+			table.insert(parts, k .. "=" .. tostring(t[k]))
+		end
+		return table.concat(parts, ";")
+	end
+
+end

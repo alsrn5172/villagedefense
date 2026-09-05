@@ -1,0 +1,286 @@
+@Logic
+script ItemCatalog extends Logic
+
+	-- ItemInfo.csv 읽기 전용 도감. 서버·클라 양쪽에서 각자 지연 로드한다 (UI 가 이름·아이콘을 직접 조회).
+	-- 헤더는 Docs/스키마-계약.md A-2 가 정본. 아이콘은 IconRUID 열로 런타임 주입한다(.ui 에 박지 않는다).
+
+	property string TableName = "ItemInfo"
+
+	property string GemTableName = "GemInfo"
+
+	property string EnhanceTableName = "EnhanceTable"
+
+	-- ⑫ 부위 × 요구레벨 티어 × 강화 단계 고정 상승치 (사용자 결정 2026-09-05)
+	property string SlotBonusTableName = "EnhanceSlotBonus"
+
+	@HideFromInspector
+	property any items = nil
+
+	@HideFromInspector
+	property any gems = nil
+
+	@HideFromInspector
+	property any enhanceRows = nil
+
+	@HideFromInspector
+	property any slotBonus = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	method void EnsureLoaded()
+		-- 최초 1회 표를 읽는다. 표가 없으면 빈 도감 + 경고.
+		if self.loaded then
+			return
+		end
+		self.loaded = true
+		self.items = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Item] dataset not found: " .. self.TableName)
+			return
+		end
+		local count = 0
+		for i = 1, t:GetRowCount() do
+			local id = t:GetCell(i, "ItemId") or ""
+			if id ~= "" then
+				local function num(col)
+					return tonumber(t:GetCell(i, col)) or 0
+				end
+				local function flag(col)
+					local v = string.lower(tostring(t:GetCell(i, col) or "false"))
+					return v == "true" or v == "1" or v == "yes"
+				end
+				self.items[id] = {
+					id = id,
+					name = t:GetCell(i, "Name") or id,
+					type = t:GetCell(i, "ItemType") or "",
+					slot = t:GetCell(i, "EquipSlot") or "",
+					reqLevel = math.floor(num("ReqLevel")),
+					reqJob = t:GetCell(i, "ReqJob") or "",
+					icon = t:GetCell(i, "IconRUID") or "",
+					stats = {
+						str = num("BaseStr"), dex = num("BaseDex"), int = num("BaseInt"), luk = num("BaseLuk"),
+						attack = num("BaseAttack"), magic = num("BaseMagic"), defense = num("BaseDefense"),
+						speed = num("BaseSpeed"), jump = num("BaseJump"), accuracy = num("BaseAccuracy"), avoid = num("BaseAvoid"),
+						maxhp = num("BaseMaxHp"), maxmp = num("BaseMaxMp"),
+					},
+					mastery = num("Mastery"),
+					maxDurability = math.floor(num("MaxDurability")),
+					maxEnhance = math.floor(num("MaxEnhanceLevel")),
+					stackable = flag("Stackable"),
+					maxStack = math.max(1, math.floor(num("MaxStack"))),
+					sellMeso = math.floor(num("SellMeso")),
+					enabled = flag("Enabled"),
+				}
+				count = count + 1
+			end
+		end
+		log("[Item] catalog loaded: " .. tostring(count) .. " items")
+		self:LoadGemsAndEnhance()
+	end
+
+	method void LoadGemsAndEnhance()
+		-- GemInfo(12행) · EnhanceTable(3행). StatId 는 StatService 키(소문자, MAX_HP→maxhp)로 바꿔 둔다.
+		self.gems = {}
+		self.enhanceRows = {}
+		local g = _DataService:GetTable(self.GemTableName)
+		if g ~= nil then
+			for i = 1, g:GetRowCount() do
+				local id = g:GetCell(i, "GemId") or ""
+				if id ~= "" then
+					local statId = string.upper(g:GetCell(i, "StatId") or "")
+					local stripped, _n = string.gsub(statId, "_", "")   -- MAX_HP → MAXHP
+					local key = string.lower(stripped)                   -- → maxhp
+					self.gems[id] = {
+						id = id, statId = statId, statKey = key,
+						addPerLevel = tonumber(g:GetCell(i, "AddPerLevel")) or 0,
+						name = g:GetCell(i, "DisplayName") or id,
+						icon = g:GetCell(i, "IconRUID") or "",
+						enabled = string.lower(tostring(g:GetCell(i, "Enabled") or "true")) ~= "false",
+					}
+				end
+			end
+		else
+			log_warning("[Item] dataset not found: " .. self.GemTableName)
+		end
+		local e = _DataService:GetTable(self.EnhanceTableName)
+		if e ~= nil then
+			for i = 1, e:GetRowCount() do
+				local lv = math.floor(tonumber(e:GetCell(i, "EnhanceLevel")) or 0)
+				if lv > 0 then
+					self.enhanceRows[lv] = {
+						level = lv,
+						mesoCost = math.floor(tonumber(e:GetCell(i, "MesoCost")) or 0),
+						gemCount = math.floor(tonumber(e:GetCell(i, "GemCount")) or 1),
+						successRate = tonumber(e:GetCell(i, "SuccessRate")) or 1,
+						destroyRate = tonumber(e:GetCell(i, "DestroyRate")) or 0,
+						downgradeOnFail = string.lower(tostring(e:GetCell(i, "DowngradeOnFail") or "false")) == "true",
+						addDefense = tonumber(e:GetCell(i, "AddDefense")) or 0,
+					}
+				end
+			end
+		else
+			log_warning("[Item] dataset not found: " .. self.EnhanceTableName)
+		end
+		self:LoadSlotBonus()
+	end
+
+	method void LoadSlotBonus()
+		-- EnhanceSlotBonus(⑫): slotBonus[EquipSlot][ReqLevel 티어][EnhanceLevel] = { attack=5, ... } (0 인 열은 생략). Enabled=false 행은 버린다.
+		self.slotBonus = {}
+		local sb = _DataService:GetTable(self.SlotBonusTableName)
+		if sb == nil then
+			log_warning("[Item] dataset not found: " .. self.SlotBonusTableName)
+			return
+		end
+		local cols = {
+			str = "AddStr", dex = "AddDex", int = "AddInt", luk = "AddLuk",
+			attack = "AddAttack", magic = "AddMagic", defense = "AddDefense",
+			speed = "AddSpeed", jump = "AddJump", accuracy = "AddAccuracy", avoid = "AddAvoid",
+			maxhp = "AddMaxHp", maxmp = "AddMaxMp",
+		}
+		local count = 0
+		for i = 1, sb:GetRowCount() do
+			local slot = string.upper(sb:GetCell(i, "EquipSlot") or "")
+			local req = math.floor(tonumber(sb:GetCell(i, "ReqLevel")) or 0)
+			local lv = math.floor(tonumber(sb:GetCell(i, "EnhanceLevel")) or 0)
+			local on = string.lower(tostring(sb:GetCell(i, "Enabled") or "true")) ~= "false"
+			if slot ~= "" and lv > 0 and on then
+				local bySlot = self.slotBonus[slot]
+				if bySlot == nil then
+					bySlot = {}
+					self.slotBonus[slot] = bySlot
+				end
+				local tier = bySlot[req]
+				if tier == nil then
+					tier = {}
+					bySlot[req] = tier
+				end
+				local stats = {}
+				for k, col in pairs(cols) do
+					local v = tonumber(sb:GetCell(i, col)) or 0
+					if v ~= 0 then
+						stats[k] = v
+					end
+				end
+				tier[lv] = stats
+				count = count + 1
+			end
+		end
+		log("[Item] slot bonus loaded: " .. tostring(count) .. " rows")
+	end
+
+	method any GetSlotBonus(string slot, integer reqLevel, integer level)
+		-- ⑫ 부위·요구레벨 티어·강화 단계의 고정 상승치. 티어 = 표의 ReqLevel 중 "아이템 요구레벨 이하 최대". 없으면 nil.
+		self:EnsureLoaded()
+		if self.slotBonus == nil then
+			return nil
+		end
+		local bySlot = self.slotBonus[string.upper(slot or "")]
+		if bySlot == nil then
+			return nil
+		end
+		local best = -1
+		for req, _tier in pairs(bySlot) do
+			if req <= reqLevel and req > best then
+				best = req
+			end
+		end
+		if best < 0 then
+			return nil
+		end
+		return bySlot[best][level]
+	end
+
+	method number GemAmount(any def, integer level, string gemId)
+		-- ⑫ B안: 이 장비의 `level` 단계에서 보석 1개가 올리는 양 = EnhanceSlotBonus 행의 그 보석 스탯 열. 0 이면 이 부위에 효과 없음(무기 외 부위의 다이아 등).
+		if def == nil then
+			return 0
+		end
+		local gem = self:GetGem(gemId)
+		local row = self:GetSlotBonus(def.slot, def.reqLevel, level)
+		if gem == nil or row == nil then
+			return 0
+		end
+		return row[gem.statKey] or 0
+	end
+
+	method any ComputeEnhance(any def, integer enh, any gems)
+		-- ⑫ B안(사용자 확정 2026-09-05): 단계 lv=1..enh 마다
+		--   fixed  = 부위 고정치(EnhanceSlotBonus.AddDefense · 보석 무관 · 방어구만 값이 있다)  → 툴팁 초록
+		--   gem    = 그 단계에 넣은 보석 1개마다 보석 스탯 열의 양(GemInfo.AddPerLevel 은 안 쓴다) → 툴팁 보라
+		-- gems 는 넣은 순서 그대로이며 단계별 GemCount(EnhanceTable)만큼 소비된다. 반환 { fixed = {...}, gem = {...} } (0 인 키 없음).
+		local fixed = {}
+		local gemSum = {}
+		if def == nil then
+			return { fixed = fixed, gem = gemSum }
+		end
+		local gi = 1
+		for lv = 1, (enh or 0) do
+			local row = self:GetSlotBonus(def.slot, def.reqLevel, lv)
+			local er = self:GetEnhanceRow(lv)
+			local cnt = (er ~= nil) and er.gemCount or 1
+			if row ~= nil and (row.defense or 0) ~= 0 then
+				fixed.defense = (fixed.defense or 0) + row.defense
+			end
+			for _n = 1, cnt do
+				local gid = nil
+				if gems ~= nil then gid = gems[gi] end
+				gi = gi + 1
+				if gid ~= nil and row ~= nil then
+					local gem = self:GetGem(gid)
+					if gem ~= nil then
+						local amt = row[gem.statKey] or 0
+						if amt ~= 0 then
+							gemSum[gem.statKey] = (gemSum[gem.statKey] or 0) + amt
+						end
+					end
+				end
+			end
+		end
+		return { fixed = fixed, gem = gemSum }
+	end
+
+	method any GetGem(string gemId)
+		-- 보석 정의 (GemInfo). 없으면 nil.
+		self:EnsureLoaded()
+		return self.gems[gemId]
+	end
+
+	method any GetEnhanceRow(integer level)
+		-- 강화 단계 행 (EnhanceTable). 없으면 nil.
+		self:EnsureLoaded()
+		return self.enhanceRows[level]
+	end
+
+	method string GemIdOfItem(string itemId)
+		-- "GEM_DIAMOND" → "DIAMOND". 보석 아이템이 아니면 "".
+		if string.sub(itemId, 1, 4) == "GEM_" then
+			return string.sub(itemId, 5)
+		end
+		return ""
+	end
+
+	method any Get(string itemId)
+		-- 아이템 정의. 없으면 nil.
+		self:EnsureLoaded()
+		return self.items[itemId]
+	end
+
+	method string GetName(string itemId)
+		-- 표시 이름. 없으면 ItemId 그대로.
+		local d = self:Get(itemId)
+		if d == nil then
+			return itemId
+		end
+		return d.name
+	end
+
+	method boolean IsEquip(string itemId)
+		-- EQUIP 이면 true.
+		local d = self:Get(itemId)
+		return d ~= nil and d.type == "EQUIP"
+	end
+
+end

@@ -1,0 +1,123 @@
+@Logic
+script MatchResultUIController extends Logic
+
+	-- 매치 결과 화면(MatchResultGroup.ui) 클라 컨트롤러 — WO-011 ⑧ S1 뼈대 (계획서 §4-5). 전원 강제 표시.
+	-- 순위 판정·보상은 WP1/WP4 `Match/` 소유. 여기서는 SetResultCsv 문자열을 그리기만 한다.
+	-- 순위 기준 = ① 발록 누적 피해 ② 넥서스 잔여 HP ③ 최종 레벨 → 열 순서가 그 순서다.
+
+	property Entity bg = "6bcc17f9-1abe-4098-9db1-c43220e9bad3"
+
+	property Entity window = "2446867e-257c-4340-8ba5-3d334dcbd589"
+
+	property TextGUIRendererComponent titleText = "445fd347-613b-4bc4-af49-2a200f5dce1b"
+
+	property TextGUIRendererComponent reasonText = "aad6b6a1-1862-43a1-9cca-99ed61eec3ca"
+
+	property Entity rankRoot = "57b532f0-4cc2-458e-bb0d-61ff0d29a9b6"
+
+	property TextGUIRendererComponent rewardText = "fb16b7fd-6414-4074-90df-d4841d7b2ca8"
+
+	property ButtonComponent btnPrimary = "0e9bee2a-e293-41da-9294-cac941be332a"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property any hPrimary = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · 닫힌 상태로 시작.
+		if isvalid(self.btnPrimary) then
+			self.hPrimary = self.btnPrimary.Entity:ConnectEvent(ButtonClickEvent, function() self:OnClickLeave() end)
+		end
+		self:SetOpen(false)
+		log("[Result] MatchResultUIController ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- 반투명 배경 + 창.
+		self.isOpen = open
+		if isvalid(self.bg) then self.bg.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Result] open=" .. tostring(open))
+	end
+
+	@ExecSpace("Client")
+	method void SetResultCsv(string csv)
+		-- 서버 → 클라(전원). "title=매치 결과;reason=30분 만료;reward=발록의 심장 +2 (계정 누적 5);me=1;r0=1|이름|12345|800|15|0;r1=..."
+		-- r{i} = 순위|이름|발록피해|넥서스HP|레벨|탈락(1/0). 창을 연다.
+		local kv = {}
+		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
+		if isvalid(self.titleText) then self.titleText.Text = kv.title or "매치 결과" end
+		if isvalid(self.reasonText) then self.reasonText.Text = kv.reason or "" end
+		if isvalid(self.rewardText) then self.rewardText.Text = kv.reward or "" end
+		local me = tonumber(kv.me) or -1
+		if isvalid(self.rankRoot) then
+			for i = 0, 4 do
+				local row = self.rankRoot:GetChildByName("RankRow_" .. tostring(i))
+				if isvalid(row) then
+					local v = kv["r" .. tostring(i)]
+					row.Enable = (v ~= nil and v ~= "")
+					if v ~= nil and v ~= "" then
+						local f = self:Split(v, "|")
+						local cols = { "Rank", "Name", "Damage", "CoreHp", "Level" }
+						for c = 1, 5 do
+							local cell = row:GetChildByName(cols[c])
+							if isvalid(cell) and cell.TextGUIRendererComponent ~= nil then
+								cell.TextGUIRendererComponent.Text = f[c] or ""
+							end
+						end
+						local elim = row:GetChildByName("EliminatedMark")
+						if isvalid(elim) then elim.Enable = (f[6] == "1") end
+						-- 내 행 강조: 이름에 ▶
+						local name = row:GetChildByName("Name")
+						if isvalid(name) and name.TextGUIRendererComponent ~= nil and i == me then
+							name.TextGUIRendererComponent.Text = "▶ " .. (f[2] or "")
+						end
+					end
+				end
+			end
+		end
+		self:SetOpen(true)
+		log("[Result] csv applied reason=" .. tostring(kv.reason))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickLeave()
+		-- 로비로. 세션 로직이 있으면 요청, 없으면 로그 + 닫기.
+		if _MatchSessionLogic ~= nil then
+			_MatchSessionLogic:LeaveToLobby()
+		else
+			log("[Result] LeaveToLobby — MatchSessionLogic 없음 (WP1)")
+		end
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method any Split(string s, string sep)
+		-- 구분자로 나눈 문자열 배열.
+		local out = {}
+		local start = 1
+		while true do
+			local i, j = string.find(s, sep, start, true)
+			if i == nil or j == nil then
+				table.insert(out, string.sub(s, start))
+				break
+			end
+			table.insert(out, string.sub(s, start, i - 1))
+			start = j + 1
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		if isvalid(self.btnPrimary) and self.hPrimary ~= nil then
+			self.btnPrimary.Entity:DisconnectEvent(ButtonClickEvent, self.hPrimary)
+		end
+	end
+
+end

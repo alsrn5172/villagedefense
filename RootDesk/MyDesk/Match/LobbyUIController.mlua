@@ -1,0 +1,203 @@
+@Logic
+script LobbyUIController extends Logic
+
+	-- 매치 로비 창(LobbyGroup.ui) 클라 컨트롤러 — WO-011 ⑧ S1 뼈대 (계획서 §4-5). 로비 안내 NPC(COMMON_MATCH_GUIDE) 가 연다.
+	-- 로직(방장·난이도·준비·큐)은 WP1 `Match/MatchLobbyGateway` 소유. 여기서는 표시 + 요청 전달만 하고,
+	-- 게이트웨이가 아직 없으면 로그만 남긴다. 값은 서버가 SetLobbyCsv 문자열로만 준다 (낙관적 UI 없음).
+	-- UUID 는 UIBuilder write({bind}) 가 주입한다.
+
+	property Entity bg = "7e5e3948-cc9e-48b9-8892-edb28dfb3f0d"
+
+	property Entity window = "236f1479-6a92-4450-bb5b-262235eda72e"
+
+	property ButtonComponent btnClose = "b6a37ca8-b4ba-405e-9f01-b4013f96c38e"
+
+	property TextGUIRendererComponent titleText = "59874dc4-acb4-4407-b2a3-499bf4c6cf93"
+
+	property Entity playersRoot = "d0742aa5-79c6-4c19-96b3-826b79e05111"
+
+	property ButtonComponent star1 = "0d3a81f2-8b7a-456c-9812-e3d294d8008e"
+
+	property ButtonComponent star2 = "22493e63-fba8-405a-9482-5354ba41f9c0"
+
+	property ButtonComponent star3 = "6cfd377b-7544-4bb8-92ae-4bbc2dfe1e4f"
+
+	property ButtonComponent star4 = "109c9862-1d8a-4c98-a1bd-ff819dba83cf"
+
+	property ButtonComponent star5 = "241303a0-887f-4586-b719-402680989bde"
+
+	property TextGUIRendererComponent diffDesc = "3ecdf444-b6dc-49c0-a8ad-057de161902b"
+
+	property TextGUIRendererComponent gateWarn = "fe57475b-d97f-4b3e-9b72-50115ffb7897"
+
+	property TextGUIRendererComponent costLabel = "401cb94d-adc6-4eb3-9765-3d494f08e457"
+
+	property ButtonComponent btnPrimary = "1a7a7a9b-b485-4c04-9e31-826bfd264b0b"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property boolean isHost = false
+
+	@HideFromInspector
+	property boolean isReady = false
+
+	@HideFromInspector
+	property integer difficulty = 1
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · 닫힌 상태로 시작.
+		self.handlers = {}
+		local function bind(btn, fn)
+			if isvalid(btn) then
+				table.insert(self.handlers, { btn = btn, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+			end
+		end
+		bind(self.btnClose, function() self:OnClickClose() end)
+		bind(self.btnPrimary, function() self:OnClickReady() end)
+		bind(self.star1, function() self:OnClickStar(1) end)
+		bind(self.star2, function() self:OnClickStar(2) end)
+		bind(self.star3, function() self:OnClickStar(3) end)
+		bind(self.star4, function() self:OnClickStar(4) end)
+		bind(self.star5, function() self:OnClickStar(5) end)
+		self:SetOpen(false)
+		log("[Lobby] LobbyUIController ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 로비 창 열기 (NPC 라우터 또는 게이트웨이가 부른다).
+		self:SetOpen(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기.
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- 불투명 배경 + 창 (모달이 아니라 전체 화면).
+		self.isOpen = open
+		if isvalid(self.bg) then self.bg.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Lobby] open=" .. tostring(open))
+	end
+
+	@ExecSpace("Client")
+	method void SetLobbyCsv(string csv)
+		-- 서버 → 소유 클라. "ready=2/4;diff=3;host=1;warn=발록의 심장이 부족한 참가자가 있습니다;desc=★3 · 심장 2 · Lv10;p0=이름|2|1;p1=..."
+		-- p{i} = 이름|발록의 심장|준비(1/0). 행은 최대 5, 없는 행은 끈다.
+		local kv = {}
+		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
+		self.isHost = (kv.host == "1")
+		self.difficulty = tonumber(kv.diff) or 1
+		self.isReady = (kv.me == "1")
+
+		if isvalid(self.costLabel) then self.costLabel.Text = "준비 " .. tostring(kv.ready or "0 / 0") end
+		if isvalid(self.diffDesc) then self.diffDesc.Text = kv.desc or "" end
+		if isvalid(self.gateWarn) then
+			self.gateWarn.Text = kv.warn or ""
+			self.gateWarn.Entity.Enable = (kv.warn ~= nil and kv.warn ~= "")
+		end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Entity.TextGUIRendererComponent.Text = self.isReady and "준비 취소" or "준비"
+		end
+
+		-- 별: 방장만 누를 수 있고, 선택된 별은 라벨에 ★, 나머지 ☆
+		local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
+		for i = 1, 5 do
+			local s = stars[i]
+			if isvalid(s) then
+				s.Enable = self.isHost
+				local t = s.Entity.TextGUIRendererComponent
+				if t ~= nil then t.Text = (i <= self.difficulty) and "★" or "☆" end
+			end
+		end
+
+		-- 참가자 행
+		if isvalid(self.playersRoot) then
+			for i = 0, 4 do
+				local row = self.playersRoot:GetChildByName("PlayerRow_" .. tostring(i))
+				if isvalid(row) then
+					local v = kv["p" .. tostring(i)]
+					row.Enable = (v ~= nil and v ~= "")
+					if v ~= nil and v ~= "" then
+						local f = self:Split(v, "|")
+						local name = row:GetChildByName("Name")
+						local heart = row:GetChildByName("HeartCount")
+						local ready = row:GetChildByName("ReadyMark")
+						if isvalid(name) and name.TextGUIRendererComponent ~= nil then name.TextGUIRendererComponent.Text = f[1] or "" end
+						if isvalid(heart) and heart.TextGUIRendererComponent ~= nil then heart.TextGUIRendererComponent.Text = "발록의 심장 ×" .. tostring(f[2] or "0") end
+						if isvalid(ready) then ready.Enable = (f[3] == "1") end
+					end
+				end
+			end
+		end
+		log("[Lobby] csv applied host=" .. tostring(self.isHost) .. " diff=" .. tostring(self.difficulty))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickStar(integer level)
+		-- 난이도 선택 (방장만). 게이트웨이가 있으면 요청, 없으면 로그.
+		if not self.isHost then return end
+		if _MatchLobbyGateway ~= nil then
+			_MatchLobbyGateway:SelectDifficulty(level)
+		else
+			log("[Lobby] SelectDifficulty(" .. tostring(level) .. ") — MatchLobbyGateway 없음 (WP1)")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickReady()
+		-- 준비 ↔ 준비 취소. 결과는 SetLobbyCsv 로만 반영.
+		if _MatchLobbyGateway ~= nil then
+			if self.isReady then _MatchLobbyGateway:CancelReady() else _MatchLobbyGateway:ConfirmReady() end
+		else
+			log("[Lobby] " .. (self.isReady and "CancelReady" or "ConfirmReady") .. " — MatchLobbyGateway 없음 (WP1)")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickClose()
+		-- 닫기 = 큐 취소 (확인 팝업은 WP1 에서 PopupGroup 재사용).
+		if _MatchLobbyGateway ~= nil then
+			_MatchLobbyGateway:CancelQueue()
+		else
+			log("[Lobby] CancelQueue — MatchLobbyGateway 없음 (WP1)")
+		end
+		self:Close()
+	end
+
+	@ExecSpace("ClientOnly")
+	method any Split(string s, string sep)
+		-- 구분자로 나눈 문자열 배열.
+		local out = {}
+		local start = 1
+		while true do
+			local i, j = string.find(s, sep, start, true)
+			if i == nil or j == nil then
+				table.insert(out, string.sub(s, start))
+				break
+			end
+			table.insert(out, string.sub(s, start, i - 1))
+			start = j + 1
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		for _, h in ipairs(self.handlers) do
+			if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
+		end
+	end
+
+end

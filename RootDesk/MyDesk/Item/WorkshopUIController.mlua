@@ -1,0 +1,556 @@
+@Logic
+script WorkshopUIController extends Logic
+
+	-- 공방 창(VillageWorkshopGroup.ui) 클라 컨트롤러 — WO-011 ⑦ (S1). 계획서 §4-3 · §5-3 (강화 3상태 기계) · §5-6 (라우터).
+	-- 라우트: enhance / enhance_pick / enhance_gempick 은 동작, craft / repair / potion / shop_equip 은 자리만 (WP2).
+	-- 인벤토리 캐시는 InventoryUIController.items 를 같이 쓴다 (서버가 밀어준 문자열만).
+	-- UUID 는 UIBuilder write({bind}) 가 주입한다.
+
+	-- ── 셸 ────────────────────────────────────────────────────
+	property Entity dimmer = "77fbcc0f-8439-415f-831d-e156ddfdd7c8"
+
+	property Entity window = "d11cc324-45e7-49be-a4fc-13edc1089d0c"
+
+	property ButtonComponent btnClose = "15518519-b5c6-4e17-81c3-18b5e1d4264a"
+
+	property TextGUIRendererComponent titleText = "5c185042-6ebd-4081-b2df-2f3435c06643"
+
+	property Entity footer = "d53d0c1e-6c1b-44fc-b24f-93bf71e4cf5c"
+
+	property TextGUIRendererComponent costLabel = "99ddec86-7bc0-422d-94be-a735d8f089ec"
+
+	property ButtonComponent btnPrimary = "114a9bc2-4dfd-48d8-8215-6705cb2d336e"
+
+	-- ── 라우트 컨테이너 ─────────────────────────────────────────
+	property Entity contentEnhance = "205709e5-7613-48d3-99b1-a6b0bab259d2"
+
+	property Entity contentPick = "ed043ceb-d781-40ac-8174-72024cc4824d"
+
+	property Entity contentGemPick = "85f073ce-5a90-41c2-8432-b1a1db62e289"
+
+	property Entity contentCraft = "0a615c81-da54-4e9f-8111-893447243284"
+
+	property Entity contentRepair = "406e24af-60dc-48bd-ac7a-b5ea4d8d932b"
+
+	property Entity contentPotion = "0b6aa6c9-e365-438d-b093-654ddfce2050"
+
+	property Entity contentShopEquip = "39bf6cbe-6e33-4652-b528-7164a8004fdf"
+
+	-- ── enhance ────────────────────────────────────────────────
+	property ButtonComponent targetSlot = "5e16d3f7-e843-41a1-b84d-eced7ca6fac9"
+
+	property SpriteGUIRendererComponent targetIcon = "5911fe3c-3d9f-4913-95d6-09e94fc29784"
+
+	property TextGUIRendererComponent targetText = "991f1b07-142a-4607-8cea-9187faea8c1e"
+
+	property SpriteGUIRendererComponent resultIcon = "f6cf6eb1-e2bc-4784-82ab-c86753ff5d0c"
+
+	property TextGUIRendererComponent resultText = "50965309-cd17-4350-81c0-28ee194c7c13"
+
+	property Entity previewRoot = "18247c93-f2ba-477a-9f1e-a64c414f083c"
+
+	property ButtonComponent gemSlot0 = "83e7c356-9522-4661-ba4b-4ba3dc973df8"
+
+	property ButtonComponent gemSlot1 = "f259f089-2a5f-42a1-b1f3-b21d0594d87d"
+
+	property ButtonComponent gemSlot2 = "b4545b44-39bc-4250-8fc3-067664db30c2"
+
+	property TextGUIRendererComponent gemText0 = "058354df-e62f-4dd6-b080-9d7c11d798e5"
+
+	property TextGUIRendererComponent gemText1 = "0b0cd731-7a1f-4889-9185-fa8bc7cf5fe6"
+
+	property TextGUIRendererComponent gemText2 = "cc335cb7-7d83-4938-88ce-bc5f291be73b"
+
+	property TextGUIRendererComponent rateValue = "c0cf480a-ff61-4074-9034-39708f061013"
+
+	property TextGUIRendererComponent statusText = "eff42db4-2de0-42ac-af31-fd2eccc0ee7a"
+
+	-- ── enhance_pick / enhance_gempick ─────────────────────────
+	property GridViewComponent pickGrid = "307cf906-5df1-411a-a8e7-0c32212335e3"
+
+	property Entity pickTemplate = "542a1732-726a-4b4d-9547-721f8fdadcf2"
+
+	property ButtonComponent btnPickBack = "800a8f9b-d038-4231-97c3-d3716146e05d"
+
+	property Entity gemPickRoot = "85f073ce-5a90-41c2-8432-b1a1db62e289"
+
+	property ButtonComponent btnGemBack = "d48b3fc9-1779-44cf-95e1-dd21609c6d92"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string route = "enhance"
+
+	@HideFromInspector
+	property string targetIid = ""
+
+	@HideFromInspector
+	property any chosenGems = nil
+
+	@HideFromInspector
+	property any pickView = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property any cellHandlers = nil
+
+	@HideFromInspector
+	property any gemHandlers = nil
+
+	@HideFromInspector
+	property boolean waiting = false
+
+	@HideFromInspector
+	property any hKey = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · GridView 템플릿 · 보석 12칸 클릭 · 닫힌 상태로 시작.
+		self.chosenGems = {}
+		self.pickView = {}
+		self.handlers = {}
+		self.cellHandlers = {}
+		self.gemHandlers = {}
+
+		local function bind(btn, fn)
+			if isvalid(btn) then
+				table.insert(self.handlers, { btn = btn, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+			end
+		end
+		bind(self.btnClose, function() self:Close() end)
+		bind(self.btnPrimary, function() self:OnPrimary() end)
+		bind(self.targetSlot, function() self:GoRoute("enhance_pick") end)
+		bind(self.gemSlot0, function() self:OnGemSlot(1) end)
+		bind(self.gemSlot1, function() self:OnGemSlot(2) end)
+		bind(self.gemSlot2, function() self:OnGemSlot(3) end)
+		bind(self.btnPickBack, function() self:GoRoute("enhance") end)
+		bind(self.btnGemBack, function() self:GoRoute("enhance") end)
+
+		if isvalid(self.pickGrid) then
+			if isvalid(self.pickTemplate) then self.pickGrid.ItemEntity = self.pickTemplate end
+			self.pickGrid.OnRefresh = function(index, entity) self:FillPickCell(index, entity) end
+			self.pickGrid.OnClear = function(index, entity) self:ClearPickCell(index, entity) end
+			self.pickGrid.TotalCount = 0
+			self.pickGrid:Refresh(true, true)
+		end
+
+		-- 보석 12칸: Slot_{GemId} 자식을 이름으로 찾아 연결한다 (바인딩 36개 대신)
+		if isvalid(self.gemPickRoot) then
+			for _, child in ipairs(self.gemPickRoot.Children) do
+				local name = child.Name
+				if string.sub(name, 1, 5) == "Slot_" then
+					local gemId = string.sub(name, 6)
+					table.insert(self.gemHandlers, { ent = child, h = child:ConnectEvent(ButtonClickEvent, function() self:OnGemPicked(gemId) end) })
+				end
+			end
+		end
+
+		-- 임시 단축키 E (NPC 클릭이 붙기 전 검증용 · 정식은 NPC 라우터)
+		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+
+		self:SetOpen(false)
+		log("[Workshop] WorkshopUIController ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터(Codex ④): VillageNpcUIController 가 Pending 요청을 들고 있으면 소비한다 (계획서 §5-6).
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "VillageWorkshopGroup" then
+			local route = r.PendingUiRoute
+			if route == "" then route = "enhance" end
+			self:Open(route)
+			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then
+				self.titleText.Text = r.PendingDisplayName
+			end
+			r:ClearPendingRequest()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- E = 공방(강화) 토글 (임시). ESC = 열려 있을 때만 닫기.
+		if event.key == KeyboardKey.E then
+			if self.isOpen then self:Close() else self:Open("enhance") end
+		elseif event.key == KeyboardKey.Escape and self.isOpen then
+			self:Close()
+		end
+	end
+
+	-- ── 열기/닫기/라우트 ────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void Open(string route)
+		-- 다른 창(캐릭터 창)을 닫고 연다 — "한 번에 하나만" (§5-6).
+		if _StatUIController ~= nil and _StatUIController.isOpen then
+			_StatUIController:Close()
+		end
+		self:SetOpen(true)
+		self.targetIid = ""
+		self.chosenGems = {}
+		self.waiting = false
+		if isvalid(self.titleText) then self.titleText.Text = "공방" end
+		self:GoRoute(route)
+		if _InventoryService ~= nil then
+			_InventoryService:RequestInventory()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기: 선택 상태 폐기 (서버에 아무것도 안 보냈으므로 안전).
+		self:SetOpen(false)
+		self.targetIid = ""
+		self.chosenGems = {}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- Dimmer + Window.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Workshop] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoRoute(string route)
+		-- Content 하위 컨테이너를 하나만 켠다. Footer 는 enhance 에서만.
+		self.route = route
+		local function show(ent, on) if isvalid(ent) then ent.Enable = on end end
+		show(self.contentEnhance, route == "enhance")
+		show(self.contentPick, route == "enhance_pick")
+		show(self.contentGemPick, route == "enhance_gempick")
+		show(self.contentCraft, route == "craft")
+		show(self.contentRepair, route == "repair")
+		show(self.contentPotion, route == "potion")
+		show(self.contentShopEquip, route == "shop_equip")
+		show(self.footer, route == "enhance")
+		if route == "enhance" then
+			self:RefreshEnhance()
+		elseif route == "enhance_pick" then
+			self:RebuildPick()
+		elseif route == "enhance_gempick" then
+			self:RefreshGemPick()
+		end
+		log("[Workshop] route=" .. route)
+	end
+
+	-- ── 인벤토리 캐시 ───────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method any Items()
+		-- InventoryUIController 의 캐시 (서버 push 결과).
+		if _InventoryUIController ~= nil and _InventoryUIController.items ~= nil then
+			return _InventoryUIController.items
+		end
+		return {}
+	end
+
+	@ExecSpace("ClientOnly")
+	method any FindItem(string iid)
+		-- 캐시에서 인스턴스 찾기.
+		for _, it in ipairs(self:Items()) do
+			if it.iid == iid then return it end
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer CountGem(string gemId)
+		-- 인벤토리의 GEM_{gemId} 스택 합.
+		local n = 0
+		for _, it in ipairs(self:Items()) do
+			if it.itemId == "GEM_" .. gemId then n = n + it.count end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnInventoryUpdated()
+		-- 서버가 인벤토리를 새로 밀어줬다 → 현재 라우트를 다시 그린다.
+		if not self.isOpen then return end
+		if self.targetIid ~= "" and self:FindItem(self.targetIid) == nil then
+			self.targetIid = ""
+			self.chosenGems = {}
+		end
+		self:GoRoute(self.route)
+	end
+
+	-- ── enhance ────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RefreshEnhance()
+		-- 3상태 기계: S0 빈 상태 / S1 장비 선택·보석 부족 / S2 준비 완료 (§5-3).
+		local it = (self.targetIid ~= "") and self:FindItem(self.targetIid) or nil
+		local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+		local row = nil
+		if def ~= nil and (it.enh or 0) < def.maxEnhance then
+			row = _ItemCatalog:GetEnhanceRow(it.enh + 1)
+		end
+
+		-- 대상 / 결과
+		if isvalid(self.targetIcon) then
+			local ruid = (def ~= nil) and def.icon or ""
+			self.targetIcon.ImageRUID = ruid
+			self.targetIcon.Entity.Enable = (ruid ~= "")
+		end
+		if isvalid(self.resultIcon) then
+			self.resultIcon.ImageRUID = (def ~= nil) and def.icon or ""
+			self.resultIcon.Entity.Enable = (def ~= nil and def.icon ~= "")
+		end
+		if isvalid(self.targetText) then
+			if def ~= nil then
+				self.targetText.Text = def.name .. ((it.enh > 0) and (" +" .. tostring(it.enh)) or "")
+			else
+				self.targetText.Text = "장비 선택"
+			end
+		end
+		if isvalid(self.resultText) then
+			if def ~= nil and row ~= nil then
+				self.resultText.Text = def.name .. " +" .. tostring(it.enh + 1)
+			elseif def ~= nil then
+				self.resultText.Text = "최대 단계"
+			else
+				self.resultText.Text = ""
+			end
+		end
+
+		-- 보석 칸
+		local gemCount = (row ~= nil) and row.gemCount or 0
+		local texts = { self.gemText0, self.gemText1, self.gemText2 }
+		local slots = { self.gemSlot0, self.gemSlot1, self.gemSlot2 }
+		for i = 1, 3 do
+			local g = self.chosenGems[i]
+			if isvalid(texts[i]) then
+				if g ~= nil then
+					local gem = _ItemCatalog:GetGem(g)
+					texts[i].Text = (gem ~= nil) and gem.name or g
+				elseif i <= gemCount then
+					texts[i].Text = "+"
+				else
+					texts[i].Text = ""
+				end
+			end
+			if isvalid(slots[i]) then slots[i].Enable = (row ~= nil and i <= gemCount) end
+		end
+
+		-- 미리보기 (클라 예상값 · 최종은 서버 응답)
+		if isvalid(self.previewRoot) then
+			local rows = {}
+			local sum = {}
+			-- ⑫ B안: 다음 단계 = 고정치(방어구 방어) + 고른 보석마다 그 스탯(양은 EnhanceSlotBonus · GemInfo.AddPerLevel 은 안 쓴다)
+			if def ~= nil and row ~= nil then
+				local nextLv = (it.enh or 0) + 1
+				local fixed = _ItemCatalog:GetSlotBonus(def.slot, def.reqLevel, nextLv)
+				if fixed ~= nil and (fixed.defense or 0) ~= 0 then sum.defense = (sum.defense or 0) + fixed.defense end
+				for _, g in ipairs(self.chosenGems) do
+					local gem = _ItemCatalog:GetGem(g)
+					local amt = _ItemCatalog:GemAmount(def, nextLv, g)
+					if gem ~= nil and amt ~= 0 then sum[gem.statKey] = (sum[gem.statKey] or 0) + amt end
+				end
+			end
+			for _, k in ipairs({ "attack", "magic", "defense", "str", "dex", "int", "luk", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
+				if (sum[k] or 0) ~= 0 and #rows < 4 then
+					table.insert(rows, { label = self:StatLabel(k), value = "+" .. tostring(sum[k]) })
+				end
+			end
+			for i = 0, 3 do
+				local r = self.previewRoot:GetChildByName("PRow" .. tostring(i))
+				if isvalid(r) then
+					local d = rows[i + 1]
+					r.Enable = (d ~= nil)
+					if d ~= nil then
+						local chip = r:GetChildByName("Chip")
+						local cell = r:GetChildByName("Cell")
+						if isvalid(chip) and chip.TextGUIRendererComponent ~= nil then chip.TextGUIRendererComponent.Text = d.label end
+						if isvalid(cell) and cell.TextGUIRendererComponent ~= nil then cell.TextGUIRendererComponent.Text = d.value end
+					end
+				end
+			end
+		end
+
+		-- 확률 · 비용 · 버튼
+		if isvalid(self.rateValue) then
+			self.rateValue.Text = (row ~= nil) and (tostring(math.floor(row.successRate * 100)) .. "%") or "-"
+		end
+		local ready = false
+		local costText = "장비를 선택하세요"
+		if def ~= nil and row ~= nil then
+			local have = #self.chosenGems
+			costText = "메소 " .. tostring(row.mesoCost) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
+			ready = (have == row.gemCount)
+		elseif def ~= nil then
+			costText = "최대 강화 단계"
+		end
+		if isvalid(self.costLabel) then self.costLabel.Text = costText end
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = (ready and not self.waiting) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnGemSlot(integer idx)
+		-- 채워져 있으면 비운다, 비었으면 보석 선택 라우트로.
+		if self.chosenGems[idx] ~= nil then
+			table.remove(self.chosenGems, idx)
+			self:RefreshEnhance()
+		else
+			self:GoRoute("enhance_gempick")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPrimary()
+		-- 🔴 강화 요청. 연타 방지: 응답 올 때까지 버튼 비활성 (§5-5 규칙 1). 화면은 응답으로만 바뀐다 (규칙 2).
+		if self.targetIid == "" or #self.chosenGems == 0 or self.waiting then return end
+		self.waiting = true
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+		if isvalid(self.statusText) then self.statusText.Text = "강화 중..." end
+		_EnhanceService:RequestEnhance(self.targetIid, table.concat(self.chosenGems, "+"))
+		log("[Workshop] enhance requested " .. self.targetIid .. " gems=" .. table.concat(self.chosenGems, "+"))
+	end
+
+	@ExecSpace("Client")
+	method void SetEnhanceResult(boolean ok, string message, integer newLevel, string instanceId)
+		-- 서버 응답. 성공이면 보석 칸을 비운다 (대상은 유지 · 인벤토리 push 로 단계가 갱신됨).
+		self.waiting = false
+		if isvalid(self.statusText) then self.statusText.Text = message end
+		if ok then
+			self.chosenGems = {}
+		end
+		log("[Workshop] enhance result ok=" .. tostring(ok) .. " level=" .. tostring(newLevel) .. " msg=" .. message)
+		self:RefreshEnhance()
+	end
+
+	-- ── enhance_pick ───────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RebuildPick()
+		-- 강화 가능한 장비(EQUIP · 장착 여부 무관) 목록 → GridView.
+		self.pickView = {}
+		for _, it in ipairs(self:Items()) do
+			local def = _ItemCatalog:Get(it.itemId)
+			if def ~= nil and def.type == "EQUIP" then
+				table.insert(self.pickView, it)
+			end
+		end
+		if isvalid(self.pickGrid) then
+			self.pickGrid.TotalCount = #self.pickView
+			self.pickGrid:Refresh(true, true)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillPickCell(integer index, Entity cell)
+		-- 셀 = 이름 + 강화 단계 (아이콘은 IconRUID 주입 후).
+		local it = self.pickView[index + 1]
+		if it == nil or not isvalid(cell) then return end
+		local def = _ItemCatalog:Get(it.itemId)
+		local name = cell:GetChildByName("Name")
+		if isvalid(name) and name.TextGUIRendererComponent ~= nil then
+			name.TextGUIRendererComponent.Text = ((def ~= nil) and def.name or it.itemId) .. ((it.enh > 0) and (" +" .. tostring(it.enh)) or "") .. (it.equipped and " (장착)" or "")
+		end
+		local icon = cell:GetChildByName("Icon")
+		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+			local ruid = (def ~= nil) and def.icon or ""
+			icon.SpriteGUIRendererComponent.ImageRUID = ruid
+			icon.Enable = (ruid ~= "")
+		end
+		local key = cell.Id
+		if self.cellHandlers[key] ~= nil then cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key]) end
+		local iid = it.iid
+		self.cellHandlers[key] = cell:ConnectEvent(ButtonClickEvent, function() self:OnPickCell(iid) end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearPickCell(integer index, Entity cell)
+		-- 재사용 셀 핸들러 해제.
+		if not isvalid(cell) then return end
+		local key = cell.Id
+		if self.cellHandlers[key] ~= nil then
+			cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key])
+			self.cellHandlers[key] = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPickCell(string iid)
+		-- 장비 확정 → enhance 복귀 (보석 선택은 초기화).
+		self.targetIid = iid
+		self.chosenGems = {}
+		self:GoRoute("enhance")
+	end
+
+	-- ── enhance_gempick ────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RefreshGemPick()
+		-- 12칸 고정: 보유 수량 · 스탯 라벨(+이 장비 다음 단계에서 올리는 양). 수량 0 이거나 이 부위에 효과 없는 보석(양 0)이면 버튼 비활성.
+		if not isvalid(self.gemPickRoot) then return end
+		local it = (self.targetIid ~= "") and self:FindItem(self.targetIid) or nil
+		local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+		local nextLv = (it ~= nil) and ((it.enh or 0) + 1) or 1
+		for _, child in ipairs(self.gemPickRoot.Children) do
+			local name = child.Name
+			if string.sub(name, 1, 5) == "Slot_" then
+				local gemId = string.sub(name, 6)
+				local gem = _ItemCatalog:GetGem(gemId)
+				local have = self:CountGem(gemId)
+				-- 이미 고른 개수는 보유에서 뺀다 (같은 보석 여러 개)
+				for _, g in ipairs(self.chosenGems) do if g == gemId then have = have - 1 end end
+				local amt = (def ~= nil) and _ItemCatalog:GemAmount(def, nextLv, gemId) or 0
+				local cnt = child:GetChildByName("Count")
+				if isvalid(cnt) and cnt.TextGUIRendererComponent ~= nil then cnt.TextGUIRendererComponent.Text = "×" .. tostring(have) end
+				local lab = child:GetChildByName("StatLabel")
+				if isvalid(lab) and lab.TextGUIRendererComponent ~= nil and gem ~= nil then
+					if amt ~= 0 then
+						lab.TextGUIRendererComponent.Text = self:StatLabel(gem.statKey) .. " +" .. tostring(amt)
+					else
+						lab.TextGUIRendererComponent.Text = self:StatLabel(gem.statKey) .. " (효과 없음)"
+					end
+				end
+				local nm = child:GetChildByName("Name")
+				if isvalid(nm) and nm.TextGUIRendererComponent ~= nil and gem ~= nil then nm.TextGUIRendererComponent.Text = gem.name end
+				if child.ButtonComponent ~= nil then child.ButtonComponent.Enable = (have > 0 and amt ~= 0) end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnGemPicked(string gemId)
+		-- 보석 확정 → enhance 복귀.
+		local it = (self.targetIid ~= "") and self:FindItem(self.targetIid) or nil
+		local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+		local row = (def ~= nil) and _ItemCatalog:GetEnhanceRow((it.enh or 0) + 1) or nil
+		local maxGems = (row ~= nil) and row.gemCount or 1
+		if #self.chosenGems < maxGems then
+			table.insert(self.chosenGems, gemId)
+		end
+		self:GoRoute("enhance")
+	end
+
+	@ExecSpace("ClientOnly")
+	method string StatLabel(string key)
+		-- 스탯 키 → 표시 라벨.
+		if key == "str" then return "STR" elseif key == "dex" then return "DEX" elseif key == "int" then return "INT" elseif key == "luk" then return "LUK"
+		elseif key == "attack" then return "공격력" elseif key == "magic" then return "마력" elseif key == "defense" then return "방어력"
+		elseif key == "speed" then return "이동속도" elseif key == "jump" then return "점프력" elseif key == "accuracy" then return "명중률"
+		elseif key == "avoid" then return "회피율" elseif key == "maxhp" then return "HP" elseif key == "maxmp" then return "MP" end
+		return key
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 핸들러 전부 해제.
+		for _, h in ipairs(self.handlers) do
+			if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
+		end
+		for _, h in ipairs(self.gemHandlers) do
+			if isvalid(h.ent) then h.ent:DisconnectEvent(ButtonClickEvent, h.h) end
+		end
+		if self.hKey ~= nil then _InputService:DisconnectEvent(KeyDownEvent, self.hKey) end
+	end
+
+end

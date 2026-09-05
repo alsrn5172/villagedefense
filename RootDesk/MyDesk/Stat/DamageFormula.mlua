@@ -1,0 +1,96 @@
+@Logic
+script DamageFormula extends Logic
+
+	-- 순수 계산만 모아둔 Logic (상태 없음 · 서버/클라 어디서든 같은 결과). 계획서 §1-3 메이플 원본식.
+	--   StatValue = 주스탯×4 + 부스탯
+	--   DamageMax = StatValue × 총공격력 ÷ 100
+	--   DamageMin = DamageMax × 숙련도(0.15~0.9)
+	--   Raw       = [Min, Max] 균등 랜덤   ← "범위 랜덤 공격력"
+	--   방어 감산  = Raw × (1 − Def ÷ (Def + DefenseK)),  최소 1
+	-- ⚠ 난이도(DifficultyConfig) 배수는 여기서 곱하지 않는다 — 서버 단일 적용점(Economy/CostResolver, WP0)에서만.
+
+	-- 방어력 감산 상수. 방어 100 이면 50% 감산.
+	property number DefenseK = 100
+
+	-- 명중 판정 임시식 상수 (m1-balance-01 에서 실값): 필요 명중 = HitBase + HitPerLevel × 대상레벨 + 대상회피
+	-- HitBase 30 은 Lv1 (명중 26) 이 Lv1 몹도 절반 빗나가게 해서 0 으로. 같은 레벨대는 100%, 20레벨 위 몹부터 빗나가기 시작.
+	property number HitBase = 0
+
+	property number HitPerLevel = 2
+
+	property number HitFloor = 0.2
+
+	-- 크리티컬 확률 = CritBase + LUK × CritPerLuk, 상한 CritCap
+	property number CritBase = 0.05
+
+	property number CritPerLuk = 0.001
+
+	property number CritCap = 0.5
+
+	method number StatValue(integer primary, integer secondary)
+		-- 메이플 원본 스탯값: 주스탯×4 + 부스탯.
+		return primary * 4 + secondary
+	end
+
+	method any CalcRange(number statValue, number totalAttack, number mastery)
+		-- 데미지 범위 { min, max } (정수). mastery 는 0.15~0.9 로 클램프.
+		if mastery < 0.15 then mastery = 0.15 end
+		if mastery > 0.9 then mastery = 0.9 end
+		local maxDmg = math.floor(statValue * totalAttack / 100)
+		if maxDmg < 1 then maxDmg = 1 end
+		local minDmg = math.floor(maxDmg * mastery)
+		if minDmg < 1 then minDmg = 1 end
+		return { min = minDmg, max = maxDmg }
+	end
+
+	method integer Roll(integer minDmg, integer maxDmg)
+		-- [min, max] 균등 정수 랜덤.
+		if maxDmg <= minDmg then
+			return minDmg
+		end
+		return minDmg + math.floor(_UtilLogic:RandomDouble() * (maxDmg - minDmg + 1))
+	end
+
+	method boolean HitCheck(number accuracy, integer targetLevel, number targetAvoid)
+		-- 명중 판정 (임시식). 명중률이 필요치 이상이면 100%, 모자라면 비율만큼 (바닥 HitFloor).
+		local need = self.HitBase + self.HitPerLevel * targetLevel + targetAvoid
+		if need <= 0 then
+			return true
+		end
+		local rate = accuracy / need
+		if rate >= 1 then
+			return true
+		end
+		if rate < self.HitFloor then rate = self.HitFloor end
+		return _UtilLogic:RandomDouble() < rate
+	end
+
+	method integer ApplyDefense(integer raw, number defense)
+		-- 방어력 감산. 방어 0 이면 그대로. 최소 1.
+		if defense <= 0 then
+			if raw < 1 then return 1 end
+			return raw
+		end
+		local final = math.floor(raw * (1 - defense / (defense + self.DefenseK)))
+		if final < 1 then final = 1 end
+		return final
+	end
+
+	method number CritRate(integer luk)
+		-- 크리티컬 확률 (스탯 기반 · 임시식).
+		local rate = self.CritBase + luk * self.CritPerLuk
+		if rate > self.CritCap then rate = self.CritCap end
+		return rate
+	end
+
+	method integer DerivedAccuracy(integer dex, integer luk)
+		-- 스탯에서 파생되는 명중률 (메이플 원본: DEX×0.8 + LUK×0.5).
+		return math.floor(dex * 0.8 + luk * 0.5)
+	end
+
+	method integer DerivedAvoid(integer dex, integer luk)
+		-- 스탯에서 파생되는 회피율 (메이플 원본: DEX×0.25 + LUK×0.5).
+		return math.floor(dex * 0.25 + luk * 0.5)
+	end
+
+end

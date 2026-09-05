@@ -1,0 +1,195 @@
+@Logic
+script InventoryService extends Logic
+
+	-- 인벤토리 원장 (서버). ItemInstance = { iid, itemId, count, enh, dur } (계약서 §0-4 ItemInstance · MatchPlayerState.match_inventory).
+	-- 🔴 클라로는 문자열로만 나간다: "iid:itemId:count:enh:dur:e|..." (e = 1 이면 장착 중). any/table RPC 금지(LEA-3036).
+	-- 영속(DataStorage) 은 WP1 MatchPlayerStateService 몫 — 지금은 메모리 원장.
+
+	-- 첫 접속 때 초보자 장비 6종 + 검증용 재료를 넣는다 (임시 스타터 · 상점(⑦ SHOP_EQUIP) 생기면 끈다)
+	property boolean GiveStarterKit = true
+
+	@HideFromInspector
+	property any inv = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 원장 준비.
+		self.inv = {}
+		log("[Item] InventoryService ready (server)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any EnsureUser(string userId)
+		-- 유저 원장을 반환한다. 없으면 만들고(옵션) 스타터 킷을 넣는다.
+		if userId == nil or userId == "" then
+			return nil
+		end
+		local u = self.inv[userId]
+		if u == nil then
+			u = { items = {}, nextId = 1 }
+			self.inv[userId] = u
+			if self.GiveStarterKit then
+				for _, id in ipairs({ "WEAPON_WOODEN_SWORD", "HAT_WHITE_BANDANA", "TOP_WHITE_UNDERSHIRT", "BOTTOM_BLUE_JEAN_SHORTS", "SHOES_RED_RUBBER_BOOTS", "GLOVES_LEATHER" }) do
+					self:GiveItem(userId, id, 1)
+				end
+				self:GiveItem(userId, "GEM_DIAMOND", 5)
+				self:GiveItem(userId, "REGION_HENESYS_SPORE", 12)
+				log("[Item] starter kit given (" .. userId .. ")")
+			end
+		end
+		return u
+	end
+
+	@ExecSpace("ServerOnly")
+	method string NewInstanceId(any u)
+		-- 서버가 발급하는 불투명 문자열.
+		local id = "i" .. tostring(u.nextId)
+		u.nextId = u.nextId + 1
+		return id
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GiveItem(string userId, string itemId, integer count)
+		-- 아이템을 넣는다. 스택형은 기존 스택에 합치고, 장비는 개당 인스턴스 1개. 넣은 개수를 반환.
+		local u = self:EnsureUser(userId)
+		local def = _ItemCatalog:Get(itemId)
+		if u == nil or def == nil or count <= 0 then
+			log_warning("[Item] GiveItem rejected: " .. tostring(itemId) .. " x" .. tostring(count))
+			return 0
+		end
+		local given = 0
+		if def.stackable then
+			local remain = count
+			for _, it in ipairs(u.items) do
+				if it.itemId == itemId and it.count < def.maxStack then
+					local room = def.maxStack - it.count
+					local add = math.min(room, remain)
+					it.count = it.count + add
+					remain = remain - add
+					given = given + add
+					if remain <= 0 then break end
+				end
+			end
+			while remain > 0 do
+				local add = math.min(def.maxStack, remain)
+				table.insert(u.items, { iid = self:NewInstanceId(u), itemId = itemId, count = add, enh = 0, dur = def.maxDurability })
+				remain = remain - add
+				given = given + add
+			end
+		else
+			for _ = 1, count do
+				table.insert(u.items, { iid = self:NewInstanceId(u), itemId = itemId, count = 1, enh = 0, dur = def.maxDurability, gems = {} })
+				given = given + 1
+			end
+		end
+		return given
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyEnhance(string userId, string instanceId, integer newLevel, any gemIds)
+		-- 강화 결과를 인스턴스에 기록한다 (EnhanceService 만 부른다). gemIds = { "DIAMOND", ... }.
+		local it = self:Find(userId, instanceId)
+		if it == nil then return end
+		it.enh = newLevel
+		if it.gems == nil then it.gems = {} end
+		for _, g in ipairs(gemIds) do
+			table.insert(it.gems, g)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Find(string userId, string instanceId)
+		-- 인스턴스를 찾는다. 없으면 nil.
+		local u = self:EnsureUser(userId)
+		if u == nil then return nil end
+		for _, it in ipairs(u.items) do
+			if it.iid == instanceId then
+				return it
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CountItem(string userId, string itemId)
+		-- 해당 ItemId 총 개수 (스택 합).
+		local u = self:EnsureUser(userId)
+		if u == nil then return 0 end
+		local n = 0
+		for _, it in ipairs(u.items) do
+			if it.itemId == itemId then n = n + it.count end
+		end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RemoveItem(string userId, string itemId, integer count)
+		-- ItemId 기준으로 count 만큼 뺀다 (스택 여러 개에 걸쳐). 부족하면 아무것도 안 빼고 false.
+		local u = self:EnsureUser(userId)
+		if u == nil or count <= 0 or self:CountItem(userId, itemId) < count then
+			return false
+		end
+		local remain = count
+		for idx = #u.items, 1, -1 do
+			local it = u.items[idx]
+			if it.itemId == itemId and remain > 0 then
+				local take = math.min(it.count, remain)
+				it.count = it.count - take
+				remain = remain - take
+				if it.count <= 0 then
+					table.remove(u.items, idx)
+				end
+			end
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RemoveInstance(string userId, string instanceId)
+		-- 인스턴스를 통째로 뺀다 (장비 파괴 등).
+		local u = self:EnsureUser(userId)
+		if u == nil then return false end
+		for idx, it in ipairs(u.items) do
+			if it.iid == instanceId then
+				table.remove(u.items, idx)
+				return true
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Serialize(string userId)
+		-- "iid:itemId:count:enh:dur:e:gems|..." — e 는 장착 여부(EquipService 조회), gems 는 "DIAMOND+DIAMOND" (없으면 빈칸).
+		local u = self:EnsureUser(userId)
+		if u == nil then return "" end
+		local parts = {}
+		for _, it in ipairs(u.items) do
+			local e = 0
+			if _EquipService ~= nil and _EquipService:IsEquipped(userId, it.iid) then e = 1 end
+			local gems = ""
+			if it.gems ~= nil and #it.gems > 0 then gems = table.concat(it.gems, "+") end
+			table.insert(parts, it.iid .. ":" .. it.itemId .. ":" .. tostring(it.count) .. ":" .. tostring(it.enh) .. ":" .. tostring(it.dur) .. ":" .. tostring(e) .. ":" .. gems)
+		end
+		return table.concat(parts, "|")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushInventory(string userId)
+		-- 소유 클라의 인벤토리 탭을 갱신한다.
+		if _InventoryUIController ~= nil then
+			_InventoryUIController:SetInventoryCsv(self:Serialize(userId), userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestInventory()
+		-- 클라(캐릭터 창 열 때)가 부른다. 인벤토리 + 장착 현황을 호출자에게만 보낸다.
+		self:EnsureUser(senderUserId)
+		self:PushInventory(senderUserId)
+		if _EquipService ~= nil then
+			_EquipService:PushEquipped(senderUserId)
+		end
+	end
+
+end

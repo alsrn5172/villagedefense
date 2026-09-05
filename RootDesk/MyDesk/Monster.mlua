@@ -32,6 +32,48 @@ script Monster extends Component
 	@MaxValue(1)
 	property number SoundVolume = 1.0
 
+	-- ── 피격 반응 (WO-011 ⑨-1 · 사용자 요청 2026-09-05) ─────────────────────
+	-- 공격 반대 방향(공격자에게서 멀어지는 쪽)으로 아주 살짝 미끄러지고, 잠깐 AI 이동을 멈추고, 스프라이트를 잠깐 붉게.
+	-- 보스: 패턴(스킬 시전) 중엔 반응 없음 · 최대 HP 의 BossKnockbackHpRatio 이상 피해일 때만 밀림 · 고정형(AiType static, 피아누스) 은 절대 안 밀림.
+	-- hit 액션 클립이 ActionSheet 에 있으면 엔진 HIT 상태가 그 표정을 재생한다 (일반 몹 76종은 아직 클립 없음 → 붉은 플래시로 대신).
+	-- 밀리는 거리(월드 유닛 · 0.2 = 20px). AddForce 는 AI 이동에 덮여 1px 남짓만 움직였다 → 위치를 직접 옮긴다.
+	-- 🔴 사용자 피드백(2026-09-05): 한 번에 옮기면 너무 확 움직인다 → KnockbackSeconds 동안 잘게 나눠 서서히(HIT 0.5s 와 같이 끝나고 stand 복귀).
+	property number KnockbackDistance = 0.2
+
+	-- 사용자 지시: 0.25초 동안 서서히 밀리고 나머지 0.25초는 가만히(HitStunSeconds 0.5 = HIT 상태 길이). 서버 타이머 해상도 ~50ms → 5단계
+	property number KnockbackSeconds = 0.25
+
+	property integer KnockbackSteps = 5
+
+	property number HitStunSeconds = 0.5
+
+	-- 피격 판정 상자를 런타임에 stand 클립으로 다시 잴지. 기본 false — 모델에 미리 계산해 넣었다(Docs/tools/monster-hitbox/harvest.cjs → apply.cjs · 사용자 지시: 매번 계산하지 말 것). 새 몬스터를 추가하면 그 두 스크립트로 값을 박거나 이 값을 켠다.
+	property boolean FitHitbox = false
+
+	property boolean LogHitbox = false
+
+	property number HitFlashSeconds = 0.12
+
+	property number BossKnockbackHpRatio = 0.01
+
+	@HideFromInspector
+	property string curClip = ""
+
+	@HideFromInspector
+	property boolean airborneHold = false
+
+	@HideFromInspector
+	property any chaseRef = nil
+
+	@HideFromInspector
+	property any fhComp = nil
+
+	@HideFromInspector
+	property boolean knocking = false
+
+	@HideFromInspector
+	property boolean flashing = false
+
 	method void OnBeginPlay()
 		-- DamageSkinId is a DataRef, not a plain string.
 		self.Hp = self.MaxHp
@@ -44,7 +86,148 @@ script Monster extends Component
 		-- die 클립이 다 돌기 전에 지우면 죽는 모션이 잘린다. 서버에서만 잰다.
 		if self:IsServer() then
 			self:SetupDieDestroyDelay()
+			self:InitStateClip()
+			if self.FitHitbox then
+				self:FitHitboxToSprite()
+			end
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FitHitboxToSprite()
+		-- HitComponent.BoxSize/ColliderOffset 을 stand 클립 첫 프레임의 실제 크기·피벗에 맞춘다 (MonsterAttack 의 공격 상자와 같은 계산).
+		-- 보스는 손으로 맞춘 값(피아누스 3.6×3 등)을 그대로 둔다.
+		if isvalid(self.Entity:GetComponent("script.BossSkillRunner")) then
+			return
+		end
+		local hit = self.Entity.HitComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(hit) or not isvalid(sr) then
+			return
+		end
+		local ruid = sr.SpriteRUID
+		local anim = self.Entity.StateAnimationComponent
+		if isvalid(anim) then
+			local stand = anim.ActionSheet["stand"]
+			if stand ~= nil and stand ~= "" then ruid = stand end
+		end
+		if ruid == nil or ruid == "" or ruid == "null" then
+			return
+		end
+		local entity = self.Entity
+		_ResourceService:PreloadAsync({ruid}, function()
+			if not isvalid(entity) or not isvalid(hit) then return end
+			local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+			if clip == nil or clip.Frames == nil or clip.Frames[1] == nil then return end
+			local sp = clip.Frames[1].FrameSprite
+			if sp == nil or sp.PixelPerUnit <= 0 then return end
+			local px = Vector2(sp.Width, sp.Height)
+			local ppu = sp.PixelPerUnit
+			local size = px / ppu
+			local offset = (px / 2 - sp.PivotPixel:ToVector2()) / ppu
+			hit.BoxSize = size
+			hit.ColliderOffset = offset
+			if self.LogHitbox then
+				log(string.format("[Monster] hitbox fit %s size=(%.2f,%.2f) offset=(%.2f,%.2f)", entity.Name, size.x, size.y, offset.x, offset.y))
+			end
+		end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitStateClip()
+		-- ⑪ 일반 몹 피격·사망 모션: StateAnimationComponent 의 ActionSheet 자동 재생이 일반 몹(StateMoveMonster/StateChaseMonster)에선
+		--    안 먹는다(실측: DEAD 뒤에도 stand 그림 그대로). 보스(BossSkillRunner.RestoreSprite)와 같은 Pattern A —
+		--    상태가 바뀔 때마다 ActionSheet[StateStringToAnimationKey(state)] 를 SpriteRUID 에 직접 넣는다.
+		--    보스는 BossSkillRunner 가 스프라이트를 관리하므로 건드리지 않는다.
+		local sr = self.Entity.SpriteRendererComponent
+		if isvalid(sr) then
+			self.curClip = sr.SpriteRUID
+		end
+		self.chaseRef = self.Entity:GetComponent("script.StateChaseMonster")
+		local sc = self.Entity.StateComponent
+		if isvalid(sc) then
+			self:ApplyStateClip(sc.CurrentStateName)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 점프하는 몹(hop · StateChaseMonster.CanJumpToTarget): 공중에 있는 동안 jump 클립 첫 프레임 하나로 고정(플레이어 점프 포즈처럼), 착지하면 상태 클립 복귀.
+		if self.IsDead then return end
+		-- 넉백으로 위치를 옮기는 동안은 IsOnGround 가 한순간 false 로 읽혀(실측) 점프 포즈로 깜빡인다 → 건너뛴다
+		if self.knocking then return end
+		local chase = self.chaseRef
+		if not isvalid(chase) or not chase.CanJumpToTarget then return end
+		local rb = self.Entity.RigidbodyComponent
+		if not isvalid(rb) then return end
+		local air = not rb:IsOnGround()
+		if air == self.airborneHold then return end
+		self.airborneHold = air
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(sr) then return end
+		if air then
+			local ruid = ""
+			local anim = self.Entity.StateAnimationComponent
+			if isvalid(anim) then ruid = anim.ActionSheet["jump"] or "" end
+			if ruid ~= "" and ruid ~= self.curClip then
+				sr.SpriteRUID = ruid
+				self.curClip = ruid
+			end
+			sr.StartFrameIndex = 0
+			sr.EndFrameIndex = 0
+		else
+			sr.StartFrameIndex = 0
+			sr.EndFrameIndex = 2147483647
+			local sc = self.Entity.StateComponent
+			if isvalid(sc) then self:ApplyStateClip(sc.CurrentStateName) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyStateClip(string stateName)
+		-- 상태 → ActionSheet 키(소문자: IDLE→stand · WANDER→wander · HIT→hit · DEAD→die) → 클립 교체. 같은 클립이면 다시 대입하지 않는다(첫 프레임 멈춤 방지).
+		local sr = self.Entity.SpriteRendererComponent
+		local anim = self.Entity.StateAnimationComponent
+		if not isvalid(sr) or not isvalid(anim) or stateName == nil or stateName == "" then
+			return
+		end
+		local key = anim:StateStringToAnimationKey(stateName)
+		if key == nil or key == "" then
+			return
+		end
+		-- 죽은 뒤엔 die 외의 클립(시체에 맞아 HIT 전이 등)으로 덮지 않는다
+		if self.IsDead and key ~= "die" then
+			return
+		end
+		-- 보스는 BossSkillRunner 가 시전 스프라이트를 관리하므로 평소엔 건드리지 않는다.
+		-- 단 사망(die)만은 강제한다(사용자 지시 2026-09-05: 피격은 몰라도 사망 모션은 반드시 바뀌어야 함).
+		if key ~= "die" and isvalid(self.Entity:GetComponent("script.BossSkillRunner")) then
+			return
+		end
+		-- die 는 프레임 창·PlayRate 를 되돌리고 튼다: 보스가 시전 중 죽었을 때(창 좁힘·PlayRate), hop 몹이 공중에서 죽었을 때(점프 포즈 0..0 고정) 모두 die 가 첫 프레임에 얼어붙지 않게
+		if key == "die" then
+			sr.StartFrameIndex = 0
+			sr.EndFrameIndex = 2147483647
+			sr.PlayRate = 1
+			self.airborneHold = false
+		end
+		-- 공중 고정 중엔 피격·사망만 끼어든다 (CHASE/IDLE 전환으로 점프 포즈가 풀리지 않게)
+		if self.airborneHold and key ~= "hit" and key ~= "die" then
+			return
+		end
+		local ruid = anim.ActionSheet[key]
+		if ruid == nil or ruid == "" or ruid == self.curClip then
+			return
+		end
+		sr.SpriteRUID = ruid
+		self.curClip = ruid
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleStateChangeEvent(StateChangeEvent event)
+		-- 상태 전이(IDLE/WANDER/CHASE/HIT/DEAD …)마다 맞는 클립으로.
+		self:ApplyStateClip(event.CurrentStateName)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -183,6 +366,7 @@ script Monster extends Component
 		if self.Hp > 0 or originalHp <= 0 then
 			if self.Hp > 0 and originalHp > 0 then
 				self:PlaySoundToMap(self.DamagedSoundRUID, self.SoundVolume)
+				self:ReactToHit(event.AttackerEntity, TotalDamage)
 			end
 			return
 		end
@@ -190,9 +374,158 @@ script Monster extends Component
 		self:PlaySoundToMap(self.DieSoundRUID, self.SoundVolume)
 		self:Dead()
 		local timerFunc = function() self:Respawn() end
-		
+
 		if self.RespawnOn then
 			_TimerService:SetTimerOnce(timerFunc, self.RespawnDelay)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsStaticMonster()
+		-- 고정형 판정: 보스는 BossInfo.AiType, 일반 몹은 MonsterInfo.AiType (FarmReward.MonsterId 경유). 모르면 false.
+		local runner = self.Entity:GetComponent("script.BossSkillRunner")
+		if isvalid(runner) and _BossCatalog ~= nil then
+			local info = _BossCatalog:GetInfo(runner.BossId)
+			if info ~= nil and string.lower(tostring(info.aiType or "")) == "static" then
+				return true
+			end
+		end
+		local reward = self.Entity:GetComponent("script.FarmReward")
+		if isvalid(reward) and reward.MonsterId > 0 and _MonsterCatalog ~= nil then
+			if string.lower(tostring(_MonsterCatalog:GetAiType(reward.MonsterId) or "")) == "static" then
+				return true
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetFootholdComponent()
+		-- 맵의 FootholdComponent. 맵 엔티티 직속이 보통이고 타일맵 자식에 달린 경우도 있다(BossSkillRunner.FindFootholdComponent 와 같은 탐색). 한 번 찾으면 캐시.
+		if isvalid(self.fhComp) then
+			return self.fhComp
+		end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return nil
+		end
+		local direct = map.FootholdComponent
+		if isvalid(direct) then
+			self.fhComp = direct
+			return direct
+		end
+		local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+		if found ~= nil then
+			for _, c in ipairs(found) do
+				if isvalid(c) then
+					self.fhComp = c
+					return c
+				end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReactToHit(Entity attacker, number damage)
+		-- 살아 있는 피격에만 부른다 (HandleHitEvent). 넉백 + 경직 + 플래시.
+		local runner = self.Entity:GetComponent("script.BossSkillRunner")
+		local isBoss = isvalid(runner)
+		if isBoss then
+			-- 패턴 중엔 아무 반응 없음 (모션도 안 바뀐다)
+			if runner.pendingSkill ~= nil then
+				return
+			end
+			-- 최대 HP 의 1% 미만 피해는 안 밀림 (플래시도 생략 — 잔타에 흔들리지 않게)
+			if self.MaxHp > 0 and damage < self.MaxHp * self.BossKnockbackHpRatio then
+				return
+			end
+		end
+		-- 고정형(피아누스 등)은 안 밀리고 안 멈춘다. 플래시(+HIT 상태의 hit 클립)만.
+		local isStatic = self:IsStaticMonster()
+
+		-- 방향: 공격자에게서 멀어지는 쪽. 공격자를 모르면 바라보는 방향의 반대.
+		local tr = self.Entity.TransformComponent
+		local dir = 0
+		if isvalid(attacker) and isvalid(attacker.TransformComponent) and isvalid(tr) then
+			local dx = tr.WorldPosition.x - attacker.TransformComponent.WorldPosition.x
+			if dx >= 0 then dir = 1 else dir = -1 end
+		elseif isvalid(tr) then
+			dir = (tr.Scale.x < 0) and -1 or 1
+		end
+
+		-- 경직: StateChaseMonster 의 시전 정지 게이트를 빌린다 (StateTypeChase 가 이동을 건너뜀 → 힘이 덮어써지지 않는다)
+		local chase = self.Entity:GetComponent("script.StateChaseMonster")
+		if not isStatic and isvalid(chase) and chase.CastFreezeLeft < self.HitStunSeconds then
+			chase.CastFreezeLeft = self.HitStunSeconds
+		end
+
+		-- 넉백: KnockbackSteps 번에 나눠 rb:SetWorldPosition 으로 살짝 미끄러뜨린다 (Rigidbody 는 Transform 직접 대입이 되돌려지므로 rb 경유).
+		-- 🔴 y 를 그대로 두고 x 만 옮기면 경사 발판에서 표면 아래로 파고들어 땅을 뚫었다(사용자 지적 2026-09-05)
+		--    → 지금 밟은 발판의 GetYByX 로 y 를 표면에 맞추고, 발판 범위 밖으로는 안 민다(절벽 밖으로 떨어뜨리지 않음). 공중이면 안 옮긴다.
+		local body = self.Entity.RigidbodyComponent
+		-- 이미 밀리는 중이면 겹쳐 밀지 않는다 (연타·다단히트로 0.2 씩 누적돼 "여러 번 미끄러지는" 것 방지 · 플래시는 그대로)
+		if not isStatic and isvalid(body) and dir ~= 0 and self.KnockbackSteps > 0 and not self.knocking then
+			local stepDx = dir * self.KnockbackDistance / self.KnockbackSteps
+			local interval = self.KnockbackSeconds / self.KnockbackSteps
+			local n = 0
+			-- 발 높이 − 발판선 오프셋을 한 번만 잰다 (실측 0 이지만, 피벗이 발이 아닌 스프라이트에서도 표면 추종이 깨지지 않게)
+			local footOff = 0
+			local cur = body:GetCurrentFoothold()
+			if cur ~= nil and not cur:IsVertical() then
+				local p0 = self.Entity.TransformComponent.WorldPosition
+				footOff = p0.y - cur:GetYByX(p0.x)
+				if math.abs(footOff) > 0.35 then footOff = 0 end
+			end
+			self.knocking = true
+			local function step()
+				-- 타이머 콜백은 엔티티보다 오래 살 수 있다 (DestroyDelay 뒤 Destroy) → 먼저 확인
+				if not isvalid(self.Entity) then return end
+				n = n + 1
+				if n < self.KnockbackSteps then
+					_TimerService:SetTimerOnce(step, interval)
+				else
+					-- 마지막 이동 뒤 한 틱 더 기다렸다 푼다 (마지막 SetWorldPosition 직후의 ground=false 한 프레임을 점프 판정이 보지 않게)
+					_TimerService:SetTimerOnce(function()
+						if isvalid(self.Entity) then self.knocking = false end
+					end, interval)
+				end
+				if not isvalid(body) or self.IsDead then return end
+				local p = self.Entity.TransformComponent.WorldPosition
+				local nx = p.x + stepDx
+				-- 새 x 바로 위에서 아래로 레이를 쏴 밟을 발판을 찾는다 (경사 · 짧게 이어진 세그먼트 · 계단 모두 잡힌다. 실측: 경사 세그먼트 폭이 0.26 라 "현재 발판 범위" 검사로는 한 걸음에 막혔다)
+				-- IsOnGround 는 SetWorldPosition 직후 한 프레임 false 로 읽혀(실측) 게이트로 쓰지 않는다 — 발 아래 0.4 안에 발판이 없으면(공중·절벽) 그 단계만 건너뛴다
+				local fh = nil
+				local fc = self:GetFootholdComponent()
+				if isvalid(fc) then
+					fh = fc:Raycast(Vector2(nx, p.y - footOff + 0.3), Vector2(0, -1), 0.7)
+				end
+				if fh == nil and body:IsOnGround() then
+					fh = body:GetCurrentFoothold()
+				end
+				-- 발판이 없거나(공중·절벽) 벽이면 안 민다
+				if fh == nil or fh:IsVertical() then return end
+				local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
+				local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
+				if nx < lo - 0.02 or nx > hi + 0.02 then return end
+				local ny = fh:GetYByX(nx) + footOff
+				-- 다른 층을 잡았으면(발 높이와 0.35 넘게 차이) 안 민다
+				if math.abs(ny - p.y) > 0.35 then return end
+				body:SetWorldPosition(Vector2(nx, ny))
+			end
+			_TimerService:SetTimerOnce(step, interval)
+		end
+
+		-- 플래시: 스프라이트를 잠깐 붉게 (hit 클립이 있으면 엔진 HIT 상태가 표정을 따로 재생한다)
+		local sr = self.Entity.SpriteRendererComponent
+		if isvalid(sr) and not self.flashing then
+			self.flashing = true
+			local original = sr.Color
+			sr.Color = Color(1, 0.55, 0.55, original.a)
+			_TimerService:SetTimerOnce(function()
+				if isvalid(sr) then sr.Color = original end
+				self.flashing = false
+			end, self.HitFlashSeconds)
 		end
 	end
 

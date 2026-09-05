@@ -1,0 +1,180 @@
+@Logic
+script EquipService extends Logic
+
+	-- 장비 6슬롯 원장 (서버) — MatchPlayerState.match_equipped. 장착/해제 요청을 검증하고
+	-- EquipChangedEvent 를 발행한 뒤 EQUIP 스탯 레이어를 StatService 에 넘긴다 (합산은 StatService 만).
+	-- 🔴 낙관적 UI 금지: 클라는 요청만 보내고 SetEquippedCsv / SetInventoryCsv 응답으로만 그린다.
+
+	@HideFromInspector
+	property any equipped = nil
+
+	@HideFromInspector
+	property any slots = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 원장 준비.
+		self.equipped = {}
+		self.slots = { "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }
+		log("[Item] EquipService ready (server)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any EnsureUser(string userId)
+		-- 유저 슬롯 표를 반환한다 (슬롯 → 인스턴스 id, 비면 "").
+		if userId == nil or userId == "" then
+			return nil
+		end
+		local e = self.equipped[userId]
+		if e == nil then
+			e = {}
+			for _, s in ipairs(self.slots) do e[s] = "" end
+			self.equipped[userId] = e
+		end
+		return e
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsEquipped(string userId, string instanceId)
+		-- 그 인스턴스가 어느 슬롯에든 장착돼 있으면 true.
+		local e = self:EnsureUser(userId)
+		if e == nil or instanceId == "" then return false end
+		for _, s in ipairs(self.slots) do
+			if e[s] == instanceId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("Server")
+	method void RequestEquip(string instanceId)
+		-- 클라 요청: 인벤토리의 장비를 그 슬롯에 장착 (기존 장비는 인벤토리로 돌아간다).
+		local userId = senderUserId
+		local e = self:EnsureUser(userId)
+		local it = _InventoryService:Find(userId, instanceId)
+		if e == nil or it == nil then
+			log("[Item] equip denied: no such instance " .. tostring(instanceId))
+			return
+		end
+		local def = _ItemCatalog:Get(it.itemId)
+		if def == nil or def.type ~= "EQUIP" or def.slot == "" then
+			log("[Item] equip denied: not equipment " .. tostring(it.itemId))
+			return
+		end
+		if self:IsEquipped(userId, instanceId) then
+			return
+		end
+		local level = 1
+		if _SummonManager ~= nil then
+			local econ = _SummonManager:GetEcon(userId)
+			if econ ~= nil then level = econ.level end
+		end
+		if level < def.reqLevel then
+			log("[Item] equip denied: level " .. tostring(level) .. " < " .. tostring(def.reqLevel))
+			return
+		end
+		if def.reqJob ~= "" and _StatService ~= nil then
+			local su = _StatService:EnsureUser(userId)
+			if su ~= nil and su.job ~= def.reqJob then
+				log("[Item] equip denied: job " .. tostring(su.job) .. " ~= " .. def.reqJob)
+				return
+			end
+		end
+		local prev = e[def.slot]
+		e[def.slot] = instanceId
+		self:Apply(userId, def.slot, prev, instanceId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestUnequip(string slot)
+		-- 클라 요청: 슬롯 비우기 (장비는 인벤토리에 그대로 남아 있으므로 표시만 바뀐다).
+		local userId = senderUserId
+		local e = self:EnsureUser(userId)
+		if e == nil or e[slot] == nil or e[slot] == "" then
+			return
+		end
+		local prev = e[slot]
+		e[slot] = ""
+		self:Apply(userId, slot, prev, "")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Apply(string userId, string slot, string prevInstanceId, string newInstanceId)
+		-- 변경 확정: 이벤트 → 스탯 레이어 → 클라 갱신.
+		local ev = EquipChangedEvent()
+		ev.UserId = userId
+		ev.EquipSlot = slot
+		ev.PrevInstanceId = prevInstanceId
+		ev.NewInstanceId = newInstanceId
+		self:SendEvent(ev)
+
+		self:RecalcLayer(userId)
+		self:PushEquipped(userId)
+		if _InventoryService ~= nil then
+			_InventoryService:PushInventory(userId)
+		end
+		log("[Item] equip " .. slot .. ": " .. tostring(prevInstanceId) .. " -> " .. tostring(newInstanceId) .. " (" .. userId .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecalcLayer(string userId)
+		-- 장착 장비의 Base* 합 → EQUIP 레이어, 강화 보너스(⑫ B안: 고정치 + 보석 선택 스탯 · 양은 EnhanceSlotBonus) 합 → ENHANCE 레이어. 무기 숙련도도 넘긴다.
+		local e = self:EnsureUser(userId)
+		if e == nil or _StatService == nil then return end
+		local sum = {}
+		local enh = {}
+		local mastery = -1
+		for _, s in ipairs(self.slots) do
+			local iid = e[s]
+			if iid ~= "" then
+				local it = _InventoryService:Find(userId, iid)
+				local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+				if def ~= nil then
+					for k, v in pairs(def.stats) do
+						if v ~= 0 then sum[k] = (sum[k] or 0) + v end
+					end
+					if s == "WEAPON" then mastery = def.mastery end
+					-- ⑫ B안: 고정치(방어구 방어) + 보석마다 그 스탯(양은 EnhanceSlotBonus). 계산은 ItemCatalog.ComputeEnhance 한 곳 (툴팁·미리보기와 같은 식)
+					local r = _ItemCatalog:ComputeEnhance(def, it.enh or 0, it.gems)
+					for k, v in pairs(r.fixed) do enh[k] = (enh[k] or 0) + v end
+					for k, v in pairs(r.gem) do enh[k] = (enh[k] or 0) + v end
+				end
+			end
+		end
+		if mastery >= 0 then
+			_StatService:SetMastery(userId, mastery)
+		else
+			_StatService:SetMastery(userId, _StatService.DefaultMastery)
+		end
+		_StatService:SetLayerCsv(userId, "EQUIP", _StatService:TableToCsv(sum))
+		_StatService:SetLayerCsv(userId, "ENHANCE", _StatService:TableToCsv(enh))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Serialize(string userId)
+		-- "WEAPON=iid:itemId:enh:dur;HAT=;..." (빈 슬롯은 값 없음).
+		local e = self:EnsureUser(userId)
+		if e == nil then return "" end
+		local parts = {}
+		for _, s in ipairs(self.slots) do
+			local v = ""
+			local iid = e[s]
+			if iid ~= "" then
+				local it = _InventoryService:Find(userId, iid)
+				if it ~= nil then
+					v = it.iid .. ":" .. it.itemId .. ":" .. tostring(it.enh) .. ":" .. tostring(it.dur)
+				end
+			end
+			table.insert(parts, s .. "=" .. v)
+		end
+		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushEquipped(string userId)
+		-- 소유 클라의 장비 탭을 갱신한다.
+		if _InventoryUIController ~= nil then
+			_InventoryUIController:SetEquippedCsv(self:Serialize(userId), userId)
+		end
+	end
+
+end
