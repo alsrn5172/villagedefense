@@ -25,6 +25,33 @@ script ItemCatalog extends Logic
 	@HideFromInspector
 	property any slotBonus = nil
 
+	-- 공방 거래 표 (계약서 A-2-8c · 2026-09-06)
+	property string RecipeTableName = "CraftRecipe"
+
+	property string ShopTableName = "ShopItem"
+
+	property string ConsumeTableName = "ConsumeInfo"
+
+	property string RepairTableName = "RepairConfig"
+
+	@HideFromInspector
+	property any recipes = nil
+
+	@HideFromInspector
+	property any recipesByShop = nil
+
+	@HideFromInspector
+	property any shopItems = nil
+
+	@HideFromInspector
+	property any shopItemsByKey = nil
+
+	@HideFromInspector
+	property any consumes = nil
+
+	@HideFromInspector
+	property any repairTiers = nil
+
 	@HideFromInspector
 	property boolean loaded = false
 
@@ -78,6 +105,175 @@ script ItemCatalog extends Logic
 		end
 		log("[Item] catalog loaded: " .. tostring(count) .. " items")
 		self:LoadGemsAndEnhance()
+		self:LoadTrade()
+	end
+
+	method void LoadTrade()
+		-- CraftRecipe · ShopItem · ConsumeInfo · RepairConfig (A-2-8c). 표가 없으면 빈 목록 + 경고 (공방 라우트만 비어 보인다).
+		self.recipes = {}
+		self.recipesByShop = {}
+		self.shopItems = {}
+		self.shopItemsByKey = {}
+		self.consumes = {}
+		self.repairTiers = {}
+		local function on(t, i)
+			return string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+		end
+		local r = _DataService:GetTable(self.RecipeTableName)
+		if r ~= nil then
+			for i = 1, r:GetRowCount() do
+				local id = r:GetCell(i, "RecipeId") or ""
+				if id ~= "" and on(r, i) then
+					local row = {
+						id = id,
+						shopKey = string.upper(r:GetCell(i, "ShopKey") or ""),
+						resultItemId = r:GetCell(i, "ResultItemId") or "",
+						resultCount = math.max(1, math.floor(tonumber(r:GetCell(i, "ResultCount")) or 1)),
+						mesoCost = math.floor(tonumber(r:GetCell(i, "MesoCost")) or 0),
+						mats = {},
+					}
+					for m = 1, 2 do
+						local mid = r:GetCell(i, "Mat" .. tostring(m) .. "ItemId") or ""
+						local cnt = math.floor(tonumber(r:GetCell(i, "Mat" .. tostring(m) .. "Count")) or 0)
+						if mid ~= "" and cnt > 0 then
+							table.insert(row.mats, { itemId = mid, count = cnt })
+						end
+					end
+					self.recipes[id] = row
+					local list = self.recipesByShop[row.shopKey]
+					if list == nil then
+						list = {}
+						self.recipesByShop[row.shopKey] = list
+					end
+					table.insert(list, row)
+				end
+			end
+		else
+			log_warning("[Item] dataset not found: " .. self.RecipeTableName)
+		end
+		local s = _DataService:GetTable(self.ShopTableName)
+		if s ~= nil then
+			for i = 1, s:GetRowCount() do
+				local id = s:GetCell(i, "ShopItemId") or ""
+				if id ~= "" and on(s, i) then
+					local row = {
+						id = id,
+						shopKey = string.upper(s:GetCell(i, "ShopKey") or ""),
+						itemId = s:GetCell(i, "ItemId") or "",
+						priceMeso = math.floor(tonumber(s:GetCell(i, "PriceMeso")) or 0),
+						maxCount = math.max(1, math.floor(tonumber(s:GetCell(i, "MaxCount")) or 1)),
+					}
+					self.shopItems[id] = row
+					local list = self.shopItemsByKey[row.shopKey]
+					if list == nil then
+						list = {}
+						self.shopItemsByKey[row.shopKey] = list
+					end
+					table.insert(list, row)
+				end
+			end
+		else
+			log_warning("[Item] dataset not found: " .. self.ShopTableName)
+		end
+		local c = _DataService:GetTable(self.ConsumeTableName)
+		if c ~= nil then
+			for i = 1, c:GetRowCount() do
+				local id = c:GetCell(i, "ItemId") or ""
+				if id ~= "" and on(c, i) then
+					self.consumes[id] = {
+						itemId = id,
+						healHp = math.floor(tonumber(c:GetCell(i, "HealHp")) or 0),
+						healMp = math.floor(tonumber(c:GetCell(i, "HealMp")) or 0),
+					}
+				end
+			end
+		else
+			log_warning("[Item] dataset not found: " .. self.ConsumeTableName)
+		end
+		local rp = _DataService:GetTable(self.RepairTableName)
+		if rp ~= nil then
+			for i = 1, rp:GetRowCount() do
+				local lv = math.floor(tonumber(rp:GetCell(i, "ReqLevel")) or -1)
+				if lv >= 0 and on(rp, i) then
+					self.repairTiers[lv] = tonumber(rp:GetCell(i, "MesoPerDurability")) or 0
+				end
+			end
+		else
+			log_warning("[Item] dataset not found: " .. self.RepairTableName)
+		end
+		log("[Item] trade tables: recipes " .. tostring(self:CountKeys(self.recipes)) .. " · shop " .. tostring(self:CountKeys(self.shopItems)) .. " · consume " .. tostring(self:CountKeys(self.consumes)) .. " · repair tiers " .. tostring(self:CountKeys(self.repairTiers)))
+	end
+
+	method integer CountKeys(any t)
+		-- 로그용: 테이블 키 개수.
+		local n = 0
+		if t ~= nil then
+			for _k, _v in pairs(t) do n = n + 1 end
+		end
+		return n
+	end
+
+	method string ShopKeyOfMap(string mapName)
+		-- 맵 이름 접두 → 지역 ShopKey (VillageConfig 전 임시 규칙 · 계약서 A-2-8c). 모르는 맵은 "".
+		local n = mapName or ""
+		if string.find(n, "Henesys") == 1 then return "REGION_HENESYS" end
+		if string.find(n, "KerningCity") == 1 then return "REGION_KERNING" end
+		if string.find(n, "Ellinia") == 1 then return "REGION_ELLINIA" end
+		if string.find(n, "Nautilus") == 1 then return "REGION_NAUTILUS" end
+		if string.find(n, "Perion") == 1 then return "REGION_PERION" end
+		if string.find(n, "LithHarbor") == 1 then return "NOVICE" end
+		return ""
+	end
+
+	method any GetRecipe(string recipeId)
+		-- CraftRecipe 행. 없으면 nil.
+		self:EnsureLoaded()
+		return self.recipes[recipeId]
+	end
+
+	method any GetRecipes(string shopKey)
+		-- ShopKey 의 레시피 목록(CSV 순서). 없으면 빈 테이블.
+		self:EnsureLoaded()
+		return self.recipesByShop[string.upper(shopKey or "")] or {}
+	end
+
+	method any GetShopItem(string shopItemId)
+		-- ShopItem 행. 없으면 nil.
+		self:EnsureLoaded()
+		return self.shopItems[shopItemId]
+	end
+
+	method any GetShopItems(string shopKey)
+		-- ShopKey 의 상품 목록. 없으면 빈 테이블.
+		self:EnsureLoaded()
+		return self.shopItemsByKey[string.upper(shopKey or "")] or {}
+	end
+
+	method any GetConsume(string itemId)
+		-- ConsumeInfo 행. 없으면 nil.
+		self:EnsureLoaded()
+		return self.consumes[itemId]
+	end
+
+	method number GetRepairMesoPerPoint(integer reqLevel)
+		-- 수리비 계수: RepairConfig 의 ReqLevel 중 "장비 요구레벨 이하 최대" 티어. 없으면 0.
+		self:EnsureLoaded()
+		local best, val = -1, 0
+		for lv, v in pairs(self.repairTiers) do
+			if lv <= reqLevel and lv > best then
+				best = lv
+				val = v
+			end
+		end
+		return val
+	end
+
+	method integer GetRepairCost(any def, integer dur)
+		-- 장비 한 개의 수리비 = (최대 − 현재 내구도) × 티어 계수 (올림). 손상 없으면 0.
+		if def == nil or def.maxDurability <= 0 then return 0 end
+		local missing = def.maxDurability - (dur or 0)
+		if missing <= 0 then return 0 end
+		return math.ceil(missing * self:GetRepairMesoPerPoint(def.reqLevel))
 	end
 
 	method void LoadGemsAndEnhance()

@@ -1,0 +1,87 @@
+@Logic
+script CraftService extends Logic
+
+	-- 제작 장인 · 지역 장비 상인 (같은 표 CraftRecipe · 계약서 A-2-8c). 서버 권한: 지역 검증 → 메소·재료 검증 → 차감 → 지급 → ItemCraftedEvent → 인벤토리 갱신 → 결과 RPC.
+	-- 실패는 Deny 로 돌려보낸다(아무것도 안 바꿈). 클라는 응답으로만 화면을 바꾼다 (§5-5).
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 준비 로그.
+		log("[Item] CraftService ready (server)")
+	end
+
+	@ExecSpace("Server")
+	method void RequestCraft(string recipeId)
+		-- 클라 요청. 요청자의 현재 맵 지역과 레시피의 ShopKey 가 같아야 한다.
+		local userId = senderUserId
+		local recipe = _ItemCatalog:GetRecipe(recipeId)
+		if recipe == nil then
+			self:Deny(userId, recipeId, "레시피를 찾을 수 없습니다")
+			return
+		end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local mapName = ""
+		if isvalid(player) and isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
+		local here = _ItemCatalog:ShopKeyOfMap(mapName)
+		if here ~= recipe.shopKey then
+			self:Deny(userId, recipeId, "이 지역에서는 만들 수 없습니다")
+			return
+		end
+		local def = _ItemCatalog:Get(recipe.resultItemId)
+		if def == nil then
+			self:Deny(userId, recipeId, "결과 아이템 정의가 없습니다: " .. recipe.resultItemId)
+			return
+		end
+		for _, m in ipairs(recipe.mats) do
+			if _InventoryService:CountItem(userId, m.itemId) < m.count then
+				local md = _ItemCatalog:Get(m.itemId)
+				self:Deny(userId, recipeId, ((md ~= nil) and md.name or m.itemId) .. " 이(가) 부족합니다 (" .. tostring(m.count) .. "개 필요)")
+				return
+			end
+		end
+		local econ = _SummonManager:GetEcon(userId)
+		if recipe.mesoCost > 0 and (econ == nil or econ.meso < recipe.mesoCost) then
+			self:Deny(userId, recipeId, "메소가 부족합니다 (" .. tostring(recipe.mesoCost) .. ")")
+			return
+		end
+
+		for _, m in ipairs(recipe.mats) do
+			_InventoryService:RemoveItem(userId, m.itemId, m.count)
+		end
+		if recipe.mesoCost > 0 then
+			_SummonManager:SpendMeso(userId, recipe.mesoCost)
+		end
+		local given = _InventoryService:GiveItem(userId, recipe.resultItemId, recipe.resultCount)
+
+		local ev = ItemCraftedEvent()
+		ev.UserId = userId
+		ev.RecipeId = recipeId
+		ev.ResultItemId = recipe.resultItemId
+		ev.Count = given
+		ev.MesoCost = recipe.mesoCost
+		self:SendEvent(ev)
+
+		_InventoryService:PushInventory(userId)
+		log("[Item] craft OK " .. recipeId .. " → " .. recipe.resultItemId .. " x" .. tostring(given) .. " meso-" .. tostring(recipe.mesoCost) .. " (" .. userId .. ")")
+		self:Result(userId, recipeId, true, def.name .. " 획득")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string recipeId, string reason)
+		-- 거절: 토스트 + 공방 창 상태줄. 아무것도 바꾸지 않았다.
+		log("[Item] craft denied (" .. userId .. "): " .. reason)
+		self:Result(userId, recipeId, false, reason)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Result(string userId, string recipeId, boolean ok, string message)
+		-- 소유 클라에만 결과를 보낸다 (토스트 재사용 + 공방 창).
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(message, userId)
+		end
+		if _WorkshopUIController ~= nil then
+			_WorkshopUIController:SetTradeResult("craft", ok, message, recipeId, userId)
+		end
+	end
+
+end
