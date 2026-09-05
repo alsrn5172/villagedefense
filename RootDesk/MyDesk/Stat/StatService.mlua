@@ -100,10 +100,10 @@ script StatService extends Logic
 				-- accuracy 20 = 기본 명중(레벨 무관). 파생치(DEX·LUK)는 Recalculate 에서 더해진다. 첫 검증에서 0 이면 Lv1 몹도 50% 빗나갔다.
 				base = { str = 12, dex = 5, int = 4, luk = 4, attack = self.BaseAttack, magic = 0, defense = 0,
 					speed = 100, jump = 100, accuracy = 20, avoid = 0, maxhp = 0, maxmp = 0 },
-				equip = {}, enhance = {}, buff = {},
+				equip = {}, enhance = {}, buff = {}, dev = {},
 				final = {},
 				mastery = self.DefaultMastery,
-				speedBase = -1, jumpBase = -1,
+				speedBase = -1, jumpBase = -1, walkBase = -1,
 				hpBonusApplied = 0,
 			}
 			self.users[userId] = u
@@ -164,11 +164,12 @@ script StatService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void SetLayerCsv(string userId, string layer, string csv)
-		-- EQUIP / ENHANCE / BUFF 레이어를 통째로 교체한다 ("str=1;attack=5" · 빈 문자열 = 전부 0).
+		-- EQUIP / ENHANCE / BUFF / DEV 레이어를 통째로 교체한다 ("str=1;attack=5" · 빈 문자열 = 전부 0).
+		-- DEV 는 개발용 리모컨(DevStatRemote · ⑩) 전용. BUFF 는 B 의 스킬·버프 몫이라 리모컨이 건드리지 않는다.
 		local u = self:EnsureUser(userId)
 		if u == nil then return end
 		local key = string.lower(layer)
-		if key ~= "equip" and key ~= "enhance" and key ~= "buff" then
+		if key ~= "equip" and key ~= "enhance" and key ~= "buff" and key ~= "dev" then
 			log_warning("[Stat] unknown layer: " .. tostring(layer))
 			return
 		end
@@ -191,7 +192,7 @@ script StatService extends Logic
 		if u == nil then return end
 		local f = {}
 		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "magic", "defense", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
-			f[k] = (u.base[k] or 0) + (u.equip[k] or 0) + (u.enhance[k] or 0) + (u.buff[k] or 0)
+			f[k] = (u.base[k] or 0) + (u.equip[k] or 0) + (u.enhance[k] or 0) + (u.buff[k] or 0) + (u.dev[k] or 0)
 		end
 		f.accuracy = f.accuracy + _DamageFormula:DerivedAccuracy(f.dex, f.luk)
 		f.avoid = f.avoid + _DamageFormula:DerivedAvoid(f.dex, f.luk)
@@ -211,19 +212,36 @@ script StatService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void ApplyToEntity(string userId, any u)
-		-- 이동속도·점프력은 MovementComponent 에, 최대 HP 보너스는 PlayerComponent 에 반영한다.
-		-- 기준값(원본 InputSpeed/JumpForce)은 처음 볼 때 한 번 저장한다. 레벨업 AddMaxHp 는 SummonManager 가 따로 더한다.
+		-- 이동속도·점프력·최대 HP 보너스를 실제 엔티티에 반영한다. 기준값(모델 원본)은 처음 볼 때 한 번 저장한다.
+		-- 🔴 ⑩ 실측 (2026-09-05 · DefaultPlayer · MapleTile):
+		--   · 플레이어 걷기 속도는 MovementComponent.InputSpeed 가 아니라 RigidbodyComponent.WalkSpeed 가 정한다
+		--     (InputSpeed 2→4 에도 최고 속도 7.2/s 그대로 · WalkSpeed 1.4→2.8 이면 7.2→14.2/s 정확히 2배).
+		--     WalkSpeed 는 @Sync 가 아니라 서버 값이 클라(로컬 플레이어 물리 주체)에 안 간다 → Client RPC 로 같이 보낸다.
+		--   · 점프는 JumpForce 가 먹지만 높이 ∝ JumpForce² (0.9→0.97 · 1.35→2.15) → "점프력 150% = 1.5배 높이" 가 되도록 √(jump/100).
+		-- 레벨업 AddMaxHp 는 SummonManager 가 따로 더한다.
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if not isvalid(player) then
 			return
 		end
+		local speedMul = (u.final.speed or 100) / 100
+		local jumpMul = math.sqrt(math.max(0, (u.final.jump or 100) / 100))
+		local walk = -1
+		local jf = -1
 		local mv = player.MovementComponent
 		if isvalid(mv) then
 			if u.speedBase < 0 then u.speedBase = mv.InputSpeed end
 			if u.jumpBase < 0 then u.jumpBase = mv.JumpForce end
-			mv.InputSpeed = u.speedBase * (u.final.speed / 100)
-			mv.JumpForce = u.jumpBase * (u.final.jump / 100)
+			mv.InputSpeed = u.speedBase * speedMul
+			mv.JumpForce = u.jumpBase * jumpMul
+			jf = mv.JumpForce
 		end
+		local rb = player.RigidbodyComponent
+		if isvalid(rb) then
+			if u.walkBase < 0 then u.walkBase = rb.WalkSpeed end
+			rb.WalkSpeed = u.walkBase * speedMul
+			walk = rb.WalkSpeed
+		end
+		self:ApplyMovementOnClient(walk, jf, userId)
 		local pc = player.PlayerComponent
 		if isvalid(pc) then
 			local bonus = u.final.maxhp
@@ -234,6 +252,26 @@ script StatService extends Logic
 				u.hpBonusApplied = bonus
 			end
 		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyMovementOnClient(number walkSpeed, number jumpForce)
+		-- 서버가 계산한 걷기 속도·점프력을 소유 클라의 로컬 플레이어에 쓴다 (RigidbodyComponent.WalkSpeed 는 @Sync 가 아니다). 음수는 건너뛴다.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) then return end
+		if walkSpeed >= 0 and isvalid(p.RigidbodyComponent) then
+			p.RigidbodyComponent.WalkSpeed = walkSpeed
+		end
+		if jumpForce >= 0 and isvalid(p.MovementComponent) then
+			p.MovementComponent.JumpForce = jumpForce
+		end
+		log("[Stat] client movement applied walk=" .. tostring(walkSpeed) .. " jump=" .. tostring(jumpForce))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetLedger(string userId)
+		-- 개발용 리모컨(DevStatRemote) 이 읽는 원장 참조. 쓰기는 SetLayerCsv 로만.
+		return self:EnsureUser(userId)
 	end
 
 	@ExecSpace("ServerOnly")

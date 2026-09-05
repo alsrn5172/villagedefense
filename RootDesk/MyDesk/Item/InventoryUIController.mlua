@@ -70,6 +70,21 @@ script InventoryUIController extends Logic
 
 	property Entity itemTemplate = "87892cec-e01a-4dae-9064-758ac5cf9ad6"
 
+	-- ── 인벤토리 hover 툴팁 (장비 탭 상세와 같은 내용 · 사용자 요청 2026-09-05) ──
+	property Entity tooltip = "203271d4-6bd1-4dfc-a184-2d46cb3f719f"
+
+	property SpriteGUIRendererComponent tipIcon = "bc747c36-6cc1-4c85-8284-baa31eedcb77"
+
+	property TextGUIRendererComponent tipName = "3fffeb1b-2228-4027-b6cf-cc229be5e722"
+
+	property TextGUIRendererComponent tipReq = "747b1e6d-39b1-4d06-b1b2-327868502e05"
+
+	property Entity tipStatList = "5ab9a892-da45-4cda-ae4e-f9aa88968f84"
+
+	property Entity tipDurFill = "87ff83af-6657-4d56-9ef1-81ff3641b090"
+
+	property TextGUIRendererComponent tipDurLabel = "92346661-d610-4261-840d-03ce8c564020"
+
 	@HideFromInspector
 	property any items = nil
 
@@ -94,6 +109,15 @@ script InventoryUIController extends Logic
 	@HideFromInspector
 	property number durFullWidth = 0
 
+	@HideFromInspector
+	property number tipDurFullWidth = 0
+
+	@HideFromInspector
+	property any cellByIid = nil
+
+	@HideFromInspector
+	property any cellIndexByIid = nil
+
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 버튼 연결 + GridView 템플릿 주입 + 빈 상태로 시작.
@@ -102,6 +126,8 @@ script InventoryUIController extends Logic
 		self.view = {}
 		self.handlers = {}
 		self.cellHandlers = {}
+		self.cellByIid = {}
+		self.cellIndexByIid = {}
 
 		local function bind(btn, fn)
 			if isvalid(btn) then
@@ -123,6 +149,10 @@ script InventoryUIController extends Logic
 		if isvalid(self.durFill) and self.durFill.UITransformComponent ~= nil then
 			self.durFullWidth = self.durFill.UITransformComponent.RectSize.x
 		end
+		if isvalid(self.tipDurFill) and self.tipDurFill.UITransformComponent ~= nil then
+			self.tipDurFullWidth = self.tipDurFill.UITransformComponent.RectSize.x
+		end
+		self:HideTooltip()
 
 		-- GridView: 템플릿은 런타임 주입만 가능 (builder-protocol-ui §3). OnRefresh 는 스크롤 중 매우 자주 불린다 — 메모리만 읽는다.
 		if isvalid(self.grid) then
@@ -259,49 +289,71 @@ script InventoryUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void ShowDetail(any eq, string slot)
-		-- 상세 패널. eq = { iid, itemId, enh, dur } 또는 nil.
+		-- 장비 탭 상세 패널. eq = { iid, itemId, enh, dur } 또는 nil.
+		self:FillItemView(eq, slot, self.detailIcon, self.detailName, self.detailReq, self.detailStatList, self.durFill, self.durLabel, self.durFullWidth)
+		if isvalid(self.btnUnequip) then
+			self.btnUnequip.Enable = (eq ~= nil)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillItemView(any eq, string slot, SpriteGUIRendererComponent iconR, TextGUIRendererComponent nameT, TextGUIRendererComponent reqT, Entity statList, Entity fill, TextGUIRendererComponent durT, number fullWidth)
+		-- 아이템 상세 한 벌(아이콘·이름·요구·능력치 5행·내구도)을 채운다. 장비 탭 상세와 인벤토리 hover 툴팁이 같은 내용을 쓴다.
 		local def = nil
 		if eq ~= nil then def = _ItemCatalog:Get(eq.itemId) end
 
-		if isvalid(self.detailIcon) then
+		if isvalid(iconR) then
 			local ruid = (def ~= nil) and def.icon or ""
-			self.detailIcon.ImageRUID = ruid
-			self.detailIcon.Entity.Enable = (ruid ~= "")
+			iconR.ImageRUID = ruid
+			iconR.Entity.Enable = (ruid ~= "")
 		end
-		if isvalid(self.detailName) then
+		if isvalid(nameT) then
 			if def ~= nil then
 				local n = def.name
 				if eq.enh > 0 then n = n .. " +" .. tostring(eq.enh) end
-				self.detailName.Text = n
+				nameT.Text = n
 			elseif slot ~= "" then
-				self.detailName.Text = "(비어 있음)"
+				nameT.Text = "(비어 있음)"
 			else
-				self.detailName.Text = ""
+				nameT.Text = ""
 			end
 		end
-		if isvalid(self.detailReq) then
+		if isvalid(reqT) then
 			if def ~= nil then
 				local job = def.reqJob
 				if job == "" then job = "전직업" end
-				self.detailReq.Text = "Lv" .. tostring(def.reqLevel) .. " · " .. job
+				reqT.Text = "Lv" .. tostring(def.reqLevel) .. " · " .. job
 			else
-				self.detailReq.Text = ""
+				reqT.Text = ""
 			end
 		end
 
-		-- 능력치 행 (0 이 아닌 것만, 최대 5행)
-		if isvalid(self.detailStatList) then
+		-- 능력치 행 (0 이 아닌 것만, 최대 5행). 사용자 확정 2026-09-05: "전체 (기본 +초록 고정강화 +보라 보석강화)"
+		if isvalid(statList) then
 			local rows = {}
 			if def ~= nil then
+				-- 보석 목록: 인벤토리 항목은 "DIAMOND+STR_CRYSTAL" 문자열, 장착 슬롯 항목엔 없을 수 있어 iid 로 인벤토리에서 찾는다
+				local gems = self:GemListOf(eq)
+				local r = _ItemCatalog:ComputeEnhance(def, eq.enh or 0, gems)
 				for _, k in ipairs({ "attack", "magic", "defense", "str", "dex", "int", "luk", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
-					local v = def.stats[k] or 0
-					if v ~= 0 and #rows < 5 then
-						table.insert(rows, { label = self:StatLabel(k), value = "+" .. tostring(v) })
+					local base = def.stats[k] or 0
+					local f = r.fixed[k] or 0
+					local g = r.gem[k] or 0
+					local total = base + f + g
+					if total ~= 0 and #rows < 5 then
+						local text = tostring(total)
+						if f ~= 0 or g ~= 0 then
+							text = text .. " (" .. tostring(base)
+							if f ~= 0 then text = text .. " <color=#5BE36B>+" .. tostring(f) .. "</color>" end
+							if g ~= 0 then text = text .. " <color=#C77DFF>+" .. tostring(g) .. "</color>" end
+							text = text .. ")"
+						end
+						table.insert(rows, { label = self:StatLabel(k), value = text })
 					end
 				end
 			end
 			for i = 0, 4 do
-				local row = self.detailStatList:GetChildByName("Row" .. tostring(i))
+				local row = statList:GetChildByName("Row" .. tostring(i))
 				if isvalid(row) then
 					local r = rows[i + 1]
 					row.Enable = (r ~= nil)
@@ -316,27 +368,102 @@ script InventoryUIController extends Logic
 		end
 
 		-- 내구도: FillAmount 대신 폭 (9-slice 유지)
-		if isvalid(self.durFill) and self.durFill.UITransformComponent ~= nil then
+		if isvalid(fill) and fill.UITransformComponent ~= nil then
 			local ratio = 0
 			if def ~= nil and def.maxDurability > 0 then ratio = eq.dur / def.maxDurability end
 			if ratio < 0 then ratio = 0 end
 			if ratio > 1 then ratio = 1 end
-			local t = self.durFill.UITransformComponent
-			t.RectSize = Vector2(self.durFullWidth * ratio, t.RectSize.y)
+			local t = fill.UITransformComponent
+			t.RectSize = Vector2(fullWidth * ratio, t.RectSize.y)
 		end
-		if isvalid(self.durLabel) then
+		if isvalid(durT) then
 			if def ~= nil and def.maxDurability > 0 then
-				self.durLabel.Text = "내구도 " .. tostring(eq.dur) .. " / " .. tostring(def.maxDurability)
+				durT.Text = "내구도 " .. tostring(eq.dur) .. " / " .. tostring(def.maxDurability)
 			else
-				self.durLabel.Text = ""
+				durT.Text = ""
 			end
-		end
-		if isvalid(self.btnUnequip) then
-			self.btnUnequip.Enable = (eq ~= nil)
 		end
 	end
 
 	@ExecSpace("ClientOnly")
+	method void ShowTooltip(string iid)
+		-- 인벤토리 셀 hover → 그 셀 오른쪽 위에 상세 툴팁. 오른쪽으로 넘치면 왼쪽에, 아래로 넘치면 위로 올린다.
+		if not isvalid(self.tooltip) then return end
+		local it = nil
+		for _, v in ipairs(self.items) do
+			if v.iid == iid then it = v; break end
+		end
+		local cell = self.cellByIid[iid]
+		if it == nil or not isvalid(cell) then
+			self:HideTooltip()
+			return
+		end
+		self:FillItemView({ iid = it.iid, itemId = it.itemId, enh = it.enh, dur = it.dur }, "", self.tipIcon, self.tipName, self.tipReq, self.tipStatList, self.tipDurFill, self.tipDurLabel, self.tipDurFullWidth)
+
+		local tt = self.tooltip.UITransformComponent
+		local parent = self.tooltip.Parent
+		local index = self.cellIndexByIid[iid]
+		if tt ~= nil and isvalid(self.grid) and index ~= nil and isvalid(parent) then
+			-- 🔴 GridView 복제 셀은 UITransform 이 전부 (0,0)/같은 월드 모서리를 돌려준다(엔진 내부 배치) → 인덱스로 칸 좌표를 계산한다.
+			--    Grid 는 Inventory(중앙 앵커) 기준 anchoredPosition·RectSize 가 정확하다. 툴팁 pivot 은 좌상단.
+			local gt = self.grid.Entity.UITransformComponent
+			local cols = self.grid.FixedCount
+			if cols < 1 then cols = 1 end
+			local step = self.grid.CellSize.x + self.grid.Spacing.x
+			local stepY = self.grid.CellSize.y + self.grid.Spacing.y
+			local col = index % cols
+			local row = math.floor(index / cols)
+			local gridLeft = gt.anchoredPosition.x - gt.RectSize.x / 2
+			local gridTop = gt.anchoredPosition.y + gt.RectSize.y / 2
+			local cellLeft = gridLeft + col * step
+			local cellTop = gridTop - row * stepY
+			local cellRight = cellLeft + self.grid.CellSize.x
+			local w = tt.RectSize.x
+			local h = tt.RectSize.y
+			-- 부모(Content/Inventory)는 stretch empty 라 런타임 크기가 100×100 으로 붕괴한다(refresh 앵커 버그) → 경계는 Content(940×460) 로 잰다.
+			local halfW = 470
+			local halfH = 230
+			local content = parent.Parent
+			if isvalid(content) and content.UITransformComponent ~= nil and content.UITransformComponent.RectSize.x > 200 then
+				halfW = content.UITransformComponent.RectSize.x / 2
+				halfH = content.UITransformComponent.RectSize.y / 2
+			end
+			local px = cellRight + 4
+			local py = cellTop
+			if px + w > halfW then px = cellLeft - 4 - w end
+			if px < -halfW then px = -halfW + 4 end
+			if py - h < -halfH then py = -halfH + h + 4 end
+			if py > halfH then py = halfH - 4 end
+			tt.anchoredPosition = Vector2(px, py)
+		end
+		self.tooltip.Enable = true
+		log("[InvUI] tooltip " .. iid .. " (" .. it.itemId .. ")")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideTooltip()
+		-- 툴팁 숨김.
+		if isvalid(self.tooltip) then self.tooltip.Enable = false end
+	end
+
+	@ExecSpace("ClientOnly")
+	method any GemListOf(any eq)
+		-- 항목의 보석 목록을 테이블로. 인벤토리 항목은 "DIAMOND+STR_CRYSTAL" 문자열, 장착 슬롯 항목은 gems 가 없어 같은 iid 의 인벤토리 항목에서 가져온다.
+		local out = {}
+		if eq == nil then return out end
+		local s = eq.gems
+		if type(s) == "table" then return s end
+		if (s == nil or s == "") and eq.iid ~= nil and self.items ~= nil then
+			for _, it in ipairs(self.items) do
+				if it.iid == eq.iid then s = it.gems break end
+			end
+		end
+		if type(s) == "string" and s ~= "" then
+			for g in string.gmatch(s, "[^+]+") do table.insert(out, g) end
+		end
+		return out
+	end
+
 	method string StatLabel(string key)
 		-- 스탯 키 → 표시 라벨.
 		if key == "str" then return "STR" elseif key == "dex" then return "DEX" elseif key == "int" then return "INT" elseif key == "luk" then return "LUK"
@@ -372,6 +499,7 @@ script InventoryUIController extends Logic
 			self.grid.TotalCount = #self.view
 			self.grid:Refresh(false, true)
 		end
+		self:HideTooltip()
 	end
 
 	@ExecSpace("ClientOnly")
@@ -399,26 +527,37 @@ script InventoryUIController extends Logic
 			name.TextGUIRendererComponent.Text = (def ~= nil) and def.name or it.itemId
 		end
 
-		-- 클릭: 셀은 재사용되므로 같은 셀의 이전 핸들러를 먼저 끊는다.
+		-- 클릭·hover: 셀은 재사용되므로 같은 셀의 이전 핸들러를 먼저 끊는다.
+		self:DisconnectCell(cell)
+		local iid = it.iid
+		self.cellByIid[iid] = cell
+		self.cellIndexByIid[iid] = index
+		self.cellHandlers[cell.Id] = {
+			click = cell:ConnectEvent(ButtonClickEvent, function() self:OnCellClick(iid) end),
+			enter = cell:ConnectEvent(UITouchEnterEvent, function() self:ShowTooltip(iid) end),
+			exit = cell:ConnectEvent(UITouchExitEvent, function() self:HideTooltip() end),
+		}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisconnectCell(Entity cell)
+		-- 셀에 붙은 클릭·hover 핸들러 전부 해제.
+		if not isvalid(cell) then return end
 		local key = cell.Id
 		local old = self.cellHandlers[key]
 		if old ~= nil then
-			cell:DisconnectEvent(ButtonClickEvent, old)
+			cell:DisconnectEvent(ButtonClickEvent, old.click)
+			cell:DisconnectEvent(UITouchEnterEvent, old.enter)
+			cell:DisconnectEvent(UITouchExitEvent, old.exit)
+			self.cellHandlers[key] = nil
 		end
-		local iid = it.iid
-		self.cellHandlers[key] = cell:ConnectEvent(ButtonClickEvent, function() self:OnCellClick(iid) end)
 	end
 
 	@ExecSpace("ClientOnly")
 	method void ClearCell(integer index, Entity cell)
 		-- 화면 밖으로 나간 셀의 핸들러 해제.
-		if not isvalid(cell) then return end
-		local key = cell.Id
-		local old = self.cellHandlers[key]
-		if old ~= nil then
-			cell:DisconnectEvent(ButtonClickEvent, old)
-			self.cellHandlers[key] = nil
-		end
+		self:DisconnectCell(cell)
+		self:HideTooltip()
 	end
 
 	@ExecSpace("ClientOnly")

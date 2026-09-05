@@ -1,0 +1,264 @@
+@Logic
+script DevStatRemote extends Logic
+
+	-- 🧪 개발용 스탯 리모컨 — WO-011 ⑩ (사용자 지시 2026-09-05). 🔴 배포 전 Enabled=false 로 끈다.
+	-- 클라: DevStatRemoteGroup.ui 의 9행(STR·DEX·INT·LUK·공격·방어·이동·점프·MaxHP) ±1/±10 버튼 → 서버 RequestAdjust
+	--       → StatService 의 DEV 레이어 교체(SetLayerCsv) → 재계산 · 엔티티 반영(WalkSpeed/JumpForce/MaxHp)
+	--       → 서버가 SetReadout 으로 "실제 적용값"(WalkSpeed·JumpForce·데미지 범위)을 돌려준다. 낙관적 UI 없음.
+	-- BUFF 레이어(B 의 스킬·버프)는 건드리지 않는다. 단축키 ` (BackQuote) 토글. UUID 는 UIBuilder write({bind}) 주입.
+
+	property boolean Enabled = true
+
+	-- ── DevStatRemoteGroup.ui ──────────────────────────────────────
+	property Entity panel = "de07b58d-d626-44d6-a115-9b7252848460"
+
+	property ButtonComponent btnClose = "049b0270-c093-4a06-8d7c-3f7fd3393280"
+
+	property ButtonComponent btnReset = "ff4dedc6-6074-4f4e-a67b-719fd2e5cbf2"
+
+	property ButtonComponent btnRoll = "223c3742-145e-41eb-bb5f-f43c3aad5848"
+
+	property TextGUIRendererComponent readoutText = "5c0ae21e-85e9-4804-8332-62bb1da7c7fe"
+
+	property TextGUIRendererComponent rollText = "8dff9142-d0e6-4f4e-85e5-99260ab70903"
+
+	property Entity rowStr = "098c7a9b-d21c-4df8-9e21-acb28efcfd32"
+
+	property Entity rowDex = "a909c63c-ada2-4758-947e-b2c6a3c96413"
+
+	property Entity rowInt = "84002a06-ebc8-4cc8-bff9-6fc024f7da5c"
+
+	property Entity rowLuk = "4ff797bb-2632-45a6-8408-2969d0901ab7"
+
+	property Entity rowAttack = "c219905f-50ac-4467-b512-e2ff5d540e7c"
+
+	property Entity rowDefense = "ddddd514-0b38-4482-bc37-650dd52deca7"
+
+	property Entity rowSpeed = "ac8cbc4e-d7b0-4f2a-83fd-c9b4bb70cfac"
+
+	property Entity rowJump = "c8d2e5ae-a07e-46a2-a47c-ae9a39fcfabe"
+
+	property Entity rowMaxhp = "1965201a-d529-45db-b40c-0a1929c949a2"
+
+	@HideFromInspector
+	property any devByUser = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property any valueTexts = nil
+
+	@HideFromInspector
+	property any hKey = nil
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	method void OnBeginPlay()
+		-- 서버는 유저별 DEV 델타 표만, 클라는 버튼·단축키 배선.
+		if self:IsServer() then
+			self.devByUser = {}
+			log("[DevRemote] ready (server) enabled=" .. tostring(self.Enabled))
+		else
+			self:SetupClient()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 9행의 Value 텍스트와 4개 버튼(BtnM10/BtnM1/BtnP1/BtnP10)을 이름으로 찾아 연결한다.
+		self.handlers = {}
+		self.valueTexts = {}
+		local rows = {
+			{ "str", self.rowStr }, { "dex", self.rowDex }, { "int", self.rowInt }, { "luk", self.rowLuk },
+			{ "attack", self.rowAttack }, { "defense", self.rowDefense }, { "speed", self.rowSpeed },
+			{ "jump", self.rowJump }, { "maxhp", self.rowMaxhp },
+		}
+		local specs = { { "BtnM10", -10 }, { "BtnM1", -1 }, { "BtnP1", 1 }, { "BtnP10", 10 } }
+		for _, r in ipairs(rows) do
+			local statId = r[1]
+			local row = r[2]
+			if isvalid(row) then
+				local v = row:GetChildByName("Value")
+				if isvalid(v) then
+					self.valueTexts[statId] = v.TextGUIRendererComponent
+				end
+				for _, spec in ipairs(specs) do
+					local b = row:GetChildByName(spec[1])
+					if isvalid(b) then
+						local delta = spec[2]
+						local h = b:ConnectEvent(ButtonClickEvent, function() self:Adjust(statId, delta) end)
+						table.insert(self.handlers, { e = b, h = h })
+					end
+				end
+			end
+		end
+		local function bind(btn, fn)
+			if isvalid(btn) then
+				table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+			end
+		end
+		bind(self.btnClose, function() self:SetOpen(false) end)
+		bind(self.btnReset, function() self:RequestReset() end)
+		bind(self.btnRoll, function() self:RequestRoll() end)
+		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		self:SetOpen(false)
+		log("[DevRemote] ready (client) rows=" .. tostring(#rows) .. " handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- ` (BackQuote) = 리모컨 토글.
+		if event.key == KeyboardKey.BackQuote then
+			self:SetOpen(not self.isOpen)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- 패널 켜고 끄기. 열 때 서버에 현재 적용값을 요청한다.
+		if not self.Enabled then open = false end
+		self.isOpen = open
+		if isvalid(self.panel) then self.panel.Enable = open end
+		if open then self:RequestReadout() end
+		log("[DevRemote] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Adjust(string statId, integer delta)
+		-- 버튼 클릭 → 서버 요청만. 화면은 SetReadout 응답으로만 바뀐다.
+		if not self.Enabled then return end
+		self:RequestAdjust(statId, delta)
+	end
+
+	@ExecSpace("Server")
+	method void RequestAdjust(string statId, integer delta)
+		-- DEV 레이어 델타 누적 → StatService 재계산 → 적용값 회신.
+		if not self.Enabled then return end
+		local uid = senderUserId
+		local t = self.devByUser[uid]
+		if t == nil then t = {} end
+		local key = string.lower(statId)
+		local v = (t[key] or 0) + delta
+		if v == 0 then t[key] = nil else t[key] = v end
+		self.devByUser[uid] = t
+		_StatService:SetLayerCsv(uid, "DEV", _StatService:TableToCsv(t))
+		log("[DevRemote] adjust " .. key .. " " .. tostring(delta) .. " (" .. uid .. ") dev=" .. _StatService:TableToCsv(t))
+		self:PushReadout(uid)
+	end
+
+	@ExecSpace("Server")
+	method void RequestReset()
+		-- DEV 레이어 전부 0.
+		if not self.Enabled then return end
+		self.devByUser[senderUserId] = {}
+		_StatService:SetLayerCsv(senderUserId, "DEV", "")
+		self:PushReadout(senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestReadout()
+		-- 열 때 현재 적용값.
+		self:PushReadout(senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestRoll()
+		-- 스탯 기반 데미지 5회 굴림 (대상 없음 = Lv1 · 회피 0 · 방어 0). PlayerAttack 이 이 API 를 쓰면 실제 데미지와 같다.
+		if not self.Enabled then return end
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(player) then return end
+		local parts = {}
+		for i = 1, 5 do
+			table.insert(parts, tostring(_StatService:CalcPlayerDamage(player, nil)))
+		end
+		self:SetRollText("굴림 ×5: " .. table.concat(parts, ", ") .. "  (0 = MISS)", senderUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushReadout(string userId)
+		-- 원장 최종치 + DEV 델타 + 실제 엔티티 값(WalkSpeed·JumpForce·InputSpeed) + 데미지 범위를 소유 클라로.
+		local u = _StatService:GetLedger(userId)
+		if u == nil then return end
+		local f = u.final
+		local dev = self.devByUser[userId]
+		if dev == nil then dev = {} end
+		local range = _StatService:GetRange(userId)
+		local walk = -1
+		local jf = -1
+		local ispd = -1
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) then
+			if isvalid(player.RigidbodyComponent) then walk = player.RigidbodyComponent.WalkSpeed end
+			if isvalid(player.MovementComponent) then
+				jf = player.MovementComponent.JumpForce
+				ispd = player.MovementComponent.InputSpeed
+			end
+		end
+		local vals = {}
+		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "defense", "speed", "jump", "maxhp" }) do
+			table.insert(vals, k .. "=" .. tostring(f[k] or 0) .. "/" .. tostring(dev[k] or 0))
+		end
+		local line1 = "WalkSpeed " .. self:Fmt(walk) .. " (기본 " .. self:Fmt(u.walkBase) .. " · 이동 " .. tostring(f.speed) .. "%)"
+			.. "  InputSpeed " .. self:Fmt(ispd)
+		local line2 = "JumpForce " .. self:Fmt(jf) .. " (기본 " .. self:Fmt(u.jumpBase) .. " · 점프 " .. tostring(f.jump) .. "% → 높이 ×" .. self:Fmt(f.jump / 100) .. ")"
+		local line3 = "데미지 " .. tostring(range.min) .. " ~ " .. tostring(range.max) .. " · 명중 " .. tostring(f.accuracy)
+			.. " · 회피 " .. tostring(f.avoid) .. " · MaxHP 보너스 " .. tostring(f.maxhp)
+		self:SetReadout(table.concat(vals, ";"), line1 .. "|" .. line2 .. "|" .. line3, userId)
+	end
+
+	method string Fmt(number v)
+		-- 소수 둘째 자리.
+		return string.format("%.2f", v)
+	end
+
+	@ExecSpace("Client")
+	method void SetReadout(string valuesCsv, string lines)
+		-- 서버 → 소유 클라. "str=15/3;..." (최종/DEV델타) + "줄1|줄2|줄3".
+		if self.valueTexts == nil then return end
+		for k, v in string.gmatch(valuesCsv, "([^;=]+)=([^;]*)") do
+			local t = self.valueTexts[k]
+			if t ~= nil then
+				local i, _j = string.find(v, "/", 1, true)
+				local fin = v
+				local dv = "0"
+				if i ~= nil then
+					fin = string.sub(v, 1, i - 1)
+					dv = string.sub(v, i + 1)
+				end
+				local text = fin
+				local n = tonumber(dv) or 0
+				if n ~= 0 then
+					local sign = ""
+					if n > 0 then sign = "+" end
+					text = fin .. " (" .. sign .. dv .. ")"
+				end
+				t.Text = text
+			end
+		end
+		if isvalid(self.readoutText) then
+			local s, _n = string.gsub(lines, "|", "\n")
+			self.readoutText.Text = s
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetRollText(string text)
+		-- 데미지 굴림 결과 한 줄.
+		if isvalid(self.rollText) then self.rollText.Text = text end
+	end
+
+	method void OnEndPlay()
+		-- 클라 핸들러 해제.
+		if self:IsClient() then
+			if self.handlers ~= nil then
+				for _, h in ipairs(self.handlers) do
+					if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+				end
+			end
+			if self.hKey ~= nil then _InputService:DisconnectEvent(KeyDownEvent, self.hKey) end
+		end
+	end
+
+end

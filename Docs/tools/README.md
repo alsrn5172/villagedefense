@@ -90,3 +90,20 @@ place.py ──▶ CSV ──(build)──▶ .ui ──(Maker 에서 드래그 
 - `build_` 는 기존 엔티티를 **추가·패치만** 한다. `Region1~3` 좌표는 건드리지 않고 자체 검증으로 보존을 확인한다.
 - 빅토리아 맵들은 `안농` 월드 소유라 이 월드엔 실물이 없다. 노드·툴팁은 정상 동작하고,
   **"현재 위치" 마커는 두 월드를 병합해야 뜬다** (내가 서 있는 맵이 표에 없으므로 안 뜨는 게 정상).
+
+---
+
+# 몬스터 피격 판정 도구 (`monster-hitbox/`)
+
+일반 몹 74종의 `HitComponent.BoxSize` / `ColliderOffset` 을 **stand 클립 첫 프레임 크기로 미리 계산해 모델에 박는다.**
+런타임(`Monster.FitHitboxToSprite`)에서 매번 클립을 재지 않기 위한 것 (사용자 지시 2026-09-05). `Monster.FitHitbox` 는 기본 `false`.
+
+| 파일 | 하는 일 |
+|---|---|
+| `mob_clips.json` | 몬스터 id → 모델 파일 · 리소스팩 · 클립 RUID(stand/move/hit/die …). ActionSheet 채울 때 수집한 것 |
+| `harvest.cjs` | 리소스 API 로 stand 클립 첫 프레임 `width/height/pivot` 을 읽어 `mob_hitbox.json` 생성. 식: `size=(w,h)/100`, `off=(w/2−px, h/2−py)/100` (런타임 `FrameSprite.PivotPixel` 과 동일) |
+| `apply.cjs` | `mob_hitbox.json` → 각 모델 `MOD.Core.HitComponent` 의 `BoxSize`·`ColliderOffset` (ModelBuilder) |
+
+순서: **Maker stop → `node Docs/tools/monster-hitbox/apply.cjs` → refresh → play.**
+⚠ 첫 refresh 뒤 스폰이 `(0,0)` 을 읽으면 **stop → refresh 를 한 번 더** (Maker 모델 캐시. 형식 문제가 아니다 — 2026-09-05 실측).
+새 몬스터: `mob_clips.json` 에 행을 넣고 `harvest` → `apply`, 또는 그 모델만 `FitHitbox=true` 로 켠다.
