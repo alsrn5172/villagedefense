@@ -31,6 +31,14 @@
 - 창고: 다이아 8개 넣기 → 인벤토리에서 빠지고 창고 1/20 · 훈련: 근접 Lv2 · 꿈의 조각 10→7
 - 도감 78칸 · 통계 생존자 1명 + 상세 · 파병 2묶음 → 보유 0 · 관문 커닝시티 → 에너지 코어 2→1
 
+### 추가 — 헤네시스 실제 NPC 배치 (같은 날 · 사용자 "헤네시스 가서 확인한다")
+- **`VillageConfig.csv` 신설**(계약서 A-2-1 헤더 그대로 · 6행 · GDD §4.1 레인표 · `LITH` 는 `Enabled=false` · `CoreX/Y` 디자이너 실측 대기) + `.userdataset` + `check-integrity` CANONICAL/KEY. `NpcCatalog` 가 이 표로 마을 맵 ↔ `VillageId` 를 잇는다 — 이게 없어서 기능 NPC 자동 배치가 전부 멈춰 있었다
+- **`VillageNpcSector` HENESYS 4행 앵커 실측**: 마을 맵 바닥 foothold y=-0.04 (x −15.2..10.3) → WORKSHOP x=−13(5명, 1.2 간격) · LIFE −6(3명) · RECORD −1.5(2명) · DEFENSE 2(1명). 다른 4마을은 앵커 빈칸 그대로(경고만 · 스폰 안 함)
+- **`MapNpcs_Village`**: 여섯갈래길 `VD_COMMON_DISPATCH_OFFICER` (−5.6, 9.31 · 차원 관문 옆) 추가
+- **`NpcSpawner` 가 어느 맵에도 붙어 있지 않았다** → 마을 맵 5개 + 여섯갈래길에 `NpcSpawner` 빈 엔티티(`script.NpcSpawner`) 를 `MapBuilder.empty` 로 추가 (`self.Entity.CurrentMap` 으로 맵을 잡으므로 자식 엔티티면 충분)
+- **소유권 임시 허용**: `OWNER_ONLY` NPC 는 소유권 리졸버가 없으면 전부 거절(`OWNER_CONTEXT_UNAVAILABLE`)이라, `LaneStateService.OnBeginPlay` 에서 `NpcCatalog:SetOwnershipResolver(allow-all)` 스텁 연결. 소유권 원장(`VillageClaimedEvent`)이 오면 교체
+- 검증: `[NpcSpawner] ready map=Henesys_Village_MinimiMain spawned=11/11` · 여섯갈래길 2/2(관문·파병관) · 서버 좌표 실측 11명 바닥 위 · 스크린샷(NPC 11명 이름표) · 클라에서 `VillageNpcInteractor:RequestOpen` → 서버 검증 통과 → 창고지기 창 열림(제목 = DisplayName). 시뮬 마우스 클릭은 터치 영역에 안 닿았음(실제 클릭은 `TouchReceiveComponent` → `HandleTouchEvent`)
+
 ### 미결 (Lane/Village 시스템으로 넘길 것)
 - 원장 스텁 → 실제 Lane(미니언 · 시설 피격 · 자동 집결 · 파병 이동) · 소유권(VillageClaimedEvent) · 빅토리아 주화 · `TowerConfig`/`MonsterTraining` CSV · 도감 발견 · `PublicPlayerSummary` · 확인 팝업(파병·재건·관문) · 지역재화 아이콘
 - 모집 가격이 SummonUnits 메소(1~3)라 사실상 공짜 — 기획은 몬스터별 재화 8개. `ItemInfo MAT_*` 15행이 WP2 로 들어오면 그때 치환
