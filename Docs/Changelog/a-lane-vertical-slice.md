@@ -38,9 +38,13 @@
 - 넥서스 아이콘 RUID `dab6ddee…` → **`8adca861…`**(사용자 선택 #3) 3곳: `VillageDefenseGroup` Node/Card `Icon` · `VillageLifeUIController` icons · `ui_village_common ICON.core`.
 - `check-integrity`: 전부 통과(경고 5건 · 기존).
 
-### 검증 (Maker 켜면)
-1. stop → refresh ×2(신규 폴더 `Village/`·`Match/MatchSessionLogic`·모델 3종·CSV 2종) → build 로그 증가분 0.
-2. 헤네시스 3맵 텔레포트 → 통로 걷기 · 밧줄 · `P_Lane_To_*` 왕복.
-3. 넥서스 클릭(레벨 10 미만 → LEVEL 토스트) → 서버 스크립트로 econ.level=10 → 클릭 → 연결 → 포탑·억제기 스폰 로그 `[Facility] spawned`.
-4. 리모컨 주화 +100 → 방어 창 강화/수리/재건 → 주화 차감. `RequestDevHit` → 색 어두워짐 → 파괴 → 재건.
-5. 비소유자 NPC 클릭 거절.
+### 검증 (2026-09-07 Play 실측 · 로그 = `[Probe]`/`[ProbeC]`/`[Facility]`/`[Lane]`/`[Village]`)
+- refresh ×2 → build 에러 0(기존 Info 104 · 경고 2 유지) · 런타임 에러 0 · LEA/LWA 0. `Village.directory` 생성 → `VillageClaimedEvent` 추가 후 refresh 1회, 이상 없음.
+- 서버 시작: `TowerConfig 7 rows` · `LaneConfig 3 rows` · `MonsterTraining 15 rows` · `spawned HENESYS:CORE at Henesys_Village_MinimiMain (-8,-6.5)` · `ownership resolver connected (owner-only)` · `MatchSessionLogic ready (stub · phase=1)`.
+- 통로: 3맵 모두 플레이어가 통로 발판 위에 선다(스샷 3장). HillNorth 통로 포탈 `P_Lane_To_Henesys_Village_MinimiMain` 에서 ↑ → 마을 바닥 포탈 `(7.40, 2.96)` 도착 ✓.
+- 소유권: `Claim@lv1 → LEVEL` · `econ.level=10 → Claim → ""`(owner/village 기록) · 재클릭 → `ALREADY_OWNER`(→ 실측 후 **`OWN` 반환으로 수정**: 주인이 자기 넥서스를 누르면 "내 마을 넥서스입니다") · 넥서스 **실클릭(maker_mouse_input)** → `[Facility] claim HENESYS by … -> ALREADY_OWNER` — TouchReceive → RequestClaim 배선 ✓. `VillageClaimedEvent` 발행 에러 없음.
+- 시설: 연결 즉시 `TOWER@GolemsTemple (2,-7)` `SUPPRESSOR@HillNorth (4,-9)` 스폰 · 포탑에 `TurretAI` 부착 ✓. 스케일 3 · Default/-1 · 히트박스 3×5 반영 ✓.
+- 피해: `ApplyDamage(CORE, 900)` → 1100/2000 · 색 `0.618`(서버=클라) ✓ · `ApplyDamage(TOWER, 800)` → `DESTROYED` · 방어 뷰 `FRONT|SUPPRESSOR` · 포탑 행 `canRebuild=1` ✓.
+- 주화: `GrantCoin 100` → 클라 `RequestTowerAction(TOWER, rebuild)` → `coin-30` ✓ · `repair CORE`(90 > 70) 거절 ✓ · `upgrade SUPPRESSOR` → `coin-30` ✓. 방어 뷰 `COIN|100` ✓.
+- 배치 수정(사용자 지적 "발판 기준으로"): 슬롯 y 에 그대로 놓으니 중심 피벗 때문에 절반이 발판 아래 → `GroundOffset(stage)`(포탑 +0.81 · 억제기 +0.69 · 넥서스 +1.45 — 피벗 계산값 2.55 에서 스프라이트 하단 투명 여백만큼 스샷 픽셀 실측으로 내림) + 모델 `SortingLayer MapLayer1→Default/-1`(통로 바닥에 가려짐) + 히트박스 오프셋 피벗 기준으로 재계산. 포탑·억제기 스샷으로 바닥 밀착 확인.
+- 미검증: `LaneFacility.HandleHitEvent`(실제 공격 → HitEvent) — 플레이어 공격은 B 파이프라인 · 미니언은 ② 에서. `RequestDevHit` 는 ApplyDamage 와 같은 경로.
