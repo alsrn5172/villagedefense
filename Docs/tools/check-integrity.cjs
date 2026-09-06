@@ -115,6 +115,8 @@ const CANONICAL = {
   GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
   GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",
   VillageNpcSector: "VillageId,SectorId,AnchorX,AnchorY,SlotDX,SlotDY,SlotPerRow,FlipX,Enabled,#Note",
+  VillageConfig: "VillageId,VillageMapName,Lane2MapName,Lane1MapName,RearMapName,BossMapName,ThemeId,CoreX,CoreY,Enabled,#Note",
+  MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 };
 
@@ -205,6 +207,8 @@ const PK = {
   GemInfo: ["GemId"],
   GemDropTable: ["SourceKind", "SourceId", "GemId"],
   VillageNpcSector: ["VillageId", "SectorId"],
+  VillageConfig: ["VillageId"],
+  MonsterTraining: ["TrainClass", "Level"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
 };
 for (const [name, cols] of Object.entries(PK)) {

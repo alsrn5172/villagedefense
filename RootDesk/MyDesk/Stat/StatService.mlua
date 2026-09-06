@@ -132,12 +132,64 @@ script StatService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer GrantAp(string userId, integer ap, integer newLevel)
-		-- 레벨업 AP 를 직업 비율로 자동 분배한다 (사용자 결정: AP 자동). 남는 AP 는 0 (전부 주스탯으로 몰아 준다).
+		-- 레벨업: 레벨만 반영하고 AP 는 **원장(SummonManager econ.ap)에 남긴다** — 사용자 결정 2026-09-06 "직접 찍는다". 반환 = 남는 AP(전부).
+		-- (이전: 직업 비율 자동 분배 · 지금은 캐릭터 창의 "+"(RequestAllocateAp) / "자동 분배"(RequestAutoAllocateAp) 가 소비한다)
 		local u = self:EnsureUser(userId)
-		if u == nil or ap <= 0 then
-			return 0
+		if u == nil then
+			return ap
 		end
 		self:SetLevel(userId, newLevel)
+		self:Recalculate(userId, "LEVEL_UP")
+		return ap
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer Allocate(string userId, any alloc, string source)
+		-- 분배 공통: base 에 더하고 econ.ap 에서 빼고 이벤트·재계산·HUD·캐릭터 창 갱신. 반환 = 실제 쓴 AP.
+		local u = self:EnsureUser(userId)
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		if u == nil or e == nil then return 0 end
+		local total = 0
+		for _, k in ipairs({ "str", "dex", "int", "luk" }) do total = total + (alloc[k] or 0) end
+		if total <= 0 or total > (e.ap or 0) then return 0 end
+		for k, n in pairs(alloc) do
+			if n > 0 then u.base[k] = (u.base[k] or 0) + n end
+		end
+		e.ap = e.ap - total
+
+		local ev = ApAllocatedEvent()
+		ev.UserId = userId
+		ev.AllocatedStatsCsv = self:TableToCsv(alloc)
+		ev.RemainingAp = e.ap
+		self:SendEvent(ev)
+		log("[Stat] AP " .. tostring(total) .. " allocated (" .. source .. " · " .. userId .. ") " .. ev.AllocatedStatsCsv .. " remain=" .. tostring(e.ap))
+
+		self:Recalculate(userId, "AP")
+		_SummonManager:Push(userId)
+		self:PushToClient(userId)
+		return total
+	end
+
+	@ExecSpace("Server")
+	method void RequestAllocateAp(string statId, integer amount)
+		-- 캐릭터 창 "+" 버튼: STR/DEX/INT/LUK 에 amount 만큼. AP 가 모자라면 아무것도 안 한다.
+		local key = string.lower(statId or "")
+		if key ~= "str" and key ~= "dex" and key ~= "int" and key ~= "luk" then return end
+		local n = math.floor(amount or 0)
+		if n <= 0 then return end
+		local alloc = { str = 0, dex = 0, int = 0, luk = 0 }
+		alloc[key] = n
+		self:Allocate(senderUserId, alloc, "manual")
+	end
+
+	@ExecSpace("Server")
+	method void RequestAutoAllocateAp()
+		-- 캐릭터 창 "자동 분배": 남은 AP 전부를 직업 비율(JobInfo.ApRatio* · 없으면 NOVICE 6:4)로. 나머지는 주스탯.
+		local uid = senderUserId
+		local u = self:EnsureUser(uid)
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(uid) or nil
+		if u == nil or e == nil or (e.ap or 0) <= 0 then return end
+		local ap = e.ap
 		local job = self:GetJob(u.job)
 		local alloc = { str = 0, dex = 0, int = 0, luk = 0 }
 		local given = 0
@@ -146,20 +198,8 @@ script StatService extends Logic
 			alloc[k] = n
 			given = given + n
 		end
-		alloc[job.primary] = alloc[job.primary] + (ap - given)   -- 나머지는 주스탯
-		for k, n in pairs(alloc) do
-			u.base[k] = (u.base[k] or 0) + n
-		end
-
-		local ev = ApAllocatedEvent()
-		ev.UserId = userId
-		ev.AllocatedStatsCsv = self:TableToCsv(alloc)
-		ev.RemainingAp = 0
-		self:SendEvent(ev)
-		log("[Stat] AP " .. tostring(ap) .. " auto-allocated (" .. userId .. ") " .. ev.AllocatedStatsCsv)
-
-		self:Recalculate(userId, "LEVEL_UP")
-		return 0
+		alloc[job.primary] = alloc[job.primary] + (ap - given)
+		self:Allocate(uid, alloc, "auto")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -349,17 +389,19 @@ script StatService extends Logic
 		local level = u.level
 		local expText = "-"
 		local sp = 0
+		local ap = 0
 		if _SummonManager ~= nil then
 			local e = _SummonManager:GetEcon(userId)
 			if e ~= nil then
 				level = e.level
 				sp = e.sp
+				ap = e.ap or 0
 				local p = _SummonManager:ExpProgress(e.exp)
 				expText = tostring(p.within) .. " / " .. tostring(p.need)
 			end
 		end
 
-		return "job=" .. job.name .. ";level=" .. tostring(level) .. ";exp=" .. expText .. ";sp=" .. tostring(sp)
+		return "job=" .. job.name .. ";level=" .. tostring(level) .. ";exp=" .. expText .. ";sp=" .. tostring(sp) .. ";ap=" .. tostring(ap)
 			.. ";str=" .. tostring(f.str) .. ";dex=" .. tostring(f.dex) .. ";int=" .. tostring(f.int) .. ";luk=" .. tostring(f.luk)
 			.. ";attack=" .. tostring(range.min) .. " ~ " .. tostring(range.max)
 			.. ";defense=" .. tostring(f.defense) .. ";speed=" .. tostring(f.speed) .. ";jump=" .. tostring(f.jump)

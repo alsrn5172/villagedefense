@@ -1,0 +1,272 @@
+@Logic
+script VillageRecordUIController extends Logic
+
+	-- 기록 창(VillageRecordGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 collection(도감 관리인) / stats(통계 분석관).
+	-- collection: MonsterInfo 전 행을 GridView 로(발견 상태는 서버 원장 전이라 전부 미발견). stats: 같은 맵 생존자 목록 + 내 요약.
+	-- 값은 전부 서버 LaneStateService 뷰(SetView). UUID 는 UIBuilder write({bind}) 주입.
+
+	property Entity dimmer = "0ac4bc1d-3e72-4792-b5ec-ae792d880606"
+
+	property Entity window = "bf0043fa-ce05-4121-a938-f4aee8f3b268"
+
+	property TextGUIRendererComponent titleText = "2021d449-949f-4662-8446-1a4c0b2c609d"
+
+	property ButtonComponent btnClose = "c6266614-d2ef-4ecf-a095-d4ce701cffb2"
+
+	property Entity footer = "f9742256-445b-4673-a604-9414ff97721c"
+
+	property TextGUIRendererComponent costLabel = "13112c20-0357-4ff7-97c6-df4bd6d3f8ea"
+
+	property ButtonComponent btnPrimary = "ced28f13-b8b6-4ca4-b219-b1ab3366be97"
+
+	property Entity contentCollection = "98e6e15a-5d6e-4f7e-9952-c06cef2e49be"
+
+	property Entity contentStats = "fd87ac83-221f-43bb-8826-9ff420578f1f"
+
+	-- collection
+	property GridViewComponent collGrid = "79c85dfa-de81-488b-b1fb-ab8fbd174c61"
+
+	property Entity collTemplate = "426f36be-580e-4c10-9d51-03c15d81c7f1"
+
+	property TextGUIRendererComponent collStatus = "61899cef-6a15-416b-9059-469b39603c0e"
+
+	-- stats
+	property Entity playerRoot = "81046521-0a80-4f96-a29d-b4746c738eda"
+
+	property Entity detailRoot = "7dc0ec26-ea03-4038-a7e0-68c35eed6a4e"
+
+	property TextGUIRendererComponent statsStatus = "124a6415-d785-49bb-abd3-816982cdef1c"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string route = ""
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property any collRows = nil
+
+	@HideFromInspector
+	property any players = nil
+
+	@HideFromInspector
+	property any me = nil
+
+	@HideFromInspector
+	property integer selPlayer = 0
+
+	method void OnBeginPlay()
+		-- 클라만 배선.
+		if self:IsClient() then self:SetupClient() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 닫기 · 도감 GridView · 생존자 행 버튼.
+		self.handlers = {}
+		self.collRows = {}
+		self.players = {}
+		local function bind(ent, fn)
+			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
+		end
+		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
+		if isvalid(self.collGrid) then
+			if isvalid(self.collTemplate) then self.collGrid.ItemEntity = self.collTemplate end
+			self.collGrid.OnRefresh = function(index, entity) self:FillCollCell(index, entity) end
+			self.collGrid.TotalCount = 0
+			self.collGrid:Refresh(true, true)
+		end
+		if isvalid(self.playerRoot) then
+			for _, row in ipairs(self.playerRoot.Children) do
+				local name = row.Name
+				if string.sub(name, 1, 10) == "PlayerRow_" then
+					local idx = tonumber(string.sub(name, 11)) or 0
+					bind(row, function() self:OnPlayer(idx) end)
+				end
+			end
+		end
+		self:SetOpen(false)
+		log("[Record] VillageRecordUIController ready (client) handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6).
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "VillageRecordGroup" then
+			self:Open(r.PendingUiRoute)
+			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
+			r:ClearPendingRequest()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string route)
+		-- 다른 창을 닫고 라우트를 켠다.
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("VillageRecordGroup") end
+		if route ~= "collection" and route ~= "stats" then route = "collection" end
+		self.selPlayer = 0
+		self:SetOpen(true)
+		self:GoRoute(route)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기.
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- Dimmer + Window.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Record] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoRoute(string route)
+		-- Content 하위 컨테이너 하나만. Footer 없음.
+		self.route = route
+		local titles = { collection = "몬스터 도감", stats = "마을 통계" }
+		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "기록" end
+		if isvalid(self.contentCollection) then self.contentCollection.Enable = (route == "collection") end
+		if isvalid(self.contentStats) then self.contentStats.Enable = (route == "stats") end
+		if isvalid(self.footer) then self.footer.Enable = false end
+		if _LaneStateService ~= nil then _LaneStateService:RequestView(route) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnView(string kind, string csv)
+		-- 서버 뷰 수신 → 현재 라우트면 그린다.
+		if not self.isOpen or kind ~= self.route then return end
+		local rows = _VillageNpcUIController:SplitRows(csv)
+		if kind == "collection" then self:RenderCollection(rows) else self:RenderStats(rows) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		-- 자식 텍스트 한 줄.
+		if not isvalid(parent) then return end
+		local c = parent:GetChildByName(childName)
+		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	-- ── collection ─────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderCollection(any rows)
+		-- C|id|name|level|found → GridView.
+		self.collRows = {}
+		local found = 0
+		for _, f in ipairs(rows) do
+			if f[1] == "C" then
+				table.insert(self.collRows, { id = f[2], name = f[3], level = f[4], found = (f[5] == "1") })
+				if f[5] == "1" then found = found + 1 end
+			end
+		end
+		if isvalid(self.collGrid) then
+			self.collGrid.TotalCount = #self.collRows
+			self.collGrid:Refresh(true, true)
+		end
+		if isvalid(self.collStatus) then
+			self.collStatus.Text = "발견 " .. tostring(found) .. " / " .. tostring(#self.collRows) .. " · 발견 기록은 Progression 원장 연동 후 (지금은 전부 미발견 실루엣)"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillCollCell(integer index, Entity cell)
+		-- 셀 = 이름 + 레벨. 미발견은 어둡게. (OnRefresh 는 스크롤마다 불린다 — 서버 호출 금지)
+		local r = self.collRows[index + 1]
+		if r == nil or not isvalid(cell) then return end
+		self:SetText(cell, "Name", r.found and r.name or "???")
+		self:SetText(cell, "Sub", "Lv " .. r.level)
+		if cell.SpriteGUIRendererComponent ~= nil then
+			cell.SpriteGUIRendererComponent.Color = r.found and Color(0.52, 0.55, 0.60, 1) or Color(0.34, 0.36, 0.40, 1)
+		end
+	end
+
+	-- ── stats ──────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderStats(any rows)
+		-- ME|name|level|exp|meso|kills|balrog · P|userId|name|level (같은 맵 생존자)
+		self.players = {}
+		for _, f in ipairs(rows) do
+			if f[1] == "ME" then self.me = { name = f[2], level = f[3], exp = f[4], meso = f[5], kills = f[6], balrog = f[7] }
+			elseif f[1] == "P" then table.insert(self.players, { userId = f[2], name = f[3], level = f[4] }) end
+		end
+		if isvalid(self.playerRoot) then
+			for i = 0, 4 do
+				local row = self.playerRoot:GetChildByName("PlayerRow_" .. tostring(i))
+				local p = self.players[i + 1]
+				if isvalid(row) then
+					row.Enable = (p ~= nil)
+					if p ~= nil then
+						self:SetText(row, "Name", p.name)
+						self:SetText(row, "Level", "Lv " .. p.level)
+						if row.SpriteGUIRendererComponent ~= nil then
+							row.SpriteGUIRendererComponent.Color = (i == self.selPlayer) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
+						end
+					end
+				end
+			end
+		end
+		self:RenderDetail()
+		if isvalid(self.statsStatus) then
+			self.statsStatus.Text = "생존자 " .. tostring(#self.players) .. "명 (같은 맵 기준 · 매치 전체 목록은 Match 연동 후) · 처치·발록 피해는 Progression 원장 전"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderDetail()
+		-- 오른쪽 상세: 선택한 생존자(나면 전체 요약, 남이면 공개 필드만).
+		if not isvalid(self.detailRoot) then return end
+		local p = self.players[self.selPlayer + 1]
+		local me = self.me or { name = "-", level = "-", exp = "-", meso = "-", kills = "0", balrog = "0" }
+		local isMe = (p == nil) or (p.name == me.name)
+		local vals = {}
+		if isMe then
+			vals = { { "닉네임", me.name }, { "레벨", "Lv " .. me.level }, { "경험치", me.exp }, { "메소", me.meso }, { "몬스터 처치", me.kills }, { "발록 누적 피해", me.balrog } }
+		else
+			vals = { { "닉네임", p.name }, { "레벨", "Lv " .. p.level }, { "경험치", "비공개" }, { "메소", "비공개" }, { "몬스터 처치", "-" }, { "발록 누적 피해", "-" } }
+		end
+		for i, v in ipairs(vals) do
+			local row = self.detailRoot:GetChildByName("DRow" .. tostring(i - 1))
+			if isvalid(row) then
+				self:SetText(row, "Chip", v[1])
+				self:SetText(row, "Cell", v[2])
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPlayer(integer i)
+		-- 생존자 행 선택 (서버 호출 없음 · 공개 요약은 PublicPlayerSummary 연동 후).
+		if self.players[i + 1] == nil then return end
+		self.selPlayer = i
+		if isvalid(self.playerRoot) then
+			for k = 0, 4 do
+				local row = self.playerRoot:GetChildByName("PlayerRow_" .. tostring(k))
+				if isvalid(row) and row.SpriteGUIRendererComponent ~= nil then
+					row.SpriteGUIRendererComponent.Color = (k == i) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
+				end
+			end
+		end
+		self:RenderDetail()
+	end
+
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		if self:IsClient() and self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+	end
+
+end

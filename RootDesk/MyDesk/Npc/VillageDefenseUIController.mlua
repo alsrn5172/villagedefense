@@ -1,0 +1,238 @@
+@Logic
+script VillageDefenseUIController extends Logic
+
+	-- 방어 창(VillageDefenseGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 tower 하나.
+	-- 위 = 방어선 그림(사냥터2 포탑 → 사냥터1 억제기 → 마을 넥서스 · 살아 있는 최전방 노드에 수비대 표식), 아래 = 시설 카드 3장(강화/수리/재건).
+	-- 값은 전부 서버 LaneStateService 의 "defense" 뷰(SetView) · 낙관적 UI 없음(§5-5). UUID 는 UIBuilder write({bind}) 주입.
+
+	property Entity dimmer = "7b796098-0a8d-4040-b924-d22f0cde17c3"
+
+	property Entity window = "c34690bc-220d-42af-bd90-6ec0848ae34d"
+
+	property TextGUIRendererComponent titleText = "6b8f9220-9dcb-4d6b-bcfd-c863ae83d761"
+
+	property ButtonComponent btnClose = "099a0336-37c7-4158-a1f6-12f45bd0eae0"
+
+	property Entity footer = "8c7b16a7-98d1-48a5-8aaf-798f327588af"
+
+	property TextGUIRendererComponent costLabel = "8a1e76c1-8aa7-459b-b2d5-55c0e6f3c402"
+
+	property ButtonComponent btnPrimary = "a11e4e02-211c-44a2-8f1b-444c3b928c32"
+
+	property Entity contentTower = "b3535af5-1fde-4c19-9a80-a13d69b323ec"
+
+	property Entity laneStrip = "40df2731-cbde-4568-a80a-e43384badc4d"
+
+	property Entity cardRoot = "7cd62dd9-3a7f-4cad-b864-2506088e97bb"
+
+	property TextGUIRendererComponent statusText = "9ef71208-f5d4-4580-a173-e4a134b10b73"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string route = ""
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property boolean waiting = false
+
+	method void OnBeginPlay()
+		-- 클라만 배선.
+		if self:IsClient() then self:SetupClient() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 닫기 + 카드 3장의 버튼(BtnUpgrade/BtnRepair/BtnRebuild)을 이름으로 연결.
+		self.handlers = {}
+		local function bind(ent, fn)
+			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
+		end
+		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
+		if isvalid(self.cardRoot) then
+			for _, card in ipairs(self.cardRoot.Children) do
+				local name = card.Name
+				if string.sub(name, 1, 5) == "Card_" then
+					local stage = string.sub(name, 6)
+					for _, spec in ipairs({ { "BtnUpgrade", "upgrade" }, { "BtnRepair", "repair" }, { "BtnRebuild", "rebuild" } }) do
+						local b = card:GetChildByName(spec[1])
+						local action = spec[2]
+						if isvalid(b) then bind(b, function() self:Act(stage, action) end) end
+					end
+				end
+			end
+		end
+		self:SetOpen(false)
+		log("[Defense] VillageDefenseUIController ready (client) handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6).
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "VillageDefenseGroup" then
+			self:Open(r.PendingUiRoute)
+			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
+			r:ClearPendingRequest()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string route)
+		-- 다른 창을 닫고 연다. 서버에 뷰를 요청한다.
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("VillageDefenseGroup") end
+		self.route = "tower"
+		self.waiting = false
+		self:SetOpen(true)
+		if isvalid(self.titleText) then self.titleText.Text = "방어 시설" end
+		if isvalid(self.footer) then self.footer.Enable = false end
+		if isvalid(self.contentTower) then self.contentTower.Enable = true end
+		if isvalid(self.statusText) then self.statusText.Text = "불러오는 중..." end
+		if _LaneStateService ~= nil then _LaneStateService:RequestView("defense") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기.
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- Dimmer + Window.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Defense] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Act(string stage, string action)
+		-- 버튼 → 서버 요청만. 응답(SetView)이 올 때까지 한 번만.
+		if self.waiting then return end
+		self.waiting = true
+		if _LaneStateService ~= nil then _LaneStateService:RequestTowerAction(stage, action) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnView(string kind, string csv)
+		-- 서버 뷰 수신 → 그리기.
+		self.waiting = false
+		if not self.isOpen or kind ~= "defense" then return end
+		self:Render(_VillageNpcUIController:SplitRows(csv))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		-- 자식 텍스트 한 줄.
+		if not isvalid(parent) then return end
+		local c = parent:GetChildByName(childName)
+		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFill(Entity gauge, number ratio, number width, number height)
+		-- 게이지 Fill 폭 = 비율.
+		if not isvalid(gauge) then return end
+		local f = gauge:GetChildByName("Fill")
+		if isvalid(f) and f.UITransformComponent ~= nil then
+			local r = math.max(0, math.min(1, ratio))
+			f.UITransformComponent.RectSize = Vector2(width * r, height)
+			if f.SpriteGUIRendererComponent ~= nil then
+				if r > 0.5 then f.SpriteGUIRendererComponent.Color = Color(0.35, 0.80, 0.40, 1)
+				elseif r > 0.2 then f.SpriteGUIRendererComponent.Color = Color(0.95, 0.75, 0.25, 1)
+				else f.SpriteGUIRendererComponent.Color = Color(0.90, 0.30, 0.30, 1) end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Render(any rows)
+		-- T 행 = 카드 + 방어선 노드, FRONT = 수비대 표식 위치, DEF = 상태줄.
+		local front = "CORE"
+		local defBundles, defUnits, defCap = "0", "0", "10"
+		local meso = "0"
+		local names = {}
+		for _, f in ipairs(rows) do
+			if f[1] == "T" then
+				local stage = f[2]
+				names[stage] = f[3]
+				local lv, hp, max, alive = f[4], tonumber(f[5]) or 0, tonumber(f[6]) or 1, (f[7] == "1")
+				local attack, range, upCost, repCost, rebCost = f[8], f[9], f[10], f[11], f[12]
+				local canUp, canRep, canReb = (f[13] == "1"), (f[14] == "1"), (f[15] == "1")
+				-- 카드
+				local card = isvalid(self.cardRoot) and self.cardRoot:GetChildByName("Card_" .. stage) or nil
+				if isvalid(card) then
+					self:SetText(card, "Name", f[3])
+					self:SetText(card, "LvText", "Lv " .. lv)
+					self:SetText(card, "HpText", alive and (tostring(hp) .. " / " .. tostring(max)) or "파괴됨")
+					self:SetFill(card:GetChildByName("HpBar"), alive and (hp / max) or 0, 256, 22)
+					if stage == "TOWER" then self:SetText(card, "StatText", "공격력 " .. attack .. " · 사거리 " .. range)
+					elseif stage == "SUPPRESSOR" then self:SetText(card, "StatText", "파괴되면 미니언이 강해집니다")
+					else self:SetText(card, "StatText", "파괴되면 탈락 · 재건 불가") end
+					local icon = card:GetChildByName("Icon")
+					if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or Color(0.5, 0.25, 0.25, 1)
+					end
+					local function btn(childName, label, on, show)
+						local b = card:GetChildByName(childName)
+						if isvalid(b) then
+							b.Enable = show
+							if b.TextGUIRendererComponent ~= nil then b.TextGUIRendererComponent.Text = label end
+							if b.ButtonComponent ~= nil then b.ButtonComponent.Enable = on end
+							if b.SpriteGUIRendererComponent ~= nil then
+								b.SpriteGUIRendererComponent.Color = on and Color(0.46, 0.49, 0.54, 1) or Color(0.62, 0.64, 0.68, 0.7)
+							end
+						end
+					end
+					btn("BtnUpgrade", (tonumber(upCost) or 0) > 0 and ("강화 (" .. upCost .. ")") or "최대 Lv", canUp, stage ~= "CORE")
+					btn("BtnRepair", "수리 (" .. repCost .. ")", canRep, true)
+					btn("BtnRebuild", "재건 (" .. rebCost .. ")", canReb, stage ~= "CORE")
+				end
+				-- 방어선 노드
+				local node = isvalid(self.laneStrip) and self.laneStrip:GetChildByName("Node_" .. stage) or nil
+				if isvalid(node) then
+					self:SetText(node, "Label", f[3] .. " Lv" .. lv)
+					self:SetFill(node:GetChildByName("HpBar"), alive and (hp / max) or 0, 120, 12)
+					local icon = node:GetChildByName("Icon")
+					if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or Color(0.5, 0.25, 0.25, 1)
+					end
+					local mark = node:GetChildByName("Mark")
+					if isvalid(mark) then mark.Enable = false end
+				end
+			elseif f[1] == "FRONT" then
+				front = f[2]
+			elseif f[1] == "DEF" then
+				defBundles, defUnits, defCap = f[2], f[3], f[4]
+			elseif f[1] == "MESO" then
+				meso = f[2]
+			end
+		end
+		-- 수비대 표식 = 최전방 노드
+		local node = isvalid(self.laneStrip) and self.laneStrip:GetChildByName("Node_" .. front) or nil
+		if isvalid(node) then
+			local mark = node:GetChildByName("Mark")
+			if isvalid(mark) then
+				mark.Enable = true
+				self:SetText(mark, "Text", "수비 " .. defBundles .. "묶음 · " .. defUnits .. "마리")
+			end
+		end
+		if isvalid(self.statusText) then
+			self.statusText.Text = "최전방: " .. tostring(names[front] or front) .. " · 수비대 " .. defBundles .. "/" .. defCap .. "묶음 (" .. defUnits .. "마리) · 메소 " .. meso .. " · 비용은 메소(임시 · 빅토리아 주화 전)"
+		end
+	end
+
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		if self:IsClient() and self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+	end
+
+end
