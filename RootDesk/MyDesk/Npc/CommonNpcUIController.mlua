@@ -1,0 +1,340 @@
+@Logic
+script CommonNpcUIController extends Logic
+
+	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문).
+	-- dispatch: 대상 마을 4개(내 마을 제외) + 보낼 묶음 수 스테퍼 → RequestDispatch(스텁). gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → RequestDimensionGate(스텁).
+	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). 확인 팝업(PopupGroup)은 M1 뼈대에서 생략(미결). UUID 는 UIBuilder write({bind}) 주입.
+
+	property Entity dimmer = "761c1f5d-c934-4d9b-b573-3c61c3b1b5b3"
+
+	property Entity window = "f1a433c3-4ee3-4975-a823-f295be4c0550"
+
+	property TextGUIRendererComponent titleText = "bf353743-eb3c-4704-ab9a-65df4d94f6ed"
+
+	property ButtonComponent btnClose = "15a0c51f-bc09-4d33-9622-56af7025261d"
+
+	property Entity footer = "3623ee40-d405-4d1a-bd48-abda5f1be574"
+
+	property TextGUIRendererComponent costLabel = "4f59838d-e194-4c46-8175-93c28c5f9f66"
+
+	property ButtonComponent btnPrimary = "7728b8ca-8bf6-4e2e-98f3-6d5171b4ca88"
+
+	property Entity contentDispatch = "ffc6a19b-9b74-4631-9760-0df3fe25a041"
+
+	property Entity contentGate = "94276f1a-bb07-4812-b43b-297c80e72b62"
+
+	-- dispatch
+	property Entity targetRoot = "b9b4d041-ff1d-4446-b979-f54087e0e48f"
+
+	property TextGUIRendererComponent cartHave = "9eb85c55-bd93-47ae-93bc-f4df28e5bb03"
+
+	property TextGUIRendererComponent cartCount = "dbf451f0-4cf2-49b9-b020-de74b038cb78"
+
+	property ButtonComponent btnCartMinus = "e967f29f-7a13-4b2a-81f5-3a42d273f23c"
+
+	property ButtonComponent btnCartPlus = "288f8f79-2533-4b2d-87fd-12a72b0c2ec0"
+
+	property TextGUIRendererComponent dispatchStatus = "9422a527-c4e7-4f5a-9690-e3ad684b5680"
+
+	-- gate
+	property TextGUIRendererComponent coreText = "7f39d0f4-2005-4a81-a98e-b74ac34567d0"
+
+	property Entity gateRoot = "747b1ad8-da92-4352-9a2f-3a23ec615092"
+
+	property TextGUIRendererComponent gateStatus = "f20f26ff-fba6-4775-bbf7-7b9fc610ee83"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string route = ""
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property boolean waiting = false
+
+	@HideFromInspector
+	property any villages = nil
+
+	@HideFromInspector
+	property string selVillage = ""
+
+	@HideFromInspector
+	property integer bundles = 0
+
+	@HideFromInspector
+	property integer cart = 1
+
+	@HideFromInspector
+	property any gates = nil
+
+	@HideFromInspector
+	property integer cores = 0
+
+	method void OnBeginPlay()
+		-- 클라만 배선.
+		if self:IsClient() then self:SetupClient() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 닫기 · 푸터 · 대상 행 · 스테퍼 · 관문 카드.
+		self.handlers = {}
+		self.villages = {}
+		self.gates = {}
+		local function bind(ent, fn)
+			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
+		end
+		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
+		if isvalid(self.btnPrimary) then bind(self.btnPrimary.Entity, function() self:OnPrimary() end) end
+		if isvalid(self.btnCartMinus) then bind(self.btnCartMinus.Entity, function() self:Step(-1) end) end
+		if isvalid(self.btnCartPlus) then bind(self.btnCartPlus.Entity, function() self:Step(1) end) end
+		if isvalid(self.targetRoot) then
+			for _, row in ipairs(self.targetRoot.Children) do
+				local name = row.Name
+				if string.sub(name, 1, 7) == "Target_" then
+					local idx = tonumber(string.sub(name, 8)) or 0
+					bind(row, function() self:OnTarget(idx) end)
+				end
+			end
+		end
+		if isvalid(self.gateRoot) then
+			for _, card in ipairs(self.gateRoot.Children) do
+				local name = card.Name
+				if string.sub(name, 1, 5) == "Gate_" then
+					local vid = string.sub(name, 6)
+					bind(card, function() self:OnGate(vid) end)
+				end
+			end
+		end
+		self:SetOpen(false)
+		log("[Common] CommonNpcUIController ready (client) handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6).
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "CommonNpcGroup" then
+			self:Open(r.PendingUiRoute)
+			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
+			r:ClearPendingRequest()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string route)
+		-- 다른 창을 닫고 라우트를 켠다.
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("CommonNpcGroup") end
+		if route ~= "dispatch" and route ~= "dimensiongate" then route = "dispatch" end
+		self.selVillage = ""
+		self.cart = 1
+		self.waiting = false
+		self:SetOpen(true)
+		self:GoRoute(route)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기: 선택 폐기.
+		self:SetOpen(false)
+		self.selVillage = ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- Dimmer + Window.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Common] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoRoute(string route)
+		-- Content 하위 컨테이너 하나만. Footer 는 둘 다 쓴다(파병 / 이동).
+		self.route = route
+		local titles = { dispatch = "파병 접수", dimensiongate = "차원 관문" }
+		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "공용" end
+		if isvalid(self.contentDispatch) then self.contentDispatch.Enable = (route == "dispatch") end
+		if isvalid(self.contentGate) then self.contentGate.Enable = (route == "dimensiongate") end
+		if isvalid(self.footer) then self.footer.Enable = true end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = false
+			if self.btnPrimary.Entity.TextGUIRendererComponent ~= nil then
+				self.btnPrimary.Entity.TextGUIRendererComponent.Text = (route == "dispatch") and "파 병" or "이 동"
+			end
+		end
+		if isvalid(self.costLabel) then self.costLabel.Text = "불러오는 중..." end
+		if _LaneStateService ~= nil then _LaneStateService:RequestView((route == "dispatch") and "dispatch" or "gate") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnView(string kind, string csv)
+		-- 서버 뷰 수신 → 현재 라우트면 그린다.
+		self.waiting = false
+		if not self.isOpen then return end
+		local rows = _VillageNpcUIController:SplitRows(csv)
+		if kind == "dispatch" and self.route == "dispatch" then self:RenderDispatch(rows)
+		elseif kind == "gate" and self.route == "dimensiongate" then self:RenderGate(rows) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		-- 자식 텍스트 한 줄.
+		if not isvalid(parent) then return end
+		local c = parent:GetChildByName(childName)
+		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	-- ── dispatch ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderDispatch(any rows)
+		-- DEF|bundles|units|cap · V|villageId|name|own — 내 마을은 목록에서 뺀다(최대 4).
+		self.villages = {}
+		local units, cap = "0", "10"
+		for _, f in ipairs(rows) do
+			if f[1] == "DEF" then
+				self.bundles = tonumber(f[2]) or 0
+				units, cap = f[3], f[4]
+			elseif f[1] == "V" and f[4] ~= "1" then
+				table.insert(self.villages, { id = f[2], name = f[3] })
+			end
+		end
+		if self.cart > self.bundles then self.cart = math.max(1, self.bundles) end
+		if isvalid(self.targetRoot) then
+			for i = 0, 4 do
+				local row = self.targetRoot:GetChildByName("Target_" .. tostring(i))
+				local v = self.villages[i + 1]
+				if isvalid(row) then
+					row.Enable = (v ~= nil)
+					if v ~= nil then self:SetText(row, "Name", v.name) end
+				end
+			end
+		end
+		if isvalid(self.cartHave) then self.cartHave.Text = "보유 수비대 " .. tostring(self.bundles) .. "묶음 (" .. units .. "마리 · " .. cap .. "칸)" end
+		if isvalid(self.dispatchStatus) then self.dispatchStatus.Text = "파병은 되돌릴 수 없습니다 · 실제 이동·전투는 Lane 연동 후(지금은 원장에서만 빠짐)" end
+		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderCart()
+		-- 대상 강조 + 스테퍼 + 푸터.
+		if isvalid(self.targetRoot) then
+			for i = 0, 4 do
+				local row = self.targetRoot:GetChildByName("Target_" .. tostring(i))
+				local v = self.villages[i + 1]
+				if isvalid(row) and v ~= nil and row.SpriteGUIRendererComponent ~= nil then
+					row.SpriteGUIRendererComponent.Color = (v.id == self.selVillage) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
+				end
+			end
+		end
+		if isvalid(self.cartCount) then self.cartCount.Text = tostring(self.cart) .. "묶음" end
+		if isvalid(self.btnCartMinus) then self.btnCartMinus.Enable = (self.cart > 1) end
+		if isvalid(self.btnCartPlus) then self.btnCartPlus.Enable = (self.cart < self.bundles) end
+		local v = nil
+		for _, x in ipairs(self.villages) do if x.id == self.selVillage then v = x end end
+		if isvalid(self.costLabel) then
+			if v == nil then self.costLabel.Text = "대상 마을을 고르세요"
+			else self.costLabel.Text = v.name .. " 로 " .. tostring(self.cart) .. "묶음 파병" end
+		end
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = (v ~= nil and self.bundles >= self.cart and self.cart > 0 and not self.waiting) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnTarget(integer i)
+		-- 대상 마을 선택.
+		local v = self.villages[i + 1]
+		self.selVillage = (v ~= nil) and v.id or ""
+		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Step(integer d)
+		-- 묶음 수 −/+.
+		self.cart = math.max(1, math.min(self.bundles, self.cart + d))
+		self:RenderCart()
+	end
+
+	-- ── dimensiongate ──────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderGate(any rows)
+		-- CORE|n · G|villageId|name|bossName|matId|have|need|own
+		self.gates = {}
+		for _, f in ipairs(rows) do
+			if f[1] == "CORE" then self.cores = tonumber(f[2]) or 0
+			elseif f[1] == "G" then
+				table.insert(self.gates, { id = f[2], name = f[3], boss = f[4], mat = f[5], have = tonumber(f[6]) or 0, need = tonumber(f[7]) or 25, own = (f[8] == "1") })
+			end
+		end
+		if isvalid(self.coreText) then self.coreText.Text = "에너지 코어 보유 " .. tostring(self.cores) end
+		self:RenderGateCards()
+		if isvalid(self.gateStatus) then self.gateStatus.Text = "관문은 에너지 코어 1개 · 도착 보스맵 입장권은 지역재화 25개 별도 · 실제 이동은 Map 포탈 연동 후" end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderGateCards()
+		-- 카드 5장 (Gate_{VillageId}). 내 마을 = "도보" 비활성.
+		if not isvalid(self.gateRoot) then return end
+		for _, g in ipairs(self.gates) do
+			local card = self.gateRoot:GetChildByName("Gate_" .. g.id)
+			if isvalid(card) then
+				self:SetText(card, "Village", g.name)
+				self:SetText(card, "Boss", g.boss)
+				self:SetText(card, "Mat", g.own and "내 마을 · 도보" or ("지역재화 " .. tostring(g.have) .. " / " .. tostring(g.need)))
+				local matIcon = card:GetChildByName("MatIcon")
+				if isvalid(matIcon) and matIcon.SpriteGUIRendererComponent ~= nil then
+					local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(g.mat) or nil
+					local ruid = (def ~= nil) and def.icon or ""
+					matIcon.SpriteGUIRendererComponent.ImageRUID = ruid
+					matIcon.Enable = (ruid ~= "")
+				end
+				if card.ButtonComponent ~= nil then card.ButtonComponent.Enable = not g.own end
+				if card.SpriteGUIRendererComponent ~= nil then
+					if g.own then card.SpriteGUIRendererComponent.Color = Color(0.36, 0.38, 0.42, 0.8)
+					elseif g.id == self.selVillage then card.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
+					else card.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1) end
+				end
+			end
+		end
+		local g = nil
+		for _, x in ipairs(self.gates) do if x.id == self.selVillage then g = x end end
+		if isvalid(self.costLabel) then
+			if g == nil then self.costLabel.Text = "지역을 고르세요 (에너지 코어 " .. tostring(self.cores) .. ")"
+			else self.costLabel.Text = g.name .. " 로 이동 · 에너지 코어 1 (보유 " .. tostring(self.cores) .. ")" end
+		end
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = (g ~= nil and not g.own and self.cores >= 1 and not self.waiting) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnGate(string vid)
+		-- 관문 카드 선택.
+		self.selVillage = vid
+		self:RenderGateCards()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPrimary()
+		-- dispatch = 파병 요청 · dimensiongate = 이동 요청. 응답이 올 때까지 버튼 잠금.
+		if self.waiting or self.selVillage == "" then return end
+		self.waiting = true
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+		if _LaneStateService == nil then return end
+		if self.route == "dispatch" then _LaneStateService:RequestDispatch(self.selVillage, self.cart)
+		else _LaneStateService:RequestDimensionGate(self.selVillage) end
+	end
+
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		if self:IsClient() and self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+	end
+
+end

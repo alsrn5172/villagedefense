@@ -1,0 +1,522 @@
+@Logic
+script VillageLifeUIController extends Logic
+
+	-- 생활 창(VillageLifeGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 storage(창고지기) / recruit(몬스터 모집관) / train(몬스터 조련사).
+	-- storage: 왼쪽 내 인벤토리(스택형만 · InventoryUIController 캐시) ↔ 오른쪽 창고 20칸. recruit: 상단 미니 방어선 프리뷰 + 몬스터 카드. train: 병과 3행.
+	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). UUID 는 UIBuilder write({bind}) 주입.
+
+	property Entity dimmer = "079bb348-d905-4623-83e2-32c0e4741bf4"
+
+	property Entity window = "637e1717-06b7-4c7d-9370-d6b73b279c5f"
+
+	property TextGUIRendererComponent titleText = "6fc783c7-d802-43ae-8195-12ed4a0e949e"
+
+	property ButtonComponent btnClose = "fe981bb5-460b-4f29-bf5b-5f9129b5b5a9"
+
+	property Entity footer = "a5778e05-dabf-4490-9665-498828b8e037"
+
+	property TextGUIRendererComponent costLabel = "5eb1cd07-fd3a-47ba-9801-d5d269db9a8d"
+
+	property ButtonComponent btnPrimary = "f8ee6124-c174-445f-8985-983d62d9b4a5"
+
+	property Entity contentStorage = "b53f4eb5-5913-4124-ad2e-188fe26ce4ef"
+
+	property Entity contentRecruit = "e10708b2-a139-42fc-a446-2ac6159bc0f7"
+
+	property Entity contentTrain = "fc139646-25d4-4073-826b-71483b034f65"
+
+	-- storage
+	property Entity invRoot = "0dfc5119-36a7-46bd-b333-6307afb0dc30"
+
+	property Entity stoRoot = "efce2cef-89f6-4cca-bc31-c6d9e82ad1d2"
+
+	property ButtonComponent btnMoveIn = "503b2b88-1acd-46c3-8339-499a273039b3"
+
+	property ButtonComponent btnMoveOut = "3a1844e9-c341-4a53-9469-9a9416a187ea"
+
+	property TextGUIRendererComponent storageStatus = "6a886f4a-432e-4bc9-a273-1fdeb4c93e40"
+
+	-- recruit
+	property Entity previewIcon = "9f9cbee2-57f7-4819-a42c-b4bc568a49ad"
+
+	property TextGUIRendererComponent previewName = "1a2210e2-1139-4d98-9f3a-632422e0fee0"
+
+	property Entity previewHp = "042669ef-e353-4d06-b215-438007f640c6"
+
+	property TextGUIRendererComponent previewHpText = "b953e972-661c-40a3-8f94-8c87815ae040"
+
+	property Entity defenderRow = "fc557d4a-67df-4ed9-8a87-2cfd2bfbb1ee"
+
+	property TextGUIRendererComponent defenderCount = "237dd2e3-a9d8-48f2-9ac7-e018d84f5ae8"
+
+	property Entity cardRoot = "d3959296-1e14-4d1c-a75b-ce10cd097706"
+
+	property TextGUIRendererComponent recruitStatus = "d869ce41-0e1f-4218-942c-9cf46ee43898"
+
+	-- train
+	property Entity trainRoot = "36f000cf-0fab-42d6-89a8-3678d4178b9e"
+
+	property TextGUIRendererComponent trainHave = "ba8a7184-d2da-4aff-9f9b-d929d8e194f7"
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string route = ""
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property boolean waiting = false
+
+	@HideFromInspector
+	property string selInv = ""
+
+	@HideFromInspector
+	property string selSto = ""
+
+	@HideFromInspector
+	property string selUnit = ""
+
+	@HideFromInspector
+	property any storageRows = nil
+
+	@HideFromInspector
+	property any units = nil
+
+	@HideFromInspector
+	property integer meso = 0
+
+	@HideFromInspector
+	property integer bundles = 0
+
+	@HideFromInspector
+	property integer cap = 10
+
+	method void OnBeginPlay()
+		-- 클라만 배선.
+		if self:IsClient() then self:SetupClient() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 닫기 · 푸터 · 창고 이동 · 슬롯/카드/훈련 버튼을 이름으로 연결.
+		self.handlers = {}
+		self.storageRows = {}
+		self.units = {}
+		local function bind(ent, fn)
+			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
+		end
+		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
+		if isvalid(self.btnPrimary) then bind(self.btnPrimary.Entity, function() self:OnPrimary() end) end
+		if isvalid(self.btnMoveIn) then bind(self.btnMoveIn.Entity, function() self:MoveStorage("in") end) end
+		if isvalid(self.btnMoveOut) then bind(self.btnMoveOut.Entity, function() self:MoveStorage("out") end) end
+		local function bindSlots(root, prefix, fn)
+			if not isvalid(root) then return end
+			for _, c in ipairs(root.Children) do
+				local name = c.Name
+				if string.sub(name, 1, #prefix) == prefix then
+					local idx = tonumber(string.sub(name, #prefix + 1)) or 0
+					bind(c, function() fn(idx) end)
+				end
+			end
+		end
+		bindSlots(self.invRoot, "InvSlot_", function(i) self:OnInvSlot(i) end)
+		bindSlots(self.stoRoot, "StoSlot_", function(i) self:OnStoSlot(i) end)
+		bindSlots(self.cardRoot, "Card_", function(i) self:OnCard(i) end)
+		if isvalid(self.trainRoot) then
+			for _, row in ipairs(self.trainRoot.Children) do
+				local name = row.Name
+				if string.sub(name, 1, 4) == "Row_" then
+					local cls = string.sub(name, 5)
+					local b = row:GetChildByName("BtnTrain")
+					if isvalid(b) then bind(b, function() self:Train(cls) end) end
+				end
+			end
+		end
+		self:SetOpen(false)
+		log("[Life] VillageLifeUIController ready (client) handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6).
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "VillageLifeGroup" then
+			self:Open(r.PendingUiRoute)
+			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
+			r:ClearPendingRequest()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string route)
+		-- 다른 창을 닫고 라우트를 켠다. 서버에 뷰(+인벤토리)를 요청한다.
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("VillageLifeGroup") end
+		if route ~= "storage" and route ~= "recruit" and route ~= "train" then route = "recruit" end
+		self.selInv = ""
+		self.selSto = ""
+		self.selUnit = ""
+		self.waiting = false
+		self:SetOpen(true)
+		self:GoRoute(route)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기: 선택 상태 폐기.
+		self:SetOpen(false)
+		self.selInv = ""
+		self.selSto = ""
+		self.selUnit = ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- Dimmer + Window.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[Life] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoRoute(string route)
+		-- Content 하위 컨테이너 하나만. Footer 는 recruit 에서만.
+		self.route = route
+		local titles = { storage = "마을 창고", recruit = "몬스터 모집", train = "몬스터 훈련" }
+		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "생활" end
+		if isvalid(self.contentStorage) then self.contentStorage.Enable = (route == "storage") end
+		if isvalid(self.contentRecruit) then self.contentRecruit.Enable = (route == "recruit") end
+		if isvalid(self.contentTrain) then self.contentTrain.Enable = (route == "train") end
+		if isvalid(self.footer) then self.footer.Enable = (route == "recruit") end
+		if route == "recruit" then
+			if isvalid(self.costLabel) then self.costLabel.Text = "몬스터를 고르세요" end
+			if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+		end
+		if _LaneStateService ~= nil then _LaneStateService:RequestView(route) end
+		if route == "storage" and _InventoryService ~= nil then _InventoryService:RequestInventory() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnView(string kind, string csv)
+		-- 서버 뷰 수신 → 현재 라우트면 그린다.
+		self.waiting = false
+		if not self.isOpen or kind ~= self.route then return end
+		local rows = _VillageNpcUIController:SplitRows(csv)
+		if kind == "storage" then self:RenderStorage(rows)
+		elseif kind == "recruit" then self:RenderRecruit(rows)
+		elseif kind == "train" then self:RenderTrain(rows) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnInventoryUpdated()
+		-- 인벤토리가 새로 밀려오면 창고 왼쪽을 다시 그린다.
+		if self.isOpen and self.route == "storage" then self:RenderInventorySide() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		-- 자식 텍스트 한 줄.
+		if not isvalid(parent) then return end
+		local c = parent:GetChildByName(childName)
+		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillSlot(Entity slot, string itemId, integer count, boolean selected)
+		-- 슬롯 = Icon + Count (+선택 강조). itemId 빈칸이면 비운다.
+		if not isvalid(slot) then return end
+		local def = (itemId ~= "" and _ItemCatalog ~= nil) and _ItemCatalog:Get(itemId) or nil
+		local icon = slot:GetChildByName("Icon")
+		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+			local ruid = (def ~= nil) and def.icon or ""
+			icon.SpriteGUIRendererComponent.ImageRUID = ruid
+			icon.Enable = (ruid ~= "")
+		end
+		local nameText = ""
+		if def ~= nil and def.icon == "" then nameText = def.name end
+		self:SetText(slot, "Name", nameText)
+		self:SetText(slot, "Count", (count > 0) and tostring(count) or "")
+		if slot.SpriteGUIRendererComponent ~= nil then
+			if selected then slot.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
+			elseif itemId ~= "" then slot.SpriteGUIRendererComponent.Color = Color(0.52, 0.55, 0.60, 1)
+			else slot.SpriteGUIRendererComponent.Color = Color(0.40, 0.42, 0.46, 1) end
+		end
+	end
+
+	-- ── storage ────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method any InventoryStacks()
+		-- 인벤토리 캐시에서 스택형(장비 제외)만 itemId 별로 합친다.
+		local out = {}
+		local idx = {}
+		local items = (_InventoryUIController ~= nil) and _InventoryUIController.items or nil
+		for _, it in ipairs(items or {}) do
+			local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+			if def ~= nil and def.type ~= "EQUIP" then
+				if idx[it.itemId] == nil then
+					table.insert(out, { itemId = it.itemId, count = it.count })
+					idx[it.itemId] = #out
+				else
+					out[idx[it.itemId]].count = out[idx[it.itemId]].count + it.count
+				end
+			end
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderInventorySide()
+		-- 왼쪽 20칸.
+		if not isvalid(self.invRoot) then return end
+		local stacks = self:InventoryStacks()
+		for i = 0, 19 do
+			local slot = self.invRoot:GetChildByName("InvSlot_" .. tostring(i))
+			local s = stacks[i + 1]
+			if s ~= nil then self:FillSlot(slot, s.itemId, s.count, s.itemId == self.selInv)
+			else self:FillSlot(slot, "", 0, false) end
+		end
+		self:RenderStorageStatus()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderStorage(any rows)
+		-- 오른쪽 20칸 = 서버 창고 행(S|itemId|count).
+		self.storageRows = {}
+		for _, f in ipairs(rows) do
+			if f[1] == "S" then table.insert(self.storageRows, { itemId = f[2], count = tonumber(f[3]) or 0 }) end
+		end
+		if isvalid(self.stoRoot) then
+			for i = 0, 19 do
+				local slot = self.stoRoot:GetChildByName("StoSlot_" .. tostring(i))
+				local s = self.storageRows[i + 1]
+				if s ~= nil then self:FillSlot(slot, s.itemId, s.count, s.itemId == self.selSto)
+				else self:FillSlot(slot, "", 0, false) end
+			end
+		end
+		self:RenderInventorySide()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderStorageStatus()
+		-- 이동 버튼 활성 + 안내.
+		if isvalid(self.btnMoveIn) then self.btnMoveIn.Enable = (self.selInv ~= "") end
+		if isvalid(self.btnMoveOut) then self.btnMoveOut.Enable = (self.selSto ~= "") end
+		if isvalid(self.storageStatus) then
+			local n = (self.storageRows ~= nil) and #self.storageRows or 0
+			self.storageStatus.Text = "창고 " .. tostring(n) .. "/20 · 재료·소비 아이템만 (장비 제외) · 칸을 고르고 화살표를 누르세요"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnInvSlot(integer i)
+		-- 왼쪽 칸 선택.
+		local stacks = self:InventoryStacks()
+		local s = stacks[i + 1]
+		self.selInv = (s ~= nil) and s.itemId or ""
+		self.selSto = ""
+		self:RenderInventorySide()
+		self:RenderStorage(_VillageNpcUIController:SplitRows(self:StorageCsv()))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnStoSlot(integer i)
+		-- 오른쪽 칸 선택.
+		local s = (self.storageRows ~= nil) and self.storageRows[i + 1] or nil
+		self.selSto = (s ~= nil) and s.itemId or ""
+		self.selInv = ""
+		self:RenderStorage(_VillageNpcUIController:SplitRows(self:StorageCsv()))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string StorageCsv()
+		-- 현재 창고 행을 다시 문자열로 (재그리기용).
+		local parts = {}
+		for _, s in ipairs(self.storageRows or {}) do table.insert(parts, "S|" .. s.itemId .. "|" .. tostring(s.count)) end
+		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveStorage(string dir)
+		-- 선택한 스택 전부 이동 요청.
+		if self.waiting then return end
+		local itemId = ""
+		local count = 0
+		local list = (dir == "in") and self:InventoryStacks() or (self.storageRows or {})
+		local want = (dir == "in") and self.selInv or self.selSto
+		for _, s in ipairs(list) do
+			if s.itemId == want then
+				itemId = s.itemId
+				count = s.count
+			end
+		end
+		if itemId == "" or count <= 0 then return end
+		self.waiting = true
+		self.selInv = ""
+		self.selSto = ""
+		if _LaneStateService ~= nil then _LaneStateService:RequestStorageMove(itemId, count, dir) end
+	end
+
+	-- ── recruit ────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderRecruit(any rows)
+		-- FRONT = 프리뷰 시설, DEF = 10칸 + 수, U = 카드, MESO = 보유.
+		self.units = {}
+		local icons = { TOWER = "781d0548d4434877a044f77db08e2ffe", SUPPRESSOR = "ccdeb5e0dcb34fe98384ee1759c852b7", CORE = "c146f6b5466949edafccccf2be406979" }
+		for _, f in ipairs(rows) do
+			if f[1] == "FRONT" then
+				local stage, name, hp, max, alive = f[2], f[3], tonumber(f[4]) or 0, tonumber(f[5]) or 1, (f[6] == "1")
+				if isvalid(self.previewIcon) and self.previewIcon.SpriteGUIRendererComponent ~= nil then
+					self.previewIcon.SpriteGUIRendererComponent.ImageRUID = icons[stage] or ""
+					self.previewIcon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or Color(0.5, 0.25, 0.25, 1)
+				end
+				if isvalid(self.previewName) then self.previewName.Text = "최전방: " .. name end
+				if isvalid(self.previewHpText) then self.previewHpText.Text = tostring(hp) .. " / " .. tostring(max) end
+				if isvalid(self.previewHp) then
+					local fill = self.previewHp:GetChildByName("Fill")
+					if isvalid(fill) and fill.UITransformComponent ~= nil then
+						fill.UITransformComponent.RectSize = Vector2(240 * math.max(0, math.min(1, hp / max)), 16)
+					end
+				end
+			elseif f[1] == "DEF" then
+				self.bundles = tonumber(f[2]) or 0
+				self.cap = tonumber(f[4]) or 10
+				local units = f[3]
+				local slots = {}
+				for chunk in string.gmatch(f[5] or "", "([^,]+)") do table.insert(slots, chunk) end
+				if isvalid(self.defenderRow) then
+					for i = 0, 9 do
+						local s = self.defenderRow:GetChildByName("Slot_" .. tostring(i))
+						if isvalid(s) then
+							local filled = slots[i + 1] ~= nil
+							if s.SpriteGUIRendererComponent ~= nil then
+								s.SpriteGUIRendererComponent.Color = filled and Color(0.99, 0.88, 0.42, 1) or Color(0.36, 0.38, 0.42, 1)
+							end
+							local label = ""
+							if filled then
+								local key = slots[i + 1]
+								local sep, _e = string.find(key, ":", 1, true)
+								label = (sep ~= nil) and string.sub(key, sep + 1) or ""
+							end
+							self:SetText(s, "Text", label)
+						end
+					end
+				end
+				if isvalid(self.defenderCount) then
+					self.defenderCount.Text = tostring(self.bundles) .. "묶음 · " .. units .. "마리 · " .. tostring(self.bundles) .. "/" .. tostring(self.cap) .. "칸"
+				end
+			elseif f[1] == "U" then
+				table.insert(self.units, { key = f[2], name = f[3], level = f[4], meso = tonumber(f[5]) or 0 })
+			elseif f[1] == "MESO" then
+				self.meso = tonumber(f[2]) or 0
+			end
+		end
+		self:RenderCards()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderCards()
+		-- 카드 5장 고정. 없는 칸은 숨김. 선택 = 노란색.
+		if not isvalid(self.cardRoot) then return end
+		for i = 0, 4 do
+			local card = self.cardRoot:GetChildByName("Card_" .. tostring(i))
+			local u = self.units[i + 1]
+			if isvalid(card) then
+				card.Enable = (u ~= nil)
+				if u ~= nil then
+					self:SetText(card, "Name", u.name)
+					self:SetText(card, "Info", "Lv " .. u.level .. " · 8마리 묶음")
+					self:SetText(card, "Price", "메소 " .. tostring(u.meso))
+					if card.SpriteGUIRendererComponent ~= nil then
+						local sel = (u.key == self.selUnit)
+						local ok = (self.meso >= u.meso)
+						if sel then card.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
+						elseif ok then card.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1)
+						else card.SpriteGUIRendererComponent.Color = Color(0.36, 0.38, 0.42, 0.8) end
+					end
+				end
+			end
+		end
+		local u = nil
+		for _, x in ipairs(self.units) do if x.key == self.selUnit then u = x end end
+		if isvalid(self.costLabel) then
+			if u == nil then self.costLabel.Text = "몬스터를 고르세요 (보유 메소 " .. tostring(self.meso) .. ")"
+			else self.costLabel.Text = u.name .. " 1묶음 · 메소 " .. tostring(u.meso) .. " (보유 " .. tostring(self.meso) .. ")" end
+		end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = (u ~= nil and self.meso >= u.meso and self.bundles < self.cap and not self.waiting)
+		end
+		if isvalid(self.recruitStatus) then
+			self.recruitStatus.Text = "모집하면 최전방 시설로 자동 집결합니다 · 배치 조작 없음 · 가격은 메소(임시)"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCard(integer i)
+		-- 카드 선택.
+		local u = self.units[i + 1]
+		self.selUnit = (u ~= nil) and u.key or ""
+		self:RenderCards()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPrimary()
+		-- recruit 의 "모집".
+		if self.route ~= "recruit" or self.selUnit == "" or self.waiting then return end
+		self.waiting = true
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+		if _LaneStateService ~= nil then _LaneStateService:RequestRecruit(self.selUnit) end
+	end
+
+	-- ── train ──────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderTrain(any rows)
+		-- TR|cls|name|lv|mul|cost|max · HAVE|n
+		local have = 0
+		for _, f in ipairs(rows) do if f[1] == "HAVE" then have = tonumber(f[2]) or 0 end end
+		for _, f in ipairs(rows) do
+			if f[1] == "TR" and isvalid(self.trainRoot) then
+				local row = self.trainRoot:GetChildByName("Row_" .. f[2])
+				if isvalid(row) then
+					local lv, max, cost = tonumber(f[4]) or 1, tonumber(f[7]) or 5, tonumber(f[6]) or 0
+					self:SetText(row, "Name", f[3])
+					self:SetText(row, "LvText", "Lv " .. tostring(lv) .. " / " .. tostring(max))
+					self:SetText(row, "MulText", "능력치 ×" .. string.format("%.2f", tonumber(f[5]) or 1))
+					self:SetText(row, "CostText", (lv >= max) and "최대" or ("꿈의 조각 " .. tostring(cost)))
+					local b = row:GetChildByName("BtnTrain")
+					if isvalid(b) and b.ButtonComponent ~= nil then
+						local on = (lv < max and have >= cost and not self.waiting)
+						b.ButtonComponent.Enable = on
+						if b.SpriteGUIRendererComponent ~= nil then
+							b.SpriteGUIRendererComponent.Color = on and Color(0.46, 0.49, 0.54, 1) or Color(0.62, 0.64, 0.68, 0.7)
+						end
+					end
+				end
+			end
+		end
+		if isvalid(self.trainHave) then self.trainHave.Text = "꿈의 조각 보유 " .. tostring(have) .. " · 훈련은 즉시 적용" end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Train(string cls)
+		-- 훈련 요청.
+		if self.waiting then return end
+		self.waiting = true
+		if _LaneStateService ~= nil then _LaneStateService:RequestTrain(cls) end
+	end
+
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		if self:IsClient() and self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+	end
+
+end
