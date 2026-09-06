@@ -39,6 +39,18 @@
 - `VillageNpcSector` HENESYS WORKSHOP 앵커 x −13 → **−14.8**: 넥서스(x −9.6~−6.4)가 물약·지역 장비 상인을 가렸다 → 슬롯 −14.8~−10.0.
 - 리모컨 **레벨 행**(`Row_level` +1/+5/+10 → `RequestLevel`): 다음 레벨까지 남은 경험치를 `GrantKillReward` 로 넣어 정식 레벨업 경로(AP/SP·HP 보상·HUD)로 올린다. 패널 800×600 → 800×640, GemRoot −288. 읽기값 `level=`.
 
+## 2026-09-07 — ② 매치 시계 + 미니언 흐름 (헤네시스만)
+
+- **데이터**: `MinionPhaseConfig.csv`(A-2-5 + 뒤에 `Profile`,`CoinDropChance` 추가 · TEST 0/60/180/300초·투입 30초 · LIVE 0/300/720/1080초·180/150/120초 잠정 · 배율 1.0·0.8 / 1.3·1.6 / 2.0·2.2) · `MinionComposition.csv`(A-2-6 + `BaseHp`,`BaseAttack` · 좀비버섯 2230101 300/15 → 400/20 → 500/25 · 3페이즈 좀비머쉬맘 2400572 1500/40) · `MonsterInfo` 2400572 행 · `check-integrity` CANONICAL/KEYS.
+- **`Match/MatchSessionLogic`**(본체): 서버 경과 시간 → StartSeconds 로 페이즈 · `MatchPhaseChangedEvent`(신규 @Event) · 페이즈 `SpawnIntervalSeconds` 마다 `MinionFlowService.SpawnWave` · 1초마다 `BroadcastClock`(Multicast) → `Match/MatchClockUIController.Apply`. `SetProfile(TEST/LIVE)` · `SkipToNextPhase` · 리모컨 RPC `RequestProfileToggle`/`RequestNextPhase`.
+- **`ui/MatchClockGroup`**(신규 · 상단 중앙 480×56 · GroupOrder 1): 페이즈명(TEST 표시) · mm:ss · 다음 투입/페이즈 초.
+- **`Lane/MinionFlowService`**: 주인 있는 마을마다 사냥터2 통로 `SpawnX` 에 가중치 추첨 몬스터 스폰. 모델의 `StateChaseMonster`·`BossSkillRunner` 는 끄고 `Faction(1x)`+`FactionAI(왼쪽 전진 · 사거리 1.3 · 탐지 6)`+`FactionAttack(BaseAttack×배율)`+`FarmReward(ExpBase)`+`MinionUnit` 부착. 정렬층 = 통로 발판 층 + Order 2. 억제기 파괴 시 HP·공격·경험치 배율. `Advance`: 통로 끝(`EndTriggerX`) → 다음 맵(사냥터1 → 마을) 통로에 같은 HP 비율로 재스폰.
+- **`Lane/MinionUnit`**: 끝 도달 판정 · 사망 시 처치자에게 메소(`MesoBase`) + 주화 확률(`CoinDropChance`) 지급.
+- **시설 전투**: `LaneFacilityService.SpawnFacility` 가 `Faction(2x)` + `HitComponent.CollisionGroup=Monster` 부착, 포탑은 `FactionAttack`+`TurretAI`(Lv 별 공격력·사거리·쿨타임 = `TowerConfig`; `ApplyCombat`). 파괴되면 진영 중립 → 미니언이 지나친다. `LaneStateService.towerDef` 에 `attackSpeed`.
+- **리모컨**: 하단 `시계 TEST/LIVE` · `다음 페이즈` 버튼.
+- 진영 번호: 헤네시스 = 슬롯 1 → 미니언 "11" · 방어 "21" (플레이어는 전원 "1" 이라 지금은 헤네시스만 정확). 다른 마을은 `LaneConfig` 행이 없어 미니언이 돌지 않는다.
+- **로그 스모크 2회**(refresh ×2 · Play · 리모컨 대신 서버 스크립트로 레벨 10 → 연결 → `SkipToNextPhase`): `phase -> 2 PHASE2_VILLAGE at 60.0s` · 30초마다 `wave … spawned=1` · 미니언이 포탑까지 걸어가 `FactionAttack Minion → ENEMY Facility_HENESYS_TOWER` · 1차에선 포탑이 야생 골렘만 쏘고 미니언을 못 맞혀(히트박스 (0,0) + 공격 상자 높이 2) 포탑 파괴 → 미니언 `advance LANE2 → LANE1` 로 사냥터1 재스폰 ✓ → 수정(히트박스 0.8×1.0 + `FitHitboxToSprite` · 공격 상자 높이 4 · `PreferMinions`) 후 2차: `TOWER -> ENEMY Minion_HENESYS_1/2` 5회, 미니언 2마리 처치(`FarmReward dropped`) ✓. 런타임 에러 0. 시계 HUD·마을 통로 넥서스 공격은 눈 확인 대기(사용자).
+
 ### 기타
 - `Match/MatchSessionLogic` 스텁: `@Sync CurrentPhase`, `PhaseIndex()`, `SetPhase()`. 시계 본체는 ②.
 - 넥서스 아이콘 RUID `dab6ddee…` → **`8adca861…`**(사용자 선택 #3) 3곳: `VillageDefenseGroup` Node/Card `Icon` · `VillageLifeUIController` icons · `ui_village_common ICON.core`.

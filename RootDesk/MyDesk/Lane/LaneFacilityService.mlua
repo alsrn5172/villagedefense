@@ -47,6 +47,7 @@ script LaneFacilityService extends Logic
 					pathMinX = tonumber(t:GetCell(i, "PathMinX")) or 0, pathMaxX = tonumber(t:GetCell(i, "PathMaxX")) or 0, pathY = tonumber(t:GetCell(i, "PathY")) or 0,
 					spawnX = tonumber(t:GetCell(i, "SpawnX")) or 0, endX = tonumber(t:GetCell(i, "EndTriggerX")) or 0,
 					slotX = tonumber(t:GetCell(i, "TowerSlotX")) or 0, slotY = tonumber(t:GetCell(i, "TowerSlotY")) or 0,
+					speedMul = tonumber(t:GetCell(i, "MinionSpeedMul")) or 1.0,
 				}
 			end
 		end
@@ -58,6 +59,45 @@ script LaneFacilityService extends Logic
 		-- 마을·역할의 LaneConfig 행.
 		if self.laneRows == nil or self.laneRows[villageId] == nil then return nil end
 		return self.laneRows[villageId][role]
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TeamSlot(string villageId)
+		-- 마을 → 진영 번호 자리(1~5). 미니언 = 10+슬롯 · 방어 시설 = 20+슬롯 (FactionLogic 대역). 플레이어는 전원 팀 "1" 이라 지금은 헤네시스(1)만 정확히 맞물린다.
+		local slots = { HENESYS = 1, KERNING = 2, ELLINIA = 3, NAUTILUS = 4, PERION = 5 }
+		return slots[villageId] or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyCombat(string villageId, string stage)
+		-- 시설의 진영·전투 부품을 원장 상태에 맞춘다: 살아 있으면 방어 진영(2x) · 파괴되면 중립(미니언이 지나친다). 포탑은 Lv 별 공격력·사거리·쿨타임.
+		local ent = self.entities[villageId .. ":" .. stage]
+		if not isvalid(ent) then return end
+		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
+		local alive = (t == nil) or t.alive
+		local faction = ent:GetComponent("script.Faction")
+		if isvalid(faction) then
+			if alive then faction.Team = tostring(20 + self:TeamSlot(villageId)) else faction.Team = _FactionLogic.NeutralTeam end
+		end
+		if stage == "TOWER" and t ~= nil and _LaneStateService.towerDef ~= nil then
+			local d = _LaneStateService.towerDef.TOWER
+			local lv = math.min(t.lv, #d.attack)
+			local atk = ent:GetComponent("script.FactionAttack")
+			local ai = ent:GetComponent("script.TurretAI")
+			local range = d.range[lv] or 3.0
+			if isvalid(atk) then
+				atk.BaseDamage = math.floor(d.attack[lv] or 30)
+				-- 세로 4: 포탑 트랜스폼이 발판보다 0.81 위라 높이 2 면 통로 위 미니언(발 기준 히트박스)을 못 덮었다(실측 2026-09-07).
+				atk.AttackBoxSize = Vector2(range * 2, 4.0)
+				atk.AttackReach = 0
+			end
+			if isvalid(ai) then
+				ai.AttackRange = range
+				ai.AttackCooldown = (d.attackSpeed and d.attackSpeed[lv]) or 1.5
+				ai.PreferMinions = true
+				ai.Enable = alive
+			end
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -140,13 +180,20 @@ script LaneFacilityService extends Logic
 			fc.VillageId = villageId
 			fc.Stage = stage
 		end
+		-- 전투 부품: 진영(방어 2x · 미니언 FactionAI 의 표적이 된다) · 피격 그룹 Monster(FactionAttack 이 때리는 그룹) · 포탑은 FactionAttack + TurretAI.
+		local faction = ent:AddComponent("script.Faction")
+		if isvalid(faction) then faction.Team = tostring(20 + self:TeamSlot(villageId)) end
+		if isvalid(ent.HitComponent) then ent.HitComponent.CollisionGroup = CollisionGroups.Monster end
 		if stage == "TOWER" then
+			local atk = ent:AddComponent("script.FactionAttack")
+			if not isvalid(atk) then log_warning("[Facility] FactionAttack add failed") end
 			local ai = ent:AddComponent("script.TurretAI")
 			if not isvalid(ai) then log_warning("[Facility] TurretAI add failed") end
 		end
 		self.entities[key] = ent
-		log("[Facility] spawned " .. key .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.slotY) .. ")")
+		log("[Facility] spawned " .. key .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.slotY) .. ") team=" .. tostring(faction and faction.Team or "?"))
 		self:ApplyVisual(villageId, stage)
+		self:ApplyCombat(villageId, stage)
 		return ent
 	end
 
@@ -176,6 +223,7 @@ script LaneFacilityService extends Logic
 	method void OnFacilityChanged(string villageId, string stage)
 		-- LaneStateService 가 HP/생존/Lv 를 바꾼 뒤 호출.
 		self:ApplyVisual(villageId, stage)
+		self:ApplyCombat(villageId, stage)
 	end
 
 end

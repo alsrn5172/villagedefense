@@ -1,25 +1,136 @@
 @Logic
 script MatchSessionLogic extends Logic
 
-	-- 매치 시계 (WO-012 ② 본체 · ① 에선 스텁). 페이즈 인덱스만 제공한다 — LaneFacility 가 "3페이즈 전 플레이어 공격 저항" 판정에 쓴다.
-	-- ② 에서 MinionPhaseConfig.csv 로 페이즈 길이·전환·시계 UI(MatchClockGroup) 를 붙인다. 그때까지 PhaseIndex 는 CurrentPhase 값 그대로.
+	-- 매치 시계 (WO-012 ② · 2026-09-07). 서버 경과 시간 기준으로 MinionPhaseConfig(Profile 별 4행)의 StartSeconds 에 따라 페이즈를 올리고,
+	-- 페이즈의 SpawnIntervalSeconds 마다 MinionFlowService.SpawnWave · 1초마다 시계 HUD(MatchClockGroup) 를 전 클라에 뿌린다.
+	-- 지금은 Play 시작 = 매치 시작. Profile 은 TEST(60초/30초) · LIVE(5분/3분 잠정) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+
+	property string Profile = "TEST"
 
 	@Sync
 	property integer CurrentPhase = 1
 
+	property string CurrentPhaseName = "PHASE1_PIONEER"
+
+	property number Elapsed = 0
+
 	property number PhaseElapsed = 0
 
+	property boolean Running = true
+
+	@HideFromInspector
+	property any phases = nil
+
+	@HideFromInspector
+	property number spawnTimer = 0
+
+	@HideFromInspector
+	property number clockTimer = 0
+
+	@HideFromInspector
+	property integer waveIndex = 0
+
 	method void OnBeginPlay()
-		-- 서버: 페이즈 1 에서 시작. 전환 로직은 ②.
+		-- 서버: 표 로드 후 1페이즈에서 시작.
 		if not self:IsServer() then return end
-		self.CurrentPhase = 1
-		self.PhaseElapsed = 0
-		log("[Match] MatchSessionLogic ready (stub · phase=" .. tostring(self.CurrentPhase) .. ")")
+		self:LoadPhases()
+		self.Elapsed = 0
+		self:SetPhase(1)
+		log("[Match] MatchSessionLogic ready (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadPhases()
+		-- MinionPhaseConfig 에서 Profile 행만 StartSeconds 순으로. 표가 없으면 TEST 기본값.
+		self.phases = {}
+		local t = _DataService:GetTable("MinionPhaseConfig")
+		if t ~= nil then
+			for i = 1, t:GetRowCount() do
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				local profile = tostring(t:GetCell(i, "Profile") or "TEST")
+				if enabled and profile == self.Profile then
+					table.insert(self.phases, {
+						name = t:GetCell(i, "Phase") or "", start = tonumber(t:GetCell(i, "StartSeconds")) or 0,
+						interval = tonumber(t:GetCell(i, "SpawnIntervalSeconds")) or 0,
+						hpMul = tonumber(t:GetCell(i, "HpMul")) or 1, atkMul = tonumber(t:GetCell(i, "AtkMul")) or 1,
+						expBase = math.floor(tonumber(t:GetCell(i, "ExpBase")) or 0), mesoBase = math.floor(tonumber(t:GetCell(i, "MesoBase")) or 0),
+						coinChance = tonumber(t:GetCell(i, "CoinDropChance")) or 0,
+					})
+				end
+			end
+		end
+		if #self.phases == 0 then
+			log_warning("[Match] MinionPhaseConfig rows missing for profile " .. self.Profile .. " — 기본값(TEST) 사용")
+			self.phases = {
+				{ name = "PHASE1_PIONEER", start = 0, interval = 0, hpMul = 1, atkMul = 1, expBase = 0, mesoBase = 0, coinChance = 0 },
+				{ name = "PHASE2_VILLAGE", start = 60, interval = 30, hpMul = 1, atkMul = 0.8, expBase = 20, mesoBase = 10, coinChance = 0.25 },
+				{ name = "PHASE25_PRESSURE", start = 180, interval = 30, hpMul = 1.3, atkMul = 1.6, expBase = 30, mesoBase = 15, coinChance = 0.3 },
+				{ name = "PHASE3_FINALE", start = 300, interval = 30, hpMul = 2, atkMul = 2.2, expBase = 40, mesoBase = 20, coinChance = 0.4 },
+			}
+		end
+		table.sort(self.phases, function(a, b) return a.start < b.start end)
 	end
 
 	method integer PhaseIndex()
 		-- 현재 페이즈 (1부터). 서버·클라 공용 (CurrentPhase 는 @Sync).
 		return self.CurrentPhase or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PhaseRow()
+		-- 현재 페이즈 행.
+		if self.phases == nil then return nil end
+		return self.phases[self.CurrentPhase]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPhase(integer idx)
+		-- 페이즈 전환: 즉시 첫 투입(spawnTimer 0) · 이벤트 발행 · 시계 갱신.
+		if self.phases == nil or self.phases[idx] == nil then return end
+		self.CurrentPhase = idx
+		self.CurrentPhaseName = self.phases[idx].name
+		self.PhaseElapsed = 0
+		self.spawnTimer = 0
+		local ev = MatchPhaseChangedEvent()
+		ev.MatchId = ""
+		ev.Phase = self.CurrentPhaseName
+		ev.ElapsedSeconds = self.Elapsed
+		self:SendEvent(ev)
+		log("[Match] phase -> " .. tostring(idx) .. " " .. self.CurrentPhaseName .. " at " .. string.format("%.1f", self.Elapsed) .. "s")
+		self.clockTimer = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetProfile(string profile)
+		-- TEST/LIVE 전환: 시계를 0 부터 다시.
+		self.Profile = profile
+		self:LoadPhases()
+		self.Elapsed = 0
+		self.waveIndex = 0
+		self:SetPhase(1)
+		log("[Match] profile -> " .. profile)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SkipToNextPhase()
+		-- 🧪 다음 페이즈 시작 시각으로 점프.
+		local nxt = self.phases and self.phases[self.CurrentPhase + 1] or nil
+		if nxt == nil then return end
+		self.Elapsed = nxt.start
+	end
+
+	@ExecSpace("Server")
+	method void RequestProfileToggle()
+		-- 🧪 리모컨: TEST ↔ LIVE.
+		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
+		if self.Profile == "TEST" then self:SetProfile("LIVE") else self:SetProfile("TEST") end
+	end
+
+	@ExecSpace("Server")
+	method void RequestNextPhase()
+		-- 🧪 리모컨: 다음 페이즈로.
+		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
+		self:SkipToNextPhase()
 	end
 
 	@ExecSpace("Server")
@@ -30,11 +141,45 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void SetPhase(integer phase)
-		-- 🧪 개발·② 시계용: 페이즈 강제 설정.
-		self.CurrentPhase = math.max(1, phase)
-		self.PhaseElapsed = 0
-		log("[Match] phase -> " .. tostring(self.CurrentPhase))
+	method void OnUpdate(number delta)
+		-- 시계: 페이즈 전환 · 투입 · HUD.
+		if not self.Running or self.phases == nil or #self.phases == 0 then return end
+		self.Elapsed = self.Elapsed + delta
+		self.PhaseElapsed = self.PhaseElapsed + delta
+		local idx = 1
+		for i, p in ipairs(self.phases) do
+			if self.Elapsed >= p.start then idx = i end
+		end
+		if idx ~= self.CurrentPhase then self:SetPhase(idx) end
+		local row = self.phases[self.CurrentPhase]
+		if row.interval > 0 then
+			self.spawnTimer = self.spawnTimer - delta
+			if self.spawnTimer <= 0 then
+				self.spawnTimer = row.interval
+				self.waveIndex = self.waveIndex + 1
+				if _MinionFlowService ~= nil then
+					_MinionFlowService:SpawnWave(self.CurrentPhase, row.name, row.hpMul, row.atkMul, row.expBase, row.mesoBase, row.coinChance)
+				end
+			end
+		end
+		self.clockTimer = self.clockTimer - delta
+		if self.clockTimer <= 0 then
+			self.clockTimer = 1.0
+			local nextIn = -1
+			if row.interval > 0 then nextIn = math.ceil(self.spawnTimer) end
+			local nextPhaseIn = -1
+			local nxt = self.phases[self.CurrentPhase + 1]
+			if nxt ~= nil then nextPhaseIn = math.ceil(nxt.start - self.Elapsed) end
+			self:BroadcastClock(self.CurrentPhase, row.name, math.floor(self.Elapsed), nextIn, nextPhaseIn, self.Profile)
+		end
+	end
+
+	@ExecSpace("Multicast")
+	method void BroadcastClock(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile)
+		-- 서버 → 전 클라: 시계 HUD 갱신.
+		if _MatchClockUIController ~= nil then
+			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile)
+		end
 	end
 
 end
