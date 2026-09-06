@@ -6,6 +6,8 @@ script DevStatRemote extends Logic
 	--       → StatService 의 DEV 레이어 교체(SetLayerCsv) → 재계산 · 엔티티 반영(WalkSpeed/JumpForce/MaxHp)
 	--       → 서버가 SetReadout 으로 "실제 적용값"(WalkSpeed·JumpForce·데미지 범위)을 돌려준다. 낙관적 UI 없음.
 	-- BUFF 레이어(B 의 스킬·버프)는 건드리지 않는다. 단축키 ` (BackQuote) 토글. UUID 는 UIBuilder write({bind}) 주입.
+	-- 우측 열(2026-09-06 확장 · 패널 800×600): 메소 +100/+1k/+10k/+100k → RequestMeso(GrantMeso) · 빨간 포션 / 보석 12종 +1/+5/+10 → RequestGive(GiveItem)
+	--       보유 수량(meso · potion · gem_{GemId})도 SetReadout 의 valuesCsv 로 같이 내려온다. 보석 행은 GemRoot 아래 Row_{GemId} 이름으로 순회.
 
 	property boolean Enabled = true
 
@@ -39,6 +41,13 @@ script DevStatRemote extends Logic
 	property Entity rowJump = "c8d2e5ae-a07e-46a2-a47c-ae9a39fcfabe"
 
 	property Entity rowMaxhp = "1965201a-d529-45db-b40c-0a1929c949a2"
+
+	-- 우측 열 (2026-09-06 확장): 메소 · 빨간 포션 · 보석 12종 지급
+	property Entity rowMeso = "bc5cc658-8dc9-47d1-9394-92997c7443cc"
+
+	property Entity rowPotion = "878dfbf4-18dd-4465-93fc-1be0a4322be4"
+
+	property Entity gemRoot = "ec287395-a64a-4260-a85c-762340f04cdb"
 
 	@HideFromInspector
 	property any devByUser = nil
@@ -102,6 +111,33 @@ script DevStatRemote extends Logic
 		bind(self.btnClose, function() self:SetOpen(false) end)
 		bind(self.btnReset, function() self:RequestReset() end)
 		bind(self.btnRoll, function() self:RequestRoll() end)
+
+		-- 우측 열: 메소 · 빨간 포션 · 보석 12종 지급 (버튼 → 서버 요청 · 표시는 SetReadout 응답으로만)
+		local function wireRow(row, key, rowSpecs, fn)
+			if not isvalid(row) then return end
+			local v = row:GetChildByName("Value")
+			if isvalid(v) then self.valueTexts[key] = v.TextGUIRendererComponent end
+			for _, spec in ipairs(rowSpecs) do
+				local b = row:GetChildByName(spec[1])
+				if isvalid(b) then
+					local n = spec[2]
+					local h = b:ConnectEvent(ButtonClickEvent, function() fn(n) end)
+					table.insert(self.handlers, { e = b, h = h })
+				end
+			end
+		end
+		wireRow(self.rowMeso, "meso", { { "BtnP100", 100 }, { "BtnP1k", 1000 }, { "BtnP10k", 10000 }, { "BtnP100k", 100000 } }, function(n) self:RequestMeso(n) end)
+		local giveSpecs = { { "BtnP1", 1 }, { "BtnP5", 5 }, { "BtnP10", 10 } }
+		wireRow(self.rowPotion, "potion", giveSpecs, function(n) self:RequestGive("POTION_RED", n) end)
+		if isvalid(self.gemRoot) then
+			for _, row in ipairs(self.gemRoot.Children) do
+				local name = row.Name
+				if string.sub(name, 1, 4) == "Row_" then
+					local gemId = string.sub(name, 5)
+					wireRow(row, "gem_" .. gemId, giveSpecs, function(n) self:RequestGive("GEM_" .. gemId, n) end)
+				end
+			end
+		end
 		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
 		self:SetOpen(false)
 		log("[DevRemote] ready (client) rows=" .. tostring(#rows) .. " handlers=" .. tostring(#self.handlers))
@@ -176,6 +212,28 @@ script DevStatRemote extends Logic
 		self:SetRollText("굴림 ×5: " .. table.concat(parts, ", ") .. "  (0 = MISS)", senderUserId)
 	end
 
+	@ExecSpace("Server")
+	method void RequestMeso(integer amount)
+		-- 메소 지급 (SummonManager 원장 + HUD 갱신). 양수만.
+		if not self.Enabled or amount <= 0 then return end
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(player) then return end
+		_SummonManager:GrantMeso(player, amount)
+		log("[DevRemote] +meso " .. tostring(amount) .. " (" .. senderUserId .. ")")
+		self:PushReadout(senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestGive(string itemId, integer count)
+		-- 아이템 지급 (보석 GEM_* · 빨간 포션). 인벤토리 갱신까지.
+		if not self.Enabled or count <= 0 or _InventoryService == nil then return end
+		local uid = senderUserId
+		local given = _InventoryService:GiveItem(uid, itemId, count)
+		_InventoryService:PushInventory(uid)
+		log("[DevRemote] give " .. itemId .. " x" .. tostring(given) .. " (" .. uid .. ")")
+		self:PushReadout(uid)
+	end
+
 	@ExecSpace("ServerOnly")
 	method void PushReadout(string userId)
 		-- 원장 최종치 + DEV 델타 + 실제 엔티티 값(WalkSpeed·JumpForce·InputSpeed) + 데미지 범위를 소유 클라로.
@@ -199,6 +257,17 @@ script DevStatRemote extends Logic
 		local vals = {}
 		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "defense", "speed", "jump", "maxhp" }) do
 			table.insert(vals, k .. "=" .. tostring(f[k] or 0) .. "/" .. tostring(dev[k] or 0))
+		end
+		-- 우측 열: 메소 · 빨간 포션 · 보석 보유 수량
+		local econ = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		table.insert(vals, "meso=" .. tostring((econ ~= nil) and econ.meso or 0))
+		if _InventoryService ~= nil then
+			table.insert(vals, "potion=" .. tostring(_InventoryService:CountItem(userId, "POTION_RED")))
+			if _ItemCatalog ~= nil and _ItemCatalog.gems ~= nil then
+				for gemId, _g in pairs(_ItemCatalog.gems) do
+					table.insert(vals, "gem_" .. gemId .. "=" .. tostring(_InventoryService:CountItem(userId, "GEM_" .. gemId)))
+				end
+			end
 		end
 		local line1 = "WalkSpeed " .. self:Fmt(walk) .. " (기본 " .. self:Fmt(u.walkBase) .. " · 이동 " .. tostring(f.speed) .. "%)"
 			.. "  InputSpeed " .. self:Fmt(ispd)
