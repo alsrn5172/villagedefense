@@ -117,6 +117,8 @@ const CANONICAL = {
   VillageNpcSector: "VillageId,SectorId,AnchorX,AnchorY,SlotDX,SlotDY,SlotPerRow,FlipX,Enabled,#Note",
   VillageConfig: "VillageId,VillageMapName,Lane2MapName,Lane1MapName,RearMapName,BossMapName,ThemeId,CoreX,CoreY,Enabled,#Note",
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
+  LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
+  TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 };
 
@@ -209,6 +211,8 @@ const PK = {
   VillageNpcSector: ["VillageId", "SectorId"],
   VillageConfig: ["VillageId"],
   MonsterTraining: ["TrainClass", "Level"],
+  LaneConfig: ["VillageId", "MapName"],
+  TowerConfig: ["Stage", "Level"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
 };
 for (const [name, cols] of Object.entries(PK)) {

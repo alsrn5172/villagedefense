@@ -1,12 +1,13 @@
 @Logic
 script LaneStateService extends Logic
 
-	-- 🧱 마을 방어 상태 원장 — WO-011 ⑮ (NPC 창 4개 뼈대 · 2026-09-06). 시설(포탑·억제기·넥서스) Lv/HP/생존 · 수비 몬스터 묶음 · 병과 훈련 Lv · 창고(스택형만) — 유저별 인메모리 스텁.
-	-- 🔴 실제 Lane 시스템(미니언 흐름 · 시설 피격 · 자동 집결)이 오면 이 원장을 그쪽이 읽고 쓴다. 표 상수(towerDef · 훈련 비용)는 TowerConfig/MonsterTraining 등록 시 CSV 로 치환.
-	-- 🔴 비용은 전부 메소(임시 · 빅토리아 주화 원장 전). 클라 계약: RequestView(kind) → _VillageNpcUIController:SetView(kind, csv) 소유 클라만. 행 ";" · 필드 "|".
+	-- 🧱 마을 방어 상태 원장 — WO-011 ⑮ 스텁을 WO-012 ①(2026-09-07)에서 **마을 단위**로 바꿈. 키 = VillageId (VillageOwnership 이 유저 ↔ 마을을 잇는다).
+	-- 시설(포탑·억제기·넥서스) Lv/HP/생존 · 수비 몬스터 묶음 · 병과 훈련 Lv · 마을 창고(스택형만). 표: TowerConfig.csv(없으면 기본값) · MonsterTraining.csv.
+	-- 🔴 시설 비용은 전부 **빅토리아 주화**(SummonManager econ.coin). 피격은 LaneFacility(엔티티) → ApplyDamage 로 들어온다. 시각은 LaneFacilityService 가 칠한다.
+	-- 클라 계약: RequestView(kind) → _VillageNpcUIController:SetView(kind, csv) 소유 클라만. 행 ";" · 필드 "|". 마을이 없으면 첫 행 "NO_VILLAGE".
 
 	@HideFromInspector
-	property any users = nil
+	property any states = nil
 
 	@HideFromInspector
 	property any towerDef = nil
@@ -18,14 +19,9 @@ script LaneStateService extends Logic
 	property any trainDef = nil
 
 	method void OnBeginPlay()
-		-- 서버만 원장. 상수는 한 곳(여기)에.
+		-- 서버만 원장. 표를 읽는다.
 		if not self:IsServer() then return end
-		self.users = {}
-		self.towerDef = {
-			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, range = { 3.0, 3.5, 4.0 }, upgrade = { 300, 800 }, repairPerHp = 1, rebuild = 500 },
-			SUPPRESSOR = { name = "억제기", maxHp = { 1500, 2200, 3000 }, attack = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 500, 1200 }, repairPerHp = 1, rebuild = 800 },
-			CORE = { name = "넥서스", maxHp = { 3000 }, attack = { 0 }, range = { 0 }, upgrade = {}, repairPerHp = 2, rebuild = 0 },
-		}
+		self.states = {}
 		self.villages = {
 			{ id = "HENESYS", name = "헤네시스", mat = "REGION_HENESYS_SPORE", prefix = "Henesys" },
 			{ id = "KERNING", name = "커닝시티", mat = "REGION_KERNING_THIEF_COIN", prefix = "KerningCity" },
@@ -33,47 +29,112 @@ script LaneStateService extends Logic
 			{ id = "NAUTILUS", name = "노틸러스", mat = "REGION_NAUTILUS_PIRATE_COIN", prefix = "Nautilus" },
 			{ id = "PERION", name = "페리온", mat = "REGION_PERION_WARRIOR_TOKEN", prefix = "Perion" },
 		}
-		-- 훈련 표 (MonsterTraining.csv · 기획 정리 §2-3). 없으면 기본값.
-		self.trainDef = { MELEE = {}, RANGED = {}, TANK = {} }
-		local mt = _DataService:GetTable("MonsterTraining")
-		if mt ~= nil then
-			for i = 1, mt:GetRowCount() do
-				local cls = mt:GetCell(i, "TrainClass") or ""
-				local lv = math.floor(tonumber(mt:GetCell(i, "Level")) or 0)
-				if self.trainDef[cls] ~= nil and lv >= 1 then
-					self.trainDef[cls][lv] = { cost = math.floor(tonumber(mt:GetCell(i, "DreamPieceCost")) or 0), mul = tonumber(mt:GetCell(i, "StatMul")) or 1 }
+		self:LoadTowerDef()
+		self:LoadTrainDef()
+		log("[Lane] LaneStateService ready (server · village ledger)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadTowerDef()
+		-- TowerConfig.csv(계약서 A-2-4 · Stage 3값 · 비용 = 주화). 없으면 결정 §1-1 기본값.
+		self.towerDef = {
+			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, range = { 3.0, 3.5, 4.0 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.05, rebuild = 30 },
+			SUPPRESSOR = { name = "억제기", maxHp = { 1200, 1800, 2600 }, attack = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 30, 60, 0 }, repairPerHp = 0.05, rebuild = 50, hpMul = 1.3, atkMul = 1.3, expMul = 1.2 },
+			CORE = { name = "넥서스", maxHp = { 2000 }, attack = { 0 }, range = { 0 }, upgrade = { 0 }, repairPerHp = 0.1, rebuild = 0 },
+		}
+		local t = _DataService:GetTable("TowerConfig")
+		if t == nil then
+			log_warning("[Lane] TowerConfig dataset not found — 기본값 사용")
+			return
+		end
+		local names = { TOWER = "포탑", SUPPRESSOR = "억제기", CORE = "넥서스" }
+		local fresh = {}
+		for i = 1, t:GetRowCount() do
+			local stage = t:GetCell(i, "Stage") or ""
+			local lv = math.floor(tonumber(t:GetCell(i, "Level")) or 0)
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if names[stage] ~= nil and lv >= 1 and enabled then
+				if fresh[stage] == nil then fresh[stage] = { name = names[stage], maxHp = {}, attack = {}, range = {}, upgrade = {}, repairPerHp = 0.05, rebuild = 0 } end
+				local d = fresh[stage]
+				d.maxHp[lv] = math.floor(tonumber(t:GetCell(i, "MaxHp")) or 1)
+				d.attack[lv] = tonumber(t:GetCell(i, "Attack")) or 0
+				d.range[lv] = tonumber(t:GetCell(i, "Range")) or 0
+				d.upgrade[lv] = math.floor(tonumber(t:GetCell(i, "UpgradeCost")) or 0)
+				d.repairPerHp = tonumber(t:GetCell(i, "RepairCostPerHp")) or d.repairPerHp
+				d.rebuild = math.floor(tonumber(t:GetCell(i, "RebuildCost")) or d.rebuild)
+				if stage == "SUPPRESSOR" then
+					d.hpMul = tonumber(t:GetCell(i, "SuppressorMinionHpMul")) or 1.3
+					d.atkMul = tonumber(t:GetCell(i, "SuppressorMinionAtkMul")) or 1.3
+					d.expMul = tonumber(t:GetCell(i, "SuppressorExpMul")) or 1.2
 				end
 			end
-			log("[Lane] MonsterTraining loaded: " .. tostring(mt:GetRowCount()) .. " rows")
-		else
+		end
+		for stage, d in pairs(fresh) do if #d.maxHp >= 1 then self.towerDef[stage] = d end end
+		log("[Lane] TowerConfig loaded: " .. tostring(t:GetRowCount()) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadTrainDef()
+		-- MonsterTraining.csv (기획 정리 §2-3). 없으면 기본값.
+		self.trainDef = { MELEE = {}, RANGED = {}, TANK = {} }
+		local mt = _DataService:GetTable("MonsterTraining")
+		if mt == nil then
 			log_warning("[Lane] MonsterTraining dataset not found — 훈련 비용 기본값 사용")
+			return
 		end
-		-- 🟡 소유권 원장(VillageClaimedEvent) 전 임시: OWNER_ONLY NPC 를 전원 허용한다. 원장이 오면 이 스텁을 그쪽 판정으로 교체.
-		if _NpcCatalog ~= nil and not _NpcCatalog:HasOwnershipResolver() then
-			_NpcCatalog:SetOwnershipResolver(function(userId, villageId, catalogNpcId) return true end)
-			log("[Lane] ownership resolver = allow-all (임시 · 소유권 원장 전)")
+		for i = 1, mt:GetRowCount() do
+			local cls = mt:GetCell(i, "TrainClass") or ""
+			local lv = math.floor(tonumber(mt:GetCell(i, "Level")) or 0)
+			if self.trainDef[cls] ~= nil and lv >= 1 then
+				self.trainDef[cls][lv] = { cost = math.floor(tonumber(mt:GetCell(i, "DreamPieceCost")) or 0), mul = tonumber(mt:GetCell(i, "StatMul")) or 1 }
+			end
 		end
-		log("[Lane] LaneStateService ready (server · stub ledger)")
+		log("[Lane] MonsterTraining loaded: " .. tostring(mt:GetRowCount()) .. " rows")
 	end
 
 	-- ── 원장 ────────────────────────────────────────────────────
 
 	@ExecSpace("ServerOnly")
-	method any EnsureUser(string userId)
+	method any EnsureVillage(string villageId)
 		-- 없으면 초기 상태: 시설 3종 Lv1 만피 생존 · 수비대 0 · 훈련 Lv1 · 창고 빈칸.
-		local u = self.users[userId]
-		if u ~= nil then return u end
-		u = { towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {} }
+		if villageId == nil or villageId == "" then return nil end
+		local v = self.states[villageId]
+		if v ~= nil then return v end
+		v = { id = villageId, towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {} }
 		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
-			u.towers[stage] = { lv = 1, hp = self:MaxHp(stage, 1), alive = true }
+			v.towers[stage] = { lv = 1, hp = self:MaxHp(stage, 1), alive = true }
 		end
-		self.users[userId] = u
-		return u
+		self.states[villageId] = v
+		return v
+	end
+
+	@ExecSpace("ServerOnly")
+	method string VillageOfUser(string userId)
+		-- 유저의 마을 (소유권 원장). 없으면 "".
+		if _VillageOwnership == nil then return "" end
+		return _VillageOwnership:VillageOf(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any StateOfUser(string userId)
+		-- 유저 마을의 원장. 마을이 없으면 nil.
+		local vid = self:VillageOfUser(userId)
+		if vid == "" then return nil end
+		return self:EnsureVillage(vid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FacilityState(string villageId, string stage)
+		-- 시설 하나: {lv, hp, max, alive}. LaneFacilityService 가 색을 칠할 때 쓴다.
+		local v = self:EnsureVillage(villageId)
+		if v == nil or v.towers[stage] == nil then return nil end
+		local t = v.towers[stage]
+		return { lv = t.lv, hp = t.hp, max = self:MaxHp(stage, t.lv), alive = t.alive }
 	end
 
 	@ExecSpace("ServerOnly")
 	method integer MaxHp(string stage, integer lv)
-		-- 단계별 최대 HP (표 상수).
+		-- 단계별 최대 HP.
 		local d = self.towerDef[stage]
 		if d == nil then return 1 end
 		return d.maxHp[math.min(lv, #d.maxHp)] or 1
@@ -81,7 +142,7 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method any TrainRow(string cls, integer lv)
-		-- 훈련 단계 행 {cost, mul}. 표에 없으면 기본값(꿈의 조각 0/3/5/10/15 · 배율 1/1.5/2.2/3.3/5).
+		-- 훈련 단계 행 {cost, mul}. 표에 없으면 기본값.
 		local t = (self.trainDef ~= nil) and self.trainDef[cls] or nil
 		if t ~= nil and t[lv] ~= nil then return t[lv] end
 		local costs = { 0, 3, 5, 10, 15 }
@@ -91,43 +152,35 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method string FrontStage(any u)
+	method string FrontStage(any v)
 		-- 살아 있는 최전방: 포탑 → 억제기 → 넥서스.
 		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
-			if u.towers[stage].alive then return stage end
+			if v.towers[stage].alive then return stage end
 		end
 		return "CORE"
 	end
 
 	@ExecSpace("ServerOnly")
-	method integer DefenderUnits(any u)
+	method integer DefenderUnits(any v)
 		-- 묶음 안 마릿수 합.
 		local n = 0
-		for _, d in ipairs(u.defenders) do n = n + (d.qty or 0) end
+		for _, d in ipairs(v.defenders) do n = n + (d.qty or 0) end
 		return n
 	end
 
 	@ExecSpace("ServerOnly")
 	method string VillageOfMap(string mapName)
-		-- 맵 이름 접두 → VillageId (VillageConfig 전 임시 · ItemCatalog.ShopKeyOfMap 과 같은 규칙).
+		-- 맵 이름 접두 → VillageId (관문·파병의 "지금 서 있는 지역" 표시용).
 		local key = (_ItemCatalog ~= nil) and _ItemCatalog:ShopKeyOfMap(mapName or "") or ""
 		if string.sub(key, 1, 7) == "REGION_" then return string.sub(key, 8) end
 		return ""
 	end
 
 	@ExecSpace("ServerOnly")
-	method string OwnVillage(string userId)
-		-- 요청자가 서 있는 맵의 마을.
-		local p = _UserService:GetUserEntityByUserId(userId)
-		if isvalid(p) and isvalid(p.CurrentMap) then return self:VillageOfMap(p.CurrentMap.Name) end
-		return ""
-	end
-
-	@ExecSpace("ServerOnly")
-	method integer Meso(string userId)
-		-- 메소 원장 조회.
+	method integer Coin(string userId)
+		-- 빅토리아 주화 조회.
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
-		return (e ~= nil) and (e.meso or 0) or 0
+		return (e ~= nil) and (e.coin or 0) or 0
 	end
 
 	@ExecSpace("ServerOnly")
@@ -145,6 +198,40 @@ script LaneStateService extends Logic
 		end
 	end
 
+	@ExecSpace("ServerOnly")
+	method void PushOwner(string villageId, string kind)
+		-- 마을 주인 클라에 뷰 갱신 (피격 등 서버 쪽 변화).
+		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
+		if owner ~= "" then self:Push(owner, kind) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Changed(string villageId, string stage)
+		-- 시설 상태 변화 → 엔티티 색 + 주인 방어 창.
+		if _LaneFacilityService ~= nil then _LaneFacilityService:OnFacilityChanged(villageId, stage) end
+		self:PushOwner(villageId, "defense")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyDamage(string villageId, string stage, integer damage, string attackerName)
+		-- 시설 피격 (LaneFacility → 여기). HP 0 → 파괴 1회 이벤트. 넥서스 파괴 = 탈락(①에선 로그·토스트까지).
+		local v = self:EnsureVillage(villageId)
+		if v == nil then return end
+		local t = v.towers[stage]
+		if t == nil or not t.alive or damage <= 0 then return end
+		t.hp = math.max(0, t.hp - damage)
+		if t.hp == 0 then
+			t.alive = false
+			log("[Lane] " .. villageId .. " " .. stage .. " DESTROYED by " .. tostring(attackerName))
+			local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
+			if owner ~= "" then
+				if stage == "CORE" then self:Toast(owner, "넥서스가 파괴되었습니다 — 탈락")
+				else self:Toast(owner, self.towerDef[stage].name .. " 파괴!") end
+			end
+		end
+		self:Changed(villageId, stage)
+	end
+
 	-- ── 뷰 ─────────────────────────────────────────────────────
 
 	@ExecSpace("Server")
@@ -155,37 +242,42 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method string BuildView(string userId, string kind)
-		-- kind 별 행. 클라는 첫 필드로 행 종류를 판단한다.
-		local u = self:EnsureUser(userId)
+		-- kind 별 행. 클라는 첫 필드로 행 종류를 판단한다. 마을이 필요한 뷰에 마을이 없으면 "NO_VILLAGE" 한 줄.
 		local rows = {}
 		local function add(parts) table.insert(rows, table.concat(parts, "|")) end
 		local function b2s(v) if v then return "1" end return "0" end
+		local v = self:StateOfUser(userId)
+		local needVillage = (kind == "defense" or kind == "recruit" or kind == "train" or kind == "storage" or kind == "dispatch")
+		if needVillage and v == nil then
+			add({ "NO_VILLAGE" })
+			return table.concat(rows, ";")
+		end
 		if kind == "defense" then
-			local front = self:FrontStage(u)
+			local front = self:FrontStage(v)
 			for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
-				local t = u.towers[stage]
+				local t = v.towers[stage]
 				local d = self.towerDef[stage]
 				local max = self:MaxHp(stage, t.lv)
 				local upCost = d.upgrade[t.lv] or 0
-				local repCost = (max - t.hp) * d.repairPerHp
+				local repCost = math.ceil((max - t.hp) * d.repairPerHp)
 				local rebCost = d.rebuild
 				local canUp = t.alive and upCost > 0
 				local canRep = t.alive and t.hp < max
-				local canReb = (not t.alive) and rebCost > 0 and (stage ~= "TOWER" or u.towers.SUPPRESSOR.alive)
+				local canReb = (not t.alive) and rebCost > 0 and (stage ~= "TOWER" or v.towers.SUPPRESSOR.alive)
 				add({ "T", stage, d.name, tostring(t.lv), tostring(t.hp), tostring(max), b2s(t.alive),
 					tostring(d.attack[math.min(t.lv, #d.attack)] or 0), tostring(d.range[math.min(t.lv, #d.range)] or 0),
 					tostring(upCost), tostring(repCost), tostring(rebCost), b2s(canUp), b2s(canRep), b2s(canReb) })
 			end
 			add({ "FRONT", front })
-			add({ "DEF", tostring(#u.defenders), tostring(self:DefenderUnits(u)), tostring(u.cap) })
-			add({ "MESO", tostring(self:Meso(userId)) })
+			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
+			add({ "COIN", tostring(self:Coin(userId)) })
 		elseif kind == "recruit" then
-			local front = self:FrontStage(u)
-			local t = u.towers[front]
+			local front = self:FrontStage(v)
+			local t = v.towers[front]
 			add({ "FRONT", front, self.towerDef[front].name, tostring(t.hp), tostring(self:MaxHp(front, t.lv)), b2s(t.alive) })
 			local slots = {}
-			for _, d in ipairs(u.defenders) do table.insert(slots, d.key .. ":" .. tostring(d.qty)) end
-			add({ "DEF", tostring(#u.defenders), tostring(self:DefenderUnits(u)), tostring(u.cap), table.concat(slots, ",") })
+			for _, d in ipairs(v.defenders) do table.insert(slots, d.key .. ":" .. tostring(d.qty)) end
+			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap), table.concat(slots, ",") })
 			local su = _DataService:GetTable("SummonUnits")
 			if su ~= nil then
 				for i = 1, su:GetRowCount() do
@@ -195,11 +287,12 @@ script LaneStateService extends Logic
 					end
 				end
 			end
-			add({ "MESO", tostring(self:Meso(userId)) })
+			local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+			add({ "MESO", tostring((e ~= nil) and (e.meso or 0) or 0) })
 		elseif kind == "train" then
 			local names = { MELEE = "근접", RANGED = "원거리", TANK = "탱커" }
 			for _, cls in ipairs({ "MELEE", "RANGED", "TANK" }) do
-				local lv = u.train[cls]
+				local lv = v.train[cls]
 				local cur = self:TrainRow(cls, lv)
 				local nextCost = (lv < 5) and self:TrainRow(cls, lv + 1).cost or 0
 				add({ "TR", cls, names[cls], tostring(lv), string.format("%.3f", cur.mul), tostring(nextCost), "5" })
@@ -207,13 +300,13 @@ script LaneStateService extends Logic
 			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "DREAM_PIECE") or 0
 			add({ "HAVE", tostring(have) })
 		elseif kind == "storage" then
-			for _, s in ipairs(u.storage) do add({ "S", s.itemId, tostring(s.count) }) end
+			for _, s in ipairs(v.storage) do add({ "S", s.itemId, tostring(s.count) }) end
 			if #rows == 0 then add({ "EMPTY" }) end
 		elseif kind == "stats" then
 			local p = _UserService:GetUserEntityByUserId(userId)
 			local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
 			local myName = (isvalid(p) and isvalid(p.PlayerComponent)) and p.PlayerComponent.Nickname or "?"
-			add({ "ME", myName, tostring((e ~= nil) and (e.level or 1) or 1), tostring((e ~= nil) and (e.exp or 0) or 0), tostring(self:Meso(userId)), "0", "0" })
+			add({ "ME", myName, tostring((e ~= nil) and (e.level or 1) or 1), tostring((e ~= nil) and (e.exp or 0) or 0), tostring((e ~= nil) and (e.meso or 0) or 0), "0", "0" })
 			if isvalid(p) and isvalid(p.CurrentMap) then
 				local list = _UserService:GetUsersByMapName(p.CurrentMap.Name)
 				for _, ent in ipairs(list or {}) do
@@ -225,27 +318,31 @@ script LaneStateService extends Logic
 				end
 			end
 		elseif kind == "dispatch" then
-			local own = self:OwnVillage(userId)
-			add({ "DEF", tostring(#u.defenders), tostring(self:DefenderUnits(u)), tostring(u.cap) })
-			for _, v in ipairs(self.villages) do add({ "V", v.id, v.name, b2s(v.id == own) }) end
+			local own = self:VillageOfUser(userId)
+			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
+			for _, vv in ipairs(self.villages) do add({ "V", vv.id, vv.name, b2s(vv.id == own) }) end
 		elseif kind == "gate" then
-			local own = self:OwnVillage(userId)
+			local own = self:VillageOfUser(userId)
+			if own == "" then
+				local p = _UserService:GetUserEntityByUserId(userId)
+				if isvalid(p) and isvalid(p.CurrentMap) then own = self:VillageOfMap(p.CurrentMap.Name) end
+			end
 			local core = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "ENERGY_CORE") or 0
 			add({ "CORE", tostring(core) })
 			local bi = _DataService:GetTable("BossInfo")
-			for _, v in ipairs(self.villages) do
+			for _, vv in ipairs(self.villages) do
 				local bossName = "-"
 				if bi ~= nil then
 					for i = 1, bi:GetRowCount() do
 						local mn = tostring(bi:GetCell(i, "MapName") or "")
-						if string.find(mn, v.prefix) == 1 then bossName = bi:GetCell(i, "Name") or bossName break end
+						if string.find(mn, vv.prefix) == 1 then bossName = bi:GetCell(i, "Name") or bossName break end
 					end
 				end
-				local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, v.mat) or 0
-				add({ "G", v.id, v.name, bossName, v.mat, tostring(have), "25", b2s(v.id == own) })
+				local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, vv.mat) or 0
+				add({ "G", vv.id, vv.name, bossName, vv.mat, tostring(have), "25", b2s(vv.id == own) })
 			end
 		elseif kind == "collection" then
-			-- 스폰 관리 몬스터(MapMonsters 에 있는 것)만 · 레벨은 MonsterInfo(기획 §3 게임 Lv 로 맞춤). 사용자 지시 2026-09-06.
+			-- 스폰 관리 몬스터(MapMonsters 에 있는 것)만 · 레벨은 MonsterInfo(기획 §3 게임 Lv).
 			local spawnSet = {}
 			local mm = _DataService:GetTable("MapMonsters")
 			if mm ~= nil then
@@ -273,10 +370,11 @@ script LaneStateService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestTowerAction(string stage, string action)
-		-- 강화 / 수리 / 재건. 비용은 메소(임시).
+		-- 강화 / 수리 / 재건. 비용은 빅토리아 주화.
 		local uid = senderUserId
-		local u = self:EnsureUser(uid)
-		local t = u.towers[stage]
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
+		local t = v.towers[stage]
 		local d = self.towerDef[stage]
 		if t == nil or d == nil then return end
 		local max = self:MaxHp(stage, t.lv)
@@ -286,17 +384,17 @@ script LaneStateService extends Logic
 			cost = d.upgrade[t.lv] or 0
 			if not t.alive or cost <= 0 then self:Toast(uid, "강화할 수 없습니다") return end
 		elseif action == "repair" then
-			cost = (max - t.hp) * d.repairPerHp
-			if not t.alive or cost <= 0 then self:Toast(uid, "수리할 곳이 없습니다") return end
+			cost = math.ceil((max - t.hp) * d.repairPerHp)
+			if not t.alive or t.hp >= max then self:Toast(uid, "수리할 곳이 없습니다") return end
 		elseif action == "rebuild" then
 			cost = d.rebuild
 			if t.alive or cost <= 0 then self:Toast(uid, "재건할 수 없습니다") return end
-			if stage == "TOWER" and not u.towers.SUPPRESSOR.alive then self:Toast(uid, "억제기가 파괴된 동안은 포탑을 재건할 수 없습니다") return end
+			if stage == "TOWER" and not v.towers.SUPPRESSOR.alive then self:Toast(uid, "억제기가 파괴된 동안은 포탑을 재건할 수 없습니다") return end
 		else
 			return
 		end
-		if _SummonManager == nil or not _SummonManager:SpendMeso(uid, cost) then
-			self:Toast(uid, "메소가 부족합니다 (" .. tostring(cost) .. ")")
+		if _SummonManager == nil or not _SummonManager:SpendCoin(uid, cost) then
+			self:Toast(uid, "빅토리아 주화가 부족합니다 (" .. tostring(cost) .. ")")
 			return
 		end
 		if action == "upgrade" then
@@ -311,24 +409,25 @@ script LaneStateService extends Logic
 			t.hp = max
 			msg = d.name .. " 재건 완료"
 		end
-		log("[Lane] " .. action .. " " .. stage .. " meso-" .. tostring(cost) .. " (" .. uid .. ")")
-		self:Toast(uid, msg .. " (메소 -" .. tostring(cost) .. ")")
-		self:Push(uid, "defense")
+		log("[Lane] " .. v.id .. " " .. action .. " " .. stage .. " coin-" .. tostring(cost) .. " (" .. uid .. ")")
+		self:Toast(uid, msg .. " (주화 -" .. tostring(cost) .. ")")
+		self:Changed(v.id, stage)
 	end
 
 	@ExecSpace("Server")
 	method void RequestRecruit(string unitKey)
-		-- 모집: SummonUnits 가격(메소 · 임시) → 묶음 1개 추가(자동 집결은 Lane 연동 후). 10묶음 상한.
+		-- 모집: SummonUnits 가격(메소 · 임시 — 몬스터별 재화 8개는 WP2) → 묶음 1개 추가. 10묶음 상한.
 		local uid = senderUserId
-		local u = self:EnsureUser(uid)
-		if #u.defenders >= u.cap then self:Toast(uid, "수비대가 가득 찼습니다 (" .. tostring(u.cap) .. "묶음)") return end
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
+		if #v.defenders >= v.cap then self:Toast(uid, "수비대가 가득 찼습니다 (" .. tostring(v.cap) .. "묶음)") return end
 		local cfg = (_SummonManager ~= nil) and _SummonManager:ResolveUnit(unitKey) or nil
 		if cfg == nil then self:Toast(uid, "알 수 없는 몬스터: " .. tostring(unitKey)) return end
 		local cost = math.floor(tonumber(cfg.mesoCost or cfg.meso or 0) or 0)
 		local name = tostring(cfg.name or cfg.Name or unitKey)
 		if not _SummonManager:SpendMeso(uid, cost) then self:Toast(uid, "메소가 부족합니다 (" .. tostring(cost) .. ")") return end
-		table.insert(u.defenders, { key = unitKey, name = name, qty = 8 })
-		log("[Lane] recruit " .. unitKey .. " meso-" .. tostring(cost) .. " bundles=" .. tostring(#u.defenders) .. " (" .. uid .. ")")
+		table.insert(v.defenders, { key = unitKey, name = name, qty = 8 })
+		log("[Lane] " .. v.id .. " recruit " .. unitKey .. " meso-" .. tostring(cost) .. " bundles=" .. tostring(#v.defenders) .. " (" .. uid .. ")")
 		self:Toast(uid, name .. " 1묶음 모집 (메소 -" .. tostring(cost) .. ")")
 		self:Push(uid, "recruit")
 	end
@@ -337,8 +436,9 @@ script LaneStateService extends Logic
 	method void RequestTrain(string cls)
 		-- 훈련: 꿈의 조각 즉시 소모 · Lv 최대 5.
 		local uid = senderUserId
-		local u = self:EnsureUser(uid)
-		local lv = u.train[cls]
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
+		local lv = v.train[cls]
 		if lv == nil then return end
 		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") return end
 		local cost = self:TrainRow(cls, lv + 1).cost
@@ -348,48 +448,50 @@ script LaneStateService extends Logic
 		end
 		_InventoryService:RemoveItem(uid, "DREAM_PIECE", cost)
 		_InventoryService:PushInventory(uid)
-		u.train[cls] = lv + 1
-		log("[Lane] train " .. cls .. " -> Lv" .. tostring(lv + 1) .. " (" .. uid .. ")")
+		v.train[cls] = lv + 1
+		log("[Lane] " .. v.id .. " train " .. cls .. " -> Lv" .. tostring(lv + 1) .. " (" .. uid .. ")")
 		self:Toast(uid, cls .. " 훈련 Lv" .. tostring(lv + 1))
 		self:Push(uid, "train")
 	end
 
 	@ExecSpace("Server")
 	method void RequestStorageMove(string itemId, integer count, string dir)
-		-- 창고 넣기/꺼내기 (스택형만 · 장비는 강화 정보가 있어 제외).
+		-- 마을 창고 넣기/꺼내기 (스택형만).
 		local uid = senderUserId
-		local u = self:EnsureUser(uid)
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
 		local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(itemId) or nil
 		if def == nil or _InventoryService == nil or count <= 0 then return end
 		if def.type == "EQUIP" then self:Toast(uid, "장비는 창고에 넣을 수 없습니다") return end
 		local slot = nil
-		for _, s in ipairs(u.storage) do if s.itemId == itemId then slot = s end end
+		for _, s in ipairs(v.storage) do if s.itemId == itemId then slot = s end end
 		if dir == "in" then
 			if not _InventoryService:RemoveItem(uid, itemId, count) then self:Toast(uid, "가진 수량이 부족합니다") return end
-			if slot == nil then table.insert(u.storage, { itemId = itemId, count = count }) else slot.count = slot.count + count end
+			if slot == nil then table.insert(v.storage, { itemId = itemId, count = count }) else slot.count = slot.count + count end
 		else
 			if slot == nil or slot.count < count then self:Toast(uid, "창고에 그만큼 없습니다") return end
 			_InventoryService:GiveItem(uid, itemId, count)
 			slot.count = slot.count - count
 			if slot.count <= 0 then
-				for i, s in ipairs(u.storage) do if s == slot then table.remove(u.storage, i) break end end
+				for i, s in ipairs(v.storage) do if s == slot then table.remove(v.storage, i) break end end
 			end
 		end
 		_InventoryService:PushInventory(uid)
-		log("[Lane] storage " .. dir .. " " .. itemId .. " x" .. tostring(count) .. " (" .. uid .. ")")
+		log("[Lane] " .. v.id .. " storage " .. dir .. " " .. itemId .. " x" .. tostring(count) .. " (" .. uid .. ")")
 		self:Push(uid, "storage")
 	end
 
 	@ExecSpace("Server")
 	method void RequestDispatch(string targetVillageId, integer bundles)
-		-- 파병(스텁): 묶음을 원장에서 빼기만 한다. 실제 이동·전투는 Lane/Dispatch 연동 후.
+		-- 파병(스텁): 묶음을 원장에서 빼기만 한다. 실제 이동·전투는 ③.
 		local uid = senderUserId
-		local u = self:EnsureUser(uid)
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
 		local n = math.floor(bundles or 0)
-		if n <= 0 or n > #u.defenders then self:Toast(uid, "보낼 수비대가 부족합니다") return end
-		if targetVillageId == self:OwnVillage(uid) then self:Toast(uid, "내 마을에는 파병할 수 없습니다") return end
-		for i = 1, n do table.remove(u.defenders, 1) end
-		log("[Lane] dispatch " .. tostring(n) .. " bundles -> " .. targetVillageId .. " (" .. uid .. ")")
+		if n <= 0 or n > #v.defenders then self:Toast(uid, "보낼 수비대가 부족합니다") return end
+		if targetVillageId == v.id then self:Toast(uid, "내 마을에는 파병할 수 없습니다") return end
+		for i = 1, n do table.remove(v.defenders, 1) end
+		log("[Lane] " .. v.id .. " dispatch " .. tostring(n) .. " bundles -> " .. targetVillageId .. " (" .. uid .. ")")
 		self:Toast(uid, targetVillageId .. " 로 " .. tostring(n) .. "묶음 파병 (스텁)")
 		self:Push(uid, "dispatch")
 	end
@@ -398,7 +500,7 @@ script LaneStateService extends Logic
 	method void RequestDimensionGate(string targetVillageId)
 		-- 차원 관문(스텁): 에너지 코어 1 소모. 실제 이동은 Map/ 포탈 훅 연결 후.
 		local uid = senderUserId
-		if targetVillageId == self:OwnVillage(uid) then self:Toast(uid, "내 마을은 걸어서 갑니다") return end
+		if targetVillageId == self:VillageOfUser(uid) then self:Toast(uid, "내 마을은 걸어서 갑니다") return end
 		if _InventoryService == nil or _InventoryService:CountItem(uid, "ENERGY_CORE") < 1 then self:Toast(uid, "에너지 코어가 없습니다") return end
 		_InventoryService:RemoveItem(uid, "ENERGY_CORE", 1)
 		_InventoryService:PushInventory(uid)
@@ -409,16 +511,12 @@ script LaneStateService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestDevHit(string stage, integer damage)
-		-- 🧪 개발용: 시설에 피해를 줘서 파괴·최전방 이동을 본다. DevStatRemote.Enabled 일 때만.
+		-- 🧪 개발용: 내 마을 시설에 피해. DevStatRemote.Enabled 일 때만.
 		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
 		local uid = senderUserId
-		local u = self:EnsureUser(uid)
-		local t = u.towers[stage]
-		if t == nil or not t.alive then return end
-		t.hp = t.hp - math.max(0, damage)
-		if t.hp <= 0 then t.hp = 0 t.alive = false end
-		log("[Lane] devhit " .. stage .. " -" .. tostring(damage) .. " hp=" .. tostring(t.hp) .. " alive=" .. tostring(t.alive))
-		self:Push(uid, "defense")
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다") return end
+		self:ApplyDamage(v.id, stage, math.max(0, damage), "dev")
 	end
 
 end
