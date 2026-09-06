@@ -60,6 +60,15 @@
 - **스펙(임시 상수)**: HP = 도감 MaxHp × 0.3 × 배율 · 공격 = 도감 Level × 1.5 × 배율 (`DefenderService.HpRatio/AttackPerLevel`).
 - 미구현: 시설 파괴 시 다음 시설로 후퇴 · 파병(파병 창은 원장 스텁 그대로) · 훈련 NPC(`train` 라우트 3병과)는 도감 레벨과 별개로 남아 있음(폐기 예정).
 
+## 2026-09-07 — 사용자 지적 6건 (③ 실측 후)
+
+1. **도감 창 재로드**: 셀 클릭 때 `GridView.Refresh` 로 셀을 다시 만들어 썸네일을 전부 재로드했다 → 셀 엔티티를 `boundCells[Id]={index, cell}` 로 들고 **제자리 다시 칠하기**(`RepaintCells`). 서버 뷰가 다시 와도 행 수가 같으면 Refresh 없이 제자리 갱신. 같은 ImageRUID 는 재대입 안 함.
+2. **창 열린 채 NPC 클릭 새어나감**: `VillageNpcUIController.IsAnyOpen()` 신설 → `VillageNpcInteractor.HandleTouchEvent` · `LaneFacility.HandleTouchEvent`(넥서스) 가 창이 열려 있으면 무시.
+3. **시설 HP 바**: `Models/Structures/LaneHpBar`(`lanehpbar` · 흰 둥근사각) 배경+채움 2장을 시설 위(포탑 +2.7 · 억제기 +1.2 · 넥서스 +3.0)에 스폰. 채움 = `Scale.x` 비율 + 왼쪽 정렬, 색 초록/노랑/빨강(50%/25%). 주인 없음·파괴 시 숨김. `LaneFacilityService.SpawnHpBar/ApplyVisual`.
+4. 미니언 페이즈 조절 = `RootDesk/MyDesk/MinionPhaseConfig.csv`(Profile 별 StartSeconds·SpawnIntervalSeconds·HpMul·AtkMul·ExpBase·MesoBase·CoinDropChance) + `MinionComposition.csv`(페이즈별 몬스터·Weight·BaseHp·BaseAttack). 리모컨 `시계 TEST/LIVE` 가 Profile 을 고른다.
+5. **포탑·억제기는 HP 로 어두워지지 않음** — 넥서스만 흰→검정. 파괴 = 반투명 회색(0.5,0.5,0.5,0.5).
+6. **해금 버튼 잠김**: 서버가 거절(재료 부족·마을 없음)할 때 뷰를 안 돌려줘 클라 `waiting` 이 영영 true 였다 → 모든 거절 경로가 `Push(collection/recruit)`. 버튼은 몬스터를 고르면 항상 켜고(부족은 라벨에 "— 부족"), 판정은 서버 토스트.
+
 ### 기타
 - `Match/MatchSessionLogic` 스텁: `@Sync CurrentPhase`, `PhaseIndex()`, `SetPhase()`. 시계 본체는 ②.
 - 넥서스 아이콘 RUID `dab6ddee…` → **`8adca861…`**(사용자 선택 #3) 3곳: `VillageDefenseGroup` Node/Card `Icon` · `VillageLifeUIController` icons · `ui_village_common ICON.core`.

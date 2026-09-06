@@ -15,6 +15,20 @@ script LaneFacilityService extends Logic
 	@HideFromInspector
 	property any entities = nil
 
+	-- 시설 HP 바 (사용자 요청 2026-09-07): lanehpbar 모델(카탈로그 흰 바 107878b3 · 16×12px = 0.16×0.12 유닛 — 계정 자산 f5e5fbd6 은 월드 SpriteRenderer 에서 "unavailable") 배경+채움 2장 · 채움은 Scale.x 로 비율.
+	property string HpBarModelId = "lanehpbar"
+
+	property number HpBarWidth = 2.0
+
+	property number HpBarHeight = 0.2
+
+	property number HpBarSpriteW = 0.16
+
+	property number HpBarSpriteH = 0.12
+
+	@HideFromInspector
+	property any bars = nil
+
 	@HideFromInspector
 	property any laneRows = nil
 
@@ -22,6 +36,7 @@ script LaneFacilityService extends Logic
 		-- 서버: LaneConfig 를 읽고 마을마다 넥서스를 놓는다 (맵 엔티티는 서버 시작 시 전부 로드돼 있다).
 		if not self:IsServer() then return end
 		self.entities = {}
+		self.bars = {}
 		self:LoadLanes()
 		_TimerService:SetTimerOnce(function() self:SpawnAllNexus() end, 1.0)
 		log("[Facility] LaneFacilityService ready (server)")
@@ -137,6 +152,42 @@ script LaneFacilityService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method number BarOffset(string stage)
+		-- 엔티티 피벗 → HP 바 y (스프라이트 꼭대기 위 0.3). 포탑 3.2(피벗 아래 0.81) · 억제기 FlipY 1.56 · 넥서스 ×3(피벗 중심).
+		if stage == "TOWER" then return 2.7 end
+		if stage == "SUPPRESSOR" then return 1.2 end
+		return 3.0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnHpBar(string villageId, string stage, Entity map, number x, number y)
+		-- 배경(어둡게) + 채움(초록) 2장. 채움 비율은 ApplyVisual 이 Scale.x/x 로 맞춘다.
+		local key = villageId .. ":" .. stage
+		if self.bars[key] ~= nil and isvalid(self.bars[key].fill) then return end
+		local sx = self.HpBarWidth / self.HpBarSpriteW
+		local sy = self.HpBarHeight / self.HpBarSpriteH
+		-- 엔티티 이름에 ':' 는 금지(LEA-3021 Interrupted · 실측) → '_' 로.
+		local safe = villageId .. "_" .. stage
+		local bg = _SpawnService:SpawnByModelId(self.HpBarModelId, "HpBg_" .. safe, Vector3(x, y, 0), map)
+		local fill = _SpawnService:SpawnByModelId(self.HpBarModelId, "HpFill_" .. safe, Vector3(x, y, 0), map)
+		if not isvalid(bg) or not isvalid(fill) then
+			log_warning("[Facility] hp bar spawn failed " .. key)
+			return
+		end
+		bg.TransformComponent.Scale = Vector3(sx * 1.06, sy * 1.4, 1)
+		fill.TransformComponent.Scale = Vector3(sx, sy, 1)
+		if isvalid(bg.SpriteRendererComponent) then
+			bg.SpriteRendererComponent.Color = Color(0.08, 0.08, 0.1, 0.85)
+			bg.SpriteRendererComponent.OrderInLayer = 6
+		end
+		if isvalid(fill.SpriteRendererComponent) then
+			fill.SpriteRendererComponent.Color = Color(0.35, 0.85, 0.40, 1)
+			fill.SpriteRendererComponent.OrderInLayer = 7
+		end
+		self.bars[key] = { bg = bg, fill = fill, x = x, y = y }
+	end
+
+	@ExecSpace("ServerOnly")
 	method number GroundOffset(string stage)
 		-- 피벗 → 스프라이트 바닥 거리(유닛). 실측 pivot ny: 포탑 0.253×3.2 · 억제기 FlipY (1−0.558)×1.56 · 넥서스 0.494×1.72×3=2.55.
 		-- 넥서스는 스프라이트 아래 ~1.1(×3) 이 투명 여백+그림자라 그만큼 내려 불투명 받침을 발판에 붙인다(스샷 픽셀 실측: 2.55 → 1.45). 모델 스케일이 바뀌면 같이 고친다.
@@ -191,6 +242,7 @@ script LaneFacilityService extends Logic
 			if not isvalid(ai) then log_warning("[Facility] TurretAI add failed") end
 		end
 		self.entities[key] = ent
+		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(stage) + self:BarOffset(stage))
 		log("[Facility] spawned " .. key .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.slotY) .. ") team=" .. tostring(faction and faction.Team or "?"))
 		self:ApplyVisual(villageId, stage)
 		self:ApplyCombat(villageId, stage)
@@ -199,24 +251,49 @@ script LaneFacilityService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void ApplyVisual(string villageId, string stage)
-		-- 원장 값 → 색. 넥서스: HP 비율로 흰→검정. 파괴: 어둡게+반투명. 주인 없는 넥서스: 회색.
-		local ent = self.entities[villageId .. ":" .. stage]
+		-- 원장 값 → 색 + HP 바. 넥서스만 HP 비율로 흰→검정(사용자 2026-09-07: 포탑·억제기는 안 어두워짐). 파괴 = 반투명 회색. 주인 없는 넥서스 = 회색 · 바 숨김.
+		local key = villageId .. ":" .. stage
+		local ent = self.entities[key]
 		if not isvalid(ent) or not isvalid(ent.SpriteRendererComponent) then return end
 		local sr = ent.SpriteRendererComponent
 		local owned = (_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(villageId) ~= "") or false
 		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
-		if not owned then
+		local bar = (self.bars ~= nil) and self.bars[key] or nil
+		local function showBar(on)
+			if bar == nil then return end
+			if isvalid(bar.bg) then bar.bg:SetVisible(on) end
+			if isvalid(bar.fill) then bar.fill:SetVisible(on) end
+		end
+		if not owned or t == nil then
 			sr.Color = Color(0.6, 0.6, 0.6, 1)
+			showBar(false)
 			return
 		end
-		if t == nil then return end
 		if not t.alive then
-			sr.Color = Color(0.25, 0.2, 0.2, 0.55)
+			sr.Color = Color(0.5, 0.5, 0.5, 0.5)
+			showBar(false)
 			return
 		end
 		local ratio = math.max(0, math.min(1, t.hp / math.max(1, t.max)))
-		local v = 0.15 + 0.85 * ratio   -- HP 0 → 거의 검정
-		sr.Color = Color(v, v, v, 1)
+		if stage == "CORE" then
+			local v = 0.15 + 0.85 * ratio   -- HP 0 → 거의 검정
+			sr.Color = Color(v, v, v, 1)
+		else
+			sr.Color = Color(1, 1, 1, 1)
+		end
+		showBar(true)
+		if bar ~= nil and isvalid(bar.fill) then
+			local sx = (self.HpBarWidth / self.HpBarSpriteW) * math.max(0.001, ratio)
+			local s = bar.fill.TransformComponent.Scale
+			bar.fill.TransformComponent.Scale = Vector3(sx, s.y, 1)
+			-- 피벗이 중심이라 왼쪽 정렬: 줄어든 만큼 왼쪽으로
+			bar.fill.TransformComponent.Position = Vector3(bar.x - (1 - ratio) * self.HpBarWidth * 0.5, bar.y, 0)
+			if isvalid(bar.fill.SpriteRendererComponent) then
+				if ratio > 0.5 then bar.fill.SpriteRendererComponent.Color = Color(0.35, 0.85, 0.40, 1)
+				elseif ratio > 0.25 then bar.fill.SpriteRendererComponent.Color = Color(0.95, 0.80, 0.25, 1)
+				else bar.fill.SpriteRendererComponent.Color = Color(0.90, 0.30, 0.25, 1) end
+			end
+		end
 	end
 
 	@ExecSpace("ServerOnly")

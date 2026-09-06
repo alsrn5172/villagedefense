@@ -203,9 +203,14 @@ script VillageRecordUIController extends Logic
 			end
 		end
 		self.waiting = false
+		-- 행 수가 같으면 GridView 를 다시 만들지 않고(썸네일 재로드 방지) 이미 있는 셀만 제자리에서 다시 채운다.
 		if isvalid(self.collGrid) then
-			self.collGrid.TotalCount = #self.collRows
-			self.collGrid:Refresh(true, true)
+			if self.collGrid.TotalCount ~= #self.collRows then
+				self.collGrid.TotalCount = #self.collRows
+				self.collGrid:Refresh(true, true)
+			else
+				self:RepaintCells()
+			end
 		end
 		if isvalid(self.collStatus) then
 			local matName = (self.collMat ~= nil) and self.collMat.name or "지역재화"
@@ -223,7 +228,8 @@ script VillageRecordUIController extends Logic
 		self:SetText(cell, "Sub", (r.monLv >= 1) and ("도감 Lv" .. tostring(r.monLv) .. " ×" .. tostring(r.mul)) or ("미해금 · Lv " .. r.level))
 		local icon = cell:GetChildByName("Icon")
 		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
-			icon.SpriteGUIRendererComponent.ImageRUID = r.icon
+			-- 같은 그림이면 다시 대입하지 않는다(재로드 방지).
+			if icon.SpriteGUIRendererComponent.ImageRUID ~= r.icon then icon.SpriteGUIRendererComponent.ImageRUID = r.icon end
 			icon.Enable = (r.icon ~= "")
 			icon.SpriteGUIRendererComponent.Color = (r.monLv >= 1) and Color(1, 1, 1, 1) or Color(0.6, 0.6, 0.6, 1)
 		end
@@ -233,9 +239,9 @@ script VillageRecordUIController extends Logic
 			elseif r.monLv >= 1 then cell.SpriteGUIRendererComponent.Color = Color(0.52, 0.55, 0.60, 1)
 			else cell.SpriteGUIRendererComponent.Color = Color(0.34, 0.36, 0.40, 1) end
 		end
-		-- 클릭 배선은 셀 엔티티당 1회. 복제 셀은 스크롤마다 index 가 바뀌므로 boundCells[셀 Id] 에 현재 index 를 갱신해 두고 클릭 때 읽는다.
+		-- 클릭 배선은 셀 엔티티당 1회. 복제 셀은 스크롤마다 index 가 바뀌므로 boundCells[셀 Id] 에 {index, 엔티티} 를 갱신해 두고 클릭·재칠하기 때 읽는다.
 		local bound = self.boundCells[cell.Id]
-		self.boundCells[cell.Id] = { index = index }
+		self.boundCells[cell.Id] = { index = index, cell = cell }
 		if bound == nil then
 			local id = cell.Id
 			local h = cell:ConnectEvent(ButtonClickEvent, function()
@@ -247,10 +253,19 @@ script VillageRecordUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void RepaintCells()
+		-- 살아 있는 셀만 제자리에서 다시 채운다 (GridView.Refresh 없이 → 썸네일 재로드·깜빡임 없음).
+		if self.boundCells == nil then return end
+		for id, rec in pairs(self.boundCells) do
+			if rec ~= nil and isvalid(rec.cell) then self:FillCollCell(rec.index, rec.cell) end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
 	method void OnCollSelect(integer idx)
-		-- 셀 선택 → 푸터 갱신 + 그리드 다시 칠하기.
+		-- 셀 선택 → 푸터 갱신 + 셀 색만 다시 칠하기.
 		self.selColl = idx
-		if isvalid(self.collGrid) then self.collGrid:Refresh(false, true) end
+		self:RepaintCells()
 		self:UpdateFooter()
 	end
 
@@ -267,13 +282,14 @@ script VillageRecordUIController extends Logic
 		if r == nil then
 			label = "몬스터를 고르면 필요한 재료가 보입니다 (보유 " .. matName .. " " .. tostring(matHave) .. " · 꿈의 조각 " .. tostring(self.dream) .. ")"
 		elseif r.monLv < 1 then
-			label = r.name .. " 해금: " .. matName .. " " .. tostring(matCost) .. "개 (보유 " .. tostring(matHave) .. ")"
+			-- 재료가 모자라도 버튼은 켜 둔다 — 서버가 거절 토스트로 알린다(잠긴 것처럼 보이지 않게).
+			label = r.name .. " 해금: " .. matName .. " " .. tostring(matCost) .. "개 (보유 " .. tostring(matHave) .. ")" .. ((matHave < matCost) and " — 부족" or "")
 			btnText = "해금"
-			can = (matHave >= matCost)
+			can = true
 		elseif r.monLv < 5 then
-			label = r.name .. " Lv" .. tostring(r.monLv) .. " → Lv" .. tostring(r.monLv + 1) .. ": 꿈의 조각 " .. tostring(r.nextCost) .. "개 (보유 " .. tostring(self.dream) .. ") · 배율 ×" .. tostring(r.mul) .. " → ×" .. tostring(r.nextMul)
+			label = r.name .. " Lv" .. tostring(r.monLv) .. " → Lv" .. tostring(r.monLv + 1) .. ": 꿈의 조각 " .. tostring(r.nextCost) .. "개 (보유 " .. tostring(self.dream) .. ") · 배율 ×" .. tostring(r.mul) .. " → ×" .. tostring(r.nextMul) .. ((self.dream < r.nextCost) and " — 부족" or "")
 			btnText = "레벨 올리기"
-			can = (self.dream >= r.nextCost)
+			can = true
 		else
 			label = r.name .. " Lv5 (최대 · 배율 ×" .. tostring(r.mul) .. ")"
 			btnText = "최대"
