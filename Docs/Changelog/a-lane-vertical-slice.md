@@ -33,6 +33,12 @@
 - `towerDef` 메소 상수 삭제 → `TowerConfig` 로드(없으면 기본값). `RequestTowerAction` 비용 = `SpendCoin`. `FacilityState(villageId, stage)` / `ApplyDamage(...)`(0 → 파괴 1회 · 넥서스는 "탈락" 토스트 — 처리 본체는 ②) / `Changed` → 엔티티 색 + 주인 방어 창 푸시.
 - 방어 뷰 `MESO` 행 → `COIN`. 모집(`SummonUnits` 메소)·훈련(꿈의 조각)·창고·파병·관문은 그대로.
 
+### 사용자 실측 반영 (2026-09-07 저녁)
+- 통로 재배치는 **사용자가 Maker 에서 직접** 깐다(층 4 · 발판 1개 · 사다리 1개 방식을 읽어 다른 마을에 복제 예정). 통로 y = 바닥층 발판 −1.5 안 · `sortingLayerName=Default`(플레이어 렌더 층이 밟은 발판 이름을 따라가서 `MapLayer0` 이면 흙 타일 뒤로 숨음). 파란 포탈은 통로 완성 뒤 발판 y 로 스냅(대기).
+- 규칙 추가: **모든 포탈은 플레이어보다 앞 층**(후순위 · 허락 후).
+- `VillageNpcSector` HENESYS WORKSHOP 앵커 x −13 → **−14.8**: 넥서스(x −9.6~−6.4)가 물약·지역 장비 상인을 가렸다 → 슬롯 −14.8~−10.0.
+- 리모컨 **레벨 행**(`Row_level` +1/+5/+10 → `RequestLevel`): 다음 레벨까지 남은 경험치를 `GrantKillReward` 로 넣어 정식 레벨업 경로(AP/SP·HP 보상·HUD)로 올린다. 패널 800×600 → 800×640, GemRoot −288. 읽기값 `level=`.
+
 ### 기타
 - `Match/MatchSessionLogic` 스텁: `@Sync CurrentPhase`, `PhaseIndex()`, `SetPhase()`. 시계 본체는 ②.
 - 넥서스 아이콘 RUID `dab6ddee…` → **`8adca861…`**(사용자 선택 #3) 3곳: `VillageDefenseGroup` Node/Card `Icon` · `VillageLifeUIController` icons · `ui_village_common ICON.core`.
@@ -48,3 +54,11 @@
 - 주화: `GrantCoin 100` → 클라 `RequestTowerAction(TOWER, rebuild)` → `coin-30` ✓ · `repair CORE`(90 > 70) 거절 ✓ · `upgrade SUPPRESSOR` → `coin-30` ✓. 방어 뷰 `COIN|100` ✓.
 - 배치 수정(사용자 지적 "발판 기준으로"): 슬롯 y 에 그대로 놓으니 중심 피벗 때문에 절반이 발판 아래 → `GroundOffset(stage)`(포탑 +0.81 · 억제기 +0.69 · 넥서스 +1.45 — 피벗 계산값 2.55 에서 스프라이트 하단 투명 여백만큼 스샷 픽셀 실측으로 내림) + 모델 `SortingLayer MapLayer1→Default/-1`(통로 바닥에 가려짐) + 히트박스 오프셋 피벗 기준으로 재계산. 포탑·억제기 스샷으로 바닥 밀착 확인.
 - 미검증: `LaneFacility.HandleHitEvent`(실제 공격 → HitEvent) — 플레이어 공격은 B 파이프라인 · 미니언은 ② 에서. `RequestDevHit` 는 ApplyDamage 와 같은 경로.
+
+---
+
+## 2026-09-07 — 프로젝트 전체 정리 (문서만)
+
+- 현재 프로젝트의 GDD·로드맵·추가기획1 결정·계약·WO-011/012·CSV·핵심 서비스를 대조해, [프로젝트 전체 정리](/C:/Users/mingu/메월드폴더/강화하고살아남기/Docs/프로젝트-전체정리.md:1)를 추가했다.
+- 2~5인·30분·3단 방어선·리스항구 비점유·NPC 15행 등 최신 결정을 이전 GDD/로드맵과 분리해 표시했다. TowerConfig는 이미 존재하지만 JobInfo·MinionPhaseConfig·MinionComposition·DifficultyConfig은 없다는 현재 상태를 반영했다.
+- 코드·데이터는 변경하지 않았다. 수치만 코드/CSV에 있거나 임시 표기인 경우는 기획 확정으로 분류하지 않았다.
