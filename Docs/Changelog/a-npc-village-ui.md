@@ -55,6 +55,12 @@
 - 부수: NPC 창 4개 `GroupOrder` 2 → **5**(공방과 동일 · StatusHUD 3 위). 🟡 그래도 StatusHUD 의 이름/AP 텍스트가 창 위에 그려짐 — Workshop(5)·Character(6)도 같음. StatusHUD 쪽 순서/타입 확인 필요(미결)
 - 검증: Play — 리모컨 `dream=1` · 억제기 FlipY true · 도감 22행(달팽이 1 · 파란 달팽이 1 · 스포아 3 · 빨간 달팽이 4 · 초록버섯 10 …) · 공방 `repair` 라우트 탭 숨김 · 왼쪽 HUD 꺼짐 · MonsterTraining 15행 로드 · 에러 0
 
+### 추가 — StatusHUD 순서 · AP 직접 분배 (같은 날 밤 · 사용자 지시)
+- **StatusHUD 가 모든 창 위에 그려지던 문제**: 런타임 `UIGroupComponent.GroupOrder` 는 파일 값이 아니라 Maker 가 매긴 **순위(0~15)** 였고 StatusHUD 는 8(Character 7 · Workshop 10 보다 위). 파일 `GroupOrder` 를 **3 → 1** 로 낮추고 refresh 하니 순위 1 로 내려가 창(4~10) 아래로 감. 루트 `displayOrder` 는 순서에 영향 없음(실험). 런타임에 GroupOrder 를 바꿔도 그리기 순서는 안 바뀜(로드 시 확정)
+- **AP 직접 분배** (설계 변경: "레벨업 AP 자동 분배" → **유저가 찍는다** · 자동 분배 버튼 병행): `StatService.GrantAp` 은 레벨만 반영하고 AP 를 원장(`SummonManager econ.ap`)에 남긴다. 새 RPC `RequestAllocateAp(statId, 1)` · `RequestAutoAllocateAp()`(남은 AP 전부 직업 비율 · 나머지 주스탯) → 공통 `Allocate` 가 base 가산 · `econ.ap` 차감 · `ApAllocatedEvent(RemainingAp)` · 재계산 · HUD/캐릭터 창 갱신. `BuildUiCsv` 에 `ap=` 추가
+- 캐릭터 창 스탯 탭: Right/Row0~3 에 **"+" 버튼**(Cell 270→226), Left/Row4 **AP 셀 + "자동 분배"**. AP 0 이면 버튼 비활성·회색, 있으면 노란색. 바인딩 6개(`cellAp btnAuto btnPlusStr/Dex/Int/Luk`)
+- 검증: econ.ap=10 → 창 AP 10 · "+" 2회 → STR 12→14 · AP 8 · 자동 분배 → STR 19 · DEX 8 · AP 0 · 버튼 비활성 · 에러 0. 방어 창을 열었을 때 StatusHUD 의 Lv/AP 텍스트가 창 뒤로 감(스크린샷)
+
 ### 미결 (Lane/Village 시스템으로 넘길 것)
 - 원장 스텁 → 실제 Lane(미니언 · 시설 피격 · 자동 집결 · 파병 이동) · 소유권(VillageClaimedEvent) · 빅토리아 주화 · `TowerConfig`/`MonsterTraining` CSV · 도감 발견 · `PublicPlayerSummary` · 확인 팝업(파병·재건·관문) · 지역재화 아이콘
 - 모집 가격이 SummonUnits 메소(1~3)라 사실상 공짜 — 기획은 몬스터별 재화 8개. `ItemInfo MAT_*` 15행이 WP2 로 들어오면 그때 치환
