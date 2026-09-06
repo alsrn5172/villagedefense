@@ -44,6 +44,17 @@
 - **알약형 흰 9-slice(`83b7e4bf…`) 전면 교체** — 늘리면 타원이 되던 문제. 순백 둥근 사각형 64×64(반경 12) PNG 를 node 로 생성 → `asset_create_account_resource_storage_item`(2단계: presigned PUT → 완료) 로 업로드 → `asset_update_resource_storage_info` 로 9-slice border 14/14/14/14 + pivot 0.5 → **RUID `f5e5fbd6dd224f2d8a5af320436b95f0`**. UI 파일 12개의 `SpriteGUIRendererComponent` 440개(옛 RUID 인 것만) `ImageRUID` 교체(색·크기·Sliced 그대로). Play 실측: 공방 창·리모컨 사각으로 렌더링(계정 자산이 이 월드에서 보임)
 - 🟡 계정 자산이라 B(다른 계정) 클라에서 안 보일 수 있음 → 그룹 자산으로 옮기거나 Maker 에서 그룹 임포트 필요(그룹 코드 확인 후). 앞으로 UI 스킨은 이 RUID 하나(공통 헬퍼 `WHITE`)
 
+### 추가 — 사용자 피드백 7건 (같은 날 저녁)
+1. **억제기 임시 스프라이트 상하반전**: `VillageDefenseGroup` `Node_SUPPRESSOR/Icon` · `Card_SUPPRESSOR/Icon` `FlipY=true` · 모집 프리뷰는 런타임에 `FlipY = (stage == SUPPRESSOR)`
+2. 넥서스 스프라이트 교체 — **보류**(사용자)
+3. **왼쪽 위 Lv/EXP/메소 패널 제거**: `BattleHUD/LeftHUD` `enable=false` + `BattleHUDController.SetMapMode` 가 다시 켜지 않게(항상 숨김). 값은 캐릭터 창 푸터·StatusHUD 가 보여준다
+4. **도감 = 스폰 관리 몬스터만(22종) · 레벨 = 기획 게임 Lv**: `LaneStateService` collection 뷰가 `MapMonsters` 에 있는 `MonsterId` 만 · 레벨 오름차순. `MonsterInfo.Level` 19행을 추가기획1 §3 "지역별 사냥터 3단계"의 **게임 Lv**(초급 10 · 중급 17 · 상급 24 · 리스항구 1/4/7)로 수정(여러 티어에 나오는 몬스터는 낮은 티어 기준 · 값만 · HP/EXP 는 m1-balance). 예: 주니어 네키 45→17 · 와일드보어 55→24 · 다크 스톤골렘 16→24 · 슬라임 7→17
+5. **리모컨 꿈의 조각 행**(`+1/+5/+10` · 보유 표시) · **`MonsterTraining.csv` 신설**(계약서 A-2-8d · `TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note` · 15행 · 기획 정리 §2-3: Lv2 3개 1.5× · Lv3 5개 2.2× · Lv4 10개 3.3× · Lv5 15개 5.0×) + `.userdataset` + CANONICAL/KEY. `LaneStateService` 가 표를 읽고(없으면 기본값) 훈련 비용·배율에 쓴다 — 하드코딩 제거
+6. **NPC 가 플레이어 뒤로**: `NpcSpawner.SpawnEntry` 가 스폰 직후 `SpriteRendererComponent.OrderInLayer = -1`(SortingLayer 그대로)
+7. **공방 탭 숨김**: `WorkshopUIController.Open` 이 `TabBar.Enable=false` — NPC(강화/제작·장비/물약/수리)마다 자기 라우트 하나만 보이고 제목은 NPC 이름. 창을 파일 단위로 쪼개진 않음(같은 컨트롤러 · 라우트만 분리)
+- 부수: NPC 창 4개 `GroupOrder` 2 → **5**(공방과 동일 · StatusHUD 3 위). 🟡 그래도 StatusHUD 의 이름/AP 텍스트가 창 위에 그려짐 — Workshop(5)·Character(6)도 같음. StatusHUD 쪽 순서/타입 확인 필요(미결)
+- 검증: Play — 리모컨 `dream=1` · 억제기 FlipY true · 도감 22행(달팽이 1 · 파란 달팽이 1 · 스포아 3 · 빨간 달팽이 4 · 초록버섯 10 …) · 공방 `repair` 라우트 탭 숨김 · 왼쪽 HUD 꺼짐 · MonsterTraining 15행 로드 · 에러 0
+
 ### 미결 (Lane/Village 시스템으로 넘길 것)
 - 원장 스텁 → 실제 Lane(미니언 · 시설 피격 · 자동 집결 · 파병 이동) · 소유권(VillageClaimedEvent) · 빅토리아 주화 · `TowerConfig`/`MonsterTraining` CSV · 도감 발견 · `PublicPlayerSummary` · 확인 팝업(파병·재건·관문) · 지역재화 아이콘
 - 모집 가격이 SummonUnits 메소(1~3)라 사실상 공짜 — 기획은 몬스터별 재화 8개. `ItemInfo MAT_*` 15행이 WP2 로 들어오면 그때 치환

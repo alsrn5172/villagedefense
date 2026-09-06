@@ -14,6 +14,9 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property any villages = nil
 
+	@HideFromInspector
+	property any trainDef = nil
+
 	method void OnBeginPlay()
 		-- 서버만 원장. 상수는 한 곳(여기)에.
 		if not self:IsServer() then return end
@@ -30,6 +33,21 @@ script LaneStateService extends Logic
 			{ id = "NAUTILUS", name = "노틸러스", mat = "REGION_NAUTILUS_PIRATE_COIN", prefix = "Nautilus" },
 			{ id = "PERION", name = "페리온", mat = "REGION_PERION_WARRIOR_TOKEN", prefix = "Perion" },
 		}
+		-- 훈련 표 (MonsterTraining.csv · 기획 정리 §2-3). 없으면 기본값.
+		self.trainDef = { MELEE = {}, RANGED = {}, TANK = {} }
+		local mt = _DataService:GetTable("MonsterTraining")
+		if mt ~= nil then
+			for i = 1, mt:GetRowCount() do
+				local cls = mt:GetCell(i, "TrainClass") or ""
+				local lv = math.floor(tonumber(mt:GetCell(i, "Level")) or 0)
+				if self.trainDef[cls] ~= nil and lv >= 1 then
+					self.trainDef[cls][lv] = { cost = math.floor(tonumber(mt:GetCell(i, "DreamPieceCost")) or 0), mul = tonumber(mt:GetCell(i, "StatMul")) or 1 }
+				end
+			end
+			log("[Lane] MonsterTraining loaded: " .. tostring(mt:GetRowCount()) .. " rows")
+		else
+			log_warning("[Lane] MonsterTraining dataset not found — 훈련 비용 기본값 사용")
+		end
 		-- 🟡 소유권 원장(VillageClaimedEvent) 전 임시: OWNER_ONLY NPC 를 전원 허용한다. 원장이 오면 이 스텁을 그쪽 판정으로 교체.
 		if _NpcCatalog ~= nil and not _NpcCatalog:HasOwnershipResolver() then
 			_NpcCatalog:SetOwnershipResolver(function(userId, villageId, catalogNpcId) return true end)
@@ -59,6 +77,17 @@ script LaneStateService extends Logic
 		local d = self.towerDef[stage]
 		if d == nil then return 1 end
 		return d.maxHp[math.min(lv, #d.maxHp)] or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method any TrainRow(string cls, integer lv)
+		-- 훈련 단계 행 {cost, mul}. 표에 없으면 기본값(꿈의 조각 0/3/5/10/15 · 배율 1/1.5/2.2/3.3/5).
+		local t = (self.trainDef ~= nil) and self.trainDef[cls] or nil
+		if t ~= nil and t[lv] ~= nil then return t[lv] end
+		local costs = { 0, 3, 5, 10, 15 }
+		local muls = { 1.0, 1.5, 2.2, 3.3, 5.0 }
+		local i = math.max(1, math.min(5, lv))
+		return { cost = costs[i], mul = muls[i] }
 	end
 
 	@ExecSpace("ServerOnly")
@@ -169,11 +198,11 @@ script LaneStateService extends Logic
 			add({ "MESO", tostring(self:Meso(userId)) })
 		elseif kind == "train" then
 			local names = { MELEE = "근접", RANGED = "원거리", TANK = "탱커" }
-			local costs = { 3, 5, 10, 15 }
 			for _, cls in ipairs({ "MELEE", "RANGED", "TANK" }) do
 				local lv = u.train[cls]
-				local mul = 1 + 0.125 * (lv - 1)
-				add({ "TR", cls, names[cls], tostring(lv), string.format("%.3f", mul), tostring(costs[lv] or 0), "5" })
+				local cur = self:TrainRow(cls, lv)
+				local nextCost = (lv < 5) and self:TrainRow(cls, lv + 1).cost or 0
+				add({ "TR", cls, names[cls], tostring(lv), string.format("%.3f", cur.mul), tostring(nextCost), "5" })
 			end
 			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "DREAM_PIECE") or 0
 			add({ "HAVE", tostring(have) })
@@ -216,12 +245,25 @@ script LaneStateService extends Logic
 				add({ "G", v.id, v.name, bossName, v.mat, tostring(have), "25", b2s(v.id == own) })
 			end
 		elseif kind == "collection" then
+			-- 스폰 관리 몬스터(MapMonsters 에 있는 것)만 · 레벨은 MonsterInfo(기획 §3 게임 Lv 로 맞춤). 사용자 지시 2026-09-06.
+			local spawnSet = {}
+			local mm = _DataService:GetTable("MapMonsters")
+			if mm ~= nil then
+				for i = 1, mm:GetRowCount() do spawnSet[tostring(mm:GetCell(i, "MonsterId") or "")] = true end
+			end
 			local mi = _DataService:GetTable("MonsterInfo")
 			if mi ~= nil then
+				local rowsById = {}
 				for i = 1, mi:GetRowCount() do
 					local id = tostring(mi:GetCell(i, "Id") or "")
-					if id ~= "" then add({ "C", id, mi:GetCell(i, "Name") or id, tostring(mi:GetCell(i, "Level") or "1"), "0" }) end
+					if id ~= "" and spawnSet[id] then
+						rowsById[id] = { id = id, name = mi:GetCell(i, "Name") or id, level = tonumber(mi:GetCell(i, "Level")) or 1 }
+					end
 				end
+				local list = {}
+				for _, r in pairs(rowsById) do table.insert(list, r) end
+				table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
+				for _, r in ipairs(list) do add({ "C", r.id, r.name, tostring(r.level), "0" }) end
 			end
 		end
 		return table.concat(rows, ";")
@@ -299,8 +341,7 @@ script LaneStateService extends Logic
 		local lv = u.train[cls]
 		if lv == nil then return end
 		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") return end
-		local costs = { 3, 5, 10, 15 }
-		local cost = costs[lv] or 0
+		local cost = self:TrainRow(cls, lv + 1).cost
 		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < cost then
 			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(cost) .. ")")
 			return
