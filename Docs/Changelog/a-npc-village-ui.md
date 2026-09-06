@@ -39,6 +39,11 @@
 - **소유권 임시 허용**: `OWNER_ONLY` NPC 는 소유권 리졸버가 없으면 전부 거절(`OWNER_CONTEXT_UNAVAILABLE`)이라, `LaneStateService.OnBeginPlay` 에서 `NpcCatalog:SetOwnershipResolver(allow-all)` 스텁 연결. 소유권 원장(`VillageClaimedEvent`)이 오면 교체
 - 검증: `[NpcSpawner] ready map=Henesys_Village_MinimiMain spawned=11/11` · 여섯갈래길 2/2(관문·파병관) · 서버 좌표 실측 11명 바닥 위 · 스크린샷(NPC 11명 이름표) · 클라에서 `VillageNpcInteractor:RequestOpen` → 서버 검증 통과 → 창고지기 창 열림(제목 = DisplayName). 시뮬 마우스 클릭은 터치 영역에 안 닿았음(실제 클릭은 `TouchReceiveComponent` → `HandleTouchEvent`)
 
+### 추가 — 원형 UI 금지 · NPC 클릭 사거리 해제 (같은 날 · 사용자 지시)
+- **NPC 클릭 사거리 제한 삭제**: `VillageNpcInteractor.MaxUseDistance` 기본 2.5 → **0(무제한)**, 검사는 `> 0` 일 때만. 맵·소유권·쿨다운 검사는 그대로
+- **알약형 흰 9-slice(`83b7e4bf…`) 전면 교체** — 늘리면 타원이 되던 문제. 순백 둥근 사각형 64×64(반경 12) PNG 를 node 로 생성 → `asset_create_account_resource_storage_item`(2단계: presigned PUT → 완료) 로 업로드 → `asset_update_resource_storage_info` 로 9-slice border 14/14/14/14 + pivot 0.5 → **RUID `f5e5fbd6dd224f2d8a5af320436b95f0`**. UI 파일 12개의 `SpriteGUIRendererComponent` 440개(옛 RUID 인 것만) `ImageRUID` 교체(색·크기·Sliced 그대로). Play 실측: 공방 창·리모컨 사각으로 렌더링(계정 자산이 이 월드에서 보임)
+- 🟡 계정 자산이라 B(다른 계정) 클라에서 안 보일 수 있음 → 그룹 자산으로 옮기거나 Maker 에서 그룹 임포트 필요(그룹 코드 확인 후). 앞으로 UI 스킨은 이 RUID 하나(공통 헬퍼 `WHITE`)
+
 ### 미결 (Lane/Village 시스템으로 넘길 것)
 - 원장 스텁 → 실제 Lane(미니언 · 시설 피격 · 자동 집결 · 파병 이동) · 소유권(VillageClaimedEvent) · 빅토리아 주화 · `TowerConfig`/`MonsterTraining` CSV · 도감 발견 · `PublicPlayerSummary` · 확인 팝업(파병·재건·관문) · 지역재화 아이콘
 - 모집 가격이 SummonUnits 메소(1~3)라 사실상 공짜 — 기획은 몬스터별 재화 8개. `ItemInfo MAT_*` 15행이 WP2 로 들어오면 그때 치환
