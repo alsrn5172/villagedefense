@@ -69,6 +69,12 @@
 5. **포탑·억제기는 HP 로 어두워지지 않음** — 넥서스만 흰→검정. 파괴 = 반투명 회색(0.5,0.5,0.5,0.5).
 6. **해금 버튼 잠김**: 서버가 거절(재료 부족·마을 없음)할 때 뷰를 안 돌려줘 클라 `waiting` 이 영영 true 였다 → 모든 거절 경로가 `Push(collection/recruit)`. 버튼은 몬스터를 고르면 항상 켜고(부족은 라벨에 "— 부족"), 판정은 서버 토스트.
 
+## 2026-09-07 — 조련사 분리 · 수비대 대기 규칙 · HP 바 재작성
+
+- **역할 분리(사용자)**: 도감 관리인 = **해금만**(푸터 버튼 "해금" · 해금 뒤 "해금됨 · 강화는 몬스터 조련사"). **몬스터 조련사** = 해금한 몬스터 목록(썸네일 · Lv/배율) + 행마다 **강화** 버튼 → `RequestTrain(monsterId)`(Lv2~5 · 꿈의 조각 3/5/10/15). 창에 "강화 = 모집한 수비 몬스터의 **HP·공격력 배율** (Lv2 ×1.5 · Lv3 ×2.2 · Lv4 ×3.3 · Lv5 ×5.0) · 새로 모집하는 묶음부터 적용" 명시. 병과 3행(MELEE/RANGED/TANK) UI 삭제 → `Row_0..7`. 뷰 `TR|id|name|lv|mul|nextCost|nextMul|max|icon`.
+- **수비대 행동(사용자)**: 적이 없으면 **포탑 뒤**(슬롯 −0.7~−1.75)로 돌아와 대기 · 적이 **포탑 사거리**(`GuardCenterX ± GuardRange`) 안에 들어오면 뛰쳐나감 · **사거리 80%** 밖(`LeashMaxX = 슬롯 + 0.8×사거리`)으로는 안 나감. `FactionAI.GuardCenterX/GuardRange` 신설.
+- **HP 바 재작성**: 카탈로그 흰 바 스프라이트를 늘린 것이 흐릿하고 이상함(사용자) → msw-combat hp-gauge 권장 **`PixelRendererComponent` 16×3**(`LaneHpBar` 모델 + `Lane/LaneHpBar` 컴포넌트 · `@Sync Ratio/Shown/Layer` · 클라 지연 초기화 후 `SetPixel`). 시설당 1장, 초록/노랑/빨강(50%/25%), 어두운 배경 픽셀. 크기는 Scale 로(가정 1px=0.01 유닛 → 실측 후 조정).
+
 ### 기타
 - `Match/MatchSessionLogic` 스텁: `@Sync CurrentPhase`, `PhaseIndex()`, `SetPhase()`. 시계 본체는 ②.
 - 넥서스 아이콘 RUID `dab6ddee…` → **`8adca861…`**(사용자 선택 #3) 3곳: `VillageDefenseGroup` Node/Card `Icon` · `VillageLifeUIController` icons · `ui_village_common ICON.core`.

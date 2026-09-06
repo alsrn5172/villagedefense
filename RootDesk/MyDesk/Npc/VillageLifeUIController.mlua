@@ -92,6 +92,10 @@ script VillageLifeUIController extends Logic
 	@HideFromInspector
 	property any mat = nil
 
+	-- 조련사 창 행 데이터 (해금 몬스터 목록)
+	@HideFromInspector
+	property any trainRows = nil
+
 	@HideFromInspector
 	property integer bundles = 0
 
@@ -129,13 +133,15 @@ script VillageLifeUIController extends Logic
 		bindSlots(self.invRoot, "InvSlot_", function(i) self:OnInvSlot(i) end)
 		bindSlots(self.stoRoot, "StoSlot_", function(i) self:OnStoSlot(i) end)
 		bindSlots(self.cardRoot, "Card_", function(i) self:OnCard(i) end)
+		-- 조련사: Row_0..7 = 해금 몬스터 목록. 버튼 → 그 행의 몬스터 강화(RequestTrain(monsterId)).
+		self.trainRows = {}
 		if isvalid(self.trainRoot) then
 			for _, row in ipairs(self.trainRoot.Children) do
 				local name = row.Name
 				if string.sub(name, 1, 4) == "Row_" then
-					local cls = string.sub(name, 5)
+					local idx = tonumber(string.sub(name, 5)) or -1
 					local b = row:GetChildByName("BtnTrain")
-					if isvalid(b) then bind(b, function() self:Train(cls) end) end
+					if isvalid(b) and idx >= 0 then bind(b, function() self:Train(idx) end) end
 				end
 			end
 		end
@@ -189,7 +195,7 @@ script VillageLifeUIController extends Logic
 	method void GoRoute(string route)
 		-- Content 하위 컨테이너 하나만. Footer 는 recruit 에서만.
 		self.route = route
-		local titles = { storage = "마을 창고", recruit = "몬스터 모집", train = "몬스터 훈련" }
+		local titles = { storage = "마을 창고", recruit = "몬스터 모집", train = "몬스터 조련 — 해금한 몬스터 강화" }
 		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "생활" end
 		if isvalid(self.contentStorage) then self.contentStorage.Enable = (route == "storage") end
 		if isvalid(self.contentRecruit) then self.contentRecruit.Enable = (route == "recruit") end
@@ -493,38 +499,62 @@ script VillageLifeUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RenderTrain(any rows)
-		-- TR|cls|name|lv|mul|cost|max · HAVE|n
+		-- TR|id|name|lv|mul|nextCost|nextMul|max|icon (해금 몬스터만) · HAVE|꿈의 조각 → Row_0..7. 강화 = 모집한 수비 몬스터의 HP·공격력 배율(새 묶음부터 적용).
 		local have = 0
-		for _, f in ipairs(rows) do if f[1] == "HAVE" then have = tonumber(f[2]) or 0 end end
+		self.trainRows = {}
 		for _, f in ipairs(rows) do
-			if f[1] == "TR" and isvalid(self.trainRoot) then
-				local row = self.trainRoot:GetChildByName("Row_" .. f[2])
+			if f[1] == "HAVE" then have = tonumber(f[2]) or 0
+			elseif f[1] == "TR" then
+				table.insert(self.trainRows, { id = f[2], name = f[3], lv = tonumber(f[4]) or 1, mul = f[5] or "1.0", nextCost = tonumber(f[6]) or 0, nextMul = f[7] or "1.0", max = tonumber(f[8]) or 5, icon = f[9] or "" })
+			end
+		end
+		self.waiting = false
+		if isvalid(self.trainRoot) then
+			for i = 0, 7 do
+				local row = self.trainRoot:GetChildByName("Row_" .. tostring(i))
+				local r = self.trainRows[i + 1]
 				if isvalid(row) then
-					local lv, max, cost = tonumber(f[4]) or 1, tonumber(f[7]) or 5, tonumber(f[6]) or 0
-					self:SetText(row, "Name", f[3])
-					self:SetText(row, "LvText", "Lv " .. tostring(lv) .. " / " .. tostring(max))
-					self:SetText(row, "MulText", "능력치 ×" .. string.format("%.2f", tonumber(f[5]) or 1))
-					self:SetText(row, "CostText", (lv >= max) and "최대" or ("꿈의 조각 " .. tostring(cost)))
-					local b = row:GetChildByName("BtnTrain")
-					if isvalid(b) and b.ButtonComponent ~= nil then
-						local on = (lv < max and have >= cost and not self.waiting)
-						b.ButtonComponent.Enable = on
-						if b.SpriteGUIRendererComponent ~= nil then
-							b.SpriteGUIRendererComponent.Color = on and Color(0.46, 0.49, 0.54, 1) or Color(0.62, 0.64, 0.68, 0.7)
+					row.Enable = (r ~= nil)
+					if r ~= nil then
+						self:SetText(row, "Name", r.name)
+						self:SetText(row, "LvText", "Lv" .. tostring(r.lv) .. " / " .. tostring(r.max) .. " · HP·공격 ×" .. tostring(r.mul))
+						if r.lv >= r.max then
+							self:SetText(row, "CostText", "최대 레벨")
+						else
+							self:SetText(row, "CostText", "Lv" .. tostring(r.lv + 1) .. ": 꿈의 조각 " .. tostring(r.nextCost) .. " → HP·공격 ×" .. tostring(r.nextMul))
+						end
+						local icon = row:GetChildByName("Icon")
+						if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+							if icon.SpriteGUIRendererComponent.ImageRUID ~= r.icon then icon.SpriteGUIRendererComponent.ImageRUID = r.icon end
+							icon.Enable = (r.icon ~= "")
+						end
+						local b = row:GetChildByName("BtnTrain")
+						if isvalid(b) and b.ButtonComponent ~= nil then
+							local on = (r.lv < r.max)
+							b.ButtonComponent.Enable = on
+							if b.TextGUIRendererComponent ~= nil then b.TextGUIRendererComponent.Text = on and ((have >= r.nextCost) and "강화" or "강화 (부족)") or "최대" end
+							if b.SpriteGUIRendererComponent ~= nil then
+								b.SpriteGUIRendererComponent.Color = on and Color(0.46, 0.49, 0.54, 1) or Color(0.62, 0.64, 0.68, 0.7)
+							end
 						end
 					end
 				end
 			end
 		end
-		if isvalid(self.trainHave) then self.trainHave.Text = "꿈의 조각 보유 " .. tostring(have) .. " · 훈련은 즉시 적용" end
+		if isvalid(self.trainHave) then
+			if #self.trainRows == 0 then self.trainHave.Text = "해금한 몬스터가 없습니다 — 도감 관리인에서 먼저 해금하세요 (꿈의 조각 보유 " .. tostring(have) .. ")"
+			else self.trainHave.Text = "꿈의 조각 보유 " .. tostring(have) .. " · 강화 = 모집한 수비 몬스터의 HP·공격력 배율 (Lv2 ×1.5 · Lv3 ×2.2 · Lv4 ×3.3 · Lv5 ×5.0) · 새로 모집하는 묶음부터 적용" .. ((#self.trainRows > 8) and (" · " .. tostring(#self.trainRows - 8) .. "종 더 있음") or "") end
+		end
 	end
 
 	@ExecSpace("ClientOnly")
-	method void Train(string cls)
-		-- 훈련 요청.
+	method void Train(integer idx)
+		-- 행 버튼 → 그 몬스터 강화 요청.
 		if self.waiting then return end
+		local r = self.trainRows and self.trainRows[idx + 1] or nil
+		if r == nil then return end
 		self.waiting = true
-		if _LaneStateService ~= nil then _LaneStateService:RequestTrain(cls) end
+		if _LaneStateService ~= nil then _LaneStateService:RequestTrain(r.id) end
 	end
 
 	method void OnEndPlay()

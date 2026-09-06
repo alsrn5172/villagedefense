@@ -330,12 +330,23 @@ script LaneStateService extends Logic
 			local matHave = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, mat.itemId) or 0
 			add({ "MAT", mat.itemId, mat.name, tostring(matHave), tostring(mat.count) })
 		elseif kind == "train" then
-			local names = { MELEE = "근접", RANGED = "원거리", TANK = "탱커" }
-			for _, cls in ipairs({ "MELEE", "RANGED", "TANK" }) do
-				local lv = v.train[cls]
-				local cur = self:TrainRow(cls, lv)
-				local nextCost = (lv < 5) and self:TrainRow(cls, lv + 1).cost or 0
-				add({ "TR", cls, names[cls], tostring(lv), string.format("%.3f", cur.mul), tostring(nextCost), "5" })
+			-- 몬스터 조련사 = 해금한 몬스터 목록 + 강화. TR|id|name|lv|mul|nextCost|nextMul|max|icon · HAVE|꿈의 조각 (사용자 2026-09-07: 도감 관리인은 해금만)
+			local mi = _DataService:GetTable("MonsterInfo")
+			if mi ~= nil then
+				local list = {}
+				for i = 1, mi:GetRowCount() do
+					local id = math.floor(tonumber(mi:GetCell(i, "Id")) or 0)
+					local lv = (id > 0) and self:MonLevel(v, id) or 0
+					if lv >= 1 then
+						table.insert(list, { id = id, name = mi:GetCell(i, "Name") or tostring(id), level = tonumber(mi:GetCell(i, "Level")) or 1, lv = lv, icon = tostring(mi:GetCell(i, "IconRUID") or "") })
+					end
+				end
+				table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
+				for _, r in ipairs(list) do
+					local cur = self:TrainRow("MELEE", r.lv)
+					local nxt = (r.lv < 5) and self:TrainRow("MELEE", r.lv + 1) or cur
+					add({ "TR", tostring(r.id), r.name, tostring(r.lv), string.format("%.1f", cur.mul), tostring((r.lv < 5) and nxt.cost or 0), string.format("%.1f", nxt.mul), "5", r.icon })
+				end
 			end
 			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "DREAM_PIECE") or 0
 			add({ "HAVE", tostring(have) })
@@ -566,24 +577,27 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("Server")
-	method void RequestTrain(string cls)
-		-- 훈련: 꿈의 조각 즉시 소모 · Lv 최대 5.
+	method void RequestTrain(string monsterIdStr)
+		-- 몬스터 조련사: 해금한 몬스터 강화(Lv2~5 · 꿈의 조각 3/5/10/15 · 수비 몬스터 HP·공격 배율 1.5/2.2/3.3/5.0). 실패도 뷰를 돌려줘 클라 waiting 을 푼다.
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
-		local lv = v.train[cls]
-		if lv == nil then return end
-		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") return end
-		local cost = self:TrainRow(cls, lv + 1).cost
-		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < cost then
-			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(cost) .. ")")
+		local monsterId = math.floor(tonumber(monsterIdStr) or 0)
+		local lv = self:MonLevel(v, monsterId)
+		if monsterId <= 0 or lv < 1 then self:Toast(uid, "도감 관리인에서 먼저 해금하세요") self:Push(uid, "train") return end
+		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") self:Push(uid, "train") return end
+		local nxt = self:TrainRow("MELEE", lv + 1)
+		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < nxt.cost then
+			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(nxt.cost) .. " 필요 · 보유 " .. tostring(_InventoryService and _InventoryService:CountItem(uid, "DREAM_PIECE") or 0) .. ")")
+			self:Push(uid, "train")
 			return
 		end
-		_InventoryService:RemoveItem(uid, "DREAM_PIECE", cost)
+		_InventoryService:RemoveItem(uid, "DREAM_PIECE", nxt.cost)
 		_InventoryService:PushInventory(uid)
-		v.train[cls] = lv + 1
-		log("[Lane] " .. v.id .. " train " .. cls .. " -> Lv" .. tostring(lv + 1) .. " (" .. uid .. ")")
-		self:Toast(uid, cls .. " 훈련 Lv" .. tostring(lv + 1))
+		v.mon[monsterId] = lv + 1
+		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
+		log("[Lane] " .. v.id .. " train " .. tostring(monsterId) .. " -> Lv" .. tostring(lv + 1) .. " dream-" .. tostring(nxt.cost) .. " (" .. uid .. ")")
+		self:Toast(uid, tostring(name) .. " Lv" .. tostring(lv + 1) .. " — 수비 몬스터 HP·공격 ×" .. string.format("%.1f", nxt.mul) .. " (새 묶음부터)")
 		self:Push(uid, "train")
 	end
 
