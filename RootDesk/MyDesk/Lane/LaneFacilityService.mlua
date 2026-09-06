@@ -1,0 +1,288 @@
+@Logic
+script LaneFacilityService extends Logic
+
+	-- 방어 시설 엔티티 관리 (WO-012 ① · 2026-09-07). 원장(HP/Lv/생존)은 LaneStateService, 엔티티(스폰·색·파괴 표시)는 여기.
+	-- 시작: LaneConfig 가 있는 마을마다 **주인 없는 넥서스** 를 마을 통로 슬롯에 스폰(클릭해서 연결). 연결(OnVillageClaimed): 포탑(사냥터2)·억제기(사냥터1)도 스폰.
+	-- 모델: Models/Structures/LaneTower · LaneSuppressor · LaneNexus (MapObject + HitComponent (+TouchReceive)). 스크립트는 스폰 직후 AddComponent(script.LaneFacility).
+	-- 색: 넥서스는 HP 비율로 흰→검정(사용자 결정). 파괴 = 어둡게 + 반투명 (부서지는 이펙트는 후보 확정 후).
+
+	property string TowerModelId = "lanetower"
+
+	property string SuppressorModelId = "lanesuppressor"
+
+	property string NexusModelId = "lanenexus"
+
+	@HideFromInspector
+	property any entities = nil
+
+	-- 시설 HP 바 (사용자 요청 2026-09-07): lanehpbar 모델(카탈로그 흰 바 107878b3 · 16×12px = 0.16×0.12 유닛 — 계정 자산 f5e5fbd6 은 월드 SpriteRenderer 에서 "unavailable") 배경+채움 2장 · 채움은 Scale.x 로 비율.
+	property string HpBarModelId = "lanehpbar"
+
+	property number HpBarWidth = 2.0
+
+	property number HpBarHeight = 0.2
+
+	property number HpBarSpriteW = 0.16
+
+	property number HpBarSpriteH = 0.12
+
+	@HideFromInspector
+	property any bars = nil
+
+	@HideFromInspector
+	property any laneRows = nil
+
+	method void OnBeginPlay()
+		-- 서버: LaneConfig 를 읽고 마을마다 넥서스를 놓는다 (맵 엔티티는 서버 시작 시 전부 로드돼 있다).
+		if not self:IsServer() then return end
+		self.entities = {}
+		self.bars = {}
+		self:LoadLanes()
+		_TimerService:SetTimerOnce(function() self:SpawnAllNexus() end, 1.0)
+		log("[Facility] LaneFacilityService ready (server)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadLanes()
+		-- LaneConfig.csv → laneRows[villageId][role] = {mapName, slotX, slotY, ...}
+		self.laneRows = {}
+		local t = _DataService:GetTable("LaneConfig")
+		if t == nil then
+			log_warning("[Facility] LaneConfig dataset not found — 시설 스폰 없음")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local vid = t:GetCell(i, "VillageId") or ""
+			local role = t:GetCell(i, "LaneRole") or ""
+			if enabled and vid ~= "" and role ~= "" then
+				if self.laneRows[vid] == nil then self.laneRows[vid] = {} end
+				self.laneRows[vid][role] = {
+					mapName = t:GetCell(i, "MapName") or "",
+					pathMinX = tonumber(t:GetCell(i, "PathMinX")) or 0, pathMaxX = tonumber(t:GetCell(i, "PathMaxX")) or 0, pathY = tonumber(t:GetCell(i, "PathY")) or 0,
+					spawnX = tonumber(t:GetCell(i, "SpawnX")) or 0, endX = tonumber(t:GetCell(i, "EndTriggerX")) or 0,
+					slotX = tonumber(t:GetCell(i, "TowerSlotX")) or 0, slotY = tonumber(t:GetCell(i, "TowerSlotY")) or 0,
+					speedMul = tonumber(t:GetCell(i, "MinionSpeedMul")) or 1.0,
+				}
+			end
+		end
+		log("[Facility] LaneConfig loaded: " .. tostring(t:GetRowCount()) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any LaneRow(string villageId, string role)
+		-- 마을·역할의 LaneConfig 행.
+		if self.laneRows == nil or self.laneRows[villageId] == nil then return nil end
+		return self.laneRows[villageId][role]
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TeamSlot(string villageId)
+		-- 마을 → 진영 번호 자리(1~5). 미니언 = 10+슬롯 · 방어 시설 = 20+슬롯 (FactionLogic 대역). 플레이어는 전원 팀 "1" 이라 지금은 헤네시스(1)만 정확히 맞물린다.
+		local slots = { HENESYS = 1, KERNING = 2, ELLINIA = 3, NAUTILUS = 4, PERION = 5 }
+		return slots[villageId] or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyCombat(string villageId, string stage)
+		-- 시설의 진영·전투 부품을 원장 상태에 맞춘다: 살아 있으면 방어 진영(2x) · 파괴되면 중립(미니언이 지나친다). 포탑은 Lv 별 공격력·사거리·쿨타임.
+		local ent = self.entities[villageId .. ":" .. stage]
+		if not isvalid(ent) then return end
+		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
+		local alive = (t == nil) or t.alive
+		local faction = ent:GetComponent("script.Faction")
+		if isvalid(faction) then
+			if alive then faction.Team = tostring(20 + self:TeamSlot(villageId)) else faction.Team = _FactionLogic.NeutralTeam end
+		end
+		if stage == "TOWER" and t ~= nil and _LaneStateService.towerDef ~= nil then
+			local d = _LaneStateService.towerDef.TOWER
+			local lv = math.min(t.lv, #d.attack)
+			local atk = ent:GetComponent("script.FactionAttack")
+			local ai = ent:GetComponent("script.TurretAI")
+			local range = d.range[lv] or 3.0
+			if isvalid(atk) then
+				atk.BaseDamage = math.floor(d.attack[lv] or 30)
+				-- 세로 4: 포탑 트랜스폼이 발판보다 0.81 위라 높이 2 면 통로 위 미니언(발 기준 히트박스)을 못 덮었다(실측 2026-09-07).
+				atk.AttackBoxSize = Vector2(range * 2, 4.0)
+				atk.AttackReach = 0
+			end
+			if isvalid(ai) then
+				ai.AttackRange = range
+				ai.AttackCooldown = (d.attackSpeed and d.attackSpeed[lv]) or 1.5
+				ai.PreferMinions = true
+				ai.Enable = alive
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RoleOfStage(string stage)
+		-- 시설 → 그 시설이 서는 맵 역할.
+		if stage == "TOWER" then return "LANE2" end
+		if stage == "SUPPRESSOR" then return "LANE1" end
+		return "VILLAGE"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnAllNexus()
+		-- 매치 시작: LaneConfig 가 있는 마을마다 주인 없는 넥서스.
+		if self.laneRows == nil then return end
+		for vid, _rows in pairs(self.laneRows) do
+			self:SpawnFacility(vid, "CORE")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnVillageClaimed(string villageId, string userId)
+		-- 소유권 생김 → 포탑·억제기 스폰 + 넥서스 색 갱신.
+		if _LaneStateService ~= nil then _LaneStateService:EnsureVillage(villageId) end
+		self:SpawnFacility(villageId, "TOWER")
+		self:SpawnFacility(villageId, "SUPPRESSOR")
+		self:ApplyVisual(villageId, "CORE")
+		log("[Facility] village " .. villageId .. " facilities spawned for " .. userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string SortingLayerBelow(Entity map, number x, number y)
+		-- (x, y) 바로 아래 발판의 SortingLayer 이름. 플레이어 렌더 층이 밟은 발판을 따라가므로, 그 위에 서는 오브젝트(NPC·시설)도 같은 층 + OrderInLayer 3 으로 두면 항상 플레이어(4) 뒤. 없으면 "".
+		if not isvalid(map) or not isvalid(map.FootholdComponent) then return "" end
+		local fh = map.FootholdComponent:Raycast(Vector2(x, y + 0.3), Vector2(0, -1), 3.0)
+		if fh == nil then return "" end
+		return fh.SortingLayer or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method number BarOffset(string stage)
+		-- 엔티티 피벗 → HP 바 y (스프라이트 꼭대기 위 0.3). 포탑 3.2(피벗 아래 0.81) · 억제기 FlipY 1.56 · 넥서스 ×3(피벗 중심).
+		if stage == "TOWER" then return 2.7 end
+		if stage == "SUPPRESSOR" then return 1.2 end
+		return 3.0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnHpBar(string villageId, string stage, Entity map, number x, number y)
+		-- PixelRenderer 16×3 한 장(msw-combat hp-gauge 권장) + script.LaneHpBar(클라가 칠함). 논리 픽셀 16×3 → Scale 로 세계 크기(1px = 0.01 유닛 가정 · 실측 후 조정).
+		local key = villageId .. ":" .. stage
+		if self.bars[key] ~= nil and isvalid(self.bars[key].ent) then return end
+		-- 엔티티 이름에 ':' 는 금지(LEA-3021 Interrupted · 실측) → '_' 로.
+		local ent = _SpawnService:SpawnByModelId(self.HpBarModelId, "HpBar_" .. villageId .. "_" .. stage, Vector3(x, y, 0), map)
+		if not isvalid(ent) then
+			log_warning("[Facility] hp bar spawn failed " .. key)
+			return
+		end
+		ent.TransformComponent.Scale = Vector3(self.HpBarWidth / 0.16, self.HpBarHeight / 0.03, 1)
+		local comp = ent:AddComponent("script.LaneHpBar")
+		if not isvalid(comp) then comp = ent:GetComponent("script.LaneHpBar") end
+		if isvalid(comp) then
+			comp.Layer = self:SortingLayerBelow(map, x, y - self:BarOffset(stage) - self:GroundOffset(stage))
+			comp.Ratio = 1.0
+			comp.Shown = false
+		end
+		self.bars[key] = { ent = ent, comp = comp, x = x, y = y }
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GroundOffset(string stage)
+		-- 피벗 → 스프라이트 바닥 거리(유닛). 실측 pivot ny: 포탑 0.253×3.2 · 억제기 FlipY (1−0.558)×1.56 · 넥서스 0.494×1.72×3=2.55.
+		-- 넥서스는 스프라이트 아래 ~1.1(×3) 이 투명 여백+그림자라 그만큼 내려 불투명 받침을 발판에 붙인다(스샷 픽셀 실측: 2.55 → 1.45). 모델 스케일이 바뀌면 같이 고친다.
+		if stage == "TOWER" then return 0.81 end
+		if stage == "SUPPRESSOR" then return 0.69 end
+		return 1.45
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnFacility(string villageId, string stage)
+		-- 슬롯에 모델 스폰 + LaneFacility 부착. 이미 있으면 그대로.
+		local key = villageId .. ":" .. stage
+		if self.entities[key] ~= nil and isvalid(self.entities[key]) then return self.entities[key] end
+		local row = self:LaneRow(villageId, self:RoleOfStage(stage))
+		if row == nil then
+			log_warning("[Facility] no LaneConfig row for " .. key)
+			return nil
+		end
+		local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
+		if not isvalid(map) then
+			log_warning("[Facility] map not loaded: " .. row.mapName)
+			return nil
+		end
+		local modelId = self.NexusModelId
+		if stage == "TOWER" then modelId = self.TowerModelId elseif stage == "SUPPRESSOR" then modelId = self.SuppressorModelId end
+		-- 슬롯 y = 통로 발판 y. 스프라이트 피벗이 중심이라 그대로 두면 절반이 발판 아래로 박힌다 → 피벗~바닥 거리만큼 올려 바닥을 발판에 맞춘다.
+		local ent = _SpawnService:SpawnByModelId(modelId, "Facility_" .. villageId .. "_" .. stage, Vector3(row.slotX, row.slotY + self:GroundOffset(stage), 0), map)
+		if not isvalid(ent) then
+			log_error("[Facility] spawn failed model=" .. modelId .. " map=" .. row.mapName)
+			return nil
+		end
+		-- 시설도 항상 플레이어 뒤: 슬롯 발판의 층 + OrderInLayer 3 (사용자 지시 2026-09-07). 발판을 못 찾으면 모델값(Default/-1) 유지.
+		if isvalid(ent.SpriteRendererComponent) then
+			local layer = self:SortingLayerBelow(map, row.slotX, row.slotY)
+			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
+			ent.SpriteRendererComponent.OrderInLayer = 3
+		end
+		local fc = ent:AddComponent("script.LaneFacility")
+		if not isvalid(fc) then fc = ent:GetComponent("script.LaneFacility") end
+		if isvalid(fc) then
+			fc.VillageId = villageId
+			fc.Stage = stage
+		end
+		-- 전투 부품: 진영(방어 2x · 미니언 FactionAI 의 표적이 된다) · 피격 그룹 Monster(FactionAttack 이 때리는 그룹) · 포탑은 FactionAttack + TurretAI.
+		local faction = ent:AddComponent("script.Faction")
+		if isvalid(faction) then faction.Team = tostring(20 + self:TeamSlot(villageId)) end
+		if isvalid(ent.HitComponent) then ent.HitComponent.CollisionGroup = CollisionGroups.Monster end
+		if stage == "TOWER" then
+			local atk = ent:AddComponent("script.FactionAttack")
+			if not isvalid(atk) then log_warning("[Facility] FactionAttack add failed") end
+			local ai = ent:AddComponent("script.TurretAI")
+			if not isvalid(ai) then log_warning("[Facility] TurretAI add failed") end
+		end
+		self.entities[key] = ent
+		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(stage) + self:BarOffset(stage))
+		log("[Facility] spawned " .. key .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.slotY) .. ") team=" .. tostring(faction and faction.Team or "?"))
+		self:ApplyVisual(villageId, stage)
+		self:ApplyCombat(villageId, stage)
+		return ent
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyVisual(string villageId, string stage)
+		-- 원장 값 → 색 + HP 바. 넥서스만 HP 비율로 흰→검정(사용자 2026-09-07: 포탑·억제기는 안 어두워짐). 파괴 = 반투명 회색. 주인 없는 넥서스 = 회색 · 바 숨김.
+		local key = villageId .. ":" .. stage
+		local ent = self.entities[key]
+		if not isvalid(ent) or not isvalid(ent.SpriteRendererComponent) then return end
+		local sr = ent.SpriteRendererComponent
+		local owned = (_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(villageId) ~= "") or false
+		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
+		local bar = (self.bars ~= nil) and self.bars[key] or nil
+		local function showBar(on)
+			if bar == nil or not isvalid(bar.comp) then return end
+			bar.comp.Shown = on
+		end
+		if not owned or t == nil then
+			sr.Color = Color(0.6, 0.6, 0.6, 1)
+			showBar(false)
+			return
+		end
+		if not t.alive then
+			sr.Color = Color(0.5, 0.5, 0.5, 0.5)
+			showBar(false)
+			return
+		end
+		local ratio = math.max(0, math.min(1, t.hp / math.max(1, t.max)))
+		if stage == "CORE" then
+			local v = 0.15 + 0.85 * ratio   -- HP 0 → 거의 검정
+			sr.Color = Color(v, v, v, 1)
+		else
+			sr.Color = Color(1, 1, 1, 1)
+		end
+		showBar(true)
+		if bar ~= nil and isvalid(bar.comp) then bar.comp.Ratio = ratio end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnFacilityChanged(string villageId, string stage)
+		-- LaneStateService 가 HP/생존/Lv 를 바꾼 뒤 호출.
+		self:ApplyVisual(villageId, stage)
+		self:ApplyCombat(villageId, stage)
+	end
+
+end

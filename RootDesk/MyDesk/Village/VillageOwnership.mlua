@@ -1,0 +1,82 @@
+@Logic
+script VillageOwnership extends Logic
+
+	-- 마을 소유권 원장 (WO-012 ① · 2026-09-07). VillageId → OwnerUserId. 넥서스 클릭(LaneFacility.RequestClaim) → Claim.
+	-- 규칙(GDD §4.1 · 결정 §1-7): 10레벨 이상 · 빈 마을만 · 선착순 · 한 유저 한 마을. 전직(B JobChangedEvent)은 이벤트가 오면 조건에 추가.
+	-- NPC 허용 판정(NpcCatalog.SetOwnershipResolver)과 방어 원장(LaneStateService)의 키가 된다. 이벤트 VillageClaimedEvent 는 Village.directory 생성 뒤 추가(LEA-3015 회피).
+
+	property integer ClaimLevel = 10
+
+	@HideFromInspector
+	property any ownerByVillage = nil
+
+	@HideFromInspector
+	property any villageByOwner = nil
+
+	method void OnBeginPlay()
+		-- 서버 원장 + NpcCatalog 리졸버 연결 (LaneStateService 의 allow-all 스텁을 대체한다).
+		if not self:IsServer() then return end
+		self.ownerByVillage = {}
+		self.villageByOwner = {}
+		if _NpcCatalog ~= nil then
+			_NpcCatalog:SetOwnershipResolver(function(userId, villageId, catalogNpcId) return self:OwnerOf(villageId) == userId end)
+			log("[Village] ownership resolver connected (owner-only)")
+		end
+		log("[Village] VillageOwnership ready (server)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method string OwnerOf(string villageId)
+		-- 마을 주인 userId. 없으면 "".
+		if self.ownerByVillage == nil then return "" end
+		return self.ownerByVillage[villageId] or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method string VillageOf(string userId)
+		-- 유저가 가진 마을. 없으면 "".
+		if self.villageByOwner == nil then return "" end
+		return self.villageByOwner[userId] or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer LevelOf(string userId)
+		-- 매치 레벨 (SummonManager econ 이 진상).
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		return (e ~= nil) and (e.level or 1) or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Claim(string userId, string villageId)
+		-- 선착순 연결. 반환 = "" 성공 / 거절 사유.
+		if userId == nil or userId == "" or villageId == nil or villageId == "" then return "INVALID" end
+		local cur = self:OwnerOf(villageId)
+		if cur == userId then return "OWN" end
+		if self:LevelOf(userId) < self.ClaimLevel then return "LEVEL" end
+		if self:VillageOf(userId) ~= "" then return "ALREADY_OWNER" end
+		if cur ~= "" then return "TAKEN" end
+		self.ownerByVillage[villageId] = userId
+		self.villageByOwner[userId] = villageId
+		log("[Village] claimed " .. villageId .. " by " .. userId)
+		if _LaneFacilityService ~= nil then
+			_LaneFacilityService:OnVillageClaimed(villageId, userId)
+		end
+		local ev = VillageClaimedEvent()
+		ev.VillageId = villageId
+		ev.OwnerUserId = userId
+		ev.ClaimedAtTime = _UtilLogic.ServerElapsedSeconds
+		self:SendEvent(ev)
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Release(string villageId)
+		-- 탈락·종료 시 소유 해제.
+		local owner = self:OwnerOf(villageId)
+		if owner == "" then return end
+		self.ownerByVillage[villageId] = nil
+		self.villageByOwner[owner] = nil
+		log("[Village] released " .. villageId .. " (" .. owner .. ")")
+	end
+
+end

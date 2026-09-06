@@ -53,6 +53,17 @@ script DevStatRemote extends Logic
 
 	property Entity rowAp = "a55dfc9c-7baa-4d9f-8a8e-c457688aaf37"
 
+	-- 빅토리아 주화 (WO-012 ① · 시설 비용 시험용)
+	property Entity rowCoin = "5b4ce51c-0a43-469e-9f1a-a9cd2ceb7164"
+
+	-- 레벨 (넥서스 연결 10레벨 게이트 시험용 · 경험치를 넣어 정식 레벨업 경로로 올린다)
+	property Entity rowLevel = "7cf558eb-cab1-4371-b7b4-ec81fe6592a2"
+
+	-- 매치 시계 (WO-012 ②): TEST/LIVE 프로파일 토글 · 다음 페이즈 점프
+	property ButtonComponent btnClockProfile = "4f905eba-2fdc-4b75-836b-932f55e72d25"
+
+	property ButtonComponent btnNextPhase = "095978c4-1eff-4439-996f-ae0c779ecd90"
+
 	@HideFromInspector
 	property any devByUser = nil
 
@@ -115,6 +126,8 @@ script DevStatRemote extends Logic
 		bind(self.btnClose, function() self:SetOpen(false) end)
 		bind(self.btnReset, function() self:RequestReset() end)
 		bind(self.btnRoll, function() self:RequestRoll() end)
+		bind(self.btnClockProfile, function() if _MatchSessionLogic ~= nil then _MatchSessionLogic:RequestProfileToggle() end end)
+		bind(self.btnNextPhase, function() if _MatchSessionLogic ~= nil then _MatchSessionLogic:RequestNextPhase() end end)
 
 		-- 우측 열: 메소 · 빨간 포션 · 보석 12종 지급 (버튼 → 서버 요청 · 표시는 SetReadout 응답으로만)
 		local function wireRow(row, key, rowSpecs, fn)
@@ -135,6 +148,8 @@ script DevStatRemote extends Logic
 		wireRow(self.rowPotion, "potion", giveSpecs, function(n) self:RequestGive("POTION_RED", n) end)
 		wireRow(self.rowDream, "dream", giveSpecs, function(n) self:RequestGive("DREAM_PIECE", n) end)
 		wireRow(self.rowAp, "ap", giveSpecs, function(n) self:RequestAp(n) end)
+		wireRow(self.rowCoin, "coin", { { "BtnP1", 1 }, { "BtnP5", 5 }, { "BtnP10", 10 }, { "BtnP100", 100 } }, function(n) self:RequestCoin(n) end)
+		wireRow(self.rowLevel, "level", giveSpecs, function(n) self:RequestLevel(n) end)
 		if isvalid(self.gemRoot) then
 			for _, row in ipairs(self.gemRoot.Children) do
 				local name = row.Name
@@ -244,6 +259,37 @@ script DevStatRemote extends Logic
 	end
 
 	@ExecSpace("Server")
+	method void RequestCoin(integer amount)
+		-- 빅토리아 주화 지급 (SummonManager econ.coin · 시설 강화/수리/재건 비용). 양수만.
+		if not self.Enabled or amount <= 0 or _SummonManager == nil then return end
+		local uid = senderUserId
+		_SummonManager:GrantCoin(uid, amount)
+		log("[DevRemote] +coin " .. tostring(amount) .. " (" .. uid .. ")")
+		self:PushReadout(uid)
+	end
+
+	@ExecSpace("Server")
+	method void RequestLevel(integer levels)
+		-- 레벨 +n: 레벨은 누적 경험치의 함수라(LevelFromExp) 다음 레벨까지 남은 경험치를 정식 경로(GrantKillReward)로 넣어 한 레벨씩 올린다 → 레벨업 보상(AP/SP·HP)·HUD 갱신까지 그대로.
+		if not self.Enabled or levels <= 0 or _SummonManager == nil then return end
+		local uid = senderUserId
+		local player = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(player) then return end
+		local e = _SummonManager:GetEcon(uid)
+		if e == nil then return end
+		local target = (e.level or 1) + levels
+		local guard = 0
+		while (e.level or 1) < target and guard < 200 do
+			local p = _SummonManager:ExpProgress(e.exp or 0)
+			local need = math.max(1, math.floor((p.need or 1) - (p.within or 0)))
+			_SummonManager:GrantKillReward(player, need)
+			guard = guard + 1
+		end
+		log("[DevRemote] +level " .. tostring(levels) .. " -> Lv" .. tostring(e.level) .. " exp=" .. tostring(e.exp) .. " (" .. uid .. ")")
+		self:PushReadout(uid)
+	end
+
+	@ExecSpace("Server")
 	method void RequestGive(string itemId, integer count)
 		-- 아이템 지급 (보석 GEM_* · 빨간 포션). 인벤토리 갱신까지.
 		if not self.Enabled or count <= 0 or _InventoryService == nil then return end
@@ -282,6 +328,8 @@ script DevStatRemote extends Logic
 		local econ = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
 		table.insert(vals, "meso=" .. tostring((econ ~= nil) and econ.meso or 0))
 		table.insert(vals, "ap=" .. tostring((econ ~= nil) and (econ.ap or 0) or 0))
+		table.insert(vals, "coin=" .. tostring((econ ~= nil) and (econ.coin or 0) or 0))
+		table.insert(vals, "level=" .. tostring((econ ~= nil) and (econ.level or 1) or 1))
 		if _InventoryService ~= nil then
 			table.insert(vals, "potion=" .. tostring(_InventoryService:CountItem(userId, "POTION_RED")))
 			table.insert(vals, "dream=" .. tostring(_InventoryService:CountItem(userId, "DREAM_PIECE")))

@@ -1,0 +1,85 @@
+@Component
+script MinionUnit extends Component
+
+	-- 미니언 1마리의 레인 상태 (WO-012 ② · 2026-09-07). MinionFlowService 가 스폰 직후 붙인다.
+	-- 이동·공격 판단은 FactionAI(진영 11~15 → 왼쪽 전진 · 사거리 안 적 공격), HP·사망은 Monster, 경험치는 FarmReward 가 맡고
+	-- 여기서는 (1) 레인 끝(EndX) 도달 → 다음 맵 통로로 이어 달리기, (2) 사망 시 메소 지급 + 빅토리아 주화 확률 드랍만 한다.
+
+	property string VillageId = ""
+
+	property string LaneRole = ""
+
+	property number EndX = 0
+
+	property number CoinDropChance = 0.25
+
+	property integer MonsterId = 0
+
+	property integer BaseHp = 300
+
+	property integer BaseAttack = 15
+
+	property number HpMul = 1.0
+
+	property number AtkMul = 1.0
+
+	property integer ExpBase = 20
+
+	property integer MesoBase = 10
+
+	@HideFromInspector
+	property any lastAttacker = nil
+
+	@HideFromInspector
+	property boolean rewarded = false
+
+	@HideFromInspector
+	property boolean advancing = false
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleHitEvent(HitEvent event)
+		-- 마지막 공격자만 기록한다 (HP 는 Monster 가 깎는다).
+		if isvalid(event.AttackerEntity) then
+			self.lastAttacker = event.AttackerEntity
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 사망 1회 보상 · 레인 끝 도달 판정.
+		---@type Monster
+		local monster = self.Entity:GetComponent("script.Monster")
+		if isvalid(monster) and monster.IsDead then
+			if not self.rewarded then
+				self.rewarded = true
+				self:OnDeath()
+			end
+			return
+		end
+		if self.advancing then return end
+		local t = self.Entity.TransformComponent
+		if not isvalid(t) then return end
+		if t.WorldPosition.x <= self.EndX then
+			self.advancing = true
+			if _MinionFlowService ~= nil then
+				_MinionFlowService:Advance(self.Entity)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnDeath()
+		-- 처치자가 플레이어면 메소(MesoBase) + 주화 확률 드랍. 경험치는 FarmReward → SummonManager.GrantKillReward.
+		local attacker = self.lastAttacker
+		if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) or _SummonManager == nil then return end
+		local uid = attacker.PlayerComponent.UserId
+		if self.MesoBase > 0 then _SummonManager:GrantMeso(attacker, self.MesoBase) end
+		if self.CoinDropChance > 0 and _UtilLogic:RandomDouble() < self.CoinDropChance then
+			_SummonManager:GrantCoin(uid, 1)
+			if _UIToast ~= nil then _UIToast:ShowMessage("빅토리아 주화 +1", uid) end
+			log("[Minion] coin drop -> " .. uid .. " (" .. self.Entity.Name .. ")")
+		end
+	end
+
+end

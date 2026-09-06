@@ -64,7 +64,7 @@ function mapNames() {
 // C1. CSV 헤더가 계약서 정본과 글자 단위로 같은가
 // ─────────────────────────────────────────────────────────
 const CANONICAL = {
-  MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce",
+  MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID",
   MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,#Note",
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
@@ -117,6 +117,10 @@ const CANONICAL = {
   VillageNpcSector: "VillageId,SectorId,AnchorX,AnchorY,SlotDX,SlotDY,SlotPerRow,FlipX,Enabled,#Note",
   VillageConfig: "VillageId,VillageMapName,Lane2MapName,Lane1MapName,RearMapName,BossMapName,ThemeId,CoreX,CoreY,Enabled,#Note",
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
+  LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
+  TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
+  MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
+  MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 };
 
@@ -209,6 +213,10 @@ const PK = {
   VillageNpcSector: ["VillageId", "SectorId"],
   VillageConfig: ["VillageId"],
   MonsterTraining: ["TrainClass", "Level"],
+  LaneConfig: ["VillageId", "MapName"],
+  TowerConfig: ["Stage", "Level"],
+  MinionPhaseConfig: ["Phase", "Profile"],
+  MinionComposition: ["Phase", "MonsterId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
 };
 for (const [name, cols] of Object.entries(PK)) {
