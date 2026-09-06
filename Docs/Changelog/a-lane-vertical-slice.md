@@ -51,6 +51,15 @@
 - 진영 번호: 헤네시스 = 슬롯 1 → 미니언 "11" · 방어 "21" (플레이어는 전원 "1" 이라 지금은 헤네시스만 정확). 다른 마을은 `LaneConfig` 행이 없어 미니언이 돌지 않는다.
 - **로그 스모크 2회**(refresh ×2 · Play · 리모컨 대신 서버 스크립트로 레벨 10 → 연결 → `SkipToNextPhase`): `phase -> 2 PHASE2_VILLAGE at 60.0s` · 30초마다 `wave … spawned=1` · 미니언이 포탑까지 걸어가 `FactionAttack Minion → ENEMY Facility_HENESYS_TOWER` · 1차에선 포탑이 야생 골렘만 쏘고 미니언을 못 맞혀(히트박스 (0,0) + 공격 상자 높이 2) 포탑 파괴 → 미니언 `advance LANE2 → LANE1` 로 사냥터1 재스폰 ✓ → 수정(히트박스 0.8×1.0 + `FitHitboxToSprite` · 공격 상자 높이 4 · `PreferMinions`) 후 2차: `TOWER -> ENEMY Minion_HENESYS_1/2` 5회, 미니언 2마리 처치(`FarmReward dropped`) ✓. 런타임 에러 0. 시계 HUD·마을 통로 넥서스 공격은 눈 확인 대기(사용자).
 
+## 2026-09-07 — ③ 수비대 MVP (도감 해금 → 모집 → 최전방 집결)
+
+- **규칙(사용자 확정)**: 도감 해금 = 지역재화 8개(지금은 `GEM_DIAMOND` 대체 · `LaneStateService.MaterialOf` 한 곳 · `UseRegionalMaterial` 켜면 `REGION_*`) → 그 몬스터가 모집 가능(Lv1). 모집도 묶음(8마리)당 같은 재료 8개. Lv2~5 = 꿈의 조각 3/5/10/15 · 배율 1.5/2.2/3.3/5.0(`MonsterTraining` MELEE 행을 공용 표로). 마을 원장 `mon[monsterId] = 0~5`.
+- **도감 창**(`VillageRecordGroup` collection): 셀에 **썸네일**(`MonsterInfo.IconRUID` 신설 열 — 모델 ActionSheet `stand` 클립 RUID, 79행 중 77 채움) + 이름 + 도감 Lv, 미해금은 어둡게(썸네일은 보임). 셀 클릭(ButtonComponent 추가) → 푸터에 "필요 재료 · 보유" + `해금` / `레벨 올리기` 버튼 → `RequestUnlockCollection` / `RequestLevelCollection`. 뷰 `C|id|name|level|monLv|icon|nextCost|mul|nextMul` · `MAT` · `DREAM` · `NO_VILLAGE`.
+- **모집 창**: 목록 = 해금한 몬스터만(`U|id|name|level|cost|monLv|mul|icon` + `MAT`) · 카드 썸네일 · 비용 = 재료 8. `RequestRecruit(monsterId)` → `DefenderService.SpawnBundle` 8마리 즉시 스폰 → 묶음 {key, qty=스폰 수, lv}. 수비 몬스터 사망(`DefenderUnit`) → `OnDefenderDied` 묶음 −1.
+- **수비대 행동**(`FactionAI.GuardMode` 신설): `HomeX`(최전방 시설 앞 0.9~2.0) 대기 · 탐지 6 안 적이 보이면 접근하되 `LeashMinX`(슬롯−1) ~ `LeashMaxX`(슬롯 + 포탑 사거리) 밖으로 안 나감 · 적 없으면 집으로. 진영 2x · `MonsterAttack.Disabled`(플레이어 접촉 피해 끔 · 신설 속성) · `StateChaseMonster`/`BossSkillRunner` 끔.
+- **스펙(임시 상수)**: HP = 도감 MaxHp × 0.3 × 배율 · 공격 = 도감 Level × 1.5 × 배율 (`DefenderService.HpRatio/AttackPerLevel`).
+- 미구현: 시설 파괴 시 다음 시설로 후퇴 · 파병(파병 창은 원장 스텁 그대로) · 훈련 NPC(`train` 라우트 3병과)는 도감 레벨과 별개로 남아 있음(폐기 예정).
+
 ### 기타
 - `Match/MatchSessionLogic` 스텁: `@Sync CurrentPhase`, `PhaseIndex()`, `SetPhase()`. 시계 본체는 ②.
 - 넥서스 아이콘 RUID `dab6ddee…` → **`8adca861…`**(사용자 선택 #3) 3곳: `VillageDefenseGroup` Node/Card `Icon` · `VillageLifeUIController` icons · `ui_village_common ICON.core`.

@@ -58,6 +58,25 @@ script VillageRecordUIController extends Logic
 	@HideFromInspector
 	property integer selPlayer = 0
 
+	-- collection 선택·재료 (WO-012 ③)
+	@HideFromInspector
+	property integer selColl = 0
+
+	@HideFromInspector
+	property any collMat = nil
+
+	@HideFromInspector
+	property integer dream = 0
+
+	@HideFromInspector
+	property boolean hasVillage = true
+
+	@HideFromInspector
+	property any boundCells = nil
+
+	@HideFromInspector
+	property boolean waiting = false
+
 	method void OnBeginPlay()
 		-- 클라만 배선.
 		if self:IsClient() then self:SetupClient() end
@@ -73,6 +92,8 @@ script VillageRecordUIController extends Logic
 			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
 		end
 		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
+		if isvalid(self.btnPrimary) then bind(self.btnPrimary.Entity, function() self:OnPrimary() end) end
+		self.boundCells = {}
 		if isvalid(self.collGrid) then
 			if isvalid(self.collTemplate) then self.collGrid.ItemEntity = self.collTemplate end
 			self.collGrid.OnRefresh = function(index, entity) self:FillCollCell(index, entity) end
@@ -136,7 +157,11 @@ script VillageRecordUIController extends Logic
 		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "기록" end
 		if isvalid(self.contentCollection) then self.contentCollection.Enable = (route == "collection") end
 		if isvalid(self.contentStats) then self.contentStats.Enable = (route == "stats") end
-		if isvalid(self.footer) then self.footer.Enable = false end
+		-- collection 은 푸터(재료 · 해금/레벨업 버튼)를 쓴다. stats 는 없음.
+		self.selColl = 0
+		self.waiting = false
+		if isvalid(self.footer) then self.footer.Enable = (route == "collection") end
+		if route == "collection" then self:UpdateFooter() end
 		if _LaneStateService ~= nil then _LaneStateService:RequestView(route) end
 	end
 
@@ -160,34 +185,119 @@ script VillageRecordUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RenderCollection(any rows)
-		-- C|id|name|level|found → GridView.
+		-- C|id|name|level|monLv|icon|nextCost|mul|nextMul · MAT|itemId|name|have|cost · DREAM|have · NO_VILLAGE → GridView + 푸터.
 		self.collRows = {}
-		local found = 0
+		self.hasVillage = true
+		local unlocked = 0
 		for _, f in ipairs(rows) do
 			if f[1] == "C" then
-				table.insert(self.collRows, { id = f[2], name = f[3], level = f[4], found = (f[5] == "1") })
-				if f[5] == "1" then found = found + 1 end
+				local monLv = tonumber(f[5]) or 0
+				table.insert(self.collRows, { id = f[2], name = f[3], level = f[4], monLv = monLv, icon = f[6] or "", nextCost = tonumber(f[7]) or 0, mul = f[8] or "1.0", nextMul = f[9] or "1.0" })
+				if monLv >= 1 then unlocked = unlocked + 1 end
+			elseif f[1] == "MAT" then
+				self.collMat = { itemId = f[2], name = f[3], have = tonumber(f[4]) or 0, cost = tonumber(f[5]) or 8 }
+			elseif f[1] == "DREAM" then
+				self.dream = tonumber(f[2]) or 0
+			elseif f[1] == "NO_VILLAGE" then
+				self.hasVillage = false
 			end
 		end
+		self.waiting = false
 		if isvalid(self.collGrid) then
 			self.collGrid.TotalCount = #self.collRows
 			self.collGrid:Refresh(true, true)
 		end
 		if isvalid(self.collStatus) then
-			self.collStatus.Text = "발견 " .. tostring(found) .. " / " .. tostring(#self.collRows) .. " · 발견 기록은 Progression 원장 연동 후 (지금은 전부 미발견 실루엣)"
+			local matName = (self.collMat ~= nil) and self.collMat.name or "지역재화"
+			self.collStatus.Text = "해금 " .. tostring(unlocked) .. " / " .. tostring(#self.collRows) .. " · 해금 = " .. matName .. " 8 → 모집 가능(Lv1) · Lv2~5 = 꿈의 조각 3/5/10/15 (배율 1.5/2.2/3.3/5.0)" .. (self.hasVillage and "" or " · 마을이 없어 해금 불가")
 		end
+		self:UpdateFooter()
 	end
 
 	@ExecSpace("ClientOnly")
 	method void FillCollCell(integer index, Entity cell)
-		-- 셀 = 이름 + 레벨. 미발견은 어둡게. (OnRefresh 는 스크롤마다 불린다 — 서버 호출 금지)
+		-- 셀 = 썸네일 + 이름 + 도감 Lv. 미해금은 어둡게(썸네일은 보인다 · 사용자 지시). 클릭 = 선택. (OnRefresh 는 스크롤마다 불린다 — 서버 호출 금지)
 		local r = self.collRows[index + 1]
 		if r == nil or not isvalid(cell) then return end
-		self:SetText(cell, "Name", r.found and r.name or "???")
-		self:SetText(cell, "Sub", "Lv " .. r.level)
-		if cell.SpriteGUIRendererComponent ~= nil then
-			cell.SpriteGUIRendererComponent.Color = r.found and Color(0.52, 0.55, 0.60, 1) or Color(0.34, 0.36, 0.40, 1)
+		self:SetText(cell, "Name", r.name)
+		self:SetText(cell, "Sub", (r.monLv >= 1) and ("도감 Lv" .. tostring(r.monLv) .. " ×" .. tostring(r.mul)) or ("미해금 · Lv " .. r.level))
+		local icon = cell:GetChildByName("Icon")
+		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+			icon.SpriteGUIRendererComponent.ImageRUID = r.icon
+			icon.Enable = (r.icon ~= "")
+			icon.SpriteGUIRendererComponent.Color = (r.monLv >= 1) and Color(1, 1, 1, 1) or Color(0.6, 0.6, 0.6, 1)
 		end
+		if cell.SpriteGUIRendererComponent ~= nil then
+			local sel = (self.selColl == index + 1)
+			if sel then cell.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
+			elseif r.monLv >= 1 then cell.SpriteGUIRendererComponent.Color = Color(0.52, 0.55, 0.60, 1)
+			else cell.SpriteGUIRendererComponent.Color = Color(0.34, 0.36, 0.40, 1) end
+		end
+		-- 클릭 배선은 셀 엔티티당 1회. 복제 셀은 스크롤마다 index 가 바뀌므로 boundCells[셀 Id] 에 현재 index 를 갱신해 두고 클릭 때 읽는다.
+		local bound = self.boundCells[cell.Id]
+		self.boundCells[cell.Id] = { index = index }
+		if bound == nil then
+			local id = cell.Id
+			local h = cell:ConnectEvent(ButtonClickEvent, function()
+				local rec = self.boundCells[id]
+				if rec ~= nil then self:OnCollSelect(rec.index + 1) end
+			end)
+			table.insert(self.handlers, { e = cell, h = h })
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCollSelect(integer idx)
+		-- 셀 선택 → 푸터 갱신 + 그리드 다시 칠하기.
+		self.selColl = idx
+		if isvalid(self.collGrid) then self.collGrid:Refresh(false, true) end
+		self:UpdateFooter()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateFooter()
+		-- 선택한 몬스터의 필요 재료 · 버튼 문구/활성.
+		local r = self.collRows and self.collRows[self.selColl] or nil
+		local matName = (self.collMat ~= nil) and self.collMat.name or "지역재화"
+		local matHave = (self.collMat ~= nil) and self.collMat.have or 0
+		local matCost = (self.collMat ~= nil) and self.collMat.cost or 8
+		local label = ""
+		local btnText = "해금"
+		local can = false
+		if r == nil then
+			label = "몬스터를 고르면 필요한 재료가 보입니다 (보유 " .. matName .. " " .. tostring(matHave) .. " · 꿈의 조각 " .. tostring(self.dream) .. ")"
+		elseif r.monLv < 1 then
+			label = r.name .. " 해금: " .. matName .. " " .. tostring(matCost) .. "개 (보유 " .. tostring(matHave) .. ")"
+			btnText = "해금"
+			can = (matHave >= matCost)
+		elseif r.monLv < 5 then
+			label = r.name .. " Lv" .. tostring(r.monLv) .. " → Lv" .. tostring(r.monLv + 1) .. ": 꿈의 조각 " .. tostring(r.nextCost) .. "개 (보유 " .. tostring(self.dream) .. ") · 배율 ×" .. tostring(r.mul) .. " → ×" .. tostring(r.nextMul)
+			btnText = "레벨 올리기"
+			can = (self.dream >= r.nextCost)
+		else
+			label = r.name .. " Lv5 (최대 · 배율 ×" .. tostring(r.mul) .. ")"
+			btnText = "최대"
+			can = false
+		end
+		if not self.hasVillage then can = false end
+		if isvalid(self.costLabel) then self.costLabel.Text = label end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = (can and not self.waiting)
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.Text = btnText end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPrimary()
+		-- 해금 / 레벨 올리기 → 서버. 응답(SetView) 으로만 갱신.
+		if self.route ~= "collection" or self.waiting then return end
+		local r = self.collRows and self.collRows[self.selColl] or nil
+		if r == nil or _LaneStateService == nil then return end
+		self.waiting = true
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+		if r.monLv < 1 then _LaneStateService:RequestUnlockCollection(r.id)
+		elseif r.monLv < 5 then _LaneStateService:RequestLevelCollection(r.id) end
 	end
 
 	-- ── stats ──────────────────────────────────────────────────

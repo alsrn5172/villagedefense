@@ -18,6 +18,9 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property any trainDef = nil
 
+	-- 해금·모집 재화를 마을 지역재화(REGION_*)로 쓸지. false = 다이아몬드 임시 (사용자 2026-09-07).
+	property boolean UseRegionalMaterial = false
+
 	method void OnBeginPlay()
 		-- 서버만 원장. 표를 읽는다.
 		if not self:IsServer() then return end
@@ -101,7 +104,8 @@ script LaneStateService extends Logic
 		if villageId == nil or villageId == "" then return nil end
 		local v = self.states[villageId]
 		if v ~= nil then return v end
-		v = { id = villageId, towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {} }
+		-- mon[monsterId] = 도감 레벨 0(미해금)~5. Lv1 = 해금(지역재화 8 · 지금은 다이아몬드) → 모집 가능, Lv2~5 = 꿈의 조각(MonsterTraining) · 배율.
+		v = { id = villageId, towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {}, mon = {} }
 		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
 			v.towers[stage] = { lv = 1, hp = self:MaxHp(stage, 1), alive = true }
 		end
@@ -150,6 +154,34 @@ script LaneStateService extends Logic
 		local muls = { 1.0, 1.5, 2.2, 3.3, 5.0 }
 		local i = math.max(1, math.min(5, lv))
 		return { cost = costs[i], mul = muls[i] }
+	end
+
+	@ExecSpace("ServerOnly")
+	method any MaterialOf(string villageId)
+		-- 해금·모집 재화 {itemId, name, count}. 기획 = 마을 지역재화 8개(헤네시스 포자 등) — 지금은 다이아몬드로 대체(사용자 2026-09-07). UseRegionalMaterial 을 켜면 villages[].mat 로 바뀐다.
+		if self.UseRegionalMaterial then
+			for _, vv in ipairs(self.villages) do
+				if vv.id == villageId then
+					local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(vv.mat) or nil
+					return { itemId = vv.mat, name = (def ~= nil and def.name) or vv.mat, count = 8 }
+				end
+			end
+		end
+		return { itemId = "GEM_DIAMOND", name = "다이아몬드(임시 지역재화)", count = 8 }
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer MonLevel(any v, integer monsterId)
+		-- 도감 레벨 0~5.
+		if v == nil or v.mon == nil then return 0 end
+		return v.mon[monsterId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method number MonMul(any v, integer monsterId)
+		-- 도감 레벨 배율 (MonsterTraining 의 MELEE 행을 공용 표로 쓴다: 1.0/1.5/2.2/3.3/5.0).
+		local lv = math.max(1, self:MonLevel(v, monsterId))
+		return self:TrainRow("MELEE", lv).mul
 	end
 
 	@ExecSpace("ServerOnly")
@@ -279,17 +311,24 @@ script LaneStateService extends Logic
 			local slots = {}
 			for _, d in ipairs(v.defenders) do table.insert(slots, d.key .. ":" .. tostring(d.qty)) end
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap), table.concat(slots, ",") })
-			local su = _DataService:GetTable("SummonUnits")
-			if su ~= nil then
-				for i = 1, su:GetRowCount() do
-					local key = su:GetCell(i, "Key") or ""
-					if key ~= "" then
-						add({ "U", key, su:GetCell(i, "Name") or key, tostring(su:GetCell(i, "Level") or "1"), tostring(su:GetCell(i, "Meso") or "0") })
+			-- 모집 목록 = 도감에서 해금(Lv1+)한 몬스터만. U|id|name|level|cost|monLv|mul|icon · 비용은 MAT 행(지역재화 8 · 지금은 다이아몬드).
+			local mi = _DataService:GetTable("MonsterInfo")
+			local mat = self:MaterialOf(v.id)
+			if mi ~= nil then
+				local list = {}
+				for i = 1, mi:GetRowCount() do
+					local id = math.floor(tonumber(mi:GetCell(i, "Id")) or 0)
+					if id > 0 and self:MonLevel(v, id) >= 1 then
+						table.insert(list, { id = id, name = mi:GetCell(i, "Name") or tostring(id), level = tonumber(mi:GetCell(i, "Level")) or 1, icon = tostring(mi:GetCell(i, "IconRUID") or "") })
 					end
 				end
+				table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
+				for _, r in ipairs(list) do
+					add({ "U", tostring(r.id), r.name, tostring(r.level), tostring(mat.count), tostring(self:MonLevel(v, r.id)), string.format("%.1f", self:MonMul(v, r.id)), r.icon })
+				end
 			end
-			local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
-			add({ "MESO", tostring((e ~= nil) and (e.meso or 0) or 0) })
+			local matHave = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, mat.itemId) or 0
+			add({ "MAT", mat.itemId, mat.name, tostring(matHave), tostring(mat.count) })
 		elseif kind == "train" then
 			local names = { MELEE = "근접", RANGED = "원거리", TANK = "탱커" }
 			for _, cls in ipairs({ "MELEE", "RANGED", "TANK" }) do
@@ -344,6 +383,7 @@ script LaneStateService extends Logic
 			end
 		elseif kind == "collection" then
 			-- 스폰 관리 몬스터(MapMonsters 에 있는 것)만 · 레벨은 MonsterInfo(기획 §3 게임 Lv).
+			-- C|id|name|level|monLv|icon|nextCost|mul|nextMul  ·  MAT|itemId|name|have|cost  ·  DREAM|have  (해금 = 재료 8 · Lv2~5 = 꿈의 조각)
 			local spawnSet = {}
 			local mm = _DataService:GetTable("MapMonsters")
 			if mm ~= nil then
@@ -355,14 +395,31 @@ script LaneStateService extends Logic
 				for i = 1, mi:GetRowCount() do
 					local id = tostring(mi:GetCell(i, "Id") or "")
 					if id ~= "" and spawnSet[id] then
-						rowsById[id] = { id = id, name = mi:GetCell(i, "Name") or id, level = tonumber(mi:GetCell(i, "Level")) or 1 }
+						rowsById[id] = { id = id, name = mi:GetCell(i, "Name") or id, level = tonumber(mi:GetCell(i, "Level")) or 1, icon = tostring(mi:GetCell(i, "IconRUID") or "") }
 					end
 				end
 				local list = {}
 				for _, r in pairs(rowsById) do table.insert(list, r) end
 				table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
-				for _, r in ipairs(list) do add({ "C", r.id, r.name, tostring(r.level), "0" }) end
+				for _, r in ipairs(list) do
+					local monLv = (v ~= nil) and self:MonLevel(v, math.floor(tonumber(r.id) or 0)) or 0
+					local mul = self:TrainRow("MELEE", math.max(1, monLv)).mul
+					local nextCost = 0
+					local nextMul = mul
+					if monLv >= 1 and monLv < 5 then
+						local nr = self:TrainRow("MELEE", monLv + 1)
+						nextCost = nr.cost
+						nextMul = nr.mul
+					end
+					add({ "C", r.id, r.name, tostring(r.level), tostring(monLv), r.icon, tostring(nextCost), string.format("%.1f", mul), string.format("%.1f", nextMul) })
+				end
 			end
+			local vid = self:VillageOfUser(userId)
+			local mat = self:MaterialOf(vid)
+			local matHave = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, mat.itemId) or 0
+			add({ "MAT", mat.itemId, mat.name, tostring(matHave), tostring(mat.count) })
+			add({ "DREAM", tostring((_InventoryService ~= nil) and _InventoryService:CountItem(userId, "DREAM_PIECE") or 0) })
+			if v == nil then add({ "NO_VILLAGE" }) end
 		end
 		return table.concat(rows, ";")
 	end
@@ -417,20 +474,91 @@ script LaneStateService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestRecruit(string unitKey)
-		-- 모집: SummonUnits 가격(메소 · 임시 — 몬스터별 재화 8개는 WP2) → 묶음 1개 추가. 10묶음 상한.
+		-- 모집: 도감에서 해금(Lv1+)한 몬스터만 · 묶음(8마리)당 지역재화 8개(지금은 다이아몬드) → 최전방 시설 앞에 즉시 스폰. 10묶음 상한.
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
 		if #v.defenders >= v.cap then self:Toast(uid, "수비대가 가득 찼습니다 (" .. tostring(v.cap) .. "묶음)") return end
-		local cfg = (_SummonManager ~= nil) and _SummonManager:ResolveUnit(unitKey) or nil
-		if cfg == nil then self:Toast(uid, "알 수 없는 몬스터: " .. tostring(unitKey)) return end
-		local cost = math.floor(tonumber(cfg.mesoCost or cfg.meso or 0) or 0)
-		local name = tostring(cfg.name or cfg.Name or unitKey)
-		if not _SummonManager:SpendMeso(uid, cost) then self:Toast(uid, "메소가 부족합니다 (" .. tostring(cost) .. ")") return end
-		table.insert(v.defenders, { key = unitKey, name = name, qty = 8 })
-		log("[Lane] " .. v.id .. " recruit " .. unitKey .. " meso-" .. tostring(cost) .. " bundles=" .. tostring(#v.defenders) .. " (" .. uid .. ")")
-		self:Toast(uid, name .. " 1묶음 모집 (메소 -" .. tostring(cost) .. ")")
+		local monsterId = math.floor(tonumber(unitKey) or 0)
+		if monsterId <= 0 or self:MonLevel(v, monsterId) < 1 then self:Toast(uid, "도감에서 먼저 해금하세요") return end
+		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
+		if name == nil or name == "" then name = tostring(monsterId) end
+		local mat = self:MaterialOf(v.id)
+		if _InventoryService == nil or _InventoryService:CountItem(uid, mat.itemId) < mat.count then
+			self:Toast(uid, mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다")
+			return
+		end
+		_InventoryService:RemoveItem(uid, mat.itemId, mat.count)
+		_InventoryService:PushInventory(uid)
+		local mul = self:MonMul(v, monsterId)
+		local spawned = (_DefenderService ~= nil) and _DefenderService:SpawnBundle(v.id, monsterId, mul, 8, self:FrontStage(v)) or 0
+		table.insert(v.defenders, { key = tostring(monsterId), name = name, qty = spawned, lv = self:MonLevel(v, monsterId) })
+		log("[Lane] " .. v.id .. " recruit " .. tostring(monsterId) .. " " .. mat.itemId .. "-" .. tostring(mat.count) .. " spawned=" .. tostring(spawned) .. " bundles=" .. tostring(#v.defenders) .. " (" .. uid .. ")")
+		self:Toast(uid, name .. " 1묶음(" .. tostring(spawned) .. "마리) 모집 — 최전방 " .. self.towerDef[self:FrontStage(v)].name .. " 앞에 집결")
 		self:Push(uid, "recruit")
+	end
+
+	@ExecSpace("Server")
+	method void RequestUnlockCollection(string monsterIdStr)
+		-- 도감 해금(Lv1): 지역재화 8개(지금은 다이아몬드) → 모집 가능.
+		local uid = senderUserId
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
+		local monsterId = math.floor(tonumber(monsterIdStr) or 0)
+		if monsterId <= 0 then return end
+		if self:MonLevel(v, monsterId) >= 1 then self:Toast(uid, "이미 해금했습니다") return end
+		local mat = self:MaterialOf(v.id)
+		if _InventoryService == nil or _InventoryService:CountItem(uid, mat.itemId) < mat.count then
+			self:Toast(uid, mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다")
+			return
+		end
+		_InventoryService:RemoveItem(uid, mat.itemId, mat.count)
+		_InventoryService:PushInventory(uid)
+		v.mon[monsterId] = 1
+		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
+		log("[Lane] " .. v.id .. " unlock " .. tostring(monsterId) .. " " .. mat.itemId .. "-" .. tostring(mat.count) .. " (" .. uid .. ")")
+		self:Toast(uid, tostring(name) .. " 해금 — 모집 가능 (Lv1)")
+		self:Push(uid, "collection")
+	end
+
+	@ExecSpace("Server")
+	method void RequestLevelCollection(string monsterIdStr)
+		-- 도감 레벨업(Lv2~5): 꿈의 조각 3/5/10/15 · 배율 1.5/2.2/3.3/5.0 (MonsterTraining MELEE 행).
+		local uid = senderUserId
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다") return end
+		local monsterId = math.floor(tonumber(monsterIdStr) or 0)
+		local lv = self:MonLevel(v, monsterId)
+		if monsterId <= 0 or lv < 1 then self:Toast(uid, "먼저 해금하세요") return end
+		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") return end
+		local cost = self:TrainRow("MELEE", lv + 1).cost
+		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < cost then
+			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(cost) .. ")")
+			return
+		end
+		_InventoryService:RemoveItem(uid, "DREAM_PIECE", cost)
+		_InventoryService:PushInventory(uid)
+		v.mon[monsterId] = lv + 1
+		log("[Lane] " .. v.id .. " monster " .. tostring(monsterId) .. " Lv" .. tostring(lv + 1) .. " dream-" .. tostring(cost) .. " (" .. uid .. ")")
+		self:Toast(uid, "Lv" .. tostring(lv + 1) .. " (배율 ×" .. string.format("%.1f", self:MonMul(v, monsterId)) .. ")")
+		self:Push(uid, "collection")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnDefenderDied(string villageId, integer monsterId)
+		-- 수비 몬스터 사망 → 해당 묶음 수 -1, 0 이면 묶음 삭제. 주인 창 갱신.
+		local v = self.states[villageId]
+		if v == nil then return end
+		local key = tostring(monsterId)
+		for i, d in ipairs(v.defenders) do
+			if d.key == key and (d.qty or 0) > 0 then
+				d.qty = d.qty - 1
+				if d.qty <= 0 then table.remove(v.defenders, i) end
+				break
+			end
+		end
+		self:PushOwner(villageId, "recruit")
+		self:PushOwner(villageId, "defense")
 	end
 
 	@ExecSpace("Server")
