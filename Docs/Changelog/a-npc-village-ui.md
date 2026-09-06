@@ -61,6 +61,12 @@
 - 캐릭터 창 스탯 탭: Right/Row0~3 에 **"+" 버튼**(Cell 270→226), Left/Row4 **AP 셀 + "자동 분배"**. AP 0 이면 버튼 비활성·회색, 있으면 노란색. 바인딩 6개(`cellAp btnAuto btnPlusStr/Dex/Int/Luk`)
 - 검증: econ.ap=10 → 창 AP 10 · "+" 2회 → STR 12→14 · AP 8 · 자동 분배 → STR 19 · DEX 8 · AP 0 · 버튼 비활성 · 에러 0. 방어 창을 열었을 때 StatusHUD 의 Lv/AP 텍스트가 창 뒤로 감(스크린샷)
 
+### 추가 — 리모컨 AP · 장비 상세 회색 네모 · 강화 기본치 표시 (같은 날 밤 · 사용자 피드백 3건)
+1. **리모컨 AP 행**(`+1/+5/+10` · 보유 표시): `DevStatRemote.RequestAp` → `econ.ap` 가산 · HUD/캐릭터 창 갱신. 보석 행 간격 30 으로 줄여 자리 확보
+2. **장비 상세 아래 회색 네모** = `Equip/Detail/DetailBg`(stretch 스프라이트가 empty 아래에서 100×100 으로 붕괴 · 메모리에 있던 함정). `DetailBg`·`SlotBg` 를 패널 크기(455×430) 명시로 고침 → 패널 전체 배경으로 정상
+3. **강화 기본치**: (a) `EnhanceSlotBonus` 1티어 방어구 `AddDefense` 0 이던 5행(TOP/BOTTOM/SHOES +1, GLOVES +1·+2)을 1 로 — 매 단계 기본 상승이 보이도록 (b) 강화 미리보기 행이 `+3 (초록 +1 · 보라 +2)` 로 고정치/보석치를 색으로 구분 · 제목 줄도 초록/보라 · `PreviewTitle`·`PRow*/Cell` IsRichText (c) **Footer 버튼 문구가 "구매" 로 남던 문제**: `GoRoute` 가 라우트별 문구(강 화 / 제 작 / 구 매 / 전체 수리)를 정한다
+- 검증: 가죽 장갑 + 힘의 결정 → 제목 `+1 · 기본 방어력 +1 · 힘의 결정 1개 = STR +2`, 행 `방어력 +1(초록)` `STR +2(보라)`, 버튼 "강 화" · 장비 탭 배경 정상 · 리모컨 AP +5 → 5 · 에러 0
+
 ### 미결 (Lane/Village 시스템으로 넘길 것)
 - 원장 스텁 → 실제 Lane(미니언 · 시설 피격 · 자동 집결 · 파병 이동) · 소유권(VillageClaimedEvent) · 빅토리아 주화 · `TowerConfig`/`MonsterTraining` CSV · 도감 발견 · `PublicPlayerSummary` · 확인 팝업(파병·재건·관문) · 지역재화 아이콘
 - 모집 가격이 SummonUnits 메소(1~3)라 사실상 공짜 — 기획은 몬스터별 재화 8개. `ItemInfo MAT_*` 15행이 WP2 로 들어오면 그때 치환
