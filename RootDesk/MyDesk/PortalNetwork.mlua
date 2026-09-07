@@ -37,6 +37,22 @@ script PortalNetwork extends Logic
 	@HideFromInspector
 	property boolean finished = false
 
+	-- 포탈 렌더 층 (사용자 지시 2026-09-07 "모든 포탈은 플레이어보다 앞").
+	-- 플레이어 렌더 층 = 밟은 발판의 SortingLayer + OrderInLayer 4 (Npc/NpcSpawner.mlua 참조).
+	-- Default 가 MapLayer0~7 보다 위 층이고 레인 통로 발판이 Default 라 플레이어가 Default/4 까지 올라온다
+	-- → Default/5 면 어느 발판에 서 있든 항상 앞. 발판 층을 조회할 필요가 없다.
+	@HideFromInspector
+	property string PortalSortingLayer = "Default"
+
+	@HideFromInspector
+	property integer PortalOrderInLayer = 5
+
+	@HideFromInspector
+	property string layerAppliedMap = ""
+
+	@HideFromInspector
+	property number layerPollElapsed = 0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self:LoadRoutes()
@@ -230,8 +246,18 @@ script PortalNetwork extends Logic
 		end
 	end
 
-	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
+		-- 서버는 노선 바인딩 재시도, 클라는 포탈 렌더 층 보정. @Logic 이라 OnMapEnter 가 안 와서 양쪽 다 폴링이다.
+		if self:IsServer() then
+			self:UpdateServerBinding(delta)
+		else
+			self:UpdateClientPortalLayer(delta)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateServerBinding(number delta)
+		-- 아직 못 붙인 노선을 RetryInterval 마다 다시 시도하고 RetryTimeout 을 넘기면 invalid 로 확정한다.
 		if self.finished then
 			return
 		end
@@ -255,6 +281,63 @@ script PortalNetwork extends Logic
 				.. " bound=" .. tostring(self.boundCount)
 				.. " invalid=" .. tostring(self.invalidCount))
 		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateClientPortalLayer(number delta)
+		-- 맵이 바뀐 프레임에만 1회 칠한다. @Logic 은 OnMapEnter 를 못 받으므로 CurrentMap 을 폴링한다.
+		self.layerPollElapsed = self.layerPollElapsed + delta
+		if self.layerPollElapsed < 0.3 then
+			return
+		end
+		self.layerPollElapsed = 0
+
+		local player = _UserService.LocalPlayer
+		if not isvalid(player) or not isvalid(player.CurrentMap) then
+			return
+		end
+
+		local mapName = player.CurrentMap.Name
+		if mapName == self.layerAppliedMap then
+			return
+		end
+		self.layerAppliedMap = mapName
+		self:ApplyPortalLayer(mapName)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyPortalLayer(string mapName)
+		-- 그 맵의 노선 포탈을 전부 플레이어 앞 층으로 올린다.
+		-- 🔴 클라 전용인 이유: 포탈은 맵 파일에 박힌 정적 엔티티라 서버에서 렌더 속성을 써도
+		--    클라에 전파된다는 보장이 없다(NpcSpawner 가 서버 대입으로 되는 건 서버가 스폰한 엔티티라서다).
+		--    SortingLayer/OrderInLayer 는 순수 렌더 값이라 각 클라가 자기 화면만 고치면 된다.
+		local tableData = _DataService:GetTable(self.TableName)
+		if tableData == nil then
+			log_warning("[PortalNetwork] client dataset not found: " .. self.TableName)
+			return
+		end
+
+		local seen = {}
+		local applied = 0
+		for i = 1, tableData:GetRowCount() do
+			local enabledValue = tableData:GetCell(i, "Enabled")
+			local enabledText = string.lower(tostring(enabledValue))
+			local isEnabled = enabledValue == nil or enabledText == "" or enabledText == "true" or enabledText == "1" or enabledText == "yes" or enabledText == "y"
+			local fromMap = tableData:GetCell(i, "FromMap") or ""
+			local fromPortal = tableData:GetCell(i, "FromPortal") or ""
+			if isEnabled and fromMap == mapName and fromPortal ~= "" and seen[fromPortal] == nil then
+				seen[fromPortal] = true
+				local portal = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. fromPortal)
+				if isvalid(portal) and isvalid(portal.SpriteRendererComponent) then
+					portal.SpriteRendererComponent.SortingLayer = self.PortalSortingLayer
+					portal.SpriteRendererComponent.OrderInLayer = self.PortalOrderInLayer
+					applied = applied + 1
+				end
+			end
+		end
+
+		log("[PortalNetwork] layer map=" .. mapName .. " portals=" .. tostring(applied)
+			.. " layer=" .. self.PortalSortingLayer .. "/" .. tostring(self.PortalOrderInLayer))
 	end
 
 
