@@ -64,20 +64,39 @@ Nautilus_Boss_Pianus ↔ Nautilus_Hunt_RibbonPigBeach ↔ Nautilus_Village_Minim
 
 ### 리스항구
 
+> 🔴 **리스항구만 구조가 다르다** — 공용 시작 지역이라 마을이 체인의 **끝**이 아니라 **시작**이고,
+> 여섯갈래길 출구가 보스맵 뒤에 있다 (기획 `Docs/추가기획1/구현항목-결정.md` §1-7, 2026-09-04 확정).
+
 ```text
-LithHarbor_Boss_Mano (원본 104010200: Forest Trail 2, 마노 보스맵)
-  ↔ LithHarbor_Hunt_ForestTrail1 (원본 104010100: 사냥터3·보스 전 맵)
-  ↔ LithHarbor_Village_MinimiMain
-  ↔ LithHarbor_Hunt_RightAroundLithHarbor (원본 104010000: 사냥터1)
-  ↔ LithHarbor_Hunt_PigBeach (원본 921170005: The Pig Beach, 사냥터2)
+LithHarbor_Village_MinimiMain (공용 시작 · 전직 NPC · 초보자 상점)
+  ↔ LithHarbor_Hunt_RightAroundLithHarbor (원본 104010000: 사냥터1 · Lv1)
+  ↔ LithHarbor_Hunt_ForestTrail1 (원본 104010100: 사냥터2 · Lv4)
+  ↔ LithHarbor_Hunt_PigBeach (원본 921170005: The Pig Beach, 사냥터3 · Lv7)
+  ↔ LithHarbor_Boss_Mano (원본 104010200: Forest Trail 2, 마노 보스맵)
   ↔ SixPathCrossway
 ```
 
+- **2026-09-07 재배선**: 이전 구조는 `PigBeach` 가 사냥터2, `ForestTrail1` 이 사냥터3 이었고
+  여섯갈래길 출구가 `PigBeach` 에 있었다. 기획 §1-7 의 일자 체인에 맞춰 **두 사냥터의 자리를 맞바꾸고**
+  출구를 마노맵 뒤로 옮겼다 (사용자 확정: "`Hunt_ForestTrail1` 이 사냥터2").
+- 마노맵의 비활성 잔재 포탈 `Portal`(8.91, −4.53)을 `P_To_SixPathCrossway` 로 개명·활성화해
+  출구로 재사용했다. 새로 배치한 포탈은 없다.
+- 마을의 `P_To_LithHarbor_Hunt_ForestTrail1`(마을→숲길1 직결)은 체인에서 빠져
+  **비활성 + 숨김**으로 남겼다 (삭제 금지 규칙).
+
 - `LithHarbor_Hunt_VictoriaTreePlatform`(원본 `104020100`)은 이동용 맵이며 몬스터 사냥터가 아니다. 이번 월드·포탈망에서 제거한다.
 - `LithHarbor_Hunt_ForestTrail2`와 `LithHarbor_Hunt_PigBeach_Preview`는 최종 경로에서 제거한다.
-- `921170005 The Pig Beach`는 이벤트 계열 원본이다. 일반 전투 로스터에 없는 이벤트 몬스터·NPC는 이번 스폰표에 임의 등록하지 않고 후속 전후처리 범위로 남긴다.
+- `921170005 The Pig Beach`는 이벤트 계열 원본이다. 박제돼 있던 쓰로우백 2종(`9010028`/`9010033`)은 `.model` 이 없어
+  기획 §1-6 "모델 있는 ID 로" 에 따라 **리본 돼지 `1210101` ×10 · 아이언호그 `4230103` ×8** 로 이관했다 (2026-09-07 · WO-013).
+  레벨 재산출(`LevelOverride` 포함)은 WP5 몫이다.
 
-## 현재 이행 상태 (2026-08-27)
+## 현재 이행 상태 (2026-09-07)
+
+- **리스항구 노선을 기획 §1-7 일자 체인으로 재배선**했다 (WO-013). `PortalRoutes` L01~L05 10행 교체 ·
+  포탈 6맵 개명/활성 9건 · `WorldMapNodes` 의 `PigBeach` ↔ `ForestTrail1` 좌표 스왑.
+  전 72행을 실물 맵과 전수 대조해 깨진 노선 0 확인.
+
+### 이전 (2026-08-27)
 
 - 최종 4개 리스항구 맵을 등록했다. `RightAroundLithHarbor`와 `PigBeach`를 새로 임포트하고, 기존 `Boss_Mano`는 `104010200 Forest Trail 2`로 교체했다.
 - 포탈망은 최종 **33개 맵, 64방향**이며, 리스항구 10행은 위 구조를 따른다.
