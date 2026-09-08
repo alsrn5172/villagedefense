@@ -29,9 +29,12 @@ VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,#Note
 
 | Stage | GroundOffset (이전 → 이후) | BarOffset (이전 → 이후) |
 |---|---|---|
-| `TOWER` | 0.81 → **0.485** | 2.7 → **1.2** (억제기와 동일) |
-| `SUPPRESSOR` | 0.69 → **0.365** | 1.2 → **1.2** |
+| `TOWER` | 0.81 → 0.485 → **1.785** | 2.7 → **1.2** (억제기와 동일) |
+| `SUPPRESSOR` | 0.69 → 0.365 → **1.665** | 1.2 → **1.2** |
 | `CORE` | 1.45 → **1.125** | 3.0 → **1.2** |
+
+`TOWER`·`SUPPRESSOR` 는 절반(0.325) 내린 뒤 **다시 2칸(0.65×2 = 1.30) 올렸다**(사용자 2026-09-08).
+넥서스는 그대로. HP바는 `slotY + GroundOffset + BarOffset` 이라 시설과 같이 올라간다.
 
 | 마을 | TOWER | SUPPRESSOR | CORE |
 |---|---|---|---|
