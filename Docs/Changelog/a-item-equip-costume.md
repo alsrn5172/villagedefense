@@ -1,3 +1,32 @@
+## 2026-09-08 (4) — 무기 기본 강화치를 공격력으로 (`FixedAttack` 열 신설)
+
+### 배경
+(3) 에서 드러난 것: 보석과 무관한 부위 고정 상승치(툴팁 초록)가 `AddDefense` 하나뿐이라, `WEAPON` 행은 `AddDefense=0` → **무기는 강화해도 기본 상승이 0** 이었다. 사용자 지시(2026-09-08): "무기는 공격력이 들어가야 되는 거고, 열이 없으면 만들고 +2 로 기본값 넣어놔".
+
+`AddAttack` 을 재사용할 수 없다 — 그 열은 이미 **"다이아 1개당 상승량"** 이라 의미가 다르다.
+
+### 데이터 (`RootDesk/MyDesk/EnhanceSlotBonus.csv`)
+- **`FixedAttack` 열 신설** — 규칙대로 **맨 뒤**(`#Note` 뒤)에 추가. 중간 삽입 금지
+- `WEAPON` 12행(4티어 × 3단계) = **2** · 나머지 60행 = 0
+- 값 2 는 전 티어·전 단계 균일한 **기본값**이다. 밸런싱(티어별 차등)은 아직 안 했다
+- `.userdataset` 은 열을 선언하지 않으므로 변경 불필요 (등록 정보만 들어 있다)
+- 72행 전부 필드 수를 검사한 뒤 기록했다 (쉼표 포함 노트로 깨지는 행 0)
+
+### 코드
+- **`ItemCatalog.LoadSlotBonus`** — `cols` 에 `fixedattack = "FixedAttack"` 추가. 보석 `statKey` 와 겹치지 않는 키라 보석 합산 루프에는 절대 안 잡힌다
+- **`ItemCatalog.ComputeEnhance`** — `fixed.attack` 에 `row.fixedattack` 누적 (기존 `fixed.defense` 와 나란히). 이 한 곳만 고치면 **장비 상세·인벤 툴팁·서버 ENHANCE 스탯 레이어가 전부 따라온다**(`EquipService.RecalcLayer` 가 같은 함수를 쓴다)
+- **`WorkshopUIController.RefreshEnhance`** — 미리보기 합계에 고정 공격력 반영 + 제목 줄을 무기면 `기본 공격력 +N`(초록), 방어구면 `기본 방어력 +N`(초록)
+
+### 계약서
+- `Docs/스키마-계약.md` A-2-8b — 헤더에 `FixedAttack` 추가, "부위 고정 상승치"를 부위별 열 표로 다시 씀
+- `Docs/tools/check-integrity.cjs` CANONICAL 헤더 갱신 → **C1 헤더 검사 통과(72행) 확인**
+
+### 검증
+- `node Docs/tools/check-integrity.cjs` → `[C1] EnhanceSlotBonus (72행) OK` · `[C3] 기본키 OK` · 전부 통과
+- 🟡 **런타임 미검증** — 무기를 강화해 `+N (기본 <초록>+2</초록> ...)` 이 뜨는지, 캐릭터 공격력이 실제로 오르는지 육안 확인 필요
+
+---
+
 ## 2026-09-08 (3) — 강화 수치 초록/보라 구분이 안 보이던 것 (IsRichText 누락)
 
 ### 증상
@@ -16,8 +45,8 @@
 
 HEAD 대조: 엔티티 161/230 그대로 · 손실 0 · 컴포넌트 목록 변화 0 · `IsRichText` 만 10/5개 변경.
 
-### 설계상 그런 것 (참고 · 버그 아님)
-`EnhanceSlotBonus` 에서 `AddDefense` 만 보석과 무관한 고정치이고 나머지 `Add*` 열은 "그 단계 보석 1개당 상승량"이다(⑫ B안 · 2026-09-05 확정). `WEAPON` 행은 `AddDefense=0` 이므로 **무기는 초록이 안 나오고 보라만, 방어구는 초록(방어력)+보라** 가 정상이다.
+### 이때 드러난 것 → (4) 에서 고침
+`EnhanceSlotBonus` 에서 `AddDefense` 만 보석과 무관한 고정치이고 나머지 `Add*` 열은 "그 단계 보석 1개당 상승량"이다(⑫ B안 · 2026-09-05 확정). `WEAPON` 행은 `AddDefense=0` 이라 **무기에는 초록(기본 상승)이 아예 없었다.** 사용자 확인 결과 이건 의도가 아니어서 아래 (4) 에서 CSV 열을 추가해 고쳤다.
 
 ### 검증
 - 정적: `.ui` HEAD 대조(위) · `color=#` 를 쓰는 코드가 이 두 파일뿐임을 확인
