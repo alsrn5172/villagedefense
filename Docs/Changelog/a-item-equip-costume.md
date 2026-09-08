@@ -1,3 +1,30 @@
+## 2026-09-08 (3) — 강화 수치 초록/보라 구분이 안 보이던 것 (IsRichText 누락)
+
+### 증상
+장비를 강화해도 능력치가 **하얗게 합쳐진 숫자 하나**로만 보였다. 기본 고정 상승치(초록)와 보석 상승치(보라)가 구분되지 않았다.
+
+### 원인 — 코드가 아니라 `.ui` 메타데이터
+색 구분 로직은 이미 있었다. `InventoryUIController.FillItemView` 가 `총합 (기본 <color=#5BE36B>+f</color> <color=#C77DFF>+g</color>)` 로 조립하고, `WorkshopUIController.RefreshEnhance` 도 같은 두 색을 쓴다.
+
+문제는 받는 쪽이었다. **프로젝트 전체에서 `TextGUIRendererComponent.IsRichText` 가 명시된 텍스트 노드는 공방 강화 미리보기 5개(`Enhance/StatPreview/PreviewTitle` · `PRow0~3/Cell`)뿐**이었고, 나머지 244개는 필드 자체가 JSON 에 없었다. `.ui` 는 필드가 빠지면 컴포넌트 기본값으로 안 떨어지는 경우가 있다(`ActivePlatform` 과 같은 함정 — builder-protocol-ui §3.9). 그래서 미리보기에서만 색이 나오고, **장비 자체를 볼 때는 태그가 무시돼 하얗게** 나왔다.
+
+### 고친 것 (`.ui` 15개 노드 · `IsRichText: true` 명시 · 다른 필드·좌표 불변)
+`FillItemView` 가 `<color>` 를 써 넣는 statList 의 `Row0~4/Cell` 전부:
+
+- `CharacterGroup` — 장비 탭 상세 `Detail/StatList` 5개 + 인벤토리 hover 툴팁 `Tooltip/StatList` 5개
+- `VillageWorkshopGroup` — 아이템 상세 `Detail/StatList` 5개 (`FillItemView` 재사용)
+
+HEAD 대조: 엔티티 161/230 그대로 · 손실 0 · 컴포넌트 목록 변화 0 · `IsRichText` 만 10/5개 변경.
+
+### 설계상 그런 것 (참고 · 버그 아님)
+`EnhanceSlotBonus` 에서 `AddDefense` 만 보석과 무관한 고정치이고 나머지 `Add*` 열은 "그 단계 보석 1개당 상승량"이다(⑫ B안 · 2026-09-05 확정). `WEAPON` 행은 `AddDefense=0` 이므로 **무기는 초록이 안 나오고 보라만, 방어구는 초록(방어력)+보라** 가 정상이다.
+
+### 검증
+- 정적: `.ui` HEAD 대조(위) · `color=#` 를 쓰는 코드가 이 두 파일뿐임을 확인
+- 🟡 **런타임 미검증** — 강화한 장비를 장비 탭/인벤 툴팁/공방에서 열어 초록·보라가 실제로 칠해지는지 육안 확인 필요
+
+---
+
 ## 2026-09-08 (2) — 캐릭터창(C) 스탯 탭에 아바타 프리뷰
 
 ### 배경
