@@ -217,7 +217,9 @@ const PK = {
   VillageNpcSector: ["VillageId", "SectorId"],
   VillageConfig: ["VillageId"],
   MonsterTraining: ["TrainClass", "Level"],
-  LaneConfig: ["VillageId", "MapName"],
+  // 2026-09-09: 커닝시티는 한 맵(공사장)에 포탑+억제기가 같이 서서 MapName 이 중복된다.
+  // 런타임도 LaneRow(villageId, role) 로 조회하므로 역할이 진짜 키다.
+  LaneConfig: ["VillageId", "LaneRole"],
   TowerConfig: ["Stage", "Level"],
   FacilitySprite: ["VillageId", "Stage"],
   MinionPhaseConfig: ["Phase", "Profile"],
