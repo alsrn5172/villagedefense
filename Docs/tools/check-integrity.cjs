@@ -124,6 +124,14 @@ const CANONICAL = {
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
+
+  // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
+  SkillInfo:
+    "SkillId,Tab,SlotOrder,SkillName,IconRUID,Description,MaxLevel,SpCost,EffectPerLevel,Cooldown," +
+    "ReqJob,ReqTier,ReqLevel,Behavior,MpCost,BaseEffect,Range,Speed,Duration,HitCount,UseLimit," +
+    "EffectUnit,MaxStack,SecondaryEffect,SecondaryPerLevel,DurationPerLevel,CooldownPerLevel,BuffTag,SpawnOffsetY,#Note",
+  JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
+  JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -222,6 +230,9 @@ const PK = {
   MinionPhaseConfig: ["Phase", "Profile"],
   MinionComposition: ["Phase", "MonsterId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
+  SkillInfo: ["SkillId"],
+  JobInfo: ["JobId"],
+  JobTier: ["JobId", "Tier"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);
