@@ -1,0 +1,304 @@
+@Logic
+script SpectateService extends Logic
+
+	-- 관전 (2026-09-08 · 탈락자용). LaneStateService.Eliminate → Enter(userId).
+	-- 서버: 플레이어를 숨기고(SetVisible false · 컨트롤러/피격 끔 · 진영 Neutral · 중력 0) 카메라 리그(spectatecamrig 모델 = CameraComponent 만 든 빈 엔티티)를
+	--       같은 맵에 스폰해 그 카메라로 전환한다(_CameraService:SwitchCameraTo(cam, userId)). 엔진에 "카메라 자유 이동" API 가 없어 리그 엔티티를 옮기는 방식.
+	-- 클라: 방향키/WASD 를 SendInterval 마다 RequestMoveCam 으로 보낸다(서버 권위 · 리그 Transform 동기화). 카메라가 내 캐릭터로 되돌아가 있으면 RequestRebind 로 자가 복구.
+	-- 탭(SpectateUIController) = 다른 플레이어 따라가기(그 플레이어 맵으로 텔레포트 후 그 플레이어 카메라로 전환) · 자유 버튼 = 리그 카메라 · 월드맵 클릭(WorldMapController) = RequestGoMap.
+	-- 맵 이동 직후 엔진이 자기 카메라로 되돌리므로 RebindDelay 뒤에 전환한다(pending). 다중 클라 검증은 Maker 다인 플레이 테스트로(사용자).
+
+	property number CamSpeed = 6.0
+
+	property string RigModelId = "spectatecamrig"
+
+	property number RebindDelay = 0.8
+
+	property number SendInterval = 0.1
+
+	-- 서버: userId → { mode="free"|"follow", target=userId, rig=Entity, vel=Vector2, velUntil, pendingKind, pendingAt }
+	@HideFromInspector
+	property any spectators = nil
+
+	@HideFromInspector
+	property any nameToUser = nil
+
+	@HideFromInspector
+	property number targetsAcc = 0
+
+	@HideFromInspector
+	property integer rigSeq = 0
+
+	-- 클라
+	@HideFromInspector
+	property boolean spectating = false
+
+	@HideFromInspector
+	property number sendAcc = 0
+
+	@HideFromInspector
+	property number lastDx = 0
+
+	@HideFromInspector
+	property number lastDy = 0
+
+	@HideFromInspector
+	property number healAcc = 0
+
+	method void OnBeginPlay()
+		-- 서버 표 초기화.
+		if self:IsServer() then
+			self.spectators = {}
+			self.nameToUser = {}
+			log("[Spectate] SpectateService ready (server)")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsSpectator(string userId)
+		-- 관전 중인 유저인가.
+		return self.spectators ~= nil and self.spectators[userId] ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Enter(string userId)
+		-- 탈락 → 관전 진입: 캐릭터 숨김·무력화, 관전 바 켜기, 자율 카메라.
+		if self.spectators == nil then self.spectators = {} end
+		if self.spectators[userId] ~= nil then return end
+		local ent = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(ent) then
+			log_warning("[Spectate] enter: no user entity " .. tostring(userId))
+			return
+		end
+		ent:SetVisible(false)
+		if isvalid(ent.PlayerControllerComponent) then ent.PlayerControllerComponent.Enable = false end
+		if isvalid(ent.HitComponent) then ent.HitComponent.Enable = false end
+		if isvalid(ent.RigidbodyComponent) then ent.RigidbodyComponent.Gravity = 0 end
+		local faction = ent:GetComponent("script.Faction")
+		if not isvalid(faction) then faction = ent:AddComponent("script.Faction") end
+		if isvalid(faction) then faction.Team = "Neutral" end
+		self.spectators[userId] = { mode = "free", target = "", rig = nil, vel = Vector2(0, 0), velUntil = 0, pendingKind = "free", pendingAt = _UtilLogic.ServerElapsedSeconds }
+		self:SetSpectating(true, userId)
+		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(true, userId) end
+		self:PushTargets()
+		log("[Spectate] enter " .. userId .. " map=" .. tostring(ent.CurrentMapName))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushTargets()
+		-- 생존자(관전자 아님) 닉네임 목록을 관전자마다 보낸다. 이름 → userId 표 갱신.
+		if self.spectators == nil then return end
+		local names = {}
+		self.nameToUser = {}
+		for uid, e in pairs(_UserService.UserEntities) do
+			if isvalid(e) and self.spectators[uid] == nil then
+				local name = (isvalid(e.PlayerComponent) and e.PlayerComponent.Nickname ~= nil and e.PlayerComponent.Nickname ~= "") and e.PlayerComponent.Nickname or tostring(uid)
+				name = (string.gsub(name, "|", "/"))
+				self.nameToUser[name] = uid
+				table.insert(names, name)
+			end
+		end
+		local csv = table.concat(names, "|")
+		for uid, _ in pairs(self.spectators) do
+			if _SpectateUIController ~= nil then _SpectateUIController:SetTargetsCsv(csv, uid) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DestroyRig(any spec)
+		-- 리그 정리.
+		if spec ~= nil and isvalid(spec.rig) then spec.rig:Destroy() end
+		if spec ~= nil then spec.rig = nil end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Rebind(string userId, string kind)
+		-- 카메라 다시 잡기. free = 내(숨은) 캐릭터 위치에 리그 스폰 후 그 카메라 · follow = 대상 플레이어 카메라.
+		local spec = self.spectators[userId]
+		local ent = _UserService:GetUserEntityByUserId(userId)
+		if spec == nil or not isvalid(ent) then return end
+		if kind == "follow" and spec.target ~= "" then
+			local tEnt = _UserService:GetUserEntityByUserId(spec.target)
+			if isvalid(tEnt) and isvalid(tEnt.CameraComponent) and tEnt.CurrentMapName == ent.CurrentMapName then
+				self:DestroyRig(spec)
+				_CameraService:SwitchCameraTo(tEnt.CameraComponent, userId)
+				log("[Spectate] " .. userId .. " follow " .. spec.target .. " map=" .. tostring(ent.CurrentMapName))
+				return
+			end
+			log_warning("[Spectate] follow target unavailable → free")
+			spec.mode = "free"
+		end
+		self:DestroyRig(spec)
+		local map = ent.CurrentMap
+		if not isvalid(map) then return end
+		local pos = ent.TransformComponent.WorldPosition
+		self.rigSeq = self.rigSeq + 1
+		local rig = _SpawnService:SpawnByModelId(self.RigModelId, "SpectateCam_" .. tostring(self.rigSeq), Vector3(pos.x, pos.y, 0), map)
+		if not isvalid(rig) then
+			log_warning("[Spectate] rig spawn failed model=" .. self.RigModelId)
+			return
+		end
+		spec.rig = rig
+		if isvalid(rig.CameraComponent) then
+			_CameraService:SwitchCameraTo(rig.CameraComponent, userId)
+		else
+			log_warning("[Spectate] rig has no CameraComponent")
+		end
+		log("[Spectate] " .. userId .. " free cam at " .. tostring(ent.CurrentMapName) .. " (" .. tostring(pos.x) .. "," .. tostring(pos.y) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Follow(string userId, string targetUid)
+		-- 대상 플레이어 맵으로 (필요하면) 텔레포트 후 지연 전환.
+		local spec = self.spectators[userId]
+		local ent = _UserService:GetUserEntityByUserId(userId)
+		local tEnt = _UserService:GetUserEntityByUserId(targetUid)
+		if spec == nil or not isvalid(ent) or not isvalid(tEnt) then return end
+		spec.mode = "follow"
+		spec.target = targetUid
+		self:DestroyRig(spec)
+		local now = _UtilLogic.ServerElapsedSeconds
+		if ent.CurrentMapName ~= tEnt.CurrentMapName then
+			_TeleportService:TeleportToEntity(ent, tEnt)
+			spec.pendingAt = now + self.RebindDelay
+		else
+			spec.pendingAt = now
+		end
+		spec.pendingKind = "follow"
+	end
+
+	method void OnUpdate(number delta)
+		-- 서버: 지연 전환 + 리그 이동 + 대상 목록 주기 갱신. 클라: 키 입력 → RequestMoveCam · 카메라 자가 복구.
+		if self:IsServer() then
+			if self.spectators == nil then return end
+			local now = _UtilLogic.ServerElapsedSeconds
+			local any = false
+			for uid, spec in pairs(self.spectators) do
+				any = true
+				if spec.pendingKind ~= "" and now >= spec.pendingAt then
+					local kind = spec.pendingKind
+					spec.pendingKind = ""
+					self:Rebind(uid, kind)
+				end
+				if isvalid(spec.rig) and now < spec.velUntil and (spec.vel.x ~= 0 or spec.vel.y ~= 0) then
+					local p = spec.rig.TransformComponent.Position
+					spec.rig.TransformComponent.Position = Vector3(p.x + spec.vel.x * self.CamSpeed * delta, p.y + spec.vel.y * self.CamSpeed * delta, p.z)
+				end
+			end
+			if any then
+				self.targetsAcc = self.targetsAcc + delta
+				if self.targetsAcc >= 5.0 then
+					self.targetsAcc = 0
+					self:PushTargets()
+				end
+			end
+			return
+		end
+		if not self.spectating then return end
+		local dx, dy = 0, 0
+		if _InputService:IsKeyPressed(KeyboardKey.LeftArrow) or _InputService:IsKeyPressed(KeyboardKey.A) then dx = dx - 1 end
+		if _InputService:IsKeyPressed(KeyboardKey.RightArrow) or _InputService:IsKeyPressed(KeyboardKey.D) then dx = dx + 1 end
+		if _InputService:IsKeyPressed(KeyboardKey.UpArrow) or _InputService:IsKeyPressed(KeyboardKey.W) then dy = dy + 1 end
+		if _InputService:IsKeyPressed(KeyboardKey.DownArrow) or _InputService:IsKeyPressed(KeyboardKey.S) then dy = dy - 1 end
+		self.sendAcc = self.sendAcc + delta
+		if self.sendAcc >= self.SendInterval then
+			self.sendAcc = 0
+			if dx ~= 0 or dy ~= 0 or self.lastDx ~= 0 or self.lastDy ~= 0 then
+				self:RequestMoveCam(dx, dy)
+			end
+			self.lastDx = dx
+			self.lastDy = dy
+		end
+		self.healAcc = self.healAcc + delta
+		if self.healAcc >= 2.0 then
+			self.healAcc = 0
+			local lp = _UserService.LocalPlayer
+			local cam = _CameraService:GetCurrentCameraComponent()
+			if isvalid(lp) and isvalid(cam) and isvalid(lp.CameraComponent) and cam == lp.CameraComponent then
+				self:RequestRebind()
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetSpectating(boolean on)
+		-- 서버 → 관전자 클라: 입력 폴링 on/off. 내 컨트롤러도 클라 쪽에서 한 번 더 끈다(숨은 캐릭터가 포탈을 밟지 않게).
+		self.spectating = on
+		self.sendAcc = 0
+		self.lastDx = 0
+		self.lastDy = 0
+		local lp = _UserService.LocalPlayer
+		if isvalid(lp) and isvalid(lp.PlayerControllerComponent) then lp.PlayerControllerComponent.Enable = not on end
+		log("[Spectate] spectating=" .. tostring(on))
+	end
+
+	@ExecSpace("Server")
+	method void RequestMoveCam(number dx, number dy)
+		-- 클라 → 서버: 리그 이동 방향(−1~1). 0.3초 동안 유효.
+		local spec = (self.spectators ~= nil) and self.spectators[senderUserId] or nil
+		if spec == nil then return end
+		spec.vel = Vector2(math.max(-1, math.min(1, dx)), math.max(-1, math.min(1, dy)))
+		spec.velUntil = _UtilLogic.ServerElapsedSeconds + 0.3
+	end
+
+	@ExecSpace("Server")
+	method void RequestRebind()
+		-- 클라 자가 복구: 카메라가 내 캐릭터로 되돌아가 있으면 현재 모드로 다시 잡는다.
+		local spec = (self.spectators ~= nil) and self.spectators[senderUserId] or nil
+		if spec == nil or spec.pendingKind ~= "" then return end
+		spec.pendingKind = spec.mode
+		spec.pendingAt = _UtilLogic.ServerElapsedSeconds
+		log("[Spectate] rebind requested by " .. senderUserId .. " mode=" .. spec.mode)
+	end
+
+	@ExecSpace("Server")
+	method void SetSpectateTarget(string name)
+		-- 관전 바 탭: 이름의 플레이어를 따라간다.
+		local spec = (self.spectators ~= nil) and self.spectators[senderUserId] or nil
+		if spec == nil then return end
+		local tuid = (self.nameToUser ~= nil) and self.nameToUser[name] or nil
+		if tuid == nil or tuid == senderUserId then
+			if _UIToast ~= nil then _UIToast:ShowMessage("관전 대상을 찾을 수 없습니다", senderUserId) end
+			self:PushTargets()
+			return
+		end
+		log("[Spectate] " .. senderUserId .. " target " .. name .. " (" .. tuid .. ")")
+		self:Follow(senderUserId, tuid)
+	end
+
+	@ExecSpace("Server")
+	method void SetFreeCam(boolean on)
+		-- 관전 바 자유 버튼: true = 리그 카메라 / false = 마지막 대상 따라가기(없으면 자유 유지).
+		local spec = (self.spectators ~= nil) and self.spectators[senderUserId] or nil
+		if spec == nil then return end
+		if on or spec.target == "" then
+			spec.mode = "free"
+			spec.pendingKind = "free"
+			spec.pendingAt = _UtilLogic.ServerElapsedSeconds
+		else
+			self:Follow(senderUserId, spec.target)
+		end
+		log("[Spectate] " .. senderUserId .. " freecam=" .. tostring(on) .. " mode=" .. spec.mode)
+	end
+
+	@ExecSpace("Server")
+	method void RequestGoMap(string mapName)
+		-- 월드맵 클릭(관전 중): 그 맵으로 숨은 캐릭터를 옮기고 지연 후 자율 카메라.
+		local spec = (self.spectators ~= nil) and self.spectators[senderUserId] or nil
+		if spec == nil or mapName == nil or mapName == "" then return end
+		local ent = _UserService:GetUserEntityByUserId(senderUserId)
+		if not isvalid(ent) then return end
+		spec.mode = "free"
+		self:DestroyRig(spec)
+		local now = _UtilLogic.ServerElapsedSeconds
+		if ent.CurrentMapName ~= mapName then
+			_TeleportService:TeleportToMapPosition(ent, Vector3(0, 0, 0), mapName)
+			spec.pendingAt = now + self.RebindDelay
+		else
+			spec.pendingAt = now
+		end
+		spec.pendingKind = "free"
+		log("[Spectate] " .. senderUserId .. " go map " .. mapName)
+	end
+
+end

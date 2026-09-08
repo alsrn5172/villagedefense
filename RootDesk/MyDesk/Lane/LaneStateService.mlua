@@ -105,7 +105,8 @@ script LaneStateService extends Logic
 		local v = self.states[villageId]
 		if v ~= nil then return v end
 		-- mon[monsterId] = 도감 레벨 0(미해금)~5. Lv1 = 해금(지역재화 8 · 지금은 다이아몬드) → 모집 가능, Lv2~5 = 꿈의 조각(MonsterTraining) · 배율.
-		v = { id = villageId, towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {}, mon = {} }
+		-- front = 마지막으로 수비대에 알린 최전방 시설 (Changed 에서 바뀌면 DefenderService.Regroup).
+		v = { id = villageId, towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {}, mon = {}, front = "TOWER" }
 		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
 			v.towers[stage] = { lv = 1, hp = self:MaxHp(stage, 1), alive = true }
 		end
@@ -240,29 +241,60 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void Changed(string villageId, string stage)
-		-- 시설 상태 변화 → 엔티티 색 + 주인 방어 창.
+		-- 시설 상태 변화 → 엔티티 색 + 주인 방어 창 + 최전방이 바뀌었으면 수비대 재집결(파괴 → 뒤로 · 재건 → 앞으로).
 		if _LaneFacilityService ~= nil then _LaneFacilityService:OnFacilityChanged(villageId, stage) end
+		local v = self.states[villageId]
+		if v ~= nil then
+			local front = self:FrontStage(v)
+			if front ~= v.front then
+				log("[Lane] " .. villageId .. " front " .. tostring(v.front) .. " -> " .. front)
+				v.front = front
+				if _DefenderService ~= nil then _DefenderService:Regroup(villageId, front) end
+			end
+		end
 		self:PushOwner(villageId, "defense")
 	end
 
 	@ExecSpace("ServerOnly")
 	method void ApplyDamage(string villageId, string stage, integer damage, string attackerName)
-		-- 시설 피격 (LaneFacility → 여기). HP 0 → 파괴 1회 이벤트. 넥서스 파괴 = 탈락(①에선 로그·토스트까지).
+		-- 시설 피격 (LaneFacility → 여기). HP 0 → 파괴 1회 이벤트. 넥서스 파괴 = 탈락(Eliminate).
 		local v = self:EnsureVillage(villageId)
 		if v == nil then return end
 		local t = v.towers[stage]
 		if t == nil or not t.alive or damage <= 0 then return end
 		t.hp = math.max(0, t.hp - damage)
+		local destroyed = false
 		if t.hp == 0 then
 			t.alive = false
+			destroyed = true
 			log("[Lane] " .. villageId .. " " .. stage .. " DESTROYED by " .. tostring(attackerName))
 			local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
-			if owner ~= "" then
-				if stage == "CORE" then self:Toast(owner, "넥서스가 파괴되었습니다 — 탈락")
-				else self:Toast(owner, self.towerDef[stage].name .. " 파괴!") end
-			end
+			if owner ~= "" and stage ~= "CORE" then self:Toast(owner, self.towerDef[stage].name .. " 파괴!") end
 		end
+		if destroyed and stage == "CORE" then self:Eliminate(villageId) end
 		self:Changed(villageId, stage)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Eliminate(string villageId)
+		-- 넥서스 파괴 = 탈락 (2026-09-08): 수비대·미니언 정리 → 소유 해제(마을 DESTROYED · 유저 ELIMINATED) → PlayerEliminatedEvent → 관전 진입.
+		-- 시설 엔티티는 남긴다(주인 없음 → 회색 · 넥서스는 검게). 미니언 웨이브는 주인 없는 마을을 건너뛰므로 저절로 멈춘다.
+		local v = self.states[villageId]
+		if v == nil then return end
+		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
+		local nDef = (_DefenderService ~= nil) and _DefenderService:DespawnVillage(villageId) or 0
+		local nMin = (_MinionFlowService ~= nil) and _MinionFlowService:DespawnVillage(villageId) or 0
+		v.defenders = {}
+		if _VillageOwnership ~= nil then _VillageOwnership:Eliminate(villageId) end
+		log("[Lane] " .. villageId .. " ELIMINATED owner=" .. tostring(owner) .. " defenders=" .. tostring(nDef) .. " minions=" .. tostring(nMin))
+		if owner == "" then return end
+		local ev = PlayerEliminatedEvent()
+		ev.MatchId = ""
+		ev.UserId = owner
+		ev.Reason = "CORE_DESTROYED"
+		self:SendEvent(ev)
+		self:Toast(owner, "넥서스 파괴 — 탈락. 관전 모드로 전환합니다")
+		if _SpectateService ~= nil then _SpectateService:Enter(owner) end
 	end
 
 	-- ── 뷰 ─────────────────────────────────────────────────────
