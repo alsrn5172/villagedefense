@@ -65,7 +65,7 @@ function mapNames() {
 // ─────────────────────────────────────────────────────────
 const CANONICAL = {
   MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID",
-  MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,#Note",
+  MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,LevelOverride,#Note",
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
   MapNpcs_Village: "MapName,NpcId,X,Y,#Note",
@@ -105,9 +105,10 @@ const CANONICAL = {
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
-  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note",
+  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType",
+  WeaponMotion: "MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note",
   EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
-  EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note",
+  EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
   ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,#Note",
@@ -119,6 +120,7 @@ const CANONICAL = {
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
   LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
   TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
+  FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,#Note",
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
@@ -202,6 +204,7 @@ const PK = {
   EliteSpawnTable: ["MapName", "BaseMonsterId"],
   EliteMaterialInfo: ["MaterialId"],
   ItemInfo: ["ItemId"],
+  WeaponMotion: ["MotionId"],
   EnhanceTable: ["EnhanceLevel"],
   EnhanceSlotBonus: ["EquipSlot", "ReqLevel", "EnhanceLevel"],
   CraftRecipe: ["RecipeId"],
@@ -215,6 +218,7 @@ const PK = {
   MonsterTraining: ["TrainClass", "Level"],
   LaneConfig: ["VillageId", "MapName"],
   TowerConfig: ["Stage", "Level"],
+  FacilitySprite: ["VillageId", "Stage"],
   MinionPhaseConfig: ["Phase", "Profile"],
   MinionComposition: ["Phase", "MonsterId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
