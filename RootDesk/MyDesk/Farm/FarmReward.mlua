@@ -1,6 +1,15 @@
 @Component
 script FarmReward extends Component
 
+	-- 몬스터 처치 보상 — WO-014 ② 로 소유권 규칙이 바뀌었다 (추가기획2 · 2026-09-08).
+	--
+	-- 🔴 이전: "막타 친 사람"(LastAttacker)에게 경험치, 동전은 아무나 주움.
+	-- 🔴 지금: **누적 피해가 가장 큰 플레이어**가 경험치와 동전을 전부 가진다. 동률이면 **먼저 때린 쪽**.
+	--          동전에는 Farm/DropOwner 를 붙여 주인만 보고 주인만 줍는다.
+	--          **플레이어 피해가 하나도 없으면(수비대·미니언·포탑이 잡음) 경험치도 동전도 없다** — 방치 파밍 차단.
+	--
+	-- LastAttacker 는 로그·디버그용으로만 남긴다.
+
 	property integer MonsterId = 0
 
 	property integer ExpAmount = 1
@@ -16,6 +25,16 @@ script FarmReward extends Component
 
 	@HideFromInspector
 	property boolean Rewarded = false
+
+	-- 누적 피해 원장 (서버). dmg[userId] = 합계 · order = 처음 때린 순서(동률 판정용).
+	@HideFromInspector
+	property any dmg = nil
+
+	@HideFromInspector
+	property any order = nil
+
+	@HideFromInspector
+	property integer orderSeq = 0
 
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
@@ -34,10 +53,39 @@ script FarmReward extends Component
 			return
 		end
 		
-		-- 살아 있음: 리스폰 직후 다음 죽음을 위해 플래그를 리셋한다.
+		-- 살아 있음: 리스폰 직후 다음 죽음을 위해 플래그와 피해 원장을 리셋한다.
 		if self.Rewarded then
 			self.Rewarded = false
+			self:ResetLedger()
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetLedger()
+		-- 누적 피해 원장 초기화. 리스폰마다 새 판이다 — 안 지우면 전 판 딜러가 계속 주인이 된다.
+		self.dmg = {}
+		self.order = {}
+		self.orderSeq = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TopDamager()
+		-- 누적 피해가 가장 큰 플레이어의 userId. 동률이면 **먼저 때린 쪽**. 플레이어 피해가 없으면 "".
+		if self.dmg == nil then
+			return ""
+		end
+		local bestId = ""
+		local bestDmg = 0
+		local bestOrder = 0
+		for uid, total in pairs(self.dmg) do
+			local ord = self.order[uid] or 0
+			if total > bestDmg or (total == bestDmg and bestId ~= "" and ord < bestOrder) then
+				bestId = uid
+				bestDmg = total
+				bestOrder = ord
+			end
+		end
+		return bestId
 	end
 
 	@ExecSpace("ServerOnly")
@@ -78,20 +126,25 @@ script FarmReward extends Component
 
 	@ExecSpace("ServerOnly")
 	method void GiveRewards()
-		-- 마지막 공격자가 플레이어면 exp 지급, 그리고 동전을 떨군다.
-		local attacker = self.LastAttacker
-		if isvalid(attacker) and isvalid(attacker.PlayerComponent) then
-			if _SummonManager ~= nil then
-				_SummonManager:GrantKillReward(attacker, self:EffectiveExp())
-			end
+		-- 누적 피해 최다 플레이어에게 경험치 + 동전. 플레이어 피해가 하나도 없으면 **둘 다 없다** (사용자 확정 · 방치 파밍 차단).
+		local ownerId = self:TopDamager()
+		if ownerId == "" then
+			log("[FarmReward] " .. self.Entity.Name .. " killed with no player damage — 보상 없음")
+			return
 		end
-		
-		self:DropCoins()
+
+		local owner = _UserService:GetUserEntityByUserId(ownerId)
+		if isvalid(owner) and isvalid(owner.PlayerComponent) and _SummonManager ~= nil then
+			_SummonManager:GrantKillReward(owner, self:EffectiveExp())
+		end
+		log("[FarmReward] " .. self.Entity.Name .. " top=" .. ownerId .. " dmg=" .. tostring(self.dmg[ownerId] or 0))
+
+		self:DropCoins(ownerId)
 	end
 
 	@ExecSpace("ServerOnly")
-	method void DropCoins()
-		-- CoinMin~CoinMax 개의 메소 동전을 몸 주변에 떨군다.
+	method void DropCoins(string ownerId)
+		-- CoinMin~CoinMax 개의 메소 동전을 몸 주변에 떨군다. 동전마다 DropOwner 를 붙여 ownerId 만 보고 줍게 한다.
 		local map = self.Entity.CurrentMap
 		local transform = self.Entity.TransformComponent
 		if not isvalid(map) or not isvalid(transform) then
@@ -113,19 +166,50 @@ script FarmReward extends Component
 			local coin = _SpawnService:SpawnByModelId(self.CoinModelId, "Meso", pos, map)
 			if coin == nil then
 				log_error("[FarmReward] 동전 스폰 실패 — modelId=" .. self.CoinModelId)
+			else
+				-- 주인 표시. 없으면 아무도 못 줍는다(DropOwner.IsPickableBy) — 여기 오는 시점엔 ownerId 가 항상 채워져 있다.
+				coin:AddComponent("script.DropOwner")
+				---@type DropOwner
+				local own = coin:GetComponent("script.DropOwner")
+				if isvalid(own) then
+					own.OwnerUserId = ownerId
+				else
+					log_warning("[FarmReward] DropOwner attach failed — 동전이 주인 없이 남는다")
+				end
 			end
 		end
-		
-		log("[FarmReward] " .. self.Entity.Name .. " dropped " .. tostring(count) .. " coins")
+
+		log("[FarmReward] " .. self.Entity.Name .. " dropped " .. tostring(count) .. " coins for " .. ownerId)
 	end
 
 	@ExecSpace("ServerOnly")
 	@EventSender("Self")
 	handler HandleHitEvent(HitEvent event)
-		-- 마지막 공격자만 기록한다. HP 는 Monster 가 깎으므로 여기서 건드리지 않는다.
-		if isvalid(event.AttackerEntity) then
-			self.LastAttacker = event.AttackerEntity
+		-- 플레이어별 누적 피해를 쌓는다. HP 는 Monster 가 깎으므로 여기서 건드리지 않는다.
+		-- 플레이어가 아닌 공격자(수비대·미니언·포탑)는 기록하지 않는다 → 그들만 때려 죽이면 TopDamager 가 "" 라 보상이 없다.
+		local attacker = event.AttackerEntity
+		if not isvalid(attacker) then
+			return
 		end
+		self.LastAttacker = attacker
+		if not isvalid(attacker.PlayerComponent) then
+			return
+		end
+		local uid = attacker.PlayerComponent.UserId
+		if uid == nil or uid == "" then
+			return
+		end
+		if self.dmg == nil then
+			self:ResetLedger()
+		end
+		local d = event.TotalDamage or 0
+		if d < 0 then d = 0 end
+		if self.dmg[uid] == nil then
+			self.orderSeq = self.orderSeq + 1
+			self.order[uid] = self.orderSeq
+			self.dmg[uid] = 0
+		end
+		self.dmg[uid] = self.dmg[uid] + d
 	end
 
 end
