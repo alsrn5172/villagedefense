@@ -2,8 +2,10 @@
 script DefenderService extends Logic
 
 	-- 수비대 엔티티 (WO-012 ③ · 2026-09-07). LaneStateService.RequestRecruit 가 SpawnBundle 을 부른다.
-	-- 모집 즉시 최전방 시설(포탑 → 억제기 → 넥서스) 앞에 8마리를 스폰. 진영 2x(방어) · FactionAI 수비 모드(대기 · 시야 안 적에게만 접근 · 포탑 사거리 밖 금지) ·
+	-- 모집 즉시 최전방 시설(포탑 → 억제기 → 넥서스) 뒤에 8마리를 스폰. 진영 2x(방어) · FactionAI 수비 모드(대기 · 시야 안 적에게만 접근 · 사거리 80% 밖 금지) ·
 	-- 접촉 피해(MonsterAttack)는 끔(주인을 때리면 안 됨). 스펙(임시 상수): HP = 도감 MaxHp × HpRatio × 훈련 배율 · 공격 = 도감 Level × AttackPerLevel × 배율.
+	-- 최전방 추종 (2026-09-08): 시설이 부서져 최전방이 바뀌면 LaneStateService.Changed → Regroup 이 살아 있는 수비대를 새 최전방 시설 뒤에 같은 HP 비율로 재스폰(맵이 달라 걸어갈 수 없다).
+	-- 사거리는 시설 종류와 무관하게 포탑 사거리(TowerConfig TOWER range Lv1 = 3)를 쓴다(사용자 확정). 대기·목줄 위치는 통로(PathMinX~PathMaxX) 안으로 클램프.
 
 	property number HpRatio = 0.3
 
@@ -16,21 +18,52 @@ script DefenderService extends Logic
 	@HideFromInspector
 	property integer spawnSeq = 0
 
+	-- units[villageId] = { {ent, monsterId, statMul}, … } 살아 있는 수비 몬스터 추적 (재집결·탈락 정리용).
+	@HideFromInspector
+	property any units = nil
+
 	method void OnBeginPlay()
 		-- 서버 전용.
 		if not self:IsServer() then return end
+		self.units = {}
 		log("[Defender] DefenderService ready (server)")
 	end
 
 	@ExecSpace("ServerOnly")
-	method integer SpawnBundle(string villageId, integer monsterId, number statMul, integer count, string frontStage)
-		-- 최전방 시설 앞에 count 마리. 스폰된 수를 돌려준다.
-		if _LaneFacilityService == nil or _MonsterCatalog == nil then return 0 end
+	method number GuardRange()
+		-- 수비 사거리 = 포탑 사거리 Lv1 (억제기·넥서스 뒤에서도 같은 값).
+		if _LaneStateService ~= nil and _LaneStateService.towerDef ~= nil and _LaneStateService.towerDef.TOWER ~= nil then
+			return _LaneStateService.towerDef.TOWER.range[1] or 3.0
+		end
+		return 3.0
+	end
+
+	@ExecSpace("ServerOnly")
+	method any UnitList(string villageId)
+		-- 마을의 추적 목록(없으면 생성). 사라진 엔티티는 걸러낸다.
+		if self.units == nil then self.units = {} end
+		local list = self.units[villageId]
+		if list == nil then
+			list = {}
+			self.units[villageId] = list
+		end
+		local keep = {}
+		for _, u in ipairs(list) do
+			if isvalid(u.ent) then table.insert(keep, u) end
+		end
+		self.units[villageId] = keep
+		return keep
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnOne(string villageId, integer monsterId, number statMul, string frontStage, integer slot, number hpRatio)
+		-- 최전방 시설 뒤 대기 위치에 1마리. slot = 0.. (뒤로 0.35 씩 · 4열 순환) · hpRatio = 재집결 시 이어받는 HP 비율.
+		if _LaneFacilityService == nil or _MonsterCatalog == nil then return nil end
 		local role = _LaneFacilityService:RoleOfStage(frontStage)
 		local row = _LaneFacilityService:LaneRow(villageId, role)
-		if row == nil then return 0 end
+		if row == nil then return nil end
 		local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
-		if not isvalid(map) then return 0 end
+		if not isvalid(map) then return nil end
 		local modelId = _MonsterCatalog:GetModelId(monsterId)
 		if modelId == nil or modelId == "" then modelId = "monster" .. tostring(monsterId) end
 		local baseHp = _MonsterCatalog:GetMaxHp(monsterId)
@@ -39,79 +72,141 @@ script DefenderService extends Logic
 		if level == nil or level <= 0 then level = 10 end
 		local maxHp = math.max(1, math.floor(baseHp * self.HpRatio * statMul))
 		local attack = math.max(1, math.floor(level * self.AttackPerLevel * statMul))
-		local range = 3.0
-		if _LaneStateService ~= nil and _LaneStateService.towerDef ~= nil and _LaneStateService.towerDef.TOWER ~= nil then
-			range = _LaneStateService.towerDef.TOWER.range[1] or 3.0
+		local range = self:GuardRange()
+		local minX = row.pathMinX or -100000
+		local maxX = row.pathMaxX or 100000
+		-- 대기 위치 = 시설 뒤(마을 쪽 · −x) 0.7~1.75 (사용자 2026-09-07). 적이 시설 사거리에 들어오면 뛰쳐나가고 사거리 80% 밖으론 안 나간다.
+		-- 마을 통로는 넥서스 뒤 여유가 1.6 뿐이라 통로 안으로 클램프(넥서스 −8 · 통로 −9.6 → 대기 −9.2 까지).
+		local homeX = math.max(minX + 0.4, row.slotX - 0.7 - (slot % 4) * 0.35)
+		self.spawnSeq = self.spawnSeq + 1
+		local name = "Defender_" .. villageId .. "_" .. tostring(self.spawnSeq)
+		local ent = _SpawnService:SpawnByModelId(modelId, name, Vector3(homeX, row.pathY + 0.3, 0), map)
+		if not isvalid(ent) then return nil end
+		---@type Monster
+		local monster = ent.Monster
+		if isvalid(monster) then
+			monster.MaxHp = maxHp
+			monster.Hp = math.max(1, math.floor(maxHp * math.min(1.0, math.max(0.05, hpRatio or 1.0))))
+			monster.RespawnOn = false
 		end
+		if isvalid(ent.HitComponent) then
+			ent.HitComponent.BoxSize = Vector2(0.8, 1.0)
+			ent.HitComponent.ColliderOffset = Vector2(0, 0.5)
+		end
+		if isvalid(monster) then monster:FitHitboxToSprite() end
+		local chase = ent.StateChaseMonster
+		if isvalid(chase) then chase.Enable = false end
+		local boss = ent.BossSkillRunner
+		if isvalid(boss) then boss.Enable = false end
+		local contact = ent.MonsterAttack
+		if isvalid(contact) then contact.Disabled = true end
+		if isvalid(ent.SpriteRendererComponent) then
+			local layer = _LaneFacilityService:SortingLayerBelow(map, homeX, row.pathY)
+			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
+			ent.SpriteRendererComponent.OrderInLayer = 2
+		end
+		local faction = ent:AddComponent("script.Faction")
+		if isvalid(faction) then faction.Team = tostring(20 + _LaneFacilityService:TeamSlot(villageId)) end
+		local sheet = isvalid(ent.StateAnimationComponent) and ent.StateAnimationComponent.ActionSheet or nil
+		local function clip(a, b)
+			if sheet == nil then return "" end
+			return sheet[a] or sheet[b] or ""
+		end
+		local ai = ent:AddComponent("script.FactionAI")
+		if isvalid(ai) then
+			ai.GuardMode = true
+			ai.HomeX = homeX
+			ai.GuardCenterX = row.slotX
+			ai.GuardRange = range
+			ai.LeashMinX = math.max(minX, row.slotX - 2.5)
+			ai.LeashMaxX = math.min(maxX, row.slotX + range * 0.8)
+			ai.AttackRange = self.AttackRange
+			ai.DetectRange = range + 2.0
+			ai.StandRUID = clip("stand", "idle")
+			ai.MoveRUID = clip("move", "walk")
+			ai.AttackRUID = clip("attack", "attack1")
+			ai.DieRUID = clip("die", "die1")
+		end
+		local atk = ent:AddComponent("script.FactionAttack")
+		if isvalid(atk) then
+			atk.BaseDamage = attack
+			atk.AttackBoxSize = Vector2(1.4, 1.4)
+			atk.AttackReach = 0.6
+		end
+		local du = ent:AddComponent("script.DefenderUnit")
+		if isvalid(du) then
+			du.VillageId = villageId
+			du.MonsterId = monsterId
+		end
+		return ent
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer SpawnBundle(string villageId, integer monsterId, number statMul, integer count, string frontStage)
+		-- 최전방 시설 뒤에 count 마리. 스폰된 수를 돌려준다.
+		local list = self:UnitList(villageId)
 		local spawned = 0
+		local first = nil
 		for i = 1, count do
-			self.spawnSeq = self.spawnSeq + 1
-			-- 대기 위치 = 포탑 뒤(마을 쪽 · −x) 0.7~1.75 (사용자 2026-09-07). 적이 포탑 사거리에 들어오면 뛰쳐나가고 사거리 80% 밖으론 안 나간다.
-			local homeX = row.slotX - 0.7 - ((i - 1) % 4) * 0.35
-			local name = "Defender_" .. villageId .. "_" .. tostring(self.spawnSeq)
-			local ent = _SpawnService:SpawnByModelId(modelId, name, Vector3(homeX, row.pathY + 0.3, 0), map)
+			local ent = self:SpawnOne(villageId, monsterId, statMul, frontStage, i - 1, 1.0)
 			if isvalid(ent) then
-				---@type Monster
-				local monster = ent.Monster
-				if isvalid(monster) then
-					monster.MaxHp = maxHp
-					monster.Hp = maxHp
-					monster.RespawnOn = false
-				end
-				if isvalid(ent.HitComponent) then
-					ent.HitComponent.BoxSize = Vector2(0.8, 1.0)
-					ent.HitComponent.ColliderOffset = Vector2(0, 0.5)
-				end
-				if isvalid(monster) then monster:FitHitboxToSprite() end
-				local chase = ent.StateChaseMonster
-				if isvalid(chase) then chase.Enable = false end
-				local boss = ent.BossSkillRunner
-				if isvalid(boss) then boss.Enable = false end
-				local contact = ent.MonsterAttack
-				if isvalid(contact) then contact.Disabled = true end
-				if isvalid(ent.SpriteRendererComponent) then
-					local layer = _LaneFacilityService:SortingLayerBelow(map, homeX, row.pathY)
-					if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
-					ent.SpriteRendererComponent.OrderInLayer = 2
-				end
-				local faction = ent:AddComponent("script.Faction")
-				if isvalid(faction) then faction.Team = tostring(20 + _LaneFacilityService:TeamSlot(villageId)) end
-				local sheet = isvalid(ent.StateAnimationComponent) and ent.StateAnimationComponent.ActionSheet or nil
-				local function clip(a, b)
-					if sheet == nil then return "" end
-					return sheet[a] or sheet[b] or ""
-				end
-				local ai = ent:AddComponent("script.FactionAI")
-				if isvalid(ai) then
-					ai.GuardMode = true
-					ai.HomeX = homeX
-					ai.GuardCenterX = row.slotX
-					ai.GuardRange = range
-					ai.LeashMinX = row.slotX - 2.5
-					ai.LeashMaxX = row.slotX + range * 0.8
-					ai.AttackRange = self.AttackRange
-					ai.DetectRange = range + 2.0
-					ai.StandRUID = clip("stand", "idle")
-					ai.MoveRUID = clip("move", "walk")
-					ai.AttackRUID = clip("attack", "attack1")
-					ai.DieRUID = clip("die", "die1")
-				end
-				local atk = ent:AddComponent("script.FactionAttack")
-				if isvalid(atk) then
-					atk.BaseDamage = attack
-					atk.AttackBoxSize = Vector2(1.4, 1.4)
-					atk.AttackReach = 0.6
-				end
-				local du = ent:AddComponent("script.DefenderUnit")
-				if isvalid(du) then
-					du.VillageId = villageId
-					du.MonsterId = monsterId
-				end
+				table.insert(list, { ent = ent, monsterId = monsterId, statMul = statMul })
 				spawned = spawned + 1
+				if first == nil then first = ent end
 			end
 		end
-		log("[Defender] " .. villageId .. " bundle " .. tostring(monsterId) .. " x" .. tostring(spawned) .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(maxHp) .. " atk=" .. tostring(attack) .. " mul=" .. tostring(statMul) .. " front=" .. frontStage)
+		local role = (_LaneFacilityService ~= nil) and _LaneFacilityService:RoleOfStage(frontStage) or ""
+		local row = (_LaneFacilityService ~= nil) and _LaneFacilityService:LaneRow(villageId, role) or nil
+		log("[Defender] " .. villageId .. " bundle " .. tostring(monsterId) .. " x" .. tostring(spawned) .. " at " .. tostring(row and row.mapName or "?") .. " (" .. tostring(row and row.slotX or "?") .. "," .. tostring(row and row.pathY or "?") .. ") mul=" .. tostring(statMul) .. " front=" .. frontStage .. " tracked=" .. tostring(#list))
 		return spawned
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer Regroup(string villageId, string frontStage)
+		-- 최전방이 바뀜(파괴·재건): 살아 있는 수비대를 새 최전방 시설 뒤에 같은 HP 비율로 재스폰. 옮긴 수를 돌려준다.
+		local list = self:UnitList(villageId)
+		if #list == 0 then return 0 end
+		local keep = {}
+		local moved = 0
+		local slot = 0
+		for _, u in ipairs(list) do
+			---@type Monster
+			local monster = u.ent.Monster
+			if isvalid(monster) and not monster.IsDead then
+				local ratio = 1.0
+				if monster.MaxHp > 0 then ratio = math.max(0.05, monster.Hp / monster.MaxHp) end
+				---@type DefenderUnit
+				local du = u.ent.DefenderUnit
+				if isvalid(du) then du.reported = true end
+				u.ent:Destroy()
+				local ent = self:SpawnOne(villageId, u.monsterId, u.statMul, frontStage, slot, ratio)
+				slot = slot + 1
+				if isvalid(ent) then
+					table.insert(keep, { ent = ent, monsterId = u.monsterId, statMul = u.statMul })
+					moved = moved + 1
+				end
+			end
+		end
+		self.units[villageId] = keep
+		log("[Defender] regroup " .. villageId .. " -> " .. frontStage .. " n=" .. tostring(moved))
+		return moved
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer DespawnVillage(string villageId)
+		-- 탈락 정리: 마을의 수비대를 전부 지운다(사망 보고 없이). 지운 수를 돌려준다.
+		local list = self:UnitList(villageId)
+		local n = 0
+		for _, u in ipairs(list) do
+			---@type DefenderUnit
+			local du = u.ent.DefenderUnit
+			if isvalid(du) then du.reported = true end
+			u.ent:Destroy()
+			n = n + 1
+		end
+		self.units[villageId] = {}
+		log("[Defender] despawn " .. villageId .. " n=" .. tostring(n))
+		return n
 	end
 
 end
