@@ -1,3 +1,43 @@
+## 2026-09-08 (9) — 무기별 공격 모션 재생 계층 (활이 검처럼 휘둘러지던 것)
+
+### 내가 (6) 에서 틀렸던 것
+(6) 에서 "활을 진짜 `twohandweapon` 로 바꾸면 활 모션이 나온다"고 했는데 **틀렸다.**
+카테고리는 필요조건일 뿐이다. 확인 결과:
+
+| 확인 | 결과 |
+|---|---|
+| `AvatarSlot` 로드 · `IsTwoHand` | `TWO_HAND` · `true` ✔ |
+| 런타임 `CostumeManagerComponent` | `CustomTwoHandedWeaponEquip = 89836b97…`(활) · `1H=[]` · `SUB=[]` ✔ |
+| `AvatarStateAnimationComponent.IsLegacy` | `false`(엔진 기본 매핑) ✔ |
+| `shoot1` 을 body 엔티티에 직접 전송 | **활 자세 정상 재생** ✔ (사용자 육안 확인) |
+
+장착은 완벽했다. **MSW 가 무기를 끼웠다고 그 무기의 모션을 자동 재생해 주지 않는 것**이 원인이었다 —
+두손무기의 `ATTACK` 기본 해석이 휘두르기라, 활은 활을 든 채 검처럼 휘둘렀다.
+
+### 만든 것 (A 가 재생 계층, B 는 표만 채운다 — 사용자 결정)
+- **`RootDesk/MyDesk/PlayerMotion.mlua`** (신규 `@Logic`) — 무기 종류 + 스킬 → 표 조회 → 그 유저 클라이언트에서 액션 재생.
+  `PlayAttack(userId)` / `PlaySkill(userId, skillId)` 두 개가 B 가 부를 API. 장착 무기는 스스로 조회한다
+- **`RootDesk/MyDesk/WeaponMotion.csv`** (+`.userdataset` 신규) — `MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note`.
+  `SkillId` 빈칸 = 그 무기의 기본 공격. 7행(무기 종류별 기본) 시드
+- **`ItemInfo.csv` `WeaponType` 열** 신설(맨 뒤) — `SWORD_1H` 4 · `SWORD_2H` 3 · `BOW` 3 · `WAND` 3 · `DAGGER` 3 · `CLAW` 3 · `KNUCKLE` 3 · `SHIELD` 4.
+  `AvatarSlot`(아바타 슬롯)과 **역할이 다르다**
+- `ItemCatalog.WeaponTypeOf(itemId)` 추가
+- **`PlayerAttack.mlua` `AttackNormal()` 첫 줄에 모션 호출 1줄** — 기존 A 의 "⚠ 임시 배선"(데미지) 과 같은 표기.
+  B 의 공격 파이프라인이 오면 그 한 줄만 옮기면 된다
+
+### 문서 · 인계
+- **`Docs/스킬-모션-구현맵.md`** 신규 — 파일 맵 / B 가 할 일(표 채우기 + 호출) / **검증 상태표**(무엇이 확인됐고 무엇이 추측값인지) / 조용히 실패하는 지점
+- **`AGENTS.md` O-5 신설** — "스킬·공격 모션 작업 전에 그 구현맵을 읽는다" + 이번에 틀린 오해를 명시. `AGENTS.md` 는 추적 파일이라 B 에게도 간다
+- `check-integrity` 에 `WeaponMotion` CANONICAL 헤더·기본키 등록 → C1/C3/C4(csv↔userdataset 짝) 전부 통과
+
+### 검증
+- ✅ 활 RUID 두손 슬롯 장착 · `shoot1` 재생 (런타임 + 육안)
+- 🟡 **`PlayerMotion` 경유 재생은 미검증** — Maker 를 닫은 뒤 작성했다. `PlayerMotion.mlua` 는 신규 파일이라
+  **Maker refresh 로 `.codeblock` 이 생성돼야 등록된다**(그 `.codeblock` 도 커밋 대상)
+- 🟡 `swingT1`(두손검) · `stabO1`(단검) · `swingO3`(아대) · `swingO1`(너클/완드) 는 **문서 후보값 · 미검증**. 눈으로 보고 조정해야 한다
+
+---
+
 ## 2026-09-08 (8) — 초보자 기본 방패
 
 (7) 에서 방패 슬롯을 만들었지만 초보자에겐 방패가 없어 7번째 칸이 계속 비어 있었다.

@@ -1,0 +1,140 @@
+@Logic
+script PlayerMotion extends Logic
+
+	-- 무기 종류별 · 스킬별 플레이어 공격 모션 재생. A 가 재생 계층을 제공하고, B 는 WeaponMotion 표만 채운다.
+	--
+	-- 왜 필요한가 (2026-09-08 런타임 확인):
+	--   MSW 는 활을 끼워도 자동으로 활 쏘기를 재생하지 않는다. 엔진은 ATTACK 상태를 무기 카테고리로 풀지만
+	--   두손무기의 기본 해석은 "휘두르기"라, 활은 활을 든 채 검처럼 휘두른다.
+	--   반면 body 엔티티에 ActionStateChangedEvent("shoot1") 을 직접 보내면 활 자세가 정상 재생된다(확인 완료).
+	--   → 무기·스킬에 맞는 액션은 스크립트가 명시적으로 재생해야 한다. 이 Logic 이 그 한 곳이다.
+	--
+	-- B 가 쓰는 법 (자세한 건 Docs/스킬-모션-구현맵.md):
+	--   서버 스킬 로직에서   _PlayerMotion:PlaySkill(userId, "SKILL_ID")
+	--   기본 공격이면        _PlayerMotion:PlayAttack(userId)
+	--   표에 행이 없으면 아무것도 재생하지 않는다(엔진 기본 동작 그대로 · 조용히 실패하지 않도록 경고 로그).
+
+	property string TableName = "WeaponMotion"
+
+	@HideFromInspector
+	property any rows = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	method void EnsureLoaded()
+		-- 표를 1회 읽는다. 키는 "<SkillId>|<WeaponType>" (SkillId 빈칸 = 그 무기의 기본 공격).
+		if self.loaded then
+			return
+		end
+		self.loaded = true
+		self.rows = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Motion] dataset not found: " .. self.TableName)
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local on = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local wt = string.upper(t:GetCell(i, "WeaponType") or "")
+			local core = t:GetCell(i, "CoreAction") or ""
+			if on and wt ~= "" and core ~= "" then
+				local skillId = t:GetCell(i, "SkillId") or ""
+				local parts = t:GetCell(i, "PartsAction") or ""
+				if parts == "" then parts = core end
+				self.rows[skillId .. "|" .. wt] = {
+					core = core,
+					parts = parts,
+					rate = tonumber(t:GetCell(i, "PlayRate")) or 1,
+					playType = string.upper(t:GetCell(i, "PlayType") or "ONETIME"),
+				}
+				n = n + 1
+			end
+		end
+		log("[Motion] weapon motion table loaded: " .. tostring(n) .. " rows")
+	end
+
+	method any Find(string weaponType, string skillId)
+		-- 스킬 전용 행이 있으면 그것, 없으면 그 무기의 기본 행. 둘 다 없으면 nil.
+		self:EnsureLoaded()
+		if weaponType == nil or weaponType == "" then
+			return nil
+		end
+		if skillId ~= nil and skillId ~= "" then
+			local hit = self.rows[skillId .. "|" .. weaponType]
+			if hit ~= nil then
+				return hit
+			end
+		end
+		return self.rows["|" .. weaponType]
+	end
+
+	@ExecSpace("ServerOnly")
+	method string WeaponTypeOf(string userId)
+		-- 그 유저가 지금 장착한 무기의 종류. 맨손이면 "".
+		if _EquipService == nil or _ItemCatalog == nil then
+			return ""
+		end
+		local e = _EquipService:EnsureUser(userId)
+		if e == nil then
+			return ""
+		end
+		return _ItemCatalog:WeaponTypeOf(_EquipService:EquippedItemId(userId, e, "WEAPON"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayAttack(string userId)
+		-- 기본 공격 모션 (스킬 아님).
+		self:PlaySkill(userId, "")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlaySkill(string userId, string skillId)
+		-- 장착 무기 + 스킬로 표를 찾아 그 유저의 클라이언트에서 액션을 재생한다.
+		if userId == nil or userId == "" then
+			return
+		end
+		local wt = self:WeaponTypeOf(userId)
+		if wt == "" then
+			return
+		end
+		local m = self:Find(wt, skillId)
+		if m == nil then
+			log_warning("[Motion] no row for weaponType=" .. wt .. " skill=[" .. tostring(skillId) .. "] — WeaponMotion.csv 에 행을 추가하세요")
+			return
+		end
+		self:PlayAction(m.core, m.parts, m.rate, m.playType, userId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayAction(string core, string parts, number rate, string playType)
+		-- 아바타 body 엔티티에 액션을 직접 재생한다. ActionStateChangedEvent 는 반드시
+		-- AvatarRendererComponent:GetBodyEntity() 로 얻은 body 에 보내야 한다(루트에 보내면 재생되지 않는다).
+		local p = _UserService.LocalPlayer
+		if isvalid(p) == false then
+			return
+		end
+		local r = p.AvatarRendererComponent
+		if isvalid(r) == false then
+			return
+		end
+		local body = r:GetBodyEntity()
+		if isvalid(body) == false then
+			return
+		end
+		local ev = ActionStateChangedEvent()
+		ev.CoreActionName = core
+		ev.PartsActionName = parts
+		ev.PlayRate = rate
+		if playType == "LOOP" then
+			ev.PlayType = SpriteAnimClipPlayType.Loop
+		elseif playType == "ZIGZAGLOOP" then
+			ev.PlayType = SpriteAnimClipPlayType.ZigzagLoop
+		else
+			ev.PlayType = SpriteAnimClipPlayType.Onetime
+		end
+		body:SendEvent(ev)
+	end
+
+end
