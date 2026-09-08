@@ -111,7 +111,7 @@ const CANONICAL = {
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
-  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,#Note",
+  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,CooldownStartSeconds,CooldownEndSeconds,CooldownEndLevel,#Note",
   RepairConfig: "ReqLevel,MesoPerDurability,Enabled,#Note",
   GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
   GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",

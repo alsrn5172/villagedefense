@@ -183,6 +183,56 @@ script InventoryService extends Logic
 		end
 	end
 
+	-- ── 소모품 쿨타임 (WO-014 · 추가기획2) ──────────────────────────
+	-- 원장은 서버 메모리다. ready[userId][itemId] = 이 시각(ServerElapsedSeconds)이 지나야 다시 쓸 수 있다.
+	-- 지금 CONSUME 은 POTION_RED 하나라 사실상 물약 공용 쿨이지만, 아이템별로 두면 종류가 늘어도 그대로 돈다.
+	-- 종류가 늘어 "여러 물약이 쿨을 공유"해야 하면 ConsumeInfo 에 CooldownGroup 열을 뒤에 추가한다.
+
+	@HideFromInspector
+	property any ready = nil
+
+	@ExecSpace("ServerOnly")
+	method integer LevelOf(string userId)
+		-- 쿨타임 보간에 쓰는 캐릭터 레벨. 원장이 없으면 1.
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		if e == nil then return 1 end
+		return math.max(1, math.floor(e.level or 1))
+	end
+
+	@ExecSpace("ServerOnly")
+	method number CooldownOf(string userId, any c)
+		-- 레벨 선형 보간: Lv1 = cdStart(13초) → cdEndLevel(30) 이상 = cdEnd(6초).
+		-- 표에 쿨 열이 없거나 0 이면 쿨타임 없음(0)을 돌려준다.
+		if c == nil then return 0 end
+		local s = c.cdStart or 0
+		local e = c.cdEnd or 0
+		if s <= 0 then return 0 end
+		local endLv = c.cdEndLevel or 0
+		if endLv <= 1 then return s end
+		local lv = self:LevelOf(userId)
+		local t = (lv - 1) / (endLv - 1)
+		if t < 0 then t = 0 end
+		if t > 1 then t = 1 end
+		return s + (e - s) * t
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ReadyAt(string userId, string itemId)
+		-- 다시 쓸 수 있게 되는 시각. 기록이 없으면 0(= 지금 바로 가능).
+		if self.ready == nil then self.ready = {} end
+		local u = self.ready[userId]
+		if u == nil then return 0 end
+		return u[itemId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetReadyAt(string userId, string itemId, number at)
+		-- 쿨타임 시작.
+		if self.ready == nil then self.ready = {} end
+		if self.ready[userId] == nil then self.ready[userId] = {} end
+		self.ready[userId][itemId] = at
+	end
+
 	@ExecSpace("Server")
 	method void RequestUse(string instanceId)
 		-- 소모품 사용 (인벤토리 클릭). ConsumeInfo 회복량만큼 HP/MP 를 더하고 1개 소모. 장비·재료는 거절.
@@ -201,6 +251,22 @@ script InventoryService extends Logic
 		local player = _UserService:GetUserEntityByUserId(userId)
 		local pc = isvalid(player) and player.PlayerComponent or nil
 		if not isvalid(pc) then return end
+
+		-- 쿨타임 (WO-014 · 추가기획2). 🔴 쿨 중이면 **아이템을 소모하지 않고** 거절한다.
+		local now = _UtilLogic.ServerElapsedSeconds
+		local readyAt = self:ReadyAt(userId, it.itemId)
+		if readyAt > now then
+			if _UIToast ~= nil then
+				_UIToast:ShowMessage(def.name .. " 쿨타임 " .. string.format("%.1f", readyAt - now) .. "초", userId)
+			end
+			return
+		end
+		local cd = self:CooldownOf(userId, c)
+		if cd > 0 then
+			self:SetReadyAt(userId, it.itemId, now + cd)
+			log("[Item] potion cooldown lv=" .. tostring(self:LevelOf(userId)) .. " cd=" .. string.format("%.2f", cd) .. "s (" .. userId .. ")")
+		end
+
 		local before = pc.Hp
 		if c.healHp > 0 then
 			pc.Hp = math.min(pc.Hp + c.healHp, pc.MaxHp)
