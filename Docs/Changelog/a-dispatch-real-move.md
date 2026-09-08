@@ -111,17 +111,53 @@ UI 안내문도 "실제 이동·전투는 Lane 연동 후(지금은 원장에서
   (터치 영역 < 88) — 같은 파일의 `Target_0..4`(62) · `BtnCart±`(64)와 같은 성격이라 그대로 둔다
 - mlua 진단: 신규·수정 파일 **error 0** (기존 `AddComponent` 반환형 Info 는 그대로)
 
-### 🔴 남은 것 — 아직 검증 안 됨
+### Play 로그 스모크 (2026-09-09 · 워크트리를 개인 월드로 열고 Reimport All → Play · 런타임 에러 0)
 
-**Play 로그 스모크와 좀비머쉬맘 3페이즈 실측이 통째로 남아 있다.** 아래는 확인해야 할 것들이다.
+혼자서는 마을을 하나만 가질 수 있어(`Claim` 은 한 유저 한 마을) 대상 마을은 서버 원장에 가짜 주인을
+직접 심어 만들었다(`ownerByVillage["ELLINIA"] = "dummy-owner"` · 메모리 전용). 스폰 경로는 다른 마을에
+`LaneConfig` 행이 없어(②) 헤네시스를 대상으로 대기열에 직접 넣어 확인했다.
 
-1. 접수 → `v.defenders` 감소 + 마을 수비 엔티티 감소 + `[Dispatch] submit`
-2. 취소 → 대기열 0 · 원장·엔티티 복귀
-3. 투입 → `[Dispatch] release … spawned=N` · 대상 `LANE2` 통로에 `Minion_<대상>_D*` · 진영 1x
-   · HP/공격이 수비대 스펙과 일치 · 억제기 파괴 배율이 **안** 걸리는지
-4. 파병 유닛 처치 → 경험치·메소·주화 **0**
-5. `Advance` 로 사냥터1 로 넘어간 뒤에도 보상 없음·고정 스펙 유지
-6. `VillageCap` 초과 거절 · 주인 없는 마을 거절 · `PHASE1` 접수 거절
-7. 방어자 토스트에 **총량 등급만** 들어가는지
-8. 좀비머쉬맘 `2400572` 3페이즈: HP 1500×2.0=3000 · 공격 40×2.2=88 · `BossSkillRunner` off ·
-   `StateChaseMonster` off · 히트박스 (0,0) 아님 · 통로 전진 · `Advance` 재스폰
+| # | 확인 | 결과 |
+|:--:|---|---|
+| 0 | 폴더 등록 | `Dispatch.directory` · `DispatchService.codeblock` 생성 · `[Dispatch] DispatchService ready (server)` · `DispatchRule loaded: 4 rows` · `cap=3 meso=0 enabled=true` ✅ |
+| 1 | 수비대 스펙 | `Defender_HENESYS_1 hp=450/450 atk=37` = 도감 1500×0.3 · Lv25×1.5 ✅ |
+| 2 | 접수 | 원장 2→1묶음 · **추적 엔티티 16→8**(`[Defender] take … n=8/8`) · `submit order=D1 qty=8` · `grade=소` ✅ |
+| 3 | 취소 | `[Dispatch] cancel order=D1` → 원장 2묶음 · 엔티티 16 복귀 ✅ |
+| 4 | 투입 | `[Dispatch] release HENESYS orders=1 spawned=8` · 통로에 `Minion_HENESYS_D*` 8마리 ✅ |
+| 5 | 스펙 유지 | `hp=450/450 atk=37` — **페이즈 배율 2.0/2.2 가 안 곱해졌다**(곱했으면 900/81) ✅ |
+| 6 | 진영 | `team=11` (대상 마을 미니언 편) ✅ |
+| 7 | 보상 없음 | `farmReward=false` · `MesoBase=0` · `CoinDropChance=0` · `ExpBase=0` ✅ |
+| 8 | `Advance` 인계 | 8마리 전부 `LANE2 → LANE1 ok=true` · HillNorth 에서 `role=LANE1` · **MaxHp 450 유지** · `dispatched=true` · `farmReward=false` ✅ |
+| 9 | 페이즈 게이트 | `PHASE1_PIONEER`(cap 0 · Enabled=false)에서 접수 전부 거절 ✅ |
+| 10 | 마을 상한 | 대기열 3/3 가득 찬 상태에서 4묶음 보유 중 추가 신청 → 원장·대기열 그대로(거절) ✅ |
+| 11 | 총량 등급 | 8마리 `소` · 24마리 `중` ✅ |
+| 12 | 실전 | 파병 미니언이 포탑 → 억제기 → **넥서스까지 파괴**(`CORE DESTROYED by Minion_HENESYS_D25`) → `ELIMINATED … dispatch=0` → 관전 전환 ✅ |
+
+### 좀비머쉬맘 3페이즈 실측 (`2400572`)
+
+`MinionComposition` PHASE3_FINALE 행 그대로(`BaseHp 1500` · `BaseAttack 40` · 배율 2.0/2.2)로 스폰:
+
+| 항목 | 값 |
+|---|---|
+| 모델 | `monster2400572` — 스폰 성공(`GetModelId` 비어 있지 않음) |
+| HP | **3000** = 1500 × 2.0 ✅ |
+| 공격 | **88** = 40 × 2.2 ✅ |
+| `BossSkillRunner` | `false` (꺼짐) ✅ |
+| `StateChaseMonster` | `false` (꺼짐) ✅ |
+| 히트박스 | `0.8 × 1.0` — (0,0) 아님 ✅ |
+| 정렬층 | `MapLayer7 / 2` · `InputSpeed 0.5` · `Scale 1.0` |
+
+> ⚠️ 공격 88 은 수비 몬스터(HP 450)를 5대에 죽인다 — 실측 중 32마리 수비대가 전멸했다.
+> 3페이즈 밸런스는 별건.
+
+### 눈 확인 (사용자에게 남김)
+
+- 파병 유닛이 대상 통로에서 미니언과 같이 걷는 그림 · 스프라이트 층 겹침
+- 좀비머쉬맘이 통로에서 어색하지 않은지 (원래 보스 모델 · Scale 1.0 · 히트박스가 스프라이트보다 작을 수 있다)
+- 파병 창 대기열 4행 렌더 · 행 클릭 취소
+
+### 부수 — 임시 단축키 `E` 제거 (사용자 지시 2026-09-09)
+
+`WorkshopUIController` 의 `E`(공방 창 토글)는 NPC 클릭이 붙기 전 검증용 임시 키였다. NPC 라우터가
+정식 경로가 됐으므로 제거하고 **ESC 닫기만** 남겼다. `` ` ``(리모컨) · `C`(캐릭터 창) · `M`(월드맵) 은 유지 —
+`M` 은 임시가 아니고 나머지 둘은 사용자가 남기라고 지정했다.
