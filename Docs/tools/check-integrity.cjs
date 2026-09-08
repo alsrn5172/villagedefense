@@ -105,9 +105,10 @@ const CANONICAL = {
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
-  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note",
+  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType",
+  WeaponMotion: "MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note",
   EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
-  EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note",
+  EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
   ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,#Note",
@@ -203,6 +204,7 @@ const PK = {
   EliteSpawnTable: ["MapName", "BaseMonsterId"],
   EliteMaterialInfo: ["MaterialId"],
   ItemInfo: ["ItemId"],
+  WeaponMotion: ["MotionId"],
   EnhanceTable: ["EnhanceLevel"],
   EnhanceSlotBonus: ["EquipSlot", "ReqLevel", "EnhanceLevel"],
   CraftRecipe: ["RecipeId"],

@@ -15,7 +15,17 @@ script EquipService extends Logic
 	method void OnBeginPlay()
 		-- 원장 준비.
 		self.equipped = {}
-		self.slots = { "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }
+		-- SUBWEAPON = 방패(2026-09-08 신설 · 7번째). 아바타는 CustomSubWeaponEquip 이고
+		-- 두손무기가 그 슬롯을 함께 점유하므로 둘은 동시에 낄 수 없다 (RequestEquip 에서 자동 해제).
+		self.slots = { "WEAPON", "SUBWEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }
+		-- 입장 유저의 아바타 외형 복구 — 플레이어 엔티티가 새로 만들어지면 다시 입혀야 한다.
+		_UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+		-- 이미 들어와 있는 유저도 처리(에디터 플레이는 보통 여기 걸린다).
+		for _, user in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(user) and isvalid(user.PlayerComponent) then
+				self:ApplyCostume(user.PlayerComponent.UserId)
+			end
+		end
 		log("[Item] EquipService ready (server)")
 	end
 
@@ -52,12 +62,12 @@ script EquipService extends Logic
 		local e = self:EnsureUser(userId)
 		local it = _InventoryService:Find(userId, instanceId)
 		if e == nil or it == nil then
-			log("[Item] equip denied: no such instance " .. tostring(instanceId))
+			self:DenyEquip(userId, "그 아이템을 찾을 수 없습니다")
 			return
 		end
 		local def = _ItemCatalog:Get(it.itemId)
 		if def == nil or def.type ~= "EQUIP" or def.slot == "" then
-			log("[Item] equip denied: not equipment " .. tostring(it.itemId))
+			self:DenyEquip(userId, "장착할 수 있는 장비가 아닙니다")
 			return
 		end
 		if self:IsEquipped(userId, instanceId) then
@@ -69,19 +79,48 @@ script EquipService extends Logic
 			if econ ~= nil then level = econ.level end
 		end
 		if level < def.reqLevel then
-			log("[Item] equip denied: level " .. tostring(level) .. " < " .. tostring(def.reqLevel))
+			self:DenyEquip(userId, def.name .. " 은(는) Lv" .. tostring(def.reqLevel) .. " 부터 장착할 수 있습니다 (현재 Lv" .. tostring(level) .. ")")
 			return
 		end
+		-- 직업 제한: 아직 전직하지 않은 유저(NOVICE)는 제한 없음.
+		-- 전직(B 의 JobChangedEvent → _StatService:SetJob)이 아직 어디서도 호출되지 않아
+		-- 모든 유저가 영구 NOVICE 였고, 그래서 제작한 직업 장비를 아무도 못 입었다 (2026-09-08).
+		-- 전직이 붙으면 그때부터 다른 직업 장비만 막힌다.
 		if def.reqJob ~= "" and _StatService ~= nil then
 			local su = _StatService:EnsureUser(userId)
-			if su ~= nil and su.job ~= def.reqJob then
-				log("[Item] equip denied: job " .. tostring(su.job) .. " ~= " .. def.reqJob)
+			local job = (su ~= nil) and su.job or ""
+			if job ~= "" and job ~= "NOVICE" and job ~= def.reqJob then
+				self:DenyEquip(userId, def.name .. " 은(는) " .. def.reqJob .. " 전용입니다")
 				return
 			end
 		end
+		-- 두손무기 ↔ 방패 상호 배제: 두손무기는 한손+보조 슬롯을 함께 점유한다.
+		-- 막지 않고 상대를 자동 해제한다 (장비는 인벤토리에 그대로 남아 손실이 없다).
+		if def.slot == "WEAPON" and _ItemCatalog:IsTwoHand(it.itemId) and e["SUBWEAPON"] ~= "" then
+			local dropped = e["SUBWEAPON"]
+			e["SUBWEAPON"] = ""
+			self:Apply(userId, "SUBWEAPON", dropped, "")
+			self:DenyEquip(userId, "두손무기라 방패를 해제했습니다")
+		elseif def.slot == "SUBWEAPON" and _ItemCatalog:IsTwoHand(self:EquippedItemId(userId, e, "WEAPON")) then
+			local dropped = e["WEAPON"]
+			e["WEAPON"] = ""
+			self:Apply(userId, "WEAPON", dropped, "")
+			self:DenyEquip(userId, "방패를 들어 두손무기를 해제했습니다")
+		end
+
 		local prev = e[def.slot]
 		e[def.slot] = instanceId
 		self:Apply(userId, def.slot, prev, instanceId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DenyEquip(string userId, string reason)
+		-- 장착 거절을 요청자에게 알린다. 예전엔 서버 로그만 남겨서, 클릭해도 아무 일도
+		-- 일어나지 않는 것처럼 보였다 (CraftService.Deny 와 같은 방식으로 토스트를 띄운다).
+		log("[Item] equip denied (" .. tostring(userId) .. "): " .. reason)
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(reason, userId)
+		end
 	end
 
 	@ExecSpace("Server")
@@ -109,6 +148,7 @@ script EquipService extends Logic
 
 		self:RecalcLayer(userId)
 		self:PushEquipped(userId)
+		self:ApplyCostume(userId)
 		if _InventoryService ~= nil then
 			_InventoryService:PushInventory(userId)
 		end
@@ -175,6 +215,101 @@ script EquipService extends Logic
 		if _InventoryUIController ~= nil then
 			_InventoryUIController:SetEquippedCsv(self:Serialize(userId), userId)
 		end
+	end
+
+	-- ── 아바타 외형 ────────────────────────────────────────────
+	-- 장착 장비를 캐릭터에 "실제로 입힌다". 스프라이트를 위에 덧그리는 게 아니라
+	-- CostumeManagerComponent 에 아바타 아이템을 꽂아 AvatarRendererComponent 가
+	-- 프레임마다 부위별로 재합성하게 한다 (모자는 머리, 검은 손에 쥐어져 같이 휘둘러진다).
+
+	@ExecSpace("ServerOnly")
+	method void OnUserEnter(UserEnterEvent event)
+		-- 입장한 유저에게 장착분을 다시 입힌다.
+		local uid = event.UserId
+		if uid ~= nil and uid ~= "" then
+			self:ApplyCostume(uid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string EquippedItemId(string userId, any e, string slot)
+		-- 그 슬롯에 장착된 인스턴스의 ItemId. 비었으면 "".
+		local iid = e[slot]
+		if iid == nil or iid == "" then
+			return ""
+		end
+		local it = _InventoryService:Find(userId, iid)
+		if it == nil then
+			return ""
+		end
+		return it.itemId
+	end
+
+	@ExecSpace("ServerOnly")
+	method string CostumeRuid(string userId, any e, string slot)
+		-- 그 슬롯에 장착된 장비의 아바타 RUID. 비었으면 "" (= 해제 → 계정 기본 외형이 다시 보인다).
+		-- 접두어 규칙은 _ItemCatalog:AvatarRuid 한 곳 (캐릭터창 프리뷰도 같은 걸 쓴다).
+		return _ItemCatalog:AvatarRuid(self:EquippedItemId(userId, e, slot))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyCostume(string userId)
+		-- 장착 6슬롯을 아바타에 반영한다. Custom*Equip 는 @Sync 라 서버에서 써야
+		-- 본인·다른 플레이어 화면에 모두 전파된다 (클라에서 쓰면 전파되지 않는다).
+		-- UseCustomEquipOnly 는 기본값 false 그대로 둔다 → 계정 아바타 위에 6부위만 덮어쓴다.
+		local e = self:EnsureUser(userId)
+		if e == nil then
+			return
+		end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) == false then
+			log_warning("[Item] costume skipped: no player entity " .. tostring(userId))
+			return
+		end
+		local costume = player.CostumeManagerComponent
+		if isvalid(costume) == false then
+			log_warning("[Item] costume skipped: no CostumeManagerComponent " .. tostring(userId))
+			return
+		end
+		-- 무기는 한손/두손을 갈라 넣는다. 엔진이 이 슬롯(아바타 아이템 카테고리)으로 공격 모션을
+		-- 고르기 때문에, 두손 활을 한손 슬롯에 넣으면 활을 들고 검처럼 휘두른다 (2026-09-08).
+		local weapon = self:CostumeRuid(userId, e, "WEAPON")
+		local twoHand = _ItemCatalog:IsTwoHand(self:EquippedItemId(userId, e, "WEAPON"))
+		local sub = ""
+		if twoHand == false then
+			sub = self:CostumeRuid(userId, e, "SUBWEAPON")
+		end
+		local vals = {
+			weapon,
+			self:CostumeRuid(userId, e, "HAT"),
+			self:CostumeRuid(userId, e, "TOP"),
+			self:CostumeRuid(userId, e, "BOTTOM"),
+			self:CostumeRuid(userId, e, "SHOES"),
+			self:CostumeRuid(userId, e, "GLOVES"),
+			sub,
+		}
+		if twoHand then
+			-- 두손무기는 한손+보조 슬롯을 함께 쓴다 → 방패 슬롯도 비운다.
+			costume.CustomTwoHandedWeaponEquip = weapon
+			costume.CustomOneHandedWeaponEquip = ""
+			costume.CustomSubWeaponEquip = ""
+		else
+			costume.CustomOneHandedWeaponEquip = weapon
+			costume.CustomTwoHandedWeaponEquip = ""
+			costume.CustomSubWeaponEquip = self:CostumeRuid(userId, e, "SUBWEAPON")
+		end
+		costume.CustomCapEquip = vals[2]
+		costume.CustomCoatEquip = vals[3]
+		costume.CustomPantsEquip = vals[4]
+		costume.CustomShoesEquip = vals[5]
+		costume.CustomGloveEquip = vals[6]
+		local worn = 0
+		for _, v in ipairs(vals) do
+			if v ~= "" then
+				worn = worn + 1
+			end
+		end
+		log("[Item] costume applied: " .. tostring(worn) .. "/7 (" .. userId .. ")")
 	end
 
 end
