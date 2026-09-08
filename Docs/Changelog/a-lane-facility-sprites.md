@@ -38,8 +38,9 @@ VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,#Note
 아트가 아직 임시인 나머지 4개 마을은 상향 단계 값 그대로 — 전용 아트가 나오면 그때 다시 잰다.
 HP바는 `slotY + GroundOffset + BarOffset` 이라 시설과 같이 움직인다.
 
-> `LaneFacilityService` 의 폴백 상수(포탑 1.785 · 억제기 1.665 · 넥서스 1.125)는 **표를 못 읽을 때만** 쓰인다.
-> 헤네시스 실측값(1.125)과 다르지만 정본은 표다.
+> 표를 못 읽을 때 쓰는 폴백 상수(`LaneFacilityService.GroundOffset`/`BarOffset` · `LaneStateService.LoadSpriteDef`)도
+> **헤네시스 실측값과 같은 `ground 1.125` / `bar 1.2`** 로 맞춰뒀다 — 세 곳이 서로 다른 값을 들고 있으면
+> 표가 빠졌을 때 어디서 온 값인지 추적이 안 된다.
 
 | 마을 | TOWER | SUPPRESSOR | CORE |
 |---|---|---|---|
