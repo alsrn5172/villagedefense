@@ -4,26 +4,15 @@ script PlayerAttack extends AttackComponent
 	@HideFromInspector
 	property any Shape = nil
 
-	property any CurrentTarget = nil
-
-	property table Candidates = {}
-
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
+		-- Reusable shape; AttackNormal repositions it each swing.
 		self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
 	end
 
 	@ExecSpace("ServerOnly")
 	method void AttackNormal()
-		-- ⚠ 임시 배선 (A · 사용자 지시 2026-09-08): 무기별 공격 모션 재생.
-		-- MSW 는 활을 끼워도 활 쏘기를 자동 재생하지 않는다(두손무기의 ATTACK 기본 해석 = 휘두르기).
-		-- 표(WeaponMotion.csv)와 재생 계층(PlayerMotion.mlua)은 A 가 제공한다.
-		-- B 의 공격 파이프라인이 오면 이 한 줄을 그쪽으로 옮기고, 스킬 모션은
-		-- _PlayerMotion:PlaySkill(userId, skillId) 로 부르면 된다. → Docs/스킬-모션-구현맵.md
-		if _PlayerMotion ~= nil and isvalid(self.Entity.PlayerComponent) then
-			_PlayerMotion:PlayAttack(self.Entity.PlayerComponent.UserId)
-		end
-
+		-- Offset the box in front of the player before firing AttackFast.
 		local playerController = self.Entity.PlayerControllerComponent
 		local transform = self.Entity.TransformComponent
 		if playerController and transform then
@@ -31,84 +20,30 @@ script PlayerAttack extends AttackComponent
 			local attackOffset = Vector2(worldPosition.x + 0.5 * playerController.LookDirectionX, worldPosition.y + 0.5)
 			self.Shape.Position = attackOffset
 		
-			-- 1패스: 데미지 없이 후보만 수집 ("probe" 태그)
-			self.Candidates = {}
-			self:Attack(self.Shape, "probe", CollisionGroups.Monster)
-		
-			-- 플레이어와 가장 가까운 후보 선택
-			local closest = nil
-			local best = math.huge
-			for _, def in ipairs(self.Candidates) do
-				if isvalid(def) then
-					local p = def.TransformComponent.WorldPosition
-					local dx = p.x - worldPosition.x
-					local dy = p.y - worldPosition.y
-					local d = dx * dx + dy * dy   -- 제곱거리 비교(루트 불필요)
-					if d < best then
-						best = d
-						closest = def
-					end
-				end
-			end
-			self.CurrentTarget = closest
-		
-			-- 2패스: 가장 가까운 하나만 실제 타격
-			if isvalid(self.CurrentTarget) then
-				self:Attack(self.Shape, "melee", CollisionGroups.Monster)
-			end
+			self:AttackFast(self.Shape, nil, CollisionGroups.Monster)
 		end
 	end
 
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
-		-- ⚠ 임시 배선 (A · 사용자 지시 2026-09-05): 고정 50 → 스탯 기반 범위 데미지. B 의 공격 파이프라인이 오면 그쪽이 덮는다.
-		--    MISS 면 0. 서버 원장이 없으면(클라) 1.
-		return _StatService:CalcPlayerDamage(attacker, defender)
+		-- Flat base damage.
+		return 50
 	end
 
 	method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
-		-- ⚠ 임시 배선: 상시 참(RandomDouble < 1.2) → LUK 기반 크리 확률.
-		return _StatService:RollCritical(attacker)
+		-- 30% crit chance.
+		return _UtilLogic:RandomDouble() < 0.3
 	end
 
 	method float GetCriticalDamageRate()
-		return 2.0
-	end
-
-	method boolean IsAttackTarget(Entity defender, string attackInfo)
-		-- 진영 필터 + "가장 가까운 하나만" 필터.
-		-- ⚠ 진영 판정이 없으면 플레이어만 규칙에서 예외가 되어 같은 팀(TeamA)도 때린다.
-		--   몬스터는 FactionAttack.IsAttackTarget 에서 같은 규칙으로 걸러진다.
-		if not isvalid(defender) then
-			return false
-		end
-		
-		-- 파밍 몹(중립, script.FarmReward 보유)은 진영과 무관하게 항상 때릴 수 있다.
-		-- 위층 파밍 대상이 여기에 해당한다. 팩션 규칙(아군 불가)은 그대로 유지된다.
-		-- 🔴 예외 없이 진영으로만 판정한다.
-		--    예전에는 파밍 몹만 진영 밖에서 예외 처리했는데, 그 결과
-		--    야생 몹 · 보스가 전부 Neutral 로 떨어져 아무도 못 때렸다.
-		--    이제 FactionLogic.GetTeam 이 그것들을 공통 몬스터 진영으로 묶는다.
-		if not _FactionLogic:IsEnemy(self.Entity, defender) then
-			return false
-		end
-		
-		if attackInfo == "probe" then
-			table.insert(self.Candidates, defender)
-			return false   -- 탐색 패스: 아무도 안 맞음(수집만)
-		end
-		
-		return defender == self.CurrentTarget   -- 실제 패스: 가장 가까운 하나만
+		-- 2x on crit.
+		return 2
 	end
 
 	@ExecSpace("ServerOnly")
 	@EventSender("Self")
 	handler HandlePlayerActionEvent(PlayerActionEvent event)
-		-- Parameters
-		local ActionName = event.ActionName
-		-- local PlayerEntity = event.PlayerEntity
-		--------------------------------------------------------
-		
-		if ActionName == "Attack" then
+		-- Route the "Attack" action to AttackNormal.
+		if event.ActionName == "Attack" then
 			self:AttackNormal()
 		end
 	end

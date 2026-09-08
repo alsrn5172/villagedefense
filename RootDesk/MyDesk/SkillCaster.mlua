@@ -1,0 +1,83 @@
+@Logic
+script SkillCaster extends Logic
+
+    -- The single entry point for using a skill. SkillHotbar calls Cast() today; the skill
+    -- window or NPCs can call it later without duplicating any of this gate logic.
+
+    -- Cast() and FinishCast() are deliberately left ExecSpace-unspecified (no annotation),
+    -- same as PlayerSkillState's own methods - so this exact function can be called again from
+    -- a future server-authoritative path without a signature change. Today it resolves the
+    -- caster via _UserService.LocalPlayer, which only works client-side; a server version will
+    -- need a different caster-resolution step, but the 6-step gate sequence itself would not
+    -- change - that is what "one function" buys here.
+    method table Cast(string skillId)
+        -- LearnSkill/Cast both read from SkillDatabase; by the time any PlayerActionEvent can
+        -- fire, every Logic's OnBeginPlay (including SkillDatabase's) has already run - but
+        -- EnsureLoaded is idempotent and free to call defensively anyway, matching the same
+        -- guard used everywhere else this project reads from SkillDatabase.
+        _SkillDatabase:EnsureLoaded()
+
+        -- 1. skill exists
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then
+            return self:FinishCast(skillId, { ok = false, reason = "unknown skill: " .. tostring(skillId) })
+        end
+
+        -- 2. behavior is not "passive" - passives are never cast
+        if skill.behavior == "passive" then
+            return self:FinishCast(skillId, { ok = false, reason = "passive skills cannot be cast" })
+        end
+
+        -- 3. _SkillDatabase:CanUse - required_job_line / required_tier / required_level / skillLevel > 0
+        local userId = _PlayerSkillState:GetLocalUserId()
+        local level = _PlayerSkillState:GetSkillLevel(skillId)
+        local canUse = _SkillDatabase:CanUse(skillId, _PlayerSkillState:GetJobLine(userId), _PlayerSkillState:GetTier(userId), _PlayerSkillState:GetPlayerLevel(), level)
+        if not canUse.ok then
+            return self:FinishCast(skillId, canUse)
+        end
+
+        -- 4. cooldown not active
+        if _PlayerSkillState:IsOnCooldown(skillId) then
+            local remaining = _PlayerSkillState:GetCooldownRemaining(skillId)
+            return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(remaining) .. "s left)" })
+        end
+
+        -- 5. use_limit not exhausted (0 = unlimited)
+        if skill.useLimit > 0 and _PlayerSkillState:GetUseCount(skillId) >= skill.useLimit then
+            return self:FinishCast(skillId, { ok = false, reason = "use limit reached (" .. tostring(skill.useLimit) .. ")" })
+        end
+
+        -- 6. enough MP
+        if _PlayerSkillState:GetMp() < skill.mpCost then
+            return self:FinishCast(skillId, { ok = false, reason = "not enough MP" })
+        end
+
+        -- All gates passed - commit state, then dispatch to the visual/audio executor. Order:
+        -- consume MP, start cooldown, increment use count, dispatch.
+        _PlayerSkillState:ConsumeMp(skill.mpCost)
+        _PlayerSkillState:StartCooldown(skillId)
+        if skill.useLimit > 0 then
+            _PlayerSkillState:IncrementUseCount(skillId)
+        end
+
+        local caster = _UserService.LocalPlayer
+        if isvalid(caster) then
+            _SkillExecutors:Execute(skill.behavior, skillId, skill, caster, level)
+        else
+            log_warning("SkillCaster: LocalPlayer unavailable, skipping executor for " .. skillId)
+        end
+
+        return self:FinishCast(skillId, { ok = true, reason = "ok" })
+    end
+
+    method table FinishCast(string skillId, table result)
+        -- One log line per Cast() call, covering skill/result/mp/cooldown regardless of outcome.
+        local reasonText = ""
+        if not result.ok then reasonText = " reason='" .. result.reason .. "'" end
+        log("SkillCaster: cast " .. skillId .. " ok=" .. tostring(result.ok) .. reasonText ..
+            " mp=" .. tostring(math.floor(_PlayerSkillState:GetMp())) ..
+            " cd=" .. tostring(_PlayerSkillState:GetCooldownRemaining(skillId)))
+        return result
+    end
+
+end

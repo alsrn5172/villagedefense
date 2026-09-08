@@ -1,0 +1,288 @@
+@Logic
+script PlayerSkillState extends Logic
+
+    -- skill_id -> learned level. Missing key means 0 (not learned).
+    property table skillLevels = {}
+
+    property number sp = 20
+
+    property number mp = 100
+    property number maxMp = 100
+    property number mpRegenPerSecond = 2
+    -- mp value as of the last "mp" SkillStateChangedEvent. Used to throttle regen notifications
+    -- (see OnUpdate) - starts equal to mp's own default so the first regen tick doesn't
+    -- spuriously read as a 100-point jump.
+    property number mpLastNotifiedValue = 100
+
+    -- Player level is not skill-domain state (owned elsewhere per the stat/AP system) - this
+    -- is the one accessor pair (GetPlayerLevel/SetPlayerLevel) every other file must call
+    -- instead of touching a level value directly. A real level/exp system does not exist yet;
+    -- when it lands, only this accessor's implementation needs to change.
+    property number playerLevel = 1
+
+    -- Job identity is now (jobLine, tier) instead of a single job_id string - JobDataSet no
+    -- longer has job_id/next_job/tab columns. BEGINNER is its own job_line at tier 0 (the
+    -- only tier-0 row); every advancement line starts at tier 1.
+    property string jobLine = "BEGINNER"
+    property number tier = 0
+
+    -- skill_id -> _UtilLogic.ServerElapsedSeconds value when the cooldown ends.
+    property table cooldownEndsAt = {}
+
+    -- skill_id -> times used this match.
+    property table useCounts = {}
+
+    -- Generic stack counter (see SkillDatabase.StackDamageAt) - increased by whichever
+    -- passive skill feeds it, clamped by that skill's max_stack, reset to 0 after the
+    -- consuming skill fires. Named generically (not meso-specific) so any job can reuse it.
+    -- NOTE: nothing outside SkillDatabase.mlua reads this yet, and nothing increments/resets
+    -- it yet - that wiring lives in SkillExecutors.mlua/SkillCaster.mlua, both out of scope
+    -- for this task. See the report.
+    property number stackCount = 0
+
+    method void OnBeginPlay()
+        -- LearnSkill/StartCooldown read skill.maxLevel/spCost/cooldown from SkillDatabase;
+        -- AdvanceTier reads JobDatabase.GetRequiredLevel. @Logic OnBeginPlay order across
+        -- scripts is not guaranteed, so this calls the same idempotent EnsureLoaded() guard
+        -- SkillWindowLogic uses instead of assuming either database's own OnBeginPlay already ran.
+        _SkillDatabase:EnsureLoaded()
+        _JobDatabase:EnsureLoaded()
+
+        -- Clears useCounts/cooldowns. Called here on world enter for now; will move to a
+        -- match-start event once one exists.
+        self:ResetMatchState()
+
+        log("PlayerSkillState: OnBeginPlay complete, sp=" .. tostring(self.sp) .. " mp=" .. tostring(self.mp) .. "/" .. tostring(self.maxMp) .. " job=" .. self.jobLine .. "/" .. tostring(self.tier) .. " playerLevel=" .. tostring(self.playerLevel))
+    end
+
+    method void OnUpdate(number delta)
+        -- MP regen is per-frame accumulation, clamped to maxMp - deliberately not an end-time
+        -- model like cooldowns (see StartCooldown/GetCooldownRemaining).
+        if self.mp < self.maxMp then
+            self.mp = math.min(self.maxMp, self.mp + self.mpRegenPerSecond * delta)
+
+            -- Regen ticks ~60 times/sec but SkillStateChangedEvent must not. Only notify once
+            -- accumulated regen has moved MP by at least 1 whole point since the last "mp"
+            -- notification - at mpRegenPerSecond=2 that caps this to at most ~2 events/sec here,
+            -- not ~60. Explicit changes (ConsumeMp/AddMp) always notify immediately regardless.
+            if math.abs(self.mp - self.mpLastNotifiedValue) >= 1 then
+                self.mpLastNotifiedValue = self.mp
+                self:NotifyStateChanged("mp")
+            end
+        end
+    end
+
+    method number GetSkillLevel(string skillId)
+        -- Learned level for skillId, 0 if never learned.
+        return self.skillLevels[skillId] or 0
+    end
+
+    method table LearnSkill(string skillId)
+        -- Returns { ok = boolean, reason = string }. Gates on required_job_line/required_tier/
+        -- required_level via SkillDatabase:CanLearn (the one place that comparison happens -
+        -- see SkillDatabase.CheckRequirements) in addition to SP and max_level, then deducts
+        -- sp_cost and increments the learned level.
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then return { ok = false, reason = "unknown skill: " .. tostring(skillId) } end
+
+        local requirements = _SkillDatabase:CanLearn(skillId, self.jobLine, self.tier, self.playerLevel)
+        if not requirements.ok then return requirements end
+
+        local currentLevel = self:GetSkillLevel(skillId)
+        if currentLevel >= skill.maxLevel then return { ok = false, reason = "already at max level" } end
+        if self.sp < skill.spCost then return { ok = false, reason = "not enough SP" } end
+
+        self.sp = self.sp - skill.spCost
+        self.skillLevels[skillId] = currentLevel + 1
+
+        self:NotifyStateChanged("sp")
+        self:NotifyStateChanged("skill")
+
+        return { ok = true, reason = "ok" }
+    end
+
+    method number GetSp()
+        -- Current SP.
+        return self.sp
+    end
+
+    method void AddSp(number amount)
+        -- Adds amount to SP (amount may be negative). Not clamped - no SP cap is specified.
+        self.sp = self.sp + amount
+        self:NotifyStateChanged("sp")
+    end
+
+    method number GetMp()
+        -- Current MP.
+        return self.mp
+    end
+
+    method number GetMaxMp()
+        -- Max MP.
+        return self.maxMp
+    end
+
+    method boolean ConsumeMp(number amount)
+        -- Deducts amount from MP if available; returns false and leaves MP untouched otherwise.
+        -- Explicit consumption always notifies immediately (unlike the throttled regen tick in
+        -- OnUpdate) and resets the regen throttle baseline so the next regen tick's delta is
+        -- measured from here, not from a stale pre-consumption value.
+        if self.mp < amount then return false end
+        self.mp = self.mp - amount
+        self.mpLastNotifiedValue = self.mp
+        self:NotifyStateChanged("mp")
+        return true
+    end
+
+    method void AddMp(number amount)
+        -- Adds amount to MP, clamped to maxMp. Added beyond the originally specified accessor
+        -- list because DebugFillMp needs a way to raise MP through an accessor rather than
+        -- writing self.mp directly from outside this file (R3). Notifies immediately and resets
+        -- the regen throttle baseline, same reasoning as ConsumeMp.
+        self.mp = math.min(self.maxMp, self.mp + amount)
+        self.mpLastNotifiedValue = self.mp
+        self:NotifyStateChanged("mp")
+    end
+
+    method string GetJobLine(string userId)
+        -- Current job line (e.g. "BEGINNER", "MAGE"). Takes userId to match
+        -- SkillDatabase.GetAttackPower/StackDamageAt's call shape, but this Logic is still a
+        -- single local-player state (not keyed per userId) - see the report. userId is
+        -- accepted and otherwise unused.
+        return self.jobLine
+    end
+
+    method number GetTier(string userId)
+        -- Current tier (0-3). Same single-local-player caveat as GetJobLine.
+        return self.tier
+    end
+
+    method number GetStackCount(string userId)
+        -- Current generic stack count (see the stackCount property comment). Same
+        -- single-local-player caveat as GetJobLine - nothing increments this yet.
+        return self.stackCount
+    end
+
+    method void ChooseJobLine(string jobLine)
+        -- Forced override entry point (e.g. DebugKeys' F10 cycle). Sets the job line directly
+        -- at its starting tier - tier 0 for BEGINNER (the only tier-0 row), tier 1 for every
+        -- advancement line. Skips the required_level check entirely, same as the old SetJob,
+        -- but still routes through ChangeJob so JobChangedEvent/logging/the "job"
+        -- SkillStateChangedEvent stay consistent with AdvanceTier.
+        local startTier = 1
+        if jobLine == "BEGINNER" then startTier = 0 end
+        self:ChangeJob(jobLine, startTier)
+    end
+
+    method boolean AdvanceTier()
+        -- Advances tier+1 within the CURRENT job_line if playerLevel already satisfies the
+        -- next tier's required_level (from JobDatabase) and tier < 3 (max tier). Returns
+        -- whether it advanced. Single-step by design (also wired to DebugKeys' F11) - the
+        -- multi-tier-per-call behavior the old CheckJobAdvancement had lives in the caller's
+        -- loop now (see SetPlayerLevel), not in here; this owns only the one-step gate.
+        if self.tier >= 3 then return false end
+        local nextTier = self.tier + 1
+        local requiredLevel = _JobDatabase:GetRequiredLevel(self.jobLine, nextTier)
+        if self.playerLevel < requiredLevel then return false end
+        self:ChangeJob(self.jobLine, nextTier)
+        return true
+    end
+
+    method number GetPlayerLevel()
+        -- The one accessor for player level (R4) - see the comment on the playerLevel property.
+        return self.playerLevel
+    end
+
+    method void SetPlayerLevel(number level)
+        -- The one accessor for player level (R4) - see the comment on the playerLevel property.
+        -- After the level changes, loops AdvanceTier() while it keeps succeeding, so one big
+        -- level jump (e.g. straight to level 30) can cross multiple tiers in a single call,
+        -- same as leveling up one point at a time would. AdvanceTier alone owns the
+        -- required_level/tier<3 gate (JobDatabase.GetRequiredLevel) - this adds no new check,
+        -- it only repeats the existing one until it stops succeeding.
+        self.playerLevel = level
+        while self:AdvanceTier() do end
+    end
+
+    method void ChangeJob(string newJobLine, number newTier)
+        -- The ONLY place jobLine/tier are ever set - both ChooseJobLine (forced) and
+        -- AdvanceTier (level-gated) route through here, so JobChangedEvent and the "job"
+        -- SkillStateChangedEvent always fire together and exactly once per actual change.
+        if newJobLine == self.jobLine and newTier == self.tier then return end
+
+        local oldJobLine = self.jobLine
+        local oldTier = self.tier
+        self.jobLine = newJobLine
+        self.tier = newTier
+        log("JOB: " .. oldJobLine .. "/" .. tostring(oldTier) .. " -> " .. newJobLine .. "/" .. tostring(newTier) .. " (level " .. tostring(math.floor(self.playerLevel)) .. ")")
+
+        -- JobChangedEvent's payload gained a `tier` field (additive - userId/jobId are
+        -- unchanged) so a subscriber can recover the full (job_line, tier) identity. jobId
+        -- carries the job_line string (e.g. "MAGE") instead of the old job_id (e.g. "MAGE1").
+        local evt = JobChangedEvent()
+        evt.userId = self:GetLocalUserId()
+        evt.jobId = newJobLine
+        evt.tier = newTier
+        self:SendEvent(evt)
+
+        self:NotifyStateChanged("job")
+    end
+
+    method string GetLocalUserId()
+        -- _UserService.LocalPlayer is ClientOnly and may not exist yet; every current caller of
+        -- ChangeJob runs client-side (SkillWindowLogic/DebugKeys), so this is safe in practice.
+        -- Returns "" rather than erroring if the player entity isn't available.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return "" end
+        return player.PlayerComponent.UserId
+    end
+
+    method void NotifyStateChanged(string what)
+        -- Sends SkillStateChangedEvent for any of "sp" | "mp" | "skill" | "job". See OnUpdate
+        -- for why "mp" is throttled instead of firing on every regen tick.
+        local evt = SkillStateChangedEvent()
+        evt.what = what
+        self:SendEvent(evt)
+    end
+
+    method boolean IsOnCooldown(string skillId)
+        -- True while GetCooldownRemaining is still above 0.
+        return self:GetCooldownRemaining(skillId) > 0
+    end
+
+    method number GetCooldownRemaining(string skillId)
+        -- Seconds until skillId is ready, clamped at 0. Computed from a stored end time rather
+        -- than decremented per frame (see StartCooldown).
+        local endTime = self.cooldownEndsAt[skillId]
+        if endTime == nil then return 0 end
+        local remaining = endTime - _UtilLogic.ServerElapsedSeconds
+        if remaining < 0 then return 0 end
+        return remaining
+    end
+
+    method void StartCooldown(string skillId)
+        -- Stores an END TIME (now + skill.cooldown) rather than a duration to decrement -
+        -- immune to frame-rate variance and never needs a per-frame update.
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then return end
+        self.cooldownEndsAt[skillId] = _UtilLogic.ServerElapsedSeconds + skill.cooldown
+    end
+
+    method number GetUseCount(string skillId)
+        -- Times skillId has been used this match, 0 if never.
+        return self.useCounts[skillId] or 0
+    end
+
+    method void IncrementUseCount(string skillId)
+        -- Increments this match's use count for skillId.
+        self.useCounts[skillId] = self:GetUseCount(skillId) + 1
+    end
+
+    method void ResetMatchState()
+        -- Clears useCounts and cooldowns. Does NOT touch skillLevels/sp/mp/job/playerLevel/
+        -- stackCount - those persist across a match reset.
+        self.useCounts = {}
+        self.cooldownEndsAt = {}
+    end
+
+end

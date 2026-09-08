@@ -1,0 +1,132 @@
+@Logic
+script DebugKeys extends Logic
+
+    -- Delete this whole file to remove every debug key - nothing outside this file references it.
+
+    property boolean isWired = false
+    property any actionEventHandler = nil
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- _UserService.LocalPlayer is not guaranteed to exist yet at world start, so this
+        -- polls each frame until it does, then registers the debug keys exactly once.
+        if self.isWired then return end
+        self:TryWireKeys()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TryWireKeys()
+        -- Registers 5 F-keys on PlayerControllerComponent with new action names (SetActionKey
+        -- is ClientOnly), then listens for PlayerActionEvent to react to them - the exact same
+        -- SetActionKey + PlayerActionEvent pipeline as every prior version of this file (number
+        -- row, F9-F12+Home, and this one). See the report: that pipeline never changed: the
+        -- number-row rebind changed ONLY which KeyboardKey members were passed to SetActionKey,
+        -- nothing about how input is received. F9/F10 are kept as-is (confirmed working); F2/F4/F8
+        -- replace F11/F12/Home, avoiding every key Chrome Remote Desktop is reported to reserve
+        -- (F1, F3, F5, F6, F7, F11, F12).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+
+        local controller = player.PlayerControllerComponent
+        controller:SetActionKey(KeyboardKey.F9, "DebugLevelUp")
+        controller:SetActionKey(KeyboardKey.F10, "DebugChooseJobLine")
+        controller:SetActionKey(KeyboardKey.F2, "DebugAdvanceTier")
+        controller:SetActionKey(KeyboardKey.F4, "DebugAddSp")
+        controller:SetActionKey(KeyboardKey.F8, "DebugFillMp")
+
+        self.actionEventHandler = player:ConnectEvent(PlayerActionEvent, self.OnPlayerAction)
+        self.isWired = true
+        log("DebugKeys: wired F9=DebugLevelUp F10=DebugChooseJobLine F2=DebugAdvanceTier F4=DebugAddSp F8=DebugFillMp")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnPlayerAction(PlayerActionEvent event)
+        -- Dispatches on the action name registered in TryWireKeys. All state changes go
+        -- through PlayerSkillState's accessors, never a direct field write.
+        if event.ActionName == "DebugLevelUp" then
+            self:DebugLevelUp()
+        elseif event.ActionName == "DebugChooseJobLine" then
+            self:DebugChooseJobLine()
+        elseif event.ActionName == "DebugAdvanceTier" then
+            self:DebugAdvanceTier()
+        elseif event.ActionName == "DebugAddSp" then
+            self:DebugAddSp()
+        elseif event.ActionName == "DebugFillMp" then
+            self:DebugFillMp()
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void DebugLevelUp()
+        -- F9: playerLevel + 1, through the one player-level accessor (R4). The "fired" log is
+        -- unconditional and comes before any state read/write, so it prints even if something
+        -- below it errors - a dead key (never reaches this method) now looks visibly different
+        -- from a key that fired but whose action did nothing/failed.
+        log("DEBUG: key F9 fired (DebugLevelUp)")
+        local newLevel = _PlayerSkillState:GetPlayerLevel() + 1
+        _PlayerSkillState:SetPlayerLevel(newLevel)
+        log("DEBUG: level -> " .. tostring(newLevel))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void DebugChooseJobLine()
+        -- F10: cycles through every job_line JobDatabase knows about (GetAllJobLines iterates
+        -- a dictionary, so order is not guaranteed run-to-run but is stable within one run),
+        -- landing on the next distinct line after the current one, always at that line's
+        -- starting tier (see PlayerSkillState.ChooseJobLine).
+        log("DEBUG: key F10 fired (DebugChooseJobLine)")
+        _JobDatabase:EnsureLoaded()
+        local lines = _JobDatabase:GetAllJobLines()
+        if #lines == 0 then return end
+
+        local userId = _PlayerSkillState:GetLocalUserId()
+        local currentLine = _PlayerSkillState:GetJobLine(userId)
+        local nextLine = lines[1]
+        for i, line in ipairs(lines) do
+            if line == currentLine then
+                nextLine = lines[(i % #lines) + 1]
+                break
+            end
+        end
+        _PlayerSkillState:ChooseJobLine(nextLine)
+        log("DEBUG: job line -> " .. nextLine)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void DebugAdvanceTier()
+        -- F2: advances one tier within the current job_line if playerLevel qualifies (see
+        -- PlayerSkillState.AdvanceTier - it is a single step, not a loop).
+        log("DEBUG: key F2 fired (DebugAdvanceTier)")
+        local advanced = _PlayerSkillState:AdvanceTier()
+        log("DEBUG: advance tier -> " .. tostring(advanced))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void DebugAddSp()
+        -- F4: sp + 5.
+        log("DEBUG: key F4 fired (DebugAddSp)")
+        _PlayerSkillState:AddSp(5)
+        log("DEBUG: sp -> " .. tostring(_PlayerSkillState:GetSp()))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void DebugFillMp()
+        -- F8: mp = maxMp, via AddMp (see PlayerSkillState.AddMp) rather than a direct field write.
+        log("DEBUG: key F8 fired (DebugFillMp)")
+        _PlayerSkillState:AddMp(_PlayerSkillState:GetMaxMp())
+        log("DEBUG: mp -> " .. tostring(_PlayerSkillState:GetMp()))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnEndPlay()
+        -- Disconnects the PlayerActionEvent handler if it was ever wired.
+        if self.actionEventHandler ~= nil then
+            local player = _UserService.LocalPlayer
+            if isvalid(player) then
+                player:DisconnectEvent(PlayerActionEvent, self.actionEventHandler)
+            end
+            self.actionEventHandler = nil
+        end
+    end
+
+end

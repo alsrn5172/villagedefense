@@ -1,0 +1,169 @@
+@Component
+script SkillProjectile extends AttackComponent
+
+    -- Real travelling projectile, ported from C:\vd's Boss/BossProjectile.mlua +
+    -- Boss/BossProjectileAttack.mlua pattern (team-validated, read-only reference - nothing in
+    -- that repo was edited or copied verbatim; this is an independent rewrite for this world's
+    -- own SkillAttack/SkillDatabase wiring). Movement and hit-resolution are combined into one
+    -- component here instead of the team's two-file split, since this world has no reason to
+    -- reuse either half independently.
+    --
+    -- No Body component - a Body would let physics overwrite TransformComponent every frame and
+    -- undo Translate (same reasoning as the ported source).
+
+    property number DirectionX = 1
+
+    -- Kept at 0 always by SetDirection - every projectile skill here fires purely horizontally
+    -- off PlayerControllerComponent.LookDirectionX, so there is no aim-vector path to port.
+    property number DirectionY = 0
+
+    property number Speed = 8
+
+    property number MaxLifetime = 5
+
+    @HideFromInspector
+    property number lived = 0
+
+    -- Damage/hit config - set by SkillAttack.SpawnProjectile right after spawn, before
+    -- SetDirection fires. Damage still comes from _SkillDatabase:DamageAt(skillId, level,
+    -- userId) - same single source of truth SkillAttack.CalcDamage already uses (R5) - it just
+    -- no longer flows through SkillAttack's own AttackComponent, the same way the team's
+    -- BossProjectileAttack has its own CalcDamage instead of routing back through
+    -- BossSkillRunner's.
+    property string SkillId = ""
+
+    property number Level = 1
+
+    property string CasterUserId = ""
+
+    property number HitCount = 1
+
+    property number RangeX = 0.8
+
+    property number RangeY = 0.8
+
+    property number HitInterval = 0.1
+
+    -- true = disappear on first hit. false = pierce. Every skill using this today is
+    -- single-target, so this stays true; a future pierce skill would just set it false and add
+    -- the hitList de-dupe pattern documented in msw-combat-system/references/projectile.md.
+    property boolean DestroyOnHit = true
+
+    -- EffectService RUID played at the hit position from OnAttack. Empty = no impact effect
+    -- (still deals damage) - matches the ported source's own convention, no particle fallback.
+    property string HitEffectRUID = ""
+
+    @HideFromInspector
+    property any Shape = nil
+
+    @HideFromInspector
+    property number accumulator = 0
+
+    @HideFromInspector
+    property boolean consumed = false
+
+    @ExecSpace("ServerOnly")
+    method void OnBeginPlay()
+        self:ApplyFacing()
+        self.Shape = BoxShape(Vector2.zero, Vector2(self.RangeX, self.RangeY), 0)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void SetDirection(number dir)
+        -- Assigning DirectionX directly moves the entity but leaves the sprite facing its spawn
+        -- direction, because OnBeginPlay already froze the visual once. This setter re-applies
+        -- facing every time direction changes - same reasoning as the ported source.
+        self.DirectionX = dir
+        self.DirectionY = 0
+        self:ApplyFacing()
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyFacing()
+        -- Sign-only flip via Scale.x (writing, not reading, facing - reading Scale.x to
+        -- determine direction is the antipattern; writing it to flip a standalone dynamic
+        -- entity's sprite+collider together is the documented monster-model exception).
+        local transform = self.Entity.TransformComponent
+        if isvalid(transform) then
+            local sign = 1
+            if self.DirectionX < 0 then sign = -1 end
+            local s = transform.Scale
+            transform.Scale = Vector3(math.abs(s.x) * -sign, s.y, s.z)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnUpdate(number delta)
+        self.lived = self.lived + delta
+        if self.lived >= self.MaxLifetime then
+            self.Entity:Destroy()
+            return
+        end
+
+        local transform = self.Entity.TransformComponent
+        if not isvalid(transform) then
+            return
+        end
+        -- Body-less entity -> Translate is safe and not overwritten by physics next frame.
+        transform:Translate(self.DirectionX * self.Speed * delta, self.DirectionY * self.Speed * delta)
+
+        if self.consumed then
+            return
+        end
+
+        -- Hit interval gate - matches SkillAttack's reusable-Shape pattern (BoxShape built once
+        -- in OnBeginPlay, repositioned/resized per check) instead of allocating one every frame.
+        self.accumulator = self.accumulator + delta
+        if self.accumulator < self.HitInterval then
+            return
+        end
+        self.accumulator = 0
+
+        local pos = transform.WorldPosition
+        self.Shape.Position = Vector2(pos.x, pos.y)
+        self.Shape.Size = Vector2(self.RangeX, self.RangeY)
+        self.Shape.Angle = 0
+        self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+    end
+
+    -- Impact effect fires here, from the normal AttackFast/HitEvent pipeline - not a
+    -- "spawn effect after N seconds" timer. This is the actual fix for the detonates-in-place
+    -- bug: the effect now happens exactly where and when the bolt lands, because it lands.
+    method void OnAttack(Entity defender)
+        if self.HitEffectRUID ~= "" and isvalid(defender) then
+            local t = defender.TransformComponent
+            if isvalid(t) then
+                local p = t.WorldPosition
+                _EffectService:PlayEffect(self.HitEffectRUID, self.Entity,
+                    Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+            end
+        end
+
+        if self.DestroyOnHit and not self.consumed then
+            self.consumed = true
+            self.Entity:Destroy(0.05)
+        end
+    end
+
+    method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
+        -- Same formula source as SkillAttack.CalcDamage (R5) - _SkillDatabase:DamageAt is still
+        -- the only place the damage VALUE comes from. SkillId/Level/CasterUserId are relayed
+        -- from spawn time instead of re-derived from `attacker`, because `attacker` here is this
+        -- projectile entity, not the caster - it has no PlayerComponent to read a userId from.
+        return math.floor(_SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId))
+    end
+
+    method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
+        -- No crit system yet - same as SkillAttack.CalcCritical.
+        return false
+    end
+
+    method int32 GetDisplayHitCount(string attackInfo)
+        local n = math.floor(self.HitCount)
+        if n < 1 then
+            return 1
+        end
+        return n
+    end
+
+end

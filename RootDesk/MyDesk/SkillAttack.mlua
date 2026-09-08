@@ -1,0 +1,162 @@
+@Component
+script SkillAttack extends AttackComponent
+
+    -- The single path through which ALL skill damage leaves the player - later the basic
+    -- attack will route through this same component too. Damage always comes from
+    -- _SkillDatabase:DamageAt(skillId, level, userId) (R5) - never a character stat, never a constant.
+
+    @HideFromInspector
+    property any Shape = nil
+
+    -- Relayed from DealSkillDamage's own `level` parameter and read back by CalcDamage. NOT a
+    -- convenience cache - it is the fix for a real cross-side bug found during verification:
+    -- _PlayerSkillState is a separate, unsynced instance per side (client vs server), and every
+    -- LearnSkill/SetPlayerLevel call so far has only ever run client-side. CalcDamage runs on
+    -- the server (confirmed via logs' isGeneratedFromServer=true), so querying
+    -- _PlayerSkillState:GetSkillLevel(attackInfo) there read the server's stale, still-default
+    -- copy (level 0) instead of the client's real value (level 1) - e.g. sk_m11 dealt 15
+    -- instead of 20 (DamageAt with level=0 is floor(attackPower * (base_effect + (0-1)*effect_per_level) / 100)).
+    -- The client's `level` argument to DealSkillDamage IS correct and crosses the RPC boundary
+    -- fine (plain number) - the bug was re-deriving it server-side from a Logic that was never
+    -- told about the client's state. Stashing the relayed value sidesteps that gap without
+    -- touching PlayerSkillState's architecture (a real fix for that is out of this task's scope).
+    @HideFromInspector
+    property number PendingLevel = 1
+
+    -- Per-caster spawn counter for unique projectile entity names (map-wide uniqueness
+    -- requirement - msw-combat-system/references/projectile.md "Name uniqueness"). Prefixed
+    -- with the caster's userId in SpawnProjectile so two different players firing the same
+    -- skill in the same frame can't collide.
+    @HideFromInspector
+    property integer projectileCount = 0
+
+    -- Fallback projectile speed when SkillDataSet.csv's `speed` column is 0 (placeholder value -
+    -- not yet balanced, same as the "TENTATIVE" #Note markers already in that CSV). Chosen in
+    -- the same ballpark as the lowest-tier real projectile skill already in the CSV (sk_a11,
+    -- speed=12) but a little slower, since a magic bolt reads better unhurried than an arrow.
+    property number DefaultProjectileSpeed = 8
+
+    @ExecSpace("ServerOnly")
+    method void OnBeginPlay()
+        -- Reusable shape; DealSkillDamage repositions/resizes it per call - same reuse pattern
+        -- PlayerAttack.mlua already uses for its own swing box.
+        self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
+    end
+
+    -- @ExecSpace("Server"): the whole SkillHotbar -> SkillCaster -> SkillExecutors chain runs
+    -- ClientOnly/unspecified-on-the-client today, but AttackFast/damage resolution needs
+    -- server authority. "Server" (not "ServerOnly") is what lets a client caller reach this -
+    -- the engine marshals the call to the server and executes it there. shape is intentionally
+    -- flat primitives only (posX/posY/sizeX/sizeY/hitCount, all numbers) rather than nested
+    -- Vector2 values inside the table - Vector2 is a documented-safe RPC parameter type on its
+    -- own, but nesting engine value types inside a generic table parameter is not a documented-
+    -- safe shape, so this side-steps that uncertainty entirely.
+    @ExecSpace("Server")
+    method void DealSkillDamage(string skillId, number level, table shape)
+        self.PendingLevel = level
+
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+
+        local hitCount = shape.hitCount
+        if hitCount == nil or hitCount < 1 then hitCount = 1 end
+
+        for i = 1, hitCount do
+            self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        end
+
+        log("SkillAttack: dealt " .. skillId .. " lv=" .. tostring(level) .. " hits=" .. tostring(hitCount))
+    end
+
+    method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
+        -- attackInfo IS the skill_id (passed as DealSkillDamage's AttackFast attackInfo arg).
+        -- level comes from PendingLevel (see its comment above), NOT a fresh
+        -- _PlayerSkillState lookup - the CSV via _SkillDatabase:DamageAt is still the only
+        -- source for the damage VALUE itself (R5); only the level input is relayed rather than
+        -- re-queried, since re-querying reads the wrong (unsynced) server-side copy.
+        --
+        -- userId is resolved from the attacker entity itself (same PlayerComponent.UserId
+        -- accessor PlayerSkillState.GetLocalUserId already uses) instead of threading a new
+        -- parameter through CalcDamage's signature - that signature is inherited from the
+        -- engine's AttackComponent and any change would trip LEA-3014 SignatureMismatch
+        -- (msw-scripting SKILL.md §9).
+        if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
+            log_warning("SkillAttack: CalcDamage attacker has no PlayerComponent, cannot resolve userId for " .. tostring(attackInfo))
+            return 0
+        end
+        local userId = attacker.PlayerComponent.UserId
+        return math.floor(_SkillDatabase:DamageAt(attackInfo, self.PendingLevel, userId))
+    end
+
+    method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
+        -- No crit system yet - always false, same as the AttackComponent default.
+        return false
+    end
+
+    -- Spawns a real travelling script.SkillProjectile entity for behavior="projectile" skills.
+    -- "Server" (not "ServerOnly") for the same reason DealSkillDamage is: the whole
+    -- SkillHotbar -> SkillCaster -> SkillExecutors chain runs client-side today, so this is the
+    -- crossing point that gets marshaled to the server, where SpawnByModelId and the projectile's
+    -- own damage-dealing AttackComponent need to run with real authority.
+    --
+    -- LookDirectionX is read here, server-side, off self.Entity - not passed in from the client -
+    -- the same source and side C:\vd's PlayerAttack.mlua:22 reads it from (team-validated:
+    -- positive = right, negative = left). Passing a client-read value instead would be trusting
+    -- the client for something the server can read itself off the same entity.
+    @ExecSpace("Server")
+    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY)
+        local caster = self.Entity
+        local transform = caster.TransformComponent
+        local controller = caster.PlayerControllerComponent
+        local map = caster.CurrentMap
+        if not isvalid(transform) or not isvalid(controller) or not isvalid(map) then
+            log_warning("SkillAttack: cannot spawn projectile for " .. skillId .. " (missing transform/controller/map)")
+            return
+        end
+        if not isvalid(caster.PlayerComponent) then
+            log_warning("SkillAttack: caster has no PlayerComponent, cannot resolve userId for " .. skillId)
+            return
+        end
+
+        local dirX = controller.LookDirectionX
+        if dirX == 0 then dirX = 1 end
+
+        if range <= 0 then range = 1 end
+        if speed <= 0 then speed = self.DefaultProjectileSpeed end
+        if hitCount < 1 then hitCount = 1 end
+
+        self.projectileCount = self.projectileCount + 1
+        local userId = caster.PlayerComponent.UserId
+        local name = "SkillProj_" .. userId .. "_" .. skillId .. "_" .. tostring(self.projectileCount)
+
+        local pos = transform.WorldPosition
+        local spawnPos = Vector3(pos.x, pos.y + spawnOffsetY, pos.z)
+        local proj = _SpawnService:SpawnByModelId(projectileModelId, name, spawnPos, map)
+        if not isvalid(proj) then
+            log_error("SkillAttack: projectile spawn failed model=" .. tostring(projectileModelId) .. " for " .. skillId)
+            return
+        end
+
+        local mover = proj:GetComponent("script.SkillProjectile")
+        if not isvalid(mover) then
+            log_warning("SkillAttack: spawned projectile missing script.SkillProjectile for " .. skillId)
+            return
+        end
+
+        mover.Speed = speed
+        mover.MaxLifetime = range / speed
+        mover.SkillId = skillId
+        mover.Level = level
+        mover.CasterUserId = userId
+        mover.HitCount = hitCount
+        mover.HitEffectRUID = hitEffectRuid
+        -- SetDirection (not a direct DirectionX assignment) so the sprite flips to match.
+        mover:SetDirection(dirX)
+
+        log("SkillAttack: spawned projectile " .. name .. " speed=" .. tostring(speed)
+            .. " lifetime=" .. tostring(mover.MaxLifetime) .. " dir=" .. tostring(dirX)
+            .. " spawnY=" .. tostring(spawnPos.y) .. " (feetY=" .. tostring(pos.y) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
+    end
+
+end
