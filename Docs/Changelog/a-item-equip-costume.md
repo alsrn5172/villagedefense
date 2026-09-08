@@ -1,3 +1,41 @@
+## 2026-09-08 (5) — 제작한 장비를 장착할 수 없던 것 + 장비 구매·수리 NPC 비활성
+
+### 1. 🔴 제작 장비 장착 불가 — 전직이 없는데 직업 제한이 걸려 있었다
+
+`EquipService.RequestEquip` 는 `su.job ~= def.reqJob` 이면 거절한다. 그런데:
+
+- **`_StatService:SetJob` 은 저장소 어디에서도 호출되지 않는다.** 전직은 B 담당이고 `JobChangedEvent` 구독처가 아직 없다 → 모든 유저가 영구 `NOVICE`
+- `CraftRecipe` 결과물은 전부 `WEAPON_WARRIOR_T10` 같은 **직업 장비**(`ReqJob` 값 있음)
+- 따라서 **제작한 장비는 누구도 입을 수 없었다.** 초보자 6종만 `ReqJob=""` 라 입혀져서 "제작한 것만 안 된다"로 보였다
+- 게다가 거절이 전부 **서버 `log` 뿐**이라, 클릭해도 아무 일도 안 일어나는 것처럼 보였다(가장 헷갈리는 부분)
+
+**고친 것 (`Item/EquipService.mlua`)**
+
+- 아직 전직하지 않은 유저(`job` 이 `""` 또는 `"NOVICE"`)는 **직업 제한을 받지 않는다.** 전직이 붙으면 그때부터 "다른 직업 장비"만 막힌다 — 규칙을 없앤 게 아니라 전직 이후로 미룬 것
+- **`DenyEquip(userId, reason)` 신설** — 거절 사유를 요청자에게 토스트로 알린다(`CraftService.Deny` 와 같은 방식). 4가지: 인스턴스 없음 / 장비 아님 / 레벨 부족(`Lv10 부터 · 현재 LvN`) / 직업 불일치
+- `ReqLevel` 제한은 그대로다. T10 장비는 여전히 Lv10 이 필요하고, 이제 그 이유가 화면에 뜬다
+
+### 2. 장비 구매 · 수리 NPC 비활성 (행 삭제 없이)
+
+`RootDesk/MyDesk/FunctionalNpcCatalog.csv` 3행을 `Enabled=false` 로:
+
+| CatalogNpcId | 이름 |
+|---|---|
+| `VD_WORKSHOP_REPAIR` | 수리 장인 |
+| `VD_SHOP_EQUIP` | 지역 장비 상인 |
+| `VD_SHOP_EQUIP_NOVICE` | 초보자 장비 상인 |
+
+- `Npc/NpcCatalog.mlua:148` 이 `Enabled=false` 행을 건너뛰므로 스폰·UI 라우트가 함께 사라진다
+- `MapNpcs_Village.csv` 에 이 3종의 위치 오버라이드 행이 없어 따로 남는 것도 없다 (확인함)
+- `RepairService` / `ShopService` 코드와 `RepairConfig` / `ShopItem` 표는 **그대로 둔다** — 되살릴 땐 CSV 행만 `true` 로
+- 장비 구입은 원래 `CraftRecipe` 한 표를 제작 장인과 공유하므로(2026-09-06 결정), **제작 장인이 남아 있어 장비 획득 경로는 유지된다**
+
+### 검증
+- `node Docs/tools/check-integrity.cjs` **전부 통과** — 경고 3건은 기존 것 그대로이고 새 경고 없음
+- 🟡 **런타임 미검증** — 제작 → 인벤토리에서 클릭 → 실제로 장착되는지, 레벨이 모자랄 때 토스트가 뜨는지, 마을에서 수리·장비 상인이 사라졌는지
+
+---
+
 ## 2026-09-08 (4) — 무기 기본 강화치를 공격력으로 (`FixedAttack` 열 신설)
 
 ### 배경
