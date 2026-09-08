@@ -10,7 +10,8 @@
 사용자 결정(2026-09-08): **시설 아트는 애초에 마을마다 달라야 한다** → 그림을 표로 빼고 런타임에 꽂는다.
 
 ### 결정 (사용자 2026-09-08)
-- **"비율 1:1" = `Scale (1,1,1)`** — 원본 픽셀 크기. 억제기 `FlipY` 해제.
+- **`Scale`** — 먼저 "비율 1:1" = `(1,1,1)`(원본 픽셀 크기)로 되돌렸는데 **화면에서 너무 커서 `(0.25, 0.25, 1)`** 로 낮췄다(사용자 2026-09-08). 억제기 `FlipY` 해제.
+- **타워는 `FlipX = true`** — 반대 방향을 보게 (사용자 2026-09-08). 마을 공통이라 표가 아니라 `.model` 값이다.
 - **마을 × 시설 매핑은 새 CSV 표.** 아트가 추가될 때마다 **행만** 고치고 코드·`.model`·`.ui` 는 안 건드린다.
 - **아트 없는 4개 마을(엘리니아·커닝·페리온·노틸러스)은 현재 임시 RUID 유지.**
 - **월드/아이콘 RUID 는 열을 분리.** 전용 아트는 두 칸이 같지만, 임시 넥서스는 UI 에 쓰면 `[LEA-3044]` 라 달라야 한다.
@@ -36,9 +37,9 @@ VillageId,Stage,WorldRuid,IconRuid,FlipY,Enabled,#Note
 | `RootDesk/MyDesk/FacilitySprite.csv` + `.userdataset` | **신규.** 위 표 |
 | `Docs/스키마-계약.md` | **A-2-4b 등록** (헤더 정본 · 열 설명 · 읽는 곳) |
 | `Docs/tools/check-integrity.cjs` | `CANONICAL` + `KEY(VillageId+Stage)` 추가 |
-| `Models/Structures/LaneNexus.model` | `SpriteRUID` → `ca23c8d4…` · `Scale (2.5,2.5,1) → (1,1,1)` |
-| `Models/Structures/LaneSuppressor.model` | `SpriteRUID` → `e20012f6…` · `FlipY true → false` |
-| `Models/Structures/LaneTower.model` | `SpriteRUID` → `b772211b…` |
+| `Models/Structures/LaneNexus.model` | `SpriteRUID` → `ca23c8d4…` · `Scale (2.5,2.5,1) → (0.25,0.25,1)` |
+| `Models/Structures/LaneSuppressor.model` | `SpriteRUID` → `e20012f6…` · `Scale → (0.25,0.25,1)` · `FlipY true → false` |
+| `Models/Structures/LaneTower.model` | `SpriteRUID` → `b772211b…` · `Scale → (0.25,0.25,1)` · `FlipX → true` |
 | `Lane/LaneStateService.mlua` | `spriteDef` + `LoadSpriteDef()` + `FacilityWorldRuid/IconRuid/FlipY`. 표가 없으면 **옛 박제값 그대로** 폴백 |
 | `Lane/LaneFacilityService.mlua` | 스폰 직후 월드 `SpriteRUID`·`FlipY` 를 마을별로 대입 |
 | `Npc/VillageDefenseUIController.mlua` | 방어선 노드 + 시설 카드 아이콘을 `T` 행 16·17번으로 |
@@ -62,7 +63,7 @@ VillageId,Stage,WorldRuid,IconRuid,FlipY,Enabled,#Note
 
 ### 검증
 Maker 없이 파일만 수정. 런타임 검증은 머지 후 월드를 새로 열어서 한다.
-- `ModelBuilder` 되읽기: 세 모델 `SpriteRUID` · `Scale (1,1,1)` · 억제기 `FlipY=false` ✅
+- `ModelBuilder` 되읽기: 세 모델 `SpriteRUID` · `Scale (0.25,0.25,1)` · 억제기 `FlipY=false` · 타워 `FlipX=true` ✅
 - `mlua-diagnose`: 수정한 `.mlua` 4개 **errors 0 · warnings 0** (남은 `LIA-1114` Info 는 기존 노이즈) ✅
 - `check-integrity`: `[C1] FacilitySprite (15행)` · `[C3] FacilitySprite (VillageId+Stage)` 통과 · 경고 3건은 기존 그대로 ✅
 - 남은 확인: `refresh` **2회**(모델 값 변경은 1회로는 옛 값이 읽힌다) → Play →
