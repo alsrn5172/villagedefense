@@ -123,6 +123,7 @@ const CANONICAL = {
   FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,#Note",
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
+  DispatchRule: "Phase,MesoCost,VillageCap,CancelDeadlineSeconds,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 };
 
@@ -221,6 +222,7 @@ const PK = {
   FacilitySprite: ["VillageId", "Stage"],
   MinionPhaseConfig: ["Phase", "Profile"],
   MinionComposition: ["Phase", "MonsterId"],
+  DispatchRule: ["Phase"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
 };
 for (const [name, cols] of Object.entries(PK)) {
