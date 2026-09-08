@@ -16,6 +16,14 @@ script EquipService extends Logic
 		-- 원장 준비.
 		self.equipped = {}
 		self.slots = { "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }
+		-- 입장 유저의 아바타 외형 복구 — 플레이어 엔티티가 새로 만들어지면 다시 입혀야 한다.
+		_UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+		-- 이미 들어와 있는 유저도 처리(에디터 플레이는 보통 여기 걸린다).
+		for _, user in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(user) and isvalid(user.PlayerComponent) then
+				self:ApplyCostume(user.PlayerComponent.UserId)
+			end
+		end
 		log("[Item] EquipService ready (server)")
 	end
 
@@ -109,6 +117,7 @@ script EquipService extends Logic
 
 		self:RecalcLayer(userId)
 		self:PushEquipped(userId)
+		self:ApplyCostume(userId)
 		if _InventoryService ~= nil then
 			_InventoryService:PushInventory(userId)
 		end
@@ -175,6 +184,95 @@ script EquipService extends Logic
 		if _InventoryUIController ~= nil then
 			_InventoryUIController:SetEquippedCsv(self:Serialize(userId), userId)
 		end
+	end
+
+	-- ── 아바타 외형 ────────────────────────────────────────────
+	-- 장착 장비를 캐릭터에 "실제로 입힌다". 스프라이트를 위에 덧그리는 게 아니라
+	-- CostumeManagerComponent 에 아바타 아이템을 꽂아 AvatarRendererComponent 가
+	-- 프레임마다 부위별로 재합성하게 한다 (모자는 머리, 검은 손에 쥐어져 같이 휘둘러진다).
+
+	@ExecSpace("ServerOnly")
+	method void OnUserEnter(UserEnterEvent event)
+		-- 입장한 유저에게 장착분을 다시 입힌다.
+		local uid = event.UserId
+		if uid ~= nil and uid ~= "" then
+			self:ApplyCostume(uid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string AvatarRuidOf(any def)
+		-- IconRUID("thumbnail://<avataritem RUID>") 에서 접두어를 뗀 순수 Guid.
+		-- Custom*Equip 는 접두어가 붙으면 에러 없이 무시하므로, 접두어가 없는 값(보석·포션의
+		-- sprite RUID)은 아바타 아이템이 아니라고 보고 버린다.
+		if def == nil then
+			return ""
+		end
+		local icon = def.icon or ""
+		local pre = "thumbnail://"
+		local n = string.len(pre)
+		if string.sub(icon, 1, n) ~= pre then
+			return ""
+		end
+		return string.sub(icon, n + 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string CostumeRuid(string userId, any e, string slot)
+		-- 그 슬롯에 장착된 장비의 아바타 RUID. 비었으면 "" (= 해제 → 계정 기본 외형이 다시 보인다).
+		local iid = e[slot]
+		if iid == nil or iid == "" then
+			return ""
+		end
+		local it = _InventoryService:Find(userId, iid)
+		if it == nil then
+			return ""
+		end
+		return self:AvatarRuidOf(_ItemCatalog:Get(it.itemId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyCostume(string userId)
+		-- 장착 6슬롯을 아바타에 반영한다. Custom*Equip 는 @Sync 라 서버에서 써야
+		-- 본인·다른 플레이어 화면에 모두 전파된다 (클라에서 쓰면 전파되지 않는다).
+		-- UseCustomEquipOnly 는 기본값 false 그대로 둔다 → 계정 아바타 위에 6부위만 덮어쓴다.
+		local e = self:EnsureUser(userId)
+		if e == nil then
+			return
+		end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) == false then
+			log_warning("[Item] costume skipped: no player entity " .. tostring(userId))
+			return
+		end
+		local costume = player.CostumeManagerComponent
+		if isvalid(costume) == false then
+			log_warning("[Item] costume skipped: no CostumeManagerComponent " .. tostring(userId))
+			return
+		end
+		-- 무기 16종은 전부 avataritem category "weapon"(한손) 으로 확인됨(2026-09-08 조회) →
+		-- 양손/보조무기 슬롯은 건드리지 않는다(계정 외형의 그 슬롯을 지우지 않기 위해).
+		local vals = {
+			self:CostumeRuid(userId, e, "WEAPON"),
+			self:CostumeRuid(userId, e, "HAT"),
+			self:CostumeRuid(userId, e, "TOP"),
+			self:CostumeRuid(userId, e, "BOTTOM"),
+			self:CostumeRuid(userId, e, "SHOES"),
+			self:CostumeRuid(userId, e, "GLOVES"),
+		}
+		costume.CustomOneHandedWeaponEquip = vals[1]
+		costume.CustomCapEquip = vals[2]
+		costume.CustomCoatEquip = vals[3]
+		costume.CustomPantsEquip = vals[4]
+		costume.CustomShoesEquip = vals[5]
+		costume.CustomGloveEquip = vals[6]
+		local worn = 0
+		for _, v in ipairs(vals) do
+			if v ~= "" then
+				worn = worn + 1
+			end
+		end
+		log("[Item] costume applied: " .. tostring(worn) .. "/6 (" .. userId .. ")")
 	end
 
 end
