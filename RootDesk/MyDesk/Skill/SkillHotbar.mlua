@@ -1,0 +1,113 @@
+@Logic
+script SkillHotbar extends Logic
+
+    -- Delete this whole file to remove the hotbar - nothing outside this file references it.
+    -- This step only logs on press: no MP consumption, no cooldown starts, no skill effects.
+
+    property boolean isWired = false
+    property any actionEventHandler = nil
+
+    -- Single source of truth for slot -> key -> skill_id. A drag-to-assign UI will replace this
+    -- table later; every consumer here (TryWireKeys, OnPlayerAction) reads from this one table,
+    -- never a second hardcoded copy.
+    property table slots = {}
+
+    @ExecSpace("ClientOnly")
+    method void OnBeginPlay()
+        self:BuildSlotTable()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BuildSlotTable()
+        -- keyName is stored alongside the KeyboardKey enum member purely for log readability -
+        -- there is no confirmed enum-to-string API, so this avoids guessing at one.
+        --
+        -- Rebound to the MAGE line under the new sk_<line><tier><slot> id scheme (old
+        -- sk_100/101/102/200/201/300 no longer exist). Slot 6 (sk_m12, Alchemy) is a passive -
+        -- SkillCaster.Cast() already rejects passives with reason="passive skills cannot be
+        -- cast" (step 2), so pressing S logs that failure the same way an on-cooldown or
+        -- not-enough-MP press does. This file only logs; it does not render a hotbar UI, so it
+        -- cannot make slot 6 visually distinct as "unusable" - that needs a .ui hotbar widget,
+        -- out of scope here (see the report). Slots 7/8 stay skillId="" (empty) - OnPlayerAction
+        -- already special-cases "" to log "empty" without ever calling Cast(), which is the one
+        -- empty/not-learned/not-enough-MP distinction this logic-only file can make today.
+        self.slots = {
+            { slot = 1, key = KeyboardKey.Q, keyName = "Q", action = "Skill1", skillId = "SK_M11" },
+            { slot = 2, key = KeyboardKey.W, keyName = "W", action = "Skill2", skillId = "SK_M13" },
+            { slot = 3, key = KeyboardKey.E, keyName = "E", action = "Skill3", skillId = "SK_M21" },
+            { slot = 4, key = KeyboardKey.R, keyName = "R", action = "Skill4", skillId = "SK_M22" },
+            { slot = 5, key = KeyboardKey.A, keyName = "A", action = "Skill5", skillId = "SK_M31" },
+            { slot = 6, key = KeyboardKey.S, keyName = "S", action = "Skill6", skillId = "SK_M12" },
+            { slot = 7, key = KeyboardKey.D, keyName = "D", action = "Skill7", skillId = "" },
+            { slot = 8, key = KeyboardKey.F, keyName = "F", action = "Skill8", skillId = "" },
+        }
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- Same proven approach as DebugKeys.TryWireKeys: _UserService.LocalPlayer is not
+        -- guaranteed to exist yet at world start, so this polls each frame until it does, then
+        -- wires exactly once. See the report for why running this alongside DebugKeys' own
+        -- identical poll is not a race (disjoint keys/action names, no shared mutable state).
+        if self.isWired then return end
+        self:TryWireKeys()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TryWireKeys()
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+
+        local controller = player.PlayerControllerComponent
+        for _, entry in ipairs(self.slots) do
+            controller:SetActionKey(entry.key, entry.action)
+        end
+
+        self.actionEventHandler = player:ConnectEvent(PlayerActionEvent, self.OnPlayerAction)
+        self.isWired = true
+        log("SkillHotbar: wired 8 hotbar keys (Skill1-Skill8)")
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindSlotByAction(string actionName)
+        -- Linear lookup - 8 slots, no index table needed.
+        for _, entry in ipairs(self.slots) do
+            if entry.action == actionName then return entry end
+        end
+        return nil
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnPlayerAction(PlayerActionEvent event)
+        -- Routes to the one skill-casting entry point instead of just logging - the gate
+        -- checks (job/level/cooldown/use-limit/MP), state changes, and visual/audio dispatch
+        -- all live in SkillCaster/SkillExecutors now, not here.
+        local entry = self:FindSlotByAction(event.ActionName)
+        if entry == nil then return end -- not one of this file's actions (e.g. a DebugKeys key)
+
+        if entry.skillId == "" then
+            log("HOTBAR: slot" .. tostring(entry.slot) .. " " .. entry.keyName .. " empty")
+            return
+        end
+
+        local result = _SkillCaster:Cast(entry.skillId)
+        -- reason is only appended on failure - SkillCaster's own log line already carries the
+        -- mp/cooldown detail, so this just ties the press back to which slot/key triggered it.
+        local resultText = tostring(result.ok)
+        if not result.ok then resultText = resultText .. " reason='" .. result.reason .. "'" end
+        log("HOTBAR: slot" .. tostring(entry.slot) .. " " .. entry.keyName .. " " .. entry.skillId .. " cast ok=" .. resultText)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnEndPlay()
+        -- Disconnects the PlayerActionEvent handler if it was ever wired.
+        if self.actionEventHandler ~= nil then
+            local player = _UserService.LocalPlayer
+            if isvalid(player) then
+                player:DisconnectEvent(PlayerActionEvent, self.actionEventHandler)
+            end
+            self.actionEventHandler = nil
+        end
+    end
+
+end

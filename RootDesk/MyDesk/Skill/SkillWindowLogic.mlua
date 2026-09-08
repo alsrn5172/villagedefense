@@ -1,0 +1,367 @@
+@Logic
+script SkillWindowLogic extends Logic
+
+    -- UI bindings (entity/component UUIDs injected by UIBuilder against ui/SkillWindow.ui)
+    property Entity rootGroup = "8a5e57b8-2b24-4be6-8240-00ce990e3b5e"
+    property ButtonComponent btnClose = "92303e42-7467-47cf-b235-6ed305a0eb44"
+    property ButtonComponent tabBtn0 = "1a2a6d79-d8a4-43eb-a783-cb585ba7b730"
+    property ButtonComponent tabBtn1 = "aece25b1-a0f2-4979-9988-240e97aa241d"
+    property ButtonComponent tabBtn2 = "d3127ae7-6feb-46dc-8c35-37cd52d6a5b7"
+    property Entity rowTemplate = "58446f43-ef5d-4ef0-952f-be8da68d0b32"
+    property ScrollLayoutGroupComponent listLayout = "daf3ad59-0e28-490e-be7d-da1235feeb2b"
+    property TextGUIRendererComponent descText = "f9c386bb-de47-407c-903e-ea48626aa2fd"
+    property TextGUIRendererComponent spValueText = "be7a723c-013b-4424-98f6-824d67df8024"
+
+    -- runtime state (client-only, not persisted)
+    property integer currentTab = 0
+    property string selectedSkillId = ""
+    property table rowEntities = {}
+    property table rowHandlers = {}
+
+    property any btnCloseHandler = nil
+    property any tabBtn0Handler = nil
+    property any tabBtn1Handler = nil
+    property any tabBtn2Handler = nil
+    property any keyDownHandler = nil
+    property any skillStateChangedHandler = nil
+
+    -- ButtonStateChangeEvent handlers for press/release visual feedback (ButtonComponent
+    -- does not apply Colors/Transition automatically - see ApplyButtonPressVisual).
+    property any btnCloseStateHandler = nil
+    property any tabBtn0StateHandler = nil
+    property any tabBtn1StateHandler = nil
+    property any tabBtn2StateHandler = nil
+
+    @ExecSpace("ClientOnly")
+    method void OnBeginPlay()
+        -- Ensures SkillDatabase has loaded (see comment above EnsureLoaded in SkillDatabase.mlua -
+        -- @Logic OnBeginPlay order across scripts is not guaranteed, so this cannot rely on
+        -- SkillDatabase's own OnBeginPlay having already run). Then hides the window and the row
+        -- template, wires close/tab buttons, and shows tab 0.
+        _SkillDatabase:EnsureLoaded()
+        self.rootGroup.Enable = false
+        self.rowTemplate:SetEnable(false)
+
+        self.btnCloseHandler = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, self.OnCloseClicked)
+        self.tabBtn0Handler = self.tabBtn0.Entity:ConnectEvent(ButtonClickEvent, self.OnTab0Clicked)
+        self.tabBtn1Handler = self.tabBtn1.Entity:ConnectEvent(ButtonClickEvent, self.OnTab1Clicked)
+        self.tabBtn2Handler = self.tabBtn2.Entity:ConnectEvent(ButtonClickEvent, self.OnTab2Clicked)
+
+        -- Press/release visual feedback - ButtonComponent only reports state, it never
+        -- applies Colors itself, so this has to be wired here. Capture the authored resting
+        -- color now (before any press) so release restores the actual designed appearance,
+        -- not Colors.NormalColor (which was never configured to match it).
+        local btnClose = self.btnClose
+        local btnCloseRestColor = btnClose.Entity.SpriteGUIRendererComponent.Color
+        self.btnCloseStateHandler = btnClose.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyButtonPressVisual(btnClose, btnCloseRestColor, event) end)
+        local tabBtn0 = self.tabBtn0
+        self.tabBtn0StateHandler = tabBtn0.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyTabPressVisual(tabBtn0, 0, event) end)
+        local tabBtn1 = self.tabBtn1
+        self.tabBtn1StateHandler = tabBtn1.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyTabPressVisual(tabBtn1, 1, event) end)
+        local tabBtn2 = self.tabBtn2
+        self.tabBtn2StateHandler = tabBtn2.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyTabPressVisual(tabBtn2, 2, event) end)
+
+        -- K hotkey: connected on _InputService (a Logic, not a UI-tree entity), so it fires
+        -- regardless of rootGroup.Enable. Shares the exact Toggle() the HUD button also calls.
+        self.keyDownHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+
+        -- Kept live regardless of rootGroup.Enable, same reasoning as the K hotkey above - a
+        -- level-up/job-change/etc. that happens while the window is hidden should already be
+        -- reflected the moment it becomes visible again (see Toggle), not just from here.
+        self.skillStateChangedHandler = _PlayerSkillState:ConnectEvent(SkillStateChangedEvent, self.OnSkillStateChanged)
+
+        self:ShowTab(0)
+        log("SkillWindowLogic: OnBeginPlay complete")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnKeyDown(KeyDownEvent event)
+        -- K toggles the window through the same Toggle() the HUD button calls - one shared path, two entry points.
+        if event.key == KeyboardKey.K then
+            self:Toggle()
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void Toggle()
+        -- Opens/closes the window; called by HUDBarLogic (K and the HUD button share this one path).
+        -- On becoming visible, refreshes from PlayerSkillState through the same RefreshFromState()
+        -- OnSkillStateChanged uses - otherwise SP/row levels can be showing whatever they were
+        -- (including the .ui-authored placeholder) the last time this window was open or built.
+        self.rootGroup.Enable = not self.rootGroup.Enable
+        if self.rootGroup.Enable then
+            self:RefreshFromState()
+        end
+        log("SkillWindowLogic: Toggle -> Enable=" .. tostring(self.rootGroup.Enable))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnSkillStateChanged(SkillStateChangedEvent event)
+        -- Only "sp" and "skill" affect anything this window currently displays (no MP bar, and
+        -- required_job/required_level row-gating isn't wired into the window yet) - "mp"/"job"
+        -- are intentionally ignored here, using event.What exactly as it was designed for.
+        if event.What == "sp" or event.What == "skill" then
+            self:RefreshFromState()
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void RefreshFromState()
+        -- The one shared refresh routine for everything this window displays from
+        -- PlayerSkillState. Called both when the window becomes visible (Toggle) and on every
+        -- relevant SkillStateChangedEvent (OnSkillStateChanged) - never duplicated inline at
+        -- either call site, or a third time in OnPlusClicked (whose own LearnSkill call already
+        -- triggers this indirectly via the event, before LearnSkill even returns).
+        self.spValueText.Text = tostring(math.floor(_PlayerSkillState:GetSp()))
+        self:RefreshRowLevels()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void RefreshRowLevels()
+        -- Updates each currently-displayed row's level text from PlayerSkillState, without
+        -- destroying/recreating the rows (ShowTab already does that full rebuild - and reads
+        -- fresh level data at creation time - whenever the tab itself changes; this only needs
+        -- to catch the case where levels changed while the same tab stayed built).
+        for _, entity in ipairs(self.rowEntities) do
+            if isvalid(entity) then
+                local skillId = string.sub(entity.Name, 5) -- strip the "Row_" prefix (see CreateRow)
+                local levelText = entity:GetChildByName("LevelText")
+                levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:GetSkillLevel(skillId))
+            end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnCloseClicked()
+        -- Closes the skill window.
+        self.rootGroup.Enable = false
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnTab0Clicked()
+        -- Switches to the Beginner tab (0).
+        self:ShowTab(0)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnTab1Clicked()
+        -- Switches to the 1st tab (1).
+        self:ShowTab(1)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnTab2Clicked()
+        -- Switches to the 2nd tab (2).
+        self:ShowTab(2)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ShowTab(integer tab)
+        -- Rebuilds the row list for the given tab (ordered by slot_order) and clears the description panel.
+        self.currentTab = tab
+        self.selectedSkillId = ""
+        self.descText.Text = ""
+        self:ClearRows()
+
+        self:SetTabHighlight(self.tabBtn0, tab == 0)
+        self:SetTabHighlight(self.tabBtn1, tab == 1)
+        self:SetTabHighlight(self.tabBtn2, tab == 2)
+
+        -- SkillInfo's tab column is now 1-based (tab = required_tier: 1/2/3), while `tab`
+        -- here is still the 0-based UI tab index (tabBtn0/1/2, unchanged above) - convert only
+        -- at the query boundary, in this file. Filtering by (playerJobLine, tier) - not just
+        -- tier - lives in SkillDatabase.GetSkillsByJobLineAndTier, not here: a different job
+        -- line is hidden entirely (a warrior never sees mage skills), while a tier ahead of
+        -- the player's own tier still shows up in its tab, just drawn locked/greyed in
+        -- CreateRow below - do not collapse those two cases into one filter.
+        local tier = tab + 1
+        local userId = _PlayerSkillState:GetLocalUserId()
+        local playerJobLine = _PlayerSkillState:GetJobLine(userId)
+        local playerTier = _PlayerSkillState:GetTier(userId)
+        local playerLevel = _PlayerSkillState:GetPlayerLevel()
+
+        -- GetSkillsByJobLineAndTier iterates a dictionary internally, so its result order is
+        -- not guaranteed - still sort by slot_order here, same as before.
+        local filtered = _SkillDatabase:GetSkillsByJobLineAndTier(playerJobLine, tier)
+        table.sort(filtered, function(a, b) return a.order < b.order end)
+
+        for _, skill in ipairs(filtered) do
+            self:CreateRow(skill, playerJobLine, playerTier, playerLevel)
+        end
+
+        -- BEGINNER (tier 0) matches no job_line, so every tab is empty by design - show why,
+        -- instead of a silent blank panel. Reuses the existing description panel; adds no new
+        -- UI element (no .ui file touched).
+        if #filtered == 0 and playerJobLine == "NOVICE" then
+            self.descText.Text = "Choose a job to see your skills."
+        end
+
+        if self.listLayout ~= nil then
+            self.listLayout:ResetScrollPosition(UITransformAxis.Vertical)
+        end
+
+        log("SkillWindowLogic: ShowTab(" .. tostring(tab) .. ") jobLine=" .. playerJobLine .. " tier=" .. tostring(tier) .. " rows=" .. tostring(#filtered))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void SetTabHighlight(ButtonComponent btn, boolean active)
+        -- Persistent selected-tab tint - no native "Selected" state exists, so this is driven
+        -- entirely from ShowTab's own currentTab, the same way every time it runs.
+        if active then
+            btn.Entity.SpriteGUIRendererComponent.Color = Color(0.85, 0.65, 0.2, 1)
+        else
+            btn.Entity.SpriteGUIRendererComponent.Color = Color(0.101960786, 0.101960786, 0.101960786, 0.235294119)
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyButtonPressVisual(ButtonComponent btn, Color restColor, ButtonStateChangeEvent event)
+        -- Generic press/release tint for non-tab buttons (BtnClose, row BtnPlus clones).
+        -- Release restores restColor (the button's authored SpriteGUIRendererComponent.Color,
+        -- captured once at setup) rather than Colors.NormalColor - NormalColor is never
+        -- configured to match the authored tint, so using it clobbers the designed appearance.
+        -- Hover/Normal are ignored entirely - no color is ever written on hover, which
+        -- sidesteps the hover-exit-never-fires problem instead of needing to detect it.
+        if event.state == ButtonState.Pressed then
+            btn.Entity.SpriteGUIRendererComponent.Color = btn.Colors.PressedColor
+        elseif event.state == ButtonState.Released or event.state == ButtonState.Clicked then
+            btn.Entity.SpriteGUIRendererComponent.Color = restColor
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyTabPressVisual(ButtonComponent btn, integer tabIndex, ButtonStateChangeEvent event)
+        -- Tab-aware press/release tint. On release, restores through SetTabHighlight instead of
+        -- Colors.NormalColor, so a press on the already-selected tab lets go back to gold, not dim.
+        -- Hover/Normal are ignored entirely, same reasoning as ApplyButtonPressVisual.
+        if event.state == ButtonState.Pressed then
+            btn.Entity.SpriteGUIRendererComponent.Color = btn.Colors.PressedColor
+        elseif event.state == ButtonState.Released or event.state == ButtonState.Clicked then
+            self:SetTabHighlight(btn, tabIndex == self.currentTab)
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ClearRows()
+        -- Destroys the previous tab's row clones and disconnects their event handlers.
+        for _, rec in ipairs(self.rowHandlers) do
+            rec.entity:DisconnectEvent(rec.eventType, rec.conn)
+        end
+        self.rowHandlers = {}
+        for _, entity in ipairs(self.rowEntities) do
+            if isvalid(entity) then entity:Destroy() end
+        end
+        self.rowEntities = {}
+    end
+
+    @ExecSpace("ClientOnly")
+    method void CreateRow(table skill, string playerJobLine, number playerTier, number playerLevel)
+        -- Clones RowTemplate, fills icon/name/level, and wires row-select + level-up clicks.
+        local row = self.rowTemplate:Clone("Row_" .. skill.id)
+        row:SetEnable(true)
+        table.insert(self.rowEntities, row)
+
+        local nameText = row:GetChildByName("NameText")
+        nameText.TextGUIRendererComponent.Text = skill.name
+
+        -- Learned level now lives in PlayerSkillState; 0 (its default for an unlearned skill)
+        -- renders as "Lv.0" - same visual as before, just reflecting the new floor value.
+        local levelText = row:GetChildByName("LevelText")
+        levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:GetSkillLevel(skill.id))
+
+        -- Locked/greyed DRAW state only - never gates learning/casting. CanLearn is called
+        -- here read-only for its ok result (job/tier/level reachability); it is not
+        -- re-implemented. A skill from a tier ahead of the player's own tier is still listed
+        -- (GetSkillsByJobLineAndTier already returned it) but renders dimmed, so a tier-1 mage
+        -- can still see Great Magic without being able to use it yet - pressing + still goes
+        -- through PlayerSkillState.LearnSkill -> CanLearn exactly as before and reports the
+        -- real reason in the description panel on failure.
+        local requirements = _SkillDatabase:CanLearn(skill.id, playerJobLine, playerTier, playerLevel)
+        local locked = not requirements.ok
+        if locked then
+            nameText.TextGUIRendererComponent.FontColor = Color(0.55, 0.55, 0.55, 1)
+        end
+
+        if skill.icon ~= "" then
+            local iconEntity = row:GetChildByName("Icon")
+            iconEntity.SpriteGUIRendererComponent.ImageRUID = DataRef(skill.icon)
+            if locked then
+                iconEntity.SpriteGUIRendererComponent.Color = Color(0.5, 0.5, 0.5, 0.6)
+            else
+                -- Clear the placeholder grey tint so the real icon renders at its original colors.
+                iconEntity.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1)
+            end
+        end
+
+        local capturedId = skill.id
+        local rowHandler = row:ConnectEvent(ButtonClickEvent, function() self:OnRowClicked(capturedId) end)
+        table.insert(self.rowHandlers, { entity = row, conn = rowHandler, eventType = ButtonClickEvent })
+
+        local plusEntity = row:GetChildByName("BtnPlus")
+        local plusHandler = plusEntity:ConnectEvent(ButtonClickEvent, function() self:OnPlusClicked(capturedId) end)
+        table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHandler, eventType = ButtonClickEvent })
+
+        -- Press/release visual feedback for the cloned + button, same mechanism as the persistent
+        -- buttons. Rest color is captured fresh per clone, right after creation, before any press.
+        local plusButton = plusEntity.ButtonComponent
+        local plusRestColor = plusEntity.SpriteGUIRendererComponent.Color
+        local plusStateHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyButtonPressVisual(plusButton, plusRestColor, event) end)
+        table.insert(self.rowHandlers, { entity = plusEntity, conn = plusStateHandler, eventType = ButtonStateChangeEvent })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnRowClicked(string skillId)
+        -- Selects the row and writes its description into the description panel.
+        self.selectedSkillId = skillId
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill ~= nil then
+            self.descText.Text = skill.description
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnPlusClicked(string skillId)
+        -- Delegates the whole gate + level-up to PlayerSkillState:LearnSkill. On success, the
+        -- SP footer and row level text are NOT updated here - LearnSkill fires
+        -- SkillStateChangedEvent("sp") and ("skill") before it even returns, which
+        -- OnSkillStateChanged catches and refreshes through RefreshFromState(). Duplicating that
+        -- update inline here would be exactly the bug this file was just fixed for, one call
+        -- site earlier (see Toggle). On failure, shows the returned reason in the description panel.
+        local result = _PlayerSkillState:LearnSkill(skillId)
+        if not result.ok then
+            self.descText.Text = result.reason
+            log("SkillWindowLogic: LearnSkill(" .. skillId .. ") failed - " .. result.reason)
+            return
+        end
+
+        if self.selectedSkillId == skillId then
+            local skill = _SkillDatabase:GetSkill(skillId)
+            if skill ~= nil then self.descText.Text = skill.description end
+        end
+
+        log("SkillWindowLogic: leveled " .. skillId .. " -> Lv." .. tostring(_PlayerSkillState:GetSkillLevel(skillId)) .. " sp=" .. tostring(_PlayerSkillState:GetSp()))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnEndPlay()
+        -- Cleans up row clones and disconnects the persistent button handlers.
+        self:ClearRows()
+        if self.btnCloseHandler ~= nil then self.btnClose.Entity:DisconnectEvent(ButtonClickEvent, self.btnCloseHandler) end
+        if self.tabBtn0Handler ~= nil then self.tabBtn0.Entity:DisconnectEvent(ButtonClickEvent, self.tabBtn0Handler) end
+        if self.tabBtn1Handler ~= nil then self.tabBtn1.Entity:DisconnectEvent(ButtonClickEvent, self.tabBtn1Handler) end
+        if self.tabBtn2Handler ~= nil then self.tabBtn2.Entity:DisconnectEvent(ButtonClickEvent, self.tabBtn2Handler) end
+        if self.btnCloseStateHandler ~= nil then self.btnClose.Entity:DisconnectEvent(ButtonStateChangeEvent, self.btnCloseStateHandler) end
+        if self.tabBtn0StateHandler ~= nil then self.tabBtn0.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtn0StateHandler) end
+        if self.tabBtn1StateHandler ~= nil then self.tabBtn1.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtn1StateHandler) end
+        if self.tabBtn2StateHandler ~= nil then self.tabBtn2.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtn2StateHandler) end
+        if self.keyDownHandler ~= nil then
+            _InputService:DisconnectEvent(KeyDownEvent, self.keyDownHandler)
+            self.keyDownHandler = nil
+        end
+        if self.skillStateChangedHandler ~= nil then
+            _PlayerSkillState:DisconnectEvent(SkillStateChangedEvent, self.skillStateChangedHandler)
+            self.skillStateChangedHandler = nil
+        end
+    end
+
+end
