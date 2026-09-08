@@ -27,10 +27,13 @@
 - 리모컨 `DevStatRemote` 하단 **`탈락 시험`**(694..786 · 적갈색) → `RequestDevHit("CORE", 999999)`. 둘째 줄(y 54) **`포탑 파괴`**(384..484) · **`억제기 파괴`**(494..604) → `RequestDevHit("TOWER"/"SUPPRESSOR", 999999)` — 수비대 재집결 시험용.
 - origin/main(PR #27·#30·#33) 머지 (77b03b7). `DefenderService` 충돌은 이 브랜치 재작성본 위에 main 의 직접 접근 규칙(`ent.Monster` 등)을 적용해 해결.
 
-### 미검증 · 확인 포인트 (Maker 켜면 로그 스모크)
-1. refresh 후 build 에러 0. `.codeblock` 은 Maker 가 파일 감시로 이미 생성.
-2. `ApplyDamage(TOWER 9999)` → `[Lane] HENESYS front TOWER -> SUPPRESSOR` · `[Defender] regroup HENESYS -> SUPPRESSOR n=8` · HillNorth x 7.3~8−0.7 GUARD.
-3. `ApplyDamage(SUPPRESSOR 9999)` → 마을 넥서스 뒤 −8.7~−9.2(클램프).
-4. `탈락 시험` → `[Lane] … CORE DESTROYED` · `[Village] eliminated` · `[Lane] HENESYS ELIMINATED` · `[Spectate] enter` · `free cam at …` · 클라 `[Spectate] spectating=true` · `open=true`.
-5. 눈 확인(사용자): 캐릭터 안 보임 · 방향키로 카메라 이동 · 월드맵 클릭 이동 · 2클라면 탭 전환. **다중 클라는 Maker 다인 플레이 테스트로**(MCP 는 클라 1개).
-- 불확실: `SwitchCameraTo(cam, userId)` 를 서버에서 부를 때 리그 엔티티가 클라에 이미 로드돼 있어야 한다(스폰 직후 같은 프레임에 전환 → 실패하면 자가 복구가 2초 뒤 재시도). 리그 Transform 서버 대입의 클라 반영(동기화) 도 실측 대상.
+### 로그 스모크 (2026-09-08 · Maker Play · 런타임 에러 0 · 빌드 에러 0)
+서버 스크립트로 레벨 10 → `Claim` → `SpawnBundle` 8마리(GolemsTemple 포탑 뒤) 준비 후:
+1. `ApplyDamage(TOWER)` → `front TOWER -> SUPPRESSOR` · `regroup HENESYS -> SUPPRESSOR n=8` · 8마리 HillNorth x 6.25~7.30 · 목줄 5.5~10.4 · HP 450 유지 ✓
+2. `ApplyDamage(SUPPRESSOR)` → `front SUPPRESSOR -> CORE` · `regroup -> CORE n=8` · 마을 x −8.70~−9.20(클램프 −9.2 = PathMinX+0.4) · 목줄 −9.6~−5.6 ✓
+3. `ApplyDamage(CORE)` → `CORE DESTROYED` · `despawn HENESYS n=8` · `[Village] released/eliminated` · `ELIMINATED owner=…` · 소유 "" · destroyed=true · `[Spectate] enter` · 리그 `SpectateCam_1` 스폰 · 클라 `spectating=true` · 관전 바 `open=true`(대상 0) ✓
+4. 클라: `visible=false` · `PlayerController.Enable=false` · 현재 카메라 = `SpectateCam_1`(내 카메라 아님) ✓ · `RequestMoveCam(1,0)` 1회 → 리그 x 4.93 → 6.72(6/s × 0.3s) ✓
+5. `RequestGoMap("Henesys_Hunt_HillNorth")` → 숨은 캐릭터 HillNorth · 리그 `SpectateCam_2` 재스폰 (0,−0.05) · 클라 카메라 = `SpectateCam_2` · 여전히 숨김 ✓. 자가 복구(RequestRebind)는 발동할 일 없었음.
+- 스폰 직후 `SwitchCameraTo(리그, userId)` 전환이 한 번에 됐다(걱정했던 로드 타이밍 문제 없음). 리그 Transform 서버 대입도 클라 카메라가 따라갔다(위치 로그 기준 · 부드러움은 눈 확인).
+- 남은 눈 확인(사용자): 캐릭터 안 보이는지 · 방향키/WASD 카메라 이동 감 · 월드맵 클릭 이동 · **탭 전환은 2클라 필요**(Maker 다인 플레이 테스트).
+- 정리: `PushTargets` 가 5초마다 같은 목록을 다시 보내 클라 로그(`open=true/targets=0`)가 반복 → 바뀐 관전자에게만 보내도록 수정 · `gsub` 2값 경고(LWA-1111) 정리.
