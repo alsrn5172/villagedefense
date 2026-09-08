@@ -1,3 +1,34 @@
+## 2026-09-08 (2) — 캐릭터창(C) 스탯 탭에 아바타 프리뷰
+
+### 배경
+장착이 월드 캐릭터에는 반영됐지만, C 로 여는 캐릭터창에서는 확인할 수 없었다.
+
+### 원인 — 노드는 있었는데 컴포넌트가 하나 빠져 있었다
+`CharacterGroup.ui` 의 `Window/Content/Stat/Left/Portrait/Avatar` 에 `AvatarGUIRendererComponent` 는 이미 있었지만 **`CostumeManagerComponent` 가 없었다.** MSW 문서("Representing Avatars in the UI") 기준 UI 아바타는 이 둘을 같은 엔티티에 달아야 그려진다. 렌더러만 있으면 입힐 대상이 없어 빈 채로 남는다.
+
+### `.ui` (`ui/CharacterGroup.ui` · UIBuilder `addComponent` 만)
+- `.../Stat/Left/Portrait/Avatar` 에 `MOD.Core.CostumeManagerComponent` 추가. **좌표·크기·다른 노드는 일절 안 건드렸다**(사용자가 Maker 에서 배치한 레이아웃 유지)
+- HEAD 대조 결과 차이는 이 컴포넌트 1개뿐 — 엔티티 161개 그대로, 손실 0. 파일이 819KB→776KB 로 준 건 빌더 재직렬화(포맷)일 뿐이다
+- `avatarPreview` UUID 는 `write({bind})` 가 `StatUIController` 에 주입
+
+### 코드
+- **`Item/ItemCatalog.mlua`** — `AvatarRuid(itemId)` 신설. `thumbnail://` 접두어 제거 규칙을 **서버·클라 공용 한 곳**으로 올렸다(`EquipService` 의 `AvatarRuidOf` 는 제거하고 이걸 부른다)
+- **`Stat/StatUIController.mlua`** — `avatarPreview` 프로퍼티 + `RefreshPreview()` / `PreviewRuid(slot)` / `OnEquippedUpdated()`
+  - 밑바탕은 `CostumeManagerComponent.DefaultEquipUserId = 내 UserId` → 머리·얼굴·피부·계정 옷이 내 캐릭터 그대로
+  - 그 위에 장착 6부위를 월드와 **같은 `Custom*Equip` 매핑**으로 덮어쓴다
+  - `Open()` 에서 1회 + 장비 변경 응답마다 갱신
+- **`Item/InventoryUIController.mlua`** — `SetEquippedCsv` 끝에서 `_StatUIController:OnEquippedUpdated()` 호출(기존 `_WorkshopUIController` 통지와 같은 관례). 장비 캐시는 `InventoryUIController.equipped` 하나만 쓴다
+
+### 검증
+- 정적: mlua 진단 훅 통과 · `.ui` HEAD 대조(위) · `AvatarGUIRendererComponent.d.mlua` 에 대상 지정 속성이 없음을 확인하고 문서 검색으로 `CostumeManagerComponent` 병행 방식 확인
+- 🟡 **런타임 미검증** — C 를 눌러 스탯 탭에서 캐릭터가 그려지는지, 장착/해제가 즉시 반영되는지 육안 확인 필요.
+  로그 확인 지점: `[CharUI] preview skipped: ...` 가 뜨면 컴포넌트/엔티티 배선이 안 된 것
+
+### 참고
+작업 도중 추적 파일 `RootDesk/MyDesk/Models/{Effects,Farm,Terrain}.directory` 3개가 워크트리에서 사라져 git 에서 복원했다. 이 브랜치의 변경분이 아니며 원인은 특정하지 못했다(mlua 진단 훅·pre-push 훅 모두 `.directory` 를 참조하지 않는다).
+
+---
+
 ## 2026-09-08 — 장착 장비를 캐릭터 아바타 외형에 반영 · 브랜치 `a/item-equip-costume` (main `d959bef` 에서)
 
 ### 배경
