@@ -1,3 +1,34 @@
+## 2026-09-08 (7) — 방패 슬롯 신설 + 도적은 아대만 노출
+
+### 1. 7번째 장비 슬롯 `SUBWEAPON` (방패)
+사용자 결정: **전사는 한손검 + 방패**. 방패는 아바타의 `CustomSubWeaponEquip` 이라 슬롯 신설이 필요했다.
+
+- **`EquipSlot` 열거값 6종 → 7종** (`SUBWEAPON` 추가 · 계약서 A-2 §4 · A-2-8b 갱신)
+- **`ItemInfo` 방패 3종** `SHIELD_WARRIOR_T10/20/30` — Stone Shield · 강철 방패 · 스틸 에인션트 실드 (category `shield`)
+  수치는 같은 티어 모자와 동일: 방어력 **6 / 10 / 15** · 내구 150/200/250 · 가격 150/500/1500
+- **`CraftRecipe` 3행** (같은 티어 모자 레시피와 동일 비용) · **`EnhanceSlotBonus` `SUBWEAPON` 12행**(모자 값 복제)
+- **두손무기 ↔ 방패 상호 배제** — 두손무기는 한손+보조 슬롯을 함께 점유한다. 막지 않고 **상대를 자동 해제**한다(장비는 인벤토리에 남아 손실 없음). 토스트로 알린다
+- `EquipService.slots` 7개로 확장 → `Serialize` · `RecalcLayer`(방어력 합산) · `ApplyCostume` 이 전부 따라온다
+- `.ui` 장비 탭에 `Slot_SUBWEAPON` 추가 — `Slot_GLOVES` 를 통째로 복제해 **빈자리 (135,-55)** 에만 놓았다. 기존 6칸 좌표·스킨은 손대지 않았다. HEAD 대조: 161→165 엔티티, **손실 0 · 기존 컴포넌트 변화 0**
+- `InventoryUIController` — `slotSubweapon`/`iconSubweapon`/`enhSubweapon` 프로퍼티 + 클릭 배선 + `RefreshSlots` 7칸 (UUID 는 빌더가 주입)
+
+### 2. 도적은 아대만 노출
+사용자 지시(후에 변경 가능): 도적 단검 3종을 목록에서 뺀다.
+
+- `ItemInfo` `WEAPON_THIEF_T10/20/30` → `Enabled=false`
+- `CraftRecipe` `RECIPE_WEAPON_THIEF_T10/20/30` → `Enabled=false`
+- ⚠️ **`ItemInfo.Enabled` 는 현재 코드가 읽지 않는다**(`ItemCatalog` 가 로드만 하고 필터에 안 쓴다). 실제로 목록에서 빼는 건 `CraftRecipe.Enabled` 다. 행은 남겼으니 되살릴 땐 둘 다 `true` 로
+- 이미 가진 단검은 그대로 장착·사용된다(회수하지 않는다)
+
+### 검증
+- `node Docs/tools/check-integrity.cjs` 전부 통과 — ItemInfo 126행 · CraftRecipe 105행 · EnhanceSlotBonus 84행
+- 🟡 **런타임 미검증** — 방패 제작 → 장비 탭 7번째 칸에 표시 → 장착 시 캐릭터 왼손에 방패, 두손검을 끼면 방패가 자동 해제되는지 확인 필요
+
+### 참고 (작업 중 발견)
+이 워크트리를 Maker 가 열고 있는 동안 `map/*.map` · `*.userdataset` · `ui/*.ui` 가 내 변경과 무관하게 바뀌고 `Models/{Effects,Farm,Terrain}.directory` 3개가 지워졌다. `git add -A` 로 한 번 삭제가 커밋돼 되돌렸다(`cb245b6` → `e69cf15`). **커밋은 경로를 명시**하고, `.ui` 작업 전에는 Maker 를 닫는다.
+
+---
+
 ## 2026-09-08 (6) — 무기별 공격 모션 (활은 활 모션, 두손검은 두손 모션)
 
 ### 원인 — 활이 "이름만 활"이었다
