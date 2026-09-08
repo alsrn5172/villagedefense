@@ -38,6 +38,23 @@ script MonsterCatalog extends Logic
 	@HideFromInspector
 	property any clipSeconds = nil
 
+	-- 게임 레벨별 기준 HP. MapMonsters.LevelOverride 환산의 정본이다 (2026-09-08 · 계약서 A-1-1).
+	-- MonsterInfo.MaxHp 자체가 "기준값 × 몹 계수" 로 산출돼 있어서, 티어를 옮기면 기준값 비율만큼 곱하면 된다.
+	@HideFromInspector
+	property any levelBaseHp = nil
+
+	method number LevelBaseHp(integer level)
+		-- 해당 레벨의 기준 HP. 표에 없는 레벨이면 0 (호출부가 환산을 건너뛴다).
+		if self.levelBaseHp == nil then
+			self.levelBaseHp = { [1] = 20, [3] = 32, [4] = 45, [7] = 90, [10] = 150, [17] = 320, [24] = 600 }
+		end
+		local v = self.levelBaseHp[level]
+		if v == nil then
+			return 0
+		end
+		return v
+	end
+
 	method void OnBeginPlay()
 		-- 서버·클라 각자 자기 쪽에서 도감을 적재한다.
 		self:EnsureLoaded()
@@ -164,10 +181,35 @@ script MonsterCatalog extends Logic
 					if self.spawnsByMap[mapName] == nil then
 						self.spawnsByMap[mapName] = {}
 					end
+
+					-- LevelOverride: 같은 몹이 다른 티어 맵에 나올 때 그 자리의 레벨로 보고
+					-- MaxHp 도 레벨 기준값 비율로 환산한다. 빈칸이면 도감 값을 그대로 쓴다.
+					local rowLevel = infoRow.level
+					local rowMaxHp = infoRow.maxHp
+					local levelOverride = tonumber(maps:GetCell(i, "LevelOverride"))
+					if levelOverride ~= nil then
+						levelOverride = math.floor(levelOverride)
+						if levelOverride > 0 and levelOverride ~= infoRow.level then
+							local fromBase = self:LevelBaseHp(infoRow.level)
+							local toBase = self:LevelBaseHp(levelOverride)
+							if fromBase > 0 and toBase > 0 then
+								rowLevel = levelOverride
+								rowMaxHp = math.floor(infoRow.maxHp * toBase / fromBase + 0.5)
+								if rowMaxHp < 1 then
+									rowMaxHp = 1
+								end
+							else
+								log_warning("[Catalog] LevelBaseHp 없음: Lv" .. tostring(infoRow.level)
+									.. " -> Lv" .. tostring(levelOverride) .. " at row " .. tostring(i))
+							end
+						end
+					end
+
 					table.insert(self.spawnsByMap[mapName], {
 						id = key,
 						modelId = infoRow.modelId,
-						maxHp = infoRow.maxHp,
+						level = rowLevel,
+						maxHp = rowMaxHp,
 						x = tonumber(maps:GetCell(i, "X")) or 0,
 						y = tonumber(maps:GetCell(i, "Y")) or 0,
 						spawnerId = spawnerId,

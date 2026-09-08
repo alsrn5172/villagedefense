@@ -65,7 +65,7 @@ function mapNames() {
 // ─────────────────────────────────────────────────────────
 const CANONICAL = {
   MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID",
-  MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,#Note",
+  MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,LevelOverride,#Note",
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
   MapNpcs_Village: "MapName,NpcId,X,Y,#Note",
