@@ -111,7 +111,7 @@ const CANONICAL = {
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
-  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,#Note",
+  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,CooldownStartSeconds,CooldownEndSeconds,CooldownEndLevel,#Note",
   RepairConfig: "ReqLevel,MesoPerDurability,Enabled,#Note",
   GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
   GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",
@@ -123,6 +123,7 @@ const CANONICAL = {
   FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,#Note",
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
+  MatchConfig: "Key,Profile,MatchDurationSeconds,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
@@ -229,6 +230,7 @@ const PK = {
   FacilitySprite: ["VillageId", "Stage"],
   MinionPhaseConfig: ["Phase", "Profile"],
   MinionComposition: ["Phase", "MonsterId"],
+  MatchConfig: ["Key", "Profile"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
