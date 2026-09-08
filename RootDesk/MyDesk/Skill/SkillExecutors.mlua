@@ -118,13 +118,42 @@ script SkillExecutors extends Logic
 
         if spec ~= nil then
             if spec.ruid ~= nil then
-                _EffectService:PlayEffect(spec.ruid, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+                if stage == "cast" then
+                    -- 2026-09-09 버그 수정: 에너지볼트를 오른쪽으로 쏘면 시전 이펙트가 캐릭터 뒤(왼쪽)에 남았다.
+                    -- 원인 ① 메이플 원본 스킬 이펙트는 전부 "왼쪽을 보는" 기준으로 그려져 있고 pivot 이 캐릭터
+                    --        앞쪽(=왼쪽)에 박혀 있다. 뒤집지 않으면 오른쪽을 볼 때만 등 뒤에 뜬다
+                    --        (.claude/skills/maplestory-skill-maker/references/player/cast-effects.md
+                    --        "Cast Effect Direction Flip Rule"). 플레이어 facing 은 Scale.x 가 아니라
+                    --        PlayerControllerComponent.LookDirectionX 라 이펙트가 자동으로 안 뒤집힌다.
+                    -- 원인 ② PlayEffect 는 월드 좌표에 고정된다 → 시전 직후 이동하면 그 자리에 머문다.
+                    -- 해결: 시전자에 붙이는 PlayEffectAttached + options.FlipX = (오른쪽 볼 때).
+                    --        옵션 키 FlipX 는 Environment/NativeScripts/Service/EffectService.d.mlua 에 명시.
+                    --        딕셔너리는 Boss/BossSkillRunner 와 같은 opt[...] 대입 형태로 만든다.
+                    -- impact 단계(AOE·ORIGIN 의 캐스터 위치 폭발)는 지면에 고정되는 게 맞아 그대로 둔다.
+                    local facing = self:GetFacingX(casterEntity)
+                    local opt = {}
+                    opt["FlipX"] = facing > 0
+                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3.zero, 0, Vector3(1, 1, 1), false, opt)
+                    log("SkillExecutors: cast effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(facing > 0))
+                else
+                    _EffectService:PlayEffect(spec.ruid, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+                end
             else
                 _ParticleService:PlayBasicParticle(spec.particle, casterEntity, pos, 0, Vector3(1, 1, 1), false)
             end
         elseif fallbackParticleType ~= nil then
             _ParticleService:PlayBasicParticle(fallbackParticleType, casterEntity, pos, 0, Vector3(1, 1, 1), false)
         end
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetFacingX(Entity casterEntity)
+        -- 시전자가 보는 방향(+1 오른쪽 / -1 왼쪽). 유일한 근거는 PlayerControllerComponent.LookDirectionX 다
+        -- (SkillAttack.SpawnProjectile · C:\vd PlayerAttack.mlua 와 같은 서버측 읽기). TransformComponent.Scale.x 는
+        -- 플레이어 facing 을 표현하지 않으므로 보면 안 된다. 0(아직 한 번도 안 움직임)은 SpawnProjectile 과 같이 오른쪽으로 본다.
+        local controller = casterEntity.PlayerControllerComponent
+        if isvalid(controller) and controller.LookDirectionX < 0 then return -1 end
+        return 1
     end
 
     method void ExecuteProjectile(string skillId, table skillData, Entity casterEntity, number level)
@@ -257,9 +286,7 @@ script SkillExecutors extends Logic
             return
         end
 
-        local dirX = 1
-        local controller = casterEntity.PlayerControllerComponent
-        if isvalid(controller) and controller.LookDirectionX < 0 then dirX = -1 end
+        local dirX = self:GetFacingX(casterEntity)
         local range = skillData.range
         if range <= 0 then range = 1 end
         local hitCount = skillData.hitCount
