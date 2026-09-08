@@ -13,11 +13,20 @@ script VillageOwnership extends Logic
 	@HideFromInspector
 	property any villageByOwner = nil
 
+	-- 탈락 (2026-09-08): 넥서스가 파괴된 마을 · 탈락한 유저. 둘 다 이번 세션 동안 다시 연결할 수 없다.
+	@HideFromInspector
+	property any destroyed = nil
+
+	@HideFromInspector
+	property any eliminated = nil
+
 	method void OnBeginPlay()
 		-- 서버 원장 + NpcCatalog 리졸버 연결 (LaneStateService 의 allow-all 스텁을 대체한다).
 		if not self:IsServer() then return end
 		self.ownerByVillage = {}
 		self.villageByOwner = {}
+		self.destroyed = {}
+		self.eliminated = {}
 		if _NpcCatalog ~= nil then
 			_NpcCatalog:SetOwnershipResolver(function(userId, villageId, catalogNpcId) return self:OwnerOf(villageId) == userId end)
 			log("[Village] ownership resolver connected (owner-only)")
@@ -52,6 +61,8 @@ script VillageOwnership extends Logic
 		if userId == nil or userId == "" or villageId == nil or villageId == "" then return "INVALID" end
 		local cur = self:OwnerOf(villageId)
 		if cur == userId then return "OWN" end
+		if self:IsDestroyed(villageId) then return "DESTROYED" end
+		if self:IsEliminated(userId) then return "ELIMINATED" end
 		if self:LevelOf(userId) < self.ClaimLevel then return "LEVEL" end
 		if self:VillageOf(userId) ~= "" then return "ALREADY_OWNER" end
 		if cur ~= "" then return "TAKEN" end
@@ -77,6 +88,29 @@ script VillageOwnership extends Logic
 		self.ownerByVillage[villageId] = nil
 		self.villageByOwner[owner] = nil
 		log("[Village] released " .. villageId .. " (" .. owner .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsDestroyed(string villageId)
+		-- 넥서스가 파괴된 마을인가.
+		return self.destroyed ~= nil and self.destroyed[villageId] == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsEliminated(string userId)
+		-- 탈락한 유저인가.
+		return self.eliminated ~= nil and self.eliminated[userId] == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Eliminate(string villageId)
+		-- 넥서스 파괴 → 소유 해제 + 마을 파괴 표시 + 주인 탈락 표시. 탈락한 주인 userId 를 돌려준다("" 이면 주인 없음).
+		local owner = self:OwnerOf(villageId)
+		self:Release(villageId)
+		self.destroyed[villageId] = true
+		if owner ~= "" then self.eliminated[owner] = true end
+		log("[Village] eliminated " .. villageId .. " owner=" .. tostring(owner))
+		return owner
 	end
 
 end
