@@ -1,3 +1,48 @@
+## 2026-09-08 (6) — 무기별 공격 모션 (활은 활 모션, 두손검은 두손 모션)
+
+### 원인 — 활이 "이름만 활"이었다
+공격 모션은 스크립트가 고르는 게 아니라 **엔진이 장착된 아바타 아이템의 category 로 자동 선택**한다
+(`weapon`=한손 → `swingO*` · `twohandweapon`+활 계열 → `shoot1`).
+
+그런데 조회해 보니 궁수 무기 3종이 이랬다:
+
+| ItemId | 실제 아바타 아이템 | category |
+|---|---|---|
+| `WEAPON_ARCHER_T10` | 고구려 활 | **weapon(한손)** |
+| `WEAPON_ARCHER_T20` | 바람의 기사 활 | **weapon(한손)** |
+| `WEAPON_ARCHER_T30` | 모험가 패스파인더 활 | **weapon(한손)** |
+
+이름만 활이고 카테고리는 한손이라, 활을 들고 **한손 검처럼 휘둘렀다.** (2026-09-06 아이콘 주입 때
+`searchAvatarItems` 를 부위 카테고리 `weapon` 으로만 돌려서 생긴 일 — 아이콘용으론 문제가 없었다.)
+
+해적 너클(`너클메이스` · `잊혀진 영웅의 너클`)과 도적 단검은 **원래 제 종류가 맞았다.**
+
+### 데이터
+- **활 3종 RUID 교체** → 진짜 `twohandweapon` 활: Beginner Bowman's Bow(T10) · Hunter's Bow(T20) · 합금 활(T30)
+- **`ItemInfo.csv` 에 `AvatarSlot` 열 신설**(맨 뒤 · `TWO_HAND` 만 표기, 빈칸 = 부위 기본)
+- **신규 6종**
+  - 전사 두손검 `WEAPON_WARRIOR_2H_T10/20/30` — 양손검 · 라 투핸더 · 강인한 전사의 투핸드소드 (`twohandweapon`)
+    공격력 **34 / 50 / 70** (한손 27/40/56 대비 +25% · 방패를 못 드는 대신). 나머지 수치는 같은 티어 한손검과 동일
+  - 도적 아대 `WEAPON_THIEF_CLAW_T10/20/30` — 개구리 아대 · 괴물손 아대 · 강철주먹 아대 (`weapon` 한손)
+    수치는 같은 티어 단검과 **동일**. 모션만 다르다
+- **`CraftRecipe.csv` 6행 추가** — 원본(같은 직업·티어) 레시피의 지역·재화·비용을 그대로 복사
+- ItemInfo 123행 · CraftRecipe 102행 · `check-integrity` C1/C3 통과
+
+### 코드
+- `ItemCatalog` — `avatarSlot` 로드 + `IsTwoHand(itemId)`
+- `EquipService.ApplyCostume` / `StatUIController.RefreshPreview` — 무기를 한손/두손 슬롯으로 갈라 넣고 반대쪽은 `""` 로 비운다(이중 장착 방지). 월드와 캐릭터창 프리뷰가 같은 규칙
+- `EquipService.EquippedItemId` 신설 (RUID·ItemId 조회를 한 군데로)
+
+### 아직 안 한 것
+- **전사 방패** — 사용자 결정은 "전사는 한손검 + 방패". 방패는 `CustomSubWeaponEquip` 이라 **7번째 장비 슬롯 신설**이 필요하다(`EquipSlot` 열거값 · `EquipService.slots` · 장비 탭 `.ui` 슬롯 · `InventoryUIController` 의 6슬롯 하드코딩 · `EnhanceSlotBonus` 부위 행). 구조 변경이라 분리했다
+- 전사 T20 아바타가 `광선 대검`(대검 이름인데 한손 카테고리)이다. 한손검으로 남길 거면 나중에 교체하는 게 좋다
+
+### 검증
+- `node Docs/tools/check-integrity.cjs` 전부 통과 (경고 3건은 기존 것)
+- 🟡 **런타임 미검증** — 활 장착 후 공격 시 `shoot1`(활 쏘기), 두손검은 `swingT*`, 아대·너클은 각자 모션이 나오는지 육안 확인 필요
+
+---
+
 ## 2026-09-08 (5) — 제작한 장비를 장착할 수 없던 것 + 장비 구매·수리 NPC 비활성
 
 ### 1. 🔴 제작 장비 장착 불가 — 전직이 없는데 직업 제한이 걸려 있었다
