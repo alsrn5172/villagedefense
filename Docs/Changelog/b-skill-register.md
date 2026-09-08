@@ -5,7 +5,7 @@
 ## 2026-09-09
 
 ### `Docs/스키마-계약.md`
-- §0-2: `JobId` 6종 확정 제안 — `NOVICE · WARRIOR · MAGICIAN · ARCHER · THIEF · PIRATE`. A 의 `ItemInfo.ReqJob` 임시값(117행)과 `StatService` 폴백 `NOVICE` 를 그대로 쓰고, 스냅샷의 `BEGINNER`/`MAGE` 는 B 가 치환한다. `JobTier` · `SkillBehavior` 7종 · `EffectUnit` 6종 · `BuffTag` 11종 추가.
+- §0-2: `JobId` 6종 확정 제안 — `NOVICE · WARRIOR · MAGICIAN · ARCHER · THIEF · PIRATE`. A 의 `ItemInfo.ReqJob` 임시값(117행)과 `StatService` 폴백 `NOVICE` 를 그대로 쓰고, 스냅샷의 `BEGINNER`/`MAGE` 는 B 가 치환한다. `JobTier` · `SkillBehavior` 9종(CSV 행 7 + 실행기 전용 `AOE`·`BUFF_ALLY`) · `EffectUnit` 6종 · `BuffTag` 13종 추가. 스냅샷 공백 기록: `SkillExecutors` 에 `MELEE_ARC`·`TAUNT` 핸들러가 없다(feature/skill 에서 추가).
 - §1: 등록서 8항목(스킬 시전·스킬 UI·전직). 상태 ⬜ → 🟡 진행 중. 8번 = `Summon/SummonManager.mlua`(`SpendMp`) · `Stat/StatUIController.mlua`(`OnClickSkill` 1줄) · `WeaponMotion.csv`(행 추가) → 경계면 PR, A 승인 필요.
 - A-2-16: 신규 표 3종 헤더 확정 — `SkillInfo`(30열, 키 `SkillId`) · `JobInfo`(A 의 `StatService.LoadJobs` 가 읽는 열 그대로, 키 `JobId`) · `JobTier`(키 `JobId`+`Tier`). 스냅샷 `SkillDataSet`/`JobDataSet` 의 snake_case 를 §0-1 PascalCase 로 바꿨다.
 - B-3 `Skill/` `Job/`: `JobChangedEvent(UserId, PrevJobId, NewJobId, Tier)` · `SkillUsedEvent(UserId, SkillId, MapName)` · 내부 `SkillStateChangedEvent(What)`. 구독은 `SpSpentEvent` 뿐, 레벨은 `curLevel`/`GetEcon().level` 을 읽는다.
