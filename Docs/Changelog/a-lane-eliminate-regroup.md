@@ -24,7 +24,8 @@
 - **월드맵 이동** `RequestGoMap(mapName)`: `TeleportToMapPosition(hidden, (0,0,0), map)` → 지연 후 리그 재스폰. `WorldMapController.OnRegionClick` 첫 분기(관전 중이면 `regionClickEnabled` 무관).
 - **자가 복구**: 클라가 2초마다 현재 카메라가 내 캐릭터 카메라면 `RequestRebind`. 생존자 목록은 서버가 5초마다 다시 보낸다.
 - `SpectateUIController`: `active` 플래그 + `SetActive` Client RPC(대상이 없어도 바를 켠다 · 자유 버튼 ● 표시). 나가기는 기존 `LeaveToLobby` 스텁(로비 없음 → 토스트).
-- 리모컨 `DevStatRemote` 하단 **`탈락 시험`**(694..786 · 적갈색) → `RequestDevHit("CORE", 999999)`.
+- 리모컨 `DevStatRemote` 하단 **`탈락 시험`**(694..786 · 적갈색) → `RequestDevHit("CORE", 999999)`. 둘째 줄(y 54) **`포탑 파괴`**(384..484) · **`억제기 파괴`**(494..604) → `RequestDevHit("TOWER"/"SUPPRESSOR", 999999)` — 수비대 재집결 시험용.
+- origin/main(PR #27·#30·#33) 머지 (77b03b7). `DefenderService` 충돌은 이 브랜치 재작성본 위에 main 의 직접 접근 규칙(`ent.Monster` 등)을 적용해 해결.
 
 ### 미검증 · 확인 포인트 (Maker 켜면 로그 스모크)
 1. refresh 후 build 에러 0. `.codeblock` 은 Maker 가 파일 감시로 이미 생성.
