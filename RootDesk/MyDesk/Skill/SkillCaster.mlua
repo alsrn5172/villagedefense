@@ -1,82 +1,151 @@
 @Logic
 script SkillCaster extends Logic
 
-    -- The single entry point for using a skill. SkillHotbar calls Cast() today; the skill
-    -- window or NPCs can call it later without duplicating any of this gate logic.
+    -- 스킬 시전의 단일 진입점 (skill-merge-plan Phase 7c).
+    --   클라 Cast(skillId)      : 미러 기준 예측 게이트(슬롯 회색·쿨다운 표시용) → 통과하면 RequestCast.
+    --   서버 RequestCast(skillId): 6개 게이트를 서버 상태로 다시 검사 → MP → 쿨다운 → 사용 횟수 → 모션 → 실행기 → SkillUsedEvent.
+    --   서버 → 클라 CastResult   : 성공/실패와 쿨다운을 돌려준다.
+    -- 최종 판정은 항상 서버다. 클라 결과는 표시용이다.
 
-    -- Cast() and FinishCast() are deliberately left ExecSpace-unspecified (no annotation),
-    -- same as PlayerSkillState's own methods - so this exact function can be called again from
-    -- a future server-authoritative path without a signature change. Today it resolves the
-    -- caster via _UserService.LocalPlayer, which only works client-side; a server version will
-    -- need a different caster-resolution step, but the 6-step gate sequence itself would not
-    -- change - that is what "one function" buys here.
+    -- A 의 SummonManager.SpendMp 브랜치가 머지되면 true 로 바꾼다 (skill-merge-plan Phase 4).
+    -- false 인 동안은 MP 게이트(GetEcon.mp >= MpCost)만 검사하고 차감은 하지 않는다.
+    property boolean UseSpendMp = false
+
+    @ExecSpace("ClientOnly")
     method table Cast(string skillId)
-        -- LearnSkill/Cast both read from SkillDatabase; by the time any PlayerActionEvent can
-        -- fire, every Logic's OnBeginPlay (including SkillDatabase's) has already run - but
-        -- EnsureLoaded is idempotent and free to call defensively anyway, matching the same
-        -- guard used everywhere else this project reads from SkillDatabase.
+        -- 예측 게이트. 여기서 막히면 서버에 보내지 않는다(왕복 절약). 통과해도 서버가 다시 판정한다.
         _SkillDatabase:EnsureLoaded()
 
-        -- 1. skill exists
         local skill = _SkillDatabase:GetSkill(skillId)
         if skill == nil then
             return self:FinishCast(skillId, { ok = false, reason = "unknown skill: " .. tostring(skillId) })
         end
-
-        -- 2. behavior is not "PASSIVE" - passives are never cast
         if skill.behavior == "PASSIVE" then
             return self:FinishCast(skillId, { ok = false, reason = "passive skills cannot be cast" })
         end
 
-        -- 3. _SkillDatabase:CanUse - required_job_line / required_tier / required_level / skillLevel > 0
-        local userId = _PlayerSkillState:GetLocalUserId()
-        local level = _PlayerSkillState:GetSkillLevel(skillId)
-        local canUse = _SkillDatabase:CanUse(skillId, _PlayerSkillState:GetJobLine(userId), _PlayerSkillState:GetTier(userId), _PlayerSkillState:GetPlayerLevel(), level)
+        local level = _PlayerSkillState:LocalSkillLevel(skillId)
+        local canUse = _SkillDatabase:CanUse(skillId, _PlayerSkillState:LocalJobId(), _PlayerSkillState:LocalTier(), _PlayerSkillState:LocalLevel(), level)
         if not canUse.ok then
             return self:FinishCast(skillId, canUse)
         end
-
-        -- 4. cooldown not active
-        if _PlayerSkillState:IsOnCooldown(skillId) then
-            local remaining = _PlayerSkillState:GetCooldownRemaining(skillId)
-            return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(remaining) .. "s left)" })
+        if _PlayerSkillState:LocalIsOnCooldown(skillId) then
+            local remaining = _PlayerSkillState:LocalCooldownRemaining(skillId)
+            return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)" })
         end
-
-        -- 5. use_limit not exhausted (0 = unlimited)
-        if skill.useLimit > 0 and _PlayerSkillState:GetUseCount(skillId) >= skill.useLimit then
-            return self:FinishCast(skillId, { ok = false, reason = "use limit reached (" .. tostring(skill.useLimit) .. ")" })
-        end
-
-        -- 6. enough MP
-        if _PlayerSkillState:GetMp() < skill.mpCost then
+        if _PlayerSkillState:LocalMp() < skill.mpCost then
             return self:FinishCast(skillId, { ok = false, reason = "not enough MP" })
         end
 
-        -- All gates passed - commit state, then dispatch to the visual/audio executor. Order:
-        -- consume MP, start cooldown, increment use count, dispatch.
-        _PlayerSkillState:ConsumeMp(skill.mpCost)
-        _PlayerSkillState:StartCooldown(skillId)
-        if skill.useLimit > 0 then
-            _PlayerSkillState:IncrementUseCount(skillId)
+        self:RequestCast(skillId)
+        return self:FinishCast(skillId, { ok = true, reason = "requested" })
+    end
+
+    @ExecSpace("Server")
+    method void RequestCast(string skillId)
+        local uid = senderUserId
+        _SkillDatabase:EnsureLoaded()
+
+        -- 1. 존재
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then
+            self:CastResult(skillId, false, "unknown skill: " .. tostring(skillId), 0, uid)
+            return
+        end
+        -- 2. 패시브 아님
+        if skill.behavior == "PASSIVE" then
+            self:CastResult(skillId, false, "passive skills cannot be cast", 0, uid)
+            return
+        end
+        -- 3. 직업/차수/레벨 + 배운 상태 (서버 원장)
+        _PlayerSkillState:TryAdvanceTier(uid)
+        local level = _PlayerSkillState:GetSkillLevel(uid, skillId)
+        local canUse = _SkillDatabase:CanUse(skillId, _PlayerSkillState:GetJobId(uid), _PlayerSkillState:GetTier(uid), _PlayerSkillState:GetLevel(uid), level)
+        if not canUse.ok then
+            self:CastResult(skillId, false, canUse.reason, 0, uid)
+            return
+        end
+        -- 4. 쿨다운
+        if _PlayerSkillState:IsOnCooldown(uid, skillId) then
+            local remaining = _PlayerSkillState:GetCooldownRemaining(uid, skillId)
+            self:CastResult(skillId, false, "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)", 0, uid)
+            return
+        end
+        -- 5. 사용 제한 (0 = 무제한)
+        if skill.useLimit > 0 and _PlayerSkillState:GetUseCount(uid, skillId) >= skill.useLimit then
+            self:CastResult(skillId, false, "use limit reached (" .. tostring(skill.useLimit) .. ")", 0, uid)
+            return
+        end
+        -- 6. MP — 원장은 SummonManager.econ (A). 차감은 SpendMp 만 (UseSpendMp 참조).
+        local mp = 0
+        if _SummonManager ~= nil then
+            local e = _SummonManager:GetEcon(uid)
+            if e ~= nil then mp = e.mp or 0 end
+        end
+        if mp < skill.mpCost then
+            self:CastResult(skillId, false, "not enough MP", 0, uid)
+            return
+        end
+        if self.UseSpendMp then
+            if not _SummonManager:SpendMp(uid, math.floor(skill.mpCost)) then
+                self:CastResult(skillId, false, "not enough MP", 0, uid)
+                return
+            end
+        else
+            log("[Skill] SpendMp 미연결 — MP 미차감 (A 브랜치 대기) skill=" .. skillId .. " cost=" .. tostring(skill.mpCost))
         end
 
-        local caster = _UserService.LocalPlayer
+        -- 게이트 통과 — 상태 확정 순서: 쿨다운 → 사용 횟수 → 모션(시전당 1회) → 실행기 → 이벤트.
+        local cooldown = _SkillDatabase:CooldownAt(skillId, level)
+        _PlayerSkillState:StartCooldown(uid, skillId, cooldown)
+        if skill.useLimit > 0 then
+            _PlayerSkillState:IncrementUseCount(uid, skillId)
+        end
+
+        if _PlayerMotion ~= nil then
+            _PlayerMotion:PlaySkill(uid, skillId)
+        end
+
+        local caster = _UserService:GetUserEntityByUserId(uid)
         if isvalid(caster) then
             _SkillExecutors:Execute(skill.behavior, skillId, skill, caster, level)
         else
-            log_warning("SkillCaster: LocalPlayer unavailable, skipping executor for " .. skillId)
+            log_warning("SkillCaster: caster entity not found for " .. uid .. ", skipping executor for " .. skillId)
         end
 
-        return self:FinishCast(skillId, { ok = true, reason = "ok" })
+        local evt = SkillUsedEvent()
+        evt.UserId = uid
+        evt.SkillId = skillId
+        evt.MapName = ""
+        if isvalid(caster) and isvalid(caster.CurrentMap) then
+            evt.MapName = caster.CurrentMap.Name
+        end
+        self:SendEvent(evt)
+
+        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " mp=" .. tostring(mp) .. " (" .. uid .. ")")
+        self:CastResult(skillId, true, "ok", cooldown, uid)
     end
 
+    @ExecSpace("Client")
+    method void CastResult(string skillId, boolean ok, string reason, number cooldown)
+        -- 서버 판정 수신. 성공이면 미러 쿨다운을 시작해 핫바/창이 회색 처리할 수 있게 한다.
+        if ok then
+            _PlayerSkillState:LocalStartCooldown(skillId, cooldown)
+        end
+        local reasonText = ""
+        if not ok then reasonText = " reason='" .. reason .. "'" end
+        log("SkillCaster: server result " .. skillId .. " ok=" .. tostring(ok) .. reasonText .. " cd=" .. tostring(cooldown))
+        _PlayerSkillState:NotifyStateChanged("mp")
+    end
+
+    @ExecSpace("ClientOnly")
     method table FinishCast(string skillId, table result)
-        -- One log line per Cast() call, covering skill/result/mp/cooldown regardless of outcome.
+        -- 클라 예측 결과 로그 한 줄. 최종 결과는 CastResult 로그를 본다.
         local reasonText = ""
         if not result.ok then reasonText = " reason='" .. result.reason .. "'" end
-        log("SkillCaster: cast " .. skillId .. " ok=" .. tostring(result.ok) .. reasonText ..
-            " mp=" .. tostring(math.floor(_PlayerSkillState:GetMp())) ..
-            " cd=" .. tostring(_PlayerSkillState:GetCooldownRemaining(skillId)))
+        log("SkillCaster: cast(pred) " .. skillId .. " ok=" .. tostring(result.ok) .. reasonText ..
+            " mp=" .. tostring(math.floor(_PlayerSkillState:LocalMp())) ..
+            " cd=" .. tostring(_PlayerSkillState:LocalCooldownRemaining(skillId)))
         return result
     end
 

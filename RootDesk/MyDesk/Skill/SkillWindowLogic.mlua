@@ -74,11 +74,16 @@ script SkillWindowLogic extends Logic
         log("SkillWindowLogic: OnBeginPlay complete")
     end
 
+    -- ⚠ DEV: F10 직업 선택 순환 인덱스 (OnDevChooseJob). 전직 UI 가 생기면 함께 제거.
+    property integer devJobIndex = 0
+
     @ExecSpace("ClientOnly")
     method void OnKeyDown(KeyDownEvent event)
         -- K toggles the window through the same Toggle() the HUD button calls - one shared path, two entry points.
         if event.key == KeyboardKey.K then
             self:Toggle()
+        elseif event.key == KeyboardKey.F10 then
+            self:OnDevChooseJob()
         end
     end
 
@@ -97,11 +102,21 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void OnSkillStateChanged(SkillStateChangedEvent event)
-        -- Only "sp" and "skill" affect anything this window currently displays (no MP bar, and
-        -- required_job/required_level row-gating isn't wired into the window yet) - "mp"/"job"
-        -- are intentionally ignored here, using event.What exactly as it was designed for.
+        -- "sp"/"skill" → 값 갱신. "job" → 직업·차수가 바뀌었으니 탭을 다시 만든다(다른 직업 스킬은 아예 안 보이므로).
+        if event.What == "job" then
+            if self.rootGroup.Enable then self:ShowTab(self.currentTab) end
+            return
+        end
         if event.What == "sp" or event.What == "skill" then
             self:RefreshFromState()
+            local reason = _PlayerSkillState.lastLearnReason
+            if reason ~= nil and reason ~= "" then
+                self.descText.Text = reason
+            elseif self.selectedSkillId ~= "" then
+                -- 성공(또는 단순 갱신): 선택된 스킬 설명으로 되돌린다 (OnPlusClicked 가 "..." 을 띄워 둔 경우).
+                local skill = _SkillDatabase:GetSkill(self.selectedSkillId)
+                if skill ~= nil then self.descText.Text = skill.description end
+            end
         end
     end
 
@@ -112,7 +127,7 @@ script SkillWindowLogic extends Logic
         -- relevant SkillStateChangedEvent (OnSkillStateChanged) - never duplicated inline at
         -- either call site, or a third time in OnPlusClicked (whose own LearnSkill call already
         -- triggers this indirectly via the event, before LearnSkill even returns).
-        self.spValueText.Text = tostring(math.floor(_PlayerSkillState:GetSp()))
+        self.spValueText.Text = tostring(math.floor(_PlayerSkillState:LocalSp()))
         self:RefreshRowLevels()
     end
 
@@ -126,7 +141,7 @@ script SkillWindowLogic extends Logic
             if isvalid(entity) then
                 local skillId = string.sub(entity.Name, 5) -- strip the "Row_" prefix (see CreateRow)
                 local levelText = entity:GetChildByName("LevelText")
-                levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:GetSkillLevel(skillId))
+                levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skillId))
             end
         end
     end
@@ -175,10 +190,10 @@ script SkillWindowLogic extends Logic
         -- the player's own tier still shows up in its tab, just drawn locked/greyed in
         -- CreateRow below - do not collapse those two cases into one filter.
         local tier = tab + 1
-        local userId = _PlayerSkillState:GetLocalUserId()
-        local playerJobLine = _PlayerSkillState:GetJobLine(userId)
-        local playerTier = _PlayerSkillState:GetTier(userId)
-        local playerLevel = _PlayerSkillState:GetPlayerLevel()
+        -- 서버가 SyncState 로 밀어 준 미러 + HUD 가 받은 레벨 (Phase 7a/7e). 캐시 없음.
+        local playerJobLine = _PlayerSkillState:LocalJobId()
+        local playerTier = _PlayerSkillState:LocalTier()
+        local playerLevel = _PlayerSkillState:LocalLevel()
 
         -- GetSkillsByJobLineAndTier iterates a dictionary internally, so its result order is
         -- not guaranteed - still sort by slot_order here, same as before.
@@ -267,7 +282,7 @@ script SkillWindowLogic extends Logic
         -- Learned level now lives in PlayerSkillState; 0 (its default for an unlearned skill)
         -- renders as "Lv.0" - same visual as before, just reflecting the new floor value.
         local levelText = row:GetChildByName("LevelText")
-        levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:GetSkillLevel(skill.id))
+        levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skill.id))
 
         -- Locked/greyed DRAW state only - never gates learning/casting. CanLearn is called
         -- here read-only for its ok result (job/tier/level reachability); it is not
@@ -321,25 +336,25 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void OnPlusClicked(string skillId)
-        -- Delegates the whole gate + level-up to PlayerSkillState:LearnSkill. On success, the
-        -- SP footer and row level text are NOT updated here - LearnSkill fires
-        -- SkillStateChangedEvent("sp") and ("skill") before it even returns, which
-        -- OnSkillStateChanged catches and refreshes through RefreshFromState(). Duplicating that
-        -- update inline here would be exactly the bug this file was just fixed for, one call
-        -- site earlier (see Toggle). On failure, shows the returned reason in the description panel.
-        local result = _PlayerSkillState:LearnSkill(skillId)
-        if not result.ok then
-            self.descText.Text = result.reason
-            log("SkillWindowLogic: LearnSkill(" .. skillId .. ") failed - " .. result.reason)
-            return
-        end
+        -- 배우기는 서버 판정(Phase 7b): RequestLearn 만 보내고 결과는 기다리지 않는다.
+        -- 성공 → 서버가 SyncState → "skill" 이벤트 → RefreshFromState 가 레벨·SP 를 다시 그린다.
+        -- 실패 → LearnResult 가 lastLearnReason 을 채우고 "skill" 이벤트 → OnSkillStateChanged 가 사유를 보여 준다.
+        self.descText.Text = "..."
+        _PlayerSkillState:RequestLearn(skillId)
+        log("SkillWindowLogic: RequestLearn(" .. skillId .. ")")
+    end
 
-        if self.selectedSkillId == skillId then
-            local skill = _SkillDatabase:GetSkill(skillId)
-            if skill ~= nil then self.descText.Text = skill.description end
-        end
-
-        log("SkillWindowLogic: leveled " .. skillId .. " -> Lv." .. tostring(_PlayerSkillState:GetSkillLevel(skillId)) .. " sp=" .. tostring(_PlayerSkillState:GetSp()))
+    @ExecSpace("ClientOnly")
+    method void OnDevChooseJob()
+        -- ⚠ DEV 임시 (전직 UI 가 생기기 전까지): F10 으로 직업 라인을 순서대로 요청한다. 서버가 레벨(JobTier.ReqLevel)로 거절할 수 있다.
+        -- 협업-규칙 §10-1: 머지 전 제거 대상인지 PR 에서 표시한다. 닉네임 게이트는 아니다.
+        -- 첫 순서 = MAGICIAN: SkillHotbar 기본 슬롯이 SK_M* 라 Play 검증이 바로 된다. 전직은 초보자에서 1회만 허용된다.
+        local order = { "MAGICIAN", "WARRIOR", "ARCHER", "THIEF", "PIRATE" }
+        self.devJobIndex = self.devJobIndex + 1
+        if self.devJobIndex > #order then self.devJobIndex = 1 end
+        local jobId = order[self.devJobIndex]
+        _PlayerSkillState:RequestChooseJob(jobId)
+        log("SkillWindowLogic: [DEV] RequestChooseJob(" .. jobId .. ")")
     end
 
     @ExecSpace("ClientOnly")

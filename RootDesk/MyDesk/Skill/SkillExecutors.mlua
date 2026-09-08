@@ -30,12 +30,16 @@ script SkillExecutors extends Logic
     -- SkillAttack.SpawnProjectile, not baked into separate models per skill.
     property string ProjectileModelId = "skillprojectile"
 
+    -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
+    -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
+    @ExecSpace("ServerOnly")
     method void OnBeginPlay()
         self:BuildHandlerTable()
         self:BuildEffectOverrides()
         self:BuildCastSounds()
     end
 
+    @ExecSpace("ServerOnly")
     method void BuildHandlerTable()
         -- buff_self and buff_ally share one executor - the visual is identical either way at
         -- this shell stage; who it targets is gameplay behavior that lands later.
@@ -55,9 +59,13 @@ script SkillExecutors extends Logic
             BUFF_ALLY = function(skillId, skillData, casterEntity, level) self:ExecuteBuff(skillId, skillData, casterEntity, level) end,
             ORIGIN = function(skillId, skillData, casterEntity, level) self:ExecuteOrigin(skillId, skillData, casterEntity, level) end,
             PASSIVE = function(skillId, skillData, casterEntity, level) self:ExecutePassive(skillId, skillData, casterEntity, level) end,
+            -- 2026-09-09 추가: 스냅샷에 없던 행 2종 (SkillInfo 가 쓰는 MELEE_ARC = SK_W11·SK_P11, TAUNT = SK_W22).
+            MELEE_ARC = function(skillId, skillData, casterEntity, level) self:ExecuteMeleeArc(skillId, skillData, casterEntity, level) end,
+            TAUNT = function(skillId, skillData, casterEntity, level) self:ExecuteTaunt(skillId, skillData, casterEntity, level) end,
         }
     end
 
+    @ExecSpace("ServerOnly")
     method void BuildEffectOverrides()
         -- sk_m11 에너지볼트's real curated Energy Bolt pack assets (skill/200.img/skill/2001008),
         -- confirmed via msw-search against the same pack that already supplies castSounds.sk_m11
@@ -66,21 +74,23 @@ script SkillExecutors extends Logic
         -- fires from the projectile's own OnAttack (see SkillProjectile.mlua / SkillAttack.
         -- SpawnProjectile), not from here at cast time, since behavior is projectile again.
         self.effectOverrides = {
-            sk_m11 = {
+            SK_M11 = {
                 cast = { ruid = "ba512e50ddad4231bd6093dd07afc00e" },
                 impact = { ruid = "6beb8d728a7d4cca92eb7f4d2d9c45f9" },
             },
         }
     end
 
+    @ExecSpace("ServerOnly")
     method void BuildCastSounds()
-        -- sk_m11's (renamed from sk_100) real Energy Bolt "Use" sound; every other skill falls
+        -- SK_M11's (renamed from sk_100) real Energy Bolt "Use" sound; every other skill falls
         -- back to defaultCastSound (a generic confirmed magic-skill sound effect).
         self.castSounds = {
-            sk_m11 = "5fd9ddc5564648d1bffc21f3407ecf51",
+            SK_M11 = "5fd9ddc5564648d1bffc21f3407ecf51",
         }
     end
 
+    @ExecSpace("ServerOnly")
     method void Execute(string behavior, string skillId, table skillData, Entity casterEntity, number level)
         -- "handler" is a reserved word in mlua (the `handler EventName(...)` declaration
         -- syntax), so the looked-up executor function is named executorFn instead.
@@ -225,6 +235,7 @@ script SkillExecutors extends Logic
         end, skillData.duration)
     end
 
+    @ExecSpace("ServerOnly")
     method void ExecutePassive(string skillId, table skillData, Entity casterEntity, number level)
         -- SkillCaster already blocks passives before Execute() is ever reached - this exists
         -- so the behavior->function table has no silent gap if Execute() is ever called
@@ -232,6 +243,45 @@ script SkillExecutors extends Logic
         log("SkillExecutors: " .. skillId .. " is passive - not castable")
     end
 
+    @ExecSpace("ServerOnly")
+    method void ExecuteMeleeArc(string skillId, table skillData, Entity casterEntity, number level)
+        -- 근접 호(파워 스트라이크·섬머솔트 킥): 시전자 앞쪽 Range 폭의 상자에 HitCount 회.
+        -- 바라보는 방향은 서버에서 PlayerControllerComponent.LookDirectionX 로 읽는다(SkillAttack.SpawnProjectile 와 동일).
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
+        self:PlayCastSound(skillId, casterEntity)
+
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+            return
+        end
+
+        local dirX = 1
+        local controller = casterEntity.PlayerControllerComponent
+        if isvalid(controller) and controller.LookDirectionX < 0 then dirX = -1 end
+        local range = skillData.range
+        if range <= 0 then range = 1 end
+        local hitCount = skillData.hitCount
+        if hitCount <= 0 then hitCount = 1 end
+
+        skillAttack:DealSkillDamage(skillId, level, {
+            posX = pos.x + dirX * range / 2, posY = pos.y + 0.5,
+            sizeX = range, sizeY = 1.5,
+            hitCount = hitCount,
+        })
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
+        -- 도발: 시각·사운드만. 어그로 전환은 몬스터 AI(A 의 Monster/) 와 계약한 뒤 붙인다.
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
+        self:PlayCastSound(skillId, casterEntity)
+        log("SkillExecutors: TAUNT " .. skillId .. " — 어그로 효과 미구현 (몬스터 AI 계약 대기)")
+    end
+
+    @ExecSpace("ServerOnly")
     method void PlayCastSound(string skillId, Entity casterEntity)
         local soundId = self.castSounds[skillId] or self.defaultCastSound
         local pos = casterEntity.TransformComponent.WorldPosition
