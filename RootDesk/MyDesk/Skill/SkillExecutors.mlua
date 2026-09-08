@@ -1,0 +1,318 @@
+@Logic
+script SkillExecutors extends Logic
+
+    -- Visual/audio shells, now with damage wired into the offensive behaviors (projectile /
+    -- aoe / origin) via the caster's script.SkillAttack component. blink / buff_self /
+    -- buff_ally / passive still deal no damage - no movement, no buff state either way.
+    -- SkillCaster calls Execute() after every gate has already passed. Real gameplay behavior
+    -- beyond damage (movement, buff effects) lands INSIDE these per-behavior functions once the
+    -- design doc arrives; SkillCaster never changes.
+
+    -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
+    -- is one line here.
+    property table behaviorHandlers = {}
+
+    -- skill_id -> { cast = <spec>, impact = <spec> }, consulted by every executor via the shared
+    -- PlayStageEffect lookup (not just the projectile one - see PlayStageEffect). <spec> is
+    -- either { ruid = "..." } (a real asset, played through EffectService) or
+    -- { particle = BasicParticleType.X } (an engine particle, played through ParticleService).
+    -- A stage with no entry falls back to that executor's own hardcoded particle for that stage,
+    -- or plays nothing if the executor has no fallback for that stage (e.g. aoe's "impact").
+    property table effectOverrides = {}
+
+    -- skill_id -> cast sound RUID override; anything not listed uses defaultCastSound.
+    property table castSounds = {}
+    property string defaultCastSound = "c98d8cb8066e4fcaabe5ad8437c4e0d1"
+
+    -- EntryKey of the shared projectile model every behavior="PROJECTILE" skill spawns
+    -- (RootDesk/MyDesk/Models/Skills/SkillProjectile.model). One model, one script.SkillProjectile
+    -- component - per-skill damage/hit config is set on the spawned instance in
+    -- SkillAttack.SpawnProjectile, not baked into separate models per skill.
+    property string ProjectileModelId = "skillprojectile"
+
+    -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
+    -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
+    @ExecSpace("ServerOnly")
+    method void OnBeginPlay()
+        self:BuildHandlerTable()
+        self:BuildEffectOverrides()
+        self:BuildCastSounds()
+    end
+
+    @ExecSpace("ServerOnly")
+    method void BuildHandlerTable()
+        -- buff_self and buff_ally share one executor - the visual is identical either way at
+        -- this shell stage; who it targets is gameplay behavior that lands later.
+        --
+        -- Each entry MUST be a closure that does an explicit self:Method(...) colon-call, not
+        -- a bare `self.ExecuteXxx` method reference. Storing `self.ExecuteXxx` directly in a
+        -- plain table and calling it later loses the self-binding entirely (mlua only
+        -- auto-binds `self.Method` references inside the engine's own ConnectEvent dispatch,
+        -- not for a table built like this) - every argument silently shifts one slot, e.g.
+        -- casterEntity ends up holding the `level` value with no error until first use
+        -- ([LEA-2007] AttemptToIndex on a number). Confirmed by testing, not assumed.
+        self.behaviorHandlers = {
+            PROJECTILE = function(skillId, skillData, casterEntity, level) self:ExecuteProjectile(skillId, skillData, casterEntity, level) end,
+            BLINK = function(skillId, skillData, casterEntity, level) self:ExecuteBlink(skillId, skillData, casterEntity, level) end,
+            AOE = function(skillId, skillData, casterEntity, level) self:ExecuteAoe(skillId, skillData, casterEntity, level) end,
+            BUFF_SELF = function(skillId, skillData, casterEntity, level) self:ExecuteBuff(skillId, skillData, casterEntity, level) end,
+            BUFF_ALLY = function(skillId, skillData, casterEntity, level) self:ExecuteBuff(skillId, skillData, casterEntity, level) end,
+            ORIGIN = function(skillId, skillData, casterEntity, level) self:ExecuteOrigin(skillId, skillData, casterEntity, level) end,
+            PASSIVE = function(skillId, skillData, casterEntity, level) self:ExecutePassive(skillId, skillData, casterEntity, level) end,
+            -- 2026-09-09 추가: 스냅샷에 없던 행 2종 (SkillInfo 가 쓰는 MELEE_ARC = SK_W11·SK_P11, TAUNT = SK_W22).
+            MELEE_ARC = function(skillId, skillData, casterEntity, level) self:ExecuteMeleeArc(skillId, skillData, casterEntity, level) end,
+            TAUNT = function(skillId, skillData, casterEntity, level) self:ExecuteTaunt(skillId, skillData, casterEntity, level) end,
+        }
+    end
+
+    @ExecSpace("ServerOnly")
+    method void BuildEffectOverrides()
+        -- sk_m11 에너지볼트's real curated Energy Bolt pack assets (skill/200.img/skill/2001008),
+        -- confirmed via msw-search against the same pack that already supplies castSounds.sk_m11
+        -- below (_audio/Use). cast = the pack's "effect" clip (spellcast flash), impact = the
+        -- pack's "hit/0" clip. Both play through the shared PlayStageEffect lookup - "impact" now
+        -- fires from the projectile's own OnAttack (see SkillProjectile.mlua / SkillAttack.
+        -- SpawnProjectile), not from here at cast time, since behavior is projectile again.
+        self.effectOverrides = {
+            SK_M11 = {
+                cast = { ruid = "ba512e50ddad4231bd6093dd07afc00e" },
+                impact = { ruid = "6beb8d728a7d4cca92eb7f4d2d9c45f9" },
+            },
+        }
+    end
+
+    @ExecSpace("ServerOnly")
+    method void BuildCastSounds()
+        -- SK_M11's (renamed from sk_100) real Energy Bolt "Use" sound; every other skill falls
+        -- back to defaultCastSound (a generic confirmed magic-skill sound effect).
+        self.castSounds = {
+            SK_M11 = "5fd9ddc5564648d1bffc21f3407ecf51",
+        }
+    end
+
+    @ExecSpace("ServerOnly")
+    method void Execute(string behavior, string skillId, table skillData, Entity casterEntity, number level)
+        -- "handler" is a reserved word in mlua (the `handler EventName(...)` declaration
+        -- syntax), so the looked-up executor function is named executorFn instead.
+        local executorFn = self.behaviorHandlers[behavior]
+        if executorFn == nil then
+            log_warning("SkillExecutors: no executor registered for behavior='" .. behavior .. "' (skill=" .. skillId .. ")")
+            return
+        end
+        executorFn(skillId, skillData, casterEntity, level)
+    end
+
+    method void PlayStageEffect(string skillId, string stage, Entity casterEntity, Vector3 pos, any fallbackParticleType)
+        -- Single override lookup shared by every executor's cast/impact visual beat. entry[stage]
+        -- (from effectOverrides) is either { ruid = "..." } (real asset, via EffectService) or
+        -- { particle = BasicParticleType.X } (engine particle, via ParticleService). With no entry
+        -- for this skill_id/stage, falls back to fallbackParticleType via ParticleService - pass
+        -- nil for a stage the calling executor has no fallback for (e.g. aoe's "impact"), which
+        -- plays nothing when there is no override.
+        --
+        -- "entry" (not "override") because "override" is a reserved word in mlua (Maker's own
+        -- override-declaration syntax).
+        local entry = self.effectOverrides[skillId]
+        local spec = nil
+        if entry ~= nil then spec = entry[stage] end
+
+        if spec ~= nil then
+            if spec.ruid ~= nil then
+                if stage == "cast" then
+                    -- 2026-09-09 버그 수정: 에너지볼트를 오른쪽으로 쏘면 시전 이펙트가 캐릭터 뒤(왼쪽)에 남았다.
+                    -- 원인 ① 메이플 원본 스킬 이펙트는 전부 "왼쪽을 보는" 기준으로 그려져 있고 pivot 이 캐릭터
+                    --        앞쪽(=왼쪽)에 박혀 있다. 뒤집지 않으면 오른쪽을 볼 때만 등 뒤에 뜬다
+                    --        (.claude/skills/maplestory-skill-maker/references/player/cast-effects.md
+                    --        "Cast Effect Direction Flip Rule"). 플레이어 facing 은 Scale.x 가 아니라
+                    --        PlayerControllerComponent.LookDirectionX 라 이펙트가 자동으로 안 뒤집힌다.
+                    -- 원인 ② PlayEffect 는 월드 좌표에 고정된다 → 시전 직후 이동하면 그 자리에 머문다.
+                    -- 해결: 시전자에 붙이는 PlayEffectAttached + options.FlipX = (오른쪽 볼 때).
+                    --        옵션 키 FlipX 는 Environment/NativeScripts/Service/EffectService.d.mlua 에 명시.
+                    --        딕셔너리는 Boss/BossSkillRunner 와 같은 opt[...] 대입 형태로 만든다.
+                    -- impact 단계(AOE·ORIGIN 의 캐스터 위치 폭발)는 지면에 고정되는 게 맞아 그대로 둔다.
+                    local facing = self:GetFacingX(casterEntity)
+                    local opt = {}
+                    opt["FlipX"] = facing > 0
+                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3.zero, 0, Vector3(1, 1, 1), false, opt)
+                    log("SkillExecutors: cast effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(facing > 0))
+                else
+                    _EffectService:PlayEffect(spec.ruid, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+                end
+            else
+                _ParticleService:PlayBasicParticle(spec.particle, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+            end
+        elseif fallbackParticleType ~= nil then
+            _ParticleService:PlayBasicParticle(fallbackParticleType, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetFacingX(Entity casterEntity)
+        -- 시전자가 보는 방향(+1 오른쪽 / -1 왼쪽). 유일한 근거는 PlayerControllerComponent.LookDirectionX 다
+        -- (SkillAttack.SpawnProjectile · C:\vd PlayerAttack.mlua 와 같은 서버측 읽기). TransformComponent.Scale.x 는
+        -- 플레이어 facing 을 표현하지 않으므로 보면 안 된다. 0(아직 한 번도 안 움직임)은 SpawnProjectile 과 같이 오른쪽으로 본다.
+        local controller = casterEntity.PlayerControllerComponent
+        if isvalid(controller) and controller.LookDirectionX < 0 then return -1 end
+        return 1
+    end
+
+    method void ExecuteProjectile(string skillId, table skillData, Entity casterEntity, number level)
+        -- Real travelling projectile (was a same-frame cast+impact shell that detonated in
+        -- place - root cause: it never spawned a travelling entity). Cast-stage visuals still
+        -- play immediately here; impact now fires from the projectile's own OnAttack once it
+        -- actually lands (SkillProjectile.mlua), not from a fixed "ahead of the caster" position.
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
+        self:PlayCastSound(skillId, casterEntity)
+
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping projectile for " .. skillId)
+            return
+        end
+
+        -- SpawnProjectile (Server ExecSpace) does the actual spawn + facing/direction/damage
+        -- wiring - see SkillAttack.mlua for why that crossing point lives there.
+        skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
+            skillData.range, skillData.speed, skillData.hitCount, self:GetImpactEffectRuid(skillId),
+            skillData.spawnOffsetY)
+    end
+
+    method string GetImpactEffectRuid(string skillId)
+        -- Extracts just the "impact" stage's ruid (if any) from effectOverrides, for handing to
+        -- the spawned projectile's HitEffectRUID. Only ruid-based overrides are supported here -
+        -- the projectile's OnAttack plays through EffectService only (matching the ported
+        -- pattern), not ParticleService, so a particle-only override has no equivalent yet.
+        local entry = self.effectOverrides[skillId]
+        if entry == nil then return "" end
+        local spec = entry.impact
+        if spec == nil or spec.ruid == nil then return "" end
+        return spec.ruid
+    end
+
+    method void ExecuteBlink(string skillId, table skillData, Entity casterEntity, number level)
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.EnergyExplosion)
+        self:PlayCastSound(skillId, casterEntity)
+    end
+
+    method void ExecuteAoe(string skillId, table skillData, Entity casterEntity, number level)
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.BigExplosion)
+        -- aoe has no fallback "impact" beat of its own - this only plays when effectOverrides
+        -- supplies one (see sk_m11 in BuildEffectOverrides), so an un-overridden aoe skill still
+        -- plays exactly one particle, same as before.
+        self:PlayStageEffect(skillId, "impact", casterEntity, pos, nil)
+        self:PlayCastSound(skillId, casterEntity)
+
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+            return
+        end
+
+        -- Square box of side 2*range centered on the caster - a simple approximation of "all
+        -- targets within range" (a true circular check would need CircleShape, which is fine
+        -- to add later without touching SkillCaster). hit_count TIMES, not targets - each pass
+        -- re-resolves against everything still in the box.
+        local range = skillData.range
+        if range <= 0 then range = 1 end
+        local hitCount = skillData.hitCount
+        if hitCount <= 0 then hitCount = 1 end
+
+        skillAttack:DealSkillDamage(skillId, level, {
+            posX = pos.x, posY = pos.y,
+            sizeX = range * 2, sizeY = range * 2,
+            hitCount = hitCount,
+        })
+    end
+
+    method void ExecuteBuff(string skillId, table skillData, Entity casterEntity, number level)
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
+        self:PlayCastSound(skillId, casterEntity)
+    end
+
+    method void ExecuteOrigin(string skillId, table skillData, Entity casterEntity, number level)
+        -- Charge immediately, then BigExplosion + damage after skillData.duration seconds (the
+        -- telegraph) - one hit covering "everything on screen", not hit_count times (hit_count
+        -- is unused/0 for this behavior per the CSV column-usage spec; only duration + use_limit
+        -- apply to origin).
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
+        self:PlayCastSound(skillId, casterEntity)
+
+        _TimerService:SetTimerOnce(function()
+            if isvalid(casterEntity) then
+                local finalPos = casterEntity.TransformComponent.WorldPosition
+                self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
+
+                local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+                if not isvalid(skillAttack) then
+                    log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+                    return
+                end
+
+                -- "Everything on screen" approximated as the PC visible area (12.8x7.2 world
+                -- units - see platform.md §5) centered on the caster's position at delay-end.
+                skillAttack:DealSkillDamage(skillId, level, {
+                    posX = finalPos.x, posY = finalPos.y,
+                    sizeX = 12.8, sizeY = 7.2,
+                    hitCount = 1,
+                })
+            end
+        end, skillData.duration)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecutePassive(string skillId, table skillData, Entity casterEntity, number level)
+        -- SkillCaster already blocks passives before Execute() is ever reached - this exists
+        -- so the behavior->function table has no silent gap if Execute() is ever called
+        -- directly with a passive skill.
+        log("SkillExecutors: " .. skillId .. " is passive - not castable")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteMeleeArc(string skillId, table skillData, Entity casterEntity, number level)
+        -- 근접 호(파워 스트라이크·섬머솔트 킥): 시전자 앞쪽 Range 폭의 상자에 HitCount 회.
+        -- 바라보는 방향은 서버에서 PlayerControllerComponent.LookDirectionX 로 읽는다(SkillAttack.SpawnProjectile 와 동일).
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
+        self:PlayCastSound(skillId, casterEntity)
+
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+            return
+        end
+
+        local dirX = self:GetFacingX(casterEntity)
+        local range = skillData.range
+        if range <= 0 then range = 1 end
+        local hitCount = skillData.hitCount
+        if hitCount <= 0 then hitCount = 1 end
+
+        skillAttack:DealSkillDamage(skillId, level, {
+            posX = pos.x + dirX * range / 2, posY = pos.y + 0.5,
+            sizeX = range, sizeY = 1.5,
+            hitCount = hitCount,
+        })
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
+        -- 도발: 시각·사운드만. 어그로 전환은 몬스터 AI(A 의 Monster/) 와 계약한 뒤 붙인다.
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
+        self:PlayCastSound(skillId, casterEntity)
+        log("SkillExecutors: TAUNT " .. skillId .. " — 어그로 효과 미구현 (몬스터 AI 계약 대기)")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayCastSound(string skillId, Entity casterEntity)
+        local soundId = self.castSounds[skillId] or self.defaultCastSound
+        local pos = casterEntity.TransformComponent.WorldPosition
+        _SoundService:PlaySoundAtPos(soundId, pos, casterEntity, 1.0)
+    end
+
+end
