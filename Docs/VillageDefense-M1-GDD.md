@@ -683,11 +683,15 @@ NpcRole                                                 -- 마을 10종
                                                         -- 공용 2종
   COMMON_MATCH_GUIDE / COMMON_DISPATCH_OFFICER
 
-MatchPhase                                              -- 전환 조건은 매치 경과 시간
-  PHASE1_PIONEER     (개척 · 미니언 없음 · 기대 ~10레벨)
-  PHASE2_VILLAGE     (마을 확보 · 미니언 HP↑ 공격력↓ · 기대 10~16)
-  PHASE25_PRESSURE   (공격력 급상승 · 기대 16~21)
-  PHASE3_FINALE      (HP·공격력 급상승 · 침범/발록 해금 · 기대 21~)
+MatchPhase                                              -- 전환 조건은 매치 경과 시간 (2026-09-08 추가기획2 · 5단)
+  PHASE0-1           (0페이즈 · 리스항구 개척 · 미니언 없음 · 0초~ · 목표 9레벨)
+  PHASE0-2           (0.5페이즈 · 전직 유예 30초 · 미니언 없음 · 240초~)
+  PHASE1             (1페이즈 · 마을 확보 후 집중 성장 · 미니언 등장 2분 간격 · 270초~ · 목표 19)
+  PHASE2             (2페이즈 · 견제 구간 · 미니언 공격력 상승 · 720초~ · 목표 29)
+  PHASE3             (3페이즈 · 최종 · 시설 풀데미지 개방 · 침범/발록 · 1200초~ · 목표 30+)
+                     -- 매치 만료 1800초 = MatchConfig.MatchDurationSeconds (계약서 A-2-5a)
+                     -- 구 4값 PHASE1_PIONEER/PHASE2_VILLAGE/PHASE25_PRESSURE/PHASE3_FINALE 폐기
+                     -- 🔴 판정은 인덱스가 아니라 이름으로 한다 (행이 늘면 인덱스가 밀린다)
 
 VillageCoreState
   VillageId / OwnerUserId (nil이면 미점유) / ClaimedAtTime
@@ -1078,6 +1082,7 @@ M1 구현은 위 항목을 추측해 선행하지 않는다. 필요한 입력·�
 
 | 날짜 | 변경 | 이유 |
 |---|---|---|
+| **2026-09-08** | **[개편] `MatchPhase` 4단 → 5단** (`PHASE0-1`/`PHASE0-2`/`PHASE1`/`PHASE2`/`PHASE3`) + 매치 만료 30분을 `MatchConfig` 로 분리. **[변경] 재화·경험치 주인 = 누적 피해 최다**(막타 아님 · 남에겐 드랍이 보이지도 먹히지도 않음 · 플레이어 피해 0이면 미지급). **[추가] 물약 쿨타임** 레벨 선형 13→6초 | 추가기획2(WO-014 · PR #35). 0페이즈 4분 뒤 **전직 유예 30초**가 필요해 5단이 됐다. 막타 기준은 남의 사냥을 가로채기 쉬웠고, 포탑·수비대에 몹을 맡겨두는 방치 파밍도 막아야 했다 |
 | **2026-09-03** | **[추가] 플레이어 스탯·장비·강화·기능 NPC 섹터·UI 계약.** 13스탯·6장비 슬롯·강화 3표·자동 AP/직접 SP·데미지 공식, 4섹터 앵커와 선택적 개별 NPC 좌표, 공통 UI 셸·라우터·릴레이를 명시 | 고정 피해·상시 크리티컬로는 1→10레벨 성장과 장비 파밍이 성립하지 않고, 기능 NPC·UI도 데이터/소유권 계약 없이는 구현을 시작할 수 없었다 |
 | **2026-08-29** | **[정정] §5.1 공개 타입 · §5.2 서비스 계약 · §6.1 데이터 표 · §6.3 정합성 규칙을 §4 기준으로 동기화** | 8-28 개정이 §4 중심으로 이뤄지면서 뒤쪽 명세가 못 따라왔다. 폐기된 `DefenseMapName`·`DEFENSE_TURRET/BUNKER/ARTILLERY`·`GreatTurretState`·`WaveState` 잔존, `MatchPhase` 에 `PHASE1` 중복·2.5 누락, **`MinionPhaseConfig`↔`WavePhaseConfig` 및 `MinionComposition`↔`WaveComposition` 신구 이름 동시 존재**, `WaveService.*` 잔존, `BossService` 중복 나열. 이 상태로 계약서를 쓰면 어느 쪽을 따를지 알 수 없다 |
 | **2026-08-29** | **[정정] 마을 맵 이름 6개를 실제 루트 엔티티 이름으로** (`MinimiHenesys` → `Henesys_Village_MinimiMain` 등) | §3과 §4.1이 같은 문서 안에서 서로 다른 이름을 쓰고 있었다. **`MapName` 은 맵 루트 엔티티 이름과 글자 단위로 일치해야 스포너가 돈다** — 안 맞으면 에러 없이 조용히 안 돈다(같은 원인으로 이미 32건이 죽어 있다) |
