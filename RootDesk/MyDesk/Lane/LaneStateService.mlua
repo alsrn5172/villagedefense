@@ -18,6 +18,10 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property any trainDef = nil
 
+	-- 마을 × 시설 그림 (FacilitySprite.csv · 계약서 A-2-4b). spriteDef[villageId][stage] = { world, icon, flipY, ground, bar }
+	@HideFromInspector
+	property any spriteDef = nil
+
 	-- 해금·모집 재화를 마을 지역재화(REGION_*)로 쓸지. false = 다이아몬드 임시 (사용자 2026-09-07).
 	property boolean UseRegionalMaterial = false
 
@@ -34,6 +38,7 @@ script LaneStateService extends Logic
 		}
 		self:LoadTowerDef()
 		self:LoadTrainDef()
+		self:LoadSpriteDef()
 		log("[Lane] LaneStateService ready (server · village ledger)")
 	end
 
@@ -75,6 +80,92 @@ script LaneStateService extends Logic
 		end
 		for stage, d in pairs(fresh) do if #d.maxHp >= 1 then self.towerDef[stage] = d end end
 		log("[Lane] TowerConfig loaded: " .. tostring(t:GetRowCount()) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadSpriteDef()
+		-- FacilitySprite.csv(계약서 A-2-4b · 마을 × Stage). 표가 없으면 아래 기본값으로 돈다.
+		-- RUID 기본값 = 2026-09-08 이전에 .model/.ui/.mlua 에 박제돼 있던 값. CORE 는 월드 RUID 를 UI 에 쓰면 LEA-3044 라 아이콘이 다르다.
+		-- ground/bar 는 헤네시스 전용 아트를 Scale 0.25 로 놓고 Maker 에서 잰 값(사용자 2026-09-08). 세 시설 모두 같다.
+		local fallback = {
+			TOWER = { world = "781d0548d4434877a044f77db08e2ffe", icon = "781d0548d4434877a044f77db08e2ffe", flipY = false, ground = 1.125, bar = 1.2 },
+			SUPPRESSOR = { world = "ccdeb5e0dcb34fe98384ee1759c852b7", icon = "ccdeb5e0dcb34fe98384ee1759c852b7", flipY = true, ground = 1.125, bar = 1.2 },
+			CORE = { world = "8adca861d2d8489682616316a3a3f50f", icon = "dab6ddee82db4d34ab48608d6103f4f2", flipY = false, ground = 1.125, bar = 1.2 },
+		}
+		self.spriteDef = {}
+		for _, village in ipairs(self.villages) do
+			self.spriteDef[village.id] = {}
+			for stage, d in pairs(fallback) do
+				self.spriteDef[village.id][stage] = { world = d.world, icon = d.icon, flipY = d.flipY, ground = d.ground, bar = d.bar }
+			end
+		end
+		local t = _DataService:GetTable("FacilitySprite")
+		if t == nil then
+			log_warning("[Lane] FacilitySprite dataset not found — 임시 스프라이트 기본값 사용")
+			return
+		end
+		local applied = 0
+		for i = 1, t:GetRowCount() do
+			local villageId = t:GetCell(i, "VillageId") or ""
+			local stage = t:GetCell(i, "Stage") or ""
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if enabled and self.spriteDef[villageId] ~= nil and fallback[stage] ~= nil then
+				local d = self.spriteDef[villageId][stage]
+				local world = t:GetCell(i, "WorldRuid") or ""
+				local icon = t:GetCell(i, "IconRuid") or ""
+				-- 빈 칸은 "기본값 유지" 다. 덮어쓰면 스프라이트가 사라진다(빈 RUID = 안 보임).
+				if world ~= "" then d.world = world end
+				if icon ~= "" then d.icon = icon end
+				d.flipY = string.lower(tostring(t:GetCell(i, "FlipY") or "false")) == "true"
+				-- 숫자 칸도 빈 칸이면 기본값 유지. 0 은 유효한 값이라 tonumber 결과로만 판단한다.
+				local ground = tonumber(t:GetCell(i, "GroundOffset"))
+				local bar = tonumber(t:GetCell(i, "BarOffset"))
+				if ground ~= nil then d.ground = ground end
+				if bar ~= nil then d.bar = bar end
+				applied = applied + 1
+			end
+		end
+		log("[Lane] FacilitySprite loaded: " .. tostring(applied) .. " rows applied")
+	end
+
+	method string FacilityWorldRuid(string villageId, string stage)
+		-- 마을×시설의 월드 스프라이트 RUID. 못 찾으면 "" → 호출부가 .model 기본값을 유지한다.
+		if self.spriteDef == nil then return "" end
+		local v = self.spriteDef[villageId]
+		if v == nil or v[stage] == nil then return "" end
+		return v[stage].world or ""
+	end
+
+	method string FacilityIconRuid(string villageId, string stage)
+		-- 마을×시설의 UI 아이콘 RUID. 못 찾으면 "" → 호출부가 .ui 기본값을 유지한다.
+		if self.spriteDef == nil then return "" end
+		local v = self.spriteDef[villageId]
+		if v == nil or v[stage] == nil then return "" end
+		return v[stage].icon or ""
+	end
+
+	method number FacilityGroundOffset(string villageId, string stage, number fallbackValue)
+		-- 발판 y 에서 얼마나 올려 스폰하는가(피벗 → 스프라이트 바닥). 표에 없으면 호출부가 준 기본값.
+		if self.spriteDef == nil then return fallbackValue end
+		local v = self.spriteDef[villageId]
+		if v == nil or v[stage] == nil or v[stage].ground == nil then return fallbackValue end
+		return v[stage].ground
+	end
+
+	method number FacilityBarOffset(string villageId, string stage, number fallbackValue)
+		-- 엔티티 피벗 → HP바 y. 표에 없으면 호출부가 준 기본값.
+		if self.spriteDef == nil then return fallbackValue end
+		local v = self.spriteDef[villageId]
+		if v == nil or v[stage] == nil or v[stage].bar == nil then return fallbackValue end
+		return v[stage].bar
+	end
+
+	method boolean FacilityFlipY(string villageId, string stage)
+		-- 마을×시설의 상하반전 여부(월드·UI 공통). 임시 억제기 스프라이트가 뒤집혀 있어 필요하다.
+		if self.spriteDef == nil then return false end
+		local v = self.spriteDef[villageId]
+		if v == nil or v[stage] == nil then return false end
+		return v[stage].flipY == true
 	end
 
 	@ExecSpace("ServerOnly")
@@ -297,9 +388,11 @@ script LaneStateService extends Logic
 				local canUp = t.alive and upCost > 0
 				local canRep = t.alive and t.hp < max
 				local canReb = (not t.alive) and rebCost > 0 and (stage ~= "TOWER" or v.towers.SUPPRESSOR.alive)
+				-- 16·17번 = 마을별 아이콘 RUID + 상하반전 (2026-09-08 추가 · payload 는 append-only).
 				add({ "T", stage, d.name, tostring(t.lv), tostring(t.hp), tostring(max), b2s(t.alive),
 					tostring(d.attack[math.min(t.lv, #d.attack)] or 0), tostring(d.range[math.min(t.lv, #d.range)] or 0),
-					tostring(upCost), tostring(repCost), tostring(rebCost), b2s(canUp), b2s(canRep), b2s(canReb) })
+					tostring(upCost), tostring(repCost), tostring(rebCost), b2s(canUp), b2s(canRep), b2s(canReb),
+					self:FacilityIconRuid(v.id, stage), b2s(self:FacilityFlipY(v.id, stage)) })
 			end
 			add({ "FRONT", front })
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
@@ -307,7 +400,9 @@ script LaneStateService extends Logic
 		elseif kind == "recruit" then
 			local front = self:FrontStage(v)
 			local t = v.towers[front]
-			add({ "FRONT", front, self.towerDef[front].name, tostring(t.hp), tostring(self:MaxHp(front, t.lv)), b2s(t.alive) })
+			-- 7·8번 = 마을별 아이콘 RUID + 상하반전 (2026-09-08 추가 · append-only).
+			add({ "FRONT", front, self.towerDef[front].name, tostring(t.hp), tostring(self:MaxHp(front, t.lv)), b2s(t.alive),
+				self:FacilityIconRuid(v.id, front), b2s(self:FacilityFlipY(v.id, front)) })
 			local slots = {}
 			for _, d in ipairs(v.defenders) do table.insert(slots, d.key .. ":" .. tostring(d.qty)) end
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap), table.concat(slots, ",") })
