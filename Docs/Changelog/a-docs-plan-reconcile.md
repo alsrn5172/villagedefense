@@ -42,11 +42,13 @@ PR #42 가 헤더 메타 + §4 매치 구성까지 맞췄고, 이 PR 이 본문�
 | 0 통합 게이트 | **9/11 ✅** | `Global/WorldConfig.config` CoreVersion **`26.5.0.0` 미승격**(실측) · 데이터 패키지 감사 |
 | 1 세로 조각 | **14/19 ✅** | 로비 맵 · `LevelTable` 실값 · 나머지 4마을 지형 · 파병관 마을 이전 |
 | 2 경제·NPC | **14/18 ✅** | `LevelTable` 실값 · 엘리트 자이언트(0행) · 미니언 구성/배율 |
-| 3 파병·발록 | **6/15 ✅** | 발록 방 6개 · 도전/선취 판정 · `DispatchService` 실제 이동 |
+| 3 파병·발록 | **6/15 ✅ · 3 🟡** | 발록 방 **6개 복제**(현재 1개) · 도전/선취 판정. 파병은 구현됐으나 **회귀로 막힘**(아래) |
 | 4 기록·영구 성장 | **0/10 ⬜** | 🔴 **DataStorage 계층 자체가 없다.** 발록의 심장·플레이 기록·순위판이 전부 여기 |
-| 5 5마을 확장 | **1/11 ✅** | `LaneConfig` 가 `HENESYS` 1행뿐 |
+| 5 5마을 확장 | **2/11 ✅** | 레인 지형 **9/15맵**(헤네시스·커닝·페리온 완료 · 엘리니아·노틸러스 남음) |
 
-주요 실측 근거: `Global/WorldConfig.config` = `26.5.0.0` / `Environment/config` = `26.7.0.0` · `LaneConfig` `HENESYS` 1행 · `BossInfo` 8행(주니어 발록·마노 포함) · 슬리피우드 맵 2개 존재 · `EliteMonsterInfo`·`EliteSpawnTable` 0행 · `Dispatch/`·`Progression/` 폴더 없음 · 맵 35개.
+주요 실측 근거(2026-09-09 최종): `Global/WorldConfig.config` = **`26.5.0.0`** / `Environment/config` = `26.7.0.0` · `LaneConfig` **9행(3마을)** · `BossInfo` 8행(주니어 발록·마노 포함) · 슬리피우드 맵 2개 · **발록 방 1개뿐**(`BalrogChallenge`/`BalrogRoom` 표 없음) · `EliteMonsterInfo`·`EliteSpawnTable` **0행** · `LevelTable` 전 행 자리표시자 · `Dispatch/` **있음**(`DispatchRule` 4행) · **`Progression/` 없음** · 맵 35개.
+
+> ⚠️ 1차 조사 때 `LaneConfig` 1행 · `Dispatch/` 없음으로 기록했으나 **낡은 스냅샷이었다.** 사용자 지시로 현재 main 기준 재실측해 §7·§4.9·§9 와 로드맵을 다시 맞췄다.
 
 ### Roadmap
 
@@ -60,7 +62,26 @@ PR #42 가 헤더 메타 + §4 매치 구성까지 맞췄고, 이 PR 이 본문�
 
 7개 브랜치 전부 `✅` 로 갱신하고 맨 위에 **"과거 기록 · 이후 작업은 `WorkOrders/WO-*.md` 가 관리"** 를 명시했다. 삭제하지 않았다 — M1 자체가 진행 중이라 초기 구현 순서의 기록으로 남긴다.
 
-### 발견해서 기록만 한 것
+### 🔴 발견한 회귀 — 파병이 전 페이즈에서 막혀 있다
+
+`Dispatch/DispatchService.CurrentRule()` 은 `_MatchSessionLogic.CurrentPhaseName` 으로 `DispatchRule` 을 조회한다.
+그런데 **WO-014 가 페이즈를 5단으로 개명한 뒤 `DispatchRule.csv`(4행)와 `DispatchService.mlua` 폴백 상수가 옛 이름(`PHASE1_PIONEER`·`PHASE2_VILLAGE`·`PHASE25_PRESSURE`·`PHASE3_FINALE`)에 그대로 남았다.**
+
+```
+RuleOf(phaseName) → 모르는 페이즈면 { enabled = false, villageCap = 0 }   ← "안전한 쪽"
+CurrentPhaseName  → PHASE0-1 / PHASE0-2 / PHASE1 / PHASE2 / PHASE3
+DispatchRule.csv  → PHASE1_PIONEER / PHASE2_VILLAGE / PHASE25_PRESSURE / PHASE3_FINALE
+```
+
+→ **모든 페이즈에서 파병 접수가 거절된다.** 에러도 경고도 없다(폴백이 조용히 막는다).
+WO-014(페이즈 개명)와 파병 브랜치가 병행 개발돼 머지 시점에 어긋난 것이다. `LaneFacility` 의 같은 문제는 WO-014 에서 고쳤지만 `DispatchRule` 은 그때 존재하지 않아 놓쳤다.
+
+**고치는 법**: `DispatchRule.csv` 4행 + `DispatchService.mlua:34-37` 폴백 4줄을 새 이름으로. `PHASE0-1`/`PHASE0-2` 는 미니언이 없으니 `enabled=false`.
+**이 PR 에서는 고치지 않았다** — 문서 전용 PR 이라 CSV·코드를 건드리지 않는다. 별도 WO.
+
+교훈은 §9 위험 표에 추가했다: **페이즈 값을 바꿀 때 `CurrentPhaseName` 을 읽는 모든 구독자와 `Phase` 열을 쓰는 모든 표를 함께 검색한다.**
+
+### 발견해서 기록만 한 것 (2)
 
 🔴 **수비대 1묶음 마릿수 — 기획 10 / 코드 8.** 모집 **비용**(재화 8개)을 **마릿수**로 잘못 쓴 버그다(`LaneStateService.mlua:633`). 몬스터별 묶음 크기 표(`MonsterRecruit`)가 없어 지금 고쳐도 임시 상수라, GDD §4.8 각주 + [`추가기획2/미정-값.md`](../추가기획2/미정-값.md) B-3 에 올리고 **코드는 건드리지 않았다.**
 
