@@ -115,6 +115,9 @@
 - `ExecuteBlast`: 중심 = 화면 안 보스 우선/최근접(없으면 시전자 앞 Range 지점) · 반지름 = **CSV `Range`(3)** · 첫 폭발(중심 Nova · `impact` 단계라 RUID 오버라이드 가능)과 같은 프레임에 `DealSkillDamageCircle`(**`CircleShape`** · 반지름 안 몬스터 전부 · HitCount) → `BlastExplosionCount`(8) 개 BigExplosion 을 0.07s 간격으로 반지름 안 타원에 결정적 배치 → 마무리 SparkRadialExplosion. 개수·간격·크기는 `SkillExecutors` 속성.
 - `SkillInfo.csv` `SK_M31`: Range 0 → **3**, Description 을 폭발형으로. ⚠ 추가기획1 표의 "단일 대상" 문구와 다르다(사용자 요청 2026-09-09) — 기획 변경 사유("발록전엔 광역이 쓸모없다")는 보스가 반지름 안에서 그대로 맞으니 유지된다. 기획자 확인 항목.
 
+### `Skill/SkillExecutors.mlua` — 텔레포트 강화를 눈으로 구분 (요청: 파란 원형 파열은 강화판에만)
+- `ExecuteBlink` 도착 `impact`(CircleBurst 폴백)를 `dealsArrivalDamage`(도착 피해가 있는 BLINK 행 = SK_M21) 일 때만 재생. 일반 텔레포트(SK_M13)는 출발 플래시(`depart` EnergyExplosion)만. 데이터 조건이라 행만 바꾸면 따라간다.
+
 ### `SkillInfo.csv` `SK_M21` 텔레포트 강화 — 수치 확정 (사용자 결정 2026-09-09)
 - 배우는 즉시: **쿨 2s → 1s**(Cooldown 1 · CooldownPerLevel 0) · **거리 +30%**(Range 3.25 = 2.5×1.3 · 기존).
 - 레벨업: **도착 광역 피해 110% → 150%**(BaseEffect 110 · EffectPerLevel 10). MpCost 12 → **5**(텔레포트와 같음 · 순수 상향).
