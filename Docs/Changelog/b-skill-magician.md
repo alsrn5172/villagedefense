@@ -84,6 +84,7 @@
 | `SK_M22` 매직 가드 | Cooldown | **60 → 5** | 반복 시전 테스트 |
 | `SK_M31` 대마법 | UseLimit | **1 → 0** | 매치당 1회 제한 해제 (`ResetMatchState` 호출처가 아직 없어 세션당 1회였다) |
 `#Note` 에 `⚠TEST` 표기. **Ready for review 전에 원값으로 되돌린다.**
+→ ✅ **복구 완료 (Ready for review 직전 커밋)**: SK_M22 Cooldown 60 · SK_M31 UseLimit 1 · `PlayerSkillState.DevAllowJobSwitch = false`(스위치는 남겨 두고 기본값만 원복 — 다음 테스트 때 true 로).
 
 ### `SkillInfo.csv` — 원작 근접 (유지)
 - `SK_M13` Range **3 → 2.5**, `SK_M21` Range **3.9 → 3.25**(2.5×1.3). 원작 텔레포트는 ≈150px(=1.5) — 더 줄이려면 두 셀만.
