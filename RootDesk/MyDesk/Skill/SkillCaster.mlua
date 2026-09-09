@@ -56,6 +56,10 @@ script SkillCaster extends Logic
         -- 양쪽 인스턴스 모두. 스킬별 락 길이 (초).
         self.castLockOverrides = {
             SK_M11 = 0.4,
+            -- b/skill-magician: 매직 가드(버프 시전 모션) · 대마법(Duration 1.0 텔레그래프 = 컷신 박자, 그동안 서 있는다).
+            -- 이동 스킬(SK_M13 텔레포트 · SK_M21 텔레포트 강화)은 락 없음(IsMovementSkill).
+            SK_M22 = 0.6,
+            SK_M31 = 1.2,
         }
     end
 
@@ -93,8 +97,11 @@ script SkillCaster extends Logic
             local remaining = _PlayerSkillState:LocalCooldownRemaining(skillId)
             return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)" })
         end
-        if _PlayerSkillState:LocalMp() < skill.mpCost then
-            return self:FinishCast(skillId, { ok = false, reason = "not enough MP" })
+        -- MP 예측 게이트. 매직 가드(SK_M22) 활성 중엔 소모 ×1.5 (SkillBuffs 미러 · 서버 GetMpCostMul 과 같은 규칙).
+        local mpCost = skill.mpCost
+        if _SkillBuffs ~= nil then mpCost = mpCost * _SkillBuffs:LocalMpCostMul() end
+        if _PlayerSkillState:LocalMp() < mpCost then
+            return self:FinishCast(skillId, { ok = false, reason = "not enough MP (need " .. tostring(math.floor(mpCost)) .. ")" })
         end
         -- 시전 락: 다른 스킬(같은 스킬 포함)이 시전 중이면 거절. 쿨다운·MP 게이트 뒤, 프레젠테이션 변경 전(casting.md "Cooldown Before Presentation Lock").
         -- 이동 스킬은 예외 — 락 중에도 나간다.
@@ -107,9 +114,19 @@ script SkillCaster extends Logic
         self.castSequence = self.castSequence + 1
         local castId = self.castSequence
         if isMove then
+            -- 이동 스킬은 클라 우선(b/skill-magician · SkillMovement): 플레이어 위치의 소유자인 이 클라가 먼저 옮기고(방향키·발판 착지 해석 포함),
+            -- 성공했을 때만 서버에 알린다. 취소(착지 없음·사망)면 서버 요청도 없다 — 쿨다운·MP 소모·이펙트 전부 없음.
+            -- 서버는 옮기지 않는다: MP·쿨다운·사용 횟수 판정과 이펙트·도착 광역 피해(SK_M21)만 (SkillExecutors.ExecuteBlink).
             -- 락을 걸지 않고, 진행 중인 락도 건드리지 않는다(activeCastId 유지). 서버 거절이 와도 castId 가 달라 ReleaseCastLock 은 무시한다.
+            if _SkillMovement == nil then
+                return self:FinishCast(skillId, { ok = false, reason = "SkillMovement not loaded" })
+            end
+            local moved = _SkillMovement:TryTeleport(skillId, skill)
+            if not moved.ok then
+                return self:FinishCast(skillId, { ok = false, reason = "teleport cancelled: " .. tostring(moved.reason) })
+            end
             self:RequestCast(skillId, castId)
-            return self:FinishCast(skillId, { ok = true, reason = "requested (cast #" .. tostring(castId) .. ", movement skill, no lock)" })
+            return self:FinishCast(skillId, { ok = true, reason = "requested (cast #" .. tostring(castId) .. ", movement " .. tostring(moved.branch) .. ", no lock)" })
         end
         local lockSeconds = self:GetCastLockSeconds(skillId)
         self.castLockActive = true
@@ -259,17 +276,20 @@ script SkillCaster extends Logic
             local e = _SummonManager:GetEcon(uid)
             if e ~= nil then mp = e.mp or 0 end
         end
-        if mp < skill.mpCost then
-            self:CastResult(skillId, false, "not enough MP", 0, castId, uid)
+        -- 매직 가드(SK_M22) 활성 중엔 소모 ×1.5 (SkillBuffs.GetMpCostMul · 추가기획1 "스킬 사용 시 소모 MP 가 50% 증가").
+        local mpCost = math.floor(skill.mpCost)
+        if _SkillBuffs ~= nil then mpCost = math.floor(skill.mpCost * _SkillBuffs:GetMpCostMul(uid)) end
+        if mp < mpCost then
+            self:CastResult(skillId, false, "not enough MP (need " .. tostring(mpCost) .. ")", 0, castId, uid)
             return
         end
         if self.UseSpendMp then
-            if not _SummonManager:SpendMp(uid, math.floor(skill.mpCost)) then
+            if not _SummonManager:SpendMp(uid, mpCost) then
                 self:CastResult(skillId, false, "not enough MP", 0, castId, uid)
                 return
             end
         else
-            log("[Skill] SpendMp 미연결 — MP 미차감 (A 브랜치 대기) skill=" .. skillId .. " cost=" .. tostring(skill.mpCost))
+            log("[Skill] SpendMp 미연결 — MP 미차감 (A 브랜치 대기) skill=" .. skillId .. " cost=" .. tostring(mpCost))
         end
 
         -- 게이트 통과 — 상태 확정 순서: 시전 락 → 쿨다운 → 사용 횟수 → 모션(시전당 1회) → 실행기 → 이벤트.
@@ -306,7 +326,7 @@ script SkillCaster extends Logic
         end
         self:SendEvent(evt)
 
-        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " (" .. uid .. ")")
+        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " (" .. uid .. ")")
         self:CastResult(skillId, true, "ok", cooldown, castId, uid)
     end
 

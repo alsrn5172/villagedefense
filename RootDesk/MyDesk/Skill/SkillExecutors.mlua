@@ -2,11 +2,13 @@
 script SkillExecutors extends Logic
 
     -- Visual/audio shells, now with damage wired into the offensive behaviors (projectile /
-    -- aoe / origin) via the caster's script.SkillAttack component. blink / buff_self /
-    -- buff_ally / passive still deal no damage - no movement, no buff state either way.
-    -- SkillCaster calls Execute() after every gate has already passed. Real gameplay behavior
-    -- beyond damage (movement, buff effects) lands INSIDE these per-behavior functions once the
-    -- design doc arrives; SkillCaster never changes.
+    -- aoe / origin / melee_arc) via the caster's script.SkillAttack component.
+    -- SkillCaster calls Execute() after every gate has already passed.
+    -- b/skill-magician (추가기획1 마법사 표):
+    --   BLINK     이동은 소유 클라가 이미 끝냈다(SkillMovement). 여기서는 출발/도착 이펙트 + 텔레포트 강화(SK_M21)의 도착 지점 광역 피해.
+    --   BUFF_SELF 버프 원장(SkillBuffs.ApplyBuff)에 BuffTag 를 Duration 동안 켠다 — 매직 가드(SK_M22).
+    --   ORIGIN    originSingleTarget 에 있는 스킬(대마법 SK_M31)은 화면 안 단일 대상(보스 우선 · 없으면 최근접)에 HitCount 회. 나머지는 화면 전체 1회.
+    --   PASSIVE   시전 없음 — 값은 JobPassiveLogic(연성 SK_M12) 이 스킬 레벨에서 읽는다.
 
     -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
     -- is one line here.
@@ -29,6 +31,18 @@ script SkillExecutors extends Logic
     -- component - per-skill damage/hit config is set on the spawned instance in
     -- SkillAttack.SpawnProjectile, not baked into separate models per skill.
     property string ProjectileModelId = "skillprojectile"
+
+    -- BLINK: 클라가 옮긴 위치가 서버로 동기화될 때까지 기다린 뒤 도착 이펙트·도착 광역 피해를 재생한다(초). 목적지는 서버로 보내지 않는다(SkillMovement 원칙).
+    property number BlinkArrivalDelay = 0.15
+
+    -- BLINK 도착 광역 피해 상자(world unit · 가로×세로). 발 위치 기준으로 세로 절반만큼 올려 놓는다. CSV Range 는 이동 거리라 여기서 안 쓴다.
+    property Vector2 BlinkArrivalAoeSize = Vector2(2.4, 1.6)
+
+    -- ORIGIN 중 단일 대상으로 푸는 스킬 (skillId -> true). BuildHandlerTable 에서 채운다.
+    property table originSingleTarget = {}
+
+    -- ORIGIN 탐색 상자 = PC 가시 영역(12.8×7.2 world unit · platform.md §5). 화면 전체 광역과 단일 대상 후보 탐색이 같이 쓴다.
+    property Vector2 ScreenBoxSize = Vector2(12.8, 7.2)
 
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
@@ -63,6 +77,10 @@ script SkillExecutors extends Logic
             MELEE_ARC = function(skillId, skillData, casterEntity, level) self:ExecuteMeleeArc(skillId, skillData, casterEntity, level) end,
             TAUNT = function(skillId, skillData, casterEntity, level) self:ExecuteTaunt(skillId, skillData, casterEntity, level) end,
         }
+        -- 대마법(SK_M31): 추가기획1 "단일 대상 초고피해 (컷신)" — 화면 전체 광역에서 단일 대상으로 바뀐 행(기획 정리 ⚠️ 변경 · 발록전이 목표).
+        self.originSingleTarget = {
+            SK_M31 = true,
+        }
     end
 
     @ExecSpace("ServerOnly")
@@ -78,6 +96,8 @@ script SkillExecutors extends Logic
                 cast = { ruid = "ba512e50ddad4231bd6093dd07afc00e" },
                 impact = { ruid = "6beb8d728a7d4cca92eb7f4d2d9c45f9" },
             },
+            -- SK_M13 · SK_M21 · SK_M22 · SK_M31: 원작 팩 RUID 미조사(이 세션엔 msw-search 가 없다). 각 실행기의 파티클 폴백으로 재생한다.
+            -- RUID 가 확인되면 여기 한 항목씩 추가하면 된다 — 실행기 코드는 안 바뀐다.
         }
     end
 
@@ -191,9 +211,35 @@ script SkillExecutors extends Logic
     end
 
     method void ExecuteBlink(string skillId, table skillData, Entity casterEntity, number level)
-        local pos = casterEntity.TransformComponent.WorldPosition
-        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.EnergyExplosion)
+        -- 텔레포트(SK_M13) · 텔레포트 강화(SK_M21). 이동 자체는 소유 클라가 RequestCast 전에 끝냈다(SkillMovement · 클라 우선).
+        -- 서버는 출발 이펙트·사운드를 지금 재생하고, BlinkArrivalDelay 뒤(위치 동기화 후) 도착 이펙트와
+        -- 도착 지점 광역 피해(EffectUnit ATK_PCT · BaseEffect > 0 인 BLINK 행 = SK_M21 · 추가기획1 C)를 재생한다.
+        local from = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "cast", casterEntity, from, BasicParticleType.EnergyExplosion)
         self:PlayCastSound(skillId, casterEntity)
+
+        local dealsArrivalDamage = skillData.effectUnit == "ATK_PCT" and skillData.baseEffect > 0
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            local to = casterEntity.TransformComponent.WorldPosition
+            self:PlayStageEffect(skillId, "impact", casterEntity, to, BasicParticleType.CircleBurst)
+            log("SkillExecutors: BLINK " .. skillId .. " server saw from=(" .. tostring(from.x) .. "," .. tostring(from.y)
+                .. ") to=(" .. tostring(to.x) .. "," .. tostring(to.y) .. ") arrivalDamage=" .. tostring(dealsArrivalDamage))
+            if not dealsArrivalDamage then return end
+
+            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+            if not isvalid(skillAttack) then
+                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping arrival damage for " .. skillId)
+                return
+            end
+            local hitCount = skillData.hitCount
+            if hitCount <= 0 then hitCount = 1 end
+            skillAttack:DealSkillDamage(skillId, level, {
+                posX = to.x, posY = to.y + self.BlinkArrivalAoeSize.y / 2,
+                sizeX = self.BlinkArrivalAoeSize.x, sizeY = self.BlinkArrivalAoeSize.y,
+                hitCount = hitCount,
+            })
+        end, self.BlinkArrivalDelay)
     end
 
     method void ExecuteAoe(string skillId, table skillData, Entity casterEntity, number level)
@@ -228,9 +274,27 @@ script SkillExecutors extends Logic
     end
 
     method void ExecuteBuff(string skillId, table skillData, Entity casterEntity, number level)
+        -- BUFF_SELF / BUFF_ALLY. 시각·사운드 뒤 버프 원장에 BuffTag 를 켠다(SkillBuffs.ApplyBuff · Duration = DurationAt).
+        -- 매직 가드(SK_M22 · MAGIC_GUARD): 효과는 SkillBuffs 가 조회 시점에 푼다 — 피격 흡수(AbsorbDamage · A 의 PlayerHit 연결 대기),
+        -- 공격 시 현재 MP % 추가 피해(SkillDatabase.DamageAt), 스킬 MP 소모 ×1.5(SkillCaster). BUFF_ALLY 의 대상 확장은 후속.
         local pos = casterEntity.TransformComponent.WorldPosition
         self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
         self:PlayCastSound(skillId, casterEntity)
+
+        if skillData.buffTag == nil or skillData.buffTag == "" then
+            log("SkillExecutors: BUFF " .. skillId .. " has no BuffTag — visual only")
+            return
+        end
+        if _SkillBuffs == nil then
+            log_warning("SkillExecutors: SkillBuffs not loaded, buff " .. skillData.buffTag .. " not applied for " .. skillId)
+            return
+        end
+        if not isvalid(casterEntity.PlayerComponent) then
+            log_warning("SkillExecutors: caster has no PlayerComponent, cannot apply buff for " .. skillId)
+            return
+        end
+        local duration = _SkillDatabase:DurationAt(skillId, level)
+        _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, duration)
     end
 
     method void ExecuteOrigin(string skillId, table skillData, Entity casterEntity, number level)
@@ -243,24 +307,40 @@ script SkillExecutors extends Logic
         self:PlayCastSound(skillId, casterEntity)
 
         _TimerService:SetTimerOnce(function()
-            if isvalid(casterEntity) then
-                local finalPos = casterEntity.TransformComponent.WorldPosition
-                self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
+            if not isvalid(casterEntity) then return end
+            local finalPos = casterEntity.TransformComponent.WorldPosition
+            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+            if not isvalid(skillAttack) then
+                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+                return
+            end
+            -- "Everything on screen" approximated as the PC visible area (ScreenBoxSize 12.8x7.2
+            -- world units - see platform.md §5) centered on the caster's position at delay-end.
+            local screen = {
+                posX = finalPos.x, posY = finalPos.y,
+                sizeX = self.ScreenBoxSize.x, sizeY = self.ScreenBoxSize.y,
+                hitCount = 1,
+            }
 
-                local skillAttack = casterEntity:GetComponent("script.SkillAttack")
-                if not isvalid(skillAttack) then
-                    log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+            if self.originSingleTarget[skillId] then
+                -- 단일 대상(대마법 SK_M31 · 추가기획1 "단일 대상 초고피해"): 화면 안 보스 우선, 없으면 가장 가까운 몬스터 하나에 HitCount 회.
+                -- 대상이 없으면 소모(MP·사용 횟수·쿨다운)는 그대로다 — 이미 시전된 궁극기라 원작과 같다. 이펙트는 대상 위치에.
+                local target = skillAttack:FindSkillTarget(skillId, screen, true)
+                if not isvalid(target) then
+                    self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.LightningStrikeTall)
+                    log("SkillExecutors: ORIGIN " .. skillId .. " no target on screen — cast consumed")
                     return
                 end
-
-                -- "Everything on screen" approximated as the PC visible area (12.8x7.2 world
-                -- units - see platform.md §5) centered on the caster's position at delay-end.
-                skillAttack:DealSkillDamage(skillId, level, {
-                    posX = finalPos.x, posY = finalPos.y,
-                    sizeX = 12.8, sizeY = 7.2,
-                    hitCount = 1,
-                })
+                local targetPos = target.TransformComponent.WorldPosition
+                self:PlayStageEffect(skillId, "impact", casterEntity, targetPos, BasicParticleType.LightningStrikeTall)
+                local hitCount = skillData.hitCount
+                if hitCount <= 0 then hitCount = 1 end
+                skillAttack:DealSkillDamageToTarget(skillId, level, target, hitCount)
+                return
             end
+
+            self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
+            skillAttack:DealSkillDamage(skillId, level, screen)
         end, skillData.duration)
     end
 

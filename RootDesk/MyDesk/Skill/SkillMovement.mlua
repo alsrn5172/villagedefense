@@ -1,0 +1,229 @@
+@Logic
+script SkillMovement extends Logic
+
+    -- 이동 스킬(behavior BLINK · 텔레포트 SK_M13 / 텔레포트 강화 SK_M21)의 클라 실행기 (b/skill-magician · 추가기획1 마법사 특이사항·C).
+    -- 원칙 — .claude/skills/maplestory-skill-maker/references/movement/skills.md · teleport.md 를 이 프로젝트 범위로 줄인 것:
+    --   · 플레이어 위치의 소유자는 그 클라다. 소유 클라가 목적지를 풀고 MovementComponent:SetWorldPosition 으로 즉시 옮긴다(클라 우선).
+    --     서버는 옮기지 않는다 — SkillCaster.RequestCast 가 MP·쿨다운·사용 횟수만 판정·기록하고, 출발/도착 이펙트와
+    --     도착 광역 피해(SK_M21)는 동기화된 위치에서 재생한다(SkillExecutors.ExecuteBlink). 목적지·방향은 서버로 보내지 않는다.
+    --   · 방향 = 시전 순간 누른 방향키(4방향 · _InputService:IsKeyPressed). 없거나 상쇄되면 바라보는 방향(LookDirectionX).
+    --     좌우·상하가 같이 눌리면 좌우 우선(레퍼런스는 거절이지만 핫바 W 한 키로도 나가야 해서 완화).
+    --   · MapleTile 착지(발판 기반): 좌우 = 목적지 아래 발판(경로 벽 통과) → 경로 벽 앞 → 현재 발판의 진행 방향 끝 →
+    --     전부 없으면 그대로 이동해 낙하(원작처럼 허공으로 나갈 수 있다). 상하 = 그 방향 안의 가장 먼 수평 발판, 없으면 취소.
+    --   · 취소는 어떤 부작용도 없다 — 쿨다운·MP·이펙트·서버 요청 전부 없음. SkillCaster.Cast 가 결과를 보고 RequestCast 를 보낼지 정한다.
+    --   · 이동 스킬은 시전 락을 걸지도 받지도 않는다(SkillCaster.IsMovementSkill · 원작 텔레포트 캔슬).
+    -- 🟡 런타임 미검증 API(근거는 .d.mlua): MovementComponent:SetWorldPosition(Vector2) 클라 쓰기 · FootholdComponent:RaycastAll 반환 순서(순서에 의존하지 않는다) ·
+    --    Foothold.NextFootholdId/PreviousFootholdId 체인 · GetCurrentFoothold 가 공중에서 nil 인지.
+
+    -- 좌우 텔레포트 착지 탐색: 목적지에서 아래로 발판을 찾는 거리(world unit · 1 = 100px).
+    property number LandingSearchDistance = 1.5
+
+    -- 착지 탐색·경로 탐색 시작 높이(발 위치 위). 발판 선 위에서 시작해야 자기 발판과 벽을 잡는다.
+    property number ProbeHeight = 0.35
+
+    -- 벽·발판 끝 착지 때 안쪽으로 물러나는 여유. 발판 선 위에 정확히 놓이지 않게만 한다.
+    property number LandingClearance = 0.03
+
+    -- 상하 텔레포트: 현재 서 있는 발판 자체를 후보에서 빼기 위한 최소 이동량.
+    property number VerticalMinTravel = 0.2
+
+    -- 발판 체인 추적 상한(무한 루프 방지).
+    property integer MaxChainSteps = 64
+
+    @ExecSpace("ClientOnly")
+    method table TryTeleport(string skillId, table skill)
+        -- 로컬 플레이어를 skill.range 만큼 옮긴다. 반환 { ok, reason, fromX, fromY, toX, toY, dirX, dirY, branch }.
+        -- ok=false 면 아무것도 바꾸지 않았다. SkillCaster.Cast(BLINK) 만 부른다 — 게이트(배움·쿨다운·MP)는 거기서 이미 통과했다.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then
+            return { ok = false, reason = "no local player" }
+        end
+        local pc = player.PlayerComponent
+        if isvalid(pc) and pc:IsDead() then
+            return { ok = false, reason = "dead" }
+        end
+        local transform = player.TransformComponent
+        local movement = player.MovementComponent
+        local body = player.RigidbodyComponent
+        local controller = player.PlayerControllerComponent
+        local map = player.CurrentMap
+        if not isvalid(transform) or not isvalid(movement) or not isvalid(map) then
+            return { ok = false, reason = "missing transform/movement/map" }
+        end
+
+        local distance = skill.range
+        if distance == nil or distance <= 0 then distance = 1 end
+
+        local dir = self:ResolveDirection(controller)
+        local origin = transform.WorldPosition
+        local foothold = map.FootholdComponent
+        local dest = nil
+        if dir.x ~= 0 then
+            dest = self:ResolveHorizontal(foothold, body, origin, dir.x, distance)
+        else
+            dest = self:ResolveVertical(foothold, origin, dir.y, distance)
+        end
+
+        if dest == nil then
+            log("SkillMovement: " .. skillId .. " cancelled — no landing dir=(" .. tostring(dir.x) .. "," .. tostring(dir.y)
+                .. ") from=(" .. tostring(origin.x) .. "," .. tostring(origin.y) .. ") dist=" .. tostring(distance))
+            return { ok = false, reason = "no landing (" .. self:DirName(dir) .. ")" }
+        end
+
+        movement:SetWorldPosition(Vector2(dest.x, dest.y))
+        log("SkillMovement: " .. skillId .. " " .. self:DirName(dir) .. " from=(" .. tostring(origin.x) .. "," .. tostring(origin.y)
+            .. ") to=(" .. tostring(dest.x) .. "," .. tostring(dest.y) .. ") branch=" .. dest.branch .. " dist=" .. tostring(distance))
+        return { ok = true, reason = dest.branch, fromX = origin.x, fromY = origin.y, toX = dest.x, toY = dest.y,
+                 dirX = dir.x, dirY = dir.y, branch = dest.branch }
+    end
+
+    @ExecSpace("ClientOnly")
+    method Vector2 ResolveDirection(any controller)
+        -- 시전 순간의 방향키 → 한 축만 1/-1 인 Vector2. 좌우 우선. 없으면 바라보는 방향(0 = 아직 안 움직임 → 오른쪽, SkillAttack.SpawnProjectile 과 같다).
+        local left = _InputService:IsKeyPressed(KeyboardKey.LeftArrow)
+        local right = _InputService:IsKeyPressed(KeyboardKey.RightArrow)
+        local up = _InputService:IsKeyPressed(KeyboardKey.UpArrow)
+        local down = _InputService:IsKeyPressed(KeyboardKey.DownArrow)
+        if left and not right then return Vector2(-1, 0) end
+        if right and not left then return Vector2(1, 0) end
+        if up and not down then return Vector2(0, 1) end
+        if down and not up then return Vector2(0, -1) end
+        local facing = 1
+        if isvalid(controller) and controller.LookDirectionX < 0 then facing = -1 end
+        return Vector2(facing, 0)
+    end
+
+    @ExecSpace("ClientOnly")
+    method string DirName(Vector2 dir)
+        -- 로그용 방향 이름.
+        if dir.x > 0 then return "right" end
+        if dir.x < 0 then return "left" end
+        if dir.y > 0 then return "up" end
+        return "down"
+    end
+
+    @ExecSpace("ClientOnly")
+    method any ResolveHorizontal(any foothold, any body, Vector3 origin, number dirX, number distance)
+        -- 좌우 목적지 { x, y, branch }. 순서: direct(목적지 아래 발판) → wall(경로 벽 앞) → edge(현재 발판 끝) → raw-fall(그대로 이동 · 낙하).
+        local targetX = origin.x + dirX * distance
+        if not isvalid(foothold) then
+            return { x = targetX, y = origin.y, branch = "no-foothold-component" }
+        end
+        local probeY = origin.y + self.ProbeHeight
+
+        -- 1. 목적지 아래 발판. 경로 중간의 벽은 통과한다(원작 텔레포트 느낌).
+        local landing = self:ProbeFloor(foothold, targetX, probeY)
+        if landing ~= nil then
+            return { x = targetX, y = landing, branch = "direct" }
+        end
+
+        -- 2. 경로 위 수직 발판(벽) 앞. RaycastAll 반환 순서를 믿지 않고 이동 거리로 고른다(가장 먼 벽).
+        local walls = foothold:RaycastAll(Vector2(origin.x, probeY), Vector2(dirX, 0), distance)
+        local bestX = nil
+        local bestY = nil
+        local bestTravel = -1
+        if walls ~= nil then
+            for _, fh in ipairs(walls) do
+                if fh ~= nil and fh:IsVertical() then
+                    local wallX = fh.StartPoint.x
+                    local travel = (wallX - origin.x) * dirX
+                    if travel > 0 and travel <= distance then
+                        local nearX = wallX - dirX * self.LandingClearance
+                        local y = self:ProbeFloor(foothold, nearX, probeY)
+                        if y ~= nil and travel > bestTravel then
+                            bestX = nearX
+                            bestY = y
+                            bestTravel = travel
+                        end
+                    end
+                end
+            end
+        end
+        if bestX ~= nil then
+            return { x = bestX, y = bestY, branch = "wall" }
+        end
+
+        -- 3. 현재 발판의 진행 방향 끝. GetCurrentFoothold 는 세그먼트 하나라 이음새일 수 있다 → 체인을 따라 진짜 끝까지 간다.
+        if isvalid(body) then
+            local edge = self:FindPlatformEdge(foothold, body:GetCurrentFoothold(), dirX)
+            if edge ~= nil then
+                local travel = (edge.x - origin.x) * dirX
+                if travel > 0 and travel <= distance then
+                    return { x = edge.x - dirX * self.LandingClearance, y = edge.y, branch = "edge" }
+                end
+            end
+        end
+
+        -- 4. 착지 없음 → 그대로 이동. 발판이 없으면 떨어진다(공중 시전 · 절벽 너머).
+        return { x = targetX, y = origin.y, branch = "raw-fall" }
+    end
+
+    @ExecSpace("ClientOnly")
+    method any ResolveVertical(any foothold, Vector3 origin, number dirY, number distance)
+        -- 상하 목적지 { x, y, branch } 또는 nil(취소). 그 방향으로 distance 안에 있는 가장 먼 수평 발판.
+        -- 좌우용 아래 탐색(ProbeFloor)을 재사용하지 않는다 — 위로 갈 때는 경로가 가로지르는 발판을 모아야 한다(teleport.md).
+        if not isvalid(foothold) then return nil end
+        local startY = origin.y + self.ProbeHeight
+        if dirY < 0 then startY = origin.y - 0.05 end
+        local hits = foothold:RaycastAll(Vector2(origin.x, startY), Vector2(0, dirY), distance)
+        if hits == nil then return nil end
+        local bestY = nil
+        local bestTravel = -1
+        for _, fh in ipairs(hits) do
+            if fh ~= nil and not fh:IsVertical() then
+                local y = fh:GetYByX(origin.x)
+                local travel = (y - origin.y) * dirY
+                if travel >= self.VerticalMinTravel and travel <= distance + self.ProbeHeight and travel > bestTravel then
+                    bestY = y
+                    bestTravel = travel
+                end
+            end
+        end
+        if bestY == nil then return nil end
+        local branch = "down"
+        if dirY > 0 then branch = "up" end
+        return { x = origin.x, y = bestY, branch = branch }
+    end
+
+    @ExecSpace("ClientOnly")
+    method any ProbeFloor(any foothold, number x, number probeY)
+        -- (x, probeY) 에서 아래로 LandingSearchDistance 안의 수평 발판 중 가장 가까운 표면 Y. 없으면 nil.
+        local hits = foothold:RaycastAll(Vector2(x, probeY), Vector2(0, -1), self.LandingSearchDistance)
+        if hits == nil then return nil end
+        local best = nil
+        local bestDist = math.huge
+        for _, fh in ipairs(hits) do
+            if fh ~= nil and not fh:IsVertical() then
+                local y = fh:GetYByX(x)
+                local d = probeY - y
+                if d >= 0 and d < bestDist then
+                    best = y
+                    bestDist = d
+                end
+            end
+        end
+        return best
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindPlatformEdge(any foothold, any current, number dirX)
+        -- 현재 발판에서 dirX 쪽으로 이어진 세그먼트를 끝까지 따라가 진짜 끝점 { x, y } 를 돌려준다. 발판이 없으면 nil.
+        -- 벽(수직)으로 이어지면 그 앞 세그먼트의 끝이 끝이다.
+        if current == nil then return nil end
+        local fh = current
+        local steps = 0
+        while steps < self.MaxChainSteps do
+            steps = steps + 1
+            local nextId = fh.PreviousFootholdId
+            if dirX > 0 then nextId = fh.NextFootholdId end
+            if nextId == nil or nextId == 0 then break end
+            local nxt = foothold:GetFoothold(nextId)
+            if nxt == nil or nxt:IsVertical() then break end
+            fh = nxt
+        end
+        local p = fh.StartPoint
+        if dirX > 0 then p = fh.EndPoint end
+        return { x = p.x, y = p.y }
+    end
+
+end
