@@ -144,6 +144,10 @@
 ### `Skill/SkillExecutors.mlua` · `SkillCaster.mlua` · `SkillInfo.csv` — 대마법 충전 2초
 - `SK_M31` Duration 1 → **2**. `ExecuteOrigin` 은 Duration > 0 이면 시전자에 붙는 루프 파티클(`ChargeOrb`)을 돌리다 폭발 시점에 `RemoveParticle`. 시전 락 2.5 → **3.5s**(충전 2 + 폭발 ≈1.5).
 
+### `Skill/SkillCaster.mlua` · `Skill/SkillHotbar.mlua` — 공중 점프(Space) 텔레포트가 두 번 나가던 문제 (거리 2배 · 이펙트 2회)
+- 원인: 클라 미러 쿨다운은 서버 `CastResult` 가 와야 시작됐다 → 왕복 전 같은 키 입력이 두 번 들어오면 둘 다 예측 게이트를 통과해 두 번 옮겨졌다(Space 는 점프 액션 이벤트가 두 번 들어오는 것으로 보임).
+- 수정: 이동 스킬은 `TryTeleport` 성공 직후 `LocalStartCooldown(CooldownAt)` 로 미러 쿨다운을 미리 시작(서버 결과가 덮어씀). `TryAirJumpTeleport` 에 0.25s 디바운스(`AirJumpTeleportDebounce`). Shift 와 Space 가 같은 경로·같은 거리.
+
 ### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
 | 항목 | 어디서 | 비고 |
 |---|---|---|
