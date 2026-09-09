@@ -2,7 +2,8 @@
 script CommonNpcUIController extends Logic
 
 	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문).
-	-- dispatch: 대상 마을 4개(내 마을 제외) + 보낼 묶음 수 스테퍼 → RequestDispatch(스텁). gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → RequestDimensionGate(스텁).
+	-- dispatch: 대상 마을 4개(내 마을 제외) + 보낼 묶음 수 스테퍼 → RequestDispatch. 아래 대기열 4행은 아직 투입 전인 내 파병 — 누르면 취소(WO-014 · 2026-09-09).
+	-- gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → RequestDimensionGate(스텁).
 	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). 확인 팝업(PopupGroup)은 M1 뼈대에서 생략(미결). UUID 는 UIBuilder write({bind}) 주입.
 
 	property Entity dimmer = "761c1f5d-c934-4d9b-b573-3c61c3b1b5b3"
@@ -36,6 +37,9 @@ script CommonNpcUIController extends Logic
 
 	property TextGUIRendererComponent dispatchStatus = "9422a527-c4e7-4f5a-9690-e3ad684b5680"
 
+	-- 대기열(WO-014): 내가 보낸 파병 중 아직 투입 전인 묶음. 행을 누르면 취소된다.
+	property Entity queueRoot = "88fcaa1e-bdef-42e8-aba1-c4857b409ff1"
+
 	-- gate
 	property TextGUIRendererComponent coreText = "7f39d0f4-2005-4a81-a98e-b74ac34567d0"
 
@@ -67,6 +71,10 @@ script CommonNpcUIController extends Logic
 	@HideFromInspector
 	property integer cart = 1
 
+	-- 대기열 행 i → orderId. 취소 요청에 쓴다.
+	@HideFromInspector
+	property any queue = nil
+
 	@HideFromInspector
 	property any gates = nil
 
@@ -84,6 +92,7 @@ script CommonNpcUIController extends Logic
 		self.handlers = {}
 		self.villages = {}
 		self.gates = {}
+		self.queue = {}
 		local function bind(ent, fn)
 			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
 		end
@@ -97,6 +106,15 @@ script CommonNpcUIController extends Logic
 				if string.sub(name, 1, 7) == "Target_" then
 					local idx = tonumber(string.sub(name, 8)) or 0
 					bind(row, function() self:OnTarget(idx) end)
+				end
+			end
+		end
+		if isvalid(self.queueRoot) then
+			for _, row in ipairs(self.queueRoot.Children) do
+				local name = row.Name
+				if string.sub(name, 1, 2) == "Q_" then
+					local idx = tonumber(string.sub(name, 3)) or 0
+					bind(row, function() self:OnCancelQueue(idx) end)
 				end
 			end
 		end
@@ -193,15 +211,24 @@ script CommonNpcUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RenderDispatch(any rows)
-		-- DEF|bundles|units|cap · V|villageId|name|own — 내 마을은 목록에서 뺀다(최대 4).
+		-- DEF|bundles|units|cap · V|villageId|name|own|claimed · RULE|villageCap|mesoCost|enabled · Q|orderId|대상|몬스터|수량
+		-- 내 마을은 목록에서 뺀다(최대 4). 주인 없는 마을은 회색으로 두고 못 고르게 한다.
 		self.villages = {}
+		self.queue = {}
 		local units, cap = "0", "10"
+		local villageCap, mesoCost, ruleOn = 0, 0, true
 		for _, f in ipairs(rows) do
 			if f[1] == "DEF" then
 				self.bundles = tonumber(f[2]) or 0
 				units, cap = f[3], f[4]
 			elseif f[1] == "V" and f[4] ~= "1" then
-				table.insert(self.villages, { id = f[2], name = f[3] })
+				table.insert(self.villages, { id = f[2], name = f[3], claimed = (f[5] == "1") })
+			elseif f[1] == "RULE" then
+				villageCap = tonumber(f[2]) or 0
+				mesoCost = tonumber(f[3]) or 0
+				ruleOn = (f[4] == "1")
+			elseif f[1] == "Q" then
+				table.insert(self.queue, { id = f[2], target = f[3], name = f[4], qty = tonumber(f[5]) or 0 })
 			end
 		end
 		if self.cart > self.bundles then self.cart = math.max(1, self.bundles) end
@@ -211,13 +238,44 @@ script CommonNpcUIController extends Logic
 				local v = self.villages[i + 1]
 				if isvalid(row) then
 					row.Enable = (v ~= nil)
-					if v ~= nil then self:SetText(row, "Name", v.name) end
+					if v ~= nil then self:SetText(row, "Name", v.claimed and v.name or (v.name .. " (주인 없음)")) end
+				end
+			end
+		end
+		-- 대기열 4행. 넘치면 마지막 행에 "외 N건".
+		if isvalid(self.queueRoot) then
+			for i = 0, 3 do
+				local row = self.queueRoot:GetChildByName("Q_" .. tostring(i))
+				local q = self.queue[i + 1]
+				if isvalid(row) then
+					row.Enable = (q ~= nil)
+					if q ~= nil then
+						local label = q.target .. " · " .. q.name .. " " .. tostring(q.qty) .. "마리"
+						if i == 3 and #self.queue > 4 then label = label .. "  외 " .. tostring(#self.queue - 4) .. "건" end
+						self:SetText(row, "Label", label .. "   [취소]")
+					end
 				end
 			end
 		end
 		if isvalid(self.cartHave) then self.cartHave.Text = "보유 수비대 " .. tostring(self.bundles) .. "묶음 (" .. units .. "마리 · " .. cap .. "칸)" end
-		if isvalid(self.dispatchStatus) then self.dispatchStatus.Text = "파병은 되돌릴 수 없습니다 · 실제 이동·전투는 Lane 연동 후(지금은 원장에서만 빠짐)" end
+		if isvalid(self.dispatchStatus) then
+			if not ruleOn then
+				self.dispatchStatus.Text = "지금 페이즈에는 파병을 접수하지 않습니다"
+			else
+				local msg = "묶음 통째로 · 마을당 동시 " .. tostring(villageCap) .. "묶음 · 다음 투입 때 합류(그 전까지 취소 가능) · 파병 몬스터는 보상 없음"
+				if mesoCost > 0 then msg = msg .. " · 묶음당 메소 " .. tostring(mesoCost) end
+				self.dispatchStatus.Text = msg
+			end
+		end
 		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCancelQueue(integer i)
+		-- 대기열 행 클릭 = 취소 요청. 결과는 서버 뷰로 다시 온다.
+		local q = self.queue[i + 1]
+		if q == nil or _LaneStateService == nil then return end
+		_LaneStateService:RequestDispatchCancel(q.id)
 	end
 
 	@ExecSpace("ClientOnly")
@@ -228,7 +286,9 @@ script CommonNpcUIController extends Logic
 				local row = self.targetRoot:GetChildByName("Target_" .. tostring(i))
 				local v = self.villages[i + 1]
 				if isvalid(row) and v ~= nil and row.SpriteGUIRendererComponent ~= nil then
-					row.SpriteGUIRendererComponent.Color = (v.id == self.selVillage) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
+					if not v.claimed then row.SpriteGUIRendererComponent.Color = Color(0.36, 0.38, 0.42, 0.8)
+					elseif v.id == self.selVillage then row.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
+					else row.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1) end
 				end
 			end
 		end
@@ -239,9 +299,10 @@ script CommonNpcUIController extends Logic
 		for _, x in ipairs(self.villages) do if x.id == self.selVillage then v = x end end
 		if isvalid(self.costLabel) then
 			if v == nil then self.costLabel.Text = "대상 마을을 고르세요"
+			elseif not v.claimed then self.costLabel.Text = v.name .. " 는 주인이 없어 파병할 수 없습니다"
 			else self.costLabel.Text = v.name .. " 로 " .. tostring(self.cart) .. "묶음 파병" end
 		end
-		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = (v ~= nil and self.bundles >= self.cart and self.cart > 0 and not self.waiting) end
+		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = (v ~= nil and v.claimed and self.bundles >= self.cart and self.cart > 0 and not self.waiting) end
 	end
 
 	@ExecSpace("ClientOnly")

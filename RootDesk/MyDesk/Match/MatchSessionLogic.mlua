@@ -1,16 +1,28 @@
 @Logic
 script MatchSessionLogic extends Logic
 
-	-- 매치 시계 (WO-012 ② · 2026-09-07). 서버 경과 시간 기준으로 MinionPhaseConfig(Profile 별 4행)의 StartSeconds 에 따라 페이즈를 올리고,
+	-- 매치 시계 (WO-012 ② · 2026-09-07 → WO-014 로 5단 개편 2026-09-08). 서버 경과 시간 기준으로 MinionPhaseConfig(Profile 별 5행)의 StartSeconds 에 따라 페이즈를 올리고,
 	-- 페이즈의 SpawnIntervalSeconds 마다 MinionFlowService.SpawnWave · 1초마다 시계 HUD(MatchClockGroup) 를 전 클라에 뿌린다.
-	-- 지금은 Play 시작 = 매치 시작. Profile 은 TEST(60초/30초) · LIVE(5분/3분 잠정) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- 지금은 Play 시작 = 매치 시작. Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	--
+	-- 페이즈 5단 (추가기획2): PHASE0-1 개척 · PHASE0-2 전직 유예 30초 · PHASE1 성장 · PHASE2 견제 · PHASE3 최종(시설 풀데미지 개방).
+	-- 🔴 구독자는 인덱스가 아니라 **이름**(CurrentPhaseName)으로 판정한다 — 행이 늘면 인덱스가 밀린다(LaneFacility 저항 게이트가 실제로 밀렸다).
+	-- 만료: MatchConfig.MatchDurationSeconds(LIVE 1800 · TEST 225). 도달하면 시계·웨이브를 멈추고 전체 토스트 + Phase="EXPIRED" 이벤트.
+	--       🔴 순위 판정·결과 화면·보상은 여기 없다 — 후속 WO(Progression) 몫이고 여기서는 "끝났다"만 알린다.
 
 	property string Profile = "TEST"
+
+	-- 매치 만료까지의 초. MatchConfig 에서 읽는다 (표가 없으면 이 기본값).
+	property number MatchDuration = 1800
+
+	@HideFromInspector
+	property boolean Expired = false
 
 	@Sync
 	property integer CurrentPhase = 1
 
-	property string CurrentPhaseName = "PHASE1_PIONEER"
+	-- 🔴 구독자(LaneFacility 등)가 이 값으로 페이즈를 판정한다. 인덱스가 아니라 이름이다.
+	property string CurrentPhaseName = "PHASE0-1"
 
 	property number Elapsed = 0
 
@@ -34,9 +46,33 @@ script MatchSessionLogic extends Logic
 		-- 서버: 표 로드 후 1페이즈에서 시작.
 		if not self:IsServer() then return end
 		self:LoadPhases()
+		self:LoadMatchConfig()
 		self.Elapsed = 0
+		self.Expired = false
 		self:SetPhase(1)
-		log("[Match] MatchSessionLogic ready (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. ")")
+		log("[Match] MatchSessionLogic ready (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadMatchConfig()
+		-- MatchConfig 에서 현재 Profile 행의 MatchDurationSeconds. 표가 없으면 기본값 유지 (LIVE 1800 / TEST 225).
+		local fallback = (self.Profile == "TEST") and 225 or 1800
+		self.MatchDuration = fallback
+		local t = _DataService:GetTable("MatchConfig")
+		if t == nil then
+			log_warning("[Match] MatchConfig dataset not found — 만료 " .. tostring(fallback) .. "s 기본값 사용")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local profile = tostring(t:GetCell(i, "Profile") or "")
+			if enabled and profile == self.Profile then
+				local v = tonumber(t:GetCell(i, "MatchDurationSeconds"))
+				if v ~= nil and v > 0 then self.MatchDuration = v end
+				break
+			end
+		end
+		log("[Match] MatchConfig loaded: duration=" .. tostring(self.MatchDuration) .. "s (profile=" .. self.Profile .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -62,10 +98,11 @@ script MatchSessionLogic extends Logic
 		if #self.phases == 0 then
 			log_warning("[Match] MinionPhaseConfig rows missing for profile " .. self.Profile .. " — 기본값(TEST) 사용")
 			self.phases = {
-				{ name = "PHASE1_PIONEER", start = 0, interval = 0, hpMul = 1, atkMul = 1, expBase = 0, mesoBase = 0, coinChance = 0 },
-				{ name = "PHASE2_VILLAGE", start = 60, interval = 30, hpMul = 1, atkMul = 0.8, expBase = 20, mesoBase = 10, coinChance = 0.25 },
-				{ name = "PHASE25_PRESSURE", start = 180, interval = 30, hpMul = 1.3, atkMul = 1.6, expBase = 30, mesoBase = 15, coinChance = 0.3 },
-				{ name = "PHASE3_FINALE", start = 300, interval = 30, hpMul = 2, atkMul = 2.2, expBase = 40, mesoBase = 20, coinChance = 0.4 },
+				{ name = "PHASE0-1", start = 0, interval = 0, hpMul = 1, atkMul = 1, expBase = 0, mesoBase = 0, coinChance = 0 },
+				{ name = "PHASE0-2", start = 30, interval = 0, hpMul = 1, atkMul = 1, expBase = 0, mesoBase = 0, coinChance = 0 },
+				{ name = "PHASE1", start = 34, interval = 15, hpMul = 1, atkMul = 0.8, expBase = 20, mesoBase = 10, coinChance = 0.25 },
+				{ name = "PHASE2", start = 90, interval = 15, hpMul = 1.3, atkMul = 1.6, expBase = 30, mesoBase = 15, coinChance = 0.3 },
+				{ name = "PHASE3", start = 150, interval = 15, hpMul = 2, atkMul = 2.2, expBase = 40, mesoBase = 20, coinChance = 0.4 },
 			}
 		end
 		table.sort(self.phases, function(a, b) return a.start < b.start end)
@@ -81,6 +118,14 @@ script MatchSessionLogic extends Logic
 		-- 현재 페이즈 행.
 		if self.phases == nil then return nil end
 		return self.phases[self.CurrentPhase]
+	end
+
+	@ExecSpace("ServerOnly")
+	method number SecondsToNextWave()
+		-- 다음 투입까지 남은 초. 투입이 없는 페이즈(interval 0)면 −1. 파병 취소 기한 판정에 쓴다(DispatchService.CanCancel).
+		local row = self:PhaseRow()
+		if row == nil or row.interval <= 0 then return -1 end
+		return self.spawnTimer
 	end
 
 	@ExecSpace("ServerOnly")
@@ -105,10 +150,13 @@ script MatchSessionLogic extends Logic
 		-- TEST/LIVE 전환: 시계를 0 부터 다시.
 		self.Profile = profile
 		self:LoadPhases()
+		self:LoadMatchConfig()
 		self.Elapsed = 0
 		self.waveIndex = 0
+		self.Expired = false
+		self.Running = true
 		self:SetPhase(1)
-		log("[Match] profile -> " .. profile)
+		log("[Match] profile -> " .. profile .. " (duration=" .. tostring(self.MatchDuration) .. "s)")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -142,10 +190,14 @@ script MatchSessionLogic extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
-		-- 시계: 페이즈 전환 · 투입 · HUD.
+		-- 시계: 페이즈 전환 · 투입 · HUD. 만료되면 Running 이 꺼져 여기서 바로 빠진다.
 		if not self.Running or self.phases == nil or #self.phases == 0 then return end
 		self.Elapsed = self.Elapsed + delta
 		self.PhaseElapsed = self.PhaseElapsed + delta
+		if self.MatchDuration > 0 and self.Elapsed >= self.MatchDuration then
+			self:Expire()
+			return
+		end
 		local idx = 1
 		for i, p in ipairs(self.phases) do
 			if self.Elapsed >= p.start then idx = i end
@@ -160,6 +212,10 @@ script MatchSessionLogic extends Logic
 				if _MinionFlowService ~= nil then
 					_MinionFlowService:SpawnWave(self.CurrentPhase, row.name, row.hpMul, row.atkMul, row.expBase, row.mesoBase, row.coinChance)
 				end
+				-- 접수된 파병은 이 웨이브에 합류한다 (WO-014 · GDD §4.3). 미니언이 먼저 나가고 바로 뒤에 붙는다.
+				if _DispatchService ~= nil then
+					_DispatchService:Release(row.name, row.hpMul, row.atkMul)
+				end
 			end
 		end
 		self.clockTimer = self.clockTimer - delta
@@ -170,15 +226,40 @@ script MatchSessionLogic extends Logic
 			local nextPhaseIn = -1
 			local nxt = self.phases[self.CurrentPhase + 1]
 			if nxt ~= nil then nextPhaseIn = math.ceil(nxt.start - self.Elapsed) end
-			self:BroadcastClock(self.CurrentPhase, row.name, math.floor(self.Elapsed), nextIn, nextPhaseIn, self.Profile)
+			local remain = -1
+			if self.MatchDuration > 0 then remain = math.max(0, math.ceil(self.MatchDuration - self.Elapsed)) end
+			self:BroadcastClock(self.CurrentPhase, row.name, math.floor(self.Elapsed), nextIn, nextPhaseIn, self.Profile, remain)
 		end
 	end
 
+	@ExecSpace("ServerOnly")
+	method void Expire()
+		-- 매치 만료(MatchConfig.MatchDurationSeconds 도달). 1회만.
+		-- 시계·웨이브를 멈추고 전 클라에 알린다. 🔴 순위 판정·결과 화면·보상은 여기 없다 — 후속 WO(Progression) 가 이 이벤트를 구독해 이어받는다.
+		if self.Expired then return end
+		self.Expired = true
+		self.Running = false
+		log("[Match] EXPIRED at " .. string.format("%.1f", self.Elapsed) .. "s (duration=" .. tostring(self.MatchDuration) .. "s profile=" .. self.Profile .. " waves=" .. tostring(self.waveIndex) .. ")")
+		local ev = MatchPhaseChangedEvent()
+		ev.MatchId = ""
+		ev.Phase = "EXPIRED"
+		ev.ElapsedSeconds = self.Elapsed
+		self:SendEvent(ev)
+		self:BroadcastClock(self.CurrentPhase, "EXPIRED", math.floor(self.Elapsed), -1, -1, self.Profile, 0)
+		self:BroadcastExpired()
+	end
+
 	@ExecSpace("Multicast")
-	method void BroadcastClock(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile)
-		-- 서버 → 전 클라: 시계 HUD 갱신.
+	method void BroadcastExpired()
+		-- 서버 → 전 클라: 만료 안내.
+		if _UIToast ~= nil then _UIToast:ShowMessage("매치 시간 종료") end
+	end
+
+	@ExecSpace("Multicast")
+	method void BroadcastClock(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile, integer remain)
+		-- 서버 → 전 클라: 시계 HUD 갱신. remain = 매치 만료까지 남은 초(음수면 표시 안 함).
 		if _MatchClockUIController ~= nil then
-			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile)
+			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile, remain)
 		end
 	end
 

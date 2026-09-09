@@ -1,11 +1,24 @@
 @Component
 script MesoCoin extends Component
 
+	-- 메소 동전 — WO-014 ② 로 소유권 + 자석이 붙었다 (추가기획2 · 2026-09-08).
+	-- 주인은 Farm/DropOwner 가 들고 있다(누적 피해 최다). 주인만 보이고 주인만 줍는다.
+	-- 자동획득(자석)이 켜져 있으면 MagnetRadius 안에서 주인 쪽으로 끌려오고, PickupRadius 안에 들어오면 지급된다.
+	-- 꺼져 있으면 예전처럼 PickupRadius 로 직접 밟아야 한다 (보스전에서 픽파켓류를 쓰려고 끄는 용도).
+
 	property integer Value = 1
 
 	property number PickupRadius = 0.8
 
-	property number LifeTime = 30
+	-- 자석 반경. 화면 가로 12.8 유닛 기준 약 1/4 (사용자 확정).
+	property number MagnetRadius = 3.0
+
+	-- 자석 이동 속도 (유닛/초). 사용자 확정 2026-09-09 — 6.0 은 최대 거리에서 0.5초라 빨려오는 게 안 보였다.
+	-- 1.5 면 3.0 → 0.8 까지 약 1.5초. ⚠️ 걷는 플레이어보다 느리므로 멀어지면 동전이 못 따라간다(의도).
+	property number MagnetSpeed = 1.5
+
+	-- 주인만 주울 수 있게 되면서 주인이 돌아올 시간이 필요해 30 → 60 (사용자 확정).
+	property number LifeTime = 60
 
 	property number ArmDelay = 0.35
 
@@ -50,16 +63,86 @@ script MesoCoin extends Component
 		if self.Age < self.ArmDelay then
 			return
 		end
-		
-		local player = self:FindNearestPlayerInRange()
-		if isvalid(player) then
+
+		local owner = self:OwnerEntity()
+		if not isvalid(owner) then
+			return
+		end
+
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local oPos = owner.TransformComponent.WorldPosition
+		local dx = oPos.x - myPos.x
+		local dy = oPos.y - myPos.y
+		local dist = math.sqrt(dx * dx + dy * dy)
+
+		if dist <= self.PickupRadius then
 			self.Collected = true
 			if _SummonManager ~= nil then
-				_SummonManager:GrantMeso(player, self.Value)
+				_SummonManager:GrantMeso(owner, self.Value)
 			end
-			log("[MesoCoin] picked +meso " .. tostring(self.Value))
+			log("[MesoCoin] picked +meso " .. tostring(self.Value) .. " by " .. tostring(owner.PlayerComponent.UserId))
 			self.Entity:Destroy()
+			return
 		end
+
+		-- 자동획득이 켜져 있고 자석 반경 안이면 주인 쪽으로 끌어당긴다.
+		if dist <= self.MagnetRadius and self:AutoPickupOn(owner) then
+			self:MoveToward(myPos, dx / dist, dy / dist, delta)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AutoPickupOn(Entity owner)
+		-- 주인의 자동획득 설정. 원장이 없으면 켜진 것으로 본다(기본 ON).
+		if _SummonManager == nil or not isvalid(owner.PlayerComponent) then
+			return true
+		end
+		return _SummonManager:IsAutoPickup(owner.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MoveToward(Vector3 from, number nx, number ny, number delta)
+		-- 동전을 주인 쪽으로 한 프레임 옮긴다.
+		-- 🔴 이 모델은 Rigidbody 를 쓴다 — TransformComponent 에 직접 대입하면 다음 프레임에 물리가 옛 좌표로 되돌린다(실측 이력).
+		--    Rigidbody 가 있으면 SetWorldPosition, 없을 때만 Transform 대입.
+		local step = self.MagnetSpeed * delta
+		local nextPos = Vector3(from.x + nx * step, from.y + ny * step, from.z)
+		local body = self.Entity.RigidbodyComponent
+		if isvalid(body) then
+			body:SetWorldPosition(Vector2(nextPos.x, nextPos.y))
+		else
+			self.Entity.TransformComponent.WorldPosition = nextPos
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity OwnerEntity()
+		-- 이 동전을 주울 수 있는 플레이어(= DropOwner 주인)가 같은 맵에 있으면 그 엔티티. 없으면 nil.
+		-- DropOwner 가 안 붙어 있으면(옛 경로·수동 스폰) 예전처럼 가장 가까운 플레이어를 쓴다.
+		---@type DropOwner
+		local own = self.Entity:GetComponent("script.DropOwner")
+		if not isvalid(own) then
+			return self:FindNearestPlayerInRange()
+		end
+
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return nil
+		end
+		local mapComp = map.MapComponent
+		if not isvalid(mapComp) then
+			return nil
+		end
+		local users = _UserService:GetUsersByMapComponent(mapComp)
+		if users == nil then
+			return nil
+		end
+		for _, user in ipairs(users) do
+			if isvalid(user) and isvalid(user.PlayerComponent) and own:IsPickableBy(user.PlayerComponent.UserId) then
+				return user
+			end
+		end
+		return nil
 	end
 
 	@ExecSpace("ServerOnly")
@@ -86,7 +169,8 @@ script MesoCoin extends Component
 		local bestDist = self.PickupRadius * self.PickupRadius
 		
 		for _, user in ipairs(users) do
-			if isvalid(user) then
+			-- 관전자의 숨은 캐릭터가 메소·주화를 줍지 않게 (2026-09-09).
+			if isvalid(user) and not (_SpectateService ~= nil and _SpectateService:IsSpectatorEntity(user)) then
 				local t = user.TransformComponent
 				if isvalid(t) then
 					local p = t.WorldPosition

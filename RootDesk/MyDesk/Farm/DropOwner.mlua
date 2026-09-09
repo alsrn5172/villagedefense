@@ -1,0 +1,68 @@
+@Component
+script DropOwner extends Component
+
+	-- 드랍물의 주인 표시 — WO-014 ② (추가기획2 · 2026-09-08).
+	--
+	-- 규칙(사용자 확정): 몬스터를 죽인 "막타"가 아니라 **누적 피해가 가장 큰 플레이어**가 그 몬스터 드랍의 주인이다.
+	-- 주인이 아닌 사람에게는 **보이지도 않고 먹히지도 않는다.** 플레이어 피해가 0이면(수비대·미니언·포탑이 잡음)
+	-- 애초에 드랍이 생기지 않으므로(FarmReward 가 스킵) 여기까지 오지 않는다.
+	--
+	-- 지금은 메소 동전(Farm/MesoCoin)만 쓰지만, 앞으로 생길 보석·재료 드랍도 스폰 직후 이 컴포넌트를 붙이고
+	-- OwnerUserId 만 채우면 같은 규칙을 그대로 얻는다. **드랍 소유권 판정은 이 파일 하나가 정본이다.**
+	--
+	-- 서버: IsPickableBy(userId) 가 획득 권한. 각 드랍 스크립트가 지급 직전에 물어본다.
+	-- 클라: 내 것이 아니면 **SpriteRendererComponent 를 끈다.**
+	--       🔴 Entity:SetVisible 을 쓰지 않는 이유 — 그 API 는 shouldSync 인자가 있어 전 클라에 퍼질 수 있다.
+	--       렌더러 Enable 은 이 클라에서만 꺼지므로 서버 판정(줍기)과 어긋나지 않는다.
+
+	@Sync
+	property string OwnerUserId = ""
+
+	@HideFromInspector
+	property boolean applied = false
+
+	@ExecSpace("ServerOnly")
+	method boolean IsPickableBy(string userId)
+		-- 이 드랍을 userId 가 주울 수 있는가. 주인이 안 정해진 드랍은 아무도 못 줍는다(안전한 쪽).
+		if self.OwnerUserId == nil or self.OwnerUserId == "" then
+			return false
+		end
+		return self.OwnerUserId == userId
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- @Sync 가 이미 도착해 있을 수 있으므로 한 번 칠하고, 늦게 오면 OnSyncProperty 가 다시 칠한다.
+		self:ApplyVisibility()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 주인이 정해져 동기화되면 그때 칠한다.
+		if name == "OwnerUserId" then
+			self:ApplyVisibility()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyVisibility()
+		-- 내 드랍이 아니면 안 보이게. 주인이 아직 비어 있으면(동기화 전) 건드리지 않는다 — 깜빡임 방지.
+		if self.OwnerUserId == nil or self.OwnerUserId == "" then
+			return
+		end
+		local lp = _UserService.LocalPlayer
+		if not isvalid(lp) or not isvalid(lp.PlayerComponent) then
+			return
+		end
+		local mine = (lp.PlayerComponent.UserId == self.OwnerUserId)
+		local sprite = self.Entity.SpriteRendererComponent
+		if isvalid(sprite) then
+			sprite.Enable = mine
+		end
+		if not self.applied then
+			self.applied = true
+			log("[DropOwner] " .. self.Entity.Name .. " owner=" .. self.OwnerUserId .. " mine=" .. tostring(mine))
+		end
+	end
+
+end

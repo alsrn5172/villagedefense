@@ -103,8 +103,9 @@ script DefenderService extends Logic
 		if isvalid(ent.SpriteRendererComponent) then
 			local layer = _LaneFacilityService:SortingLayerBelow(map, homeX, row.pathY)
 			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
-			ent.SpriteRendererComponent.OrderInLayer = 2
+			ent.SpriteRendererComponent.OrderInLayer = 3
 		end
+		---@type Faction
 		local faction = ent:AddComponent("script.Faction")
 		if isvalid(faction) then faction.Team = tostring(20 + _LaneFacilityService:TeamSlot(villageId)) end
 		local sheet = isvalid(ent.StateAnimationComponent) and ent.StateAnimationComponent.ActionSheet or nil
@@ -112,6 +113,7 @@ script DefenderService extends Logic
 			if sheet == nil then return "" end
 			return sheet[a] or sheet[b] or ""
 		end
+		---@type FactionAI
 		local ai = ent:AddComponent("script.FactionAI")
 		if isvalid(ai) then
 			ai.GuardMode = true
@@ -127,12 +129,14 @@ script DefenderService extends Logic
 			ai.AttackRUID = clip("attack", "attack1")
 			ai.DieRUID = clip("die", "die1")
 		end
+		---@type FactionAttack
 		local atk = ent:AddComponent("script.FactionAttack")
 		if isvalid(atk) then
 			atk.BaseDamage = attack
 			atk.AttackBoxSize = Vector2(1.4, 1.4)
 			atk.AttackReach = 0.6
 		end
+		---@type DefenderUnit
 		local du = ent:AddComponent("script.DefenderUnit")
 		if isvalid(du) then
 			du.VillageId = villageId
@@ -190,6 +194,37 @@ script DefenderService extends Logic
 		self.units[villageId] = keep
 		log("[Defender] regroup " .. villageId .. " -> " .. frontStage .. " n=" .. tostring(moved))
 		return moved
+	end
+
+	@ExecSpace("ServerOnly")
+	method any TakeUnits(string villageId, integer monsterId, integer qty)
+		-- 파병으로 내보낼 수비 몬스터를 실제로 뺀다 (WO-014 · LaneStateService.RequestDispatch 가 부른다).
+		-- 원장에서 묶음만 지우면 엔티티가 마을에 남는다 — 그래서 여기서 살아 있는 개체를 골라 파괴한다.
+		-- reported=true 로 사망 보고를 막는 건 Regroup·DespawnVillage 와 같다(죽은 게 아니라 옮겨간 것이다).
+		-- 돌려주는 statMul 이 파병 유닛의 스펙이 된다(그 묶음의 훈련 배율).
+		local list = self:UnitList(villageId)
+		local keep = {}
+		local taken = 0
+		local statMul = 1.0
+		for _, u in ipairs(list) do
+			---@type Monster
+			local monster = u.ent.Monster
+			local alive = isvalid(monster) and not monster.IsDead
+			if taken < qty and u.monsterId == monsterId and alive then
+				---@type DefenderUnit
+				local du = u.ent.DefenderUnit
+				if isvalid(du) then du.reported = true end
+				u.ent:Destroy()
+				if taken == 0 then statMul = u.statMul or 1.0 end
+				taken = taken + 1
+			else
+				table.insert(keep, u)
+			end
+		end
+		self.units[villageId] = keep
+		log("[Defender] take " .. villageId .. " mon=" .. tostring(monsterId) .. " n=" .. tostring(taken) .. "/" .. tostring(qty)
+			.. " mul=" .. tostring(statMul) .. " left=" .. tostring(#keep))
+		return { taken = taken, statMul = statMul }
 	end
 
 	@ExecSpace("ServerOnly")

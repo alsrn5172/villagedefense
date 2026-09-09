@@ -1,0 +1,204 @@
+@Logic
+script DispatchService extends Logic
+
+	-- 파병 대기열 (WO-014 · 2026-09-09). GDD §4.3 — 파병은 유일한 원격 공격 수단이고 "실제 투입 전까지 취소 가능"이다.
+	-- 그래서 신청 즉시 스폰하지 않고 여기 **대기열**에 쌓았다가, MatchSessionLogic 이 웨이브를 돌릴 때
+	-- MinionFlowService.SpawnWave 직후 Release 로 한꺼번에 대상 마을 사냥터2 통로에 풀어놓는다(미니언 편으로 합류).
+	-- 접수·취소·상한 검증은 LaneStateService.RequestDispatch/RequestDispatchCancel 이 하고, 여기는 원장만 든다.
+	-- 대기열은 서버 메모리에만 있다(계약서 A-2-16 · 저장하지 않는다). 표: DispatchRule.csv(없으면 기본값).
+	-- 🔴 이벤트를 만들지 않았다 — 구독자가 A 자신뿐이라 직접 호출이다. 계약서 B-3 Dispatch/ 3행은 예약 상태.
+
+	-- orders[targetVillageId] = { {id, sender, senderVillage, monsterId, name, qty, statMul}, ... } 접수 순서(FIFO)
+	@HideFromInspector
+	property any orders = nil
+
+	-- rule[phaseName] = { mesoCost, villageCap, cancelDeadline, enabled }
+	@HideFromInspector
+	property any rule = nil
+
+	@HideFromInspector
+	property integer orderSeq = 0
+
+	method void OnBeginPlay()
+		-- 서버만 원장.
+		if not self:IsServer() then return end
+		self.orders = {}
+		self:LoadRule()
+		log("[Dispatch] DispatchService ready (server)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadRule()
+		-- DispatchRule.csv (계약서 A-2-16). 표가 없으면 아래 기본값으로 돈다.
+		-- 🔴 키는 MinionPhaseConfig.Phase 값(= MatchSessionLogic.CurrentPhaseName)과 글자 단위로 같아야 한다.
+		--    WO-014 가 페이즈를 5단으로 개명했을 때 이 표가 옛 이름에 남아 RuleOf 가 항상 enabled=false 를
+		--    돌려줬고, 파병이 전 페이즈에서 조용히 막혔다(2026-09-09 발견). 하이픈 이름이라 [""] 표기를 쓴다.
+		self.rule = {
+			["PHASE0-1"] = { mesoCost = 0, villageCap = 0, cancelDeadline = 0, enabled = false },
+			["PHASE0-2"] = { mesoCost = 0, villageCap = 0, cancelDeadline = 0, enabled = false },
+			["PHASE1"] = { mesoCost = 0, villageCap = 3, cancelDeadline = 0, enabled = true },
+			["PHASE2"] = { mesoCost = 0, villageCap = 3, cancelDeadline = 0, enabled = true },
+			["PHASE3"] = { mesoCost = 0, villageCap = 4, cancelDeadline = 0, enabled = true },
+		}
+		local t = _DataService:GetTable("DispatchRule")
+		if t == nil then
+			log_warning("[Dispatch] DispatchRule dataset not found — 기본값 사용")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local phase = t:GetCell(i, "Phase") or ""
+			if phase ~= "" then
+				self.rule[phase] = {
+					mesoCost = math.floor(tonumber(t:GetCell(i, "MesoCost")) or 0),
+					villageCap = math.floor(tonumber(t:GetCell(i, "VillageCap")) or 0),
+					cancelDeadline = tonumber(t:GetCell(i, "CancelDeadlineSeconds")) or 0,
+					enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false",
+				}
+				n = n + 1
+			end
+		end
+		log("[Dispatch] DispatchRule loaded: " .. tostring(n) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any RuleOf(string phaseName)
+		-- 페이즈 규칙. 모르는 페이즈면 접수 막힘(안전한 쪽).
+		local r = (self.rule ~= nil) and self.rule[phaseName] or nil
+		if r == nil then return { mesoCost = 0, villageCap = 0, cancelDeadline = 0, enabled = false } end
+		return r
+	end
+
+	@ExecSpace("ServerOnly")
+	method any CurrentRule()
+		-- 지금 페이즈의 규칙.
+		local phase = (_MatchSessionLogic ~= nil) and _MatchSessionLogic.CurrentPhaseName or ""
+		return self:RuleOf(phase)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Queue(string villageId)
+		-- 마을 대기열(없으면 생성).
+		if self.orders == nil then self.orders = {} end
+		if self.orders[villageId] == nil then self.orders[villageId] = {} end
+		return self.orders[villageId]
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer PendingCount(string villageId)
+		-- 대기 중인 묶음 수 (상한 검사용).
+		return #self:Queue(villageId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer PendingUnits(string villageId)
+		-- 대기 중인 마릿수 합 (총량 등급용).
+		local n = 0
+		for _, o in ipairs(self:Queue(villageId)) do n = n + (o.qty or 0) end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GradeOf(string villageId)
+		-- 방어자에게 알리는 **총량 등급만** (GDD §4.3 정보 비대칭 — 보낸 사람·몬스터 종류는 감춘다).
+		local n = self:PendingUnits(villageId)
+		if n <= 0 then return "" end
+		if n <= 8 then return "소" end
+		if n <= 24 then return "중" end
+		return "대"
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Submit(string fromUserId, string senderVillageId, string targetVillageId, integer monsterId, string name, integer qty, number statMul)
+		-- 묶음 1개를 대기열에 넣고 orderId 를 돌려준다. 검증은 부르는 쪽(LaneStateService)이 한다.
+		self.orderSeq = self.orderSeq + 1
+		local id = "D" .. tostring(self.orderSeq)
+		local order = { id = id, sender = fromUserId, senderVillage = senderVillageId, target = targetVillageId,
+			monsterId = monsterId, name = name, qty = qty, statMul = statMul }
+		table.insert(self:Queue(targetVillageId), order)
+		log("[Dispatch] submit order=" .. id .. " " .. tostring(senderVillageId) .. " -> " .. targetVillageId
+			.. " mon=" .. tostring(monsterId) .. " qty=" .. tostring(qty) .. " mul=" .. tostring(statMul)
+			.. " pending=" .. tostring(self:PendingCount(targetVillageId)) .. " (" .. fromUserId .. ")")
+		return id
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PendingOf(string userId)
+		-- 이 유저가 보낸 대기열 전체(마을 구분 없이 · 접수 순서). 파병 창 목록용.
+		local out = {}
+		if self.orders == nil then return out end
+		for _, list in pairs(self.orders) do
+			for _, o in ipairs(list) do
+				if o.sender == userId then table.insert(out, o) end
+			end
+		end
+		table.sort(out, function(a, b) return a.id < b.id end)
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanCancel()
+		-- 투입까지 남은 시간이 취소 기한보다 길어야 취소할 수 있다. 기한 0 = 투입 직전까지 가능.
+		local r = self:CurrentRule()
+		if (r.cancelDeadline or 0) <= 0 then return true end
+		local left = (_MatchSessionLogic ~= nil) and _MatchSessionLogic:SecondsToNextWave() or -1
+		if left < 0 then return true end
+		return left > r.cancelDeadline
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Cancel(string orderId, string userId)
+		-- 본인이 보낸 대기 묶음을 뺀다. 뺀 order 를 돌려준다(없으면 nil) — 부르는 쪽이 수비대로 되돌린다.
+		if self.orders == nil then return nil end
+		for vid, list in pairs(self.orders) do
+			for i, o in ipairs(list) do
+				if o.id == orderId and o.sender == userId then
+					table.remove(list, i)
+					log("[Dispatch] cancel order=" .. orderId .. " target=" .. vid .. " qty=" .. tostring(o.qty) .. " (" .. userId .. ")")
+					return o
+				end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CancelAllOfVillage(string villageId)
+		-- 마을이 탈락·파괴됐다: 그 마을로 가던 대기열을 버린다. 보낸 사람에게 돌려주지 않는다(이미 소모된 전력이다).
+		local n = #self:Queue(villageId)
+		self.orders[villageId] = {}
+		if n > 0 then log("[Dispatch] drop queue " .. villageId .. " n=" .. tostring(n)) end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer Release(string phaseName, number hpMul, number atkMul)
+		-- 웨이브 타이밍: 대기열을 전부 꺼내 대상 마을 통로에 푼다. 스폰된 마릿수를 돌려준다.
+		-- 수치는 페이즈 배율을 타지 않는다 — 보낸 사람의 수비대 스펙 그대로다(사용자 확정 2026-09-08).
+		if self.orders == nil or _MinionFlowService == nil then return 0 end
+		local total = 0
+		for villageId, list in pairs(self.orders) do
+			if #list > 0 then
+				local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
+				if owner == "" then
+					-- 그 사이 탈락했다: 조용히 버린다.
+					self:CancelAllOfVillage(villageId)
+				else
+					local spawned = 0
+					for _, o in ipairs(list) do
+						spawned = spawned + _MinionFlowService:SpawnDispatched(villageId, o)
+					end
+					self.orders[villageId] = {}
+					total = total + spawned
+					log("[Dispatch] release " .. villageId .. " orders=" .. tostring(#list) .. " spawned=" .. tostring(spawned) .. " phase=" .. tostring(phaseName))
+					if _LaneStateService ~= nil and spawned > 0 then
+						_LaneStateService:Toast(owner, "파병이 섞였습니다 — 이번 웨이브에 " .. tostring(spawned) .. "마리 합류")
+						_LaneStateService:Push(owner, "defense")
+					end
+				end
+			end
+		end
+		return total
+	end
+
+end
