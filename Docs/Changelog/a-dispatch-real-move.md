@@ -172,7 +172,7 @@ UI 안내문도 "실제 이동·전투는 Lane 연동 후(지금은 원장에서
   (슬롯 y −3.2 + 1.64 = 월드 −1.56).
 - **포탑이 표적을 따라 도는 문제** — 원인은 `FlipX` 가 아니라 `TurretAI.FaceTo` 가 뒤집던 `Scale.x`.
   `TurretAI.FixedFacing` 신설(레인 포탑은 `true`). 공격 상자가 좌우 대칭(`AttackBoxSize=(range*2,4)` · `AttackReach=0`)이라 사거리 영향 없음.
-  방향은 `FacilitySprite.csv` 새 열 **`FlipX`** 가 정본 — **전 행 `false`**(사용자 지시 2026-09-09).
+  방향은 `FacilitySprite.csv` 새 열 **`FlipX`** 가 정본 — 헤네시스·커닝 포탑 `true`, 나머지 전부 `false`(사용자 지시 2026-09-09).
 - **시설 피격 상자가 너무 좁던 문제** — `HitComponent.BoxSize`/`ColliderOffset` 은 **로컬 단위**라
   `Scale 0.25` 에서 포탑이 실제 0.40×0.75 밖에 안 됐다(공식 문서 `DamageSkinSpawnerComponent` 예제로 확인).
   `LaneFacilityService.ApplyHitBox` 신설 — 가로 = `HitWidth`(넥서스 `HitWidthCore`), 세로 = `GroundOffset × 2`,
@@ -180,3 +180,10 @@ UI 안내문도 "실제 이동·전투는 Lane 연동 후(지금은 원장에서
 - **미니언이 시설 위로 파고들던 문제** — `FactionAI` 사거리 판정에 **표적 피격 상자 반폭 − 0.4** 만큼 pad.
   일반 몬스터(반폭 0.4 안팎)는 pad 0 이라 거동 불변. 실측: 미니언이 포탑 중심에서 dx 1.44
   (상자 가장자리 밖 0.44)에 서서 공격 — 이전 판정이면 dx 0.66 으로 그림 안까지 들어왔다.
+
+- **포탑이 제 주인을 쏘던 버그** — `FactionLogic.GetTeam` 이 플레이어를 전원 `PlayerTeam "1"` 로 봤다.
+  대역 규칙상 팀 1 의 주인은 1번(헤네시스)이라 커닝(22)·페리온(25) 포탑에게 주인이 "남" 이었다.
+  `PlayerTeamOf(userId)` 신설 — `VillageOwnership.VillageOf` → `LaneFacilityService.TeamSlot` 으로
+  **가진 마을의 슬롯 번호**를 팀으로 준다(마을 없으면 기존대로 "1").
+  실측: 커닝 주인 팀 2 · 포탑 팀 22 → 양방향 **ALLY**, 남의 마을 헤네시스 넥서스(21) → **ENEMY**.
+  같은 원인으로 어긋나 있던 "미니언은 지정 대상의 것만 친다" 규칙도 같이 맞았다.
