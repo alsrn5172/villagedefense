@@ -61,6 +61,22 @@
   - **E**: 몹 무리 근처에서 `SkillExecutors: TAUNT SK_W22 radius=3 candidates=N taunted=M pulled=K for 5s` · 몹들이 발 앞에 모여 시전자를 쫓는지(⚠ 다른 발판 몹은 떨어져 착지하는지) · 5초 뒤 `TAUNT released M`
   - **R**: `SkillCaster: cast lock ON … SK_W31` · `[Buff] ON INVULNERABLE … dur=8` · `SkillExecutors: ORIGIN SK_W31 buff INVULNERABLE for 8s (no damage)` · 8초 뒤 `[Buff] OFF INVULNERABLE` · 재시전 `use limit reached (1)`. **피해는 A 연결 전까지 그대로 들어온다.**
 - 🟡 런타임 미검증 API(근거는 `.d.mlua`·팀 코드): 플레이어 `HitEvent` 를 Logic 에서 `ConnectEvent` 로 받는 것 · `RigidbodyComponent:SetWorldPosition` 으로 몬스터 끌기(발판 다른 몹) · `StateChaseMonster` 를 `GetComponent("script.StateChaseMonster")` 로 얻어 `SetTarget`/`IsChaseNearPlayer` 쓰기 · `StatService.SetLayerCsv("BUFF")` 뒤 `PlayerComponent.Hp` 서버 쓰기 반영.
+  → 2026-09-10 Play 로 전부 확인(아래). `GetComponent("script.StateChaseMonster")` 만 nil 이라 점 접근으로 고침.
+
+## 2026-09-10 — Maker Play 검증 (Maker MCP 자동 조작 · `강화하고살아남기` 폴더 · 여섯갈래길 달팽이)
+- 빌드: **오류 0 · 경고 1**(A `ParseStatCsv` LWA-1111 · 기준선과 같음) · 린트 정보 100. `.codeblock` 변경 없음(새 스크립트 없음).
+- 준비(파일 편집 없이): 서버 스크립트 `_PlayerSkillState:ChangeJob(uid,"WARRIOR",1)` → K 창 DEV 행 → `[DevRemote] +level 29 -> Lv30` · `JOB WARRIOR -> WARRIOR/3` · `[DEV] learn-all WARRIOR skills=5 tier=3` · `[JobPassive] … reflect 25%` · `mp/maxMp = 500000`. 시작 시 `[Buff] hit listener attached` 는 부팅 로그에 묻혀 서버 스크립트로 `hitHandlers[uid] ~= nil = true` 확인.
+- **아이언 바디(SK_W12 · Lv5)**: 달팽이 접촉마다 `[Buff] IRON_BODY reflect 50362 -> Monster_SixPathCrossway_SP002… (ratio=25% maxHp=201450 took=1)` · `SkillAttack: flat 50362 to … (src=SK_W12)` · `[FarmReward] … dmg=50362` → 달팽이(HP 32) 즉사 · 처치 보상까지 정상. 하이퍼 바디 중엔 `would deal 80580`(최대 HP 322320 의 25%) 로 기준이 따라 오른다. 테스트 중엔 `_SkillBuffs.ReflectEnabled=false` 로 끄고 나머지를 봤다(끄면 `reflect disabled (would deal N)` 로그만).
+- **Q 파워 스트라이크(SK_W11 · Lv5)**: `FindSkillTarget SK_W11 candidates=1 -> Monster_SixPathCrossway_SP003…` · `dealt SK_W11 to … lv=5 hits=1` · `[FarmReward] … dmg=225`(75 × 300%). 앞에 아무도 없을 때 `MELEE_ARC SK_W11 no target in front — cast consumed` + MP 10 소모·쿨 3s 시작(원작 헛스윙과 같음). 처음 두 번의 헛스윙은 텔레포트가 몬스터 발판보다 3.7 위에 떨어뜨린 탓(도발 상자 10×10 은 닿았고 근접 상자 2×1.5 는 못 닿음) — 버그 아님.
+- **W 하이퍼 바디(SK_W21 · Lv5)**: `[Buff] ON HYPER_BODY … ratio=60 secondary=40` · `[Stat] recalculated … source=BUFF … maxhp=120870` · `HYPER_BODY maxHp 201450 +120870 (60%) -> 322320 hp=322286` · HUD 322284/322320 · `ReduceDamage(1000) = 600` · `GetDamageMul = 0.6` · **45초 뒤** `[Buff] OFF HYPER_BODY` · `[Stat] recalculated … maxhp=0` · `HYPER_BODY maxHp bonus cleared (-120870)`.
+- **E 도발(SK_W22 · Lv5)**: `FindSkillTargets SK_W22 candidates=5` · `TAUNT SK_W22 radius=5.0 candidates=5 taunted=0 pulled=5 for 5s` → 달팽이 5마리가 시전자 발 앞(x ± 0.6·k · 같은 y)으로 순간 이동(스크린샷 확인) · 다른 발판에서 끌려온 몹은 아래로 떨어져 착지(정상). **`taunted=0` 은 여섯갈래길 달팽이가 배회형(`StateMoveMonster` · `StateChaseMonster` 없음)이라 맞다** — 추격형 몹·보스에선 대상 전환도 걸린다(🟡 그쪽 Play 는 아직).
+- **R 불굴의 진(SK_W31)**: 1차 시전은 `[Summon] SpendMp rejected amount=0` → `not enough MP` 로 거절됐다(**버그 · 아래 수정**). 수정 후 `[Buff] ON INVULNERABLE … dur=8` · `ORIGIN SK_W31 buff INVULNERABLE for 8s (no damage)` · `cast … lock=1.5 mpCost=0` · 활성 중 서버 조회 `IsInvincible=true · GetDamageMul=0 · ModifyIncomingDamage(1000)=0`(`[Buff] INVULNERABLE blocked 1000`) · 8초 뒤 `[Buff] OFF INVULNERABLE` · 재시전 `use limit reached (1)` · `ResetMatchState` 뒤 다시 1회 시전 가능.
+- 핫바: `HOTBAR: slot1 Q SK_W11` · `slot5 W SK_W21` · `slot3 E SK_W22` · `slot4 R SK_W31` 전부 `cast ok=true` (직업별 byJob 동작).
+- 기타 관찰: `[LWA-3048] DuplicateComponent … 'PlayerAttack' 이 이미 존재하지만 'SkillAttack' 가 추가됐습니다 · 향후 추가되지 않도록 변경될 예정` 경고 — `SkillCaster.EnsureSkillAttack`(feature/skill 시절부터 있던 런타임 AddComponent)의 기존 경고. 엔진이 막는 날엔 `SkillAttack` 을 모델에 붙이는 등록서(A 의 `DefaultPlayer.model`)가 필요하다 — 이 PR 범위 밖 · 메모만.
+
+### 수정 (Play 실측 반영)
+- `Skill/SkillCaster.mlua`: `UseSpendMp` 경로에서 **`mpCost > 0` 일 때만 `SpendMp`** — `SummonManager.SpendMp` 가 amount ≤ 0 을 거절해 MP 0 스킬(불굴의 진)이 "not enough MP" 로 튕겼다.
+- `Skill/SkillExecutors.mlua` `ExecuteTaunt`/`ReleaseTaunt`: `mob:GetComponent("script.StateChaseMonster")` → **`mob.StateChaseMonster`**(팀 코드와 같은 점 접근). `GetComponent` 는 `StateComponent` 파생 스크립트에 nil 을 줬다.
 
 ## 2026-09-10 (마법사 세션이 이 브랜치에 얹음) — 매직 가드 임시 자가 배선
 - `Skill/SkillBuffs.mlua` `OnPlayerHitEvent` 맨 앞에서 `MagicGuardRefund(userId, TotalDamage)`: 매직 가드 활성이면 `AbsorbDamage`(SpendMp 로 MP 차감) 뒤 흡수분만큼 HP 를 0.05s 뒤 되돌린다(HitEvent 는 피해 확정 뒤라 되돌리는 방식). `MagicGuardSelfWire=true` — A 가 `PlayerHit` 에서 `ModifyIncomingDamage` 를 부르게 되면 false 로(안 끄면 흡수 2회). 한 방 치명 피해는 못 살린다.
