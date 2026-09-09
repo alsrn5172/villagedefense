@@ -168,10 +168,10 @@
 - 2차의 "좌우 양쪽" 탐색을 앞쪽 Range 상자로 되돌림(뒤쪽 제외). 대상이 있으면 유도, 없으면 직선.
 
 ### `Skill/PlayerSkillState.mlua` · `Skill/SkillWindowLogic.mlua` — ⚠ DEV 키 (발록전 검증용 · 리뷰 전 `DevTestMode=false`)
-- `DevTestMode`(기본 false · 테스트 폴더에선 true) · `DevTestMp`(5,000,000).
+- `DevTestMode`(기본 false · 테스트 폴더에선 true) · `DevTestMp`(**500,000** · 사용자 지시 2026-09-10 — 5% 추가 피해 기대값은 25,000).
 - **F9** `RequestDevLearnAll`: 현재 직업의 모든 스킬을 MaxLevel 로(SP 미소모 · 차수는 레벨이 허용하는 만큼 `TryAdvanceTier`). 로그 `[Skill] [DEV] learn-all MAGICIAN skills=6 …`.
 - **F8** `RequestDevSetMp`: `econ.mp`·`econ.maxMp` = 5,000,000 후 HUD Push. 레벨업·스탯 재계산(`RecomputeMaxMp`)이 maxMp 를 되돌리면 다시 누른다. DevStatRemote 엔 MP 항목이 없어 B 쪽 키로.
-- 검증 절차(사람): 리모컨으로 Lv30 → F10 마법사 → F9 → F8 → E(매직 가드) → 주니어 발록: ① 맞을 때 `[Buff] MAGIC_GUARD absorb …` + HP 되돌림 ② Q 피해에 `+magicGuard=250000` ③ 시전 로그 `mpCost=12`(8×1.5).
+- 검증 절차(사람): 리모컨으로 Lv30 → F10 마법사 → F9 → F8 → E(매직 가드) → 주니어 발록: ① 맞을 때 `[Buff] MAGIC_GUARD absorb …` + HP 되돌림 ② Q 피해에 `+magicGuard=25000`(MP 500,000 의 5%) ③ 시전 로그 `mpCost=12`(8×1.5).
 - 매직 가드 흡수의 실제 HP 반영은 A 의 `PlayerHit` 연결 전엔 **b/skill-warrior 의 `SkillBuffs.MagicGuardRefund`(임시 자가 배선 · HitEvent 뒤 HP 되돌림)** 가 한다 — 이 브랜치엔 없다(HitEvent 배선이 warrior 쪽에 있음).
 
 ### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
