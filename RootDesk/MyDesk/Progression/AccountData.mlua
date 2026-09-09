@@ -1,0 +1,208 @@
+@Logic
+script AccountData extends Logic
+
+	-- 계정 영구 데이터의 **런타임 원장** (WO-018 S1).
+	-- datastorage.md §8 "Multi-Component Persistence Protocol" 의 5메서드 계약을 구현한다.
+	-- 참조 구현은 플레이어 엔티티의 @Component 지만, 이 프로젝트의 원장은 전부 @Logic + userId 키라
+	-- 같은 꼴로 맞췄다. 중요한 건 host 타입이 아니라 **프로토콜**이다.
+	--
+	-- 🔴 여기서 _DataStorageService 를 직접 부르지 않는다. 저장·불러오기는 전부 _PlayerDBManager 가 한다.
+	--    이 규칙이 깨지면 Batch 로 모으는 의미가 없어지고 Credit 이 선형으로 는다.
+	--
+	-- 🔴 계정 데이터만 여기 둔다. 매치 자원(메소·주화·장비·레벨·경험치·스킬·시설)은 절대 넣지 마라.
+	--    GDD §3: "발록의 심장 외에는 매치 종료 시 소멸". 실수로 저장하면 다음 매치를 재화 들고 시작한다.
+
+	-- users[userId] = { level, balrogHeart, unlocks, isSaveDB, saveGeneration }
+	@HideFromInspector
+	property any users = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		self.users = {}
+		log("[AcctData] ready")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any EnsureUser(string userId)
+		-- 유저 항목을 반환한다. 없으면 기본값으로 만든다.
+		if userId == nil or userId == "" then return nil end
+		if self.users == nil then self.users = {} end
+		if self.users[userId] == nil then
+			self.users[userId] = {
+				level = 1,
+				balrogHeart = 0,
+				unlocks = "",
+				isSaveDB = false,      -- 더티 플래그. 바뀐 게 있을 때만 저장한다 (Credit 절약)
+				saveGeneration = 0,    -- 모든 setter 가 +1. 저장 왕복 중 setter 를 감지하는 장치
+			}
+		end
+		return self.users[userId]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Forget(string userId)
+		-- 유저가 나간 뒤 메모리 정리. 반드시 마지막 저장이 끝난 뒤에 부른다.
+		if self.users == nil then return end
+		self.users[userId] = nil
+	end
+
+	-- ── 5메서드 계약 (datastorage.md §8) ─────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method boolean LoadFromDB(string userId, table loadKeys)
+		-- ① BatchGet 전. 내가 소유한 키를 loadKeys 에 밀어 넣기만 한다. 저장소는 건드리지 않는다.
+		self:EnsureUser(userId)
+		table.insert(loadKeys, _AccountStorageLogic.ProfileKey)
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean OnLoadedDataFromDB(string userId, table loadedData)
+		-- ② BatchGet 후. 내 키를 찾아 디코드해 원장에 채운다. false 를 반환하면 전체 로드가 중단된다.
+		local u = self:EnsureUser(userId)
+		if u == nil then return false end
+
+		local key = _AccountStorageLogic.ProfileKey
+		-- 🔴 한 번도 쓴 적 없는 키는 NotFound 행이 아니라 **아예 없다** (datastorage.md §4.6).
+		--    nil 체크 없이 .Value 를 읽으면 여기서 터진다.
+		local item = loadedData[key]
+
+		local profile = AccountProfile()
+		profile:Init()
+
+		if item ~= nil and not _UtilLogic:IsNilorEmptyString(item.Value) then
+			local t = _HttpService:JSONDecode(item.Value)
+			if not profile:Deserialize(t) then
+				log_error("[AcctData] deserialize failed for " .. userId)
+				return false
+			end
+		else
+			-- 최초 접속. 정상 경로다. 기본값으로 시작하고 첫 저장을 예약한다.
+			u.isSaveDB = true
+			u.saveGeneration = u.saveGeneration + 1
+			log("[AcctData] new account " .. userId)
+		end
+
+		u.level = profile.account_level
+		u.balrogHeart = profile.account_balrogHeart
+		u.unlocks = profile.account_unlocks
+		log("[AcctData] loaded " .. userId .. " lv=" .. tostring(u.level) .. " heart=" .. tostring(u.balrogHeart))
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PostOnLoadedDataFromDB(string userId)
+		-- ③ 모든 도메인이 ②를 끝낸 뒤. 다른 도메인이 채워져 있어야 하는 후처리를 여기 둔다.
+		-- 지금은 도메인이 하나뿐이라 할 일이 없다. 도메인이 늘면 여기가 필요해진다.
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(string userId, table saveData, table savedGenerations)
+		-- ④ BatchSet 전. 현재 상태를 직렬화해 saveData 에 담는다.
+		-- 🔴 여기서 더티 플래그를 지우지 마라. 저장은 아직 실패할 수 있다.
+		local u = self.users ~= nil and self.users[userId] or nil
+		if u == nil then return end
+		if not u.isSaveDB then return end   -- 안 바뀌었으면 바이트 0 → Credit 0
+
+		local profile = AccountProfile()
+		profile:Init()
+		profile.SchemaVersion = _AccountStorageLogic.SchemaVersion
+		profile.account_level = u.level
+		profile.account_balrogHeart = u.balrogHeart
+		profile.account_unlocks = u.unlocks
+
+		local t = {}
+		profile:Serialize(t)
+
+		local key = _AccountStorageLogic.ProfileKey
+		saveData[key] = _HttpService:JSONEncode(t)
+		-- 지금 직렬화한 세대를 스냅샷에 찍는다. 이 값이 짝이 되는 OnSavedToDB 로 그대로 전달돼,
+		-- 저장 왕복 중에 setter 가 돌았는지 판정한다.
+		savedGenerations[key] = u.saveGeneration
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnSavedToDB(string userId, table successKeys, table savedGenerations)
+		-- ⑤ BatchSet 후. **확정된 키에 한해서만** 더티를 지운다.
+		local u = self.users ~= nil and self.users[userId] or nil
+		if u == nil then return end
+
+		local key = _AccountStorageLogic.ProfileKey
+		for i = 1, #successKeys do
+			if successKeys[i] == key then
+				local snapshot = savedGenerations[key]
+				if snapshot ~= nil and u.saveGeneration == snapshot then
+					u.isSaveDB = false   -- 저장 확정 + 그 사이 변경 없음 → 안전하게 클리어
+				end
+				-- 세대가 앞으로 갔으면(왕복 중 setter) 더티를 남겨 다음 주기에 다시 저장한다.
+				return
+			end
+		end
+		-- 키가 successKeys 에 없다 = 저장이 확정되지 않았다 → 더티 유지하고 재시도.
+	end
+
+	-- ── 읽기 ─────────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method integer GetLevel(string userId)
+		local u = self:EnsureUser(userId)
+		return u ~= nil and u.level or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetBalrogHeart(string userId)
+		local u = self:EnsureUser(userId)
+		return u ~= nil and u.balrogHeart or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetUnlocks(string userId)
+		local u = self:EnsureUser(userId)
+		return u ~= nil and u.unlocks or ""
+	end
+
+	-- ── 쓰기 — 전부 Touch 를 거친다 ──────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void Touch(any u)
+		-- 🔴 모든 setter 는 이걸 부른다. 더티 플래그와 세대를 **둘 다** 올려야 한다.
+		--    세대를 안 올리면 저장 왕복 중 변경을 못 잡아 조용히 유실된다.
+		if u == nil then return end
+		u.isSaveDB = true
+		u.saveGeneration = u.saveGeneration + 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLevel(string userId, integer level)
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		local v = math.max(1, level)
+		if u.level == v then return end   -- 안 바뀌면 저장도 없다
+		u.level = v
+		self:Touch(u)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddBalrogHeart(string userId, integer amount)
+		-- 발록의 심장 증감. 음수면 소모다. 🔴 0 아래로 내려가지 않는다.
+		local u = self:EnsureUser(userId)
+		if u == nil or amount == 0 then return end
+		local v = math.max(0, u.balrogHeart + amount)
+		if u.balrogHeart == v then return end
+		u.balrogHeart = v
+		self:Touch(u)
+		log("[AcctData] heart " .. userId .. " " .. tostring(amount) .. " -> " .. tostring(v))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetUnlocks(string userId, string unlocks)
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		local v = unlocks or ""
+		if u.unlocks == v then return end
+		u.unlocks = v
+		self:Touch(u)
+	end
+
+end

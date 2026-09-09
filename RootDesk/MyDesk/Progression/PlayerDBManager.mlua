@@ -1,0 +1,218 @@
+@Logic
+script PlayerDBManager extends Logic
+
+	-- 계정 영구 저장의 **단일 창구** (WO-018 S1 · datastorage.md §8 참조 아키텍처).
+	--
+	-- 🔴 이 파일 밖에서 _DataStorageService 를 부르지 마라. 저장 경로가 여러 군데면
+	--    스키마가 조용히 갈라지고, Batch 로 모으는 이점이 사라져 Credit 이 선형으로 는다.
+	--
+	-- 흐름:
+	--   접속  UserEnterEvent → 각 도메인의 LoadFromDB 로 키 수집 → **BatchGet 1회** →
+	--                          OnLoadedDataFromDB → 전부 끝난 뒤 PostOnLoadedDataFromDB → loadOk = true
+	--   저장  주기 300초  → BatchSetAsync  (프레임을 막지 않는다)
+	--        UserLeaveEvent → BatchSetAndWait (마지막 기회라 확정될 때까지 블록)
+	--
+	-- 🔴 DataStorage 는 Credit 과금이다 (datastorage.md §2).
+	--    OnUpdate·1초 미만 타이머에서 부르지 않는다 / 안 바뀐 도메인은 바이트 0 / 여러 키는 Batch.
+
+	-- userId → profileCode. DataStorage 컨테이너는 ProfileCode 로 잡는다 (datastorage.md §2).
+	-- 이탈 시점엔 플레이어 엔티티가 이미 없을 수 있는데, UserEnterEvent/UserLeaveEvent 가
+	-- ProfileCode 를 직접 들고 있어서 엔티티 조회 없이 처리된다.
+	@HideFromInspector
+	property any profileCodes = nil
+
+	-- userId → boolean. 🔴 로드가 **완전히** 끝난 유저만 true.
+	-- 이 게이트가 없으면 로드 실패 상태에서 빈 기본값으로 세이브를 덮어쓴다 = 최악의 사고.
+	@HideFromInspector
+	property any loadOk = nil
+
+	@HideFromInspector
+	property any enterHandler = nil
+
+	@HideFromInspector
+	property any leaveHandler = nil
+
+	@HideFromInspector
+	property integer autoSaveTimerId = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		self.profileCodes = {}
+		self.loadOk = {}
+		self.enterHandler = _UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+		self.leaveHandler = _UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
+
+		local period = (_AccountStorageLogic ~= nil) and _AccountStorageLogic.AutoSaveIntervalSec or 300.0
+		if period < 1.0 then period = 300.0 end   -- 방어: 1초 미만은 Credit 을 태운다
+		self.autoSaveTimerId = _TimerService:SetTimerRepeat(function() self:FlushAll() end, period, period)
+		log("[PlayerDB] ready · autosave " .. tostring(period) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- OnBeginPlay 에서 건 것은 전부 여기서 푼다.
+		if self.enterHandler ~= nil then _UserService:DisconnectEvent(UserEnterEvent, self.enterHandler) end
+		if self.leaveHandler ~= nil then _UserService:DisconnectEvent(UserLeaveEvent, self.leaveHandler) end
+		if self.autoSaveTimerId ~= 0 then _TimerService:ClearTimer(self.autoSaveTimerId) end
+	end
+
+	-- ── 접속 · 이탈 ──────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void OnUserEnter(UserEnterEvent event)
+		-- 이벤트가 UserId 와 ProfileCode 를 둘 다 준다.
+		local userId = event.UserId
+		local profileCode = event.ProfileCode
+		if userId == nil or userId == "" then return end
+		self.profileCodes[userId] = profileCode
+		self.loadOk[userId] = false
+		self:LoadForUser(userId, profileCode)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserLeave(UserLeaveEvent event)
+		-- 마지막 기회 저장. 확정될 때까지 블록한다 (datastorage.md §4.7).
+		local userId = event.UserId
+		if userId == nil or userId == "" then return end
+		self:SaveForUser(userId, true)
+		self.profileCodes[userId] = nil
+		self.loadOk[userId] = nil
+		if _AccountData ~= nil then _AccountData:Forget(userId) end
+	end
+
+	-- ── 불러오기 ─────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void LoadForUser(string userId, string profileCode)
+		if profileCode == nil or profileCode == "" then
+			log_warning("[PlayerDB] no profileCode for " .. tostring(userId) .. " — skip load")
+			return
+		end
+
+		-- ① 각 도메인이 자기 키를 밀어 넣는다. 도메인이 늘면 여기 한 줄씩 추가된다.
+		local loadKeys = {}
+		if _AccountData ~= nil then
+			if not _AccountData:LoadFromDB(userId, loadKeys) then return end
+		end
+		if #loadKeys == 0 then return end
+
+		-- ② BatchGet 1회. 페이지를 전부 소진한다.
+		local loadedData = {}
+		if not self:BatchGetAllPages(profileCode, loadKeys, loadedData) then
+			log_error("[PlayerDB] load failed for " .. userId .. " — loadOk stays false")
+			return
+		end
+
+		-- ③ 각 도메인이 자기 키를 디코드한다.
+		if _AccountData ~= nil then
+			if not _AccountData:OnLoadedDataFromDB(userId, loadedData) then return end
+		end
+
+		-- ④ 도메인 간 후처리 — 모두가 ③을 끝낸 뒤.
+		if _AccountData ~= nil then
+			if not _AccountData:PostOnLoadedDataFromDB(userId) then return end
+		end
+
+		-- ⑤ 🔴 전부 성공한 뒤에만 게이트를 연다. SaveForUser 가 이걸 본다.
+		self.loadOk[userId] = true
+		log("[PlayerDB] load ok " .. userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean BatchGetAllPages(string profileCode, table loadKeys, table outLoadedData)
+		-- 🔴 BatchGetAndWait 은 페이지를 돌려준다. IsLastPage 까지 돌지 않으면
+		--    뒷페이지 키가 **조용히 사라진다** (datastorage.md §4.6).
+		local ds = _DataStorageService:GetUserDataStorage(profileCode)
+		if ds == nil then return false end
+
+		local code, itemPages = ds:BatchGetAndWait(loadKeys)
+		if code ~= 0 then
+			log_error("[PlayerDB] BatchGetAndWait failed. code=" .. tostring(code))
+			return false
+		end
+
+		while true do
+			local datas = itemPages:GetCurrentPageDatas()
+			if datas == nil then break end
+			for i = 1, #datas do
+				outLoadedData[datas[i].KeyInfo.Key] = datas[i]
+			end
+			if itemPages.IsLastPage then break end
+
+			-- 다음 페이지를 먼저 로드하고 에러를 확인한 뒤에 커서를 옮긴다.
+			local loadErr = itemPages:LoadNextPageAndWait()
+			if loadErr ~= 0 then
+				log_error("[PlayerDB] LoadNextPageAndWait failed. code=" .. tostring(loadErr))
+				return false
+			end
+			itemPages:MoveToNextPageAndWait()
+		end
+		return true
+	end
+
+	-- ── 저장 ─────────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void SaveForUser(string userId, boolean isLeaving)
+		-- 🔴 로드가 안 끝난 유저는 저장하지 않는다. 빈 기본값으로 세이브를 덮어쓰는 걸 막는 유일한 장치.
+		if self.loadOk == nil or self.loadOk[userId] ~= true then return end
+
+		local profileCode = self.profileCodes ~= nil and self.profileCodes[userId] or nil
+		if profileCode == nil or profileCode == "" then return end
+
+		-- saveData 와 savedGenerations 는 **이 호출만의 로컬**이다.
+		-- 이탈 저장과 주기 저장이 겹쳐 돌아도 서로의 스냅샷을 덮어쓰지 않는다.
+		local saveData = {}
+		local savedGenerations = {}
+		if _AccountData ~= nil then _AccountData:SaveToDB(userId, saveData, savedGenerations) end
+
+		-- 바뀐 도메인이 하나도 없으면 요청 자체를 건너뛴다 → Credit 0.
+		if next(saveData) == nil then return end
+
+		local ds = _DataStorageService:GetUserDataStorage(profileCode)
+		if ds == nil then return end
+
+		-- 🔴 BatchSet* 이 돌려주는 successKeys 는 List<string> 이라 table 파라미터에 그대로 못 넘긴다.
+		--    ToTable() 로 평범한 Lua 테이블로 바꿔서 도메인에 전달한다.
+		if isLeaving then
+			local errorCode, successKeys = ds:BatchSetAndWait(saveData)
+			local okKeys = (successKeys ~= nil) and successKeys:ToTable() or {}
+			if _AccountData ~= nil then _AccountData:OnSavedToDB(userId, okKeys, savedGenerations) end
+			if errorCode ~= 0 then
+				log_error("[PlayerDB] logout save failed. code=" .. tostring(errorCode) ..
+					" ok=" .. tostring(#okKeys) .. " user=" .. userId)
+			else
+				log("[PlayerDB] logout save ok " .. userId)
+			end
+		else
+			-- 콜백이 **이 호출의** savedGenerations 를 캡처한다. 다른 저장이 끼어들어도 안전하다.
+			ds:BatchSetAsync(saveData, function(errorCode, successKeys)
+				local okKeys = (successKeys ~= nil) and successKeys:ToTable() or {}
+				if _AccountData ~= nil then _AccountData:OnSavedToDB(userId, okKeys, savedGenerations) end
+				if errorCode ~= 0 then
+					log_warning("[PlayerDB] periodic save failed. code=" .. tostring(errorCode) ..
+						" ok=" .. tostring(#okKeys) .. " user=" .. userId)
+				end
+			end)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FlushAll()
+		-- 주기 자동저장. 더티가 없는 유저는 SaveForUser 안에서 걸러진다.
+		if self.loadOk == nil then return end
+		for userId, ok in pairs(self.loadOk) do
+			if ok == true then self:SaveForUser(userId, false) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestFlush(string userId)
+		-- 매치 종료·탈락처럼 "지금 확정해 두고 싶은" 지점에서 부른다.
+		-- 🔴 호출부가 _DataStorageService 를 직접 만지지 않게 하려고 뚫어 둔 창구다.
+		--    빈번한 이벤트에 걸지 마라 — 한 번 부를 때마다 Credit 이 나간다.
+		if userId == nil or userId == "" then return end
+		self:SaveForUser(userId, false)
+	end
+
+end
