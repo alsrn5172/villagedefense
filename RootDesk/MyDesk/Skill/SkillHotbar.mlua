@@ -7,6 +7,9 @@ script SkillHotbar extends Logic
     property boolean isWired = false
     property any actionEventHandler = nil
 
+    -- 점프 키 원시 입력(KeyDownEvent) 핸들러 — 더블 점프 텔레포트용 (OnJumpKeyDown).
+    property any jumpKeyHandler = nil
+
     -- Single source of truth for slot -> key -> skill_id. A drag-to-assign UI will replace this
     -- table later; every consumer here (TryWireKeys, OnPlayerAction) reads from this one table,
     -- never a second hardcoded copy.
@@ -109,6 +112,7 @@ script SkillHotbar extends Logic
         end
 
         self.actionEventHandler = player:ConnectEvent(PlayerActionEvent, self.OnPlayerAction)
+        self.jumpKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyDown)
         self.isWired = true
         log("SkillHotbar: wired 8 hotbar keys (Skill1-Skill8)")
     end
@@ -127,10 +131,8 @@ script SkillHotbar extends Logic
         -- Routes to the one skill-casting entry point instead of just logging - the gate
         -- checks (job/level/cooldown/use-limit/MP), state changes, and visual/audio dispatch
         -- all live in SkillCaster/SkillExecutors now, not here.
-        if self.TeleportOnAirJump and event.ActionName == self.JumpActionName then
-            self:TryAirJumpTeleport()
-            return
-        end
+        -- 더블 점프 텔레포트는 여기(PlayerActionEvent)가 아니라 OnJumpKeyDown(KeyDownEvent) 에서 — "Jump" 액션 이벤트는 실제 점프가 실행될 때(지상)만 오고
+        -- 공중 입력엔 오지 않는다(2026-09-10 실측). 여기서는 핫바 슬롯 액션만 본다.
 
         local entry = self:FindSlotByAction(event.ActionName)
         if entry == nil then return end -- not one of this file's actions (e.g. a DebugKeys key)
@@ -172,6 +174,22 @@ script SkillHotbar extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method void OnJumpKeyDown(KeyDownEvent event)
+        -- 점프 키 원시 입력 → 더블 점프 판정(TryAirJumpTeleport). 어느 키가 점프인지는 컨트롤러 액션 매핑(GetActionName)으로 보고, 매핑 조회가 비면 Space 로 폴백.
+        if not self.TeleportOnAirJump then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local controller = player.PlayerControllerComponent
+        local isJumpKey = false
+        if isvalid(controller) then
+            isJumpKey = controller:GetActionName(event.key) == self.JumpActionName
+        end
+        if not isJumpKey and event.key == KeyboardKey.Space then isJumpKey = true end
+        if not isJumpKey then return end
+        self:TryAirJumpTeleport()
+    end
+
+    @ExecSpace("ClientOnly")
     method void TryAirJumpTeleport()
         -- 공중 점프 키 → 텔레포트(더블 점프 대체). 지상이면 엔진 점프에 맡기고, 텔레포트를 안 배웠으면 조용히 무시(다른 직업의 점프 스팸 방지).
         -- 방향은 SkillMovement 가 누른 방향키/바라보는 쪽으로 푼다. 게이트(직업·쿨다운·MP)는 SkillCaster.Cast 가 판정한다.
@@ -204,6 +222,10 @@ script SkillHotbar extends Logic
                 player:DisconnectEvent(PlayerActionEvent, self.actionEventHandler)
             end
             self.actionEventHandler = nil
+        end
+        if self.jumpKeyHandler ~= nil then
+            _InputService:DisconnectEvent(KeyDownEvent, self.jumpKeyHandler)
+            self.jumpKeyHandler = nil
         end
     end
 
