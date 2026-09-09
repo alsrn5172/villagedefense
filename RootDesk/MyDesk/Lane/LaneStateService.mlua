@@ -5,6 +5,7 @@ script LaneStateService extends Logic
 	-- 시설(포탑·억제기·넥서스) Lv/HP/생존 · 수비 몬스터 묶음 · 병과 훈련 Lv · 마을 창고(스택형만). 표: TowerConfig.csv(없으면 기본값) · MonsterTraining.csv.
 	-- 🔴 시설 비용은 전부 **빅토리아 주화**(SummonManager econ.coin). 피격은 LaneFacility(엔티티) → ApplyDamage 로 들어온다. 시각은 LaneFacilityService 가 칠한다.
 	-- 클라 계약: RequestView(kind) → _VillageNpcUIController:SetView(kind, csv) 소유 클라만. 행 ";" · 필드 "|". 마을이 없으면 첫 행 "NO_VILLAGE".
+	-- 파병(WO-014 · 2026-09-09)은 여기서 접수·취소만 하고 대기열은 Dispatch/DispatchService, 실제 스폰은 MinionFlowService.SpawnDispatched 가 맡는다.
 
 	@HideFromInspector
 	property any states = nil
@@ -88,15 +89,15 @@ script LaneStateService extends Logic
 		-- RUID 기본값 = 2026-09-08 이전에 .model/.ui/.mlua 에 박제돼 있던 값. CORE 는 월드 RUID 를 UI 에 쓰면 LEA-3044 라 아이콘이 다르다.
 		-- ground/bar 는 헤네시스 전용 아트를 Scale 0.25 로 놓고 Maker 에서 잰 값(사용자 2026-09-08). 세 시설 모두 같다.
 		local fallback = {
-			TOWER = { world = "781d0548d4434877a044f77db08e2ffe", icon = "781d0548d4434877a044f77db08e2ffe", flipY = false, ground = 1.125, bar = 1.2 },
-			SUPPRESSOR = { world = "ccdeb5e0dcb34fe98384ee1759c852b7", icon = "ccdeb5e0dcb34fe98384ee1759c852b7", flipY = true, ground = 1.125, bar = 1.2 },
-			CORE = { world = "8adca861d2d8489682616316a3a3f50f", icon = "dab6ddee82db4d34ab48608d6103f4f2", flipY = false, ground = 1.125, bar = 1.2 },
+			TOWER = { world = "781d0548d4434877a044f77db08e2ffe", icon = "781d0548d4434877a044f77db08e2ffe", flipY = false, flipX = false, ground = 1.125, bar = 1.2 },
+			SUPPRESSOR = { world = "ccdeb5e0dcb34fe98384ee1759c852b7", icon = "ccdeb5e0dcb34fe98384ee1759c852b7", flipY = true, flipX = false, ground = 1.125, bar = 1.2 },
+			CORE = { world = "8adca861d2d8489682616316a3a3f50f", icon = "dab6ddee82db4d34ab48608d6103f4f2", flipY = false, flipX = false, ground = 1.125, bar = 1.2 },
 		}
 		self.spriteDef = {}
 		for _, village in ipairs(self.villages) do
 			self.spriteDef[village.id] = {}
 			for stage, d in pairs(fallback) do
-				self.spriteDef[village.id][stage] = { world = d.world, icon = d.icon, flipY = d.flipY, ground = d.ground, bar = d.bar }
+				self.spriteDef[village.id][stage] = { world = d.world, icon = d.icon, flipY = d.flipY, flipX = d.flipX, ground = d.ground, bar = d.bar }
 			end
 		end
 		local t = _DataService:GetTable("FacilitySprite")
@@ -117,6 +118,7 @@ script LaneStateService extends Logic
 				if world ~= "" then d.world = world end
 				if icon ~= "" then d.icon = icon end
 				d.flipY = string.lower(tostring(t:GetCell(i, "FlipY") or "false")) == "true"
+				d.flipX = string.lower(tostring(t:GetCell(i, "FlipX") or "false")) == "true"
 				-- 숫자 칸도 빈 칸이면 기본값 유지. 0 은 유효한 값이라 tonumber 결과로만 판단한다.
 				local ground = tonumber(t:GetCell(i, "GroundOffset"))
 				local bar = tonumber(t:GetCell(i, "BarOffset"))
@@ -158,6 +160,14 @@ script LaneStateService extends Logic
 		local v = self.spriteDef[villageId]
 		if v == nil or v[stage] == nil or v[stage].bar == nil then return fallbackValue end
 		return v[stage].bar
+	end
+
+	method boolean FacilityFlipX(string villageId, string stage)
+		-- 좌우 반전 (2026-09-09). 포탑은 TurretAI 가 방향을 안 바꾸므로 이 값이 최종이다.
+		if self.spriteDef == nil then return false end
+		local v = self.spriteDef[villageId]
+		if v == nil or v[stage] == nil then return false end
+		return v[stage].flipX == true
 	end
 
 	method boolean FacilityFlipY(string villageId, string stage)
@@ -302,6 +312,17 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method string VillageName(string villageId)
+		-- 마을 표시 이름. 모르는 id 면 id 그대로.
+		if self.villages ~= nil then
+			for _, vv in ipairs(self.villages) do
+				if vv.id == villageId then return vv.name end
+			end
+		end
+		return tostring(villageId)
+	end
+
+	@ExecSpace("ServerOnly")
 	method integer Coin(string userId)
 		-- 빅토리아 주화 조회.
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
@@ -375,9 +396,11 @@ script LaneStateService extends Logic
 		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
 		local nDef = (_DefenderService ~= nil) and _DefenderService:DespawnVillage(villageId) or 0
 		local nMin = (_MinionFlowService ~= nil) and _MinionFlowService:DespawnVillage(villageId) or 0
+		-- 이 마을로 오던 파병 대기열도 버린다. 보낸 사람에게 돌려주지 않는다 — 이미 소모된 전력이다(GDD §4.3).
+		local nDisp = (_DispatchService ~= nil) and _DispatchService:CancelAllOfVillage(villageId) or 0
 		v.defenders = {}
 		if _VillageOwnership ~= nil then _VillageOwnership:Eliminate(villageId) end
-		log("[Lane] " .. villageId .. " ELIMINATED owner=" .. tostring(owner) .. " defenders=" .. tostring(nDef) .. " minions=" .. tostring(nMin))
+		log("[Lane] " .. villageId .. " ELIMINATED owner=" .. tostring(owner) .. " defenders=" .. tostring(nDef) .. " minions=" .. tostring(nMin) .. " dispatch=" .. tostring(nDisp))
 		if owner == "" then return end
 		local ev = PlayerEliminatedEvent()
 		ev.MatchId = ""
@@ -498,7 +521,19 @@ script LaneStateService extends Logic
 		elseif kind == "dispatch" then
 			local own = self:VillageOfUser(userId)
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
-			for _, vv in ipairs(self.villages) do add({ "V", vv.id, vv.name, b2s(vv.id == own) }) end
+			-- V|id|name|own|claimed — 주인 없는 마을은 파병 대상이 아니다(클라가 회색 처리).
+			for _, vv in ipairs(self.villages) do
+				local claimed = (_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(vv.id) ~= "") or false
+				add({ "V", vv.id, vv.name, b2s(vv.id == own), b2s(claimed) })
+			end
+			if _DispatchService ~= nil then
+				local rule = _DispatchService:CurrentRule()
+				add({ "RULE", tostring(math.floor(rule.villageCap or 0)), tostring(math.floor(rule.mesoCost or 0)), b2s(rule.enabled) })
+				-- Q|orderId|대상마을이름|몬스터이름|마릿수 — 내가 보낸 대기 묶음(투입 전이라 취소 가능).
+				for _, o in ipairs(_DispatchService:PendingOf(userId)) do
+					add({ "Q", o.id, self:VillageName(o.target), tostring(o.name or o.monsterId), tostring(o.qty) })
+				end
+			end
 		elseif kind == "gate" then
 			local own = self:VillageOfUser(userId)
 			if own == "" then
@@ -757,17 +792,96 @@ script LaneStateService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestDispatch(string targetVillageId, integer bundles)
-		-- 파병(스텁): 묶음을 원장에서 빼기만 한다. 실제 이동·전투는 ③.
+		-- 파병 (WO-014 · 2026-09-09): 보유 수비대 앞에서부터 n묶음을 **통째로**(FIFO) 빼내 대상 마을 대기열에 넣는다.
+		-- 실제 이동은 다음 웨이브다 — MatchSessionLogic 이 SpawnWave 직후 DispatchService.Release 를 부른다. 그 전까지 취소할 수 있다.
+		-- 원장(v.defenders)과 엔티티(DefenderService.units) 를 **함께** 비운다. 원장만 지우면 몬스터가 마을에 남는다(예전 스텁의 버그).
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
+		if _DispatchService == nil then self:Toast(uid, "파병 접수처가 없습니다") return end
 		local n = math.floor(bundles or 0)
-		if n <= 0 or n > #v.defenders then self:Toast(uid, "보낼 수비대가 부족합니다") return end
-		if targetVillageId == v.id then self:Toast(uid, "내 마을에는 파병할 수 없습니다") return end
-		for i = 1, n do table.remove(v.defenders, 1) end
-		log("[Lane] " .. v.id .. " dispatch " .. tostring(n) .. " bundles -> " .. targetVillageId .. " (" .. uid .. ")")
-		self:Toast(uid, targetVillageId .. " 로 " .. tostring(n) .. "묶음 파병 (스텁)")
+		if n <= 0 or n > #v.defenders then self:Toast(uid, "보낼 수비대가 부족합니다") self:Push(uid, "dispatch") return end
+		if targetVillageId == v.id then self:Toast(uid, "내 마을에는 파병할 수 없습니다") self:Push(uid, "dispatch") return end
+		local targetName = self:VillageName(targetVillageId)
+		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(targetVillageId) or ""
+		if owner == "" then self:Toast(uid, targetName .. " 는 주인이 없습니다 — 파병 대상이 아닙니다") self:Push(uid, "dispatch") return end
+		local rule = _DispatchService:CurrentRule()
+		if not rule.enabled then self:Toast(uid, "지금 페이즈에는 파병을 접수하지 않습니다") self:Push(uid, "dispatch") return end
+		local cap = math.floor(rule.villageCap or 0)
+		if _DispatchService:PendingCount(targetVillageId) + n > cap then
+			self:Toast(uid, targetName .. " 대기열이 가득 찼습니다 (동시 " .. tostring(cap) .. "묶음)")
+			self:Push(uid, "dispatch")
+			return
+		end
+		local cost = math.floor(rule.mesoCost or 0) * n
+		if cost > 0 then
+			if _SummonManager == nil or not _SummonManager:SpendMeso(uid, cost) then
+				self:Toast(uid, "메소가 부족합니다 (" .. tostring(cost) .. " 필요)")
+				self:Push(uid, "dispatch")
+				return
+			end
+		end
+		local sent = 0
+		local units = 0
+		for i = 1, n do
+			local d = v.defenders[1]
+			if d == nil then break end
+			table.remove(v.defenders, 1)
+			local monsterId = math.floor(tonumber(d.key) or 0)
+			local qty = math.floor(d.qty or 0)
+			local statMul = self:MonMul(v, monsterId)
+			if _DefenderService ~= nil then
+				local took = _DefenderService:TakeUnits(v.id, monsterId, qty)
+				-- 이미 죽어서 원장보다 적게 남아 있을 수 있다. 실제로 빠져나간 만큼만 보낸다.
+				qty = math.floor(took.taken or 0)
+				statMul = took.statMul or statMul
+			end
+			if qty > 0 then
+				_DispatchService:Submit(uid, v.id, targetVillageId, monsterId, d.name or tostring(monsterId), qty, statMul)
+				sent = sent + 1
+				units = units + qty
+			end
+		end
+		log("[Lane] " .. v.id .. " dispatch " .. tostring(sent) .. " bundles (" .. tostring(units) .. " units) -> "
+			.. targetVillageId .. " cost=" .. tostring(cost) .. " (" .. uid .. ")")
+		if sent == 0 then
+			self:Toast(uid, "보낼 수 있는 수비대가 없습니다")
+		else
+			self:Toast(uid, targetName .. " 로 " .. tostring(sent) .. "묶음(" .. tostring(units) .. "마리) 파병 접수 — 다음 투입 때 합류합니다 (그 전까지 취소 가능)")
+			-- 🔴 방어자에게는 **총량 등급만** 알린다 (GDD §4.3 정보 비대칭 — 누가·무엇을 보냈는지는 공개하지 않는다).
+			local grade = _DispatchService:GradeOf(targetVillageId)
+			if grade ~= "" then self:Toast(owner, "내 레인에 파병이 섞였습니다 — 총량 " .. grade) end
+		end
 		self:Push(uid, "dispatch")
+		self:Push(uid, "recruit")
+	end
+
+	@ExecSpace("Server")
+	method void RequestDispatchCancel(string orderId)
+		-- 투입 전 취소 (GDD §4.3): 대기열에서 빼고 내 수비대로 되돌린다 — 원장 묶음 복귀 + 최전방에 재스폰.
+		local uid = senderUserId
+		local v = self:StateOfUser(uid)
+		if v == nil or _DispatchService == nil then return end
+		if not _DispatchService:CanCancel() then
+			self:Toast(uid, "투입이 임박해 취소할 수 없습니다")
+			self:Push(uid, "dispatch")
+			return
+		end
+		if #v.defenders >= v.cap then
+			self:Toast(uid, "수비대가 가득 차 되돌릴 자리가 없습니다 (" .. tostring(v.cap) .. "묶음)")
+			self:Push(uid, "dispatch")
+			return
+		end
+		local o = _DispatchService:Cancel(orderId, uid)
+		if o == nil then self:Toast(uid, "이미 투입됐거나 없는 신청입니다") self:Push(uid, "dispatch") return end
+		local monsterId = math.floor(o.monsterId or 0)
+		local qty = math.floor(o.qty or 0)
+		local spawned = (_DefenderService ~= nil) and _DefenderService:SpawnBundle(v.id, monsterId, o.statMul or 1.0, qty, self:FrontStage(v)) or 0
+		table.insert(v.defenders, { key = tostring(monsterId), name = o.name or tostring(monsterId), qty = spawned, lv = self:MonLevel(v, monsterId) })
+		log("[Lane] " .. v.id .. " dispatch-cancel order=" .. orderId .. " mon=" .. tostring(monsterId) .. " back=" .. tostring(spawned) .. " (" .. uid .. ")")
+		self:Toast(uid, tostring(o.name or monsterId) .. " 1묶음(" .. tostring(spawned) .. "마리) 파병 취소 — 수비대로 복귀")
+		self:Push(uid, "dispatch")
+		self:Push(uid, "recruit")
 	end
 
 	@ExecSpace("Server")

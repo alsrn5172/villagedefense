@@ -203,7 +203,13 @@
 | `NAUTILUS` | `Nautilus_Village_MinimiMain` | `Nautilus_Hunt_WayToBeach` | `Nautilus_Hunt_PigPasture` | `Nautilus_Village_MinimiShip` → `Nautilus_Hunt_RibbonPigBeach` | `Nautilus_Boss_Pianus` |
 | `LITH` | `LithHarbor_Village_MinimiMain` | `LithHarbor_Hunt_PigBeach` | `LithHarbor_Hunt_RightAroundLithHarbor` | `LithHarbor_Hunt_ForestTrail1` | `LithHarbor_Boss_Mano` |
 
-⚠️ **커닝시티만 레인이 4단이다** — `SubwayLine1 → Village_SubwayEntrance → ConstructionSite → 마을`. 중간에 `Village_SubwayEntrance`가 낀다. 이 맵에 포탑을 둘지 통과만 시킬지는 제작 시 결정한다.
+✅ **커닝시티는 레인 맵이 하나 적다 (2026-09-09 확정 · 사용자 결정)** — `여섯갈래길 → ConstructionSite(공사장) → 마을`.
+`SubwayLine1` 과 `Village_SubwayEntrance` 는 **레인에서 빠진다**(사냥터로만 남는다).
+맵이 하나 적으므로 **포탑과 억제기가 둘 다 공사장에 선다**(포탑이 오른쪽 = 미니언 진입 쪽, 억제기가 왼쪽 = 마을 쪽).
+넥서스는 다른 마을과 같이 마을 맵에.
+
+> 이전 각주는 "커닝시티만 레인이 4단(`SubwayLine1 → SubwayEntrance → ConstructionSite → 마을`)"이라고 적고
+> `SubwayEntrance` 처리를 미결로 남겨 두었다 — 그 구성 자체가 폐기됐다.
 ⚠️ **노틸러스는 후방 지선에 `Village_MinimiShip`이 낀다.** 침공 레인에는 영향 없다.
 
 #### 레인 요소 계약
@@ -301,7 +307,8 @@
 
 21레벨 전에는 상대를 직접 때릴 수 없다. 대신 자기 몬스터를 상대의 방어 레인으로 보낸다.
 
-- 파병 접수는 `SixPathCrossway`의 **공용 파병 접수 NPC**에서 한다.
+- 파병 접수는 **내 마을의 파병 담당관**에서 한다 (`DEFENSE` 섹터 · 방어 시설 관리인 옆 · `OWNER_ONLY`).
+  ⚠️ 2026-09-09 이전에는 `SixPathCrossway` 의 공용 NPC 였다 — 사용자 지시로 마을로 옮겼다(§4.14 공용 기능 NPC 표 참조).
 - 대상은 **주인이 있고 아직 살아 있는 다른 플레이어의 마을**이다. 주인 없는 빈 마을과 자기 마을은 대상이 될 수 없다.
 - 보낸 몬스터는 **미니언 흐름에 합류**해 상대 레인을 함께 걸어간다. 별도의 전투 인스턴스를 만들지 않는다.
 - 파병한 몬스터는 **내 보유 목록에서 즉시 빠지고 돌아오지 않는다.** 즉 파병은 **내 수비 전력을 깎아 남의 시간을 뺏는 거래**다.
@@ -384,7 +391,11 @@
 | 위치 | NpcRole | 이용 범위 | 기능 |
 |---|---|---|---|
 | 로비 | `COMMON_MATCH_GUIDE` | 로비의 모든 플레이어 | 매칭 참가·취소, 준비 확인 상태, 규칙 안내 |
-| `SixPathCrossway` | `COMMON_DISPATCH_OFFICER` | 같은 MatchId의 생존자 | 대상 선택, 공개 요약 확인, 파병 편성·취소, 현재 페이즈 안내 |
+
+> 🔄 **2026-09-09 변경(사용자 지시)** — `COMMON_DISPATCH_OFFICER`(파병 담당관)는 공용 NPC 가 아니라
+> **각 마을의 NPC**다. 마을 `DEFENSE` 섹터에 방어 시설 관리인 옆(2번 슬롯)으로 서고 `OWNER_ONLY` 라
+> **마을 주인만** 연다. `SixPathCrossway` 의 공용 파병관은 제거했다.
+> 이유: 파병은 "내 마을 수비대를 깎아 남의 시간을 뺏는 거래"(§4.3)라 내 마을에서 하는 것이 동선에 맞는다.
 
 파병 접수 NPC는 대상의 시설·몬스터 상세를 공개하지 않으며, 실제 편성은 항상 `WaveService`의 서버 검증을 거친다.
 
@@ -1007,7 +1018,8 @@ BossService.ClaimFirstKill(bossId, userId)                 -- 마노 선취 보�
 - ⬜ Phase 0 기준선에 `안농`의 나머지 마을 맵과 NPC CSV를 통합
 - ⬜ 기존 `MapNpcs.csv` 행을 보존하며 60개 기능 NPC 배치 데이터 완성
 - ⬜ **나머지 5개 마을 × 레인 3맵 = 15개 맵의 하단 1자 길 + 밧줄 지형 작업** (Maker UI, 이 마일스톤 최대 물리 작업)
-- ⬜ **커닝시티 레인 4단 예외 처리** (`Village_SubwayEntrance`를 통과시킬지 포탑을 둘지)
+- ✅ **커닝시티 레인 예외 처리** — 2026-09-09 확정: `SubwayLine1`·`Village_SubwayEntrance` 를 레인에서 빼고
+  `여섯갈래길 → 공사장 → 마을` 2구간. 공사장 한 맵에 포탑+억제기를 같이 둔다 (§4.1)
 - ⬜ 6개 마을 전부에 코어·포탑 3종 앵커 배치 및 동작 검증
 - ⬜ **마을 간 레인 난이도 편차를 `LaneConfig`로 보정하고 명백한 유불리가 없는지 확인**
 - ⬜ 2인·4인·6인 각각에서 마을 선점 경쟁, NPC 권한, 생존자 통계 목록 검증

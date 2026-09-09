@@ -120,11 +120,12 @@ const CANONICAL = {
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
   LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
   TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
-  FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,#Note",
+  FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,FlipX,#Note",
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
+  DispatchRule: "Phase,MesoCost,VillageCap,CancelDeadlineSeconds,Enabled,#Note",
+  FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,Hidden,#Note",
   MatchConfig: "Key,Profile,MatchDurationSeconds,Enabled,#Note",
-  FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,#Note",
 
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
   SkillInfo:
@@ -225,11 +226,14 @@ const PK = {
   VillageNpcSector: ["VillageId", "SectorId"],
   VillageConfig: ["VillageId"],
   MonsterTraining: ["TrainClass", "Level"],
-  LaneConfig: ["VillageId", "MapName"],
+  // 2026-09-09: 커닝시티는 한 맵(공사장)에 포탑+억제기가 같이 서서 MapName 이 중복된다.
+  // 런타임도 LaneRow(villageId, role) 로 조회하므로 역할이 진짜 키다.
+  LaneConfig: ["VillageId", "LaneRole"],
   TowerConfig: ["Stage", "Level"],
   FacilitySprite: ["VillageId", "Stage"],
   MinionPhaseConfig: ["Phase", "Profile"],
   MinionComposition: ["Phase", "MonsterId"],
+  DispatchRule: ["Phase"],
   MatchConfig: ["Key", "Profile"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
