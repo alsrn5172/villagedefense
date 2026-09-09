@@ -56,6 +56,12 @@ script SkillAttack extends AttackComponent
     -- probe 패스의 attackInfo. 스킬 id 와 겹치지 않는 값.
     property string ProbeTag = "probe"
 
+    -- 평값 피해 패스의 attackInfo (아이언 바디 반사 · b/skill-warrior). CalcDamage 가 이 태그면 PendingFlatDamage 를 그대로 돌려준다.
+    property string FlatTag = "flat"
+
+    @HideFromInspector
+    property integer PendingFlatDamage = 0
+
     -- 에너지볼트 원작화(2026-09-09): 투사체는 시전자 앞쪽 Range 안의 최근접 몬스터를 향해 날아간다(유도 · SkillProjectile.SetTarget).
     -- 앞쪽에 아무도 없으면 예전처럼 바라보는 방향 직선. 탐색 상자 = 앞으로 Range, 발부터 위로 AimSearchHeight.
     property boolean AimProjectileAtTarget = true
@@ -119,6 +125,10 @@ script SkillAttack extends AttackComponent
         -- parameter through CalcDamage's signature - that signature is inherited from the
         -- engine's AttackComponent and any change would trip LEA-3014 SignatureMismatch
         -- (msw-scripting SKILL.md §9).
+        if attackInfo == self.FlatTag then
+            -- 평값 패스(DealFlatDamageToTarget): 스킬 표가 아니라 호출자가 준 값. 아이언 바디 반사 = 최대 HP × 반사율.
+            return self.PendingFlatDamage
+        end
         if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
             log_warning("SkillAttack: CalcDamage attacker has no PlayerComponent, cannot resolve userId for " .. tostring(attackInfo))
             return 0
@@ -184,6 +194,46 @@ script SkillAttack extends AttackComponent
         log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
         self.Candidates = {}
         return best
+    end
+
+    @ExecSpace("ServerOnly")
+    method table FindSkillTargets(string skillId, table shape)
+        -- shape 상자 안 몬스터 전부(probe 패스 · 피해 없음). 도발(SK_W22)처럼 "여러 대상에게 피해 아닌 효과" 를 줄 때 쓴다. 정렬 없음.
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        self.Candidates = {}
+        self.SingleTarget = nil
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local found = {}
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) then table.insert(found, cand) end
+        end
+        self.Candidates = {}
+        log("SkillAttack: FindSkillTargets " .. skillId .. " candidates=" .. tostring(#found))
+        return found
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealFlatDamageToTarget(Entity target, integer amount, string sourceSkillId)
+        -- 평값 피해를 대상 하나에 1회 (아이언 바디 반사 · SkillBuffs.OnPlayerHitEvent). 피해 값은 CalcDamage 의 FlatTag 분기가 amount 를 그대로 쓴다.
+        -- 몬스터 쪽 무적 시간(MonsterHit.ImmuneCooldown 0.4s)에 걸리면 이번 반사는 조용히 빠진다 — 로그로만 남는다.
+        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
+        if amount == nil or amount <= 0 then return end
+        self:EnsureShape()
+        local p = target.TransformComponent.WorldPosition
+        self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
+        self.Shape.Size = Vector2(self.SingleTargetBoxSize.x, self.SingleTargetBoxSize.y)
+        self.Shape.Angle = 0
+
+        self.PendingFlatDamage = math.floor(amount)
+        self.SingleTarget = target
+        self:AttackFast(self.Shape, self.FlatTag, CollisionGroups.Monster)
+        self.SingleTarget = nil
+        self.PendingFlatDamage = 0
+
+        log("SkillAttack: flat " .. tostring(amount) .. " to " .. tostring(target.Name) .. " (src=" .. tostring(sourceSkillId) .. ")")
     end
 
     @ExecSpace("ServerOnly")

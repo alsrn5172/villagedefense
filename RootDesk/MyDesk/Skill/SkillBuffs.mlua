@@ -11,7 +11,14 @@ script SkillBuffs extends Logic
     --   AbsorbDamage(userId, damage)    흡수분을 MP 로 돌리고 HP 가 받을 피해를 돌려준다 (매직 가드 본체)
     --   IsInvincible(userId)            INVULNERABLE(불굴의 진)
     --   GetShield(userId) · GetReflectRatio(userId) · ConsumeEvadeOnce(userId)  후속 태그 자리 — 지금은 기본값
-    -- 이 PR 은 MAGIC_GUARD 만 실제로 채운다. 나머지는 "빈 함수" 가 아니라 A 가 한 번만 연결하면 되는 계약 자리다.
+    --   ModifyIncomingDamage(userId, damage)  위 셋을 한 번에: 무적 → 0 · 하이퍼 바디 감소 → 매직 가드 흡수. A 의 PlayerHit.OnHit 이 __base 전에 한 줄로 부른다.
+    -- b/skill-magician 은 MAGIC_GUARD 를, b/skill-warrior(추가기획1 전사 표)는 아래 셋을 채운다:
+    --   REFLECT_HP_PCT 아이언 바디(SK_W12 · 패시브): 플레이어 HitEvent 를 여기서 직접 구독(AttachHitListener)해 공격자에게 최대 HP × 5~25% 를
+    --                  되돌려 준다(SkillAttack.DealFlatDamageToTarget). 들어오는 피해를 바꾸지 않으므로 A 연결 없이 동작한다.
+    --   HYPER_BODY     하이퍼 바디(SK_W21 · 버프): 최대 HP +20~60% 는 A 의 StatService BUFF 레이어(SetLayerCsv · 계약상 B 몫)로 넣고,
+    --                  피해 −20~40% 는 GetDamageMul/ReduceDamage 로 낸다(A 의 PlayerHit 연결 대기).
+    --   INVULNERABLE   불굴의 진(SK_W31 · 궁): 8초 무적. IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
+    -- GetShield · ConsumeEvadeOnce 는 아직 계약 자리(기본값).
     -- MP 원장은 SummonManager.econ (A). 흡수분 차감은 SpendMp 가 연결된 뒤(SkillCaster.UseSpendMp) 만 — econ.mp 직접 쓰기 금지.
 
     -- [서버] userId -> buffTag -> 버프 레코드
@@ -29,6 +36,104 @@ script SkillBuffs extends Logic
     property string TagMagicGuard = "MAGIC_GUARD"
 
     property string TagInvulnerable = "INVULNERABLE"
+
+    property string TagHyperBody = "HYPER_BODY"
+
+    -- 아이언 바디(SK_W12)의 BuffTag. 패시브라 버프 원장이 아니라 스킬 레벨(JobPassiveLogic.PassiveRatio)에서 읽는다.
+    property string TagReflect = "REFLECT_HP_PCT"
+
+    -- 아이언 바디 반사를 끈다(디버그). true 면 반사 없이 로그만.
+    property boolean ReflectEnabled = true
+
+    -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
+    property table hyperBodyBonus = {}
+
+    -- [서버] userId -> 플레이어 엔티티 HitEvent 핸들러 (AttachHitListener). OnEndPlay 에서 전부 끊는다.
+    property table hitHandlers = {}
+
+    property any userEnterHandler = nil
+
+    -- ───────────────────────── 서버: 피격 리스너 (아이언 바디) ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void OnBeginPlay()
+        -- 입장 유저마다 플레이어 엔티티의 HitEvent 를 구독한다(SummonManager.OnBeginPlay 와 같은 UserEnterEvent 패턴).
+        -- 에디터 플레이는 유저가 이미 들어와 있어 아래 루프에 걸린다.
+        self.userEnterHandler = _UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+        for _, user in ipairs(_UserService.UserEntities.Values) do
+            if isvalid(user) and isvalid(user.PlayerComponent) then
+                self:AttachHitListener(user.PlayerComponent.UserId)
+            end
+        end
+        log("[Buff] SkillBuffs ready (hit listener for reflect)")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnEndPlay()
+        -- 연결한 핸들러를 전부 끊는다(SKILL.md §5 필수 패턴).
+        if self.userEnterHandler ~= nil then
+            _UserService:DisconnectEvent(UserEnterEvent, self.userEnterHandler)
+            self.userEnterHandler = nil
+        end
+        for uid, h in pairs(self.hitHandlers) do
+            local player = _UserService:GetUserEntityByUserId(uid)
+            if isvalid(player) and h ~= nil then
+                player:DisconnectEvent(HitEvent, h)
+            end
+        end
+        self.hitHandlers = {}
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnUserEnter(UserEnterEvent event)
+        -- 새로 입장한 유저의 플레이어 엔티티에 피격 리스너를 붙인다.
+        local uid = event.UserId
+        if uid ~= nil and uid ~= "" then
+            self:AttachHitListener(uid)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void AttachHitListener(string userId)
+        -- 플레이어 엔티티의 HitEvent(엔진 · HitComponent.OnHit 기본 동작이 발행)를 구독한다. 한 번만. 엔티티가 아직 없으면 다음 기회(RequestSync 등)에.
+        if self.hitHandlers[userId] ~= nil then return end
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(player) then return end
+        local uid = userId
+        self.hitHandlers[userId] = player:ConnectEvent(HitEvent, function(event) self:OnPlayerHitEvent(uid, event) end)
+        log("[Buff] hit listener attached (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnPlayerHitEvent(string userId, HitEvent event)
+        -- 아이언 바디(SK_W12): 맞을 때마다 공격자에게 "본인 최대 HP × 반사율(5~25%)" 만큼 되돌려 준다.
+        -- HitEvent 는 피해가 이미 확정된 뒤에 온다 — 들어오는 피해는 여기서 못 바꾼다(그건 A 의 PlayerHit → ModifyIncomingDamage).
+        -- 공격자가 몬스터(플레이어 아님 · 진영상 적)일 때만. 보스 투사체처럼 공격자가 투사체 엔티티면 Monster 충돌 그룹이 아니라 맞지 않는다(로그만).
+        local ratio = self:GetReflectRatio(userId)
+        if ratio <= 0 then return end
+        local attacker = event.AttackerEntity
+        if not isvalid(attacker) or isvalid(attacker.PlayerComponent) then return end
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+        if _FactionLogic ~= nil and not _FactionLogic:IsEnemy(player, attacker) then return end
+
+        local maxHp = player.PlayerComponent.MaxHp
+        local reflect = math.floor(maxHp * ratio / 100)
+        if reflect <= 0 then return end
+        if not self.ReflectEnabled then
+            log("[Buff] IRON_BODY reflect disabled (would deal " .. tostring(reflect) .. ") (" .. userId .. ")")
+            return
+        end
+        if _SkillCaster ~= nil then _SkillCaster:EnsureSkillAttack(player) end
+        local skillAttack = player:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("[Buff] IRON_BODY no script.SkillAttack on player, cannot reflect (" .. userId .. ")")
+            return
+        end
+        skillAttack:DealFlatDamageToTarget(attacker, reflect, "SK_W12")
+        log("[Buff] IRON_BODY reflect " .. tostring(reflect) .. " -> " .. tostring(attacker.Name) .. " (ratio=" .. tostring(ratio)
+            .. "% maxHp=" .. tostring(maxHp) .. " took=" .. tostring(event.TotalDamage) .. ") (" .. userId .. ")")
+    end
 
     -- ───────────────────────── 서버: 원장 ─────────────────────────
 
@@ -62,6 +167,10 @@ script SkillBuffs extends Logic
         _TimerService:SetTimerOnce(function()
             self:ExpireBuff(userId, buffTag, stamp)
         end, duration)
+        -- 하이퍼 바디(SK_W21): 최대 HP 보너스는 버프 원장이 아니라 A 의 StatService 가 들고 있어야 한다(장비·레벨 보너스와 같은 합산 경로).
+        if buffTag == self.TagHyperBody then
+            self:ApplyHyperBodyHp(userId, ratio)
+        end
         self:PushBuffs(userId)
     end
 
@@ -74,7 +183,58 @@ script SkillBuffs extends Logic
         if b == nil or b.stamp ~= stamp then return end
         u[buffTag] = nil
         log("[Buff] OFF " .. buffTag .. " (" .. userId .. ")")
+        if buffTag == self.TagHyperBody then
+            self:ClearHyperBodyHp(userId)
+        end
         self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyHyperBodyHp(string userId, number ratio)
+        -- 하이퍼 바디 최대 HP +ratio%. "기준" = 버프 없는 최대 HP(현재 MaxHp − 이미 넣은 보너스) 라 재시전해도 두 번 곱해지지 않는다.
+        -- 보너스는 StatService BUFF 레이어(SetLayerCsv · "maxhp=N" · 계약서: BUFF 는 B 몫)로 넣고, StatService.ApplyToEntity 가 PlayerComponent.MaxHp 에 차이만큼 더한다.
+        -- 현재 HP 도 같은 양만큼 올린다(원작 하이퍼 바디: 최대·현재 HP 동시 상승). StatService 가 없으면 MaxHp 에 직접 쓴다(폴백 · 로그).
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+        local pc = player.PlayerComponent
+        local prev = self.hyperBodyBonus[userId] or 0
+        local base = pc.MaxHp - prev
+        local bonus = math.floor(base * ratio / 100)
+        if bonus < 0 then bonus = 0 end
+        self.hyperBodyBonus[userId] = bonus
+        if _StatService ~= nil then
+            _StatService:SetLayerCsv(userId, "BUFF", "maxhp=" .. tostring(bonus))
+        else
+            pc.MaxHp = pc.MaxHp - prev + bonus
+            log_warning("[Buff] HYPER_BODY StatService 없음 — MaxHp 직접 쓰기 (" .. userId .. ")")
+        end
+        local delta = bonus - prev
+        if delta > 0 then
+            local hp = pc.Hp + delta
+            if hp > pc.MaxHp then hp = pc.MaxHp end
+            pc.Hp = hp
+        end
+        log("[Buff] HYPER_BODY maxHp " .. tostring(base) .. " +" .. tostring(bonus) .. " (" .. tostring(ratio) .. "%) -> " .. tostring(pc.MaxHp)
+            .. " hp=" .. tostring(pc.Hp) .. " (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ClearHyperBodyHp(string userId)
+        -- 만료·매치 초기화: BUFF 레이어를 비운다. StatService.ApplyToEntity 가 MaxHp 를 되돌리고 Hp 를 그 아래로 clamp 한다.
+        local prev = self.hyperBodyBonus[userId] or 0
+        if prev <= 0 then return end
+        self.hyperBodyBonus[userId] = 0
+        if _StatService ~= nil then
+            _StatService:SetLayerCsv(userId, "BUFF", "")
+        else
+            local player = _UserService:GetUserEntityByUserId(userId)
+            if isvalid(player) and isvalid(player.PlayerComponent) then
+                local pc = player.PlayerComponent
+                pc.MaxHp = pc.MaxHp - prev
+                if pc.Hp > pc.MaxHp then pc.Hp = pc.MaxHp end
+            end
+        end
+        log("[Buff] HYPER_BODY maxHp bonus cleared (-" .. tostring(prev) .. ") (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -104,8 +264,9 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method void ResetMatchState(string userId)
-        -- 매치 시작 시 버프를 전부 비운다 (PlayerSkillState.ResetMatchState 와 짝).
+        -- 매치 시작 시 버프를 전부 비운다 (PlayerSkillState.ResetMatchState 와 짝). 하이퍼 바디 HP 보너스도 같이.
         self.buffs[userId] = {}
+        self:ClearHyperBodyHp(userId)
         self:PushBuffs(userId)
     end
 
@@ -113,15 +274,47 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method number GetDamageMul(string userId)
-        -- HP 가 받는 피해 배율. 매직 가드 활성 = 1 − 흡수율(35~75%). 없으면 1.
-        -- 하이퍼 바디(피해 감소)·에너지 쉴드 등은 여기에 곱으로 얹는다(후속).
+        -- HP 가 받는 피해 배율(조회용 · 곱). 무적 = 0. 하이퍼 바디 = ×(1 − 피해 감소 20~40%). 매직 가드 = ×(1 − 흡수율 35~75%). 없으면 1.
+        -- 실제 감산은 ModifyIncomingDamage 가 같은 순서로 한다(매직 가드는 MP 잔량에 따라 배율과 다를 수 있다).
+        if self:IsInvincible(userId) then return 0 end
+        local mul = 1
+        local hb = self:GetBuff(userId, self.TagHyperBody)
+        if hb ~= nil then
+            mul = mul * (1 - hb.secondary / 100)
+        end
         local mg = self:GetBuff(userId, self.TagMagicGuard)
         if mg ~= nil then
-            local mul = 1 - mg.ratio / 100
-            if mul < 0 then mul = 0 end
-            return mul
+            mul = mul * (1 - mg.ratio / 100)
         end
-        return 1
+        if mul < 0 then mul = 0 end
+        return mul
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer ReduceDamage(string userId, integer damage)
+        -- 하이퍼 바디(SK_W21 · SecondaryEffect 20~40%): 받는 피해를 그만큼 줄인다. 버프가 없으면 그대로.
+        if damage == nil or damage <= 0 then return 0 end
+        local hb = self:GetBuff(userId, self.TagHyperBody)
+        if hb == nil or hb.secondary <= 0 then return damage end
+        local reduced = math.floor(damage * (1 - hb.secondary / 100))
+        if reduced < 0 then reduced = 0 end
+        log("[Buff] HYPER_BODY reduce " .. tostring(damage) .. " -> " .. tostring(reduced) .. " (-" .. tostring(hb.secondary) .. "%) (" .. userId .. ")")
+        return reduced
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer ModifyIncomingDamage(string userId, integer damage)
+        -- A 의 PlayerHit 가 HP 감산 전에 한 줄로 부르는 단일 진입점. 반환 = HP 가 실제로 받을 피해.
+        --   ① 불굴의 진(INVULNERABLE) → 0   ② 하이퍼 바디 감소(ReduceDamage)   ③ 매직 가드 흡수(AbsorbDamage · MP 차감 포함)
+        -- 개별 조회(IsInvincible/GetDamageMul/AbsorbDamage)를 따로 부르는 것과 결과가 같다 — 둘 다 쓰지는 말 것(흡수 MP 가 두 번 빠진다).
+        if damage == nil or damage <= 0 then return 0 end
+        if self:IsInvincible(userId) then
+            log("[Buff] INVULNERABLE blocked " .. tostring(damage) .. " (" .. userId .. ")")
+            return 0
+        end
+        local d = self:ReduceDamage(userId, damage)
+        d = self:AbsorbDamage(userId, d)
+        return d
     end
 
     @ExecSpace("ServerOnly")
@@ -158,7 +351,8 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method boolean IsInvincible(string userId)
-        -- 불굴의 진(SK_W31 · INVULNERABLE) 활성이면 true. 실행기 연결은 후속 — 값만 미리 낸다.
+        -- 불굴의 진(SK_W31 · INVULNERABLE) 활성이면 true. SkillExecutors.ExecuteOrigin 의 버프 분기가 8초 켠다.
+        -- A 의 PlayerHit.IsHitTarget 이 이걸 보고 false 를 돌려주면 피격 자체(넉백·피해)가 없다 — "아무 영향도 안 받음".
         return self:GetBuff(userId, self.TagInvulnerable) ~= nil
     end
 
@@ -170,8 +364,10 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method number GetReflectRatio(string userId)
-        -- 아이언 바디(SK_W12 · REFLECT_HP_PCT) 자리. 패시브라 버프 원장이 아니라 스킬 레벨에서 읽어야 한다 — 후속. 지금은 0.
-        return 0
+        -- 아이언 바디(SK_W12 · REFLECT_HP_PCT): 배운 레벨의 반사율(% · 최대 HP 기준 · 5~25). 패시브라 버프 원장이 아니라 스킬 레벨에서 읽는다(JobPassiveLogic.PassiveRatio).
+        -- 안 배웠으면 0. 반사 자체는 OnPlayerHitEvent 가 한다 — A 가 부를 일은 표시/검증용.
+        if _JobPassiveLogic == nil then return 0 end
+        return _JobPassiveLogic:PassiveRatio(userId, self.TagReflect)
     end
 
     @ExecSpace("ServerOnly")
