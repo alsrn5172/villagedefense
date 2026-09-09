@@ -44,8 +44,10 @@
 - `DamageAt` = 기존 값 + `_SkillBuffs:GetOnHitBonusDamage(userId)`(매직 가드 활성 시 현재 MP 5%). 0 이 아니면 로그. 기본 공격(A · `StatService.CalcPlayerDamage`)에 얹는 건 A 가 같은 메서드를 부르면 된다.
 
 ### `RootDesk/MyDesk/Skill/SkillHotbar.mlua`
-- "초보자 스킬의 더블 점프가 텔레포트로 바뀐다": `PlayerActionEvent.ActionName == "Jump"` 이고 공중(`RigidbodyComponent:IsOnGround() == false`)이고 SK_M13 을 배웠으면 `Cast("SK_M13")`. 지상 점프·미학습은 무시. `TeleportOnAirJump` 로 끌 수 있다. 🟡 액션 이름 "Jump" 는 미검증.
-- 핫바 슬롯은 그대로(Q 에너지볼트 · W 텔레포트 · E 텔레포트 강화 · R 매직 가드 · A 대마법 · S 연성=패시브 거절).
+- **키 배치 (사용자 결정 2026-09-09)**: **Q** 에너지볼트(SK_M11) · **Shift** 텔레포트(이동기 공통 · `LeftShift`+`RightShift` 둘 다 `Skill2`) · **E** 매직 가드(SK_M22) · **R** 대마법(SK_M31). W/A/S/D 는 빈 슬롯(`Skill5~8` · "empty" 로그만). F 해제. 연성(SK_M12)은 패시브라 키 없음.
+- **텔레포트 강화(SK_M21)는 별도 키가 아니다** — "기존 텔레포트의 변화". Shift 슬롯은 `resolver = "TELEPORT"` 이고, 누르는 순간 `ResolveTeleportSkillId()` 가 SK_M21 을 배웠으면 SK_M21, 아니면 SK_M13 을 고른다. 배운 뒤엔 SK_M13 은 더 이상 시전되지 않고 거리 3.9 · 쿨 2→1s · MP 12 · 도착 광역 피해가 전부 SK_M21 행에서 온다. `SkillMovement`/`SkillCaster` 는 바뀌지 않는다(받은 행만 본다).
+- "초보자 스킬의 더블 점프가 텔레포트로 바뀐다": `PlayerActionEvent.ActionName == "Jump"` 이고 공중(`RigidbodyComponent:IsOnGround() == false`)이고 그 텔레포트를 배웠으면 같은 `ResolveTeleportSkillId()` 결과를 `Cast`. 지상 점프·미학습은 무시. `TeleportOnAirJump` 로 끌 수 있다. 🟡 액션 이름 "Jump" 미검증.
+- 🟡 `SetActionKey(KeyboardKey.LeftShift/RightShift, "Skill2")` — 수식 키가 `PlayerActionEvent` 를 내는지 런타임 미검증. 안 나오면 다른 키로 바꾸는 건 슬롯 표 한 줄.
 
 ### `RootDesk/MyDesk/Skill/PlayerSkillState.mlua`
 - `RequestLearn` 성공 시 PASSIVE 면 `_JobPassiveLogic:LogPassives(uid)` 한 줄(검증 증거). 원장·동기화 변경 없음.
@@ -56,7 +58,7 @@
 - `SK_M13` · `SK_M22` `#Note` 갱신(구현 위치).
 
 ### 해석 메모 (표와 코드가 어긋날 수 있는 곳)
-- 텔레포트 강화(C)는 **별도 시전 스킬(E 키)** 로 뒀다 — 표에서 패시브 표기는 B 만이고, CSV·핫바가 이미 BLINK 로 잡혀 있었다. "텔레포트 자체를 강화하는 패시브/토글" 로 바꾸려면 `SkillMovement.TryTeleport` 가 SK_M21 레벨을 읽어 거리·쿨을 곱하면 된다(한 곳).
+- 텔레포트 강화(C)는 **키 없이 Shift 텔레포트를 대체**한다(사용자 결정 2026-09-09 "기존 텔레포트 변화"). 구현은 핫바 resolver 한 곳 — SK_M21 행이 통째로 SK_M13 행을 대신하므로 MP 12(vs 5)도 같이 바뀐다. 텔레포트 MP 를 5 로 유지하고 싶으면 `SkillInfo.csv` SK_M21 `MpCost` 만 고친다.
 - 매직 가드 "피해의 35~75% 를 MP 가 대신": HP 감산은 A 의 `PlayerHit`(등록서 8번 · 루트 파일)라 **B 는 `AbsorbDamage` 제공까지**. 연결 전엔 Play 에서 흡수가 보이지 않는다.
 
 ### A 에게 (이 PR 로 열리는 연결점 · A 파일 편집 없음)
@@ -69,7 +71,7 @@
 - `node Docs/tools/check-integrity.cjs` — **통과** (경고 3건 = 기존 A 쪽 C5×2 · C6×1 · 기준선과 같음). `SkillInfo.csv` 편집 행 4개 전부 30열 · BOM/CRLF 유지.
 - Maker 런타임: 🟡 **미검증** — 이 워크트리를 Maker 로 열어(Maker 닫고 폴더 전환) `Reimport All` → 새 `.codeblock` 3개 생성 확인 → 빌드 경고 수 N → N 기록 → Play:
   - K 창 → F10(마법사) → `+` 로 SK_M12·SK_M13·SK_M21·SK_M22·SK_M31 배우기(DevStatRemote 로 레벨 30) → `[JobPassive] … cost ENHANCE x0.7`
-  - W(+방향키): `SkillMovement: SK_M13 right from=… to=… branch=direct` · 서버 `SkillExecutors: BLINK SK_M13 server saw from=… to=…` · 공중 점프 키 → `HOTBAR: air-jump -> SK_M13`
-  - E: `SkillMovement: SK_M21 …` + `SkillAttack: dealt SK_M21 … hits=1`(도착 지점에 몬스터가 있을 때)
-  - R: `[Buff] ON MAGIC_GUARD … ratio=35` · `[Buff] mirror <- 'MAGIC_GUARD:1:…'` · 이후 Q 시전 로그 `mpCost=12`(8×1.5) · 에너지볼트 피해 로그 `+magicGuard=N` · 45초 뒤 `[Buff] OFF MAGIC_GUARD`
-  - A: `SkillCaster: cast lock ON … SK_M31` → 1초 뒤 `SkillAttack: FindSkillTarget SK_M31 candidates=N preferBoss=true -> <이름>` · `dealt SK_M31 to <이름> … hits=1` · 재시전 `use limit reached (1)`
+  - Shift(+방향키 · SK_M21 배우기 전): `HOTBAR: slot2 Shift SK_M13 cast ok=true` · `SkillMovement: SK_M13 right from=… to=… branch=direct` · 서버 `SkillExecutors: BLINK SK_M13 server saw from=… to=…` · 공중 점프 키 → `HOTBAR: air-jump -> SK_M13`
+  - Shift(SK_M21 배운 뒤): `HOTBAR: slot2 Shift SK_M21 cast ok=true` · `SkillMovement: SK_M21 …` + `SkillAttack: dealt SK_M21 … hits=1`(도착 지점에 몬스터가 있을 때) · 쿨다운 로그 `cd=2`(Lv1)
+  - E: `[Buff] ON MAGIC_GUARD … ratio=35` · `[Buff] mirror <- 'MAGIC_GUARD:1:…'` · 이후 Q 시전 로그 `mpCost=12`(8×1.5) · 에너지볼트 피해 로그 `+magicGuard=N` · 45초 뒤 `[Buff] OFF MAGIC_GUARD`
+  - R: `SkillCaster: cast lock ON … SK_M31` → 1초 뒤 `SkillAttack: FindSkillTarget SK_M31 candidates=N preferBoss=true -> <이름>` · `dealt SK_M31 to <이름> … hits=1` · 재시전 `use limit reached (1)`
