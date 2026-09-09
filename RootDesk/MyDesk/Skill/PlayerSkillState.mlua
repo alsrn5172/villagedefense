@@ -32,6 +32,12 @@ script PlayerSkillState extends Logic
     -- 직업이 바뀌어도 이미 배운 스킬 레벨·쓴 SP 는 그대로다(다른 직업 스킬은 CanUse 의 직업 검사로 시전만 막힌다).
     property boolean DevAllowJobSwitch = false
 
+    -- ⚠ DEV 임시 (2026-09-10 · 발록 테스트 편의): true 면 F9(현재 직업 전 스킬 MaxLevel · SP 미소모) · F8(MP·최대 MP 를 DevTestMp 로) 가 동작(SkillWindowLogic.OnKeyDown).
+    -- 협업-규칙 §10-1: 머지 전 false. econ.maxMp 는 RecomputeMaxMp(레벨업·스탯 재계산)가 되돌릴 수 있다 → 그때 F8 을 다시 누른다.
+    property boolean DevTestMode = false
+
+    property integer DevTestMp = 5000000
+
     method void OnBeginPlay()
         -- @Logic OnBeginPlay 순서는 보장되지 않으므로 멱등 EnsureLoaded 를 직접 부른다.
         _SkillDatabase:EnsureLoaded()
@@ -275,6 +281,47 @@ script PlayerSkillState extends Logic
         end
         self:ChangeJob(uid, jobId, 1)
         self:TryAdvanceTier(uid)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevLearnAll()
+        -- ⚠ DEV: 현재 직업의 모든 스킬을 MaxLevel 로 (SP 미소모). 차수는 레벨이 허용하는 만큼 먼저 올린다. DevTestMode 가 false 면 무시.
+        local uid = senderUserId
+        if not self.DevTestMode then
+            log("[Skill] [DEV] learn-all ignored (DevTestMode=false) (" .. uid .. ")")
+            return
+        end
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _SkillDatabase:EnsureLoaded()
+        self:TryAdvanceTier(uid)
+        local n = 0
+        for skillId, skill in pairs(_SkillDatabase.skillsById) do
+            if skill.requiredJobLine == u.jobId then
+                u.skillLevels[skillId] = skill.maxLevel
+                n = n + 1
+            end
+        end
+        log("[Skill] [DEV] learn-all " .. u.jobId .. " skills=" .. tostring(n) .. " tier=" .. tostring(u.tier) .. " level=" .. tostring(self:GetLevel(uid)) .. " (" .. uid .. ")")
+        if _JobPassiveLogic ~= nil then _JobPassiveLogic:LogPassives(uid) end
+        self:PushState(uid)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevSetMp()
+        -- ⚠ DEV: MP 원장(SummonManager.econ)의 mp·maxMp 를 DevTestMp 로 채운다(발록전 매직 가드 검증용). econ 직접 쓰기는 이 DEV 경로뿐.
+        local uid = senderUserId
+        if not self.DevTestMode then
+            log("[Skill] [DEV] set-mp ignored (DevTestMode=false) (" .. uid .. ")")
+            return
+        end
+        if _SummonManager == nil then return end
+        local e = _SummonManager:GetEcon(uid)
+        if e == nil then return end
+        e.maxMp = self.DevTestMp
+        e.mp = self.DevTestMp
+        _SummonManager:Push(uid)
+        log("[Skill] [DEV] mp/maxMp = " .. tostring(self.DevTestMp) .. " (" .. uid .. ")")
     end
 
     -- ───────────────────────── 서버 → 클라 푸시 ─────────────────────────
