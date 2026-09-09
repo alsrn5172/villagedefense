@@ -81,6 +81,13 @@ script SkillExecutors extends Logic
 
     property number BlastExplosionScale = 1.2
 
+    -- 텔레포트 출발 파티클(BasicParticleType 멤버명 · 일반/강화 따로). 엔진 파티클은 이름만 보고 모양을 알 수 없어 Play 로 확인하며 여기 한 단어만 바꾼다.
+    -- 2026-09-10 확인: EnergyExplosion = 폭발 + 퍼지는 원 한 세트, CircleBurst = 퍼지는 원. 일반 텔레포트는 "폭발만" 요청이라 원 없는 후보로 시작.
+    -- 후보: SparkExplosion · SparkRadialExplosion · Nova · PillarBurst · Enchant · Aura · StarVortex · SmallExplosion · EnergyExplosion · CircleBurst
+    property string TeleportDepartParticle = "SparkExplosion"
+
+    property string TeleportEnhancedDepartParticle = "EnergyExplosion"
+
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
     @ExecSpace("ServerOnly")
@@ -263,6 +270,22 @@ script SkillExecutors extends Logic
         return spec.ruid
     end
 
+    method any ParticleByName(string name)
+        -- BasicParticleType 멤버명 → 열거값. 모르는 이름이면 경고 후 EnergyExplosion.
+        local byName = {
+            SparkExplosion = BasicParticleType.SparkExplosion, SparkRadialExplosion = BasicParticleType.SparkRadialExplosion,
+            Nova = BasicParticleType.Nova, PillarBurst = BasicParticleType.PillarBurst, Enchant = BasicParticleType.Enchant,
+            Aura = BasicParticleType.Aura, StarVortex = BasicParticleType.StarVortex, SmallExplosion = BasicParticleType.SmallExplosion,
+            EnergyExplosion = BasicParticleType.EnergyExplosion, CircleBurst = BasicParticleType.CircleBurst, DustExplosion = BasicParticleType.DustExplosion,
+        }
+        local v = byName[name]
+        if v == nil then
+            log_warning("SkillExecutors: unknown particle name " .. tostring(name) .. " - using EnergyExplosion")
+            return BasicParticleType.EnergyExplosion
+        end
+        return v
+    end
+
     method void ExecuteBlink(string skillId, table skillData, Entity casterEntity, number level)
         -- 텔레포트(SK_M13) · 텔레포트 강화(SK_M21). 이동 자체는 소유 클라가 RequestCast 전에 끝냈다(SkillMovement · 클라 우선).
         -- 서버는 출발 이펙트·사운드를 지금 재생하고, BlinkArrivalDelay 뒤(위치 동기화 후) 도착 이펙트와
@@ -270,8 +293,11 @@ script SkillExecutors extends Logic
         local from = casterEntity.TransformComponent.WorldPosition
         local dealsArrivalDamage = skillData.effectUnit == "ATK_PCT" and skillData.baseEffect > 0
         -- 출발 이펙트는 "depart" 단계 = 출발 좌표에 고정(시전자에 붙이면 이미 옮겨진 클라에서는 도착점에 뜬다). effectOverrides 에 depart 항목이 없으면 파티클 폴백.
-        -- 출발 폭발(EnergyExplosion)은 일반·강화 공통. 스크린샷으로 확정된 "큰 파란 원" 은 도착 링(CircleBurst) — 그쪽만 강화 전용 (2026-09-09 요청 4차 · 최종).
-        self:PlayStageEffect(skillId, "depart", casterEntity, from, BasicParticleType.EnergyExplosion)
+        -- 출발 파티클: 일반 = TeleportDepartParticle(원 없는 폭발), 강화 = TeleportEnhancedDepartParticle. 퍼지는 원(도착 CircleBurst)은 강화 전용.
+        local departName = self.TeleportDepartParticle
+        if dealsArrivalDamage then departName = self.TeleportEnhancedDepartParticle end
+        self:PlayStageEffect(skillId, "depart", casterEntity, from, self:ParticleByName(departName))
+        log("SkillExecutors: BLINK " .. skillId .. " depart particle=" .. departName)
         self:PlayCastSound(skillId, casterEntity)
 
         _TimerService:SetTimerOnce(function()
