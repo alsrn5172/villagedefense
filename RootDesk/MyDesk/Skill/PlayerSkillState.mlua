@@ -38,6 +38,9 @@ script PlayerSkillState extends Logic
 
     property integer DevTestMp = 500000
 
+    -- ⚠ DEV 원버튼: A 리모컨 레벨 RPC 가 먼저 처리되도록 학습·MP 세팅을 이만큼(초) 늦춘다.
+    property number DevSetupDelay = 0.5
+
     method void OnBeginPlay()
         -- @Logic OnBeginPlay 순서는 보장되지 않으므로 멱등 EnsureLoaded 를 직접 부른다.
         _SkillDatabase:EnsureLoaded()
@@ -285,10 +288,36 @@ script PlayerSkillState extends Logic
 
     @ExecSpace("Server")
     method void RequestDevLearnAll()
-        -- ⚠ DEV: 현재 직업의 모든 스킬을 MaxLevel 로 (SP 미소모). 차수는 레벨이 허용하는 만큼 먼저 올린다. DevTestMode 가 false 면 무시.
+        -- ⚠ DEV (F9): 현재 직업 전 스킬 MaxLevel. 본체는 DevLearnAll.
+        self:DevLearnAll(senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevSetMp()
+        -- ⚠ DEV (F8): MP·최대 MP = DevTestMp. 본체는 DevSetMp.
+        self:DevSetMp(senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevSetup()
+        -- ⚠ DEV 원버튼(스킬 창 DEV 행 · SkillWindowLogic.OnDevSetupClicked): 클라가 먼저 보낸 A 리모컨 레벨 RPC(DevStatRemote.RequestLevel)가
+        -- 처리된 뒤 돌도록 DevSetupDelay 뒤에 차수 → 전 스킬 MaxLevel → MP/최대 MP 순으로. 레벨업의 RecomputeMaxMp 가 MP 를 되돌리지 않게 MP 를 마지막에.
         local uid = senderUserId
         if not self.DevTestMode then
-            log("[Skill] [DEV] learn-all ignored (DevTestMode=false) (" .. uid .. ")")
+            log("[Skill] [DEV] setup ignored (DevTestMode=false) (" .. uid .. ")")
+            return
+        end
+        _TimerService:SetTimerOnce(function()
+            self:DevLearnAll(uid)
+            self:DevSetMp(uid)
+        end, self.DevSetupDelay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevLearnAll(string uid)
+        -- ⚠ DEV: 현재 직업의 모든 스킬을 MaxLevel 로 (SP 미소모). 차수는 레벨이 허용하는 만큼 먼저 올린다. DevTestMode 가 false 면 무시.
+        if not self.DevTestMode then
+            log("[Skill] [DEV] learn-all ignored (DevTestMode=false) (" .. tostring(uid) .. ")")
             return
         end
         local u = self:EnsureUser(uid)
@@ -307,21 +336,17 @@ script PlayerSkillState extends Logic
         self:PushState(uid)
     end
 
-    @ExecSpace("Server")
-    method void RequestDevSetMp()
+    @ExecSpace("ServerOnly")
+    method void DevSetMp(string uid)
         -- ⚠ DEV: MP 원장(SummonManager.econ)의 mp·maxMp 를 DevTestMp 로 채운다(발록전 매직 가드 검증용). econ 직접 쓰기는 이 DEV 경로뿐.
-        local uid = senderUserId
-        if not self.DevTestMode then
-            log("[Skill] [DEV] set-mp ignored (DevTestMode=false) (" .. uid .. ")")
-            return
-        end
+        if not self.DevTestMode then return end
         if _SummonManager == nil then return end
         local e = _SummonManager:GetEcon(uid)
         if e == nil then return end
         e.maxMp = self.DevTestMp
         e.mp = self.DevTestMp
         _SummonManager:Push(uid)
-        log("[Skill] [DEV] mp/maxMp = " .. tostring(self.DevTestMp) .. " (" .. uid .. ")")
+        log("[Skill] [DEV] mp/maxMp = " .. tostring(self.DevTestMp) .. " (" .. tostring(uid) .. ")")
     end
 
     -- ───────────────────────── 서버 → 클라 푸시 ─────────────────────────
