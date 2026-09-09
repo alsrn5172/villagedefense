@@ -104,3 +104,27 @@
 - `SkillAttack.SpawnProjectile`: 발사 직후 앞쪽 상자(앞으로 Range · 발부터 위로 `AimSearchHeight` 2.5) 안 최근접 몬스터를 `FindSkillTarget(preferBoss=false)` 로 고르고 `mover:SetTarget(target)`. 없으면 예전 그대로 직선. `AimProjectileAtTarget=false` 로 끌 수 있다. 유도 시 수명 ×`HomingLifetimeMul`(1.5). 로그에 `target=<이름|none>`.
 - `SkillProjectile`: `TargetEntity`(유도 대상) · `SetDirection2D(dx,dy)`(정규화 2D 방향 + 좌우 뒤집기) · `SetTarget` · `AimAtTarget`(대상 발 + `TargetAimOffsetY` 0.5). `OnUpdate` 가 대상이 유효한 동안 매 프레임 재조준(유도), 대상 소멸 시 마지막 방향 유지. `DirectionY` 가 실제로 쓰인다.
 - 🟡 미검증: 위/아래 발판의 몬스터로 날아갈 때 히트박스(0.8×0.8) 통과 여부 · `Scale.x` 뒤집기가 대각선에서도 자연스러운지.
+
+## 2026-09-09 (3차) — 텔레포트 모션 제거 · 대마법 폭발형 · 텔레포트 강화 수치 확정 (사용자 요청)
+
+### `Skill/SkillCaster.mlua` — 이동 스킬은 공격 모션을 재생하지 않는다
+- 원인: `RequestCast` 가 모든 시전에 `_PlayerMotion:PlaySkill` 을 불렀고, `WeaponMotion.csv` 에 스킬 행이 없으면 무기 기본 공격(완드 `swingO1`)으로 **조용히** 폴백(구현맵 §2) → 텔레포트에 휘두르기 + 후딜이 붙었다.
+- 수정: `isMove`(BLINK) 면 `PlaySkill` 생략. 텔레포트·텔레포트 강화 모두 모션·후딜 0(시전 락도 원래 없음).
+
+### `Skill/SkillExecutors.mlua` · `Skill/SkillAttack.mlua` · `SkillInfo.csv` — 대마법을 폭발형으로 (요청: "정해진 반지름 안에서 여러 폭발이 터지는 큰 한 방")
+- `ExecuteBlast`: 중심 = 화면 안 보스 우선/최근접(없으면 시전자 앞 Range 지점) · 반지름 = **CSV `Range`(3)** · 첫 폭발(중심 Nova · `impact` 단계라 RUID 오버라이드 가능)과 같은 프레임에 `DealSkillDamageCircle`(**`CircleShape`** · 반지름 안 몬스터 전부 · HitCount) → `BlastExplosionCount`(8) 개 BigExplosion 을 0.07s 간격으로 반지름 안 타원에 결정적 배치 → 마무리 SparkRadialExplosion. 개수·간격·크기는 `SkillExecutors` 속성.
+- `SkillInfo.csv` `SK_M31`: Range 0 → **3**, Description 을 폭발형으로. ⚠ 추가기획1 표의 "단일 대상" 문구와 다르다(사용자 요청 2026-09-09) — 기획 변경 사유("발록전엔 광역이 쓸모없다")는 보스가 반지름 안에서 그대로 맞으니 유지된다. 기획자 확인 항목.
+
+### `SkillInfo.csv` `SK_M21` 텔레포트 강화 — 수치 확정 (사용자 결정 2026-09-09)
+- 배우는 즉시: **쿨 2s → 1s**(Cooldown 1 · CooldownPerLevel 0) · **거리 +30%**(Range 3.25 = 2.5×1.3 · 기존).
+- 레벨업: **도착 광역 피해 110% → 150%**(BaseEffect 110 · EffectPerLevel 10). MpCost 12 → **5**(텔레포트와 같음 · 순수 상향).
+- 구현 방식은 "배우면 Shift 가 강화판을 시전"(기존) 그대로 — 사용자가 허용한 두 방식 중 첫째.
+
+### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
+| 항목 | 어디서 | 비고 |
+|---|---|---|
+| 사거리·거리·반지름 | **CSV `Range`** | 투사체 사거리 · 텔레포트 거리 · 근접 호 · 대마법 반지름 전부 |
+| 쿨다운·지속·타수·MP·사용 제한·효과 % | **CSV** | `Cooldown(+PerLevel)` `Duration(+PerLevel)` `HitCount` `MpCost` `UseLimit` `BaseEffect/EffectPerLevel` |
+| 후딜(시전 락) | **코드** `SkillCaster.castLockOverrides` | CSV 열 추가 = 헤더 변경 → 계약서 선행 PR + 공지(협업-규칙 §1-5). 원하면 `CastTime` 열 제안서 작성 가능 |
+| 캐릭터 모션 | **A 의 `WeaponMotion.csv`**(행 추가는 자유) | 스킬×무기 행이 없으면 무기 기본 공격으로 폴백 · "모션 없음" 은 표로 못 하고 코드(BLINK 생략) |
+| 이펙트(파티클·RUID) | **코드** `SkillExecutors.effectOverrides` + 실행기 폴백 | RUID 열 없음(`IconRUID` 만 있음) |
