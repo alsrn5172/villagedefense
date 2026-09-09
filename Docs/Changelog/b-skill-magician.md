@@ -152,6 +152,13 @@
 - 원인: 엔진이 점프를 먼저 띄운 뒤 `Jump` 이벤트를 주므로 지상에서 누른 첫 점프도 이벤트 시점엔 `IsOnGround()==false` → 텔레포트가 나갔다.
 - 수정: `TrackGround`(매 프레임 접지 시각 기록 · 착지 시 `airTeleportUsed` 초기화). `Jump` 이벤트가 마지막 접지 후 `FirstJumpGrace`(0.2s) 안이면 첫 점프로 보고 무시, 그 뒤 공중에서 누른 것만 텔레포트, 공중에서 1회(더블 점프 자리). Shift 텔레포트는 제한 없음. 로그 `HOTBAR: air-jump(double) -> … airborne=N s`.
 
+### `Skill/SkillHotbar.mlua` — 더블 점프가 아예 안 나가던 문제 → 점프 키 원시 입력으로
+- 실측: `PlayerActionEvent "Jump"` 는 실제 점프가 실행될 때(지상)만 오고 공중 입력엔 오지 않는다. 지상 첫 점프를 거르자 트리거가 사라졌다.
+- 수정: `_InputService` `KeyDownEvent` 를 구독(`OnJumpKeyDown`). 점프 키 판정 = `PlayerControllerComponent:GetActionName(key) == "Jump"`(매핑 조회가 비면 Space 폴백). 더블 점프 판정(접지 후 0.2s 유예 · 공중 1회)은 그대로 `TryAirJumpTeleport`. `OnEndPlay` 에서 해제.
+
+### `Skill/SkillExecutors.mlua` — 대마법 충전 파티클 되돌림
+- 루프 파티클을 `ChargeOrb` 에서 예전 한 번짜리와 같은 `Charge` 로(2026-09-10 "충전 이펙트가 바뀌었다" 제보). 2초 동안 루프, 폭발 시점에 제거.
+
 ### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
 | 항목 | 어디서 | 비고 |
 |---|---|---|
