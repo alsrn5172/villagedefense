@@ -180,6 +180,11 @@
 - `DevTestMp` 기본 **500,000**(버튼 사양). 발록 테스트 폴더에선 5,000,000 으로 두고 검증(5% 추가 피해 250,000) — 커밋 금지 값.
 - `RefreshRowLevels` 는 `Row_DEV_` 행을 건너뛴다.
 
+### 2026-09-10 제출 정리 — 테스트 값 원복 확인 · DEV 버튼 유지 (사용자 지시)
+- 이 브랜치의 수치는 전부 추가기획1 표 원값(SK_M22 Cooldown 60 · SK_M31 UseLimit 1 · SK_M21 쿨 2→1s · `DevTestMp` 500,000 · `DevAllowJobSwitch=false`). 테스트 임시값은 테스트 폴더(`강화하고살아남기` · b/skill-warrior 작업본)에만 있고 커밋하지 않았다.
+- **`PlayerSkillState.DevTestMode` 기본 `false` → `true`**: 디버그 버튼(스킬 창 DEV 행 · F9 · F8)을 머지 후에도 쓸 수 있게 남긴다. A 의 `DevStatRemote`(`Enabled=true`)와 같은 취급. 숨길 때는 그 한 줄만 false.
+- 전사 5종(#48)은 제출하지 않는다 — 이 PR 은 마법사 5종만.
+
 ### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
 | 항목 | 어디서 | 비고 |
 |---|---|---|
