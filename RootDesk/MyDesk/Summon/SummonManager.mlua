@@ -7,6 +7,11 @@ script SummonManager extends Logic
 
 	property integer BaseMaxMp = 100
 
+	-- MP 자연 회복: MpRegenIntervalSec 초마다 max(1, floor(maxMp × MpRegenRate)) 회복 (A 답변 2026-09-09 · 계약서 §1 등록서 8번). 튜닝 가능.
+	property number MpRegenIntervalSec = 3
+
+	property number MpRegenRate = 0.03
+
 	property string LevelUpEffectRUID = "032cf0ab86d6431a92fe6b352b110724"
 
 	property string LevelUpSoundRUID = "0ec9de7090264d85ae9a03d5f6f59093"
@@ -26,6 +31,9 @@ script SummonManager extends Logic
 
 	@HideFromInspector
 	property any regionConfig = nil
+
+	@HideFromInspector
+	property any mpRegenTimerId = nil
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -62,8 +70,23 @@ script SummonManager extends Logic
 				self:EnsureUser(user.PlayerComponent.UserId)
 			end
 		end
-		
-		log("[Summon] manager ready")
+
+		-- MP 자연 회복 틱(서버). 회복한 유저만 Push 한다 — 가득 찬 유저까지 매 틱 RPC 하지 않는다.
+		self.mpRegenTimerId = _TimerService:SetTimerRepeat(function()
+			self:TickMpRegen()
+		end, self.MpRegenIntervalSec)
+
+		log("[Summon] manager ready (mp regen interval=" .. tostring(self.MpRegenIntervalSec)
+			.. "s rate=" .. tostring(self.MpRegenRate) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 회복 타이머를 반드시 걷는다. 남겨두면 플레이가 끝난 뒤에도 계속 돈다.
+		if self.mpRegenTimerId ~= nil then
+			_TimerService:ClearTimer(self.mpRegenTimerId)
+			self.mpRegenTimerId = nil
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -86,6 +109,7 @@ script SummonManager extends Logic
 			self.econ[userId] = {
 				exp = 0, level = 1, meso = 0, coin = 0,   -- coin = 빅토리아 주화 (시설 건설·강화·재건 전용 · WO-012 ①)
 				mp = self.BaseMaxMp, maxMp = self.BaseMaxMp,
+				levelMaxMp = 0, bonusMaxMp = 0,   -- maxMp = BaseMaxMp + levelMaxMp(Σ LevelTable.AddMaxMp) + bonusMaxMp(장비·버프 · StatService 다리) → RecomputeMaxMp
 				ap = 0, sp = 0,
 				autoPickup = true,   -- 드랍 자동획득(자석) on/off · 기본 ON · 스탯창 토글 (WO-014 ②). 매치 단위 세션 값 — DataStorage 가 생기면 계정으로 옮긴다
 			}
@@ -158,6 +182,103 @@ script SummonManager extends Logic
 		self:SendEvent(ev)
 		log("[Summon] -sp " .. tostring(amount) .. " skill=" .. tostring(skillId) .. " -> sp=" .. tostring(e.sp) .. " (" .. userId .. ")")
 		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpendMp(string userId, integer amount)
+		-- MP 소비 (B 의 스킬 시전 SkillCaster 가 시전마다 부른다 · 계약서 §1 등록서 8번). 부족하거나 amount ≤ 0 이면 false 로 거절하고 아무것도 안 뺀다.
+		-- 성공하면 차감 → HUD Push → true. SP 와 달리 이벤트는 발행하지 않는다(A 답변 2026-09-09). econ.mp 직접 쓰기 금지 — SpendMp · GrantMp · 회복 틱만.
+		local e = self:EnsureUser(userId)
+		if e == nil or amount <= 0 or (e.mp or 0) < amount then
+			log("[Summon] SpendMp rejected amount=" .. tostring(amount) .. " mp=" .. tostring(e and e.mp or "?") .. " (" .. tostring(userId) .. ")")
+			return false
+		end
+		e.mp = e.mp - amount
+		self:Push(userId)
+		log("[Summon] -mp " .. tostring(amount) .. " -> mp=" .. tostring(e.mp) .. " (" .. userId .. ")")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GrantMp(string userId, integer amount)
+		-- MP 지급 (포션 · 보상 · 리모컨). maxMp 를 넘지 않게 clamp. GrantSp 와 같은 꼴. HUD 갱신까지.
+		local e = self:EnsureUser(userId)
+		if e == nil or amount <= 0 then return end
+		e.mp = math.min((e.mp or 0) + amount, e.maxMp or 0)
+		self:Push(userId)
+		log("[Summon] +mp " .. tostring(amount) .. " -> mp=" .. tostring(e.mp) .. " (" .. userId .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickMpRegen()
+		-- MP 자연 회복 틱(OnBeginPlay 의 반복 타이머). mp < maxMp 인 유저만 max(1, floor(maxMp × MpRegenRate)) 회복하고 그 유저만 Push.
+		-- 나간 유저(엔티티 무효)는 건너뛴다 — econ 행은 남겨 둔다(재입장 시 그대로).
+		if self.econ == nil then return end
+		for userId, e in pairs(self.econ) do
+			local maxMp = e.maxMp or 0
+			if (e.mp or 0) < maxMp then
+				local player = _UserService:GetUserEntityByUserId(userId)
+				if isvalid(player) then
+					local regen = math.max(1, math.floor(maxMp * self.MpRegenRate))
+					e.mp = math.min((e.mp or 0) + regen, maxMp)
+					self:Push(userId)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecomputeMaxMp(any e)
+		-- econ.maxMp = BaseMaxMp + Σ LevelTable.AddMaxMp(levelMaxMp) + 장비·버프 maxmp(bonusMaxMp) — maxMp 진상은 이 한 줄 (A 답변 ④).
+		-- 줄어들었으면 현재 mp 도 새 maxMp 로 clamp 한다.
+		if e == nil then return end
+		e.maxMp = self.BaseMaxMp + (e.levelMaxMp or 0) + (e.bonusMaxMp or 0)
+		if (e.mp or 0) > e.maxMp then
+			e.mp = e.maxMp
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer ParseStatCsv(string csv, string key)
+		-- "str=12;...;maxmp=100" 에서 key 의 값을 정수로 꺼낸다. 없거나 숫자가 아니면 0.
+		if csv == nil or csv == "" then
+			return 0
+		end
+		for chunk in string.gmatch(csv, "([^;]+)") do
+			local sep = string.find(chunk, "=", 1, true)
+			if sep ~= nil and string.sub(chunk, 1, sep - 1) == key then
+				return math.floor(tonumber(string.sub(chunk, sep + 1)) or 0)
+			end
+		end
+		return 0
+	end
+
+	@EventSender("Logic", "StatService")
+	@ExecSpace("ServerOnly")
+	handler HandleStatRecalculatedEvent(StatRecalculatedEvent event)
+		-- StatService 가 FinalStat 을 다시 계산했을 때(INIT/LEVEL_UP/EQUIP/ENHANCE/JOB/BUFF/AP/DEV) 장비·버프 maxmp 를 econ 으로 흘려보내는 다리.
+		-- StatService.mlua 는 건드리지 않는다(발행자는 구독자를 모른다 · 협업 규칙 6-2). maxMp 가 실제로 바뀌었을 때만 Push —
+		-- Push → StatService:SetLevel → 재계산 이벤트가 다시 와도 bonus 가 같으면 여기서 끝나 순환하지 않는다.
+		local uid = event.UserId
+		if uid == nil or uid == "" then
+			return
+		end
+		local e = self:EnsureUser(uid)
+		if e == nil then
+			return
+		end
+		local bonus = self:ParseStatCsv(event.FinalStatsCsv, "maxmp")
+		if (e.bonusMaxMp or 0) == bonus then
+			return
+		end
+		local before = e.maxMp
+		e.bonusMaxMp = bonus
+		self:RecomputeMaxMp(e)
+		if e.maxMp ~= before then
+			self:Push(uid)
+			log("[Summon] maxMp " .. tostring(before) .. " -> " .. tostring(e.maxMp) .. " (bonus=" .. tostring(bonus)
+				.. " src=" .. tostring(event.Source) .. ") (" .. uid .. ")")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -270,8 +391,9 @@ script SummonManager extends Logic
 			pc.MaxHp = pc.MaxHp + addHp
 		end
 		
-		-- MP 는 엔진에 없어 여기(서버 econ)가 진상.
-		e.maxMp = e.maxMp + addMp
+		-- MP 는 엔진에 없어 여기(서버 econ)가 진상. 레벨업분은 levelMaxMp 에 따로 쌓고 maxMp 는 RecomputeMaxMp 가 합산한다.
+		e.levelMaxMp = (e.levelMaxMp or 0) + addMp
+		self:RecomputeMaxMp(e)
 		e.ap = e.ap + ap
 		e.sp = e.sp + sp
 
