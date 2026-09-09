@@ -164,14 +164,15 @@ UI 안내문도 "실제 이동·전투는 Lane 연동 후(지금은 원장에서
 
 ## 2026-09-09 — 시설 렌더 순서 · 방향 고정 · 피격 상자 (사용자 지시)
 
-- **렌더 순서** 플레이어 4 > 몬스터 2 > **시설 1** > **통로 바닥 0**.
-  `LaneFacilityService.SpawnFacility` 의 `OrderInLayer` 3 → 1, 8개 맵의 `LaneGround_*` 는 1..n → 0.
+- **렌더 순서** 플레이어 4 > 몬스터 3 > 통로 바닥 2 > **시설 1**.
+  시설 `OrderInLayer` 3 → 1 · 미니언/수비대 2 → 3 · 8개 맵 `LaneGround_*` 1..n → 2.
+  바닥을 시설보다 앞에 두는 건 의도 — 시설 그림이 발판 아래로 잠기는 부분을 가린다
+  (커닝 포탑 png 1122×1402 → 반높이 1.75 인데 `GroundOffset` 은 1.125 이라 0.63 잠김. **위치는 사용자 지시로 그대로 둔다**).
 - **커닝시티 억제기 y −1.56** — `FacilitySprite.csv` `KERNING,SUPPRESSOR.GroundOffset = 1.64`
   (슬롯 y −3.2 + 1.64 = 월드 −1.56).
 - **포탑이 표적을 따라 도는 문제** — 원인은 `FlipX` 가 아니라 `TurretAI.FaceTo` 가 뒤집던 `Scale.x`.
   `TurretAI.FixedFacing` 신설(레인 포탑은 `true`). 공격 상자가 좌우 대칭(`AttackBoxSize=(range*2,4)` · `AttackReach=0`)이라 사거리 영향 없음.
-  방향은 `FacilitySprite.csv` 새 열 **`FlipX`** 가 정본 — 커닝/페리온 포탑 `false`, 헤네시스·엘리니아·노틸러스는
-  기존 그림 그대로 두려고 `true`(`.model` 기본값과 동일).
+  방향은 `FacilitySprite.csv` 새 열 **`FlipX`** 가 정본 — **전 행 `false`**(사용자 지시 2026-09-09).
 - **시설 피격 상자가 너무 좁던 문제** — `HitComponent.BoxSize`/`ColliderOffset` 은 **로컬 단위**라
   `Scale 0.25` 에서 포탑이 실제 0.40×0.75 밖에 안 됐다(공식 문서 `DamageSkinSpawnerComponent` 예제로 확인).
   `LaneFacilityService.ApplyHitBox` 신설 — 가로 = `HitWidth`(넥서스 `HitWidthCore`), 세로 = `GroundOffset × 2`,
