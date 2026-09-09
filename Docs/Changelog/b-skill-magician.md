@@ -174,6 +174,12 @@
 - 검증 절차(사람): 리모컨으로 Lv30 → F10 마법사 → F9 → F8 → E(매직 가드) → 주니어 발록: ① 맞을 때 `[Buff] MAGIC_GUARD absorb …` + HP 되돌림 ② Q 피해에 `+magicGuard=25000`(MP 500,000 의 5%) ③ 시전 로그 `mpCost=12`(8×1.5).
 - 매직 가드 흡수의 실제 HP 반영은 A 의 `PlayerHit` 연결 전엔 **b/skill-warrior 의 `SkillBuffs.MagicGuardRefund`(임시 자가 배선 · HitEvent 뒤 HP 되돌림)** 가 한다 — 이 브랜치엔 없다(HitEvent 배선이 warrior 쪽에 있음).
 
+### `Skill/SkillWindowLogic.mlua` · `Skill/PlayerSkillState.mlua` — ⚠ DEV 원버튼 (스킬 창 목록 끝 "DEV 세팅" 행)
+- 요청은 "리모컨에 버튼" 이었으나 리모컨(`Stat/DevStatRemote.mlua` · `ui/DevStatRemoteGroup.ui`)은 A 소유라 B 의 K 스킬 창에 둔다. `.ui` 편집 없이 `RowTemplate` 을 런타임 복제(`CreateDevRow` · `CreateRow` 와 같은 경로) — `DevTestMode` 가 true 일 때만 생긴다.
+- `+`/행 클릭 → `OnDevSetupClicked`: ① A 리모컨 RPC `_DevStatRemote:RequestLevel(30 − 현재)`(senderUserId 기반이라 클라에서 호출) ② `RequestDevSetup` → 서버가 `DevSetupDelay`(0.5s) 뒤 차수 → 전 스킬 MaxLevel(`DevLearnAll`) → MP/최대 MP = `DevTestMp`(`DevSetMp`). F9/F8 은 같은 본체를 부른다.
+- `DevTestMp` 기본 **500,000**(버튼 사양). 발록 테스트 폴더에선 5,000,000 으로 두고 검증(5% 추가 피해 250,000) — 커밋 금지 값.
+- `RefreshRowLevels` 는 `Row_DEV_` 행을 건너뛴다.
+
 ### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
 | 항목 | 어디서 | 비고 |
 |---|---|---|
