@@ -29,6 +29,11 @@ script LaneFacilityService extends Logic
 	@HideFromInspector
 	property any bars = nil
 
+	-- 피격 상자 가로(월드 단위 · 사용자 2026-09-09). 세로는 GroundOffset × 2 로 그림 높이를 따라간다.
+	property number HitWidth = 2.0
+
+	property number HitWidthCore = 2.4
+
 	@HideFromInspector
 	property any laneRows = nil
 
@@ -184,6 +189,26 @@ script LaneFacilityService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void ApplyHitBox(Entity ent, string villageId, string stage)
+		-- 피격 상자를 **그림 크기**에 맞춘다 (사용자 2026-09-09 "피격범위가 너무 좁아서 몬스터가 겹친다").
+		-- 🔴 HitComponent.BoxSize/ColliderOffset 은 로컬 단위 — 실제 크기 = 값 × TransformComponent.Scale (공식 문서 DamageSkinSpawner 예제).
+		--    모델값 1.6×3 에 Scale 0.25 라 실제로는 0.4×0.75 밖에 안 됐다. 미니언 공격 상자(1.4×1.4)가 자주 빗나가서
+		--    미니언이 시설 위로 파고들었다.
+		-- 세로 = GroundOffset × 2 (피벗이 그림 중심이므로 바닥이 발판에 정확히 닿는다) · 가로 = HitWidth(월드 단위).
+		if not isvalid(ent) or not isvalid(ent.HitComponent) then return end
+		local sc = ent.TransformComponent.Scale
+		local sx = math.abs(sc.x)
+		local sy = math.abs(sc.y)
+		if sx <= 0 or sy <= 0 then return end
+		local h = self:GroundOffset(villageId, stage) * 2
+		local w = self.HitWidth
+		if stage == "CORE" then w = self.HitWidthCore end
+		ent.HitComponent.BoxSize = Vector2(w / sx, h / sy)
+		ent.HitComponent.ColliderOffset = Vector2(0, 0)
+		log(string.format("[Facility] hitbox %s:%s world=(%.2f,%.2f) scale=(%.2f,%.2f)", villageId, stage, w, h, sx, sy))
+	end
+
+	@ExecSpace("ServerOnly")
 	method number GroundOffset(string villageId, string stage)
 		-- 발판 y 에서 얼마나 올려 스폰하는가 = 피벗 → 스프라이트 바닥 거리(유닛). 정본은 FacilitySprite.csv 의 GroundOffset 열.
 		-- 🔴 계산이 아니라 실측이다 — 업로드 자산의 픽셀 크기는 리소스 API·런타임 API 어디서도 못 읽는다.
@@ -217,18 +242,22 @@ script LaneFacilityService extends Logic
 			log_error("[Facility] spawn failed model=" .. modelId .. " map=" .. row.mapName)
 			return nil
 		end
-		-- 시설도 항상 플레이어 뒤: 슬롯 발판의 층 + OrderInLayer 3 (사용자 지시 2026-09-07). 발판을 못 찾으면 모델값(Default/-1) 유지.
+		-- 렌더 순서(사용자 2026-09-09): 플레이어 4 > 몬스터 2 > **시설 1** > 통로 바닥 0. 전부 슬롯 발판의 SortingLayer 위에서 겨룬다.
+		-- 발판을 못 찾으면 모델값(Default/-1) 유지.
 		if isvalid(ent.SpriteRendererComponent) then
 			local layer = self:SortingLayerBelow(map, row.slotX, row.slotY)
 			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
-			ent.SpriteRendererComponent.OrderInLayer = 3
+			ent.SpriteRendererComponent.OrderInLayer = 1
 			-- 그림은 마을마다 다르다(FacilitySprite.csv · 계약서 A-2-4b). 빈 값이면 .model 기본값을 그대로 둔다.
 			if _LaneStateService ~= nil then
 				local ruid = _LaneStateService:FacilityWorldRuid(villageId, stage)
 				if ruid ~= "" then ent.SpriteRendererComponent.SpriteRUID = ruid end
 				ent.SpriteRendererComponent.FlipY = _LaneStateService:FacilityFlipY(villageId, stage)
+				-- 좌우 반전도 표가 정본이다(.model 기본값 FlipX=true 를 덮는다). 포탑은 아래 FixedFacing 으로 고정된다.
+				ent.SpriteRendererComponent.FlipX = _LaneStateService:FacilityFlipX(villageId, stage)
 			end
 		end
+		self:ApplyHitBox(ent, villageId, stage)
 		local fc = ent:AddComponent("script.LaneFacility")
 		if not isvalid(fc) then fc = ent.LaneFacility end
 		if isvalid(fc) then
@@ -242,8 +271,12 @@ script LaneFacilityService extends Logic
 		if stage == "TOWER" then
 			local atk = ent:AddComponent("script.FactionAttack")
 			if not isvalid(atk) then log_warning("[Facility] FactionAttack add failed") end
+			---@type TurretAI
 			local ai = ent:AddComponent("script.TurretAI")
 			if not isvalid(ai) then log_warning("[Facility] TurretAI add failed") end
+			-- 포탑은 표적을 따라 몸을 돌리지 않는다(사용자 2026-09-09 "얘가 자꾸 움직이냐").
+			-- 공격 상자가 좌우 대칭(AttackReach 0 · 폭 range*2)이라 방향을 고정해도 사거리는 그대로다.
+			if isvalid(ai) then ai.FixedFacing = true end
 		end
 		self.entities[key] = ent
 		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(villageId, stage) + self:BarOffset(villageId, stage))
