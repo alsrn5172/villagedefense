@@ -118,7 +118,7 @@
 ### `Skill/SkillExecutors.mlua` — 텔레포트 강화를 눈으로 구분 (요청: 파란 원형 파열은 강화판에만)
 - `ExecuteBlink` 도착 `impact`(CircleBurst 폴백)를 `dealsArrivalDamage`(도착 피해가 있는 BLINK 행 = SK_M21) 일 때만 재생. 데이터 조건이라 행만 바꾸면 따라간다.
 - 2차: 출발 파티클을 잠시 `DustExplosion` 으로 나눴다가 사용자 불호로 되돌림.
-- 3차·4차(Play 로 확정): 출발 `EnergyExplosion` 을 빼 보니 "큰 파란 원" 이 남았다 → 큰 원 = **도착 `CircleBurst`**. **최종: 출발 `EnergyExplosion` 은 일반·강화 공통, 도착 링 `CircleBurst` 는 강화판(도착 피해 행) 전용.**
+- 3차·4차·5차(Play 로 확정 · 2026-09-10): `EnergyExplosion` 은 **폭발 + 퍼지는 원이 한 세트**, `CircleBurst` 는 퍼지는 원 — 둘 다 원이 있다. 요청은 "폭발은 두고 원만 제거" → 출발 파티클을 **이름 속성**으로 뺐다: `TeleportDepartParticle`(일반 · 기본 `SparkExplosion`) · `TeleportEnhancedDepartParticle`(강화 · `EnergyExplosion`) + `ParticleByName` 매핑. 도착 `CircleBurst` 는 강화 전용 유지. 모양이 안 맞으면 속성 한 단어만 바꾼다(후보 목록은 코드 주석).
 
 ### `SkillInfo.csv` `SK_M21` 텔레포트 강화 — 수치 확정 (사용자 결정 2026-09-09)
 - 배우는 즉시: **쿨 2s → 1s**(Cooldown 1 · CooldownPerLevel 0) · **거리 +30%**(Range 3.25 = 2.5×1.3 · 기존).
