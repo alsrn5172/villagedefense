@@ -111,7 +111,7 @@ const CANONICAL = {
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
-  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,#Note",
+  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,CooldownStartSeconds,CooldownEndSeconds,CooldownEndLevel,#Note",
   RepairConfig: "ReqLevel,MesoPerDurability,Enabled,#Note",
   GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
   GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",
@@ -125,6 +125,15 @@ const CANONICAL = {
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,#Note",
   DispatchRule: "Phase,MesoCost,VillageCap,CancelDeadlineSeconds,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,Hidden,#Note",
+  MatchConfig: "Key,Profile,MatchDurationSeconds,Enabled,#Note",
+
+  // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
+  SkillInfo:
+    "SkillId,Tab,SlotOrder,SkillName,IconRUID,Description,MaxLevel,SpCost,EffectPerLevel,Cooldown," +
+    "ReqJob,ReqTier,ReqLevel,Behavior,MpCost,BaseEffect,Range,Speed,Duration,HitCount,UseLimit," +
+    "EffectUnit,MaxStack,SecondaryEffect,SecondaryPerLevel,DurationPerLevel,CooldownPerLevel,BuffTag,SpawnOffsetY,#Note",
+  JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
+  JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -225,7 +234,11 @@ const PK = {
   MinionPhaseConfig: ["Phase", "Profile"],
   MinionComposition: ["Phase", "MonsterId"],
   DispatchRule: ["Phase"],
+  MatchConfig: ["Key", "Profile"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
+  SkillInfo: ["SkillId"],
+  JobInfo: ["JobId"],
+  JobTier: ["JobId", "Tier"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);

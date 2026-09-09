@@ -1,0 +1,360 @@
+@Logic
+script PlayerSkillState extends Logic
+
+    -- 서버 권위 스킬 상태 (skill-merge-plan Phase 7a).
+    --   서버 인스턴스: users[userId] = { skillLevels, cooldownEndsAt, useCounts, jobId, tier, stackCount } 가 진상.
+    --   클라 인스턴스: 자기 유저의 미러(mirror*)만 — 표시·예측용. 서버가 SyncState 로 밀어 준다.
+    -- SP / MP / 레벨은 이 파일에 없다:
+    --   서버 → _SummonManager:GetEcon(userId).sp/.mp/.level (원장은 A · SpendSp/SpendMp 로만 소비)
+    --   클라 → _StatusHUDController.curSp/.curMp/.curMaxMp/.curLevel (SummonManager.Push 가 갱신)
+    -- 클라 → 서버: RequestLearn / RequestChooseJob / RequestSync (ExecSpace "Server", senderUserId).
+    -- 서버 → 클라: SyncState / LearnResult (ExecSpace "Client", 마지막 인자 = targetUserId — 팀 관례).
+    -- 테이블은 ExecSpace 경계를 못 넘는다(LEA-3036) → 상태는 한 줄 문자열로 직렬화한다.
+
+    -- [서버] userId -> 상태 테이블
+    property table users = {}
+
+    -- [클라] 로컬 유저 미러
+    property string mirrorJobId = "NOVICE"
+    property integer mirrorTier = 0
+    property table mirrorSkillLevels = {}
+    property table mirrorCooldownEndsAt = {}
+    property boolean mirrorSynced = false
+    property boolean syncRequested = false
+    -- 마지막 RequestLearn 실패 사유("" = 성공). SkillWindowLogic 이 "skill" 이벤트 때 읽는다.
+    property string lastLearnReason = ""
+
+    property integer MaxTier = 3
+    property string NoviceJobId = "NOVICE"
+
+    method void OnBeginPlay()
+        -- @Logic OnBeginPlay 순서는 보장되지 않으므로 멱등 EnsureLoaded 를 직접 부른다.
+        _SkillDatabase:EnsureLoaded()
+        _JobDatabase:EnsureLoaded()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- LocalPlayer 가 생긴 뒤 한 번만 서버에 미러를 요청한다 (SkillHotbar.TryWireKeys 와 같은 폴링 패턴).
+        if self.syncRequested then return end
+        if not isvalid(_UserService.LocalPlayer) then return end
+        self.syncRequested = true
+        self:RequestSync()
+    end
+
+    -- ───────────────────────── 서버: 원장 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method any EnsureUser(string userId)
+        if userId == nil or userId == "" then return nil end
+        local u = self.users[userId]
+        if u == nil then
+            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0 }
+            self.users[userId] = u
+        end
+        return u
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer GetLevel(string userId)
+        -- 매치 레벨의 진상은 SummonManager.econ.level (A). 캐시하지 않는다 — 레벨 변경 브로드캐스트가 없다.
+        if _SummonManager == nil then return 1 end
+        local e = _SummonManager:GetEcon(userId)
+        if e == nil then return 1 end
+        return math.floor(e.level or 1)
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetSkillLevel(string userId, string skillId)
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        return u.skillLevels[skillId] or 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method string GetJobId(string userId)
+        local u = self:EnsureUser(userId)
+        if u == nil then return self.NoviceJobId end
+        return u.jobId
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetTier(string userId)
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        return u.tier
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetStackCount(string userId)
+        -- 범용 스택 카운터 (SkillDatabase.StackDamageAt). 증감 배선은 아직 없다.
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        return u.stackCount
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetCooldownRemaining(string userId, string skillId)
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        local endTime = u.cooldownEndsAt[skillId]
+        if endTime == nil then return 0 end
+        local remaining = endTime - _UtilLogic.ServerElapsedSeconds
+        if remaining < 0 then return 0 end
+        return remaining
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsOnCooldown(string userId, string skillId)
+        return self:GetCooldownRemaining(userId, skillId) > 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method void StartCooldown(string userId, string skillId, number seconds)
+        -- 종료 시각을 저장한다(프레임마다 감산하지 않는다).
+        local u = self:EnsureUser(userId)
+        if u == nil then return end
+        u.cooldownEndsAt[skillId] = _UtilLogic.ServerElapsedSeconds + seconds
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetUseCount(string userId, string skillId)
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        return u.useCounts[skillId] or 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method void IncrementUseCount(string userId, string skillId)
+        local u = self:EnsureUser(userId)
+        if u == nil then return end
+        u.useCounts[skillId] = (u.useCounts[skillId] or 0) + 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ResetMatchState(string userId)
+        -- 매치 시작 시 useCounts/쿨다운만 비운다. 스킬 레벨·직업은 유지.
+        local u = self:EnsureUser(userId)
+        if u == nil then return end
+        u.useCounts = {}
+        u.cooldownEndsAt = {}
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ChangeJob(string userId, string newJobId, number newTier)
+        -- jobId/tier 를 바꾸는 유일한 곳. JobChangedEvent(UserId, PrevJobId, NewJobId, Tier) 발행 (계약서 B-3 · Tier integer 0~3).
+        local u = self:EnsureUser(userId)
+        if u == nil then return end
+        newTier = math.floor(newTier)
+        if u.jobId == newJobId and u.tier == newTier then return end
+        local prev = u.jobId
+        u.jobId = newJobId
+        u.tier = newTier
+        log("[Skill] JOB " .. prev .. " -> " .. newJobId .. "/" .. tostring(newTier) .. " (level " .. tostring(self:GetLevel(userId)) .. ") " .. userId)
+
+        local evt = JobChangedEvent()
+        evt.UserId = userId
+        evt.PrevJobId = prev
+        evt.NewJobId = newJobId
+        evt.Tier = newTier
+        self:SendEvent(evt)
+
+        self:PushState(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean TryAdvanceTier(string userId)
+        -- 현재 직업 안에서 JobTier.ReqLevel 을 만족하는 만큼 차수를 올린다(여러 단계 가능). 초보자는 대상 아님(전직은 RequestChooseJob).
+        local u = self:EnsureUser(userId)
+        if u == nil or u.jobId == self.NoviceJobId then return false end
+        local level = self:GetLevel(userId)
+        local advanced = false
+        while u.tier < self.MaxTier do
+            local req = _JobDatabase:GetRequiredLevel(u.jobId, u.tier + 1)
+            if req <= 0 or level < req then break end
+            self:ChangeJob(userId, u.jobId, u.tier + 1)
+            advanced = true
+        end
+        return advanced
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PushState(string userId)
+        -- 미러 동기화: "job=WARRIOR;tier=1;levels=SK_W11:2,SK_W12:1"
+        local u = self:EnsureUser(userId)
+        if u == nil then return end
+        local parts = {}
+        for id, lv in pairs(u.skillLevels) do
+            table.insert(parts, id .. ":" .. tostring(lv))
+        end
+        local csv = "job=" .. u.jobId .. ";tier=" .. tostring(u.tier) .. ";levels=" .. table.concat(parts, ",")
+        self:SyncState(csv, userId)
+    end
+
+    -- ───────────────────────── 클라 → 서버 요청 ─────────────────────────
+
+    @ExecSpace("Server")
+    method void RequestSync()
+        self:EnsureUser(senderUserId)
+        self:TryAdvanceTier(senderUserId)
+        self:PushState(senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void RequestLearn(string skillId)
+        -- 배우기 = SP 소비 (계획 7b). 게이트: 존재 · CanLearn(직업/차수/레벨) · 최대 레벨 · SP(SummonManager.SpendSp 가 판정·차감).
+        local uid = senderUserId
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _SkillDatabase:EnsureLoaded()
+        self:TryAdvanceTier(uid)
+
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then
+            self:LearnResult(skillId, false, "unknown skill: " .. tostring(skillId), uid)
+            return
+        end
+        local req = _SkillDatabase:CanLearn(skillId, u.jobId, u.tier, self:GetLevel(uid))
+        if not req.ok then
+            self:LearnResult(skillId, false, req.reason, uid)
+            return
+        end
+        local cur = u.skillLevels[skillId] or 0
+        if cur >= skill.maxLevel then
+            self:LearnResult(skillId, false, "already at max level", uid)
+            return
+        end
+        if _SummonManager == nil or not _SummonManager:SpendSp(uid, skillId, math.floor(skill.spCost)) then
+            self:LearnResult(skillId, false, "not enough SP", uid)
+            return
+        end
+
+        u.skillLevels[skillId] = cur + 1
+        log("[Skill] learn " .. skillId .. " -> Lv." .. tostring(cur + 1) .. " (" .. uid .. ")")
+        self:LearnResult(skillId, true, "ok", uid)
+        self:PushState(uid)
+    end
+
+    @ExecSpace("Server")
+    method void RequestChooseJob(string jobId)
+        -- 전직: 초보자만, JobTier(jobId, 1).ReqLevel(=10) 이상일 때. 이후 차수는 TryAdvanceTier 가 레벨로 올린다.
+        local uid = senderUserId
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _JobDatabase:EnsureLoaded()
+        if u.jobId ~= self.NoviceJobId then
+            log("[Skill] choose job rejected: already " .. u.jobId .. " (" .. uid .. ")")
+            return
+        end
+        if _JobDatabase:GetJob(jobId, 1) == nil then
+            log("[Skill] choose job rejected: unknown job " .. tostring(jobId) .. " (" .. uid .. ")")
+            return
+        end
+        local req = _JobDatabase:GetRequiredLevel(jobId, 1)
+        local level = self:GetLevel(uid)
+        if level < req then
+            log("[Skill] choose job rejected: level " .. tostring(level) .. " < " .. tostring(req) .. " (" .. uid .. ")")
+            return
+        end
+        self:ChangeJob(uid, jobId, 1)
+        self:TryAdvanceTier(uid)
+    end
+
+    -- ───────────────────────── 서버 → 클라 푸시 ─────────────────────────
+
+    @ExecSpace("Client")
+    method void SyncState(string csv)
+        self.mirrorSkillLevels = {}
+        for key, val in string.gmatch(csv, "([^;=]+)=([^;]*)") do
+            if key == "job" then
+                self.mirrorJobId = val
+            elseif key == "tier" then
+                self.mirrorTier = math.floor(tonumber(val) or 0)
+            elseif key == "levels" then
+                for id, lv in string.gmatch(val, "([^,:]+):([^,]*)") do
+                    self.mirrorSkillLevels[id] = tonumber(lv) or 0
+                end
+            end
+        end
+        self.mirrorSynced = true
+        self:NotifyStateChanged("job")
+        self:NotifyStateChanged("skill")
+    end
+
+    @ExecSpace("Client")
+    method void LearnResult(string skillId, boolean ok, string reason)
+        if ok then
+            self.lastLearnReason = ""
+        else
+            self.lastLearnReason = reason
+            -- 실패는 SyncState 가 안 오므로 여기서 창을 깨운다.
+            self:NotifyStateChanged("skill")
+        end
+        log("[Skill] learn result " .. skillId .. " ok=" .. tostring(ok) .. (ok and "" or (" reason='" .. reason .. "'")))
+    end
+
+    -- ───────────────────────── 클라: 미러 접근자 ─────────────────────────
+
+    @ExecSpace("ClientOnly")
+    method string LocalJobId()
+        return self.mirrorJobId
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalTier()
+        return self.mirrorTier
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalSkillLevel(string skillId)
+        return self.mirrorSkillLevels[skillId] or 0
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalLevel()
+        -- HUD 가 받은 최신 레벨 (StatusHUDController.PushStats). 캐시하지 않고 그릴 때마다 읽는다.
+        if _StatusHUDController == nil then return 1 end
+        return _StatusHUDController.curLevel or 1
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalSp()
+        if _StatusHUDController == nil then return 0 end
+        return _StatusHUDController.curSp or 0
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalMp()
+        if _StatusHUDController == nil then return 0 end
+        return _StatusHUDController.curMp or 0
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalCooldownRemaining(string skillId)
+        -- 예측용. 서버 CastResult 가 준 쿨다운으로 채운다.
+        local endTime = self.mirrorCooldownEndsAt[skillId]
+        if endTime == nil then return 0 end
+        local remaining = endTime - _UtilLogic.ServerElapsedSeconds
+        if remaining < 0 then return 0 end
+        return remaining
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalIsOnCooldown(string skillId)
+        return self:LocalCooldownRemaining(skillId) > 0
+    end
+
+    @ExecSpace("ClientOnly")
+    method void LocalStartCooldown(string skillId, number seconds)
+        self.mirrorCooldownEndsAt[skillId] = _UtilLogic.ServerElapsedSeconds + seconds
+    end
+
+    @ExecSpace("ClientOnly")
+    method void NotifyStateChanged(string what)
+        -- B 내부 · 클라 전용 UI 갱신 신호. What = "sp" | "mp" | "skill" | "job" (계약서 B-3).
+        local evt = SkillStateChangedEvent()
+        evt.What = what
+        self:SendEvent(evt)
+    end
+
+end

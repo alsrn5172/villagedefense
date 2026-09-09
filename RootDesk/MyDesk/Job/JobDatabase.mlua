@@ -1,0 +1,111 @@
+@Logic
+script JobDatabase extends Logic
+
+    -- Dataset name to resolve via _DataService:GetTable(...). Change here if the dataset is ever renamed.
+    property string datasetName = "JobTier"
+
+    -- Loaded once at startup, keyed by JobKey(job_line, tier) - job_id/next_job/tab no longer
+    -- exist as columns, so a single string id can't identify a row any more. Read-only after
+    -- LoadAll() completes.
+    property table jobsByKey = {}
+
+    property boolean isLoaded = false
+
+    method void OnBeginPlay()
+        -- Loads every JobTier row once into jobsByKey.
+        self:EnsureLoaded()
+    end
+
+    method void EnsureLoaded()
+        -- Idempotent entry point, same pattern as SkillDatabase.EnsureLoaded - @Logic OnBeginPlay
+        -- order across scripts is not guaranteed, so any consumer must call this itself before
+        -- touching jobsByKey instead of assuming JobDatabase's own OnBeginPlay already ran.
+        if not self.isLoaded then self:LoadAll() end
+    end
+
+    method void LoadAll()
+        -- Resolves the dataset by name, converts every numeric column once per row, and logs
+        -- the dataset name + row count so callers can confirm the table was found.
+        local ds = _DataService:GetTable(self.datasetName)
+        if ds == nil then
+            log_warning("JobDatabase: dataset '" .. self.datasetName .. "' was not found")
+            return
+        end
+
+        local count = ds:GetRowCount()
+        for i = 1, count do
+            local jobLine = ds:GetCell(i, "JobId")
+            local tier = self:ParseNumber(jobLine, "tier", ds:GetCell(i, "Tier"))
+            local job = {
+                jobLine = jobLine,
+                tier = tier,
+                requiredLevel = self:ParseNumber(jobLine, "required_level", ds:GetCell(i, "ReqLevel")),
+                displayName = ds:GetCell(i, "DisplayName") or "",
+                baseAttack = self:ParseNumber(jobLine, "base_attack", ds:GetCell(i, "BaseAttack")),
+            }
+            self.jobsByKey[self:JobKey(jobLine, tier)] = job
+        end
+
+        self.isLoaded = true
+        log("JobDatabase: resolved dataset '" .. self.datasetName .. "', loaded " .. tostring(count) .. " rows")
+    end
+
+    method string JobKey(string jobLine, number tier)
+        -- Composite key for jobsByKey - job_line alone is not unique now that every line has
+        -- multiple tier rows.
+        return tostring(jobLine) .. "|" .. tostring(tier)
+    end
+
+    method number ParseNumber(string jobLine, string columnName, string rawValue)
+        -- Converts one CSV cell to a number; missing/unparseable values default to 0 and log a warning.
+        if rawValue == nil or rawValue == "" then
+            log_warning("JobDatabase: job_line=" .. tostring(jobLine) .. " column=" .. columnName .. " is missing, defaulting to 0")
+            return 0
+        end
+        local parsed = tonumber(rawValue)
+        if parsed == nil then
+            log_warning("JobDatabase: job_line=" .. tostring(jobLine) .. " column=" .. columnName .. " value='" .. rawValue .. "' is unparseable, defaulting to 0")
+            return 0
+        end
+        return parsed
+    end
+
+    method any GetJob(string jobLine, number tier)
+        -- Returns the job record table for (jobLine, tier), or nil if it doesn't exist.
+        return self.jobsByKey[self:JobKey(jobLine, tier)]
+    end
+
+    method number GetRequiredLevel(string jobLine, number tier)
+        -- Returns required_level for (jobLine, tier), or 0 if that row doesn't exist.
+        local job = self:GetJob(jobLine, tier)
+        if job == nil then return 0 end
+        return job.requiredLevel
+    end
+
+    method number GetBaseAttack(string jobLine)
+        -- Returns base_attack for jobLine. base_attack is uniform across every tier of a
+        -- job_line by design (see JobTier - "placeholder, intentionally uniform across
+        -- jobs"), so this reads whichever tier row for jobLine is loaded first rather than
+        -- requiring a tier argument. If base_attack is ever made to vary per tier, this needs
+        -- a tier parameter added.
+        for _, job in pairs(self.jobsByKey) do
+            if job.jobLine == jobLine then return job.baseAttack end
+        end
+        return 0
+    end
+
+    method table GetAllJobLines()
+        -- Returns every distinct job_line loaded (e.g. BEGINNER, WARRIOR, MAGE, ARCHER,
+        -- THIEF, PIRATE), unordered, no duplicates.
+        local seen = {}
+        local result = {}
+        for _, job in pairs(self.jobsByKey) do
+            if not seen[job.jobLine] then
+                seen[job.jobLine] = true
+                table.insert(result, job.jobLine)
+            end
+        end
+        return result
+    end
+
+end

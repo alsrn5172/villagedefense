@@ -1,0 +1,356 @@
+@Logic
+script SkillCaster extends Logic
+
+    -- 스킬 시전의 단일 진입점 (skill-merge-plan Phase 7c).
+    --   클라 Cast(skillId)      : 미러 기준 예측 게이트(슬롯 회색·쿨다운 표시용) + 시전 락 → 통과하면 castId 발급 · 이동/시선/점프 잠금 · RequestCast.
+    --   서버 RequestCast(skillId, castId): 게이트를 서버 상태로 다시 검사(시전 락 포함) → MP → 쿨다운 → 사용 횟수 → 모션 → 실행기 → SkillUsedEvent.
+    --   서버 → 클라 CastResult   : 성공/실패와 쿨다운, castId 를 돌려준다. 실패면 그 castId 의 클라 락을 푼다.
+    --   클라 ReleaseCastLock     : 락 타이머·서버 거절이 수렴하는 유일한 해제 경로(castId 가 다르면 무시).
+    -- 최종 판정은 항상 서버다. 클라 결과는 표시용이다.
+
+    -- A 의 SummonManager.SpendMp 브랜치가 머지되면 true 로 바꾼다 (skill-merge-plan Phase 4).
+    -- false 인 동안은 MP 게이트(GetEcon.mp >= MpCost)만 검사하고 차감은 하지 않는다.
+    property boolean UseSpendMp = false
+
+    -- ───────────── 시전 락 (2026-09-09 · 메이플 원작 기준: 스킬 시전 중 이동 불가 · 다른 스킬 시전 불가) ─────────────
+    -- 원작의 "공격 딜레이": 시전 모션이 도는 동안 땅에서는 못 움직이고, 어떤 스킬도 다시 못 쓴다. 공중 시전은 궤적을 유지한다.
+    -- 구조는 .claude/skills/maplestory-skill-maker/references/player/casting.md 의 원칙을 이 프로젝트 범위로 줄인 것:
+    --   · 클라 프레젠테이션 락(이동·시선·점프)과 서버 검증 락은 소유자가 다르다. 서버는 클라의 InputSpeed/FixedLookAt 을 절대 안 만진다.
+    --   · 모든 비동기 콜백(타이머·서버 거절)은 castId 를 들고 다니며, 현재 활성 castId 와 다르면 아무것도 안 한다.
+    --   · 정상 종료·거절·안전 타이머가 전부 ReleaseCastLock(castId) 하나로 수렴한다(멱등).
+    --   · 지상: InputSpeed 캐시 → Stop() → InputSpeed=0. 공중: 아무것도 안 건드린다(점프 궤적 보존).
+    --   · 점프는 PlayerControllerComponent:AddCondition("Jump"/"DownJump") 로 막는다. 레퍼런스가 권하는 컨트롤러 서브클래스 교체는
+    --     Global/DefaultPlayer.model(A 소유) 변경이라 등록서가 필요해 쓰지 않는다. 액션 이름 "Jump"/"DownJump" 는 런타임 미검증 → 로그로 확인.
+    --   · 지상 시전 동안 StateComponent 를 IDLE 로 보내고 끈다(클라만 · Enable=false). 안 그러면 방향키를 누른 채 시전할 때
+    --     상태기가 MOVE 로 가서 제자리 걷기 모션이 계속 나온다. 공격 모션 재생 자체는 A 의 PlayerMotion 소관(스킬-모션-구현맵 §4).
+    --   · 이동 스킬(behavior BLINK · 텔레포트 등)은 락의 예외다: 락 중에도 시전되고, 자기 자신은 락을 걸지 않는다(원작 텔레포트 캔슬).
+    --   · 이동 입력 자체를 막는다(AddCondition "MoveLeft"/"MoveRight"). InputSpeed=0 만으로는 제자리에서 걷는 모션이 나온다.
+    -- 시전 락 길이(초). 원작 에너지볼트 공격 딜레이 ≈ 0.8s 의 절반(2026-09-09 요청). 스킬별로 castLockOverrides 에 넣고, 없으면 기본값.
+    -- CSV 열(CastTime)로 승격하려면 헤더 변경이라 협업-규칙 §1-5(스키마-계약 선행 PR + 공지)를 먼저 거친다.
+    property number DefaultCastLockSeconds = 0.4
+
+    property table castLockOverrides = {}
+
+    -- 클라 전용 상태 (@Sync 금지 — 서버가 덮어쓰면 다음 시전 락이 풀리는 경쟁이 생긴다)
+    property boolean castLockActive = false
+
+    property integer activeCastId = 0
+
+    property integer castSequence = 0
+
+    property boolean hasCachedInputSpeed = false
+
+    property number cachedInputSpeed = 1
+
+    property integer castLockTimerId = 0
+
+    property boolean jumpGateInstalled = false
+
+    -- 이 시전이 StateComponent 를 껐는지(지상 시전만). 끈 시전만 되살린다.
+    property boolean stateDisabled = false
+
+    -- 서버 전용 상태: userId → 이 시각(ServerElapsedSeconds)까지 재시전 거절
+    property table castLockUntil = {}
+
+    method void OnBeginPlay()
+        -- 양쪽 인스턴스 모두. 스킬별 락 길이 (초).
+        self.castLockOverrides = {
+            SK_M11 = 0.4,
+        }
+    end
+
+    method boolean IsMovementSkill(table skill)
+        -- 이동 스킬 = behavior BLINK (SK_M13 텔레포트). 시전 락을 무시하고, 자기 락도 안 건다. 양쪽 인스턴스 공용.
+        return skill ~= nil and skill.behavior == "BLINK"
+    end
+
+    method number GetCastLockSeconds(string skillId)
+        local v = self.castLockOverrides[skillId]
+        if v == nil then v = self.DefaultCastLockSeconds end
+        if v < 0 then v = 0 end
+        return v
+    end
+
+    @ExecSpace("ClientOnly")
+    method table Cast(string skillId)
+        -- 예측 게이트. 여기서 막히면 서버에 보내지 않는다(왕복 절약). 통과해도 서버가 다시 판정한다.
+        _SkillDatabase:EnsureLoaded()
+
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then
+            return self:FinishCast(skillId, { ok = false, reason = "unknown skill: " .. tostring(skillId) })
+        end
+        if skill.behavior == "PASSIVE" then
+            return self:FinishCast(skillId, { ok = false, reason = "passive skills cannot be cast" })
+        end
+
+        local level = _PlayerSkillState:LocalSkillLevel(skillId)
+        local canUse = _SkillDatabase:CanUse(skillId, _PlayerSkillState:LocalJobId(), _PlayerSkillState:LocalTier(), _PlayerSkillState:LocalLevel(), level)
+        if not canUse.ok then
+            return self:FinishCast(skillId, canUse)
+        end
+        if _PlayerSkillState:LocalIsOnCooldown(skillId) then
+            local remaining = _PlayerSkillState:LocalCooldownRemaining(skillId)
+            return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)" })
+        end
+        if _PlayerSkillState:LocalMp() < skill.mpCost then
+            return self:FinishCast(skillId, { ok = false, reason = "not enough MP" })
+        end
+        -- 시전 락: 다른 스킬(같은 스킬 포함)이 시전 중이면 거절. 쿨다운·MP 게이트 뒤, 프레젠테이션 변경 전(casting.md "Cooldown Before Presentation Lock").
+        -- 이동 스킬은 예외 — 락 중에도 나간다.
+        local isMove = self:IsMovementSkill(skill)
+        if self.castLockActive and not isMove then
+            return self:FinishCast(skillId, { ok = false, reason = "casting (cast #" .. tostring(self.activeCastId) .. " in progress)" })
+        end
+
+        -- 로컬 게이트 전부 통과 → castId 발급 → (이동 스킬이 아니면) 락 → 서버 요청 → 해제 타이머.
+        self.castSequence = self.castSequence + 1
+        local castId = self.castSequence
+        if isMove then
+            -- 락을 걸지 않고, 진행 중인 락도 건드리지 않는다(activeCastId 유지). 서버 거절이 와도 castId 가 달라 ReleaseCastLock 은 무시한다.
+            self:RequestCast(skillId, castId)
+            return self:FinishCast(skillId, { ok = true, reason = "requested (cast #" .. tostring(castId) .. ", movement skill, no lock)" })
+        end
+        local lockSeconds = self:GetCastLockSeconds(skillId)
+        self.castLockActive = true
+        self.activeCastId = castId
+        self:LockPresentation(castId, skillId)
+        self:RequestCast(skillId, castId)
+        if lockSeconds > 0 then
+            self.castLockTimerId = _TimerService:SetTimerOnce(function()
+                self:ReleaseCastLock(castId, "timer")
+            end, lockSeconds)
+        else
+            self:ReleaseCastLock(castId, "no-lock")
+        end
+        return self:FinishCast(skillId, { ok = true, reason = "requested (cast #" .. tostring(castId) .. ", lock " .. tostring(lockSeconds) .. "s)" })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void LockPresentation(integer castId, string skillId)
+        -- 이동·시선·점프를 이 시전 동안 잠근다. 서버는 여기 관여하지 않는다.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local movement = player.MovementComponent
+        local controller = player.PlayerControllerComponent
+        local body = player.RigidbodyComponent
+
+        -- 지상 여부: MapleTile 은 RigidbodyComponent:IsOnGround(). 공중이면 이동을 건드리지 않는다(점프 궤적 보존 · 원작도 공중 시전 가능).
+        local grounded = true
+        if isvalid(body) then grounded = body:IsOnGround() end
+
+        if grounded and isvalid(movement) then
+            self.cachedInputSpeed = movement.InputSpeed
+            self.hasCachedInputSpeed = true
+            movement:Stop()
+            movement.InputSpeed = 0
+
+            -- 2026-09-09 2차: 방향키를 누른 채 시전하면 제자리에서 계속 걷는 모션이 나왔다. InputSpeed=0 은 "이동"만 막고,
+            -- 상태기(StateComponent)는 입력을 보고 MOVE 로 가서 걷기 애니메이션을 계속 밀어넣기 때문이다.
+            -- casting.md 원칙 2·7: 시전 프레젠테이션 동안 StateComponent 를 끈다(제거가 아니라 Enable=false, 서버가 아닌 클라가).
+            -- 끄기 전에 IDLE 로 보내 걷는 프레임에 멈추지 않게 한다. 그 위에 A 의 PlayerMotion 이 보내는 공격 액션만 재생된다.
+            local state = player.StateComponent
+            if isvalid(state) then
+                if state.CurrentStateName ~= "IDLE" then state:ChangeState("IDLE") end
+                state.Enable = false
+                self.stateDisabled = true
+            end
+        end
+
+        if isvalid(controller) then
+            -- 시선 고정: 이동은 막혀도 방향키로 제자리 회전은 되므로(casting.md 원칙 9) FixedLookAt 으로 시전 시점 방향에 묶는다.
+            if controller.LookDirectionX < 0 then controller.FixedLookAt = -1 else controller.FixedLookAt = 1 end
+            -- 입력 게이트는 한 번만 설치. 조건 클로저가 락 상태를 매번 읽으므로 해제할 필요가 없다.
+            --   점프: 락 중이면 전부 차단.
+            --   좌우 이동: "지상 시전으로 이동을 잠근 동안"만 차단 — 이동 명령 자체를 없애야 제자리 걷기 모션이 안 나온다.
+            --             공중 시전(hasCachedInputSpeed=false)은 방향 입력을 살려 점프 궤적을 그대로 둔다.
+            if not self.jumpGateInstalled then
+                self.jumpGateInstalled = true
+                controller:AddCondition("Jump", function() return not self.castLockActive end)
+                controller:AddCondition("DownJump", function() return not self.castLockActive end)
+                controller:AddCondition("MoveLeft", function() return not (self.castLockActive and self.hasCachedInputSpeed) end)
+                controller:AddCondition("MoveRight", function() return not (self.castLockActive and self.hasCachedInputSpeed) end)
+            end
+        end
+
+        log("SkillCaster: cast lock ON #" .. tostring(castId) .. " " .. skillId .. " grounded=" .. tostring(grounded)
+            .. " cachedInputSpeed=" .. tostring(self.cachedInputSpeed) .. " fixedLookAt=" .. tostring(isvalid(controller) and controller.FixedLookAt or 0))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ReleaseCastLock(integer castId, string why)
+        -- 멱등. 타이머·서버 거절·직접 호출이 전부 여기로 온다. 활성 castId 가 아니면(이미 다음 시전이 시작됨) 무시.
+        if not self.castLockActive or castId ~= self.activeCastId then return end
+        if self.castLockTimerId ~= 0 then
+            _TimerService:ClearTimer(self.castLockTimerId)
+            self.castLockTimerId = 0
+        end
+
+        local player = _UserService.LocalPlayer
+        if isvalid(player) then
+            local movement = player.MovementComponent
+            local controller = player.PlayerControllerComponent
+            -- 이 시전이 실제로 캐시한 값만 되돌린다(공중 시전은 캐시가 없다 → 건드리지 않음).
+            if self.hasCachedInputSpeed and isvalid(movement) then
+                movement.InputSpeed = self.cachedInputSpeed
+            end
+            if isvalid(controller) then controller.FixedLookAt = 0 end
+            -- 상태기 복구: 이 시전이 끈 경우만. 켜지면 키를 누르고 있던 상태 그대로 MOVE 로 자연 전이한다.
+            if self.stateDisabled then
+                local state = player.StateComponent
+                if isvalid(state) then state.Enable = true end
+            end
+        end
+        self.stateDisabled = false
+        self.hasCachedInputSpeed = false
+        self.castLockActive = false
+        self.activeCastId = 0
+        log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")")
+    end
+
+    @ExecSpace("Server")
+    method void RequestCast(string skillId, integer castId)
+        -- castId: 클라가 발급한 시전 번호. 결과(CastResult)에 그대로 돌려줘 클라가 "이미 지난 시전"의 응답을 무시할 수 있게 한다.
+        local uid = senderUserId
+        _SkillDatabase:EnsureLoaded()
+
+        -- 1. 존재
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then
+            self:CastResult(skillId, false, "unknown skill: " .. tostring(skillId), 0, castId, uid)
+            return
+        end
+        -- 2. 패시브 아님
+        if skill.behavior == "PASSIVE" then
+            self:CastResult(skillId, false, "passive skills cannot be cast", 0, castId, uid)
+            return
+        end
+        -- 3. 직업/차수/레벨 + 배운 상태 (서버 원장)
+        _PlayerSkillState:TryAdvanceTier(uid)
+        local level = _PlayerSkillState:GetSkillLevel(uid, skillId)
+        local canUse = _SkillDatabase:CanUse(skillId, _PlayerSkillState:GetJobId(uid), _PlayerSkillState:GetTier(uid), _PlayerSkillState:GetLevel(uid), level)
+        if not canUse.ok then
+            self:CastResult(skillId, false, canUse.reason, 0, castId, uid)
+            return
+        end
+        -- 4. 쿨다운
+        if _PlayerSkillState:IsOnCooldown(uid, skillId) then
+            local remaining = _PlayerSkillState:GetCooldownRemaining(uid, skillId)
+            self:CastResult(skillId, false, "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)", 0, castId, uid)
+            return
+        end
+        -- 4-1. 시전 락 (서버 검증본). 클라 락은 표시용이고 최종 판정은 여기. 어떤 스킬이든 직전 시전의 락이 끝나기 전엔 거절.
+        --      클라 타이머와 서버 스탬프 사이의 왕복 지연만큼 여유를 둔다(×0.9) — 정직한 클라가 락 끝나자마자 보낸 요청을 튕기지 않게.
+        local now = _UtilLogic.ServerElapsedSeconds
+        local lockedUntil = self.castLockUntil[uid] or 0
+        local isMove = self:IsMovementSkill(skill)
+        if lockedUntil > now and not isMove then
+            self:CastResult(skillId, false, "casting (" .. tostring(math.floor((lockedUntil - now) * 100) / 100) .. "s left)", 0, castId, uid)
+            return
+        end
+        -- 5. 사용 제한 (0 = 무제한)
+        if skill.useLimit > 0 and _PlayerSkillState:GetUseCount(uid, skillId) >= skill.useLimit then
+            self:CastResult(skillId, false, "use limit reached (" .. tostring(skill.useLimit) .. ")", 0, castId, uid)
+            return
+        end
+        -- 6. MP — 원장은 SummonManager.econ (A). 차감은 SpendMp 만 (UseSpendMp 참조).
+        local mp = 0
+        if _SummonManager ~= nil then
+            local e = _SummonManager:GetEcon(uid)
+            if e ~= nil then mp = e.mp or 0 end
+        end
+        if mp < skill.mpCost then
+            self:CastResult(skillId, false, "not enough MP", 0, castId, uid)
+            return
+        end
+        if self.UseSpendMp then
+            if not _SummonManager:SpendMp(uid, math.floor(skill.mpCost)) then
+                self:CastResult(skillId, false, "not enough MP", 0, castId, uid)
+                return
+            end
+        else
+            log("[Skill] SpendMp 미연결 — MP 미차감 (A 브랜치 대기) skill=" .. skillId .. " cost=" .. tostring(skill.mpCost))
+        end
+
+        -- 게이트 통과 — 상태 확정 순서: 시전 락 → 쿨다운 → 사용 횟수 → 모션(시전당 1회) → 실행기 → 이벤트.
+        local lockSeconds = self:GetCastLockSeconds(skillId)
+        if isMove then
+            lockSeconds = 0   -- 이동 스킬은 락을 걸지도, 진행 중 락을 늘리지도 않는다.
+        else
+            self.castLockUntil[uid] = now + lockSeconds * 0.9
+        end
+        local cooldown = _SkillDatabase:CooldownAt(skillId, level)
+        _PlayerSkillState:StartCooldown(uid, skillId, cooldown)
+        if skill.useLimit > 0 then
+            _PlayerSkillState:IncrementUseCount(uid, skillId)
+        end
+
+        if _PlayerMotion ~= nil then
+            _PlayerMotion:PlaySkill(uid, skillId)
+        end
+
+        local caster = _UserService:GetUserEntityByUserId(uid)
+        if isvalid(caster) then
+            self:EnsureSkillAttack(caster)
+            _SkillExecutors:Execute(skill.behavior, skillId, skill, caster, level)
+        else
+            log_warning("SkillCaster: caster entity not found for " .. uid .. ", skipping executor for " .. skillId)
+        end
+
+        local evt = SkillUsedEvent()
+        evt.UserId = uid
+        evt.SkillId = skillId
+        evt.MapName = ""
+        if isvalid(caster) and isvalid(caster.CurrentMap) then
+            evt.MapName = caster.CurrentMap.Name
+        end
+        self:SendEvent(evt)
+
+        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " (" .. uid .. ")")
+        self:CastResult(skillId, true, "ok", cooldown, castId, uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EnsureSkillAttack(Entity caster)
+        -- 팀 월드의 Global/DefaultPlayer.model(A 소유 · 수정 금지)에는 script.SkillAttack 이 없다.
+        -- 개인 월드는 모델에 붙어 있었지만 여기서는 런타임에 붙인다 — 플레이어에 AddComponent 하는 팀 패턴(Faction/Buff)과 같다.
+        -- 투사체(SpawnProjectile)·범위 피해(DealSkillDamage)는 전부 이 컴포넌트를 거친다.
+        local existing = caster:GetComponent("script.SkillAttack")
+        if isvalid(existing) then return end
+        local added = caster:AddComponent("script.SkillAttack")
+        if isvalid(added) then
+            -- 런타임에 붙으면 OnBeginPlay 가 안 돌 수 있다 → 초기화를 직접 부른다 (Faction/Buff 패턴).
+            added:EnsureShape()
+            log("SkillCaster: attached script.SkillAttack to " .. tostring(caster.Name))
+        else
+            log_warning("SkillCaster: AddComponent(script.SkillAttack) failed on " .. tostring(caster.Name))
+        end
+    end
+
+    @ExecSpace("Client")
+    method void CastResult(string skillId, boolean ok, string reason, number cooldown, integer castId)
+        -- 서버 판정 수신. 성공이면 미러 쿨다운을 시작해 핫바/창이 회색 처리할 수 있게 한다.
+        -- 실패면 그 castId 의 락만 푼다 — 실행되지 않은 스킬 때문에 플레이어가 서 있으면 안 된다. 이미 다음 시전이 시작됐으면 ReleaseCastLock 이 무시한다.
+        if ok then
+            _PlayerSkillState:LocalStartCooldown(skillId, cooldown)
+        else
+            self:ReleaseCastLock(castId, "server rejected: " .. reason)
+        end
+        local reasonText = ""
+        if not ok then reasonText = " reason='" .. reason .. "'" end
+        log("SkillCaster: server result " .. skillId .. " cast#" .. tostring(castId) .. " ok=" .. tostring(ok) .. reasonText .. " cd=" .. tostring(cooldown))
+        _PlayerSkillState:NotifyStateChanged("mp")
+    end
+
+    @ExecSpace("ClientOnly")
+    method table FinishCast(string skillId, table result)
+        -- 클라 예측 결과 로그 한 줄. 최종 결과는 CastResult 로그를 본다.
+        local reasonText = ""
+        if not result.ok then reasonText = " reason='" .. result.reason .. "'" end
+        log("SkillCaster: cast(pred) " .. skillId .. " ok=" .. tostring(result.ok) .. reasonText ..
+            " mp=" .. tostring(math.floor(_PlayerSkillState:LocalMp())) ..
+            " cd=" .. tostring(_PlayerSkillState:LocalCooldownRemaining(skillId)))
+        return result
+    end
+
+end

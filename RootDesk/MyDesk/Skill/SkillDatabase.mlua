@@ -1,0 +1,335 @@
+@Logic
+script SkillDatabase extends Logic
+
+    -- Dataset name to resolve via _DataService:GetTable(...). Change here if the dataset is ever renamed.
+    property string datasetName = "SkillInfo"
+
+    -- Loaded once at startup, keyed by skill_id. Read-only after LoadAll() completes.
+    property table skillsById = {}
+
+    property boolean isLoaded = false
+
+    -- JobTier mirror, loaded independently of skillsById so GetAttackPower works even if
+    -- only jobs (not skills) have been requested yet. Keyed by JobKey(job_line, tier), NOT
+    -- job_id - the job_id/next_job/tab columns no longer exist in JobTier (see the
+    -- migration report; JobDatabase.mlua still reads those and is now broken).
+    property string jobDatasetName = "JobTier"
+
+    property table jobsByKey = {}
+
+    property boolean isJobsLoaded = false
+
+    method void OnBeginPlay()
+        -- Loads every SkillInfo + JobTier row once, into skillsById / jobsByKey.
+        self:EnsureLoaded()
+        self:EnsureJobsLoaded()
+    end
+
+    method void EnsureLoaded()
+        -- Idempotent entry point. @Logic OnBeginPlay order across different Logic scripts is
+        -- not guaranteed, so any consumer (e.g. SkillWindowLogic) must call this itself before
+        -- touching skillsById instead of assuming SkillDatabase's own OnBeginPlay already ran.
+        if not self.isLoaded then self:LoadAll() end
+    end
+
+    method void EnsureJobsLoaded()
+        -- Same idempotent-guard pattern as EnsureLoaded, for the JobTier mirror used by
+        -- GetAttackPower. Called lazily from GetAttackPower itself, so callers never need to
+        -- remember to call this directly.
+        if not self.isJobsLoaded then self:LoadJobs() end
+    end
+
+    method void LoadAll()
+        -- Resolves the dataset by name, converts every numeric column once per row, and logs
+        -- the dataset name + row count so callers can confirm the table was found.
+        local ds = _DataService:GetTable(self.datasetName)
+        if ds == nil then
+            log_warning("SkillDatabase: dataset '" .. self.datasetName .. "' was not found")
+            return
+        end
+
+        local count = ds:GetRowCount()
+        for i = 1, count do
+            local skillId = ds:GetCell(i, "SkillId")
+            local skill = {
+                id = skillId,
+                tab = self:ParseNumber(skillId, "tab", ds:GetCell(i, "Tab")),
+                order = self:ParseNumber(skillId, "slot_order", ds:GetCell(i, "SlotOrder")),
+                name = ds:GetCell(i, "SkillName") or "",
+                icon = ds:GetCell(i, "IconRUID") or "",
+                description = ds:GetCell(i, "Description") or "",
+                maxLevel = self:ParseNumber(skillId, "max_level", ds:GetCell(i, "MaxLevel")),
+                spCost = self:ParseNumber(skillId, "sp_cost", ds:GetCell(i, "SpCost")),
+                effectPerLevel = self:ParseNumber(skillId, "effect_per_level", ds:GetCell(i, "EffectPerLevel")),
+                cooldown = self:ParseNumber(skillId, "cooldown", ds:GetCell(i, "Cooldown")),
+                requiredJobLine = ds:GetCell(i, "ReqJob") or "",
+                requiredTier = self:ParseNumber(skillId, "required_tier", ds:GetCell(i, "ReqTier")),
+                requiredLevel = self:ParseNumber(skillId, "required_level", ds:GetCell(i, "ReqLevel")),
+                behavior = ds:GetCell(i, "Behavior") or "",
+                mpCost = self:ParseNumber(skillId, "mp_cost", ds:GetCell(i, "MpCost")),
+                -- base_effect is now a MULTIPLIER (percentage/ratio), not an absolute value -
+                -- its unit is effectUnit. See RatioAt/DamageAt/StackDamageAt.
+                baseEffect = self:ParseNumber(skillId, "base_effect", ds:GetCell(i, "BaseEffect")),
+                range = self:ParseNumber(skillId, "range", ds:GetCell(i, "Range")),
+                speed = self:ParseNumber(skillId, "speed", ds:GetCell(i, "Speed")),
+                -- World-unit Y offset from the caster's feet-level WorldPosition, applied at
+                -- projectile spawn (SkillAttack.SpawnProjectile). Per-skill CSV column, appended
+                -- at the end before #Note - same body-relative spawn-point convention C:\vd's
+                -- BossSkills.csv OffsetY column uses for BossSkillRunner.SpawnOneProjectile.
+                spawnOffsetY = self:ParseNumber(skillId, "spawn_offset_y", ds:GetCell(i, "SpawnOffsetY")),
+                duration = self:ParseNumber(skillId, "duration", ds:GetCell(i, "Duration")),
+                hitCount = self:ParseNumber(skillId, "hit_count", ds:GetCell(i, "HitCount")),
+                useLimit = self:ParseNumber(skillId, "use_limit", ds:GetCell(i, "UseLimit")),
+                effectUnit = ds:GetCell(i, "EffectUnit") or "",
+                maxStack = self:ParseNumber(skillId, "max_stack", ds:GetCell(i, "MaxStack")),
+                secondaryEffect = self:ParseNumber(skillId, "secondary_effect", ds:GetCell(i, "SecondaryEffect")),
+                secondaryPerLevel = self:ParseNumber(skillId, "secondary_per_level", ds:GetCell(i, "SecondaryPerLevel")),
+                durationPerLevel = self:ParseNumber(skillId, "duration_per_level", ds:GetCell(i, "DurationPerLevel")),
+                cooldownPerLevel = self:ParseNumber(skillId, "cooldown_per_level", ds:GetCell(i, "CooldownPerLevel")),
+                buffTag = ds:GetCell(i, "BuffTag") or "",
+            }
+            self.skillsById[skillId] = skill
+        end
+
+        self.isLoaded = true
+        log("SkillDatabase: resolved dataset '" .. self.datasetName .. "', loaded " .. tostring(count) .. " rows")
+    end
+
+    method void LoadJobs()
+        -- Resolves JobTier by name and converts every row, keyed by JobKey(job_line, tier).
+        local ds = _DataService:GetTable(self.jobDatasetName)
+        if ds == nil then
+            log_warning("SkillDatabase: dataset '" .. self.jobDatasetName .. "' was not found")
+            return
+        end
+
+        local count = ds:GetRowCount()
+        for i = 1, count do
+            local jobLine = ds:GetCell(i, "JobId")
+            local tier = self:ParseNumber(jobLine, "tier", ds:GetCell(i, "Tier"))
+            local job = {
+                jobLine = jobLine,
+                tier = tier,
+                requiredLevel = self:ParseNumber(jobLine, "required_level", ds:GetCell(i, "ReqLevel")),
+                displayName = ds:GetCell(i, "DisplayName") or "",
+                baseAttack = self:ParseNumber(jobLine, "base_attack", ds:GetCell(i, "BaseAttack")),
+            }
+            self.jobsByKey[self:JobKey(jobLine, tier)] = job
+        end
+
+        self.isJobsLoaded = true
+        log("SkillDatabase: resolved dataset '" .. self.jobDatasetName .. "', loaded " .. tostring(count) .. " rows")
+    end
+
+    method string JobKey(string jobLine, number tier)
+        -- Composite key for jobsByKey - job_line alone is not unique now that every line has
+        -- 3 tier rows.
+        return tostring(jobLine) .. "|" .. tostring(tier)
+    end
+
+    method number ParseNumber(string skillId, string columnName, string rawValue)
+        -- Converts one CSV cell to a number; missing/unparseable values default to 0 and log a warning.
+        if rawValue == nil or rawValue == "" then
+            log_warning("SkillDatabase: skill_id=" .. tostring(skillId) .. " column=" .. columnName .. " is missing, defaulting to 0")
+            return 0
+        end
+        local parsed = tonumber(rawValue)
+        if parsed == nil then
+            log_warning("SkillDatabase: skill_id=" .. tostring(skillId) .. " column=" .. columnName .. " value='" .. rawValue .. "' is unparseable, defaulting to 0")
+            return 0
+        end
+        return parsed
+    end
+
+    method any GetSkill(string skillId)
+        -- Returns the skill record table for skillId, or nil if it doesn't exist.
+        return self.skillsById[skillId]
+    end
+
+    method table GetSkillsByTab(number tab)
+        -- Returns every skill record whose tab matches, in dataset row order.
+        local result = {}
+        for _, skill in pairs(self.skillsById) do
+            if skill.tab == tab then table.insert(result, skill) end
+        end
+        return result
+    end
+
+    method table GetSkillsByJobLine(string jobLine)
+        -- Returns every skill record whose required_job_line matches jobLine. Renamed from
+        -- GetSkillsByJob - required_job (a single job_id string) no longer exists as a column;
+        -- it was replaced by required_job_line + required_tier.
+        local result = {}
+        for _, skill in pairs(self.skillsById) do
+            if skill.requiredJobLine == jobLine then table.insert(result, skill) end
+        end
+        return result
+    end
+
+    method table GetSkillsByJobLineAndTier(string jobLine, number tier)
+        -- Returns every skill record whose required_job_line == jobLine AND
+        -- required_tier == tier. This is the display filter for the skill window - it does
+        -- NOT decide learnability/castability (that stays with CanLearn/CanUse); a caller
+        -- wanting "can this player use this tab's skills" still has to call those separately.
+        local result = {}
+        for _, skill in pairs(self.skillsById) do
+            if skill.requiredJobLine == jobLine and skill.requiredTier == tier then
+                table.insert(result, skill)
+            end
+        end
+        return result
+    end
+
+    method number GetAttackPower(string userId)
+        -- The ONLY place base_attack is ever read (R-equivalent of the old single-source rule
+        -- for base_effect). Resolves userId's current job_line/tier and looks up base_attack
+        -- for that (job_line, tier) pair in JobTier.
+        --
+        -- NOTE: PlayerSkillState does not yet expose a per-user job_line/tier accessor (its
+        -- jobId property is a single legacy string like "MAGE1", and it is not keyed by
+        -- userId at all - see the migration report). GetJobLine/GetTier below are called
+        -- speculatively against that not-yet-existing API; until it's added this always logs
+        -- a warning and returns 0.
+        self:EnsureJobsLoaded()
+
+        -- 서버 전용 경로(DamageAt ← SkillAttack/SkillProjectile.CalcDamage). PlayerSkillState 의 userId 키 원장을 읽는다.
+        local jobLine = _PlayerSkillState:GetJobId(userId)
+        local tier = _PlayerSkillState:GetTier(userId)
+        local job = self.jobsByKey[self:JobKey(jobLine, tier)]
+        if job == nil then
+            log_warning("SkillDatabase: GetAttackPower found no JobTier row for job_line=" .. tostring(jobLine) .. " tier=" .. tostring(tier) .. " (userId=" .. tostring(userId) .. ")")
+            return 0
+        end
+        return job.baseAttack
+    end
+
+    method number RatioAt(string skillId, number level)
+        -- base_effect + (level-1) * effect_per_level. base_effect is now a MULTIPLIER whose
+        -- unit is effectUnit - callers must check effect_unit before interpreting the result
+        -- (see DamageAt/StackDamageAt, the two typed consumers). Returns 0 for an unknown skillId.
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: RatioAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        return skill.baseEffect + (level - 1) * skill.effectPerLevel
+    end
+
+    method number SecondaryAt(string skillId, number level)
+        -- secondary_effect + (level-1) * secondary_per_level. Returns 0 for an unknown skillId.
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: SecondaryAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        return skill.secondaryEffect + (level - 1) * skill.secondaryPerLevel
+    end
+
+    method number DurationAt(string skillId, number level)
+        -- duration + (level-1) * duration_per_level, clamped to a minimum of 0.
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: DurationAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        local value = skill.duration + (level - 1) * skill.durationPerLevel
+        if value < 0 then return 0 end
+        return value
+    end
+
+    method number CooldownAt(string skillId, number level)
+        -- cooldown + (level-1) * cooldown_per_level, clamped to a minimum of 0. Negative
+        -- cooldown_per_level is expected and correct (cooldown shrinks as level rises).
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: CooldownAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        local value = skill.cooldown + (level - 1) * skill.cooldownPerLevel
+        if value < 0 then return 0 end
+        return value
+    end
+
+    method number DamageAt(string skillId, number level, string userId)
+        -- floor(GetAttackPower(userId) * RatioAt(skillId, level) / 100). Only valid when the
+        -- skill's effect_unit is ATK_PCT - logs a warning and returns 0 otherwise so a
+        -- misrouted call is loud, not silently wrong.
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: DamageAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        if skill.effectUnit ~= "ATK_PCT" then
+            log_warning("SkillDatabase: DamageAt called for skill_id=" .. skillId .. " whose effect_unit is '" .. skill.effectUnit .. "', not ATK_PCT")
+            return 0
+        end
+        return math.floor(self:GetAttackPower(userId) * self:RatioAt(skillId, level) / 100)
+    end
+
+    method number StackDamageAt(string skillId, number level, string userId)
+        -- floor(currentStack * RatioAt(skillId, level) / 100). Only valid when the skill's
+        -- effect_unit is STACK_PCT.
+        --
+        -- currentStack is read from PlayerSkillState's generic stack counter (named
+        -- generically, not meso-specific, per spec - e.g. GetStackCount). PlayerSkillState.mlua
+        -- is out of scope for this task and does not yet have this accessor, the increment
+        -- step (from the feeding passive skill), or the reset-on-consume step - see the
+        -- migration report.
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: StackDamageAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        if skill.effectUnit ~= "STACK_PCT" then
+            log_warning("SkillDatabase: StackDamageAt called for skill_id=" .. skillId .. " whose effect_unit is '" .. skill.effectUnit .. "', not STACK_PCT")
+            return 0
+        end
+        local currentStack = _PlayerSkillState:GetStackCount(userId)
+        return math.floor(currentStack * self:RatioAt(skillId, level) / 100)
+    end
+
+    method table CanLearn(string skillId, string jobLine, number tier, number playerLevel)
+        -- Returns { ok = boolean, reason = string }. Job-line + tier + player-level gate for
+        -- learning a skill. This and CanUse are the only places required_job_line /
+        -- required_tier / required_level are ever compared - callers must not re-check them.
+        -- NOTE: a "method boolean, string" comma multi-return signature (valid in native
+        -- .d.mlua engine stubs) crashes the Maker script loader for user-authored scripts
+        -- with "[LEA-3015] CannotLoad: Sequence contains no elements" - the user-script method
+        -- syntax supports exactly one declared return type, so results are wrapped in a table.
+        local skill = self.skillsById[skillId]
+        if skill == nil then return { ok = false, reason = "unknown skill: " .. tostring(skillId) } end
+        return self:CheckRequirements(skill, jobLine, tier, playerLevel)
+    end
+
+    method table CanUse(string skillId, string jobLine, number tier, number playerLevel, number skillLevel)
+        -- Returns { ok = boolean, reason = string }. Job-line + tier + player-level +
+        -- learned-state gate for casting a skill. Shares CheckRequirements with CanLearn so a
+        -- CSV threshold change never needs a second edit anywhere else.
+        local skill = self.skillsById[skillId]
+        if skill == nil then return { ok = false, reason = "unknown skill: " .. tostring(skillId) } end
+
+        local requirements = self:CheckRequirements(skill, jobLine, tier, playerLevel)
+        if not requirements.ok then return requirements end
+
+        if skillLevel <= 0 then return { ok = false, reason = "skill not learned" } end
+
+        return { ok = true, reason = "ok" }
+    end
+
+    method table CheckRequirements(table skill, string jobLine, number tier, number playerLevel)
+        -- Returns { ok = boolean, reason = string }. Shared required_job_line / required_tier /
+        -- required_level comparison used by both CanLearn and CanUse. Tier check is >=, NOT
+        -- ==: a tier-3 warrior must still be able to use tier-1 warrior skills.
+        if skill.requiredJobLine ~= "" and skill.requiredJobLine ~= jobLine then
+            return { ok = false, reason = "requires job line " .. skill.requiredJobLine }
+        end
+        if tier < skill.requiredTier then
+            return { ok = false, reason = "requires tier " .. tostring(skill.requiredTier) }
+        end
+        if playerLevel < skill.requiredLevel then
+            return { ok = false, reason = "requires level " .. tostring(skill.requiredLevel) }
+        end
+        return { ok = true, reason = "ok" }
+    end
+
+end
