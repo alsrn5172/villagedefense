@@ -13,9 +13,17 @@ script SkillProjectile extends AttackComponent
 
     property number DirectionX = 1
 
-    -- Kept at 0 always by SetDirection - every projectile skill here fires purely horizontally
-    -- off PlayerControllerComponent.LookDirectionX, so there is no aim-vector path to port.
+    -- 0 for a plain horizontal shot (SetDirection). SetTarget / SetDirection2D give the bolt a real 2D
+    -- aim vector so it can fly to an enemy above or below the caster (에너지볼트 원작화 2026-09-09).
     property number DirectionY = 0
+
+    -- 조준 대상 (SkillAttack.SpawnProjectile 이 앞쪽 범위 안 최근접 몬스터를 넣는다). 유효한 동안 매 프레임 다시 조준한다(유도) —
+    -- 원작 에너지볼트는 지정한 적에게 날아가 반드시 맞는다. 대상이 죽거나 사라지면 마지막 방향으로 계속 간다.
+    @HideFromInspector
+    property any TargetEntity = nil
+
+    -- 대상 발 위치에서 몸통 중심까지 올리는 높이(world unit). 몬스터 스프라이트 피벗이 발이라 0 이면 발끝을 노린다.
+    property number TargetAimOffsetY = 0.5
 
     property number Speed = 8
 
@@ -79,6 +87,39 @@ script SkillProjectile extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
+    method void SetDirection2D(number dx, number dy)
+        -- 2D 조준 방향(정규화). 좌우 부호는 ApplyFacing 으로 스프라이트에 반영. 영벡터면 무시.
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len < 0.0001 then return end
+        self.DirectionX = dx / len
+        self.DirectionY = dy / len
+        self:ApplyFacing()
+    end
+
+    @ExecSpace("ServerOnly")
+    method void SetTarget(Entity target)
+        -- 유도 대상 지정 + 즉시 첫 조준. SpawnProjectile 이 부른다.
+        self.TargetEntity = target
+        self:AimAtTarget()
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean AimAtTarget()
+        -- 현재 위치에서 대상(발 + TargetAimOffsetY)으로 방향을 다시 잡는다. 대상이 무효면 유도를 풀고 false(마지막 방향 유지).
+        local target = self.TargetEntity
+        if not isvalid(target) or not isvalid(target.TransformComponent) then
+            self.TargetEntity = nil
+            return false
+        end
+        local me = self.Entity.TransformComponent
+        if not isvalid(me) then return false end
+        local p = me.WorldPosition
+        local t = target.TransformComponent.WorldPosition
+        self:SetDirection2D(t.x - p.x, (t.y + self.TargetAimOffsetY) - p.y)
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
     method void ApplyFacing()
         -- Sign-only flip via Scale.x (writing, not reading, facing - reading Scale.x to
         -- determine direction is the antipattern; writing it to flip a standalone dynamic
@@ -103,6 +144,10 @@ script SkillProjectile extends AttackComponent
         local transform = self.Entity.TransformComponent
         if not isvalid(transform) then
             return
+        end
+        -- 유도: 대상이 살아 있는 동안 매 프레임 다시 조준한다(원작 에너지볼트는 지정한 적에게 반드시 맞는다). 대상 소멸 시 마지막 방향 유지.
+        if self.TargetEntity ~= nil and not self.consumed then
+            self:AimAtTarget()
         end
         -- Body-less entity -> Translate is safe and not overwritten by physics next frame.
         transform:Translate(self.DirectionX * self.Speed * delta, self.DirectionY * self.Speed * delta)

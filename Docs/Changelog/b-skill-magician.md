@@ -75,3 +75,31 @@
   - Shift(SK_M21 배운 뒤): `HOTBAR: slot2 Shift SK_M21 cast ok=true` · `SkillMovement: SK_M21 …` + `SkillAttack: dealt SK_M21 … hits=1`(도착 지점에 몬스터가 있을 때) · 쿨다운 로그 `cd=2`(Lv1)
   - E: `[Buff] ON MAGIC_GUARD … ratio=35` · `[Buff] mirror <- 'MAGIC_GUARD:1:…'` · 이후 Q 시전 로그 `mpCost=12`(8×1.5) · 에너지볼트 피해 로그 `+magicGuard=N` · 45초 뒤 `[Buff] OFF MAGIC_GUARD`
   - R: `SkillCaster: cast lock ON … SK_M31` → 1초 뒤 `SkillAttack: FindSkillTarget SK_M31 candidates=N preferBoss=true -> <이름>` · `dealt SK_M31 to <이름> … hits=1` · 재시전 `use limit reached (1)`
+
+## 2026-09-09 (2차) — 테스트 값 · 원작화 (사용자 요청 · Play 검증 중)
+
+### ⚠ `RootDesk/MyDesk/SkillInfo.csv` — 임시 테스트 값 (리뷰 전 복구)
+| 행 | 열 | 원값 → 테스트 | 이유 |
+|---|---|---|---|
+| `SK_M22` 매직 가드 | Cooldown | **60 → 5** | 반복 시전 테스트 |
+| `SK_M31` 대마법 | UseLimit | **1 → 0** | 매치당 1회 제한 해제 (`ResetMatchState` 호출처가 아직 없어 세션당 1회였다) |
+`#Note` 에 `⚠TEST` 표기. **Ready for review 전에 원값으로 되돌린다.**
+
+### `SkillInfo.csv` — 원작 근접 (유지)
+- `SK_M13` Range **3 → 2.5**, `SK_M21` Range **3.9 → 3.25**(2.5×1.3). 원작 텔레포트는 ≈150px(=1.5) — 더 줄이려면 두 셀만.
+- `SK_M11` Speed **6 → 8**(원작 볼트는 빠르다).
+
+### ⚠ `Skill/PlayerSkillState.mlua` — DEV 직업 전환 허용 (리뷰 전 false)
+- `DevAllowJobSwitch = true`(기본): `RequestChooseJob` 이 초보자가 아니어도 직업을 바꿔 준다 → F10 이 누를 때마다 MAGICIAN → WARRIOR → ARCHER → THIEF → PIRATE 순환. 같은 직업 재요청은 무시. 레벨 조건(JobTier ReqLevel 10)은 그대로. 실제 규칙(초보자에서 1회)은 `false` 로 되돌리면 복구. 배운 스킬·쓴 SP 는 유지(타 직업 스킬은 CanUse 가 막는다).
+
+### `Skill/SkillCaster.mlua` — 대마법 시전 락 1.2 → 2.5s (원작 오리진 스킬: 컷신 끝까지 이동 불가)
+- 제보: 이펙트가 아직 나오는데 캐릭터가 움직인다. 락이 텔레그래프(1.0s)만 덮고 낙뢰 임팩트 파티클 동안은 풀려 있었다. `castLockOverrides.SK_M31 = 2.5`(텔레그래프 1.0 + 임팩트 ≈1.5). 서버 재시전 게이트도 같은 값(×0.9)을 쓴다. 원작의 컷신 중 무적은 A 의 PlayerHit 연결(`_SkillBuffs:IsInvincible`) 뒤에나 가능.
+
+### `Skill/SkillExecutors.mlua` — 시전 파티클이 캐릭터 뒤에 뜨던 문제 (대마법 R 제보)
+- 원인: 파티클 폴백은 `PlayBasicParticle` 고정 좌표였고, 그 좌표는 서버가 `RequestCast` 때 읽은 위치 — 이동 중 시전하면 클라보다 왕복 지연만큼 뒤. RUID 이펙트는 이미 `PlayEffectAttached` 로 붙여 둔 상태였다.
+- 수정: `PlayParticle(type, stage, caster, pos)` 로 묶고 **"cast" 단계 파티클은 `PlayBasicParticleAttached`(시전자에 부착)**. `impact`(대상·지면) 는 고정 유지. 텔레포트 출발 이펙트는 새 stage 이름 `"depart"`(고정) — 붙이면 이미 옮겨진 클라에서 도착점에 떠 버리므로.
+
+### `Skill/SkillProjectile.mlua` · `Skill/SkillAttack.mlua` — 에너지볼트 조준·유도 (원작: 지정한 적에게 날아가 맞는다)
+- `SkillAttack.SpawnProjectile`: 발사 직후 앞쪽 상자(앞으로 Range · 발부터 위로 `AimSearchHeight` 2.5) 안 최근접 몬스터를 `FindSkillTarget(preferBoss=false)` 로 고르고 `mover:SetTarget(target)`. 없으면 예전 그대로 직선. `AimProjectileAtTarget=false` 로 끌 수 있다. 유도 시 수명 ×`HomingLifetimeMul`(1.5). 로그에 `target=<이름|none>`.
+- `SkillProjectile`: `TargetEntity`(유도 대상) · `SetDirection2D(dx,dy)`(정규화 2D 방향 + 좌우 뒤집기) · `SetTarget` · `AimAtTarget`(대상 발 + `TargetAimOffsetY` 0.5). `OnUpdate` 가 대상이 유효한 동안 매 프레임 재조준(유도), 대상 소멸 시 마지막 방향 유지. `DirectionY` 가 실제로 쓰인다.
+- 🟡 미검증: 위/아래 발판의 몬스터로 날아갈 때 히트박스(0.8×0.8) 통과 여부 · `Scale.x` 뒤집기가 대각선에서도 자연스러운지.
