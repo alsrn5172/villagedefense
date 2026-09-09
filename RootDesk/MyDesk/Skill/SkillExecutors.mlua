@@ -44,6 +44,18 @@ script SkillExecutors extends Logic
     -- ORIGIN 탐색 상자 = PC 가시 영역(12.8×7.2 world unit · platform.md §5). 화면 전체 광역과 단일 대상 후보 탐색이 같이 쓴다.
     property Vector2 ScreenBoxSize = Vector2(12.8, 7.2)
 
+    -- 대마법(SK_M31) 폭발 연출(ExecuteBlast) 파라미터. 반지름 자체는 CSV Range 가 정한다(0 이면 BlastDefaultRadius).
+    property number BlastDefaultRadius = 2.5
+
+    -- 반지름 안에 흩뿌리는 연쇄 폭발 개수 · 간격(초) · 세로 눌림(0.45 = 지면 위 타원) · 폭발 크기 배율.
+    property integer BlastExplosionCount = 8
+
+    property number BlastExplosionInterval = 0.07
+
+    property number BlastVerticalSquash = 0.45
+
+    property number BlastExplosionScale = 1.2
+
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
     @ExecSpace("ServerOnly")
@@ -310,6 +322,57 @@ script SkillExecutors extends Logic
         _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, duration)
     end
 
+    @ExecSpace("ServerOnly")
+    method void ExecuteBlast(string skillId, table skillData, Entity casterEntity, number level, Vector3 finalPos, any skillAttack)
+        -- 대마법(SK_M31) 폭발 (2026-09-09 요청: "메소 익스플로전처럼 정해진 반지름 안에서 여러 폭발이 터지는 큰 한 방").
+        --   중심   = 화면 안 보스(우선) / 최근접 몬스터의 위치. 없으면 시전자 앞 Range 지점(그래도 터진다 — 소모는 이미 확정).
+        --   반지름 = CSV Range (0 이면 BlastDefaultRadius). 피해 = 첫 폭발 시점에 반지름 안 몬스터 전부(CircleShape) HitCount 회.
+        --   연출   = 중심 Nova(impact 단계 · RUID 오버라이드 가능) → BlastExplosionCount 개의 BigExplosion 을 간격을 두고 반지름 안에 흩뿌림 → 마무리 SparkRadialExplosion.
+        --   추가기획1 표의 "단일 대상" 문구와 다르다: 기획 변경 사유가 "발록전엔 광역이 쓸모없다" 였으니 보스가 반지름 안에 있으면 그대로 맞는다. 조각 파일에 표시.
+        local radius = skillData.range
+        if radius <= 0 then radius = self.BlastDefaultRadius end
+        local hitCount = skillData.hitCount
+        if hitCount <= 0 then hitCount = 1 end
+
+        local screen = { posX = finalPos.x, posY = finalPos.y, sizeX = self.ScreenBoxSize.x, sizeY = self.ScreenBoxSize.y }
+        local target = skillAttack:FindSkillTarget(skillId, screen, true)
+        local cx = finalPos.x + self:GetFacingX(casterEntity) * radius
+        local cy = finalPos.y + 0.3
+        local cz = finalPos.z
+        local centerName = "front"
+        if isvalid(target) and isvalid(target.TransformComponent) then
+            local tp = target.TransformComponent.WorldPosition
+            cx = tp.x
+            cy = tp.y + 0.3
+            centerName = tostring(target.Name)
+        end
+
+        -- 첫 폭발 = 중심 + 피해 (같은 프레임 — 맞는 순간과 보이는 순간을 맞춘다)
+        self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(cx, cy, cz), BasicParticleType.Nova)
+        skillAttack:DealSkillDamageCircle(skillId, level, cx, cy, radius, hitCount)
+        log("SkillExecutors: BLAST " .. skillId .. " center=" .. centerName .. " (" .. tostring(cx) .. "," .. tostring(cy) .. ") r=" .. tostring(radius)
+            .. " explosions=" .. tostring(self.BlastExplosionCount) .. " hits=" .. tostring(hitCount))
+
+        -- 반지름 안 연쇄 폭발. 배치는 결정적(각도 균등 · 거리 0.9r/0.5r 교대) — 한 프레임 안의 RandomDouble 은 거의 같은 값을 돌려준다(SummonManager 실측).
+        local count = self.BlastExplosionCount
+        local scale = Vector3(self.BlastExplosionScale, self.BlastExplosionScale, 1)
+        for i = 1, count do
+            local angle = (i - 1) * (2 * math.pi / count) + 0.4
+            local dist = radius * 0.9
+            if i % 2 == 0 then dist = radius * 0.5 end
+            local ex = cx + math.cos(angle) * dist
+            local ey = cy + math.sin(angle) * dist * self.BlastVerticalSquash
+            _TimerService:SetTimerOnce(function()
+                if not isvalid(casterEntity) then return end
+                _ParticleService:PlayBasicParticle(BasicParticleType.BigExplosion, casterEntity, Vector3(ex, ey, cz), 0, scale, false)
+            end, i * self.BlastExplosionInterval)
+        end
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            _ParticleService:PlayBasicParticle(BasicParticleType.SparkRadialExplosion, casterEntity, Vector3(cx, cy, cz), 0, Vector3(1.5, 1.5, 1), false)
+        end, (count + 1) * self.BlastExplosionInterval)
+    end
+
     method void ExecuteOrigin(string skillId, table skillData, Entity casterEntity, number level)
         -- Charge immediately, then BigExplosion + damage after skillData.duration seconds (the
         -- telegraph) - one hit covering "everything on screen", not hit_count times (hit_count
@@ -336,19 +399,8 @@ script SkillExecutors extends Logic
             }
 
             if self.originSingleTarget[skillId] then
-                -- 단일 대상(대마법 SK_M31 · 추가기획1 "단일 대상 초고피해"): 화면 안 보스 우선, 없으면 가장 가까운 몬스터 하나에 HitCount 회.
-                -- 대상이 없으면 소모(MP·사용 횟수·쿨다운)는 그대로다 — 이미 시전된 궁극기라 원작과 같다. 이펙트는 대상 위치에.
-                local target = skillAttack:FindSkillTarget(skillId, screen, true)
-                if not isvalid(target) then
-                    self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.LightningStrikeTall)
-                    log("SkillExecutors: ORIGIN " .. skillId .. " no target on screen — cast consumed")
-                    return
-                end
-                local targetPos = target.TransformComponent.WorldPosition
-                self:PlayStageEffect(skillId, "impact", casterEntity, targetPos, BasicParticleType.LightningStrikeTall)
-                local hitCount = skillData.hitCount
-                if hitCount <= 0 then hitCount = 1 end
-                skillAttack:DealSkillDamageToTarget(skillId, level, target, hitCount)
+                -- 대마법(SK_M31): 폭발형 — 보스 우선/최근접 대상 위치(없으면 시전자 앞)를 중심으로 CSV Range 반지름 폭발 (ExecuteBlast).
+                self:ExecuteBlast(skillId, skillData, casterEntity, level, finalPos, skillAttack)
                 return
             end
 
