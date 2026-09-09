@@ -148,6 +148,10 @@
 - 원인: 클라 미러 쿨다운은 서버 `CastResult` 가 와야 시작됐다 → 왕복 전 같은 키 입력이 두 번 들어오면 둘 다 예측 게이트를 통과해 두 번 옮겨졌다(Space 는 점프 액션 이벤트가 두 번 들어오는 것으로 보임).
 - 수정: 이동 스킬은 `TryTeleport` 성공 직후 `LocalStartCooldown(CooldownAt)` 로 미러 쿨다운을 미리 시작(서버 결과가 덮어씀). `TryAirJumpTeleport` 에 0.25s 디바운스(`AirJumpTeleportDebounce`). Shift 와 Space 가 같은 경로·같은 거리.
 
+### `Skill/SkillHotbar.mlua` — 지상 점프가 텔레포트로 바뀌던 문제 (더블 점프 판정)
+- 원인: 엔진이 점프를 먼저 띄운 뒤 `Jump` 이벤트를 주므로 지상에서 누른 첫 점프도 이벤트 시점엔 `IsOnGround()==false` → 텔레포트가 나갔다.
+- 수정: `TrackGround`(매 프레임 접지 시각 기록 · 착지 시 `airTeleportUsed` 초기화). `Jump` 이벤트가 마지막 접지 후 `FirstJumpGrace`(0.2s) 안이면 첫 점프로 보고 무시, 그 뒤 공중에서 누른 것만 텔레포트, 공중에서 1회(더블 점프 자리). Shift 텔레포트는 제한 없음. 로그 `HOTBAR: air-jump(double) -> … airborne=N s`.
+
 ### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
 | 항목 | 어디서 | 비고 |
 |---|---|---|
