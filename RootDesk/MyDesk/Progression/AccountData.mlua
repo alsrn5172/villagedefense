@@ -12,7 +12,7 @@ script AccountData extends Logic
 	-- 🔴 계정 데이터만 여기 둔다. 매치 자원(메소·주화·장비·레벨·경험치·스킬·시설)은 절대 넣지 마라.
 	--    GDD §3: "발록의 심장 외에는 매치 종료 시 소멸". 실수로 저장하면 다음 매치를 재화 들고 시작한다.
 
-	-- users[userId] = { level, balrogHeart, unlocks, isSaveDB, saveGeneration }
+	-- users[userId] = { level, balrogHeart, unlocks, isSaveDB, saveGeneration, loaded }
 	@HideFromInspector
 	property any users = nil
 
@@ -34,6 +34,7 @@ script AccountData extends Logic
 				unlocks = "",
 				isSaveDB = false,      -- 더티 플래그. 바뀐 게 있을 때만 저장한다 (Credit 절약)
 				saveGeneration = 0,    -- 모든 setter 가 +1. 저장 왕복 중 setter 를 감지하는 장치
+				loaded = false,        -- 🔴 저장소에서 채워지기 전에는 값이 "기본값"일 뿐 진짜가 아니다
 			}
 		end
 		return self.users[userId]
@@ -86,6 +87,7 @@ script AccountData extends Logic
 		u.level = profile.account_level
 		u.balrogHeart = profile.account_balrogHeart
 		u.unlocks = profile.account_unlocks
+		u.loaded = true
 		log("[AcctData] loaded " .. userId .. " lv=" .. tostring(u.level) .. " heart=" .. tostring(u.balrogHeart))
 		return true
 	end
@@ -165,6 +167,21 @@ script AccountData extends Logic
 	-- ── 쓰기 — 전부 Touch 를 거친다 ──────────────────────────────────
 
 	@ExecSpace("ServerOnly")
+	method boolean CanWrite(string userId, any u)
+		-- 🔴 로드가 끝나기 전에는 쓰기를 거부한다.
+		--    로드 전 값은 "저장소에서 온 값"이 아니라 EnsureUser 의 기본값이다. 여기에 쓰면
+		--    ① 뒤늦게 도착한 로드가 그 변경을 통째로 덮어써 조용히 사라지고
+		--    ② 반대로 로드 실패 시 기본값 + 변경분이 저장소로 나가 진짜 데이터를 밀어낸다.
+		--    지금은 호출자가 없지만(발록의 심장 지급은 WO-022) 그때 이 구멍에 빠지지 않도록 미리 막는다.
+		if u == nil then return false end
+		if not u.loaded then
+			log_warning("[AcctData] write before load — dropped (" .. tostring(userId) .. ")")
+			return false
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
 	method void Touch(any u)
 		-- 🔴 모든 setter 는 이걸 부른다. 더티 플래그와 세대를 **둘 다** 올려야 한다.
 		--    세대를 안 올리면 저장 왕복 중 변경을 못 잡아 조용히 유실된다.
@@ -176,7 +193,7 @@ script AccountData extends Logic
 	@ExecSpace("ServerOnly")
 	method void SetLevel(string userId, integer level)
 		local u = self:EnsureUser(userId)
-		if u == nil then return end
+		if not self:CanWrite(userId, u) then return end
 		local v = math.max(1, level)
 		if u.level == v then return end   -- 안 바뀌면 저장도 없다
 		u.level = v
@@ -187,7 +204,7 @@ script AccountData extends Logic
 	method void AddBalrogHeart(string userId, integer amount)
 		-- 발록의 심장 증감. 음수면 소모다. 🔴 0 아래로 내려가지 않는다.
 		local u = self:EnsureUser(userId)
-		if u == nil or amount == 0 then return end
+		if not self:CanWrite(userId, u) or amount == 0 then return end
 		local v = math.max(0, u.balrogHeart + amount)
 		if u.balrogHeart == v then return end
 		u.balrogHeart = v
@@ -198,7 +215,7 @@ script AccountData extends Logic
 	@ExecSpace("ServerOnly")
 	method void SetUnlocks(string userId, string unlocks)
 		local u = self:EnsureUser(userId)
-		if u == nil then return end
+		if not self:CanWrite(userId, u) then return end
 		local v = unlocks or ""
 		if u.unlocks == v then return end
 		u.unlocks = v
