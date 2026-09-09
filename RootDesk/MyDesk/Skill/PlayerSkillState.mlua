@@ -27,6 +27,21 @@ script PlayerSkillState extends Logic
     property integer MaxTier = 3
     property string NoviceJobId = "NOVICE"
 
+    -- ⚠ DEV 임시 (2026-09-09 · 테스트 편의): true 면 RequestChooseJob 이 초보자가 아니어도 직업을 바꿔 준다 — F10(SkillWindowLogic.OnDevChooseJob)
+    -- 순환으로 5직업을 바로 시험하기 위한 것. 실제 규칙은 "전직은 초보자에서 1회"(추가기획1 §1-7). 협업-규칙 §10-1: 머지 전 false 로 되돌린다.
+    -- 직업이 바뀌어도 이미 배운 스킬 레벨·쓴 SP 는 그대로다(다른 직업 스킬은 CanUse 의 직업 검사로 시전만 막힌다).
+    property boolean DevAllowJobSwitch = false
+
+    -- ⚠ DEV 스위치 (2026-09-10 · 발록 테스트 편의): true 면 F9(현재 직업 전 스킬 MaxLevel · SP 미소모) · F8(MP·최대 MP 를 DevTestMp 로) · 스킬 창 "DEV 세팅" 행이 동작(SkillWindowLogic).
+    -- 사용자 결정 2026-09-10: 디버그 버튼은 머지 후에도 남긴다 → 기본 true (A 의 DevStatRemote 도 Enabled=true 로 들어가 있는 것과 같은 취급).
+    -- 숨기려면 이 한 줄만 false — DEV 행이 안 생기고 F8/F9 요청은 서버가 무시한다. econ.maxMp 는 RecomputeMaxMp(레벨업·스탯 재계산)가 되돌릴 수 있다 → 그때 F8 을 다시 누른다.
+    property boolean DevTestMode = true
+
+    property integer DevTestMp = 500000
+
+    -- ⚠ DEV 원버튼: A 리모컨 레벨 RPC 가 먼저 처리되도록 학습·MP 세팅을 이만큼(초) 늦춘다.
+    property number DevSetupDelay = 0.5
+
     method void OnBeginPlay()
         -- @Logic OnBeginPlay 순서는 보장되지 않으므로 멱등 EnsureLoaded 를 직접 부른다.
         _SkillDatabase:EnsureLoaded()
@@ -231,6 +246,10 @@ script PlayerSkillState extends Logic
 
         u.skillLevels[skillId] = cur + 1
         log("[Skill] learn " .. skillId .. " -> Lv." .. tostring(cur + 1) .. " (" .. uid .. ")")
+        -- 패시브(연성 SK_M12 등)는 시전이 없으므로 배운 직후 배율을 로그로 남긴다 — Play 검증 증거 (JobPassiveLogic · b/skill-magician).
+        if skill.behavior == "PASSIVE" and _JobPassiveLogic ~= nil then
+            _JobPassiveLogic:LogPassives(uid)
+        end
         self:LearnResult(skillId, true, "ok", uid)
         self:PushState(uid)
     end
@@ -238,13 +257,21 @@ script PlayerSkillState extends Logic
     @ExecSpace("Server")
     method void RequestChooseJob(string jobId)
         -- 전직: 초보자만, JobTier(jobId, 1).ReqLevel(=10) 이상일 때. 이후 차수는 TryAdvanceTier 가 레벨로 올린다.
+        -- DevAllowJobSwitch(⚠ DEV) 가 true 면 초보자가 아니어도 바꿔 준다(같은 직업 재요청은 무시).
         local uid = senderUserId
         local u = self:EnsureUser(uid)
         if u == nil then return end
         _JobDatabase:EnsureLoaded()
         if u.jobId ~= self.NoviceJobId then
-            log("[Skill] choose job rejected: already " .. u.jobId .. " (" .. uid .. ")")
-            return
+            if not self.DevAllowJobSwitch then
+                log("[Skill] choose job rejected: already " .. u.jobId .. " (" .. uid .. ")")
+                return
+            end
+            if u.jobId == jobId then
+                log("[Skill] [DEV] choose job skipped: already " .. u.jobId .. " (" .. uid .. ")")
+                return
+            end
+            log("[Skill] [DEV] job switch allowed: " .. u.jobId .. " -> " .. tostring(jobId) .. " (" .. uid .. ")")
         end
         if _JobDatabase:GetJob(jobId, 1) == nil then
             log("[Skill] choose job rejected: unknown job " .. tostring(jobId) .. " (" .. uid .. ")")
@@ -258,6 +285,69 @@ script PlayerSkillState extends Logic
         end
         self:ChangeJob(uid, jobId, 1)
         self:TryAdvanceTier(uid)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevLearnAll()
+        -- ⚠ DEV (F9): 현재 직업 전 스킬 MaxLevel. 본체는 DevLearnAll.
+        self:DevLearnAll(senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevSetMp()
+        -- ⚠ DEV (F8): MP·최대 MP = DevTestMp. 본체는 DevSetMp.
+        self:DevSetMp(senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevSetup()
+        -- ⚠ DEV 원버튼(스킬 창 DEV 행 · SkillWindowLogic.OnDevSetupClicked): 클라가 먼저 보낸 A 리모컨 레벨 RPC(DevStatRemote.RequestLevel)가
+        -- 처리된 뒤 돌도록 DevSetupDelay 뒤에 차수 → 전 스킬 MaxLevel → MP/최대 MP 순으로. 레벨업의 RecomputeMaxMp 가 MP 를 되돌리지 않게 MP 를 마지막에.
+        local uid = senderUserId
+        if not self.DevTestMode then
+            log("[Skill] [DEV] setup ignored (DevTestMode=false) (" .. uid .. ")")
+            return
+        end
+        _TimerService:SetTimerOnce(function()
+            self:DevLearnAll(uid)
+            self:DevSetMp(uid)
+        end, self.DevSetupDelay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevLearnAll(string uid)
+        -- ⚠ DEV: 현재 직업의 모든 스킬을 MaxLevel 로 (SP 미소모). 차수는 레벨이 허용하는 만큼 먼저 올린다. DevTestMode 가 false 면 무시.
+        if not self.DevTestMode then
+            log("[Skill] [DEV] learn-all ignored (DevTestMode=false) (" .. tostring(uid) .. ")")
+            return
+        end
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _SkillDatabase:EnsureLoaded()
+        self:TryAdvanceTier(uid)
+        local n = 0
+        for skillId, skill in pairs(_SkillDatabase.skillsById) do
+            if skill.requiredJobLine == u.jobId then
+                u.skillLevels[skillId] = skill.maxLevel
+                n = n + 1
+            end
+        end
+        log("[Skill] [DEV] learn-all " .. u.jobId .. " skills=" .. tostring(n) .. " tier=" .. tostring(u.tier) .. " level=" .. tostring(self:GetLevel(uid)) .. " (" .. uid .. ")")
+        if _JobPassiveLogic ~= nil then _JobPassiveLogic:LogPassives(uid) end
+        self:PushState(uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevSetMp(string uid)
+        -- ⚠ DEV: MP 원장(SummonManager.econ)의 mp·maxMp 를 DevTestMp 로 채운다(발록전 매직 가드 검증용). econ 직접 쓰기는 이 DEV 경로뿐.
+        if not self.DevTestMode then return end
+        if _SummonManager == nil then return end
+        local e = _SummonManager:GetEcon(uid)
+        if e == nil then return end
+        e.maxMp = self.DevTestMp
+        e.mp = self.DevTestMp
+        _SummonManager:Push(uid)
+        log("[Skill] [DEV] mp/maxMp = " .. tostring(self.DevTestMp) .. " (" .. tostring(uid) .. ")")
     end
 
     -- ───────────────────────── 서버 → 클라 푸시 ─────────────────────────

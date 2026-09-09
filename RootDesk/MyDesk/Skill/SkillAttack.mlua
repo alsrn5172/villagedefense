@@ -42,6 +42,29 @@ script SkillAttack extends AttackComponent
     -- 열로 승격하려면 헤더 변경이라 협업-규칙 §1-5(스키마-계약 선행 PR + 공지)를 먼저 거쳐야 한다.
     property number ProjectileSpawnOffsetX = 0.5
 
+    -- 단일 대상 선택 (대마법 SK_M31 · b/skill-magician). PlayerAttack.AttackNormal 의 2패스(probe 로 후보 수집 → 하나만 실제 타격)와 같은 꼴.
+    -- Candidates 는 "probe" 패스 동안만 채워지고, SingleTarget 이 잡혀 있는 동안 IsAttackTarget 이 그 하나만 통과시킨다.
+    @HideFromInspector
+    property table Candidates = {}
+
+    @HideFromInspector
+    property any SingleTarget = nil
+
+    -- 단일 대상 타격 상자(대상 발 위치 기준 · 가로×세로). 몬스터 히트박스와 겹치기만 하면 된다.
+    property Vector2 SingleTargetBoxSize = Vector2(1.5, 2.0)
+
+    -- probe 패스의 attackInfo. 스킬 id 와 겹치지 않는 값.
+    property string ProbeTag = "probe"
+
+    -- 에너지볼트 원작화(2026-09-09): 투사체는 시전자 앞쪽 Range 안의 최근접 몬스터를 향해 날아간다(유도 · SkillProjectile.SetTarget).
+    -- 앞쪽에 아무도 없으면 예전처럼 바라보는 방향 직선. 탐색 상자 = 앞으로 Range, 발부터 위로 AimSearchHeight.
+    property boolean AimProjectileAtTarget = true
+
+    property number AimSearchHeight = 2.5
+
+    -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
+    property number HomingLifetimeMul = 1.5
+
     @ExecSpace("ServerOnly")
     method void OnBeginPlay()
         self:EnsureShape()
@@ -109,6 +132,96 @@ script SkillAttack extends AttackComponent
         return false
     end
 
+    method boolean IsAttackTarget(Entity defender, string attackInfo)
+        -- 부모 시그니처와 동일(ExecSpace 없음 · LEA-3014). 기본 규칙(__base)을 먼저 통과한 대상만 본다.
+        --   attackInfo == ProbeTag : 후보만 모으고 아무도 안 맞는다(피해·OnHit 없음).
+        --   SingleTarget 이 있으면  : 그 하나만 맞는다(DealSkillDamageToTarget).
+        --   그 외                  : 기존과 같다 — 상자 안 전부.
+        if not isvalid(defender) then return false end
+        if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        if attackInfo == self.ProbeTag then
+            table.insert(self.Candidates, defender)
+            return false
+        end
+        if self.SingleTarget ~= nil then
+            return defender == self.SingleTarget
+        end
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method any FindSkillTarget(string skillId, table shape, boolean preferBoss)
+        -- shape 상자(posX/posY/sizeX/sizeY) 안 몬스터 중 하나를 고른다: preferBoss 면 보스(script.BossSkillRunner 보유) 우선,
+        -- 그다음 시전자에게 가장 가까운 것. 없으면 nil. 피해 없음(probe 패스).
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        self.Candidates = {}
+        self.SingleTarget = nil
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+
+        local origin = self.Entity.TransformComponent.WorldPosition
+        local best = nil
+        local bestScore = math.huge
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) then
+                local p = cand.TransformComponent.WorldPosition
+                local dx = p.x - origin.x
+                local dy = p.y - origin.y
+                local score = dx * dx + dy * dy
+                if preferBoss and isvalid(cand:GetComponent("script.BossSkillRunner")) then
+                    score = score - 1000000   -- 보스는 거리와 무관하게 앞으로
+                end
+                if score < bestScore then
+                    best = cand
+                    bestScore = score
+                end
+            end
+        end
+        local bestName = "none"
+        if isvalid(best) then bestName = tostring(best.Name) end
+        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
+        self.Candidates = {}
+        return best
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSkillDamageCircle(string skillId, number level, number cx, number cy, number radius, number hitCount)
+        -- 원형 범위 타격(대마법 폭발 · b/skill-magician). CircleShape(Environment/NativeScripts/Misc/CircleShape.d.mlua) 를 호출마다 만든다 —
+        -- 반지름이 스킬마다 달라 상자 Shape 처럼 재사용할 이득이 없다. 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → DamageAt).
+        self.PendingLevel = level
+        if radius <= 0 then radius = 1 end
+        if hitCount == nil or hitCount < 1 then hitCount = 1 end
+        local circle = CircleShape(Vector2(cx, cy), radius)
+        for i = 1, hitCount do
+            self:AttackFast(circle, skillId, CollisionGroups.Monster)
+        end
+        log("SkillAttack: dealt " .. skillId .. " circle r=" .. tostring(radius) .. " at (" .. tostring(cx) .. "," .. tostring(cy) .. ") lv=" .. tostring(level) .. " hits=" .. tostring(hitCount))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSkillDamageToTarget(string skillId, number level, Entity target, number hitCount)
+        -- 단일 대상 타격: 대상 위치에 SingleTargetBoxSize 상자를 놓고 SingleTarget 필터로 그 하나만 hitCount 회.
+        -- 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → SkillDatabase.DamageAt).
+        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
+        self.PendingLevel = level
+        self:EnsureShape()
+        local p = target.TransformComponent.WorldPosition
+        self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
+        self.Shape.Size = Vector2(self.SingleTargetBoxSize.x, self.SingleTargetBoxSize.y)
+        self.Shape.Angle = 0
+        if hitCount == nil or hitCount < 1 then hitCount = 1 end
+
+        self.SingleTarget = target
+        for i = 1, hitCount do
+            self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        end
+        self.SingleTarget = nil
+
+        log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " hits=" .. tostring(hitCount))
+    end
+
     -- Spawns a real travelling script.SkillProjectile entity for behavior="PROJECTILE" skills.
     -- "Server" (not "ServerOnly") for the same reason DealSkillDamage is: the whole
     -- SkillHotbar -> SkillCaster -> SkillExecutors chain runs client-side today, so this is the
@@ -146,7 +259,17 @@ script SkillAttack extends AttackComponent
         local name = "SkillProj_" .. userId .. "_" .. skillId .. "_" .. tostring(self.projectileCount)
 
         local pos = transform.WorldPosition
-        -- x: 바라보는 방향으로 ProjectileSpawnOffsetX 만큼 앞(시전 이펙트가 뜨는 자리). y: CSV SpawnOffsetY(발 → 손 높이).
+        -- 조준(2026-09-10 3차 · 사용자 결정): 바라보는 방향 앞쪽 Range 상자(발부터 위로 AimSearchHeight) 안 최근접 몬스터 — 뒤쪽은 제외.
+        -- 대상이 있으면 그쪽으로 유도 발사, 없으면 바라보는 방향 직선.
+        local target = nil
+        if self.AimProjectileAtTarget then
+            target = self:FindSkillTarget(skillId, {
+                posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
+                sizeX = range, sizeY = self.AimSearchHeight,
+            }, false)
+            if not isvalid(target) then target = nil end
+        end
+        -- x: 대상 쪽(없으면 바라보는 방향)으로 ProjectileSpawnOffsetX 만큼 앞(시전 이펙트가 뜨는 자리). y: CSV SpawnOffsetY(발 → 손 높이).
         local spawnPos = Vector3(pos.x + dirX * self.ProjectileSpawnOffsetX, pos.y + spawnOffsetY, pos.z)
         local proj = _SpawnService:SpawnByModelId(projectileModelId, name, spawnPos, map)
         if not isvalid(proj) then
@@ -170,8 +293,16 @@ script SkillAttack extends AttackComponent
         -- SetDirection (not a direct DirectionX assignment) so the sprite flips to match.
         mover:SetDirection(dirX)
 
+        -- 조준 대상이 있으면 유도(SetTarget · 매 프레임 재조준) + 수명 연장. 대상 선택은 위(스폰 전)에서 끝났다.
+        local targetName = "none"
+        if target ~= nil then
+            mover.MaxLifetime = mover.MaxLifetime * self.HomingLifetimeMul
+            mover:SetTarget(target)
+            targetName = tostring(target.Name)
+        end
+
         log("SkillAttack: spawned projectile " .. name .. " speed=" .. tostring(speed)
-            .. " lifetime=" .. tostring(mover.MaxLifetime) .. " dir=" .. tostring(dirX)
+            .. " lifetime=" .. tostring(mover.MaxLifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName
             .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
             .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * self.ProjectileSpawnOffsetX) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end

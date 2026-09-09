@@ -1,0 +1,262 @@
+@Logic
+script SkillBuffs extends Logic
+
+    -- 스킬 버프 원장 + 피격·비용 조회 API (b/skill-magician · 추가기획1 마법사 D 매직 가드).
+    --   서버 인스턴스: buffs[userId][buffTag] = { skillId, level, endsAt, stamp, ratio, secondary } 가 진상.
+    --     SkillExecutors.ExecuteBuff 가 ApplyBuff 로 넣고, 타이머가 ExpireBuff 로 뺀다. 조회는 항상 GetBuff(만료 시각 재검사).
+    --   클라 인스턴스: 로컬 유저의 미러(mirrorBuffs) — 시전 예측(MP 소모 배율)·표시용. 서버가 SyncBuffs 로 밀어 준다.
+    -- A 가 연결할 조회 API (Docs/추가기획1/구현항목-결정.md §3 "피격 파이프라인": PlayerHit.IsHitTarget 이 B 의
+    -- EvadeOnce/Invincible/DamageMul/Shield/Reflect 를 조회) — 전부 ServerOnly · userId 기준:
+    --   GetDamageMul(userId)            HP 가 받는 피해 배율 (매직 가드 = 1 − 흡수율)
+    --   AbsorbDamage(userId, damage)    흡수분을 MP 로 돌리고 HP 가 받을 피해를 돌려준다 (매직 가드 본체)
+    --   IsInvincible(userId)            INVULNERABLE(불굴의 진)
+    --   GetShield(userId) · GetReflectRatio(userId) · ConsumeEvadeOnce(userId)  후속 태그 자리 — 지금은 기본값
+    -- 이 PR 은 MAGIC_GUARD 만 실제로 채운다. 나머지는 "빈 함수" 가 아니라 A 가 한 번만 연결하면 되는 계약 자리다.
+    -- MP 원장은 SummonManager.econ (A). 흡수분 차감은 SpendMp 가 연결된 뒤(SkillCaster.UseSpendMp) 만 — econ.mp 직접 쓰기 금지.
+
+    -- [서버] userId -> buffTag -> 버프 레코드
+    property table buffs = {}
+
+    -- [서버] ApplyBuff 마다 증가. 재시전으로 갱신된 버프를 옛 만료 타이머가 지우지 않게 한다.
+    property integer buffStamp = 0
+
+    -- [클라] 로컬 유저 미러: buffTag -> { level, endsAt }
+    property table mirrorBuffs = {}
+
+    -- 매직 가드: 활성 중 스킬 MP 소모 배율 (추가기획1 "스킬 사용 시 소모 MP 가 50% 증가"). CSV 에 열이 없어 코드 상수.
+    property number MagicGuardMpCostMul = 1.5
+
+    property string TagMagicGuard = "MAGIC_GUARD"
+
+    property string TagInvulnerable = "INVULNERABLE"
+
+    -- ───────────────────────── 서버: 원장 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method any EnsureUser(string userId)
+        -- userId 의 버프 테이블. 없으면 만든다. 빈 userId 는 nil.
+        if userId == nil or userId == "" then return nil end
+        local u = self.buffs[userId]
+        if u == nil then
+            u = {}
+            self.buffs[userId] = u
+        end
+        return u
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyBuff(string userId, string skillId, string buffTag, number level, number duration)
+        -- BUFF_SELF 실행기(SkillExecutors.ExecuteBuff)가 부른다. 같은 태그가 이미 있으면 덮어쓴다(재시전 = 갱신).
+        -- duration <= 0 이면 아무것도 안 한다. 효과값(ratio · secondary)은 SkillInfo 행의 레벨 공식으로 여기서 한 번 계산해 둔다.
+        local u = self:EnsureUser(userId)
+        if u == nil or buffTag == nil or buffTag == "" or duration <= 0 then return end
+        _SkillDatabase:EnsureLoaded()
+        local now = _UtilLogic.ServerElapsedSeconds
+        self.buffStamp = self.buffStamp + 1
+        local stamp = self.buffStamp
+        local ratio = _SkillDatabase:RatioAt(skillId, level)
+        local secondary = _SkillDatabase:SecondaryAt(skillId, level)
+        u[buffTag] = { skillId = skillId, level = level, endsAt = now + duration, stamp = stamp, ratio = ratio, secondary = secondary }
+        log("[Buff] ON " .. buffTag .. " skill=" .. skillId .. " lv=" .. tostring(level) .. " dur=" .. tostring(duration)
+            .. " ratio=" .. tostring(ratio) .. " secondary=" .. tostring(secondary) .. " (" .. userId .. ")")
+        _TimerService:SetTimerOnce(function()
+            self:ExpireBuff(userId, buffTag, stamp)
+        end, duration)
+        self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExpireBuff(string userId, string buffTag, integer stamp)
+        -- 만료 타이머. stamp 가 다르면(그 사이 재시전으로 갱신됨) 아무것도 안 한다.
+        local u = self.buffs[userId]
+        if u == nil then return end
+        local b = u[buffTag]
+        if b == nil or b.stamp ~= stamp then return end
+        u[buffTag] = nil
+        log("[Buff] OFF " .. buffTag .. " (" .. userId .. ")")
+        self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method any GetBuff(string userId, string buffTag)
+        -- 활성 레코드 또는 nil. 만료 시각을 지났으면(타이머 지연) nil — 타이머가 아니라 이 검사가 진상이다.
+        local u = self.buffs[userId]
+        if u == nil then return nil end
+        local b = u[buffTag]
+        if b == nil then return nil end
+        if b.endsAt <= _UtilLogic.ServerElapsedSeconds then return nil end
+        return b
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsActive(string userId, string buffTag)
+        -- 태그가 켜져 있는가.
+        return self:GetBuff(userId, buffTag) ~= nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetRemaining(string userId, string buffTag)
+        -- 남은 초. 없으면 0.
+        local b = self:GetBuff(userId, buffTag)
+        if b == nil then return 0 end
+        return b.endsAt - _UtilLogic.ServerElapsedSeconds
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ResetMatchState(string userId)
+        -- 매치 시작 시 버프를 전부 비운다 (PlayerSkillState.ResetMatchState 와 짝).
+        self.buffs[userId] = {}
+        self:PushBuffs(userId)
+    end
+
+    -- ───────────────────────── 서버: 피격 파이프라인 조회 (A 의 PlayerHit 가 부른다) ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method number GetDamageMul(string userId)
+        -- HP 가 받는 피해 배율. 매직 가드 활성 = 1 − 흡수율(35~75%). 없으면 1.
+        -- 하이퍼 바디(피해 감소)·에너지 쉴드 등은 여기에 곱으로 얹는다(후속).
+        local mg = self:GetBuff(userId, self.TagMagicGuard)
+        if mg ~= nil then
+            local mul = 1 - mg.ratio / 100
+            if mul < 0 then mul = 0 end
+            return mul
+        end
+        return 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer AbsorbDamage(string userId, integer damage)
+        -- 매직 가드 본체: damage 중 흡수율만큼을 MP 가 대신 받는다. 반환 = HP 가 실제로 받을 피해.
+        --   MP 가 흡수분보다 적으면 있는 만큼만 흡수하고 나머지는 HP 로(원작과 같다).
+        --   MP 차감은 SummonManager.SpendMp(#41) 로만 — SkillCaster.UseSpendMp 가 false 인 동안은 로그만 남기고 HP 분만 돌려준다.
+        -- 버프가 없으면 damage 그대로. A 의 PlayerHit 가 최종 HP 감산 전에 한 번 부른다(구현항목-결정 §3).
+        if damage == nil or damage <= 0 then return 0 end
+        local mg = self:GetBuff(userId, self.TagMagicGuard)
+        if mg == nil then return damage end
+
+        local absorb = math.floor(damage * mg.ratio / 100)
+        local mp = 0
+        if _SummonManager ~= nil then
+            local e = _SummonManager:GetEcon(userId)
+            if e ~= nil then mp = math.floor(e.mp or 0) end
+        end
+        if absorb > mp then absorb = mp end
+        if absorb <= 0 then return damage end
+
+        if _SkillCaster ~= nil and _SkillCaster.UseSpendMp then
+            if not _SummonManager:SpendMp(userId, absorb) then
+                return damage
+            end
+        else
+            log("[Buff] MAGIC_GUARD SpendMp 미연결 — MP 미차감 (absorb=" .. tostring(absorb) .. ") (" .. userId .. ")")
+        end
+        local hpDamage = damage - absorb
+        log("[Buff] MAGIC_GUARD absorb " .. tostring(absorb) .. "/" .. tostring(damage) .. " -> hp " .. tostring(hpDamage)
+            .. " ratio=" .. tostring(mg.ratio) .. "% mp=" .. tostring(mp) .. " (" .. userId .. ")")
+        return hpDamage
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsInvincible(string userId)
+        -- 불굴의 진(SK_W31 · INVULNERABLE) 활성이면 true. 실행기 연결은 후속 — 값만 미리 낸다.
+        return self:GetBuff(userId, self.TagInvulnerable) ~= nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer GetShield(string userId)
+        -- 에너지 쉴드(SK_P22) 자리. 지금은 0.
+        return 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetReflectRatio(string userId)
+        -- 아이언 바디(SK_W12 · REFLECT_HP_PCT) 자리. 패시브라 버프 원장이 아니라 스킬 레벨에서 읽어야 한다 — 후속. 지금은 0.
+        return 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean ConsumeEvadeOnce(string userId)
+        -- 다크 사이트(SK_T21) "공격 한 번 회피" 자리. 지금은 false.
+        return false
+    end
+
+    -- ───────────────────────── 서버: 스킬 시스템 내부 조회 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method number GetMpCostMul(string userId)
+        -- 스킬 MP 소모 배율. 매직 가드 활성 = MagicGuardMpCostMul(1.5). SkillCaster.RequestCast 가 곱한다.
+        if self:GetBuff(userId, self.TagMagicGuard) ~= nil then return self.MagicGuardMpCostMul end
+        return 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer GetOnHitBonusDamage(string userId)
+        -- 매직 가드 "공격 시 현재 MP 의 5%(SecondaryEffect) 만큼 추가 마법 피해". 타격마다 그때의 MP 로 계산.
+        -- SkillDatabase.DamageAt 이 스킬 피해에 더한다. 기본 공격(PlayerAttack · A)에 얹는 것은 A 의 CalcPlayerDamage 에서 이 메서드를 부르면 된다.
+        local mg = self:GetBuff(userId, self.TagMagicGuard)
+        if mg == nil or mg.secondary <= 0 then return 0 end
+        local mp = 0
+        if _SummonManager ~= nil then
+            local e = _SummonManager:GetEcon(userId)
+            if e ~= nil then mp = e.mp or 0 end
+        end
+        return math.floor(mp * mg.secondary / 100)
+    end
+
+    -- ───────────────────────── 서버 → 클라 미러 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void PushBuffs(string userId)
+        -- 미러 동기화: "MAGIC_GUARD:3:1234.5,INVULNERABLE:1:1300" (태그:레벨:만료시각 · ServerElapsedSeconds 기준).
+        -- 테이블은 ExecSpace 경계를 못 넘는다(LEA-3036) → 한 줄 문자열 (PlayerSkillState.PushState 와 같은 방식).
+        local u = self.buffs[userId]
+        local parts = {}
+        if u ~= nil then
+            local now = _UtilLogic.ServerElapsedSeconds
+            for tag, b in pairs(u) do
+                if b.endsAt > now then
+                    table.insert(parts, tag .. ":" .. tostring(b.level) .. ":" .. tostring(b.endsAt))
+                end
+            end
+        end
+        self:SyncBuffs(table.concat(parts, ","), userId)
+    end
+
+    @ExecSpace("Client")
+    method void SyncBuffs(string csv)
+        -- 서버가 밀어 준 활성 버프 목록으로 미러를 통째로 바꾼다.
+        self.mirrorBuffs = {}
+        for tag, lv, ends in string.gmatch(csv, "([^,:]+):([^,:]*):([^,]*)") do
+            self.mirrorBuffs[tag] = { level = tonumber(lv) or 0, endsAt = tonumber(ends) or 0 }
+        end
+        log("[Buff] mirror <- '" .. csv .. "'")
+    end
+
+    -- ───────────────────────── 클라: 미러 접근자 ─────────────────────────
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalIsActive(string buffTag)
+        -- 로컬 유저에게 태그가 켜져 있는가(예측용 · 최종 판정은 서버).
+        local b = self.mirrorBuffs[buffTag]
+        if b == nil then return false end
+        return b.endsAt > _UtilLogic.ServerElapsedSeconds
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalRemaining(string buffTag)
+        -- 남은 초(표시용). 없으면 0.
+        local b = self.mirrorBuffs[buffTag]
+        if b == nil then return 0 end
+        local remaining = b.endsAt - _UtilLogic.ServerElapsedSeconds
+        if remaining < 0 then return 0 end
+        return remaining
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalMpCostMul()
+        -- 클라 예측용 MP 소모 배율 (SkillCaster.Cast 의 MP 게이트). 서버 GetMpCostMul 과 같은 규칙.
+        if self:LocalIsActive(self.TagMagicGuard) then return self.MagicGuardMpCostMul end
+        return 1
+    end
+
+end

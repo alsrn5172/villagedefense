@@ -2,11 +2,13 @@
 script SkillExecutors extends Logic
 
     -- Visual/audio shells, now with damage wired into the offensive behaviors (projectile /
-    -- aoe / origin) via the caster's script.SkillAttack component. blink / buff_self /
-    -- buff_ally / passive still deal no damage - no movement, no buff state either way.
-    -- SkillCaster calls Execute() after every gate has already passed. Real gameplay behavior
-    -- beyond damage (movement, buff effects) lands INSIDE these per-behavior functions once the
-    -- design doc arrives; SkillCaster never changes.
+    -- aoe / origin / melee_arc) via the caster's script.SkillAttack component.
+    -- SkillCaster calls Execute() after every gate has already passed.
+    -- b/skill-magician (추가기획1 마법사 표):
+    --   BLINK     이동은 소유 클라가 이미 끝냈다(SkillMovement). 여기서는 출발/도착 이펙트 + 텔레포트 강화(SK_M21)의 도착 지점 광역 피해.
+    --   BUFF_SELF 버프 원장(SkillBuffs.ApplyBuff)에 BuffTag 를 Duration 동안 켠다 — 매직 가드(SK_M22).
+    --   ORIGIN    originSingleTarget 에 있는 스킬(대마법 SK_M31)은 화면 안 단일 대상(보스 우선 · 없으면 최근접)에 HitCount 회. 나머지는 화면 전체 1회.
+    --   PASSIVE   시전 없음 — 값은 JobPassiveLogic(연성 SK_M12) 이 스킬 레벨에서 읽는다.
 
     -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
     -- is one line here.
@@ -29,6 +31,37 @@ script SkillExecutors extends Logic
     -- component - per-skill damage/hit config is set on the spawned instance in
     -- SkillAttack.SpawnProjectile, not baked into separate models per skill.
     property string ProjectileModelId = "skillprojectile"
+
+    -- BLINK: 클라가 옮긴 위치가 서버로 동기화될 때까지 기다린 뒤 도착 이펙트·도착 광역 피해를 재생한다(초). 목적지는 서버로 보내지 않는다(SkillMovement 원칙).
+    property number BlinkArrivalDelay = 0.15
+
+    -- BLINK 도착 광역 피해 상자(world unit · 가로×세로). 발 위치 기준으로 세로 절반만큼 올려 놓는다. CSV Range 는 이동 거리라 여기서 안 쓴다.
+    property Vector2 BlinkArrivalAoeSize = Vector2(2.4, 1.6)
+
+    -- ORIGIN 중 단일 대상으로 푸는 스킬 (skillId -> true). BuildHandlerTable 에서 채운다.
+    property table originSingleTarget = {}
+
+    -- ORIGIN 탐색 상자 = PC 가시 영역(12.8×7.2 world unit · platform.md §5). 화면 전체 광역과 단일 대상 후보 탐색이 같이 쓴다.
+    property Vector2 ScreenBoxSize = Vector2(12.8, 7.2)
+
+    -- 대마법(SK_M31) 폭발 연출(ExecuteBlast) 파라미터. 반지름 자체는 CSV Range 가 정한다(0 이면 BlastDefaultRadius).
+    property number BlastDefaultRadius = 2.5
+
+    -- 반지름 안에 흩뿌리는 연쇄 폭발 개수 · 간격(초) · 세로 눌림(0.45 = 지면 위 타원) · 폭발 크기 배율.
+    property integer BlastExplosionCount = 8
+
+    property number BlastExplosionInterval = 0.07
+
+    property number BlastVerticalSquash = 0.45
+
+    property number BlastExplosionScale = 1.2
+
+    -- 텔레포트 출발 파티클(BasicParticleType 멤버명 · 일반/강화 따로). 엔진 파티클은 이름만 보고 모양을 알 수 없어 Play 로 확인하며 여기 한 단어만 바꾼다.
+    -- 2026-09-10 확인: EnergyExplosion = 폭발 + 퍼지는 원 한 세트, CircleBurst = 퍼지는 원. 일반 텔레포트는 "폭발만" 요청이라 원 없는 후보로 시작.
+    -- 후보: SparkExplosion · SparkRadialExplosion · Nova · PillarBurst · Enchant · Aura · StarVortex · SmallExplosion · EnergyExplosion · CircleBurst
+    property string TeleportDepartParticle = ""   -- "" = 출발 이펙트 없음 (2026-09-10 최종: 일반 텔레포트는 도착 링만)
+
+    property string TeleportEnhancedDepartParticle = "EnergyExplosion"
 
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
@@ -63,6 +96,10 @@ script SkillExecutors extends Logic
             MELEE_ARC = function(skillId, skillData, casterEntity, level) self:ExecuteMeleeArc(skillId, skillData, casterEntity, level) end,
             TAUNT = function(skillId, skillData, casterEntity, level) self:ExecuteTaunt(skillId, skillData, casterEntity, level) end,
         }
+        -- 대마법(SK_M31): 추가기획1 "단일 대상 초고피해 (컷신)" — 화면 전체 광역에서 단일 대상으로 바뀐 행(기획 정리 ⚠️ 변경 · 발록전이 목표).
+        self.originSingleTarget = {
+            SK_M31 = true,
+        }
     end
 
     @ExecSpace("ServerOnly")
@@ -78,6 +115,8 @@ script SkillExecutors extends Logic
                 cast = { ruid = "ba512e50ddad4231bd6093dd07afc00e" },
                 impact = { ruid = "6beb8d728a7d4cca92eb7f4d2d9c45f9" },
             },
+            -- SK_M13 · SK_M21 · SK_M22 · SK_M31: 원작 팩 RUID 미조사(이 세션엔 msw-search 가 없다). 각 실행기의 파티클 폴백으로 재생한다.
+            -- RUID 가 확인되면 여기 한 항목씩 추가하면 된다 — 실행기 코드는 안 바뀐다.
         }
     end
 
@@ -139,10 +178,22 @@ script SkillExecutors extends Logic
                     _EffectService:PlayEffect(spec.ruid, casterEntity, pos, 0, Vector3(1, 1, 1), false)
                 end
             else
-                _ParticleService:PlayBasicParticle(spec.particle, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+                self:PlayParticle(spec.particle, stage, casterEntity, pos)
             end
         elseif fallbackParticleType ~= nil then
-            _ParticleService:PlayBasicParticle(fallbackParticleType, casterEntity, pos, 0, Vector3(1, 1, 1), false)
+            self:PlayParticle(fallbackParticleType, stage, casterEntity, pos)
+        end
+    end
+
+    method void PlayParticle(any particleType, string stage, Entity casterEntity, Vector3 pos)
+        -- 엔진 파티클 재생. "cast" 단계는 시전자에 붙인다(PlayBasicParticleAttached · 로컬 (0,0,0)):
+        -- 서버가 RequestCast 때 읽는 위치는 이동 중이던 클라 위치보다 왕복 지연만큼 뒤에 있어, 고정 좌표로 재생하면
+        -- 캐릭터 뒤에 뜬다(2026-09-09 대마법 R 제보 · RUID 이펙트를 PlayEffectAttached 로 붙인 것과 같은 이유).
+        -- "impact"(대상·지면) · "depart"(텔레포트 출발점) 는 그 자리에 남아야 하므로 고정 좌표 그대로.
+        if stage == "cast" then
+            _ParticleService:PlayBasicParticleAttached(particleType, casterEntity, Vector3.zero, 0, Vector3(1, 1, 1), false)
+        else
+            _ParticleService:PlayBasicParticle(particleType, casterEntity, pos, 0, Vector3(1, 1, 1), false)
         end
     end
 
@@ -190,10 +241,60 @@ script SkillExecutors extends Logic
         return spec.ruid
     end
 
+    method any ParticleByName(string name)
+        -- BasicParticleType 멤버명 → 열거값. 모르는 이름이면 경고 후 EnergyExplosion.
+        local byName = {
+            SparkExplosion = BasicParticleType.SparkExplosion, SparkRadialExplosion = BasicParticleType.SparkRadialExplosion,
+            Nova = BasicParticleType.Nova, PillarBurst = BasicParticleType.PillarBurst, Enchant = BasicParticleType.Enchant,
+            Aura = BasicParticleType.Aura, StarVortex = BasicParticleType.StarVortex, SmallExplosion = BasicParticleType.SmallExplosion,
+            EnergyExplosion = BasicParticleType.EnergyExplosion, CircleBurst = BasicParticleType.CircleBurst, DustExplosion = BasicParticleType.DustExplosion,
+        }
+        local v = byName[name]
+        if v == nil then
+            log_warning("SkillExecutors: unknown particle name " .. tostring(name) .. " - using EnergyExplosion")
+            return BasicParticleType.EnergyExplosion
+        end
+        return v
+    end
+
     method void ExecuteBlink(string skillId, table skillData, Entity casterEntity, number level)
-        local pos = casterEntity.TransformComponent.WorldPosition
-        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.EnergyExplosion)
+        -- 텔레포트(SK_M13) · 텔레포트 강화(SK_M21). 이동 자체는 소유 클라가 RequestCast 전에 끝냈다(SkillMovement · 클라 우선).
+        -- 서버는 출발 이펙트·사운드를 지금 재생하고, BlinkArrivalDelay 뒤(위치 동기화 후) 도착 이펙트와
+        -- 도착 지점 광역 피해(EffectUnit ATK_PCT · BaseEffect > 0 인 BLINK 행 = SK_M21 · 추가기획1 C)를 재생한다.
+        local from = casterEntity.TransformComponent.WorldPosition
+        local dealsArrivalDamage = skillData.effectUnit == "ATK_PCT" and skillData.baseEffect > 0
+        -- 출발 이펙트는 "depart" 단계 = 출발 좌표에 고정(시전자에 붙이면 이미 옮겨진 클라에서는 도착점에 뜬다). effectOverrides 에 depart 항목이 없으면 파티클 폴백.
+        -- 출발 파티클: 일반 = TeleportDepartParticle(원 없는 폭발), 강화 = TeleportEnhancedDepartParticle. 퍼지는 원(도착 CircleBurst)은 강화 전용.
+        local departName = self.TeleportDepartParticle
+        if dealsArrivalDamage then departName = self.TeleportEnhancedDepartParticle end
+        if departName ~= nil and departName ~= "" then
+            self:PlayStageEffect(skillId, "depart", casterEntity, from, self:ParticleByName(departName))
+        end
+        log("SkillExecutors: BLINK " .. skillId .. " depart particle=" .. departName)
         self:PlayCastSound(skillId, casterEntity)
+
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            local to = casterEntity.TransformComponent.WorldPosition
+            -- 도착 링(CircleBurst)은 일반·강화 공통 (2026-09-10 최종: 일반 = 링만, 강화 = 출발 폭발 EnergyExplosion + 링 + 피해).
+            self:PlayStageEffect(skillId, "impact", casterEntity, to, BasicParticleType.CircleBurst)
+            log("SkillExecutors: BLINK " .. skillId .. " server saw from=(" .. tostring(from.x) .. "," .. tostring(from.y)
+                .. ") to=(" .. tostring(to.x) .. "," .. tostring(to.y) .. ") arrivalDamage=" .. tostring(dealsArrivalDamage))
+            if not dealsArrivalDamage then return end
+
+            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+            if not isvalid(skillAttack) then
+                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping arrival damage for " .. skillId)
+                return
+            end
+            local hitCount = skillData.hitCount
+            if hitCount <= 0 then hitCount = 1 end
+            skillAttack:DealSkillDamage(skillId, level, {
+                posX = to.x, posY = to.y + self.BlinkArrivalAoeSize.y / 2,
+                sizeX = self.BlinkArrivalAoeSize.x, sizeY = self.BlinkArrivalAoeSize.y,
+                hitCount = hitCount,
+            })
+        end, self.BlinkArrivalDelay)
     end
 
     method void ExecuteAoe(string skillId, table skillData, Entity casterEntity, number level)
@@ -228,9 +329,78 @@ script SkillExecutors extends Logic
     end
 
     method void ExecuteBuff(string skillId, table skillData, Entity casterEntity, number level)
+        -- BUFF_SELF / BUFF_ALLY. 시각·사운드 뒤 버프 원장에 BuffTag 를 켠다(SkillBuffs.ApplyBuff · Duration = DurationAt).
+        -- 매직 가드(SK_M22 · MAGIC_GUARD): 효과는 SkillBuffs 가 조회 시점에 푼다 — 피격 흡수(AbsorbDamage · A 의 PlayerHit 연결 대기),
+        -- 공격 시 현재 MP % 추가 피해(SkillDatabase.DamageAt), 스킬 MP 소모 ×1.5(SkillCaster). BUFF_ALLY 의 대상 확장은 후속.
         local pos = casterEntity.TransformComponent.WorldPosition
         self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
         self:PlayCastSound(skillId, casterEntity)
+
+        if skillData.buffTag == nil or skillData.buffTag == "" then
+            log("SkillExecutors: BUFF " .. skillId .. " has no BuffTag — visual only")
+            return
+        end
+        if _SkillBuffs == nil then
+            log_warning("SkillExecutors: SkillBuffs not loaded, buff " .. skillData.buffTag .. " not applied for " .. skillId)
+            return
+        end
+        if not isvalid(casterEntity.PlayerComponent) then
+            log_warning("SkillExecutors: caster has no PlayerComponent, cannot apply buff for " .. skillId)
+            return
+        end
+        local duration = _SkillDatabase:DurationAt(skillId, level)
+        _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, duration)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteBlast(string skillId, table skillData, Entity casterEntity, number level, Vector3 finalPos, any skillAttack)
+        -- 대마법(SK_M31) 폭발 (2026-09-09 요청: "메소 익스플로전처럼 정해진 반지름 안에서 여러 폭발이 터지는 큰 한 방").
+        --   중심   = 화면 안 보스(우선) / 최근접 몬스터의 위치. 없으면 시전자 앞 Range 지점(그래도 터진다 — 소모는 이미 확정).
+        --   반지름 = CSV Range (0 이면 BlastDefaultRadius). 피해 = 첫 폭발 시점에 반지름 안 몬스터 전부(CircleShape) HitCount 회.
+        --   연출   = 중심 Nova(impact 단계 · RUID 오버라이드 가능) → BlastExplosionCount 개의 BigExplosion 을 간격을 두고 반지름 안에 흩뿌림 → 마무리 SparkRadialExplosion.
+        --   추가기획1 표의 "단일 대상" 문구와 다르다: 기획 변경 사유가 "발록전엔 광역이 쓸모없다" 였으니 보스가 반지름 안에 있으면 그대로 맞는다. 조각 파일에 표시.
+        local radius = skillData.range
+        if radius <= 0 then radius = self.BlastDefaultRadius end
+        local hitCount = skillData.hitCount
+        if hitCount <= 0 then hitCount = 1 end
+
+        local screen = { posX = finalPos.x, posY = finalPos.y, sizeX = self.ScreenBoxSize.x, sizeY = self.ScreenBoxSize.y }
+        local target = skillAttack:FindSkillTarget(skillId, screen, true)
+        local cx = finalPos.x + self:GetFacingX(casterEntity) * radius
+        local cy = finalPos.y + 0.3
+        local cz = finalPos.z
+        local centerName = "front"
+        if isvalid(target) and isvalid(target.TransformComponent) then
+            local tp = target.TransformComponent.WorldPosition
+            cx = tp.x
+            cy = tp.y + 0.3
+            centerName = tostring(target.Name)
+        end
+
+        -- 첫 폭발 = 중심 + 피해 (같은 프레임 — 맞는 순간과 보이는 순간을 맞춘다)
+        self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(cx, cy, cz), BasicParticleType.Nova)
+        skillAttack:DealSkillDamageCircle(skillId, level, cx, cy, radius, hitCount)
+        log("SkillExecutors: BLAST " .. skillId .. " center=" .. centerName .. " (" .. tostring(cx) .. "," .. tostring(cy) .. ") r=" .. tostring(radius)
+            .. " explosions=" .. tostring(self.BlastExplosionCount) .. " hits=" .. tostring(hitCount))
+
+        -- 반지름 안 연쇄 폭발. 배치는 결정적(각도 균등 · 거리 0.9r/0.5r 교대) — 한 프레임 안의 RandomDouble 은 거의 같은 값을 돌려준다(SummonManager 실측).
+        local count = self.BlastExplosionCount
+        local scale = Vector3(self.BlastExplosionScale, self.BlastExplosionScale, 1)
+        for i = 1, count do
+            local angle = (i - 1) * (2 * math.pi / count) + 0.4
+            local dist = radius * 0.9
+            if i % 2 == 0 then dist = radius * 0.5 end
+            local ex = cx + math.cos(angle) * dist
+            local ey = cy + math.sin(angle) * dist * self.BlastVerticalSquash
+            _TimerService:SetTimerOnce(function()
+                if not isvalid(casterEntity) then return end
+                _ParticleService:PlayBasicParticle(BasicParticleType.BigExplosion, casterEntity, Vector3(ex, ey, cz), 0, scale, false)
+            end, i * self.BlastExplosionInterval)
+        end
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            _ParticleService:PlayBasicParticle(BasicParticleType.SparkRadialExplosion, casterEntity, Vector3(cx, cy, cz), 0, Vector3(1.5, 1.5, 1), false)
+        end, (count + 1) * self.BlastExplosionInterval)
     end
 
     method void ExecuteOrigin(string skillId, table skillData, Entity casterEntity, number level)
@@ -239,28 +409,42 @@ script SkillExecutors extends Logic
         -- is unused/0 for this behavior per the CSV column-usage spec; only duration + use_limit
         -- apply to origin).
         local pos = casterEntity.TransformComponent.WorldPosition
-        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
+        -- 충전 연출(2026-09-10 요청 "R 은 2초 동안 기를 모은 뒤 폭발"): 폭발형(originSingleTarget) 이고 Duration > 0 이면 시전자에 붙는 루프 파티클(ChargeOrb)을
+        -- 돌리다 폭발 시점에 RemoveParticle 로 지운다. 그 외 ORIGIN(버프형·화면 전체형)은 예전처럼 한 번짜리 cast 이펙트.
+        local chargeSerial = 0
+        if self.originSingleTarget[skillId] and skillData.duration > 0 then
+            -- 파티클은 예전 한 번짜리와 같은 Charge 를 루프로(2026-09-10 "충전 이펙트가 바뀌었다" 제보 → ChargeOrb 에서 되돌림).
+            chargeSerial = _ParticleService:PlayBasicParticleAttached(BasicParticleType.Charge, casterEntity, Vector3.zero, 0, Vector3(1, 1, 1), true)
+        else
+            self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
+        end
         self:PlayCastSound(skillId, casterEntity)
 
         _TimerService:SetTimerOnce(function()
-            if isvalid(casterEntity) then
-                local finalPos = casterEntity.TransformComponent.WorldPosition
-                self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
-
-                local skillAttack = casterEntity:GetComponent("script.SkillAttack")
-                if not isvalid(skillAttack) then
-                    log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
-                    return
-                end
-
-                -- "Everything on screen" approximated as the PC visible area (12.8x7.2 world
-                -- units - see platform.md §5) centered on the caster's position at delay-end.
-                skillAttack:DealSkillDamage(skillId, level, {
-                    posX = finalPos.x, posY = finalPos.y,
-                    sizeX = 12.8, sizeY = 7.2,
-                    hitCount = 1,
-                })
+            if chargeSerial ~= 0 then _ParticleService:RemoveParticle(chargeSerial) end
+            if not isvalid(casterEntity) then return end
+            local finalPos = casterEntity.TransformComponent.WorldPosition
+            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+            if not isvalid(skillAttack) then
+                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping damage for " .. skillId)
+                return
             end
+            -- "Everything on screen" approximated as the PC visible area (ScreenBoxSize 12.8x7.2
+            -- world units - see platform.md §5) centered on the caster's position at delay-end.
+            local screen = {
+                posX = finalPos.x, posY = finalPos.y,
+                sizeX = self.ScreenBoxSize.x, sizeY = self.ScreenBoxSize.y,
+                hitCount = 1,
+            }
+
+            if self.originSingleTarget[skillId] then
+                -- 대마법(SK_M31): 폭발형 — 보스 우선/최근접 대상 위치(없으면 시전자 앞)를 중심으로 CSV Range 반지름 폭발 (ExecuteBlast).
+                self:ExecuteBlast(skillId, skillData, casterEntity, level, finalPos, skillAttack)
+                return
+            end
+
+            self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
+            skillAttack:DealSkillDamage(skillId, level, screen)
         end, skillData.duration)
     end
 

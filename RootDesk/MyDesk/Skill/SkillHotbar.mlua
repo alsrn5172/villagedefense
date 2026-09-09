@@ -7,10 +7,43 @@ script SkillHotbar extends Logic
     property boolean isWired = false
     property any actionEventHandler = nil
 
+    -- 점프 키 원시 입력(KeyDownEvent) 핸들러 — 더블 점프 텔레포트용 (OnJumpKeyDown).
+    property any jumpKeyHandler = nil
+
     -- Single source of truth for slot -> key -> skill_id. A drag-to-assign UI will replace this
     -- table later; every consumer here (TryWireKeys, OnPlayerAction) reads from this one table,
     -- never a second hardcoded copy.
     property table slots = {}
+
+    -- 텔레포트(이동기 공통)는 Shift 한 키 (사용자 결정 2026-09-09: Q 에너지볼트 · Shift 텔레포트 · E 매직 가드 · R 대마법).
+    -- 텔레포트 강화(SK_M21)는 별도 키가 아니라 "기존 텔레포트의 변화": 배우면 같은 Shift 가 SK_M13 대신 SK_M21 을 시전한다
+    -- (거리 3.9 · 쿨 2→1s · MP 12 · 도착 광역 피해는 전부 SK_M21 행에서 온다). 슬롯의 resolver="TELEPORT" 가 ResolveTeleportSkillId 로 고른다.
+    property string TeleportBaseSkillId = "SK_M13"
+
+    property string TeleportMasterySkillId = "SK_M21"
+
+    -- 추가기획1 마법사 특이사항 "초보자 스킬의 더블 점프가 텔레포트로 바뀐다": 공중에서 점프 키를 누르면(더블 점프 자리)
+    -- 같은 텔레포트(ResolveTeleportSkillId)를 시전한다. 배운 상태에서만. 지상 점프는 엔진 몫이라 건드리지 않는다.
+    -- 🟡 PlayerActionEvent 의 액션 이름 "Jump" 는 런타임 미검증(SkillCaster.AddCondition("Jump") 와 같은 근거) — 로그로 확인.
+    property boolean TeleportOnAirJump = true
+
+    -- 점프 키 이벤트가 한 번 누름에 두 번 들어오는 경우(2026-09-10 제보: 텔레포트 2회 → 거리 2배·이펙트 2회)를 막는 디바운스(초).
+    property number AirJumpTeleportDebounce = 0.25
+
+    @HideFromInspector
+    property number lastAirJumpTeleportAt = -10
+
+    -- 더블 점프 판정(2026-09-10 제보 "일반 점프가 텔레포트로 바뀐다"): 엔진은 점프를 먼저 띄운 뒤 "Jump" 이벤트를 주므로 첫 점프 순간에도 IsOnGround 가 이미 false 다.
+    -- 그래서 "마지막 접지 후 FirstJumpGrace 초 안" 의 점프 이벤트는 첫(지상) 점프로 보고 무시하고, 그 뒤 공중에서 한 번 더 누른 것만 텔레포트(공중에서 1회).
+    property number FirstJumpGrace = 0.2
+
+    @HideFromInspector
+    property number lastGroundedAt = -10
+
+    @HideFromInspector
+    property boolean airTeleportUsed = false
+
+    property string JumpActionName = "Jump"
 
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
@@ -22,24 +55,19 @@ script SkillHotbar extends Logic
         -- keyName is stored alongside the KeyboardKey enum member purely for log readability -
         -- there is no confirmed enum-to-string API, so this avoids guessing at one.
         --
-        -- Rebound to the MAGE line under the new sk_<line><tier><slot> id scheme (old
-        -- sk_100/101/102/200/201/300 no longer exist). Slot 6 (sk_m12, Alchemy) is a passive -
-        -- SkillCaster.Cast() already rejects passives with reason="passive skills cannot be
-        -- cast" (step 2), so pressing S logs that failure the same way an on-cooldown or
-        -- not-enough-MP press does. This file only logs; it does not render a hotbar UI, so it
-        -- cannot make slot 6 visually distinct as "unusable" - that needs a .ui hotbar widget,
-        -- out of scope here (see the report). Slots 7/8 stay skillId="" (empty) - OnPlayerAction
-        -- already special-cases "" to log "empty" without ever calling Cast(), which is the one
-        -- empty/not-learned/not-enough-MP distinction this logic-only file can make today.
+        -- 키 배치 (사용자 결정 2026-09-09): Q 에너지볼트 · Shift 텔레포트(이동기 공통 · 좌/우 Shift 둘 다) · E 매직 가드 · R 대마법.
+        -- W/A/S/D 는 비워 둔다(skillId "" → "empty" 로그만, Cast 호출 없음). 연성(SK_M12)은 패시브라 키가 없다(SkillCaster 가 시전 거절).
+        -- resolver = "TELEPORT" 슬롯은 누르는 순간 ResolveTeleportSkillId 가 SK_M21(배움) / SK_M13 을 고른다 — 텔레포트 강화는 별도 키가 아니다.
+        -- 🟡 Shift 를 SetActionKey 로 묶는 것은 런타임 미검증(수식 키가 PlayerActionEvent 를 내는지) — "SkillHotbar: wired" 뒤 Shift 로그로 확인.
         self.slots = {
             { slot = 1, key = KeyboardKey.Q, keyName = "Q", action = "Skill1", skillId = "SK_M11" },
-            { slot = 2, key = KeyboardKey.W, keyName = "W", action = "Skill2", skillId = "SK_M13" },
-            { slot = 3, key = KeyboardKey.E, keyName = "E", action = "Skill3", skillId = "SK_M21" },
-            { slot = 4, key = KeyboardKey.R, keyName = "R", action = "Skill4", skillId = "SK_M22" },
-            { slot = 5, key = KeyboardKey.A, keyName = "A", action = "Skill5", skillId = "SK_M31" },
-            { slot = 6, key = KeyboardKey.S, keyName = "S", action = "Skill6", skillId = "SK_M12" },
-            { slot = 7, key = KeyboardKey.D, keyName = "D", action = "Skill7", skillId = "" },
-            { slot = 8, key = KeyboardKey.F, keyName = "F", action = "Skill8", skillId = "" },
+            { slot = 2, key = KeyboardKey.LeftShift, altKey = KeyboardKey.RightShift, keyName = "Shift", action = "Skill2", skillId = "", resolver = "TELEPORT" },
+            { slot = 3, key = KeyboardKey.E, keyName = "E", action = "Skill3", skillId = "SK_M22" },
+            { slot = 4, key = KeyboardKey.R, keyName = "R", action = "Skill4", skillId = "SK_M31" },
+            { slot = 5, key = KeyboardKey.W, keyName = "W", action = "Skill5", skillId = "" },
+            { slot = 6, key = KeyboardKey.A, keyName = "A", action = "Skill6", skillId = "" },
+            { slot = 7, key = KeyboardKey.S, keyName = "S", action = "Skill7", skillId = "" },
+            { slot = 8, key = KeyboardKey.D, keyName = "D", action = "Skill8", skillId = "" },
         }
     end
 
@@ -49,8 +77,23 @@ script SkillHotbar extends Logic
         -- guaranteed to exist yet at world start, so this polls each frame until it does, then
         -- wires exactly once. See the report for why running this alongside DebugKeys' own
         -- identical poll is not a race (disjoint keys/action names, no shared mutable state).
-        if self.isWired then return end
+        if self.isWired then
+            self:TrackGround()
+            return
+        end
         self:TryWireKeys()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TrackGround()
+        -- 매 프레임 지상 여부를 기록한다(더블 점프 판정용). 땅에 닿아 있으면 마지막 접지 시각을 갱신하고 공중 텔레포트 사용 여부를 초기화.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local body = player.RigidbodyComponent
+        if isvalid(body) and body:IsOnGround() then
+            self.lastGroundedAt = _UtilLogic.ElapsedSeconds
+            self.airTeleportUsed = false
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -61,9 +104,13 @@ script SkillHotbar extends Logic
         local controller = player.PlayerControllerComponent
         for _, entry in ipairs(self.slots) do
             controller:SetActionKey(entry.key, entry.action)
+            if entry.altKey ~= nil then
+                controller:SetActionKey(entry.altKey, entry.action)
+            end
         end
 
         self.actionEventHandler = player:ConnectEvent(PlayerActionEvent, self.OnPlayerAction)
+        self.jumpKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyDown)
         self.isWired = true
         log("SkillHotbar: wired 8 hotbar keys (Skill1-Skill8)")
     end
@@ -82,20 +129,83 @@ script SkillHotbar extends Logic
         -- Routes to the one skill-casting entry point instead of just logging - the gate
         -- checks (job/level/cooldown/use-limit/MP), state changes, and visual/audio dispatch
         -- all live in SkillCaster/SkillExecutors now, not here.
+        -- 더블 점프 텔레포트는 여기(PlayerActionEvent)가 아니라 OnJumpKeyDown(KeyDownEvent) 에서 — "Jump" 액션 이벤트는 실제 점프가 실행될 때(지상)만 오고
+        -- 공중 입력엔 오지 않는다(2026-09-10 실측). 여기서는 핫바 슬롯 액션만 본다.
+
         local entry = self:FindSlotByAction(event.ActionName)
         if entry == nil then return end -- not one of this file's actions (e.g. a DebugKeys key)
 
-        if entry.skillId == "" then
+        local skillId = self:ResolveSlotSkillId(entry)
+        if skillId == "" then
             log("HOTBAR: slot" .. tostring(entry.slot) .. " " .. entry.keyName .. " empty")
             return
         end
 
-        local result = _SkillCaster:Cast(entry.skillId)
+        local result = _SkillCaster:Cast(skillId)
         -- reason is only appended on failure - SkillCaster's own log line already carries the
         -- mp/cooldown detail, so this just ties the press back to which slot/key triggered it.
         local resultText = tostring(result.ok)
         if not result.ok then resultText = resultText .. " reason='" .. result.reason .. "'" end
-        log("HOTBAR: slot" .. tostring(entry.slot) .. " " .. entry.keyName .. " " .. entry.skillId .. " cast ok=" .. resultText)
+        log("HOTBAR: slot" .. tostring(entry.slot) .. " " .. entry.keyName .. " " .. skillId .. " cast ok=" .. resultText)
+    end
+
+    @ExecSpace("ClientOnly")
+    method string ResolveSlotSkillId(table entry)
+        -- 슬롯이 가리키는 스킬 id. resolver="TELEPORT" 면 누르는 순간의 배움 상태로 고른다.
+        if entry.resolver == "TELEPORT" then
+            return self:ResolveTeleportSkillId()
+        end
+        return entry.skillId
+    end
+
+    @ExecSpace("ClientOnly")
+    method string ResolveTeleportSkillId()
+        -- Shift(및 공중 점프)가 시전할 텔레포트: 텔레포트 강화(SK_M21)를 배웠으면 그것, 아니면 기본 텔레포트(SK_M13).
+        -- "기존 텔레포트가 바뀐다" 는 기획을 키 하나로 구현한 것 — SK_M21 을 배운 뒤엔 SK_M13 은 더 이상 시전되지 않는다.
+        if _PlayerSkillState:LocalSkillLevel(self.TeleportMasterySkillId) > 0 then
+            return self.TeleportMasterySkillId
+        end
+        return self.TeleportBaseSkillId
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnJumpKeyDown(KeyDownEvent event)
+        -- 점프 키 원시 입력 → 더블 점프 판정(TryAirJumpTeleport). 어느 키가 점프인지는 컨트롤러 액션 매핑(GetActionName)으로 보고, 매핑 조회가 비면 Space 로 폴백.
+        if not self.TeleportOnAirJump then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local controller = player.PlayerControllerComponent
+        local isJumpKey = false
+        if isvalid(controller) then
+            isJumpKey = controller:GetActionName(event.key) == self.JumpActionName
+        end
+        if not isJumpKey and event.key == KeyboardKey.Space then isJumpKey = true end
+        if not isJumpKey then return end
+        self:TryAirJumpTeleport()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TryAirJumpTeleport()
+        -- 공중 점프 키 → 텔레포트(더블 점프 대체). 지상이면 엔진 점프에 맡기고, 텔레포트를 안 배웠으면 조용히 무시(다른 직업의 점프 스팸 방지).
+        -- 방향은 SkillMovement 가 누른 방향키/바라보는 쪽으로 푼다. 게이트(직업·쿨다운·MP)는 SkillCaster.Cast 가 판정한다.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local body = player.RigidbodyComponent
+        if isvalid(body) and body:IsOnGround() then return end
+        local skillId = self:ResolveTeleportSkillId()
+        if _PlayerSkillState:LocalSkillLevel(skillId) <= 0 then return end
+        local now = _UtilLogic.ElapsedSeconds
+        -- 첫(지상) 점프의 이벤트: 방금 땅에서 떴다 → 엔진 점프 그대로. 두 번째 누름(공중에 머문 뒤)만 더블 점프 자리 = 텔레포트.
+        if now - self.lastGroundedAt < self.FirstJumpGrace then return end
+        if self.airTeleportUsed then return end
+        if now - self.lastAirJumpTeleportAt < self.AirJumpTeleportDebounce then return end
+        self.lastAirJumpTeleportAt = now
+
+        local result = _SkillCaster:Cast(skillId)
+        if result.ok then self.airTeleportUsed = true end
+        local resultText = tostring(result.ok)
+        if not result.ok then resultText = resultText .. " reason='" .. result.reason .. "'" end
+        log("HOTBAR: air-jump(double) -> " .. skillId .. " cast ok=" .. resultText .. " airborne=" .. tostring(math.floor((now - self.lastGroundedAt) * 100) / 100) .. "s")
     end
 
     @ExecSpace("ClientOnly")
@@ -107,6 +217,10 @@ script SkillHotbar extends Logic
                 player:DisconnectEvent(PlayerActionEvent, self.actionEventHandler)
             end
             self.actionEventHandler = nil
+        end
+        if self.jumpKeyHandler ~= nil then
+            _InputService:DisconnectEvent(KeyDownEvent, self.jumpKeyHandler)
+            self.jumpKeyHandler = nil
         end
     end
 
