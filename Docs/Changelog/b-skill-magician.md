@@ -116,7 +116,8 @@
 - `SkillInfo.csv` `SK_M31`: Range 0 → **3**, Description 을 폭발형으로. ⚠ 추가기획1 표의 "단일 대상" 문구와 다르다(사용자 요청 2026-09-09) — 기획 변경 사유("발록전엔 광역이 쓸모없다")는 보스가 반지름 안에서 그대로 맞으니 유지된다. 기획자 확인 항목.
 
 ### `Skill/SkillExecutors.mlua` — 텔레포트 강화를 눈으로 구분 (요청: 파란 원형 파열은 강화판에만)
-- `ExecuteBlink` 도착 `impact`(CircleBurst 폴백)를 `dealsArrivalDamage`(도착 피해가 있는 BLINK 행 = SK_M21) 일 때만 재생. 일반 텔레포트(SK_M13)는 출발 플래시(`depart` EnergyExplosion)만. 데이터 조건이라 행만 바꾸면 따라간다.
+- `ExecuteBlink` 도착 `impact`(CircleBurst 폴백)를 `dealsArrivalDamage`(도착 피해가 있는 BLINK 행 = SK_M21) 일 때만 재생. 데이터 조건이라 행만 바꾸면 따라간다.
+- 2차 제보("파란 원이 일반에도 뜬다" = 출발 EnergyExplosion 도 파란 원형): 출발 파티클도 분기 — 일반 텔레포트 = `DustExplosion`(먼지 퍼프) 하나, 강화판 = 출발 `EnergyExplosion` + 도착 `CircleBurst`. 파란 계열은 강화판 전용.
 
 ### `SkillInfo.csv` `SK_M21` 텔레포트 강화 — 수치 확정 (사용자 결정 2026-09-09)
 - 배우는 즉시: **쿨 2s → 1s**(Cooldown 1 · CooldownPerLevel 0) · **거리 +30%**(Range 3.25 = 2.5×1.3 · 기존).
