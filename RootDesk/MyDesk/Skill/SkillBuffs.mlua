@@ -45,6 +45,9 @@ script SkillBuffs extends Logic
     -- 아이언 바디 반사를 끈다(디버그). true 면 반사 없이 로그만.
     property boolean ReflectEnabled = true
 
+    -- 매직 가드 임시 자가 배선(HitEvent 뒤 HP 되돌리기). A 의 PlayerHit 정식 연결 후 false 로.
+    property boolean MagicGuardSelfWire = true
+
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
 
@@ -109,6 +112,10 @@ script SkillBuffs extends Logic
         -- 아이언 바디(SK_W12): 맞을 때마다 공격자에게 "본인 최대 HP × 반사율(5~25%)" 만큼 되돌려 준다.
         -- HitEvent 는 피해가 이미 확정된 뒤에 온다 — 들어오는 피해는 여기서 못 바꾼다(그건 A 의 PlayerHit → ModifyIncomingDamage).
         -- 공격자가 몬스터(플레이어 아님 · 진영상 적)일 때만. 보스 투사체처럼 공격자가 투사체 엔티티면 Monster 충돌 그룹이 아니라 맞지 않는다(로그만).
+        -- 매직 가드(SK_M22) 임시 자가 배선(2026-09-10 · A 의 PlayerHit → ModifyIncomingDamage 연결 전): HitEvent 는 피해 확정 뒤라 HP 가 이미 깎였다 →
+        -- 흡수분을 MP 로 내고(AbsorbDamage · SpendMp) 같은 양의 HP 를 한 틱 뒤에 되돌려 준다. 한 방에 죽는 피해는 못 살린다(정식 경로에서만 가능).
+        if self.MagicGuardSelfWire then self:MagicGuardRefund(userId, event.TotalDamage) end
+
         local ratio = self:GetReflectRatio(userId)
         if ratio <= 0 then return end
         local attacker = event.AttackerEntity
@@ -133,6 +140,25 @@ script SkillBuffs extends Logic
         skillAttack:DealFlatDamageToTarget(attacker, reflect, "SK_W12")
         log("[Buff] IRON_BODY reflect " .. tostring(reflect) .. " -> " .. tostring(attacker.Name) .. " (ratio=" .. tostring(ratio)
             .. "% maxHp=" .. tostring(maxHp) .. " took=" .. tostring(event.TotalDamage) .. ") (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void MagicGuardRefund(string userId, integer damage)
+        -- 매직 가드 임시 자가 배선 본체. A 가 PlayerHit 에서 ModifyIncomingDamage 를 부르게 되면 MagicGuardSelfWire=false 로 끈다(안 끄면 흡수가 두 번).
+        if damage == nil or damage <= 0 then return end
+        if self:GetBuff(userId, self.TagMagicGuard) == nil then return end
+        local hpDamage = self:AbsorbDamage(userId, damage)
+        local refund = damage - hpDamage
+        if refund <= 0 then return end
+        _TimerService:SetTimerOnce(function()
+            local player = _UserService:GetUserEntityByUserId(userId)
+            if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+            local pc = player.PlayerComponent
+            if pc:IsDead() then return end
+            local before = pc.Hp
+            pc.Hp = math.min(before + refund, pc.MaxHp)
+            log("[Buff] MAGIC_GUARD hp refund +" .. tostring(refund) .. " (" .. tostring(before) .. " -> " .. tostring(pc.Hp) .. ") (" .. userId .. ")")
+        end, 0.05)
     end
 
     -- ───────────────────────── 서버: 원장 ─────────────────────────

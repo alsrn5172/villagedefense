@@ -61,3 +61,7 @@
   - **E**: 몹 무리 근처에서 `SkillExecutors: TAUNT SK_W22 radius=3 candidates=N taunted=M pulled=K for 5s` · 몹들이 발 앞에 모여 시전자를 쫓는지(⚠ 다른 발판 몹은 떨어져 착지하는지) · 5초 뒤 `TAUNT released M`
   - **R**: `SkillCaster: cast lock ON … SK_W31` · `[Buff] ON INVULNERABLE … dur=8` · `SkillExecutors: ORIGIN SK_W31 buff INVULNERABLE for 8s (no damage)` · 8초 뒤 `[Buff] OFF INVULNERABLE` · 재시전 `use limit reached (1)`. **피해는 A 연결 전까지 그대로 들어온다.**
 - 🟡 런타임 미검증 API(근거는 `.d.mlua`·팀 코드): 플레이어 `HitEvent` 를 Logic 에서 `ConnectEvent` 로 받는 것 · `RigidbodyComponent:SetWorldPosition` 으로 몬스터 끌기(발판 다른 몹) · `StateChaseMonster` 를 `GetComponent("script.StateChaseMonster")` 로 얻어 `SetTarget`/`IsChaseNearPlayer` 쓰기 · `StatService.SetLayerCsv("BUFF")` 뒤 `PlayerComponent.Hp` 서버 쓰기 반영.
+
+## 2026-09-10 (마법사 세션이 이 브랜치에 얹음) — 매직 가드 임시 자가 배선
+- `Skill/SkillBuffs.mlua` `OnPlayerHitEvent` 맨 앞에서 `MagicGuardRefund(userId, TotalDamage)`: 매직 가드 활성이면 `AbsorbDamage`(SpendMp 로 MP 차감) 뒤 흡수분만큼 HP 를 0.05s 뒤 되돌린다(HitEvent 는 피해 확정 뒤라 되돌리는 방식). `MagicGuardSelfWire=true` — A 가 `PlayerHit` 에서 `ModifyIncomingDamage` 를 부르게 되면 false 로(안 끄면 흡수 2회). 한 방 치명 피해는 못 살린다.
+- 근거: 사용자 발록전 검증 요청("맞을 때 HP 대신 MP 가 준다" 확인). SkillCaster.UseSpendMp 는 b/skill-magician 에서 true 로 켜졌다.
