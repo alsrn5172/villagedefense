@@ -31,6 +31,16 @@ script SkillHotbar extends Logic
     @HideFromInspector
     property number lastAirJumpTeleportAt = -10
 
+    -- 더블 점프 판정(2026-09-10 제보 "일반 점프가 텔레포트로 바뀐다"): 엔진은 점프를 먼저 띄운 뒤 "Jump" 이벤트를 주므로 첫 점프 순간에도 IsOnGround 가 이미 false 다.
+    -- 그래서 "마지막 접지 후 FirstJumpGrace 초 안" 의 점프 이벤트는 첫(지상) 점프로 보고 무시하고, 그 뒤 공중에서 한 번 더 누른 것만 텔레포트(공중에서 1회).
+    property number FirstJumpGrace = 0.2
+
+    @HideFromInspector
+    property number lastGroundedAt = -10
+
+    @HideFromInspector
+    property boolean airTeleportUsed = false
+
     property string JumpActionName = "Jump"
 
     @ExecSpace("ClientOnly")
@@ -66,8 +76,23 @@ script SkillHotbar extends Logic
         -- guaranteed to exist yet at world start, so this polls each frame until it does, then
         -- wires exactly once. See the report for why running this alongside DebugKeys' own
         -- identical poll is not a race (disjoint keys/action names, no shared mutable state).
-        if self.isWired then return end
+        if self.isWired then
+            self:TrackGround()
+            return
+        end
         self:TryWireKeys()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TrackGround()
+        -- 매 프레임 지상 여부를 기록한다(더블 점프 판정용). 땅에 닿아 있으면 마지막 접지 시각을 갱신하고 공중 텔레포트 사용 여부를 초기화.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local body = player.RigidbodyComponent
+        if isvalid(body) and body:IsOnGround() then
+            self.lastGroundedAt = _UtilLogic.ElapsedSeconds
+            self.airTeleportUsed = false
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -157,13 +182,17 @@ script SkillHotbar extends Logic
         local skillId = self:ResolveTeleportSkillId()
         if _PlayerSkillState:LocalSkillLevel(skillId) <= 0 then return end
         local now = _UtilLogic.ElapsedSeconds
+        -- 첫(지상) 점프의 이벤트: 방금 땅에서 떴다 → 엔진 점프 그대로. 두 번째 누름(공중에 머문 뒤)만 더블 점프 자리 = 텔레포트.
+        if now - self.lastGroundedAt < self.FirstJumpGrace then return end
+        if self.airTeleportUsed then return end
         if now - self.lastAirJumpTeleportAt < self.AirJumpTeleportDebounce then return end
         self.lastAirJumpTeleportAt = now
 
         local result = _SkillCaster:Cast(skillId)
+        if result.ok then self.airTeleportUsed = true end
         local resultText = tostring(result.ok)
         if not result.ok then resultText = resultText .. " reason='" .. result.reason .. "'" end
-        log("HOTBAR: air-jump -> " .. skillId .. " cast ok=" .. resultText)
+        log("HOTBAR: air-jump(double) -> " .. skillId .. " cast ok=" .. resultText .. " airborne=" .. tostring(math.floor((now - self.lastGroundedAt) * 100) / 100) .. "s")
     end
 
     @ExecSpace("ClientOnly")
