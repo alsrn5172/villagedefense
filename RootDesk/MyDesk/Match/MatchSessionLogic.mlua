@@ -3,7 +3,12 @@ script MatchSessionLogic extends Logic
 
 	-- 매치 시계 (WO-012 ② · 2026-09-07 → WO-014 로 5단 개편 2026-09-08). 서버 경과 시간 기준으로 MinionPhaseConfig(Profile 별 5행)의 StartSeconds 에 따라 페이즈를 올리고,
 	-- 페이즈의 SpawnIntervalSeconds 마다 MinionFlowService.SpawnWave · 1초마다 시계 HUD(MatchClockGroup) 를 전 클라에 뿌린다.
-	-- 지금은 Play 시작 = 매치 시작. Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- 🔴 **시작 계약이 바뀌었다 (WO-019 · 2026-09-10).** 예전엔 "Play 시작 = 매치 시작"이었다 —
+	--    Running 기본값이 true 라 월드가 뜨는 순간 시계가 돌았다. 로비가 생기면서 그게 깨진다:
+	--    승강장에서 매칭하는 동안 시계가 이미 돌고, TEST 프로필(225초)은 **로비에서 만료될 수도 있다.**
+	--    이제 매치는 `StartMatch(userIds, difficulty)` 를 불러야 시작한다. 부르는 쪽은 MatchLobbyGateway 다.
+	--    로비 없이 테스트하려면 `AutoStartOnPlay` 를 켠다.
+	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
 	--
 	-- 페이즈 5단 (추가기획2): PHASE0-1 개척 · PHASE0-2 전직 유예 30초 · PHASE1 성장 · PHASE2 견제 · PHASE3 최종(시설 풀데미지 개방).
 	-- 🔴 구독자는 인덱스가 아니라 **이름**(CurrentPhaseName)으로 판정한다 — 행이 늘면 인덱스가 밀린다(LaneFacility 저항 게이트가 실제로 밀렸다).
@@ -28,7 +33,19 @@ script MatchSessionLogic extends Logic
 
 	property number PhaseElapsed = 0
 
-	property boolean Running = true
+	-- 🔴 기본값 false. StartMatch 를 불러야 켜진다 (WO-019 — 예전엔 true 였다).
+	property boolean Running = false
+
+	-- 개발용. true 면 로비 없이 Play 만 눌러도 즉시 매치가 시작한다.
+	-- 🔴 릴리스 전에 false 인지 확인한다. 켜두면 로비를 거치지 않고 매치가 돌아 로비 검증이 무의미해진다.
+	property boolean AutoStartOnPlay = false
+
+	-- 로비에서 고른 난이도 ★1~5. 시작할 때 받아 둔다 (WO-022 의 DifficultyConfig 가 이 값을 쓴다).
+	property integer Difficulty = 1
+
+	-- 이번 매치 참가자 userId 목록. 로비가 넘겨준 "그 순간 배에 있던 사람들"이다.
+	@HideFromInspector
+	property any participants = nil
 
 	@HideFromInspector
 	property any phases = nil
@@ -43,14 +60,61 @@ script MatchSessionLogic extends Logic
 	property integer waveIndex = 0
 
 	method void OnBeginPlay()
-		-- 서버: 표 로드 후 1페이즈에서 시작.
+		-- 서버: 표만 로드하고 **시계는 돌리지 않는다.** 시작은 StartMatch 가 한다 (WO-019).
 		if not self:IsServer() then return end
 		self:LoadPhases()
 		self:LoadMatchConfig()
+		self.participants = {}
 		self.Elapsed = 0
 		self.Expired = false
+		self.Running = false
+		log("[Match] MatchSessionLogic ready — 대기 중 (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s autoStart=" .. tostring(self.AutoStartOnPlay) .. ")")
+		if self.AutoStartOnPlay then
+			-- 로비 없이 테스트하는 경로. 지금 접속해 있는 전원을 참가자로 잡는다.
+			local ids = {}
+			for _, user in ipairs(_UserService.UserEntities.Values) do
+				if isvalid(user) and isvalid(user.PlayerComponent) then table.insert(ids, user.PlayerComponent.UserId) end
+			end
+			log("[Match] AutoStartOnPlay — 로비 생략, 즉시 시작 (" .. tostring(#ids) .. "명)")
+			self:StartMatch(ids, 1)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartMatch(table userIds, integer difficulty)
+		-- 매치 시작. 로비(MatchLobbyGateway)가 참가자를 리스항구로 옮긴 뒤 부른다.
+		-- 🔴 여기가 유일한 시작 진입점이다. Running 을 밖에서 직접 켜지 마라 — 시계만 돌고 상태가 안 맞는다.
+		if self.Running then
+			log_warning("[Match] StartMatch 무시 — 이미 진행 중")
+			return
+		end
+		if self.phases == nil or #self.phases == 0 then
+			log_error("[Match] StartMatch 실패 — 페이즈 표가 비었다")
+			return
+		end
+
+		self.participants = userIds or {}
+		self.Difficulty = math.max(1, math.min(5, difficulty))
+		self.Elapsed = 0
+		self.PhaseElapsed = 0
+		self.waveIndex = 0
+		self.spawnTimer = 0
+		self.clockTimer = 0
+		self.Expired = false
+		self.Running = true
 		self:SetPhase(1)
-		log("[Match] MatchSessionLogic ready (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s)")
+		log("[Match] START players=" .. tostring(#self.participants) .. " diff=" .. tostring(self.Difficulty) ..
+			" profile=" .. self.Profile .. " duration=" .. tostring(self.MatchDuration) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsParticipant(string userId)
+		-- 이번 매치에 참가 중인가. 로비에 있는 사람과 구분할 때 쓴다.
+		if self.participants == nil then return false end
+		for i = 1, #self.participants do
+			if self.participants[i] == userId then return true end
+		end
+		return false
 	end
 
 	@ExecSpace("ServerOnly")

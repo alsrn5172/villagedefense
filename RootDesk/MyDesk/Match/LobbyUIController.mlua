@@ -49,6 +49,11 @@ script LobbyUIController extends Logic
 	@HideFromInspector
 	property any handlers = nil
 
+	-- 🔴 난이도 선택 모드 (WO-019). 아직 어느 방에도 안 들어간 상태에서 별을 고르는 단계다.
+	--    이때는 서버 상태가 없으므로 isHost 로 별을 잠그면 안 된다.
+	@HideFromInspector
+	property boolean picking = false
+
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 버튼 연결 · 닫힌 상태로 시작.
@@ -91,11 +96,21 @@ script LobbyUIController extends Logic
 	end
 
 	@ExecSpace("Client")
+	method void ShowLobby(boolean open)
+		-- 서버 → 소유 클라. 로비 창 열기/닫기 (WO-019).
+		-- 🔴 Open/Close/SetOpen 은 ClientOnly 라 서버가 직접 못 부른다. 이게 서버용 진입점이다.
+		--    준비완료를 누르면 서버가 이걸 false 로 불러서 창을 닫고, 그때부터 배 안을 자유롭게 다닌다.
+		self:SetOpen(open)
+	end
+
+	@ExecSpace("Client")
 	method void SetLobbyCsv(string csv)
 		-- 서버 → 소유 클라. "ready=2/4;diff=3;host=1;warn=발록의 심장이 부족한 참가자가 있습니다;desc=★3 · 심장 2 · Lv10;p0=이름|2|1;p1=..."
 		-- p{i} = 이름|발록의 심장|준비(1/0). 행은 최대 5, 없는 행은 끈다.
 		local kv = {}
 		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
+		-- 서버 상태가 왔다 = 이미 방에 들어갔다. 선택 단계는 끝이다.
+		self.picking = false
 		self.isHost = (kv.host == "1")
 		self.difficulty = tonumber(kv.diff) or 1
 		self.isReady = (kv.me == "1")
@@ -144,8 +159,55 @@ script LobbyUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터: LobbyGroup 앞으로 온 Pending 요청을 소비한다 (CommonNpcUIController:135 와 같은 패턴).
+		-- 매치 안내원을 누르면 여기로 들어와서 "매칭할래?" 확인 팝업을 띄운다.
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "LobbyGroup" then
+			r:ClearPendingRequest()
+			self:AskMatchmaking()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AskMatchmaking()
+		-- "매칭할래?" 확인. UIPopup 은 이미 완성돼 있는데 호출부가 없던 물건이라 그대로 재사용한다.
+		-- onOk/onCancel 은 클라 안에서만 도는 클로저라 ExecSpace 경계를 안 넘는다([LEA-3036] 무관).
+		if _UIPopup == nil then
+			self:OpenDifficultyPicker()   -- 팝업이 없으면 바로 선택 단계로
+			return
+		end
+		_UIPopup:Open("매칭을 시작할까요?", function() self:OpenDifficultyPicker() end, nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenDifficultyPicker()
+		-- 난이도 선택 단계. 아직 방에 안 들어갔으므로 서버 상태(isHost)가 없다 → 별을 전부 연다.
+		self.picking = true
+		self.isReady = false
+		self:SetOpen(true)
+		if isvalid(self.diffDesc) then self.diffDesc.Text = "난이도를 선택하세요" end
+		if isvalid(self.costLabel) then self.costLabel.Text = "" end
+		if isvalid(self.gateWarn) then self.gateWarn.Entity.Enable = false end
+		local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
+		for i = 1, 5 do
+			if isvalid(stars[i]) then stars[i].Enable = true end
+		end
+		log("[Lobby] 난이도 선택 단계")
+	end
+
+	@ExecSpace("ClientOnly")
 	method void OnClickStar(integer level)
-		-- 난이도 선택 (방장만). 게이트웨이가 있으면 요청, 없으면 로그.
+		-- 선택 단계면 그 난이도 방에 참가(없으면 생성). 이미 방에 있으면 방장만 옮길 수 있다.
+		if self.picking then
+			self.picking = false
+			if _MatchLobbyGateway ~= nil then
+				_MatchLobbyGateway:RequestJoin(level)
+			else
+				log("[Lobby] RequestJoin(" .. tostring(level) .. ") — MatchLobbyGateway 없음")
+			end
+			return
+		end
 		if not self.isHost then return end
 		if _MatchLobbyGateway ~= nil then
 			_MatchLobbyGateway:SelectDifficulty(level)
