@@ -1,0 +1,195 @@
+# b/skill-magician — 마법사 스킬 5종 (B)
+
+> Draft PR `[b/skill-magician] 마법사 스킬 5종 — 연성·텔레포트·텔레포트 강화·매직 가드·대마법` · base `feature/skill`(PR #32 · 스택). 이 브랜치의 조각 로그. 릴리스 때 `Docs/CHANGELOG.md` 로 합친다(협업-규칙 §11).
+> 근거: `Docs/추가기획1/기획 정리 ….md` 마법사 표(A 에너지볼트는 feature/skill `54d781b` 에서 완료) · `Docs/추가기획1/구현항목-결정.md` §3(A 가 제공할 훅 · B 가 제공할 배율/조회) · `.claude/skills/maplestory-skill-maker/references/movement/{skills,teleport,common}.md`.
+> 계약 변경 없음: 새 표·열·열거값·이벤트 없음. `SkillBehavior`(BLINK·BUFF_SELF·ORIGIN·PASSIVE) · `BuffTag`(MAGIC_GUARD·COST_REDUCE_UPGRADE) · `SinkType`/`SourceType` 은 계약서 §0-2 값 그대로.
+
+## 2026-09-09
+
+### 신규 `RootDesk/MyDesk/Skill/SkillBuffs.mlua` — 버프 원장 + 피격·비용 조회 API (D 매직 가드)
+- 서버 `buffs[userId][buffTag] = { skillId, level, endsAt, stamp, ratio, secondary }`. `ApplyBuff`(BUFF_SELF 실행기가 호출 · 재시전 = 갱신) → `SetTimerOnce` 만료(`stamp` 로 옛 타이머 무시). 조회는 항상 `GetBuff` 가 만료 시각을 재검사.
+- **A 가 연결할 조회 API(구현항목-결정 §3 "피격 파이프라인")** — 전부 ServerOnly · userId 기준: `GetDamageMul(userId)`(= 1 − 흡수율) · `AbsorbDamage(userId, damage) → HP 가 받을 피해`(흡수분은 MP 가 있는 만큼만 · 차감은 `SummonManager.SpendMp` — `SkillCaster.UseSpendMp` 가 false 인 동안 로그만) · `IsInvincible(userId)`(INVULNERABLE 값만) · `GetShield` · `GetReflectRatio` · `ConsumeEvadeOnce`(후속 태그 자리 · 기본값).
+- 스킬 시스템 내부: `GetMpCostMul(userId)`(매직 가드 활성 = ×1.5 · `MagicGuardMpCostMul`) · `GetOnHitBonusDamage(userId)`(현재 MP × Secondary 5%).
+- 클라 미러 `SyncBuffs("TAG:lv:endsAt,…", userId)` → `LocalIsActive` · `LocalRemaining` · `LocalMpCostMul`(시전 예측). `SkillStateChangedEvent.What` 은 계약 값 4종 그대로(새 값 안 넣음).
+
+### 신규 `RootDesk/MyDesk/Skill/SkillMovement.mlua` — 텔레포트 클라 실행기 (특이사항 텔레포트 · C 텔레포트 강화)
+- **클라 우선**: 위치 소유자인 클라가 `TryTeleport(skillId, skill)` 로 목적지를 풀고 `MovementComponent:SetWorldPosition(Vector2)` 로 즉시 옮긴다. 성공했을 때만 `SkillCaster.Cast` 가 `RequestCast` 를 보낸다. 취소는 부작용 0(쿨다운·MP·이펙트·서버 요청 없음). 서버는 옮기지 않는다(목적지·방향을 서버로 안 보낸다 — movement/skills.md "forbidden topology").
+- 방향: 시전 순간 `_InputService:IsKeyPressed` 로 방향키 4방향. 없으면 `LookDirectionX`. 좌우+상하 동시면 좌우 우선(레퍼런스는 거절 — 핫바 W 한 키로도 나가야 해서 완화).
+- MapleTile 착지(`FootholdComponent:RaycastAll` · `Foothold:GetYByX/IsVertical` · `Next/PreviousFootholdId` 체인): 좌우 = `direct`(목적지 아래 발판 · 경로 벽 통과) → `wall`(경로 벽 앞 · 가장 먼 벽) → `edge`(현재 발판 체인의 진행 방향 끝) → `raw-fall`(그대로 이동 · 낙하). 상하 = 그 방향 안 가장 먼 수평 발판, 없으면 취소. 분기 이름이 로그에 남는다.
+- 🟡 런타임 미검증 API: `MovementComponent:SetWorldPosition` 클라 쓰기 · `RaycastAll` 반환(순서 무시) · 발판 체인 · 공중 `GetCurrentFoothold`.
+
+### 신규 `RootDesk/MyDesk/Job/JobPassiveLogic.mlua` — 직업 패시브 배율 (B 연성)
+- 구현항목-결정 §3: A 의 `Economy/CostResolver` 가 "난이도 × `_JobPassiveLogic`" 로 곱한다. **B 의 심볼을 아는 A 파일은 CostResolver 하나뿐 → 이 스텁이 먼저 머지돼야 A 브랜치가 빌드된다.**
+- `GetJobCostMul(userId, sinkType)`: `COST_REDUCE_UPGRADE`(연성 SK_M12) → `ENHANCE` **메소만**(보석 개수 그대로). `COST_REDUCE_RECRUIT`(선원 관리 SK_P12) → `MONSTER_RECRUIT` · `MONSTER_TRAIN`. 값 = 1 − RatioAt/100 (30%→50% = ×0.7→×0.5).
+- `GetJobDropMul(userId, sourceType)`: `DROP_RATE_DREAM_SHARD`(포커스 SK_A12) → `BOSS_KILL` · `ELITE_KILL`(잠정). 값 = 1 + RatioAt/100.
+- ExecSpace 없음(양쪽): 서버 = `PlayerSkillState.GetSkillLevel`, 클라 = 로컬 유저 미러(`IsServer()` 콜론 호출로 분기). 숫자는 전부 `SkillInfo.csv` PASSIVE 행.
+- `LogPassives(userId)`: 배운 직후 배율 로그(검증 증거).
+
+### `RootDesk/MyDesk/Skill/SkillCaster.mlua`
+- MP 게이트 양쪽에 `SkillBuffs` 배율: 클라 `LocalMpCostMul()` · 서버 `GetMpCostMul(uid)` → `mpCost = floor(MpCost × 배율)`. `SpendMp` 도 `mpCost` 로. 거절 사유에 필요 MP 표기. 성공 로그에 `mpCost=`.
+- 이동 스킬(BLINK) 클라 분기: `_SkillMovement:TryTeleport` 성공 → `RequestCast`, 실패 → `teleport cancelled: <사유>` 로 끝(서버 요청 없음). 락 규칙은 그대로(이동 스킬은 락 없음).
+- `castLockOverrides` += `SK_M22 = 0.6`, `SK_M31 = 1.2`(Duration 1.0 텔레그래프 동안 서 있기 = 컷신 박자).
+
+### `RootDesk/MyDesk/Skill/SkillExecutors.mlua`
+- `ExecuteBlink`: 출발 이펙트·사운드 즉시 → `BlinkArrivalDelay`(0.15s · 위치 동기화 대기) 뒤 도착 이펙트 + **도착 지점 광역 피해**(`EffectUnit ATK_PCT` 이고 `BaseEffect > 0` 인 BLINK 행 = SK_M21 · 상자 `BlinkArrivalAoeSize` 2.4×1.6 · HitCount). 서버가 본 from/to 를 로그.
+- `ExecuteBuff`: BuffTag 가 있으면 `_SkillBuffs:ApplyBuff(userId, skillId, tag, level, DurationAt)`.
+- `ExecuteOrigin`: `originSingleTarget = { SK_M31 }` → 화면 상자(`ScreenBoxSize` 12.8×7.2)에서 `SkillAttack.FindSkillTarget(preferBoss=true)` → 보스 우선 · 없으면 최근접 하나에 `DealSkillDamageToTarget` HitCount 회. 대상 없음 = 소모 유지 + 로그. 나머지 ORIGIN 은 기존과 같음(화면 전체 1회).
+- `effectOverrides`: 새 스킬 4종은 RUID 미조사(msw-search 없음) → 파티클 폴백(EnergyExplosion/CircleBurst/Buff/Charge/LightningStrikeTall). RUID 확인 시 항목만 추가.
+
+### `RootDesk/MyDesk/Skill/SkillAttack.mlua`
+- `IsAttackTarget` 오버라이드(부모와 같은 무주석 시그니처 · LEA-3014 회피): `__base` 통과 후 `probe` 면 `Candidates` 수집만(피해 없음), `SingleTarget` 이 있으면 그 하나만. `PlayerAttack.AttackNormal` 의 2패스와 같은 꼴.
+- `FindSkillTarget(skillId, shape, preferBoss)`(ServerOnly): `Attack(shape, "probe")` → 보스(`script.BossSkillRunner`) 우선 · 최근접. `DealSkillDamageToTarget(skillId, level, target, hitCount)`: 대상 위치 `SingleTargetBoxSize` 1.5×2.0 상자 + `SingleTarget` 필터.
+
+### `RootDesk/MyDesk/Skill/SkillDatabase.mlua`
+- `DamageAt` = 기존 값 + `_SkillBuffs:GetOnHitBonusDamage(userId)`(매직 가드 활성 시 현재 MP 5%). 0 이 아니면 로그. 기본 공격(A · `StatService.CalcPlayerDamage`)에 얹는 건 A 가 같은 메서드를 부르면 된다.
+
+### `RootDesk/MyDesk/Skill/SkillHotbar.mlua`
+- **키 배치 (사용자 결정 2026-09-09)**: **Q** 에너지볼트(SK_M11) · **Shift** 텔레포트(이동기 공통 · `LeftShift`+`RightShift` 둘 다 `Skill2`) · **E** 매직 가드(SK_M22) · **R** 대마법(SK_M31). W/A/S/D 는 빈 슬롯(`Skill5~8` · "empty" 로그만). F 해제. 연성(SK_M12)은 패시브라 키 없음.
+- **텔레포트 강화(SK_M21)는 별도 키가 아니다** — "기존 텔레포트의 변화". Shift 슬롯은 `resolver = "TELEPORT"` 이고, 누르는 순간 `ResolveTeleportSkillId()` 가 SK_M21 을 배웠으면 SK_M21, 아니면 SK_M13 을 고른다. 배운 뒤엔 SK_M13 은 더 이상 시전되지 않고 거리 3.9 · 쿨 2→1s · MP 12 · 도착 광역 피해가 전부 SK_M21 행에서 온다. `SkillMovement`/`SkillCaster` 는 바뀌지 않는다(받은 행만 본다).
+- "초보자 스킬의 더블 점프가 텔레포트로 바뀐다": `PlayerActionEvent.ActionName == "Jump"` 이고 공중(`RigidbodyComponent:IsOnGround() == false`)이고 그 텔레포트를 배웠으면 같은 `ResolveTeleportSkillId()` 결과를 `Cast`. 지상 점프·미학습은 무시. `TeleportOnAirJump` 로 끌 수 있다. 🟡 액션 이름 "Jump" 미검증.
+- 🟡 `SetActionKey(KeyboardKey.LeftShift/RightShift, "Skill2")` — 수식 키가 `PlayerActionEvent` 를 내는지 런타임 미검증. 안 나오면 다른 키로 바꾸는 건 슬롯 표 한 줄.
+
+### `RootDesk/MyDesk/Skill/PlayerSkillState.mlua`
+- `RequestLearn` 성공 시 PASSIVE 면 `_JobPassiveLogic:LogPassives(uid)` 한 줄(검증 증거). 원장·동기화 변경 없음.
+
+### `RootDesk/MyDesk/SkillInfo.csv` — B 소유 4행의 값·`#Note` 만 (헤더 불변 · 행 추가 없음)
+- `SK_M21` Range 4 → **3.9**(= 텔레포트 3 × 1.3 "이동 거리 30% 증가") · HitCount 0 → 1(도착 광역). 쿨 2 → 1(−0.25/lv) 그대로. 피해 100→200% 는 표에 없어 TENTATIVE 유지.
+- `SK_M31` Duration 0 → **1**(컷신 텔레그래프). 6000% 고정 · UseLimit 1 그대로.
+- `SK_M13` · `SK_M22` `#Note` 갱신(구현 위치).
+
+### 해석 메모 (표와 코드가 어긋날 수 있는 곳)
+- 텔레포트 강화(C)는 **키 없이 Shift 텔레포트를 대체**한다(사용자 결정 2026-09-09 "기존 텔레포트 변화"). 구현은 핫바 resolver 한 곳 — SK_M21 행이 통째로 SK_M13 행을 대신하므로 MP 12(vs 5)도 같이 바뀐다. 텔레포트 MP 를 5 로 유지하고 싶으면 `SkillInfo.csv` SK_M21 `MpCost` 만 고친다.
+- 매직 가드 "피해의 35~75% 를 MP 가 대신": HP 감산은 A 의 `PlayerHit`(등록서 8번 · 루트 파일)라 **B 는 `AbsorbDamage` 제공까지**. 연결 전엔 Play 에서 흡수가 보이지 않는다.
+
+### A 에게 (이 PR 로 열리는 연결점 · A 파일 편집 없음)
+1. `Economy/CostResolver`(WP2) 에서 `_JobPassiveLogic:GetJobCostMul(userId, "ENHANCE")` 를 `EnhanceService.RequestEnhance` 의 `row.mesoCost` 에 곱하면 연성이 산다(파일 주석 그대로 "여기 한 곳만").
+2. `PlayerHit`(또는 A 의 피격 훅)에서 HP 감산 전에 `damage = _SkillBuffs:AbsorbDamage(userId, damage)` 한 줄 → 매직 가드 흡수. `IsInvincible` 도 같은 자리.
+3. 기본 공격에 매직 가드 추가 피해를 얹으려면 `StatService.CalcPlayerDamage` 에서 `_SkillBuffs:GetOnHitBonusDamage(userId)` 를 더한다(선택).
+4. #41(`b/summon-mp-ledger`) 머지 후 `SkillCaster.UseSpendMp = true` 로 바꾸면 흡수분 MP 차감·스킬 MP 차감이 같이 켜진다.
+
+### 검증
+- `node Docs/tools/check-integrity.cjs` — **통과** (경고 3건 = 기존 A 쪽 C5×2 · C6×1 · 기준선과 같음). `SkillInfo.csv` 편집 행 4개 전부 30열 · BOM/CRLF 유지.
+- Maker 런타임: 🟡 **미검증** — 이 워크트리를 Maker 로 열어(Maker 닫고 폴더 전환) `Reimport All` → 새 `.codeblock` 3개 생성 확인 → 빌드 경고 수 N → N 기록 → Play:
+  - K 창 → F10(마법사) → `+` 로 SK_M12·SK_M13·SK_M21·SK_M22·SK_M31 배우기(DevStatRemote 로 레벨 30) → `[JobPassive] … cost ENHANCE x0.7`
+  - Shift(+방향키 · SK_M21 배우기 전): `HOTBAR: slot2 Shift SK_M13 cast ok=true` · `SkillMovement: SK_M13 right from=… to=… branch=direct` · 서버 `SkillExecutors: BLINK SK_M13 server saw from=… to=…` · 공중 점프 키 → `HOTBAR: air-jump -> SK_M13`
+  - Shift(SK_M21 배운 뒤): `HOTBAR: slot2 Shift SK_M21 cast ok=true` · `SkillMovement: SK_M21 …` + `SkillAttack: dealt SK_M21 … hits=1`(도착 지점에 몬스터가 있을 때) · 쿨다운 로그 `cd=2`(Lv1)
+  - E: `[Buff] ON MAGIC_GUARD … ratio=35` · `[Buff] mirror <- 'MAGIC_GUARD:1:…'` · 이후 Q 시전 로그 `mpCost=12`(8×1.5) · 에너지볼트 피해 로그 `+magicGuard=N` · 45초 뒤 `[Buff] OFF MAGIC_GUARD`
+  - R: `SkillCaster: cast lock ON … SK_M31` → 1초 뒤 `SkillAttack: FindSkillTarget SK_M31 candidates=N preferBoss=true -> <이름>` · `dealt SK_M31 to <이름> … hits=1` · 재시전 `use limit reached (1)`
+
+## 2026-09-09 (2차) — 테스트 값 · 원작화 (사용자 요청 · Play 검증 중)
+
+### ⚠ `RootDesk/MyDesk/SkillInfo.csv` — 임시 테스트 값 (리뷰 전 복구)
+| 행 | 열 | 원값 → 테스트 | 이유 |
+|---|---|---|---|
+| `SK_M22` 매직 가드 | Cooldown | **60 → 5** | 반복 시전 테스트 |
+| `SK_M31` 대마법 | UseLimit | **1 → 0** | 매치당 1회 제한 해제 (`ResetMatchState` 호출처가 아직 없어 세션당 1회였다) |
+`#Note` 에 `⚠TEST` 표기. **Ready for review 전에 원값으로 되돌린다.**
+→ ✅ **복구 완료 (Ready for review 직전 커밋)**: SK_M22 Cooldown 60 · SK_M31 UseLimit 1 · `PlayerSkillState.DevAllowJobSwitch = false`(스위치는 남겨 두고 기본값만 원복 — 다음 테스트 때 true 로).
+
+### `SkillInfo.csv` — 원작 근접 (유지)
+- `SK_M13` Range **3 → 2.5**, `SK_M21` Range **3.9 → 3.25**(2.5×1.3). 원작 텔레포트는 ≈150px(=1.5) — 더 줄이려면 두 셀만.
+- `SK_M11` Speed **6 → 8**(원작 볼트는 빠르다).
+
+### ⚠ `Skill/PlayerSkillState.mlua` — DEV 직업 전환 허용 (리뷰 전 false)
+- `DevAllowJobSwitch = true`(기본): `RequestChooseJob` 이 초보자가 아니어도 직업을 바꿔 준다 → F10 이 누를 때마다 MAGICIAN → WARRIOR → ARCHER → THIEF → PIRATE 순환. 같은 직업 재요청은 무시. 레벨 조건(JobTier ReqLevel 10)은 그대로. 실제 규칙(초보자에서 1회)은 `false` 로 되돌리면 복구. 배운 스킬·쓴 SP 는 유지(타 직업 스킬은 CanUse 가 막는다).
+
+### `Skill/SkillCaster.mlua` — 대마법 시전 락 1.2 → 2.5s (원작 오리진 스킬: 컷신 끝까지 이동 불가)
+- 제보: 이펙트가 아직 나오는데 캐릭터가 움직인다. 락이 텔레그래프(1.0s)만 덮고 낙뢰 임팩트 파티클 동안은 풀려 있었다. `castLockOverrides.SK_M31 = 2.5`(텔레그래프 1.0 + 임팩트 ≈1.5). 서버 재시전 게이트도 같은 값(×0.9)을 쓴다. 원작의 컷신 중 무적은 A 의 PlayerHit 연결(`_SkillBuffs:IsInvincible`) 뒤에나 가능.
+
+### `Skill/SkillExecutors.mlua` — 시전 파티클이 캐릭터 뒤에 뜨던 문제 (대마법 R 제보)
+- 원인: 파티클 폴백은 `PlayBasicParticle` 고정 좌표였고, 그 좌표는 서버가 `RequestCast` 때 읽은 위치 — 이동 중 시전하면 클라보다 왕복 지연만큼 뒤. RUID 이펙트는 이미 `PlayEffectAttached` 로 붙여 둔 상태였다.
+- 수정: `PlayParticle(type, stage, caster, pos)` 로 묶고 **"cast" 단계 파티클은 `PlayBasicParticleAttached`(시전자에 부착)**. `impact`(대상·지면) 는 고정 유지. 텔레포트 출발 이펙트는 새 stage 이름 `"depart"`(고정) — 붙이면 이미 옮겨진 클라에서 도착점에 떠 버리므로.
+
+### `Skill/SkillProjectile.mlua` · `Skill/SkillAttack.mlua` — 에너지볼트 조준·유도 (원작: 지정한 적에게 날아가 맞는다)
+- `SkillAttack.SpawnProjectile`: 발사 직후 앞쪽 상자(앞으로 Range · 발부터 위로 `AimSearchHeight` 2.5) 안 최근접 몬스터를 `FindSkillTarget(preferBoss=false)` 로 고르고 `mover:SetTarget(target)`. 없으면 예전 그대로 직선. `AimProjectileAtTarget=false` 로 끌 수 있다. 유도 시 수명 ×`HomingLifetimeMul`(1.5). 로그에 `target=<이름|none>`.
+- `SkillProjectile`: `TargetEntity`(유도 대상) · `SetDirection2D(dx,dy)`(정규화 2D 방향 + 좌우 뒤집기) · `SetTarget` · `AimAtTarget`(대상 발 + `TargetAimOffsetY` 0.5). `OnUpdate` 가 대상이 유효한 동안 매 프레임 재조준(유도), 대상 소멸 시 마지막 방향 유지. `DirectionY` 가 실제로 쓰인다.
+- 🟡 미검증: 위/아래 발판의 몬스터로 날아갈 때 히트박스(0.8×0.8) 통과 여부 · `Scale.x` 뒤집기가 대각선에서도 자연스러운지.
+
+## 2026-09-09 (3차) — 텔레포트 모션 제거 · 대마법 폭발형 · 텔레포트 강화 수치 확정 (사용자 요청)
+
+### `Skill/SkillCaster.mlua` — 이동 스킬은 공격 모션을 재생하지 않는다
+- 원인: `RequestCast` 가 모든 시전에 `_PlayerMotion:PlaySkill` 을 불렀고, `WeaponMotion.csv` 에 스킬 행이 없으면 무기 기본 공격(완드 `swingO1`)으로 **조용히** 폴백(구현맵 §2) → 텔레포트에 휘두르기 + 후딜이 붙었다.
+- 수정: `isMove`(BLINK) 면 `PlaySkill` 생략. 텔레포트·텔레포트 강화 모두 모션·후딜 0(시전 락도 원래 없음).
+
+### `Skill/SkillExecutors.mlua` · `Skill/SkillAttack.mlua` · `SkillInfo.csv` — 대마법을 폭발형으로 (요청: "정해진 반지름 안에서 여러 폭발이 터지는 큰 한 방")
+- `ExecuteBlast`: 중심 = 화면 안 보스 우선/최근접(없으면 시전자 앞 Range 지점) · 반지름 = **CSV `Range`(3)** · 첫 폭발(중심 Nova · `impact` 단계라 RUID 오버라이드 가능)과 같은 프레임에 `DealSkillDamageCircle`(**`CircleShape`** · 반지름 안 몬스터 전부 · HitCount) → `BlastExplosionCount`(8) 개 BigExplosion 을 0.07s 간격으로 반지름 안 타원에 결정적 배치 → 마무리 SparkRadialExplosion. 개수·간격·크기는 `SkillExecutors` 속성.
+- `SkillInfo.csv` `SK_M31`: Range 0 → **3**, Description 을 폭발형으로. ⚠ 추가기획1 표의 "단일 대상" 문구와 다르다(사용자 요청 2026-09-09) — 기획 변경 사유("발록전엔 광역이 쓸모없다")는 보스가 반지름 안에서 그대로 맞으니 유지된다. 기획자 확인 항목.
+
+### `Skill/SkillExecutors.mlua` — 텔레포트 강화를 눈으로 구분 (요청: 파란 원형 파열은 강화판에만)
+- `ExecuteBlink` 도착 `impact`(CircleBurst 폴백)를 `dealsArrivalDamage`(도착 피해가 있는 BLINK 행 = SK_M21) 일 때만 재생. 데이터 조건이라 행만 바꾸면 따라간다.
+- 2차: 출발 파티클을 잠시 `DustExplosion` 으로 나눴다가 사용자 불호로 되돌림.
+- 3차·4차·5차(Play 로 확정 · 2026-09-10): `EnergyExplosion` 은 **폭발 + 퍼지는 원이 한 세트**, `CircleBurst` 는 퍼지는 원 — 둘 다 원이 있다. 요청은 "폭발은 두고 원만 제거" → 출발 파티클을 **이름 속성**으로 뺐다: `TeleportDepartParticle`(일반 · 기본 `SparkExplosion`) · `TeleportEnhancedDepartParticle`(강화 · `EnergyExplosion`) + `ParticleByName` 매핑. 모양이 안 맞으면 속성 한 단어만 바꾼다(후보 목록은 코드 주석).
+- **최종(2026-09-10 사용자 결정)**: 일반 텔레포트 = **도착 링(CircleBurst)만**(`TeleportDepartParticle = ""`), 강화 = 출발 폭발 `EnergyExplosion` + 도착 링 + 피해. 링은 일반·강화 공통, 폭발이 강화 전용.
+
+### `SkillInfo.csv` `SK_M21` 텔레포트 강화 — 수치 확정 (사용자 결정 2026-09-09)
+- 배우는 즉시: **쿨 2s → 1s**(Cooldown 1 · CooldownPerLevel 0) · **거리 +30%**(Range 3.25 = 2.5×1.3 · 기존).
+- 레벨업: **도착 광역 피해 110% → 150%**(BaseEffect 110 · EffectPerLevel 10). MpCost 12 → **5**(텔레포트와 같음 · 순수 상향).
+- 구현 방식은 "배우면 Shift 가 강화판을 시전"(기존) 그대로 — 사용자가 허용한 두 방식 중 첫째.
+
+## 2026-09-10 — 표 재확인 · 에너지볼트 조준 범위 · 대마법 충전 2초 (사용자 요청)
+
+### 표(마법사 · 키 표기 포함) Lv.1→5 열 대조
+| 슬롯 | 표 | CSV | 결과 |
+|---|---|---|---|
+| A 에너지볼트 Q | 140% → 220% | BaseEffect 140 · EffectPerLevel 20 | ✅ |
+| B 연성 | 30% → 50% | 30 · +5 | ✅ |
+| C 텔레포트 강화 shift | 쿨 2초 → 1초 | **Cooldown 2 · CooldownPerLevel −0.25** (전날 "즉시 절반" 지시로 1 고정이었던 것을 표대로 되돌림) | ✅ 수정 |
+| D 매직 가드 E | 35/45/55/65/75% · 45초 · 쿨 1분 | 35 · +10 · Duration 45 · Cooldown 60 | ✅ |
+| 궁 대마법 R | 6000% 고정 | 6000 · MaxLevel 1 | ✅ |
+| 특이사항 텔레포트 shift | — | — | ✅ (Shift 공용 · 강화 배우면 대체) |
+
+### `Skill/SkillAttack.mlua` — 에너지볼트: 범위 안 적에게 바로 발사 (뒤쪽 포함)
+- 대상 탐색을 스폰 **전**으로 옮기고 상자를 시전자 중심 좌우 Range(가로 2×Range · 세로 AimSearchHeight)로 넓혔다. 대상이 있으면 스폰 위치·초기 방향을 대상 쪽으로(뒤에 있으면 뒤로) 잡고 유도. 없으면 바라보는 방향 직선.
+
+### `Skill/SkillExecutors.mlua` · `SkillCaster.mlua` · `SkillInfo.csv` — 대마법 충전 2초
+- `SK_M31` Duration 1 → **2**. `ExecuteOrigin` 은 Duration > 0 이면 시전자에 붙는 루프 파티클(`ChargeOrb`)을 돌리다 폭발 시점에 `RemoveParticle`. 시전 락 2.5 → **3.5s**(충전 2 + 폭발 ≈1.5).
+
+### `Skill/SkillCaster.mlua` · `Skill/SkillHotbar.mlua` — 공중 점프(Space) 텔레포트가 두 번 나가던 문제 (거리 2배 · 이펙트 2회)
+- 원인: 클라 미러 쿨다운은 서버 `CastResult` 가 와야 시작됐다 → 왕복 전 같은 키 입력이 두 번 들어오면 둘 다 예측 게이트를 통과해 두 번 옮겨졌다(Space 는 점프 액션 이벤트가 두 번 들어오는 것으로 보임).
+- 수정: 이동 스킬은 `TryTeleport` 성공 직후 `LocalStartCooldown(CooldownAt)` 로 미러 쿨다운을 미리 시작(서버 결과가 덮어씀). `TryAirJumpTeleport` 에 0.25s 디바운스(`AirJumpTeleportDebounce`). Shift 와 Space 가 같은 경로·같은 거리.
+
+### `Skill/SkillHotbar.mlua` — 지상 점프가 텔레포트로 바뀌던 문제 (더블 점프 판정)
+- 원인: 엔진이 점프를 먼저 띄운 뒤 `Jump` 이벤트를 주므로 지상에서 누른 첫 점프도 이벤트 시점엔 `IsOnGround()==false` → 텔레포트가 나갔다.
+- 수정: `TrackGround`(매 프레임 접지 시각 기록 · 착지 시 `airTeleportUsed` 초기화). `Jump` 이벤트가 마지막 접지 후 `FirstJumpGrace`(0.2s) 안이면 첫 점프로 보고 무시, 그 뒤 공중에서 누른 것만 텔레포트, 공중에서 1회(더블 점프 자리). Shift 텔레포트는 제한 없음. 로그 `HOTBAR: air-jump(double) -> … airborne=N s`.
+
+### `Skill/SkillHotbar.mlua` — 더블 점프가 아예 안 나가던 문제 → 점프 키 원시 입력으로
+- 실측: `PlayerActionEvent "Jump"` 는 실제 점프가 실행될 때(지상)만 오고 공중 입력엔 오지 않는다. 지상 첫 점프를 거르자 트리거가 사라졌다.
+- 수정: `_InputService` `KeyDownEvent` 를 구독(`OnJumpKeyDown`). 점프 키 판정 = `PlayerControllerComponent:GetActionName(key) == "Jump"`(매핑 조회가 비면 Space 폴백). 더블 점프 판정(접지 후 0.2s 유예 · 공중 1회)은 그대로 `TryAirJumpTeleport`. `OnEndPlay` 에서 해제.
+
+### `Skill/SkillExecutors.mlua` — 대마법 충전 파티클 되돌림
+- 루프 파티클을 `ChargeOrb` 에서 예전 한 번짜리와 같은 `Charge` 로(2026-09-10 "충전 이펙트가 바뀌었다" 제보). 2초 동안 루프, 폭발 시점에 제거.
+
+## 2026-09-10 (2차) — SpendMp 켬 · 에너지볼트 전방 조준 · 발록 테스트용 DEV 키 (사용자 요청)
+
+### `Skill/SkillCaster.mlua` — `UseSpendMp = true`
+- #41(SummonManager SpendMp/GrantMp/회복 틱)이 main 24204a3 에 머지돼 있고 이 브랜치에도 병합돼 있어 켰다. 시전마다 `[Summon] -mp N -> mp=…`, 매직 가드 활성 시 소모 ×1.5(`mpCost=`), 매직 가드 흡수분도 SpendMp 로 빠진다.
+
+### `Skill/SkillAttack.mlua` — 에너지볼트 조준을 바라보는 방향 앞쪽으로 (사용자 결정)
+- 2차의 "좌우 양쪽" 탐색을 앞쪽 Range 상자로 되돌림(뒤쪽 제외). 대상이 있으면 유도, 없으면 직선.
+
+### `Skill/PlayerSkillState.mlua` · `Skill/SkillWindowLogic.mlua` — ⚠ DEV 키 (발록전 검증용 · 리뷰 전 `DevTestMode=false`)
+- `DevTestMode`(기본 false · 테스트 폴더에선 true) · `DevTestMp`(**500,000** · 사용자 지시 2026-09-10 — 5% 추가 피해 기대값은 25,000).
+- **F9** `RequestDevLearnAll`: 현재 직업의 모든 스킬을 MaxLevel 로(SP 미소모 · 차수는 레벨이 허용하는 만큼 `TryAdvanceTier`). 로그 `[Skill] [DEV] learn-all MAGICIAN skills=6 …`.
+- **F8** `RequestDevSetMp`: `econ.mp`·`econ.maxMp` = 5,000,000 후 HUD Push. 레벨업·스탯 재계산(`RecomputeMaxMp`)이 maxMp 를 되돌리면 다시 누른다. DevStatRemote 엔 MP 항목이 없어 B 쪽 키로.
+- 검증 절차(사람): 리모컨으로 Lv30 → F10 마법사 → F9 → F8 → E(매직 가드) → 주니어 발록: ① 맞을 때 `[Buff] MAGIC_GUARD absorb …` + HP 되돌림 ② Q 피해에 `+magicGuard=25000`(MP 500,000 의 5%) ③ 시전 로그 `mpCost=12`(8×1.5).
+- 매직 가드 흡수의 실제 HP 반영은 A 의 `PlayerHit` 연결 전엔 **b/skill-warrior 의 `SkillBuffs.MagicGuardRefund`(임시 자가 배선 · HitEvent 뒤 HP 되돌림)** 가 한다 — 이 브랜치엔 없다(HitEvent 배선이 warrior 쪽에 있음).
+
+### `Skill/SkillWindowLogic.mlua` · `Skill/PlayerSkillState.mlua` — ⚠ DEV 원버튼 (스킬 창 목록 끝 "DEV 세팅" 행)
+- 요청은 "리모컨에 버튼" 이었으나 리모컨(`Stat/DevStatRemote.mlua` · `ui/DevStatRemoteGroup.ui`)은 A 소유라 B 의 K 스킬 창에 둔다. `.ui` 편집 없이 `RowTemplate` 을 런타임 복제(`CreateDevRow` · `CreateRow` 와 같은 경로) — `DevTestMode` 가 true 일 때만 생긴다.
+- `+`/행 클릭 → `OnDevSetupClicked`: ① A 리모컨 RPC `_DevStatRemote:RequestLevel(30 − 현재)`(senderUserId 기반이라 클라에서 호출) ② `RequestDevSetup` → 서버가 `DevSetupDelay`(0.5s) 뒤 차수 → 전 스킬 MaxLevel(`DevLearnAll`) → MP/최대 MP = `DevTestMp`(`DevSetMp`). F9/F8 은 같은 본체를 부른다.
+- `DevTestMp` 기본 **500,000**(버튼 사양). 발록 테스트 폴더에선 5,000,000 으로 두고 검증(5% 추가 피해 250,000) — 커밋 금지 값.
+- `RefreshRowLevels` 는 `Row_DEV_` 행을 건너뛴다.
+
+### 2026-09-10 제출 정리 — 테스트 값 원복 확인 · DEV 버튼 유지 (사용자 지시)
+- 이 브랜치의 수치는 전부 추가기획1 표 원값(SK_M22 Cooldown 60 · SK_M31 UseLimit 1 · SK_M21 쿨 2→1s · `DevTestMp` 500,000 · `DevAllowJobSwitch=false`). 테스트 임시값은 테스트 폴더(`강화하고살아남기` · b/skill-warrior 작업본)에만 있고 커밋하지 않았다.
+- **`PlayerSkillState.DevTestMode` 기본 `false` → `true`**: 디버그 버튼(스킬 창 DEV 행 · F9 · F8)을 머지 후에도 쓸 수 있게 남긴다. A 의 `DevStatRemote`(`Enabled=true`)와 같은 취급. 숨길 때는 그 한 줄만 false.
+- 전사 5종(#48)은 제출하지 않는다 — 이 PR 은 마법사 5종만.
+
+### CSV 로 조절되는 것 / 아닌 것 (사용자 질문 2026-09-09)
+| 항목 | 어디서 | 비고 |
+|---|---|---|
+| 사거리·거리·반지름 | **CSV `Range`** | 투사체 사거리 · 텔레포트 거리 · 근접 호 · 대마법 반지름 전부 |
+| 쿨다운·지속·타수·MP·사용 제한·효과 % | **CSV** | `Cooldown(+PerLevel)` `Duration(+PerLevel)` `HitCount` `MpCost` `UseLimit` `BaseEffect/EffectPerLevel` |
+| 후딜(시전 락) | **코드** `SkillCaster.castLockOverrides` | CSV 열 추가 = 헤더 변경 → 계약서 선행 PR + 공지(협업-규칙 §1-5). 원하면 `CastTime` 열 제안서 작성 가능 |
+| 캐릭터 모션 | **A 의 `WeaponMotion.csv`**(행 추가는 자유) | 스킬×무기 행이 없으면 무기 기본 공격으로 폴백 · "모션 없음" 은 표로 못 하고 코드(BLINK 생략) |
+| 이펙트(파티클·RUID) | **코드** `SkillExecutors.effectOverrides` + 실행기 폴백 | RUID 열 없음(`IconRUID` 만 있음) |

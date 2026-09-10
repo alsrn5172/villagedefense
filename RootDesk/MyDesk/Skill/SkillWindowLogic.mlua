@@ -77,6 +77,9 @@ script SkillWindowLogic extends Logic
     -- ⚠ DEV: F10 직업 선택 순환 인덱스 (OnDevChooseJob). 전직 UI 가 생기면 함께 제거.
     property integer devJobIndex = 0
 
+    -- ⚠ DEV 원버튼(스킬 창 목록 끝 "DEV 세팅" 행 · PlayerSkillState.DevTestMode 가 true 일 때만 생김): 목표 레벨.
+    property integer DevTargetLevel = 30
+
     @ExecSpace("ClientOnly")
     method void OnKeyDown(KeyDownEvent event)
         -- K toggles the window through the same Toggle() the HUD button calls - one shared path, two entry points.
@@ -84,6 +87,14 @@ script SkillWindowLogic extends Logic
             self:Toggle()
         elseif event.key == KeyboardKey.F10 then
             self:OnDevChooseJob()
+        elseif event.key == KeyboardKey.F9 then
+            -- ⚠ DEV: 현재 직업 전 스킬 MaxLevel (PlayerSkillState.DevTestMode 가 true 일 때만 서버가 받아준다)
+            _PlayerSkillState:RequestDevLearnAll()
+            log("SkillWindowLogic: [DEV] RequestDevLearnAll()")
+        elseif event.key == KeyboardKey.F8 then
+            -- ⚠ DEV: MP·최대 MP 를 PlayerSkillState.DevTestMp(기본 5,000,000)로
+            _PlayerSkillState:RequestDevSetMp()
+            log("SkillWindowLogic: [DEV] RequestDevSetMp()")
         end
     end
 
@@ -138,7 +149,7 @@ script SkillWindowLogic extends Logic
         -- fresh level data at creation time - whenever the tab itself changes; this only needs
         -- to catch the case where levels changed while the same tab stayed built).
         for _, entity in ipairs(self.rowEntities) do
-            if isvalid(entity) then
+            if isvalid(entity) and string.sub(entity.Name, 1, 8) ~= "Row_DEV_" then
                 local skillId = string.sub(entity.Name, 5) -- strip the "Row_" prefix (see CreateRow)
                 local levelText = entity:GetChildByName("LevelText")
                 levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skillId))
@@ -202,6 +213,10 @@ script SkillWindowLogic extends Logic
 
         for _, skill in ipairs(filtered) do
             self:CreateRow(skill, playerJobLine, playerTier, playerLevel)
+        end
+        -- ⚠ DEV 원버튼 행 (리모컨 DevStatRemote 는 A 의 UI·스크립트라 못 건드림 → B 의 스킬 창에). 머지 전 DevTestMode=false 면 안 생긴다.
+        if _PlayerSkillState.DevTestMode then
+            self:CreateDevRow()
         end
 
         -- BEGINNER (tier 0) matches no job_line, so every tab is empty by design - show why,
@@ -325,6 +340,46 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method void CreateDevRow()
+        -- ⚠ DEV 원버튼 행: RowTemplate 을 복제해 목록 끝에 붙인다. "+" 또는 행 클릭 → OnDevSetupClicked (Lv30 · 전 스킬 MaxLevel · MP/최대 MP = DevTestMp).
+        -- 리모컨(DevStatRemote · A 소유)에 버튼을 못 넣어 여기에 둔다. .ui 편집 없이 런타임 복제만(CreateRow 와 같은 경로).
+        local row = self.rowTemplate:Clone("Row_DEV_SETUP")
+        row:SetEnable(true)
+        table.insert(self.rowEntities, row)
+
+        local nameText = row:GetChildByName("NameText")
+        nameText.TextGUIRendererComponent.Text = "⚠ DEV 세팅: Lv" .. tostring(self.DevTargetLevel) .. " · 전 스킬 MAX · MP " .. tostring(_PlayerSkillState.DevTestMp)
+        nameText.TextGUIRendererComponent.FontColor = Color(1, 0.6, 0.2, 1)
+        local levelText = row:GetChildByName("LevelText")
+        levelText.TextGUIRendererComponent.Text = "+ 클릭"
+        local iconEntity = row:GetChildByName("Icon")
+        if isvalid(iconEntity) then iconEntity:SetEnable(false) end
+
+        local rowHandler = row:ConnectEvent(ButtonClickEvent, function() self:OnDevSetupClicked() end)
+        table.insert(self.rowHandlers, { entity = row, conn = rowHandler, eventType = ButtonClickEvent })
+        local plusEntity = row:GetChildByName("BtnPlus")
+        local plusHandler = plusEntity:ConnectEvent(ButtonClickEvent, function() self:OnDevSetupClicked() end)
+        table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHandler, eventType = ButtonClickEvent })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnDevSetupClicked()
+        -- ⚠ DEV 원버튼: ① A 리모컨 RPC(DevStatRemote.RequestLevel · senderUserId 기반이라 클라에서 보내야 한다)로 목표 레벨까지
+        --              ② PlayerSkillState.RequestDevSetup → 서버가 0.5s 뒤 차수·전 스킬 MaxLevel·MP/최대 MP 세팅.
+        local need = self.DevTargetLevel - math.floor(_PlayerSkillState:LocalLevel())
+        if need > 0 then
+            if _DevStatRemote ~= nil then
+                _DevStatRemote:RequestLevel(need)
+            else
+                log_warning("SkillWindowLogic: [DEV] _DevStatRemote not found — level not raised")
+            end
+        end
+        _PlayerSkillState:RequestDevSetup()
+        self.descText.Text = "DEV 세팅 요청: Lv" .. tostring(self.DevTargetLevel) .. " · 전 스킬 MAX · MP " .. tostring(_PlayerSkillState.DevTestMp) .. " (0.5초 뒤 반영)"
+        log("SkillWindowLogic: [DEV] setup clicked need=" .. tostring(need) .. " levels")
+    end
+
+    @ExecSpace("ClientOnly")
     method void OnRowClicked(string skillId)
         -- Selects the row and writes its description into the description panel.
         self.selectedSkillId = skillId
@@ -348,7 +403,8 @@ script SkillWindowLogic extends Logic
     method void OnDevChooseJob()
         -- ⚠ DEV 임시 (전직 UI 가 생기기 전까지): F10 으로 직업 라인을 순서대로 요청한다. 서버가 레벨(JobTier.ReqLevel)로 거절할 수 있다.
         -- 협업-규칙 §10-1: 머지 전 제거 대상인지 PR 에서 표시한다. 닉네임 게이트는 아니다.
-        -- 첫 순서 = MAGICIAN: SkillHotbar 기본 슬롯이 SK_M* 라 Play 검증이 바로 된다. 전직은 초보자에서 1회만 허용된다.
+        -- 첫 순서 = MAGICIAN: SkillHotbar 기본 슬롯이 SK_M* 라 Play 검증이 바로 된다.
+        -- 실제 규칙은 초보자에서 1회지만, PlayerSkillState.DevAllowJobSwitch(⚠ DEV · 기본 false · 테스트 때만 true) 가 켜져 있는 동안은 누를 때마다 다음 직업으로 바뀐다.
         local order = { "MAGICIAN", "WARRIOR", "ARCHER", "THIEF", "PIRATE" }
         self.devJobIndex = self.devJobIndex + 1
         if self.devJobIndex > #order then self.devJobIndex = 1 end
