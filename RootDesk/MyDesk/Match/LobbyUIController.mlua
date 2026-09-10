@@ -54,6 +54,15 @@ script LobbyUIController extends Logic
 	@HideFromInspector
 	property boolean picking = false
 
+	-- 🔴 창이 열린 시각. NPC 를 누른 그 클릭이 **창이 열리자마자 그 자리의 버튼으로 새어 들어간다**
+	--    (NPC 클릭 → 서버 왕복 → 다음 프레임에 창이 뜨는데 마침 ★1 이 그 좌표에 깔린다).
+	--    실제로 "NPC 만 눌렀는데 ★1 방에 들어가 배에 타 있는" 증상이 났다.
+	@HideFromInspector
+	property number openedAt = 0
+
+	-- 창이 열린 직후 이 시간 동안은 버튼 입력을 무시한다.
+	property number InputGuardSeconds = 0.35
+
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 버튼 연결 · 닫힌 상태로 시작.
@@ -100,6 +109,7 @@ script LobbyUIController extends Logic
 		-- 서버 → 소유 클라. 로비 창 열기/닫기 (WO-019).
 		-- 🔴 Open/Close/SetOpen 은 ClientOnly 라 서버가 직접 못 부른다. 이게 서버용 진입점이다.
 		--    준비완료를 누르면 서버가 이걸 false 로 불러서 창을 닫고, 그때부터 배 안을 자유롭게 다닌다.
+		if open then self.openedAt = _UtilLogic.ElapsedSeconds end
 		self:SetOpen(open)
 	end
 
@@ -122,6 +132,8 @@ script LobbyUIController extends Logic
 			self.gateWarn.Entity.Enable = (kv.warn ~= nil and kv.warn ~= "")
 		end
 		if isvalid(self.btnPrimary) then
+			-- 방에 들어왔으니 준비 버튼을 다시 켠다 (난이도 선택 단계에서 꺼뒀다).
+			self.btnPrimary.Enable = true
 			self.btnPrimary.Entity.TextGUIRendererComponent.Text = self.isReady and "준비 취소" or "준비"
 		end
 
@@ -183,31 +195,86 @@ script LobbyUIController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OpenDifficultyPicker()
 		-- 난이도 선택 단계. 아직 방에 안 들어갔으므로 서버 상태(isHost)가 없다 → 별을 전부 연다.
+		-- 🔴 **창을 통째로 초기 상태로 그린다.** 활성화만 하고 라벨을 안 건드리면 이전 판·이전
+		--    방의 ★ 표시와 "준비/준비취소" 버튼 문구가 그대로 남아서 뭘 고르는 건지 안 보인다.
 		self.picking = true
 		self.isReady = false
+		self.isHost = false
+		self.difficulty = 0        -- 아직 아무것도 안 골랐다 → 별을 전부 ☆ 로
 		self:SetOpen(true)
+
+		self.openedAt = _UtilLogic.ElapsedSeconds
+
 		if isvalid(self.diffDesc) then self.diffDesc.Text = "난이도를 선택하세요" end
 		if isvalid(self.costLabel) then self.costLabel.Text = "" end
-		if isvalid(self.gateWarn) then self.gateWarn.Entity.Enable = false end
+		if isvalid(self.gateWarn) then
+			self.gateWarn.Text = ""
+			self.gateWarn.Entity.Enable = false
+		end
+		-- 🔴 선택 단계에서는 이 버튼이 **"확인"** 이다. 별을 고른 뒤 이걸 눌러야 매칭이 돈다.
+		--    별 클릭만으로 방에 들어가면 안 된다 — 고르는 중에 배에 타 버린다.
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = false   -- 별을 고르기 전엔 못 누른다
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.Text = "확인" end
+		end
+
 		local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
 		for i = 1, 5 do
-			if isvalid(stars[i]) then stars[i].Enable = true end
+			local s = stars[i]
+			if isvalid(s) then
+				s.Enable = true
+				local t = s.Entity.TextGUIRendererComponent
+				if t ~= nil then t.Text = "☆" end
+			end
 		end
-		log("[Lobby] 난이도 선택 단계")
+
+		-- 참가자 행은 전부 끈다. 이전 방 사람들이 남아 있으면 안 된다.
+		if isvalid(self.playersRoot) then
+			for i = 0, 4 do
+				local row = self.playersRoot:GetChildByName("PlayerRow_" .. tostring(i))
+				if isvalid(row) then row.Enable = false end
+			end
+		end
+		log("[Lobby] 난이도 선택 단계 — 창 초기화")
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean InputBlocked()
+		-- 창이 열린 직후의 입력을 막는다. NPC·팝업을 누른 그 클릭이 새로 뜬 창의 버튼으로
+		-- 새어 들어가는 걸 차단한다 (실제로 "확인만 눌렀는데 ★1 방에 들어가 배에 타 있는" 증상이 났다).
+		return (_UtilLogic.ElapsedSeconds - self.openedAt) < self.InputGuardSeconds
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnClickStar(integer level)
-		-- 선택 단계면 그 난이도 방에 참가(없으면 생성). 이미 방에 있으면 방장만 옮길 수 있다.
+		if self:InputBlocked() then return end
+
+		-- 🔴 선택 단계에서 별은 **고르기만** 한다. 서버로 안 보낸다.
+		--    여기서 바로 RequestJoin 하면 별을 고르는 순간 배에 타 버려서 2·3을 못 고른다.
+		--    실제로 매칭이 도는 건 "확인"(btnPrimary)을 눌렀을 때다.
 		if self.picking then
-			self.picking = false
-			if _MatchLobbyGateway ~= nil then
-				_MatchLobbyGateway:RequestJoin(level)
-			else
-				log("[Lobby] RequestJoin(" .. tostring(level) .. ") — MatchLobbyGateway 없음")
+			self.difficulty = level
+			local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
+			for i = 1, 5 do
+				local s = stars[i]
+				if isvalid(s) then
+					local t = s.Entity.TextGUIRendererComponent
+					if t ~= nil then t.Text = (i <= level) and "★" or "☆" end
+				end
 			end
+			-- 솔로 감면은 서버가 인원을 보고 정한다. 여기선 단독 기준으로만 안내한다.
+			local solo = math.max(0, level - 1)
+			if isvalid(self.diffDesc) then
+				self.diffDesc.Text = "★" .. tostring(level) .. " · 발록의 심장 " .. tostring(level) ..
+					"개 (혼자면 " .. tostring(solo) .. "개)"
+			end
+			if isvalid(self.btnPrimary) then self.btnPrimary.Enable = true end
+			log("[Lobby] 난이도 선택 = ★" .. tostring(level) .. " (아직 참가 전)")
 			return
 		end
+
+		-- 이미 방에 있는 경우: 방장만 다른 난이도 방으로 옮길 수 있다.
 		if not self.isHost then return end
 		if _MatchLobbyGateway ~= nil then
 			_MatchLobbyGateway:SelectDifficulty(level)
@@ -218,6 +285,26 @@ script LobbyUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnClickReady()
+		-- 이 버튼은 단계에 따라 두 역할을 한다: 선택 단계 = "확인" / 방 안 = "준비↔준비취소".
+		if self:InputBlocked() then return end
+
+		if self.picking then
+			-- 🔴 여기가 **매칭이 실제로 도는 유일한 지점**이다.
+			--    고른 난이도의 방이 있으면 참가(최대 5인), 없으면 새로 만든다. 그때 배에 탄다.
+			if self.difficulty < 1 then
+				log("[Lobby] 확인 무시 — 난이도 미선택")
+				return
+			end
+			self.picking = false
+			if _MatchLobbyGateway ~= nil then
+				log("[Lobby] 확인 → 매칭 요청 ★" .. tostring(self.difficulty))
+				_MatchLobbyGateway:RequestJoin(self.difficulty)
+			else
+				log("[Lobby] RequestJoin(" .. tostring(self.difficulty) .. ") — MatchLobbyGateway 없음")
+			end
+			return
+		end
+
 		-- 준비 ↔ 준비 취소. 결과는 SetLobbyCsv 로만 반영.
 		if _MatchLobbyGateway ~= nil then
 			if self.isReady then _MatchLobbyGateway:CancelReady() else _MatchLobbyGateway:ConfirmReady() end

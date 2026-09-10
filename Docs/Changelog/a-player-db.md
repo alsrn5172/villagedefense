@@ -78,3 +78,21 @@ GDD §3: *"발록의 심장 외에는 매치 종료 시 소멸"*.
 ### 조사 방법 기록
 
 Codex 로 3건을 **각각 2회 돌려 교차검증**하고, 숫자·줄번호는 전부 직접 재확인했다. codex 가 `EquipService` 8→**9**, `StatService` 25→**26**, `PlayerSkillState` 14→**15**, `SpectateService` 20→**21** 로 5곳을 1~3줄씩 틀렸다. 필드 이름과 구조 판정은 두 회차가 일치했고 전부 맞았다.
+
+---
+
+## 2026-09-10 — 로비 런타임 버그 5건 (WO-019 후속)
+
+실제로 돌려보고 잡은 것만.
+
+| 증상 | 원인 | 고침 |
+|---|---|---|
+| 안내원을 눌러도 UI 가 안 뜬다 | NPC 엔티티에 **`TouchReceiveComponent` 가 없었다.** Rigidbody/물리 콜라이더는 `TouchEvent` 를 발행하지 않는다 | `map/Orbis_Lobby_VictoriaStation.map` 의 `npc-4525` 에 추가 (`AutoFitToSize=true` → 런타임 `TouchArea=(0.470, 0.710)`) |
+| 관전 나가기 → *"로비는 아직 없습니다"* | `LeaveToLobby` 가 WO-019 4단계(승강장 복귀)를 한 번도 부르지 않았다 | `MatchSessionLogic:LeaveToLobby` → `SpectateService:LeaveSpectate` → `MatchLobbyGateway:ReturnToStation` |
+| 관전 종료 후 조작 불가 | 관전 진입 때 끈 것들을 되돌리는 코드가 없었다 | `SpectateService:LeaveSpectate` 신설 — 리그 파괴 · `SetVisible(true)` · `PlayerControllerComponent`/`HitComponent` `Enable=true` · `Rigidbody.Gravity=1` |
+| 로그에 `countdown 취소` 뒤에 `START` 가 찍힌다 | `StopCountdown` 이 **정상 만료에도** "취소" 를 찍었다 | `StopCountdown`(타이머만) / `CancelCountdown(difficulty, reason)`(실제 취소 + 토스트) 로 분리 |
+| 난이도 선택 창이 비거나 이전 값이 남는다 | `OpenDifficultyPicker` 가 별만 켜고 라벨·비용·버튼·플레이어 행을 안 지웠다 | 열 때 전체 다시 칠하도록 재작성 |
+
+**입력 새어들어감**도 같이 막았다 — 안내원 클릭 한 번이 새로 열린 창의 ★1 버튼까지 눌러서 배에 타버렸다. `InputGuardSeconds = 0.35` + 별 클릭을 **로컬 선택만** 으로 바꾸고 `btnPrimary` 를 명시적 "확인" 으로 뒀다.
+
+> 이 UI 흐름 자체는 **WO-023 에서 매치 브라우저로 다시 만든다.** 위 5건 중 UI 흐름 2건을 뺀 나머지(TouchReceive · LeaveSpectate · ReturnToStation · 카운트다운 로그)는 그대로 간다.

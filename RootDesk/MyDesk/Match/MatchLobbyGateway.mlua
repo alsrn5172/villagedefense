@@ -171,7 +171,7 @@ script MatchLobbyGateway extends Logic
 		table.insert(room.members, userId)
 		room.ready[userId] = false
 		self.roomOf[userId] = d
-		self:StopCountdown(d)   -- 인원이 바뀌면 카운트다운 무효
+		self:CancelCountdown(d, "인원 변경")
 
 		self:MoveTo(userId, self.ShipMapId, self.ShipSpawn)
 		self:OpenFor(userId, true)
@@ -217,7 +217,7 @@ script MatchLobbyGateway extends Logic
 		local room = self.rooms[d]
 		if room == nil then return end
 		room.ready[userId] = false
-		self:StopCountdown(d)
+		self:CancelCountdown(d, "준비 해제")
 		self:OpenFor(userId, true)   -- 다시 준비를 누를 수 있게 창을 연다
 		log("[Lobby] unready ★" .. tostring(d) .. " " .. userId)
 		self:PushRoom(d)
@@ -241,7 +241,7 @@ script MatchLobbyGateway extends Logic
 			local idx = self:IndexIn(room, userId)
 			if idx > 0 then table.remove(room.members, idx) end
 			room.ready[userId] = nil
-			self:StopCountdown(d)   -- 인원이 줄면 무효
+			self:CancelCountdown(d, "이탈")
 			if #room.members == 0 then
 				self.rooms[d] = nil
 				log("[Lobby] room ★" .. tostring(d) .. " 해산")
@@ -251,6 +251,18 @@ script MatchLobbyGateway extends Logic
 		if moveBack then self:MoveTo(userId, self.StationMapId, self.StationSpawn) end
 		log("[Lobby] leave ★" .. tostring(d) .. " " .. userId)
 		self:PushRoom(d)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReturnToStation(string userId)
+		-- 매치·관전에서 "로비로" 를 눌렀을 때 (MatchSessionLogic.LeaveToLobby 가 부른다).
+		-- 🔴 목적지는 **승강장**이다. 배는 매칭 대기실이라 큐에 없는 사람이 있으면 안 된다.
+		--    맵·좌표의 진상이 여기 있으므로 호출부가 하드코딩하지 않게 이 창구를 둔다.
+		if userId == nil or userId == "" then return end
+		if self:RoomOfUser(userId) ~= nil then self:Leave(userId, false) end   -- 방에 있었으면 먼저 뺀다
+		self:OpenFor(userId, false)
+		self:MoveTo(userId, self.StationMapId, self.StationSpawn)
+		log("[Lobby] return to station " .. userId)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -286,12 +298,26 @@ script MatchLobbyGateway extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void StopCountdown(integer difficulty)
+		-- 타이머만 걷는다. 로그는 부르는 쪽이 찍는다 —
+		-- 🔴 여기서 "취소" 를 찍으면 **정상 종료(Tick 이 0초에 도달)에도 "취소" 가 찍혀** 로그가 거짓말한다.
+		--    실제로 그래서 `countdown 취소` 바로 뒤에 `START` 가 나오는 헷갈리는 로그가 나왔다.
 		local room = self.rooms ~= nil and self.rooms[difficulty] or nil
 		if room == nil or room.timerId == 0 then return end
 		_TimerService:ClearTimer(room.timerId)
 		room.timerId = 0
 		room.remain = 0
-		log("[Lobby] countdown ★" .. tostring(difficulty) .. " 취소")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CancelCountdown(integer difficulty, string reason)
+		-- 카운트다운을 **중단**한다(정상 종료가 아니다). 돌고 있을 때만 로그를 남긴다.
+		local room = self.rooms ~= nil and self.rooms[difficulty] or nil
+		if room == nil or room.timerId == 0 then return end
+		self:StopCountdown(difficulty)
+		log("[Lobby] countdown ★" .. tostring(difficulty) .. " 취소 (" .. reason .. ")")
+		for i = 1, #room.members do
+			self:Toast(room.members[i], "출발이 취소됐습니다")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -303,7 +329,7 @@ script MatchLobbyGateway extends Logic
 			self:AnnounceCountdown(difficulty, math.ceil(room.remain))
 			return
 		end
-		self:StopCountdown(difficulty)
+		self:StopCountdown(difficulty)   -- 정상 종료. 취소가 아니다
 		self:StartMatch(difficulty)
 	end
 
