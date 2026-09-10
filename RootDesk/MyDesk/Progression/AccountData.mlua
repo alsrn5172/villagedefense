@@ -12,7 +12,7 @@ script AccountData extends Logic
 	-- 🔴 계정 데이터만 여기 둔다. 매치 자원(메소·주화·장비·레벨·경험치·스킬·시설)은 절대 넣지 마라.
 	--    GDD §3: "발록의 심장 외에는 매치 종료 시 소멸". 실수로 저장하면 다음 매치를 재화 들고 시작한다.
 
-	-- users[userId] = { level, balrogHeart, unlocks, isSaveDB, saveGeneration, loaded }
+	-- users[userId] = { level, balrogHeart, freeHeart, freeAtMs, unlocks, isSaveDB, saveGeneration, loaded }
 	@HideFromInspector
 	property any users = nil
 
@@ -31,6 +31,8 @@ script AccountData extends Logic
 			self.users[userId] = {
 				level = 1,
 				balrogHeart = 0,
+				freeHeart = 0,           -- ★1 전용 무료 스택 (WO-022)
+				freeAtMs = 0,            -- 현재 1시간 사이클 시작 절대 ms. 0 = 정지
 				unlocks = "",
 				isSaveDB = false,      -- 더티 플래그. 바뀐 게 있을 때만 저장한다 (Credit 절약)
 				saveGeneration = 0,    -- 모든 setter 가 +1. 저장 왕복 중 setter 를 감지하는 장치
@@ -86,9 +88,12 @@ script AccountData extends Logic
 
 		u.level = profile.account_level
 		u.balrogHeart = profile.account_balrogHeart
+		u.freeHeart = profile.account_freeHeartStack
+		u.freeAtMs = profile.account_freeHeartAtMs
 		u.unlocks = profile.account_unlocks
 		u.loaded = true
-		log("[AcctData] loaded " .. userId .. " lv=" .. tostring(u.level) .. " heart=" .. tostring(u.balrogHeart))
+		log("[AcctData] loaded " .. userId .. " lv=" .. tostring(u.level) .. " heart=" .. tostring(u.balrogHeart) ..
+			" free=" .. tostring(u.freeHeart) .. " freeAt=" .. tostring(u.freeAtMs))
 		return true
 	end
 
@@ -112,6 +117,8 @@ script AccountData extends Logic
 		profile.SchemaVersion = _AccountStorageLogic.SchemaVersion
 		profile.account_level = u.level
 		profile.account_balrogHeart = u.balrogHeart
+		profile.account_freeHeartStack = u.freeHeart
+		profile.account_freeHeartAtMs = u.freeAtMs
 		profile.account_unlocks = u.unlocks
 
 		local t = {}
@@ -156,6 +163,61 @@ script AccountData extends Logic
 	method integer GetBalrogHeart(string userId)
 		local u = self:EnsureUser(userId)
 		return u ~= nil and u.balrogHeart or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsLoaded(string userId)
+		-- 저장소에서 값이 채워졌나. 🔴 로드 전 값은 EnsureUser 의 기본값일 뿐 진짜가 아니다 —
+		--    무료 충전 계산을 로드 전에 돌리면 존재하지 않는 스택을 만들어 낸다.
+		local u = self.users ~= nil and self.users[userId] or nil
+		return u ~= nil and u.loaded or false
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetFreeHeart(string userId)
+		-- ★1 전용 무료 스택. ⚠️ **충전분은 반영되지 않은 원장 값**이다 —
+		--    쓸 수 있는 양은 `_BalrogHeartService:FreeOf` 로 물어봐야 한다(그쪽이 Refill 을 먼저 한다).
+		local u = self:EnsureUser(userId)
+		return u ~= nil and u.freeHeart or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetFreeHeartAtMs(string userId)
+		-- 현재 1시간 사이클이 시작된 절대 ms. 0 = 타이머 정지(스택 꽉 참).
+		local u = self:EnsureUser(userId)
+		return u ~= nil and u.freeAtMs or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetFreeHeart(string userId, integer stack, integer atMs)
+		-- 무료 스택과 사이클 시작 시각을 함께 쓴다. 🔴 **둘은 한 쌍이다** — 따로 쓰면
+		--    "스택은 늘었는데 타이머가 안 밀린" 상태가 생겨 충전이 두 번 들어온다.
+		local u = self:EnsureUser(userId)
+		if not self:CanWrite(userId, u) then return end
+		local s = math.max(0, math.floor(stack))
+		local a = math.max(0, math.floor(atMs))
+		if u.freeHeart == s and u.freeAtMs == a then return end
+		u.freeHeart = s
+		u.freeAtMs = a
+		self:Touch(u)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer SpendFreeHeart(string userId, integer want, integer nowMs)
+		-- 무료 스택을 최대 want 개까지 쓴다. **실제로 쓴 개수**를 돌려준다(0 가능).
+		-- 🔴 꽉 찬 상태에서 썼으면 그 즉시 새 사이클을 시작한다(타이머가 멈춰 있었으므로).
+		--    이미 돌고 있던 중이면 `freeAtMs` 를 그대로 둔다 — 59분에 쓴 사람이 손해 보면 안 된다.
+		local u = self:EnsureUser(userId)
+		if not self:CanWrite(userId, u) or want <= 0 then return 0 end
+		local use = math.min(u.freeHeart, math.floor(want))
+		if use <= 0 then return 0 end
+		local wasStopped = (u.freeAtMs == 0)
+		u.freeHeart = u.freeHeart - use
+		if wasStopped then u.freeAtMs = math.max(0, math.floor(nowMs)) end
+		self:Touch(u)
+		log("[AcctData] free -" .. tostring(use) .. " -> " .. tostring(u.freeHeart) ..
+			(wasStopped and " (타이머 시작)" or " (타이머 유지)") .. " " .. userId)
+		return use
 	end
 
 	@ExecSpace("ServerOnly")
