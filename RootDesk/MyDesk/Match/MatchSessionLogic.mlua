@@ -3,7 +3,12 @@ script MatchSessionLogic extends Logic
 
 	-- 매치 시계 (WO-012 ② · 2026-09-07 → WO-014 로 5단 개편 2026-09-08). 서버 경과 시간 기준으로 MinionPhaseConfig(Profile 별 5행)의 StartSeconds 에 따라 페이즈를 올리고,
 	-- 페이즈의 SpawnIntervalSeconds 마다 MinionFlowService.SpawnWave · 1초마다 시계 HUD(MatchClockGroup) 를 전 클라에 뿌린다.
-	-- 지금은 Play 시작 = 매치 시작. Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- 🔴 **시작 계약이 바뀌었다 (WO-019 · 2026-09-10).** 예전엔 "Play 시작 = 매치 시작"이었다 —
+	--    Running 기본값이 true 라 월드가 뜨는 순간 시계가 돌았다. 로비가 생기면서 그게 깨진다:
+	--    승강장에서 매칭하는 동안 시계가 이미 돌고, TEST 프로필(225초)은 **로비에서 만료될 수도 있다.**
+	--    이제 매치는 `StartMatch(userIds, difficulty)` 를 불러야 시작한다. 부르는 쪽은 MatchLobbyGateway 다.
+	--    로비 없이 테스트하려면 `AutoStartOnPlay` 를 켠다.
+	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
 	--
 	-- 페이즈 5단 (추가기획2): PHASE0-1 개척 · PHASE0-2 전직 유예 30초 · PHASE1 성장 · PHASE2 견제 · PHASE3 최종(시설 풀데미지 개방).
 	-- 🔴 구독자는 인덱스가 아니라 **이름**(CurrentPhaseName)으로 판정한다 — 행이 늘면 인덱스가 밀린다(LaneFacility 저항 게이트가 실제로 밀렸다).
@@ -28,7 +33,35 @@ script MatchSessionLogic extends Logic
 
 	property number PhaseElapsed = 0
 
-	property boolean Running = true
+	-- 🔴 기본값 false. StartMatch 를 불러야 켜진다 (WO-019 — 예전엔 true 였다).
+	property boolean Running = false
+
+	-- 개발용. true 면 로비 없이 Play 만 눌러도 즉시 매치가 시작한다.
+	-- 🔴 릴리스 전에 false 인지 확인한다. 켜두면 로비를 거치지 않고 매치가 돌아 로비 검증이 무의미해진다.
+	property boolean AutoStartOnPlay = false
+
+	-- 로비에서 고른 난이도 ★1~5. 시작할 때 받아 둔다 (WO-022 의 DifficultyConfig 가 이 값을 쓴다).
+	property integer Difficulty = 1
+
+	-- 이번 매치 참가자 userId 목록. 로비가 넘겨준 "그 순간 배에 있던 사람들"이다.
+	@HideFromInspector
+	property any participants = nil
+
+	-- 🔴 탈락한 사람의 **마지막 모습 스냅샷** (userId → 결과 행).
+	--    탈락하면 곧 승강장으로 나가면서 매치 원장이 비워진다(LeaveToLobby → ResetUser).
+	--    그때 레벨이 1로 돌아가므로, **탈락하는 그 순간에 찍어 둬야** 결과 화면에
+	--    "마지막 모습"이 남는다 (M-1 · 사용자 확정 2026-09-10).
+	@HideFromInspector
+	property any finalRows = nil
+
+	-- 🔴 매치를 **떠난** 참가자 (포기 · 접속 끊김). 탈락 판정과 별개로 들고 있는다 —
+	--    마을을 아직 안 잡은 사람은 넥서스가 없어서 Eliminate 를 태울 수 없는데,
+	--    그러면 "전원 탈락" 이 영영 성립하지 않아 매치가 끝나지 않는다.
+	@HideFromInspector
+	property any leftUsers = nil
+
+	@HideFromInspector
+	property any leaveHandler = nil
 
 	@HideFromInspector
 	property any phases = nil
@@ -43,14 +76,79 @@ script MatchSessionLogic extends Logic
 	property integer waveIndex = 0
 
 	method void OnBeginPlay()
-		-- 서버: 표 로드 후 1페이즈에서 시작.
+		-- 서버: 표만 로드하고 **시계는 돌리지 않는다.** 시작은 StartMatch 가 한다 (WO-019).
 		if not self:IsServer() then return end
 		self:LoadPhases()
 		self:LoadMatchConfig()
+		self.participants = {}
+		self.finalRows = {}
+		self.leftUsers = {}
+		-- 🔴 **매치 중 접속이 끊기면 바로 내보낸다. 복귀는 없다** (사용자 확정 2026-09-10).
+		--    안 내보내면 participants 에는 남아 있는데 실체가 없어서, 그 사람 때문에
+		--    "전원 탈락" 이 성립하지 않아 매치가 영영 안 끝난다.
+		self.leaveHandler = _UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
 		self.Elapsed = 0
 		self.Expired = false
+		self.Running = false
+		log("[Match] MatchSessionLogic ready — 대기 중 (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s autoStart=" .. tostring(self.AutoStartOnPlay) .. ")")
+		if self.AutoStartOnPlay then
+			-- 로비 없이 테스트하는 경로. 지금 접속해 있는 전원을 참가자로 잡는다.
+			local ids = {}
+			for _, user in ipairs(_UserService.UserEntities.Values) do
+				if isvalid(user) and isvalid(user.PlayerComponent) then table.insert(ids, user.PlayerComponent.UserId) end
+			end
+			log("[Match] AutoStartOnPlay — 로비 생략, 즉시 시작 (" .. tostring(#ids) .. "명)")
+			self:StartMatch(ids, 1)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartMatch(table userIds, integer difficulty)
+		-- 매치 시작. 로비(MatchLobbyGateway)가 참가자를 리스항구로 옮긴 뒤 부른다.
+		-- 🔴 여기가 유일한 시작 진입점이다. Running 을 밖에서 직접 켜지 마라 — 시계만 돌고 상태가 안 맞는다.
+		if self.Running then
+			log_warning("[Match] StartMatch 무시 — 이미 진행 중")
+			return
+		end
+		if self.phases == nil or #self.phases == 0 then
+			log_error("[Match] StartMatch 실패 — 페이즈 표가 비었다")
+			return
+		end
+
+		self.participants = userIds or {}
+		self.finalRows = {}
+		self.leftUsers = {}
+		self.Difficulty = math.max(1, math.min(5, difficulty))
+
+		-- 🔴 시계를 켜기 **전에** 이전 판 원장을 비운다. @Logic 은 매치가 끝나도 살아남아
+		--    자동으로 비워지지 않는다 — 안 비우면 두 번째 판을 이전 판 재화·장비·시설을 들고 시작한다.
+		--    계정 데이터(AccountData)는 건드리지 않는다.
+		if _MatchResetService ~= nil then
+			_MatchResetService:ResetForMatch(self.participants)
+		else
+			log_error("[Match] MatchResetService 없음 — 이전 판 상태가 남은 채 시작한다")
+		end
+
+		self.Elapsed = 0
+		self.PhaseElapsed = 0
+		self.waveIndex = 0
+		self.spawnTimer = 0
+		self.clockTimer = 0
+		self.Expired = false
+		self.Running = true
 		self:SetPhase(1)
-		log("[Match] MatchSessionLogic ready (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s)")
+		log("[Match] START players=" .. tostring(#self.participants) .. " diff=" .. tostring(self.Difficulty) ..
+			" profile=" .. self.Profile .. " duration=" .. tostring(self.MatchDuration) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsParticipant(string userId)
+		-- 이번 매치에 참가 중인가. 로비에 있는 사람과 구분할 때 쓴다.
+		if self.participants == nil then return false end
+		for i = 1, #self.participants do
+			if self.participants[i] == userId then return true end
+		end
+		return false
 	end
 
 	@ExecSpace("ServerOnly")
@@ -183,9 +281,49 @@ script MatchSessionLogic extends Logic
 
 	@ExecSpace("Server")
 	method void LeaveToLobby()
-		-- 관전·결과 화면 "로비로" (SpectateUIController · MatchResultUIController 가 부른다). 로비 맵은 아직 없다 — 토스트만 (WP1).
-		log("[Match] LeaveToLobby requested by " .. tostring(senderUserId) .. " — 로비 없음 (WP1)")
-		if _UIToast ~= nil then _UIToast:ShowMessage("로비는 아직 없습니다", senderUserId) end
+		-- 관전·결과 화면 "로비로" + **게임 도중 포기** (SpectateUIController · MatchResultUIController 가 부른다).
+		-- 🔴 목적지는 **승강장**이다. 배가 아니다 — 배는 매칭 대기실이라 큐에 없는 사람이 있으면 안 된다.
+		--    게이트웨이가 맵·좌표의 진상이므로 여기서 하드코딩하지 않고 거기 물어본다.
+		local userId = senderUserId
+		if userId == nil or userId == "" then return end
+
+		-- 🔴 아직 살아 있는 참가자가 눌렀다 = **포기**다 (사용자 확정 2026-09-10).
+		--    넥서스를 즉시 0 으로 만들고 탈락시킨다 → 남은 사람들에게는 "마지막 모습"(넥서스 0 · ELIMINATED)이 기록된다.
+		--    이미 탈락했거나(관전 중) 매치 밖이면 ForfeitByUser 가 false 를 돌려주고 아무 일도 안 한다.
+		if self.Running and self:IsParticipant(userId) and _LaneStateService ~= nil then
+			if _LaneStateService:ForfeitByUser(userId) then
+				log("[Match] FORFEIT " .. userId .. " — 넥서스 0 · 탈락 처리")
+			end
+		end
+
+		-- 관전 중이었으면 관전 상태부터 정리한다. 안 하면 로비에서도 관전 리그가 따라다닌다.
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
+			_SpectateService:LeaveSpectate(userId)
+		end
+
+		-- 🔴 떠난 것으로 표시하고 매치 종료 여부를 다시 본다. 마을을 안 잡은 사람이
+		--    나갈 때도 판이 닫히게 하려면 이 표가 필요하다.
+		if self:IsParticipant(userId) then
+			self:MarkLeft(userId)
+			self:CheckAllOut()
+		end
+
+		-- 🔴 **매치를 떠나는 사람의 원장을 여기서 비운다.** 시작할 때만 비우면
+		--    탈락하고 승강장으로 나와도 스킬·전직·레벨이 그대로 보인다(실제 증상, 2026-09-10).
+		--    ⚠️ ResetForMatch 가 아니라 ResetUser 다 — 판 전체를 비우면 남아서 싸우는
+		--    사람들의 마을·소유권까지 날아간다. 마지막 모습은 위 SnapshotRow 가 이미 찍어 뒀다.
+		if self:IsParticipant(userId) and _MatchResetService ~= nil then
+			_MatchResetService:ResetUser(userId)
+			log("[Match] 떠나는 참가자 원장 초기화 " .. userId)
+		end
+
+		if _MatchLobbyGateway ~= nil then
+			_MatchLobbyGateway:ReturnToStation(userId)
+			log("[Match] LeaveToLobby -> 승강장 (" .. userId .. ")")
+		else
+			log_error("[Match] LeaveToLobby 실패 — MatchLobbyGateway 없음")
+			if _UIToast ~= nil then _UIToast:ShowMessage("로비로 이동할 수 없습니다", userId) end
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -195,7 +333,7 @@ script MatchSessionLogic extends Logic
 		self.Elapsed = self.Elapsed + delta
 		self.PhaseElapsed = self.PhaseElapsed + delta
 		if self.MatchDuration > 0 and self.Elapsed >= self.MatchDuration then
-			self:Expire()
+			self:Expire("시간 종료")
 			return
 		end
 		local idx = 1
@@ -233,9 +371,9 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void Expire()
-		-- 매치 만료(MatchConfig.MatchDurationSeconds 도달). 1회만.
-		-- 시계·웨이브를 멈추고 전 클라에 알린다. 🔴 순위 판정·결과 화면·보상은 여기 없다 — 후속 WO(Progression) 가 이 이벤트를 구독해 이어받는다.
+	method void Expire(string reason)
+		-- 매치 종료. 1회만. reason = "시간 종료" · "전원 탈락" 등.
+		-- 시계·웨이브를 멈추고 전 클라에 알린 뒤 **결과 화면**을 띄운다.
 		if self.Expired then return end
 		self.Expired = true
 		self.Running = false
@@ -247,6 +385,200 @@ script MatchSessionLogic extends Logic
 		self:SendEvent(ev)
 		self:BroadcastClock(self.CurrentPhase, "EXPIRED", math.floor(self.Elapsed), -1, -1, self.Profile, 0)
 		self:BroadcastExpired()
+		-- 계정 데이터 확정 (WO-018). 만료 시점에 생존자 전원의 계정 값을 한 번 굳힌다.
+		-- 🔴 저장 창구는 _PlayerDBManager 하나뿐이다. 여기서 _DataStorageService 를 직접 부르지 않는다.
+		-- 바뀐 게 없는 유저는 매니저가 걸러서 요청 자체를 보내지 않는다(Credit 0).
+		if _PlayerDBManager ~= nil then _PlayerDBManager:FlushAll() end
+		self:ShowResult(reason)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SnapshotRow(string userId, boolean eliminated)
+		-- 결과 화면에 실릴 한 줄을 지금 값으로 찍어 둔다. 이미 찍혀 있으면 덮지 않는다
+		-- (탈락 경로가 두 번 타도 첫 순간의 값이 진상이다).
+		if userId == nil or userId == "" then return end
+		if self.finalRows == nil then self.finalRows = {} end
+		if self.finalRows[userId] ~= nil then return end
+		local lv = 1
+		if _VillageOwnership ~= nil then lv = _VillageOwnership:LevelOf(userId) end
+		self.finalRows[userId] = {
+			uid = userId,
+			name = self:SafeName(userId),
+			damage = 0,                     -- TODO(WO-017): 발록 누적 피해
+			coreHp = self:CoreHpOf(userId),
+			level = lv,
+			elim = eliminated,
+		}
+		log("[Match] 마지막 모습 기록 " .. userId .. " lv=" .. tostring(lv) ..
+			" coreHp=" .. tostring(self.finalRows[userId].coreHp) .. " elim=" .. tostring(eliminated))
+	end
+	@ExecSpace("ServerOnly")
+	method void OnPlayerEliminated(string userId)
+		-- 참가자 한 명이 탈락했다 (LaneStateService:Eliminate 가 부른다).
+		-- 🔴 **전원 탈락이면 매치를 끝낸다.** 안 그러면 Running 이 계속 true 라
+		--    로비에서 다음 매치를 영영 시작할 수 없다 (솔플 포기가 정확히 이 경우다).
+		if not self.Running then return end
+		if not self:IsParticipant(userId) then return end
+		-- 🔴 먼저 스냅샷. 아래에서 매치가 끝나거나, 이 사람이 승강장으로 나가면서
+		--    원장이 비워지면 레벨을 다시 읽을 수 없다.
+		self:SnapshotRow(userId, true)
+		self:CheckAllOut()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserLeave(UserLeaveEvent event)
+		-- 🔴 매치 중 접속 끊김 = **즉시 이탈**. 복귀는 고려하지 않는다 (사용자 확정 2026-09-10).
+		--    포기와 같게 취급한다 — 넥서스를 0 으로 만들고 탈락시킨 뒤 원장을 비운다.
+		--    (로비 대기 중이던 사람은 MatchLobbyGateway 가 따로 정리한다.)
+		local userId = event.UserId
+		if userId == nil or userId == "" then return end
+		if not self.Running or not self:IsParticipant(userId) then return end
+
+		-- 순서: 포기(넥서스 0 · 탈락 · 그 안에서 스냅샷) → 이탈 표시 → 관전 정리 → 원장 비우기
+		if _LaneStateService ~= nil then _LaneStateService:ForfeitByUser(userId) end
+		self:MarkLeft(userId)
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
+			_SpectateService:LeaveSpectate(userId)
+		end
+		if _MatchResetService ~= nil then _MatchResetService:ResetUser(userId) end
+		log("[Match] 접속 끊김 — 매치에서 내보냄 " .. userId)
+		self:CheckAllOut()
+	end
+	@ExecSpace("ServerOnly")
+	method void MarkLeft(string userId)
+		-- 이 참가자는 매치를 떠났다 (포기 · 강퇴 · 접속 끊김). 마지막 모습을 찍고 이탈로 표시한다.
+		-- 🔴 마을을 안 잡은 사람은 Eliminate 를 태울 수 없어서 탈락 표시가 안 붙는다 →
+		--    이 표가 없으면 그 사람 때문에 매치가 영영 안 끝난다.
+		if userId == nil or userId == "" then return end
+		if self.leftUsers == nil then self.leftUsers = {} end
+		self.leftUsers[userId] = true
+		self:SnapshotRow(userId, true)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckAllOut()
+		-- 남은 사람이 없으면 매치를 끝낸다. 탈락 **또는** 이탈이면 나간 것으로 센다.
+		-- 🔴 안 끝내면 Running 이 true 로 남아 로비에서 다음 매치를 영영 시작할 수 없다.
+		if not self.Running or self.participants == nil then return end
+		if _VillageOwnership == nil then return end
+		for i = 1, #self.participants do
+			local uid = self.participants[i]
+			local out = _VillageOwnership:IsEliminated(uid)
+			if not out and self.leftUsers ~= nil and self.leftUsers[uid] then out = true end
+			if not out then return end
+		end
+		log("[Match] 전원 탈락/이탈 — 매치 종료")
+		self:Expire("전원 탈락")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ShowResult(string reason)
+		-- 결과 화면(MatchResultGroup)을 참가자 전원에게 띄운다.
+		-- 🔴 "포기한 사람의 마지막 모습"이 남는 곳이 여기다 — 넥서스 HP 0 + 탈락 표식으로 기록된다.
+		-- ⚠️ **잠정 배선이다.** 순위 1순위인 "발록 누적 피해" 를 재는 코드가 아직 없어서(WO-017)
+		--    지금은 전부 0 으로 나가고 실질 정렬은 넥서스 HP → 레벨 순이다. 보상 지급도 WO-022 다.
+		if _MatchResultUIController == nil or self.participants == nil then return end
+		local n = #self.participants
+		if n == 0 then return end
+
+		local rows = {}
+		for i = 1, n do
+			local uid = self.participants[i]
+			-- 🔴 탈락한 사람은 **탈락하던 순간의 스냅샷**을 쓴다. 지금 값을 읽으면
+			--    이미 승강장으로 나가 원장이 비워진 사람의 레벨이 1로 나온다.
+			local snap = (self.finalRows ~= nil) and self.finalRows[uid] or nil
+			if snap ~= nil then
+				table.insert(rows, snap)
+			else
+				local elim = false
+				local lv = 1
+				if _VillageOwnership ~= nil then
+					elim = _VillageOwnership:IsEliminated(uid)
+					lv = _VillageOwnership:LevelOf(uid)
+				end
+				table.insert(rows, {
+					uid = uid,
+					name = self:SafeName(uid),
+					damage = 0,                     -- TODO(WO-017): 발록 누적 피해
+					coreHp = self:CoreHpOf(uid),
+					level = lv,
+					elim = elim,
+				})
+			end
+		end
+
+		-- 순위: ① 발록 피해 ② 넥서스 잔여 HP ③ 최종 레벨 (결과 화면의 열 순서와 같다)
+		table.sort(rows, function(a, b)
+			if a.damage ~= b.damage then return a.damage > b.damage end
+			if a.coreHp ~= b.coreHp then return a.coreHp > b.coreHp end
+			return a.level > b.level
+		end)
+
+		for i = 1, n do
+			local uid = self.participants[i]
+			_MatchResultUIController:SetResultCsv(self:BuildResultCsv(rows, uid, reason), uid)
+		end
+		log("[Match] 결과 화면 표시 reason=" .. tostring(reason) .. " rows=" .. tostring(n))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildResultCsv(any rows, string forUserId, string reason)
+		-- 계약(MatchResultUIController:SetResultCsv): title=..;reason=..;reward=..;me=0;r0=순위|이름|발록피해|넥서스HP|레벨|탈락
+		--   me 는 **0-base 행 번호**다 (내 행에 ▶ 가 붙는다).
+		local parts = {}
+		table.insert(parts, "title=매치 결과")
+		table.insert(parts, "reason=" .. self:SafeText(reason or ""))
+		table.insert(parts, "reward=발록의 심장 보상은 준비 중입니다")
+		local me = -1
+		for i = 1, #rows do
+			if rows[i].uid == forUserId then me = i - 1 end
+		end
+		table.insert(parts, "me=" .. tostring(me))
+		for i = 1, #rows do
+			local r = rows[i]
+			local mark = "0"
+			if r.elim then mark = "1" end
+			table.insert(parts, "r" .. tostring(i - 1) .. "=" .. tostring(i) .. "|" .. r.name .. "|" ..
+				tostring(r.damage) .. "|" .. tostring(r.coreHp) .. "|" .. tostring(r.level) .. "|" .. mark)
+		end
+		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CoreHpOf(string userId)
+		-- 그 사람 마을 넥서스의 현재 HP. 마을이 없으면 0.
+		if _LaneStateService == nil then return 0 end
+		local vid = _LaneStateService:VillageOfUser(userId)
+		if vid == "" then return 0 end
+		local core = _LaneStateService:FacilityState(vid, "CORE")
+		if core == nil then return 0 end
+		return core.hp
+	end
+
+	@ExecSpace("ServerOnly")
+	method string SafeText(string s)
+		-- 🔴 CSV 파서가 ([^;=]+)=([^;]*) 다. 값에 ";" 나 "=" 가 있으면 행이 깨진다.
+		if s == nil then return "" end
+		local out, _n = string.gsub(s, "[;=]", " ")
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method string SafeName(string userId)
+		-- 🔴 표시용은 **닉네임**이다 (PlayerComponent.Nickname). Entity.Name 은 userId 로 나온다.
+		--    필드 구분자 "|" 까지 막는다.
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local nm = userId
+		if isvalid(player) then
+			local pc = player.PlayerComponent
+			if isvalid(pc) and pc.Nickname ~= nil and pc.Nickname ~= "" then
+				nm = pc.Nickname
+			elseif player.Name ~= nil and player.Name ~= "" then
+				nm = player.Name
+			end
+		end
+		local out, _n = string.gsub(nm, "[;=|]", "_")
+		return out
 	end
 
 	@ExecSpace("Multicast")
@@ -260,6 +592,15 @@ script MatchSessionLogic extends Logic
 		-- 서버 → 전 클라: 시계 HUD 갱신. remain = 매치 만료까지 남은 초(음수면 표시 안 함).
 		if _MatchClockUIController ~= nil then
 			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile, remain)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 구독 해제. OnBeginPlay 에서 건 건 반드시 여기서 되돌린다.
+		if self.leaveHandler ~= nil then
+			_UserService:DisconnectEvent(UserLeaveEvent, self.leaveHandler)
+			self.leaveHandler = nil
 		end
 	end
 
