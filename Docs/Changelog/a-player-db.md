@@ -275,3 +275,34 @@ Name='20372100010275064'   Nickname='밍키타'
 
 **미제로 남긴다** (사용자 판단 2026-09-10). 실제로 증상이 보고되면 그때 판다.
 급하면 서버에서 `RequestJoinMatch` 를 잠긴 매치에 직접 쏴서 거절 경로만 따로 찍어 볼 수 있다.
+
+### 🔴 탈락하고 로비로 나와도 스킬·전직·레벨이 남았다
+
+사용자 실측: *"리모컨에서 탈락 시험 누르고 로비로 가도 스킬, 전직, 레벨이 다 초기화가 안 된다."* 원인 두 개였다.
+
+**① 초기화 진입점이 "매치 시작" 한 곳뿐이었다.** `ResetForMatch` 는 `StartMatch` 에서만 불린다.
+그래서 다음 매치를 시작하기 전까지 승강장에서 Lv25 전직 상태가 그대로 보인다.
+로비는 매치 밖이니 거기서는 깨끗해야 한다.
+
+→ `MatchSessionLogic:LeaveToLobby` 가 **그 한 명만** `ResetUser` 한다.
+⚠️ `ResetForMatch` 가 아니라 `ResetUser` 다 — 판 전체를 비우면 **남아서 싸우는 사람들의 마을·소유권까지 날아간다.**
+
+**② `SkillBuffs:ResetMatchState` 를 아무도 안 불렀다.** B 의 스킬 작업이 머지되면서 들어온 원장인데
+`MatchResetService` 배선이 빠져 있었다. 메서드는 B 가 *"PlayerSkillState.ResetMatchState 와 짝"* 이라고
+주석까지 달아 뒀는데 짝이 안 맞춰져 있었다. → `ResetUser` 에 추가.
+
+**그리고 ①이 M-1 을 깨뜨린다.** 나가면서 레벨이 1로 돌아가니 결과 화면이 Lv1 을 보여준다.
+그래서 **`finalRows` 스냅샷**을 넣었다 — 탈락하는 그 순간 `SnapshotRow` 가 이름·넥서스HP·레벨을 찍고,
+`ShowResult` 는 스냅샷이 있으면 그걸 쓴다. 첫 순간의 값만 남기고 덮어쓰지 않는다(탈락 경로가 두 번 타도 안전).
+
+```
+BEFORE       lv=25 job=WARRIOR tier=1 skill=5 stack=3
+탈락       → [Match] 마지막 모습 기록 lv=25 coreHp=0 elim=true
+로비로     → [Match] 떠나는 참가자 원장 초기화
+FINAL        lv=1  job=NOVICE  tier=0  skill=0  stack=0
+snapshot     lv=25 coreHp=0 name=밍키타
+```
+
+> 🟡 **남은 구멍**: 매치 중에 접속을 끊고 다시 들어오면 `participants` 에는 남아 있는데 승강장에서
+> 시작한다 — 매치 상태를 들고 로비에 있는 셈이다. `UserEnterEvent` 로 정리하거나 매치에 복귀시켜야
+> 하는데 어느 쪽인지 결정이 필요해서 남겨 뒀다.

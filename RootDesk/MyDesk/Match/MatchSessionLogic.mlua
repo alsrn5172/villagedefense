@@ -47,6 +47,13 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property any participants = nil
 
+	-- 🔴 탈락한 사람의 **마지막 모습 스냅샷** (userId → 결과 행).
+	--    탈락하면 곧 승강장으로 나가면서 매치 원장이 비워진다(LeaveToLobby → ResetUser).
+	--    그때 레벨이 1로 돌아가므로, **탈락하는 그 순간에 찍어 둬야** 결과 화면에
+	--    "마지막 모습"이 남는다 (M-1 · 사용자 확정 2026-09-10).
+	@HideFromInspector
+	property any finalRows = nil
+
 	@HideFromInspector
 	property any phases = nil
 
@@ -94,6 +101,7 @@ script MatchSessionLogic extends Logic
 		end
 
 		self.participants = userIds or {}
+		self.finalRows = {}
 		self.Difficulty = math.max(1, math.min(5, difficulty))
 
 		-- 🔴 시계를 켜기 **전에** 이전 판 원장을 비운다. @Logic 은 매치가 끝나도 살아남아
@@ -277,6 +285,15 @@ script MatchSessionLogic extends Logic
 			_SpectateService:LeaveSpectate(userId)
 		end
 
+		-- 🔴 **매치를 떠나는 사람의 원장을 여기서 비운다.** 시작할 때만 비우면
+		--    탈락하고 승강장으로 나와도 스킬·전직·레벨이 그대로 보인다(실제 증상, 2026-09-10).
+		--    ⚠️ ResetForMatch 가 아니라 ResetUser 다 — 판 전체를 비우면 남아서 싸우는
+		--    사람들의 마을·소유권까지 날아간다. 마지막 모습은 위 SnapshotRow 가 이미 찍어 뒀다.
+		if self:IsParticipant(userId) and _MatchResetService ~= nil then
+			_MatchResetService:ResetUser(userId)
+			log("[Match] 떠나는 참가자 원장 초기화 " .. userId)
+		end
+
 		if _MatchLobbyGateway ~= nil then
 			_MatchLobbyGateway:ReturnToStation(userId)
 			log("[Match] LeaveToLobby -> 승강장 (" .. userId .. ")")
@@ -353,12 +370,35 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void SnapshotRow(string userId, boolean eliminated)
+		-- 결과 화면에 실릴 한 줄을 지금 값으로 찍어 둔다. 이미 찍혀 있으면 덮지 않는다
+		-- (탈락 경로가 두 번 타도 첫 순간의 값이 진상이다).
+		if userId == nil or userId == "" then return end
+		if self.finalRows == nil then self.finalRows = {} end
+		if self.finalRows[userId] ~= nil then return end
+		local lv = 1
+		if _VillageOwnership ~= nil then lv = _VillageOwnership:LevelOf(userId) end
+		self.finalRows[userId] = {
+			uid = userId,
+			name = self:SafeName(userId),
+			damage = 0,                     -- TODO(WO-017): 발록 누적 피해
+			coreHp = self:CoreHpOf(userId),
+			level = lv,
+			elim = eliminated,
+		}
+		log("[Match] 마지막 모습 기록 " .. userId .. " lv=" .. tostring(lv) ..
+			" coreHp=" .. tostring(self.finalRows[userId].coreHp) .. " elim=" .. tostring(eliminated))
+	end
+	@ExecSpace("ServerOnly")
 	method void OnPlayerEliminated(string userId)
 		-- 참가자 한 명이 탈락했다 (LaneStateService:Eliminate 가 부른다).
 		-- 🔴 **전원 탈락이면 매치를 끝낸다.** 안 그러면 Running 이 계속 true 라
 		--    로비에서 다음 매치를 영영 시작할 수 없다 (솔플 포기가 정확히 이 경우다).
 		if not self.Running then return end
 		if not self:IsParticipant(userId) then return end
+		-- 🔴 먼저 스냅샷. 아래에서 매치가 끝나거나, 이 사람이 승강장으로 나가면서
+		--    원장이 비워지면 레벨을 다시 읽을 수 없다.
+		self:SnapshotRow(userId, true)
 		if _VillageOwnership == nil or self.participants == nil then return end
 		for i = 1, #self.participants do
 			if not _VillageOwnership:IsEliminated(self.participants[i]) then return end
@@ -380,20 +420,27 @@ script MatchSessionLogic extends Logic
 		local rows = {}
 		for i = 1, n do
 			local uid = self.participants[i]
-			local elim = false
-			local lv = 1
-			if _VillageOwnership ~= nil then
-				elim = _VillageOwnership:IsEliminated(uid)
-				lv = _VillageOwnership:LevelOf(uid)
+			-- 🔴 탈락한 사람은 **탈락하던 순간의 스냅샷**을 쓴다. 지금 값을 읽으면
+			--    이미 승강장으로 나가 원장이 비워진 사람의 레벨이 1로 나온다.
+			local snap = (self.finalRows ~= nil) and self.finalRows[uid] or nil
+			if snap ~= nil then
+				table.insert(rows, snap)
+			else
+				local elim = false
+				local lv = 1
+				if _VillageOwnership ~= nil then
+					elim = _VillageOwnership:IsEliminated(uid)
+					lv = _VillageOwnership:LevelOf(uid)
+				end
+				table.insert(rows, {
+					uid = uid,
+					name = self:SafeName(uid),
+					damage = 0,                     -- TODO(WO-017): 발록 누적 피해
+					coreHp = self:CoreHpOf(uid),
+					level = lv,
+					elim = elim,
+				})
 			end
-			table.insert(rows, {
-				uid = uid,
-				name = self:SafeName(uid),
-				damage = 0,                     -- TODO(WO-017): 발록 누적 피해
-				coreHp = self:CoreHpOf(uid),
-				level = lv,
-				elim = elim,
-			})
 		end
 
 		-- 순위: ① 발록 피해 ② 넥서스 잔여 HP ③ 최종 레벨 (결과 화면의 열 순서와 같다)
