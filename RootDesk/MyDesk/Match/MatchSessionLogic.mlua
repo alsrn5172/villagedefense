@@ -54,6 +54,15 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property any finalRows = nil
 
+	-- 🔴 매치를 **떠난** 참가자 (포기 · 접속 끊김). 탈락 판정과 별개로 들고 있는다 —
+	--    마을을 아직 안 잡은 사람은 넥서스가 없어서 Eliminate 를 태울 수 없는데,
+	--    그러면 "전원 탈락" 이 영영 성립하지 않아 매치가 끝나지 않는다.
+	@HideFromInspector
+	property any leftUsers = nil
+
+	@HideFromInspector
+	property any leaveHandler = nil
+
 	@HideFromInspector
 	property any phases = nil
 
@@ -72,6 +81,12 @@ script MatchSessionLogic extends Logic
 		self:LoadPhases()
 		self:LoadMatchConfig()
 		self.participants = {}
+		self.finalRows = {}
+		self.leftUsers = {}
+		-- 🔴 **매치 중 접속이 끊기면 바로 내보낸다. 복귀는 없다** (사용자 확정 2026-09-10).
+		--    안 내보내면 participants 에는 남아 있는데 실체가 없어서, 그 사람 때문에
+		--    "전원 탈락" 이 성립하지 않아 매치가 영영 안 끝난다.
+		self.leaveHandler = _UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
 		self.Elapsed = 0
 		self.Expired = false
 		self.Running = false
@@ -102,6 +117,7 @@ script MatchSessionLogic extends Logic
 
 		self.participants = userIds or {}
 		self.finalRows = {}
+		self.leftUsers = {}
 		self.Difficulty = math.max(1, math.min(5, difficulty))
 
 		-- 🔴 시계를 켜기 **전에** 이전 판 원장을 비운다. @Logic 은 매치가 끝나도 살아남아
@@ -285,6 +301,13 @@ script MatchSessionLogic extends Logic
 			_SpectateService:LeaveSpectate(userId)
 		end
 
+		-- 🔴 떠난 것으로 표시하고 매치 종료 여부를 다시 본다. 마을을 안 잡은 사람이
+		--    나갈 때도 판이 닫히게 하려면 이 표가 필요하다.
+		if self:IsParticipant(userId) then
+			self:MarkLeft(userId)
+			self:CheckAllOut()
+		end
+
 		-- 🔴 **매치를 떠나는 사람의 원장을 여기서 비운다.** 시작할 때만 비우면
 		--    탈락하고 승강장으로 나와도 스킬·전직·레벨이 그대로 보인다(실제 증상, 2026-09-10).
 		--    ⚠️ ResetForMatch 가 아니라 ResetUser 다 — 판 전체를 비우면 남아서 싸우는
@@ -399,11 +422,52 @@ script MatchSessionLogic extends Logic
 		-- 🔴 먼저 스냅샷. 아래에서 매치가 끝나거나, 이 사람이 승강장으로 나가면서
 		--    원장이 비워지면 레벨을 다시 읽을 수 없다.
 		self:SnapshotRow(userId, true)
-		if _VillageOwnership == nil or self.participants == nil then return end
-		for i = 1, #self.participants do
-			if not _VillageOwnership:IsEliminated(self.participants[i]) then return end
+		self:CheckAllOut()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserLeave(UserLeaveEvent event)
+		-- 🔴 매치 중 접속 끊김 = **즉시 이탈**. 복귀는 고려하지 않는다 (사용자 확정 2026-09-10).
+		--    포기와 같게 취급한다 — 넥서스를 0 으로 만들고 탈락시킨 뒤 원장을 비운다.
+		--    (로비 대기 중이던 사람은 MatchLobbyGateway 가 따로 정리한다.)
+		local userId = event.UserId
+		if userId == nil or userId == "" then return end
+		if not self.Running or not self:IsParticipant(userId) then return end
+
+		-- 순서: 포기(넥서스 0 · 탈락 · 그 안에서 스냅샷) → 이탈 표시 → 관전 정리 → 원장 비우기
+		if _LaneStateService ~= nil then _LaneStateService:ForfeitByUser(userId) end
+		self:MarkLeft(userId)
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
+			_SpectateService:LeaveSpectate(userId)
 		end
-		log("[Match] 전원 탈락 — 매치 종료")
+		if _MatchResetService ~= nil then _MatchResetService:ResetUser(userId) end
+		log("[Match] 접속 끊김 — 매치에서 내보냄 " .. userId)
+		self:CheckAllOut()
+	end
+	@ExecSpace("ServerOnly")
+	method void MarkLeft(string userId)
+		-- 이 참가자는 매치를 떠났다 (포기 · 강퇴 · 접속 끊김). 마지막 모습을 찍고 이탈로 표시한다.
+		-- 🔴 마을을 안 잡은 사람은 Eliminate 를 태울 수 없어서 탈락 표시가 안 붙는다 →
+		--    이 표가 없으면 그 사람 때문에 매치가 영영 안 끝난다.
+		if userId == nil or userId == "" then return end
+		if self.leftUsers == nil then self.leftUsers = {} end
+		self.leftUsers[userId] = true
+		self:SnapshotRow(userId, true)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckAllOut()
+		-- 남은 사람이 없으면 매치를 끝낸다. 탈락 **또는** 이탈이면 나간 것으로 센다.
+		-- 🔴 안 끝내면 Running 이 true 로 남아 로비에서 다음 매치를 영영 시작할 수 없다.
+		if not self.Running or self.participants == nil then return end
+		if _VillageOwnership == nil then return end
+		for i = 1, #self.participants do
+			local uid = self.participants[i]
+			local out = _VillageOwnership:IsEliminated(uid)
+			if not out and self.leftUsers ~= nil and self.leftUsers[uid] then out = true end
+			if not out then return end
+		end
+		log("[Match] 전원 탈락/이탈 — 매치 종료")
 		self:Expire("전원 탈락")
 	end
 
@@ -528,6 +592,15 @@ script MatchSessionLogic extends Logic
 		-- 서버 → 전 클라: 시계 HUD 갱신. remain = 매치 만료까지 남은 초(음수면 표시 안 함).
 		if _MatchClockUIController ~= nil then
 			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile, remain)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 구독 해제. OnBeginPlay 에서 건 건 반드시 여기서 되돌린다.
+		if self.leaveHandler ~= nil then
+			_UserService:DisconnectEvent(UserLeaveEvent, self.leaveHandler)
+			self.leaveHandler = nil
 		end
 	end
 

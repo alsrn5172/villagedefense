@@ -306,3 +306,47 @@ snapshot     lv=25 coreHp=0 name=밍키타
 > 🟡 **남은 구멍**: 매치 중에 접속을 끊고 다시 들어오면 `participants` 에는 남아 있는데 승강장에서
 > 시작한다 — 매치 상태를 들고 로비에 있는 셈이다. `UserEnterEvent` 로 정리하거나 매치에 복귀시켜야
 > 하는데 어느 쪽인지 결정이 필요해서 남겨 뒀다.
+
+### 🔴 관전자가 뭐든 다 할 수 있었다
+
+사용자 실측: *"관전자 상태가 되면 모든 권한을 가져가야 한다. 지금은 맵 이동도 되는데 넥서스 클릭(점령)도 되고 난리다."*
+
+`SpectateService:Enter` 는 **컨트롤러·피격·중력·진영만** 껐다. 그런데 **월드 클릭(`TouchReceive`)과 UI 창은
+캐릭터가 안 움직여도 그대로 살아 있다.** 숨은 캐릭터로 넥서스를 클릭해 점령하고, 시설을 짓고, 상점을 열 수 있었다.
+**서버 RPC 가 아무도 관전자를 걸러내지 않았다** — 캐릭터를 무력화해도 소용이 없다.
+
+→ **`SpectateService:Blocked(userId)`** 를 만들고, **상태를 바꾸는 Server RPC 34곳**이 첫 줄에서 물어본다.
+
+| 파일 | 막은 RPC |
+|---|---|
+| `Lane/LaneStateService` | 10 (`RequestTowerAction`·`RequestRecruit`·`RequestTrain`·`RequestDispatch`·`RequestDimensionGate`·`RequestDevHit` 등) |
+| `Skill/PlayerSkillState` | 5 (`RequestLearn`·`RequestChooseJob`·Dev 3종) |
+| `Summon/SummonManager` | 4 (소환·파병) |
+| `Skill/SkillAttack` | 2 · `Item/EquipService` 2 · `Item/RepairService` 2 · `Stat/StatService` 2 |
+| 각 1 | `Lane/LaneFacility`(**점령**) · `Npc/VillageNpcInteractor`(**NPC 창 전체**) · `SkillCaster` · `InventoryService` · `ShopService` · `CraftService` · `EnhanceService` |
+
+🔴 **읽기 전용은 막지 않았다** — `RequestView` · `RequestStats` · `RequestInventory` · `RequestSync`.
+남의 판을 들여다보는 게 관전의 목적이다. 관전 중 맵 이동(`RequestGoMap`)도 관전 기능 자체라 그대로 뒀다.
+
+```
+IsSpectator=true  Blocked=true
+관전 중 RPC 8발 → job=NOVICE (전직 거절) · coreHp=2000 (DevHit 거절) · TOWER lv=1 alive (건설 거절)
+관전 해제 → Blocked=false
+```
+
+### 매치 중 접속이 끊기면 바로 내보낸다
+
+사용자 확정: *"복귀하는 건 고려할 가치가 없다."* `MatchSessionLogic` 이 `UserLeaveEvent` 를 직접 구독한다.
+포기와 **같게** 취급 — 넥서스 0 · 탈락 · 관전 정리 · 원장 비우기.
+
+그리고 **`leftUsers` 표**를 추가했다. 마을을 아직 안 잡은 사람은 `Eliminate` 를 태울 수 없어 탈락 표시가 안 붙는데,
+그러면 **그 사람 때문에 "전원 탈락" 이 영영 성립하지 않아 매치가 안 끝난다.**
+`CheckAllOut` 이 **탈락 또는 이탈**이면 나간 것으로 센다.
+
+### 🔴 리스항구 마노방 우측 포탈이 안 보였다
+
+`LithHarbor_Boss_Mano` 의 `P_To_SixPathCrossway` — **여섯갈래길로 나가는 유일한 출구**인데 `visible=false` 였다.
+이전 세션에서 *"마노방에서 여섯갈래길로 가는 포탈이 없어서 갇혔다"* 던 증상의 진짜 원인이다.
+포탈은 처음부터 거기 있었고 **안 보이기만 했다.**
+
+사용자가 Maker 에서 고친 것을 담았다 — 엔티티 72개 동일, 그 한 플래그만 바뀐다.
