@@ -239,3 +239,27 @@ WO-019 로비를 실제로 돌려 보니 두 가지가 안 맞았다 (사용자 
 [R2] locked: sub='출발까지 3초'  start='출발 준비 중' en=false  leave.en=false
 [R2] after start: map=LithHarbor_Village_MinimiMain  hud=false
 ```
+
+### 이름이 유저 번호로 나왔다 → 닉네임
+
+매치 목록·참가자 줄·결과 화면에 `20372100010275064` 같은 **유저 번호**가 그대로 찍혔다.
+`Entity.Name` 을 표시용으로 쓴 게 원인이다 — 그 값은 userId 다. 진상은 **`PlayerComponent.Nickname`**.
+
+```
+Name='20372100010275064'   Nickname='밍키타'
+```
+
+`MatchLobbyGateway:NameOf` · `MatchSessionLogic:SafeName` 둘 다 `Nickname → Entity.Name → userId` 순으로 떨어지게 고쳤다.
+
+### RoomHud 를 오른쪽으로 밀었다
+
+`DefaultGroup` 의 채팅 on/off 토글이 좌상단(UI 기준 대략 x 35~112, y -35~-104)에 박혀 있어
+`RoomHud` 제목줄과 겹쳤다. **오른쪽으로만** `24 → 128` (토글 크기 약 80 + 그 30% 인 24). 세로는 `-24` 그대로.
+
+> 남은 것: **채팅 로그 텍스트**는 아직 패널 왼쪽 가장자리에 걸친다. `DefaultGroup` 이 `LobbyGroup` 보다
+> 위에 그려지기 때문인데, GroupOrder 는 전역 z 순서라 요청 없이 건드리지 않았다.
+
+### 사용자 가상플레이 검증 (2026-09-10)
+
+클라 1개로 못 돌렸던 항목을 사용자가 가상플레이로 확인했다 — **참여 · 정원 5명 · 강퇴 · 주인 이탈 해산** 전부 통과.
+**잠금 후 참여 거절**만 남았는데, 잠기는 그 순간에 눌러야 해서 손으로는 재현이 안 된다(서버 분기는 있다).
