@@ -1,0 +1,591 @@
+@Logic
+script BalrogRoomService extends Logic
+
+	-- 주니어 발록 방 6개 — 배정 · 입장권 · 90초 · 퇴장 · 선취 판정 (WO-017).
+	--
+	-- 사용자 확정 (2026-09-10 ~ 09-11)
+	--   · 방은 **매치 시작 때 참가 순서대로 한 번 고정 배정**한다. 입장할 때마다 배정하지 않는다.
+	--     못 잡으면 **HP 그대로 재도전**하는 게임이라, 내 방 발록이 내 피해를 계속 들고 있어야 한다.
+	--   · 입장권 = 낙인의 영혼석(BRAND_SOULSTONE). ★1~5 = 1 · 5 · 10 · 15 · 20 개. 환불 없음.
+	--   · 진입 = 마을 포탈 1개 → 서버가 배정된 방으로 보낸다 (A안).
+	--   · 90초 만료 · 사망 · 걸어서 나감 = 도전 종료. 배정은 유지한다.
+	--   · 발록 재생성 금지는 필요 없다 — 발록 하나가 죽는 순간 매치가 끝난다.
+	--
+	-- 🔴 발록 HP 를 따로 저장하지 않는다. 방마다 발록 엔티티가 계속 떠 있고 자연회복이 없으며,
+	--    방을 나가면 추격 대상이 맵 검사에서 먼저 풀린다(StateChaseMonster.IsTargetValid).
+	--    빈 방에선 대상이 없어 스킬도 안 나간다(DistanceToTarget = 99999). 엔티티 자체가 장부다.
+	-- 🔴 1인 1방이라 "최다 누적 피해자" = 그 방 주인이다. 누적 피해 = MaxHp - 현재 HP.
+	-- 🔴 발록 방은 비인스턴스 맵이라 매치가 끝나도 없어지지 않는다. 그래서 매치 시작 때 6방 발록을
+	--    새로 깔고, 방에 남아 있던 사람을 승강장으로 치운다. 인스턴스 룸으로 가면 둘 다 필요 없다 (WO-024).
+	-- 🔴 선취 판정은 서버 여기 한 곳에서 **정확히 한 번**. 클라가 "이겼다"를 보내는 경로는 없다.
+	--
+	-- Codex 2회 리뷰로 고친 것 (2026-09-11)
+	--   · 발록 생사는 **매 프레임** 본다 — 0.25초 폴링이면 그 사이 두 방이 죽을 때 방 번호로 갈렸다.
+	--   · 처치는 **도전 중(방 안 · 90초 마감 전)** 일 때만 인정한다. 마감은 서버 시각 절댓값이다.
+	--   · 입장권은 요청 때 개수만 보고 **도착했을 때** 뺀다 — 이동에 실패하면 안 쓴 것이 된다.
+	--   · 내보낼 사람 표식(evict)은 **방 밖이 확인될 때까지** 남긴다 — 죽어서 부활 대기 · 옮기는 중 탈락 ·
+	--     이동이 늦는 경우 모두 결국 마을로 나오게 한다.
+	--   · 입장 요청은 서버가 **슬리피우드 마을에 있는지** 본다 · 매치를 이탈했던 사람은 막는다 ·
+	--     발록 리셋에 실패한 방은 입장권을 쓰기 전에 막는다.
+	--   · 결과 화면 피해는 캐시가 아니라 **지금 HP** 로 계산한다.
+	--   · MatchSessionLogic.Expire 가 승리 아닌 종료 직전에 ClaimPendingWinner 로 한 번 더 묻는다.
+
+	property string RoomMaps = "Sleepywood_Boss_JrBalrog,Sleepywood_Boss_JrBalrog2,Sleepywood_Boss_JrBalrog3,Sleepywood_Boss_JrBalrog4,Sleepywood_Boss_JrBalrog5,Sleepywood_Boss_JrBalrog6"
+
+	-- 방에 들어가면 서는 곳 = 방의 복귀 포탈 앞
+	property string RoomArrivePortal = "P_To_Sleepywood_Village_MinimiMain"
+
+	property string VillageMap = "Sleepywood_Village_MinimiMain"
+
+	-- 마을로 나오면 서는 곳 = 마을의 발록 입구 포탈 앞
+	property string VillageArrivePortal = "P_To_Sleepywood_Boss_JrBalrog"
+
+	-- 6방이 이 BossId 하나를 공유한다 (복제 방은 BossSpawner.AllowClonedMap = true)
+	property string BossId = "8130100"
+
+	property string TicketItemId = "BRAND_SOULSTONE"
+
+	-- ★1~5 입장권 개수 (사용자 확정 2026-09-11). DifficultyConfig 표가 머지되면 그 표로 옮긴다(WO-022).
+	property string TicketCosts = "1,5,10,15,20"
+
+	property number ChallengeSeconds = 90
+
+	-- 옮긴 뒤 이 시간 안에 방에 안 나타나면 이동 실패로 본다. 내보내기 표식도 최소 이만큼 유지한다.
+	property number ArriveTimeoutSeconds = 8
+
+	-- 방 안에 남은 사람에게 마을 이동을 다시 거는 간격
+	property number EvictRetrySeconds = 2
+
+	@HideFromInspector
+	property any rooms = nil       -- 방 번호 → 맵 이름
+
+	@HideFromInspector
+	property any assign = nil      -- userId → 방 번호 (매치 시작 때 1회 · 끝까지 유지)
+
+	@HideFromInspector
+	property any owner = nil       -- 방 번호 → userId (배정 역방향)
+
+	@HideFromInspector
+	property any occupant = nil    -- 방 번호 → 지금 도전 중인 userId ("" = 빔)
+
+	@HideFromInspector
+	property any phase = nil       -- userId → "moving"(옮기는 중) · "in"(방 안)
+
+	@HideFromInspector
+	property any moveStart = nil   -- userId → 입장 이동을 건 서버 시각
+
+	@HideFromInspector
+	property any deadline = nil    -- userId → 도전 마감 서버 시각 (도착 순간 + 90초)
+
+	@HideFromInspector
+	property any cost = nil        -- userId → 입장 요청 때 확정한 영혼석 개수 (도착했을 때 뺀다)
+
+	@HideFromInspector
+	property any evict = nil       -- userId → 방 번호. 이 방에서 나가야 한다 — 방 밖이 확인될 때까지 유지
+
+	@HideFromInspector
+	property any evictAt = nil     -- userId → 마지막으로 마을 이동을 건 서버 시각
+
+	@HideFromInspector
+	property any evictUntil = nil  -- userId → 이 시각 전에는 방 밖이어도 표식을 지우지 않는다 (늦게 도착하는 이동)
+
+	@HideFromInspector
+	property any bosses = nil      -- 방 번호 → 발록 엔티티 (매치 시작 때 새로 깐 것)
+
+	@HideFromInspector
+	property any lastHp = nil      -- 방 번호 → 마지막으로 본 HP. nil = 이 방은 판정 대상이 아니다(리셋 실패)
+
+	@HideFromInspector
+	property string Winner = ""
+
+	@HideFromInspector
+	property boolean active = false
+
+	@HideFromInspector
+	property number tickAcc = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 방 목록을 읽고 원장을 비운다. 배정은 매치가 시작돼야 생긴다.
+		self.rooms = {}
+		for name in string.gmatch(self.RoomMaps, "[^,]+") do
+			table.insert(self.rooms, name)
+		end
+		self:ClearLedger()
+		log("[BalrogRoom] ready · rooms=" .. tostring(#self.rooms) .. " ticket=" .. self.TicketItemId ..
+			" costs=" .. self.TicketCosts .. " limit=" .. tostring(self.ChallengeSeconds) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearLedger()
+		-- 매치 한 판 분량의 원장을 전부 비운다.
+		self.assign = {}
+		self.owner = {}
+		self.occupant = {}
+		self.phase = {}
+		self.moveStart = {}
+		self.deadline = {}
+		self.cost = {}
+		self.evict = {}
+		self.evictAt = {}
+		self.evictUntil = {}
+		self.bosses = {}
+		self.lastHp = {}
+		self.Winner = ""
+		self.active = false
+		self.tickAcc = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method number Now()
+		-- 서버 경과 시각(초). 한 매치 안의 90초 마감·이동 대기에만 쓴다 (월드 재시작에 0으로 돌아가도 상관없다).
+		return _UtilLogic.ServerElapsedSeconds
+	end
+
+	-- ── 매치 시작 ───────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void BeginMatch(any userIds)
+		-- 매치 시작. MatchSessionLogic.StartMatch 가 이전 판 원장을 비운 직후 부른다.
+		-- ① 방에 남은 사람을 승강장으로  ② 참가 순서대로 한 번 고정 배정  ③ 6방 발록을 새로 깐다.
+		self:ClearLedger()
+		self:ClearStragglers()
+		local n = (userIds ~= nil) and #userIds or 0
+		for i = 1, n do
+			if i > #self.rooms then
+				log_error("[BalrogRoom] 방이 모자란다 — 참가 " .. tostring(n) .. "명 · 방 " .. tostring(#self.rooms) ..
+					"개. " .. tostring(userIds[i]) .. " 미배정")
+			else
+				self.assign[userIds[i]] = i
+				self.owner[i] = userIds[i]
+			end
+		end
+		for i = 1, #self.rooms do
+			self.occupant[i] = ""
+			self:ResetRoomBoss(i)
+		end
+		self.active = true
+		local txt = ""
+		for i = 1, #self.rooms do
+			txt = txt .. " " .. tostring(i) .. "=" .. tostring(self.owner[i] or "-")
+		end
+		log("[BalrogRoom] BEGIN 배정" .. txt)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearStragglers()
+		-- 🔴 발록 방은 정적 맵이라 이전 판 사람이 남아 있을 수 있다 (결과 화면에서 "로비로" 를 안 눌렀다 ·
+		--    죽었다가 방 안에 부활했다). 그대로 두면 새 방 주인과 한 방에 서서 새 발록을 때린다 —
+		--    피해 값도 승부도 망가진다. MatchSessionLogic.LeaveToLobby 와 같은 순서로 승강장에 보낸다.
+		for i = 1, #self.rooms do
+			local map = _EntityService:GetEntityByPath("/maps/" .. self.rooms[i])
+			if isvalid(map) and isvalid(map.MapComponent) then
+				local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+				if users ~= nil then
+					for _, u in ipairs(users) do
+						if isvalid(u) and isvalid(u.PlayerComponent) then
+							local uid = u.PlayerComponent.UserId
+							if _SpectateService ~= nil and _SpectateService:IsSpectator(uid) then _SpectateService:LeaveSpectate(uid) end
+							if _MatchResetService ~= nil then _MatchResetService:ResetUser(uid) end
+							if _MatchLobbyGateway ~= nil then _MatchLobbyGateway:ReturnToStation(uid) end
+							log("[BalrogRoom] 방" .. tostring(i) .. " 남은 사람 → 승강장 " .. uid)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetRoomBoss(integer room)
+		-- 그 방 발록을 풀 HP 새 엔티티로 다시 깐다.
+		-- 🔴 스포너가 없거나 리셋에 실패하면 그 방은 판정 대상에서 뺀다(lastHp 를 안 채운다) —
+		--    안 그러면 "없는 발록" 이 죽은 것으로 읽혀 가짜 승자가 나온다. 입장도 막힌다(IsRoomReady).
+		local map = self.rooms[room]
+		self.bosses[room] = nil
+		self.lastHp[room] = nil
+		local sp = _EntityService:GetEntityByPath("/maps/" .. map .. "/BossSpawner_" .. self.BossId)
+		if not isvalid(sp) or not isvalid(sp.BossSpawner) then
+			log_error("[BalrogRoom] 방" .. tostring(room) .. " 스포너 없음 — " .. map)
+			return
+		end
+		if not sp.BossSpawner:ResetBoss() then
+			log_error("[BalrogRoom] 방" .. tostring(room) .. " 발록 리셋 실패 — " .. map)
+			return
+		end
+		local b = sp.BossSpawner.bossEntity
+		if isvalid(b) then
+			self.bosses[room] = b
+			self.lastHp[room] = self:BossMaxHp()
+		end
+	end
+
+	-- ── 값 ──────────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method integer RoomOf(string userId)
+		-- 이 사람에게 배정된 방 번호. 없으면 0.
+		if self.assign == nil then return 0 end
+		return self.assign[userId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TicketCost()
+		-- 이번 매치 ★에 해당하는 영혼석 개수. 표가 이상하면 ★ 그대로.
+		local d = 1
+		if _MatchSessionLogic ~= nil then d = math.max(1, math.min(5, _MatchSessionLogic.Difficulty)) end
+		local i = 0
+		for v in string.gmatch(self.TicketCosts, "[^,]+") do
+			i = i + 1
+			if i == d then return math.max(0, math.floor(tonumber(v) or d)) end
+		end
+		return d
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer BossMaxHp()
+		-- 도감의 발록 최대 HP. 6방 모두 같다(BossId 하나를 공유한다).
+		if _BossCatalog == nil then return 0 end
+		local info = _BossCatalog:GetInfo(self.BossId)
+		if info == nil then return 0 end
+		return math.floor(info.maxHp)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer DamageOf(string userId)
+		-- 이 사람이 자기 방 발록에 준 누적 피해. 1인 1방이라 MaxHp - 현재 HP 가 곧 그 값이다.
+		-- 결과 화면 순위 1순위 열이다 (MatchSessionLogic.ShowResult · SnapshotRow).
+		-- 🔴 캐시(lastHp)가 아니라 **지금 HP** 를 읽는다. 엔티티가 치워졌을 때만 캐시를 쓴다.
+		local room = self:RoomOf(userId)
+		if room == 0 or self.lastHp == nil or self.lastHp[room] == nil then return 0 end
+		local hp = self.lastHp[room]
+		local b = self.bosses[room]
+		if isvalid(b) and isvalid(b.Monster) then hp = math.max(0, b.Monster.Hp) end
+		return math.max(0, self:BossMaxHp() - math.floor(hp))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsInMap(Entity player, string mapName)
+		-- 이 플레이어가 지금 그 맵에 서 있나.
+		local cm = player.CurrentMap
+		return isvalid(cm) and cm.Name == mapName
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsRoomReady(integer room)
+		-- 판정할 발록이 제대로 깔려 있는 방인가.
+		return self.lastHp[room] ~= nil and isvalid(self.bosses[room])
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsChallengeLive(string userId, integer room)
+		-- 이 사람이 지금 그 방에서 도전 중인가 — 도착했고 · 아직 방 주인이고 · 90초 마감 전.
+		if userId == nil or userId == "" then return false end
+		if self.occupant[room] ~= userId or self.phase[userId] ~= "in" then return false end
+		local dl = self.deadline[userId]
+		return dl ~= nil and self:Now() <= dl
+	end
+
+	-- ── 입장 (클라 → 서버) ──────────────────────────────────────────
+
+	@ExecSpace("Server")
+	method void RequestEnter()
+		-- 마을 발록 포탈에서 ↑. **서버가** 가도 되는지 판정하고 배정된 방으로 보낸다.
+		-- 🔴 클라는 판정하지 않는다 — PortalNetwork 가 이 행만 바인딩하지 않고 여기로 넘긴다.
+		-- 🔴 입장권은 여기서 **개수만 확인**하고 실제로 방에 도착했을 때 뺀다(Arrive).
+		local userId = senderUserId
+		if _SpectateService ~= nil and _SpectateService:Blocked(userId) then return end
+		if not self.active or _MatchSessionLogic == nil or not _MatchSessionLogic.Running then
+			self:Toast(userId, "매치 중에만 발록에 도전할 수 있습니다")
+			return
+		end
+		if not _MatchSessionLogic:IsParticipant(userId) then
+			self:Toast(userId, "이번 매치 참가자가 아닙니다")
+			return
+		end
+		local lu = _MatchSessionLogic.leftUsers
+		if lu ~= nil and lu[userId] then
+			-- 매치 중 접속을 끊었던 사람. 마을이 없어 넥서스 탈락이 안 걸린 경우도 여기서 막는다.
+			self:Toast(userId, "매치를 이탈해서 도전할 수 없습니다")
+			return
+		end
+		if self.Winner ~= "" then
+			self:Toast(userId, "이미 누군가 발록을 처치했습니다")
+			return
+		end
+		if _VillageOwnership ~= nil and _VillageOwnership:IsEliminated(userId) then
+			self:Toast(userId, "탈락해서 도전할 수 없습니다")
+			return
+		end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		if player.PlayerComponent:IsDead() then return end
+		-- 🔴 위치는 서버가 본다. 안 보면 변조된 클라가 어디서든 이 RPC 로 방에 들어간다.
+		if not self:IsInMap(player, self.VillageMap) then
+			self:Toast(userId, "슬리피우드 마을의 발록 포탈에서만 도전할 수 있습니다")
+			return
+		end
+		local room = self:RoomOf(userId)
+		if room == 0 then
+			self:Toast(userId, "배정된 발록 방이 없습니다")
+			log_warning("[BalrogRoom] 입장 거절 " .. userId .. " — 배정 없음")
+			return
+		end
+		if not self:IsRoomReady(room) then
+			-- 발록 리셋에 실패한 방. 들어가 봐야 이길 수 없으니 입장권을 쓰기 전에 막는다.
+			self:Toast(userId, "발록 방이 준비되지 않았습니다")
+			log_error("[BalrogRoom] 입장 거절 " .. userId .. " — 방" .. tostring(room) .. " 발록 없음")
+			return
+		end
+		local occ = self.occupant[room] or ""
+		if occ == userId then return end   -- 이미 들어가 있거나 옮기는 중
+		if occ ~= "" then
+			-- 고정 배정이라 원래 일어나면 안 된다. 안전망이다.
+			self:Toast(userId, "발록 방이 사용 중입니다")
+			log_warning("[BalrogRoom] 입장 거절 " .. userId .. " — 방" .. tostring(room) .. " 점유 " .. occ)
+			return
+		end
+		local need = self:TicketCost()
+		if need > 0 then
+			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, self.TicketItemId) or 0
+			if have < need then
+				self:Toast(userId, "낙인의 영혼석이 부족합니다 (필요 " .. tostring(need) .. " · 보유 " .. tostring(have) .. ")")
+				return
+			end
+		end
+
+		self.occupant[room] = userId
+		self.phase[userId] = "moving"
+		self.moveStart[userId] = self:Now()
+		self.cost[userId] = need
+		self.deadline[userId] = nil
+		self.evict[userId] = nil
+		player.PlayerComponent:MoveToEntityByPath("/maps/" .. self.rooms[room] .. "/" .. self.RoomArrivePortal)
+		log("[BalrogRoom] ENTER " .. userId .. " 방" .. tostring(room) .. " 영혼석 " .. tostring(need) .. "개 확인 · 이동 중")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Arrive(string userId, integer room)
+		-- 방에 도착했다. 🔴 입장권은 **지금** 뺀다 — 옮기다 실패하면 안 쓴 것이 된다. 환불은 없다.
+		local need = self.cost[userId] or 0
+		if need > 0 then
+			if _InventoryService == nil or not _InventoryService:RemoveItem(userId, self.TicketItemId, need) then
+				self:Toast(userId, "낙인의 영혼석이 부족해 들어가지 못했습니다")
+				self:Evict(userId, room, "")
+				log_warning("[BalrogRoom] 도착했지만 입장권 차감 실패 " .. userId .. " x" .. tostring(need))
+				return
+			end
+		end
+		self.phase[userId] = "in"
+		self.deadline[userId] = self:Now() + self.ChallengeSeconds
+		self:Toast(userId, "발록 방 " .. tostring(room) .. " — " .. tostring(math.floor(self.ChallengeSeconds)) .. "초")
+		log("[BalrogRoom] ARRIVE " .. userId .. " 방" .. tostring(room) .. " 영혼석 -" .. tostring(need) ..
+			" 발록HP=" .. tostring(self.lastHp[room] or -1))
+	end
+
+	-- ── 퇴장 ────────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void Release(string userId)
+		-- 도전 상태만 푼다. 배정은 그대로다(고정 배정 · HP 그대로 재도전).
+		local room = self:RoomOf(userId)
+		if room ~= 0 and self.occupant[room] == userId then self.occupant[room] = "" end
+		self.phase[userId] = nil
+		self.moveStart[userId] = nil
+		self.deadline[userId] = nil
+		self.cost[userId] = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Evict(string userId, integer room, string reason)
+		-- 도전을 끝내고 그 방에서 내보낸다. 🔴 입장권은 돌려주지 않는다.
+		-- 표식은 **방 밖에 선 것을 확인할 때까지** 남는다 — 죽어서 부활을 기다리든, 옮기는 중이었든,
+		--    이동이 늦든 결국 마을로 나오게 한다(ProcessEvictions).
+		self:Release(userId)
+		self.evict[userId] = room
+		self.evictAt[userId] = -999
+		self.evictUntil[userId] = self:Now() + self.ArriveTimeoutSeconds
+		if reason ~= "" then self:Toast(userId, "발록 도전 종료 — " .. reason) end
+		log("[BalrogRoom] EVICT " .. userId .. " 방" .. tostring(room) .. " (" .. reason .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEliminated(string userId)
+		-- 넥서스가 부서져 탈락했다 (MatchSessionLogic.OnPlayerEliminated 가 부른다).
+		-- 🔴 관전 진입은 캐릭터를 숨기고 멈추기만 하지 옮기지 않는다. 방 안이든 · 옮기는 중이든 ·
+		--    죽어서 부활 대기든 전부 내보내기 표식을 건다. 방 밖이면 표식은 곧 저절로 지워진다.
+		--    배정은 유지한다 (WO-017 §4 · 방을 재활용하지 않는다).
+		local room = self:RoomOf(userId)
+		if room == 0 then return end
+		local wasIn = (self.occupant[room] == userId)
+		self:Evict(userId, room, wasIn and "탈락" or "")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ClaimPendingWinner()
+		-- MatchSessionLogic.Expire 가 **승리가 아닌 종료 직전에** 부른다.
+		-- Logic 끼리 OnUpdate 순서는 정해져 있지 않다 — 같은 프레임에 만료가 먼저 돌면 방금 죽은 발록이
+		-- 승리로 안 잡힌다. 여기서 한 번 더 보고, 승자가 나오면 true (DeclareWinner 가 매치를 이미 끝냈다).
+		if not self.active or self.Winner ~= "" then return false end
+		self:CheckBosses()
+		return self.Winner ~= ""
+	end
+
+	-- ── 매 프레임 ───────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임: 발록 생사(선취 판정). 0.25초마다: 방 안 사람 · 내보낼 사람.
+		if not self.active then return end
+		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then
+			self:OnMatchOver()
+			return
+		end
+		self:CheckBosses()
+		if self.Winner ~= "" then return end
+		self.tickAcc = self.tickAcc + delta
+		if self.tickAcc < 0.25 then return end
+		self.tickAcc = 0
+		self:CheckOccupants()
+		self:ProcessEvictions()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMatchOver()
+		-- 매치가 끝났다. 도전을 전부 닫고 감시를 멈춘다.
+		-- 방에 남은 사람은 결과 화면의 "로비로" 가 승강장으로 보낸다. 끝내 안 누르면 다음 BeginMatch 가 치운다.
+		-- ⚠️ owner · bosses · lastHp 는 남긴다 — 결과 화면이 DamageOf 로 읽는다. 다음 BeginMatch 가 비운다.
+		for i = 1, #self.rooms do
+			self.occupant[i] = ""
+		end
+		self.phase = {}
+		self.moveStart = {}
+		self.deadline = {}
+		self.cost = {}
+		self.evict = {}
+		self.evictAt = {}
+		self.evictUntil = {}
+		self.active = false
+		log("[BalrogRoom] 매치 종료 — 도전 전부 닫음 · 감시 중지")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckBosses()
+		-- 방마다 발록 HP 를 기록하고 죽은 발록을 찾는다.
+		-- 🔴 매 프레임 돈다. 같은 프레임에 둘 이상 죽은 것만 동률이고, 그건 서버 입장에서 동시다 —
+		--    방 번호가 빠른 쪽이 이긴다(결정적).
+		for i = 1, #self.rooms do
+			local uid = self.owner[i]
+			if uid ~= nil and self.lastHp[i] ~= nil then
+				local b = self.bosses[i]
+				local dead = false
+				if isvalid(b) then
+					local mon = b.Monster
+					if isvalid(mon) then
+						self.lastHp[i] = math.max(0, mon.Hp)
+						dead = mon.IsDead
+					end
+				else
+					-- 사망 연출 뒤 Destroy 로 치워졌다. 살아 있는 걸 본 방이니 죽은 것이다.
+					dead = true
+				end
+				if dead then
+					if self:IsChallengeLive(uid, i) then
+						self:DeclareWinner(i)
+						return
+					end
+					-- 🔴 도전 중이 아닐 때 죽었다 — 90초 마감 뒤, 또는 방을 나간 뒤의 소환수·지속 피해.
+					--    선취로 인정하지 않는다. 그 방이 계속 이길 수 있게 발록을 새로 깐다.
+					log_warning("[BalrogRoom] 방" .. tostring(i) .. " 발록 사망 무효 — 도전 중이 아니었다 (" .. tostring(uid) .. ")")
+					self:Toast(uid, "도전 시간 밖의 처치는 인정되지 않습니다 — 발록이 다시 나타났습니다")
+					self:ResetRoomBoss(i)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckOccupants()
+		-- 방 안 사람: 도착 확인 · 접속 끊김 · 사망 · 걸어서 나감 · 90초 만료.
+		local now = self:Now()
+		for i = 1, #self.rooms do
+			local uid = self.occupant[i] or ""
+			if uid ~= "" then
+				local player = _UserService:GetUserEntityByUserId(uid)
+				if not isvalid(player) or not isvalid(player.PlayerComponent) then
+					self:Release(uid)
+					log("[BalrogRoom] 방" .. tostring(i) .. " 비움 — " .. uid .. " 접속 없음")
+				elseif self.phase[uid] == "moving" then
+					-- 🔴 MoveToEntityByPath 직후엔 아직 마을에 있다. 도착하기 전에 "방 밖" 으로 읽으면
+					--    들어가자마자 쫓겨난다. 도착해야 입장권을 빼고 90초를 센다.
+					if self:IsInMap(player, self.rooms[i]) then
+						self:Arrive(uid, i)
+					elseif now - (self.moveStart[uid] or now) >= self.ArriveTimeoutSeconds then
+						self:Toast(uid, "발록 방으로 이동하지 못했습니다 (입장권은 쓰지 않았습니다)")
+						-- 늦게라도 도착하면 내보내야 하므로 Release 가 아니라 Evict 다.
+						self:Evict(uid, i, "")
+						log_warning("[BalrogRoom] 도착 안 함 " .. uid .. " 방" .. tostring(i) ..
+							" — " .. tostring(self.ArriveTimeoutSeconds) .. "초 대기")
+					end
+				elseif player.PlayerComponent:IsDead() then
+					-- 🔴 엔진은 5초 뒤 **이 방의 SpawnLocation** 에 되살린다(PlayerComponent.Respawn:
+					--    RespawnPosition → 맵 SpawnLocation → 입구). 되살아나면 ProcessEvictions 가 마을로 꺼낸다.
+					self:Evict(uid, i, "사망. 부활하면 마을로 돌아갑니다")
+				elseif not self:IsInMap(player, self.rooms[i]) then
+					-- 복귀 포탈(S01B*)로 걸어 나갔다. 그 포탈은 바인딩돼 있어서 서버를 안 거친다.
+					self:Release(uid)
+					self:Toast(uid, "발록 방에서 나왔습니다")
+					log("[BalrogRoom] EXIT " .. uid .. " 방" .. tostring(i))
+				elseif now >= (self.deadline[uid] or now) then
+					self:Evict(uid, i, tostring(math.floor(self.ChallengeSeconds)) .. "초 만료")
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ProcessEvictions()
+		-- 내보낼 사람을 방 밖이 확인될 때까지 챙긴다. 죽어 있으면 부활을 기다린다.
+		local now = self:Now()
+		for uid, room in pairs(self.evict) do
+			local player = _UserService:GetUserEntityByUserId(uid)
+			if not isvalid(player) or not isvalid(player.PlayerComponent) then
+				self.evict[uid] = nil
+				self.evictAt[uid] = nil
+				self.evictUntil[uid] = nil
+			elseif self:IsInMap(player, self.rooms[room]) then
+				if not player.PlayerComponent:IsDead() and now - (self.evictAt[uid] or -999) >= self.EvictRetrySeconds then
+					self.evictAt[uid] = now
+					player.PlayerComponent:MoveToEntityByPath("/maps/" .. self.VillageMap .. "/" .. self.VillageArrivePortal)
+					log("[BalrogRoom] → 마을 " .. uid .. " (방" .. tostring(room) .. ")")
+				end
+			elseif now >= (self.evictUntil[uid] or 0) then
+				-- 방 밖이고, 늦게 도착할 이동을 기다릴 시간도 지났다.
+				self.evict[uid] = nil
+				self.evictAt[uid] = nil
+				self.evictUntil[uid] = nil
+			end
+		end
+	end
+
+	-- ── 선취 판정 ───────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void DeclareWinner(integer room)
+		-- 🔴 선취 판정. 정확히 한 번 — Winner 가 차 있으면 즉시 돌아간다.
+		if self.Winner ~= "" then return end
+		local uid = self.owner[room]
+		if uid == nil or uid == "" then return end
+		self.Winner = uid
+		self.lastHp[room] = 0
+		log("[BalrogRoom] WINNER " .. uid .. " — 방" .. tostring(room) .. " 발록 처치")
+		if _MatchSessionLogic ~= nil then _MatchSessionLogic:DeclareWinner(uid) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Toast(string userId, string message)
+		-- 소유 클라 토스트.
+		if _UIToast ~= nil then _UIToast:ShowMessage(message, userId) end
+	end
+
+end
