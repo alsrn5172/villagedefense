@@ -129,6 +129,15 @@ script MatchSessionLogic extends Logic
 			log_error("[Match] MatchResetService 없음 — 이전 판 상태가 남은 채 시작한다")
 		end
 
+		-- 발록 방 6개: 참가 순서대로 고정 배정 + 6방 발록 새로 깔기 (WO-017).
+		-- 🔴 발록 방은 비인스턴스 맵이라 매치가 끝나도 발록이 안 치워진다. 여기서 안 깔면
+		--    다음 판이 이전 판의 죽은 방·깎인 HP 를 물려받는다.
+		if _BalrogRoomService ~= nil then
+			_BalrogRoomService:BeginMatch(self.participants)
+		else
+			log_error("[Match] BalrogRoomService 없음 — 발록 방 배정 없이 시작한다 (승리 조건이 동작하지 않는다)")
+		end
+
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
 		self.waveIndex = 0
@@ -375,6 +384,12 @@ script MatchSessionLogic extends Logic
 		-- 매치 종료. 1회만. reason = "시간 종료" · "전원 탈락" 등.
 		-- 시계·웨이브를 멈추고 전 클라에 알린 뒤 **결과 화면**을 띄운다.
 		if self.Expired then return end
+		-- 🔴 승리가 아닌 종료(시간 종료 · 전원 탈락) 직전에 발록 사망을 한 번 더 본다 (WO-017 · Codex A·B).
+		--    BalrogRoomService 는 매 프레임 보지만 Logic 끼리 OnUpdate 순서는 정해져 있지 않다 —
+		--    같은 프레임에 만료가 먼저 돌면 방금 죽은 발록이 승리로 안 잡힌다.
+		--    승자가 나오면 DeclareWinner → Expire("승리 — …") 가 이미 끝냈으므로 여기서 돌아간다.
+		--    그 안쪽 Expire 에선 Winner 가 이미 차 있어 ClaimPendingWinner 가 false 라 재귀하지 않는다.
+		if _BalrogRoomService ~= nil and _BalrogRoomService:ClaimPendingWinner() then return end
 		self.Expired = true
 		self.Running = false
 		log("[Match] EXPIRED at " .. string.format("%.1f", self.Elapsed) .. "s (duration=" .. tostring(self.MatchDuration) .. "s profile=" .. self.Profile .. " waves=" .. tostring(self.waveIndex) .. ")")
@@ -393,6 +408,28 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void DeclareWinner(string userId)
+		-- 🔴 승리 확정 (WO-017). 주니어 발록을 **가장 먼저** 잡은 사람이 매치 승자다.
+		--    판정은 BalrogRoomService 한 곳에서 1회만 하고 여기선 끝내기만 한다. Expire 가 1회를 보장한다.
+		if self.Expired or not self.Running then return end
+		local name = self:SafeName(userId)
+		log("[Match] WINNER " .. userId .. " (" .. name .. ") — 주니어 발록 선취")
+		if self.participants ~= nil and _UIToast ~= nil then
+			for i = 1, #self.participants do
+				_UIToast:ShowMessage(name .. " 님이 주니어 발록을 가장 먼저 처치했습니다!", self.participants[i])
+			end
+		end
+		self:Expire("승리 — " .. name)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer BalrogDamageOf(string userId)
+		-- 결과 화면 순위 1순위 — 자기 방 발록에 준 누적 피해 (WO-017). 서비스가 없으면 0.
+		if _BalrogRoomService == nil then return 0 end
+		return _BalrogRoomService:DamageOf(userId)
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SnapshotRow(string userId, boolean eliminated)
 		-- 결과 화면에 실릴 한 줄을 지금 값으로 찍어 둔다. 이미 찍혀 있으면 덮지 않는다
 		-- (탈락 경로가 두 번 타도 첫 순간의 값이 진상이다).
@@ -404,7 +441,7 @@ script MatchSessionLogic extends Logic
 		self.finalRows[userId] = {
 			uid = userId,
 			name = self:SafeName(userId),
-			damage = 0,                     -- TODO(WO-017): 발록 누적 피해
+			damage = self:BalrogDamageOf(userId),   -- 발록 누적 피해 (WO-017 · MaxHp - 현재 HP)
 			coreHp = self:CoreHpOf(userId),
 			level = lv,
 			elim = eliminated,
@@ -422,6 +459,8 @@ script MatchSessionLogic extends Logic
 		-- 🔴 먼저 스냅샷. 아래에서 매치가 끝나거나, 이 사람이 승강장으로 나가면서
 		--    원장이 비워지면 레벨을 다시 읽을 수 없다.
 		self:SnapshotRow(userId, true)
+		-- 발록 방 안에서 탈락했으면 꺼낸다 — 관전 진입은 캐릭터를 옮기지 않는다 (WO-017).
+		if _BalrogRoomService ~= nil then _BalrogRoomService:OnEliminated(userId) end
 		self:CheckAllOut()
 	end
 
@@ -475,8 +514,9 @@ script MatchSessionLogic extends Logic
 	method void ShowResult(string reason)
 		-- 결과 화면(MatchResultGroup)을 참가자 전원에게 띄운다.
 		-- 🔴 "포기한 사람의 마지막 모습"이 남는 곳이 여기다 — 넥서스 HP 0 + 탈락 표식으로 기록된다.
-		-- ⚠️ **잠정 배선이다.** 순위 1순위인 "발록 누적 피해" 를 재는 코드가 아직 없어서(WO-017)
-		--    지금은 전부 0 으로 나가고 실질 정렬은 넥서스 HP → 레벨 순이다. 보상 지급도 WO-022 다.
+		-- 순위 1순위 "발록 누적 피해" 는 BalrogRoomService.DamageOf 가 준다 (WO-017).
+		--    1인 1방이라 자기 방 발록의 MaxHp - 현재 HP 가 곧 그 사람 피해다. 승자는 MaxHp 라 맨 위다.
+		-- ⚠️ 순위별 보상 지급은 아직 없다 — WO-022 S2.
 		if _MatchResultUIController == nil or self.participants == nil then return end
 		local n = #self.participants
 		if n == 0 then return end
@@ -499,7 +539,7 @@ script MatchSessionLogic extends Logic
 				table.insert(rows, {
 					uid = uid,
 					name = self:SafeName(uid),
-					damage = 0,                     -- TODO(WO-017): 발록 누적 피해
+					damage = self:BalrogDamageOf(uid),   -- 발록 누적 피해 (WO-017 · MaxHp - 현재 HP)
 					coreHp = self:CoreHpOf(uid),
 					level = lv,
 					elim = elim,
