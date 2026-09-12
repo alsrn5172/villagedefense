@@ -162,4 +162,5 @@
 - 추가기획1 표의 "(컷신 제작)" 을 섀도어 오리진 **일도양단**(`skill/424.img/skill/4241500` · screen 85프레임 1455×858)으로 채웠다. 도적 오리진 팩은 6차 img 규칙(`X24.img` 섀도어 · `X14.img` 나이트로드 = 생사여탈 `skill/414.img/skill/4141500`)으로 찾았다.
 - `SkillExecutors.effectOverrides.SK_T31.cast` = 일도양단 screen(noFlip · offsetY 1.0 · scale 1.4 · 다른 두 컷신과 같은 보정) · `impact` 는 메소 익스플로젼 VI effect0 그대로 · `castSounds.SK_T31` = 오디오 검색 "일도양단" 1순위.
 - 타이밍: CSV `SK_T31` Duration 0.6 → **1.6**(컷신 뒤 피해) · `ExecuteMesoOrigin` 이 동전 연쇄 폭발을 피해 시점 0.15s 전에 끝나도록 역산해 시작(컷신 중 터진다) · `SkillCaster.castLockOverrides.SK_T31` 2.5 → 3.5.
-- 🟡 Play 재확인 필요(컷신 위치·타이밍).
+- Play 확인(같은 방식 · 폴더 임시 복사): 2회차 시전에서 일도양단 컷신(먹 베기 → 파란 메소 폭발) 정상 · `dealt SK_T31 circle r=6 … mul=4` · 피해가 컷신 1.6s 시점에 맞음. **첫 시전은 컷신이 아예 안 떴다**(파이널 에임과 같은 세션 첫 재생 에셋 로딩) → 아래 예열.
+- **컷신 예열**(`SkillExecutors.StartCutscenePrewarm` · `CutscenePrewarm` 스위치): `UserEnterEvent`(+ 이미 입장한 유저) 3s 뒤 `effectOverrides` 의 화면 컷신 cast 5종(불굴의 진·대마법·폭풍의 화살·메소 익스플로전·함포 사격 = `noFlip + scale` 인 항목)을 그 유저 발밑 −40 에 scale 0.01 로 한 번 재생(피해·소리 없음). Play 확인: `cutscene prewarm x5` 뒤 **첫 시전에 컷신 즉시**(0.6s 스크린샷에 이미 화면 가득). 마법사·전사 컷신에도 같은 효과.
