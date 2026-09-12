@@ -10,12 +10,33 @@ script JobPassiveLogic extends Logic
     -- ExecSpace 없음 = 서버·클라 양쪽에서 부른다. 서버는 PlayerSkillState 원장, 클라는 미러(할인된 예상값 표시용 · 로컬 유저만).
     -- 숫자는 전부 SkillInfo.csv PASSIVE 행의 BaseEffect/EffectPerLevel(EffectUnit RATIO · %) — 여기엔 없다.
     -- SinkType/SourceType 값은 Docs/스키마-계약.md §0-2 열거값을 그대로 쓴다.
+    -- b/skill-archer-thief-pirate (2026-09-12):
+    --   포커스(SK_A12) "보스 리젠 표시": 서버 타이머(TickFocusBossTimer)가 포커스를 배운 유저의 현재 맵에 있는 A 의 BossSpawner(deadSeen/respawnAt/elapsed · 읽기만)를 보고
+    --     보스가 죽은 순간 "리젠까지 N초" · 리젠 FocusSoonSeconds 전 "N초 후 리젠" 을 그 유저에게만 토스트(UIToast.ShowMessage · Client ExecSpace + targetUserId).
+    --   픽파켓(SK_T12 · STACK_GAIN): 값(타격당 메소 개수 1~2)만 여기서 읽고, 드랍은 SkillBuffs.OnSkillHitMonster 가 한다.
 
     -- BuffTag -> 적용 SinkType 집합. 여기 없는 태그는 비용 배율에 관여하지 않는다.
     property table costTagSinks = {}
 
     -- BuffTag -> 적용 SourceType 집합.
     property table dropTagSources = {}
+
+    -- 포커스(SK_A12)의 BuffTag. 배웠는지(PassiveRatio > 0)로 리젠 표시 대상을 고른다.
+    property string TagFocus = "DROP_RATE_DREAM_SHARD"
+
+    -- 픽파켓(SK_T12)의 BuffTag(LogPassives 표시용).
+    property string TagPickpocket = "STACK_GAIN"
+
+    -- 보스 리젠 표시 폴링 주기(초) · "곧 리젠" 안내 기준(초).
+    property number FocusPollSeconds = 2
+
+    property number FocusSoonSeconds = 10
+
+    -- [서버] "userId|맵|BossId" -> "announced" | "soon". 보스가 살아나면 지운다.
+    property table focusNotified = {}
+
+    @HideFromInspector
+    property integer focusTimerId = 0
 
     method void OnBeginPlay()
         -- 태그 ↔ 열거값 매핑(양쪽 인스턴스 공용). 열거값이 늘면 계약서 §0-2 를 먼저 고친다.
@@ -26,6 +47,18 @@ script JobPassiveLogic extends Logic
         self.dropTagSources = {
             DROP_RATE_DREAM_SHARD = { BOSS_KILL = true, ELITE_KILL = true },
         }
+        -- 포커스 보스 리젠 표시는 서버 타이머로(IsServer 는 메서드 — 콜론 호출).
+        if self:IsServer() then
+            self.focusTimerId = _TimerService:SetTimerRepeat(function() self:TickFocusBossTimer() end, self.FocusPollSeconds)
+            log("[JobPassive] focus boss timer started (" .. tostring(self.FocusPollSeconds) .. "s)")
+        end
+    end
+
+    method void OnEndPlay()
+        if self.focusTimerId ~= 0 then
+            _TimerService:ClearTimer(self.focusTimerId)
+            self.focusTimerId = 0
+        end
     end
 
     method number GetJobCostMul(string userId, string sinkType)
@@ -83,10 +116,72 @@ script JobPassiveLogic extends Logic
     method void LogPassives(string userId)
         -- 검증용 로그 한 줄. PlayerSkillState.RequestLearn 이 PASSIVE 를 배운 직후 부른다.
         -- reflect = 아이언 바디(SK_W12 · REFLECT_HP_PCT) 최대 HP 반사율 % (b/skill-warrior · SkillBuffs.GetReflectRatio 가 같은 값을 읽는다).
+        -- pickpocket = 픽파켓(SK_T12) 타격당 메소 개수 · focus = 포커스(SK_A12) 드랍율 % (b/skill-archer-thief-pirate).
         log("[JobPassive] " .. userId .. " cost ENHANCE x" .. tostring(self:GetJobCostMul(userId, "ENHANCE"))
             .. " · MONSTER_RECRUIT x" .. tostring(self:GetJobCostMul(userId, "MONSTER_RECRUIT"))
+            .. " · MONSTER_TRAIN x" .. tostring(self:GetJobCostMul(userId, "MONSTER_TRAIN"))
             .. " · drop BOSS_KILL x" .. tostring(self:GetJobDropMul(userId, "BOSS_KILL"))
-            .. " · reflect " .. tostring(self:PassiveRatio(userId, "REFLECT_HP_PCT")) .. "%")
+            .. " · reflect " .. tostring(self:PassiveRatio(userId, "REFLECT_HP_PCT")) .. "%"
+            .. " · pickpocket " .. tostring(self:PassiveRatio(userId, self.TagPickpocket)) .. " meso/hit"
+            .. " · focus " .. tostring(self:PassiveRatio(userId, self.TagFocus)) .. "%")
+    end
+
+    -- ───────────────────────── 서버: 포커스 보스 리젠 표시 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void TickFocusBossTimer()
+        -- 포커스를 배운 유저마다 현재 맵의 BossSpawner 를 읽어 리젠 안내를 보낸다. A 파일은 읽기만(BossSpawner 의 공개 속성).
+        local users = _UserService.UserEntities.Values
+        if users == nil then return end
+        for _, user in ipairs(users) do
+            if isvalid(user) and isvalid(user.PlayerComponent) then
+                local uid = user.PlayerComponent.UserId
+                if self:PassiveRatio(uid, self.TagFocus) > 0 then
+                    local map = user.CurrentMap
+                    if isvalid(map) then
+                        local spawners = map:GetChildComponentsByTypeName("script.BossSpawner", true)
+                        if spawners ~= nil then
+                            for _, sp in ipairs(spawners) do
+                                if isvalid(sp) then
+                                    self:CheckFocusSpawner(uid, map.Name, sp)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CheckFocusSpawner(string userId, string mapName, any sp)
+        -- 스포너 하나: 보스가 죽어 리젠 대기 중이면 "리젠까지 N초"(1회) → FocusSoonSeconds 전 "N초 후 리젠"(1회). 살아 있으면 상태를 지운다.
+        local key = userId .. "|" .. mapName .. "|" .. tostring(sp.BossId)
+        if not sp.deadSeen or sp.respawnAt == nil or sp.respawnAt < 0 then
+            self.focusNotified[key] = nil
+            return
+        end
+        local remaining = sp.respawnAt - sp.elapsed
+        if remaining < 0 then remaining = 0 end
+        local bossName = tostring(sp.BossId)
+        if sp.bossRow ~= nil and sp.bossRow.name ~= nil and sp.bossRow.name ~= "" then bossName = sp.bossRow.name end
+        local state = self.focusNotified[key]
+        if state == nil then
+            self:FocusToast(userId, "[포커스] " .. bossName .. " 리젠까지 " .. tostring(math.floor(remaining)) .. "초")
+            self.focusNotified[key] = "announced"
+        elseif state == "announced" and remaining <= self.FocusSoonSeconds then
+            self:FocusToast(userId, "[포커스] " .. bossName .. " " .. tostring(math.floor(remaining)) .. "초 후 리젠")
+            self.focusNotified[key] = "soon"
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FocusToast(string userId, string text)
+        -- 그 유저에게만 토스트(UIToast.ShowMessage 는 Client ExecSpace → 마지막 인자 targetUserId). UIToast 가 없으면 로그만.
+        if _UIToast ~= nil then
+            _UIToast:ShowMessage(text, userId)
+        end
+        log("[JobPassive] FOCUS toast -> " .. userId .. " : " .. text)
     end
 
 end

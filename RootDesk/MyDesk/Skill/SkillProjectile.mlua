@@ -10,6 +10,12 @@ script SkillProjectile extends AttackComponent
     --
     -- No Body component - a Body would let physics overwrite TransformComponent every frame and
     -- undo Translate (same reasoning as the ported source).
+    --
+    -- b/skill-archer-thief-pirate (2026-09-12):
+    --   · DamageMul / DisplayHits: "60x2%" 같은 N발 스킬은 첫 투사체 하나가 피해 ×N · 표시 N타를 진다(MonsterHit.ImmuneCooldown 0.4s 때문에
+    --     두 번째 투사체의 피해는 어차피 무효). 나머지 투사체는 VisualOnly(피해 없음 · 연출만).
+    --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 배율 2.0.
+    --   · OnAttack: hit 사운드(HitSoundRUID) + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
 
     property number DirectionX = 1
 
@@ -46,6 +52,15 @@ script SkillProjectile extends AttackComponent
 
     property number HitCount = 1
 
+    -- 피해 배율(HitCount 발 스킬의 첫 투사체 = HitCount). CalcDamage 가 곱한다.
+    property number DamageMul = 1
+
+    -- 표시 타수(GetDisplayHitCount). 피해 배율과 같은 값으로 두면 "N타에 각 1발 피해" 로 보인다.
+    property number DisplayHits = 1
+
+    -- true = 피해 없음(연출만). 볼리의 2발째부터. 수명·이동·유도는 그대로.
+    property boolean VisualOnly = false
+
     property number RangeX = 0.8
 
     property number RangeY = 0.8
@@ -60,6 +75,12 @@ script SkillProjectile extends AttackComponent
     -- EffectService RUID played at the hit position from OnAttack. Empty = no impact effect
     -- (still deals damage) - matches the ported source's own convention, no particle fallback.
     property string HitEffectRUID = ""
+
+    -- 명중 시 재생할 사운드 RUID(원작 팩 _audio/Hit). 비면 없음.
+    property string HitSoundRUID = ""
+
+    -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
+    property number CritDamageRate = 2.0
 
     @HideFromInspector
     property any Shape = nil
@@ -152,7 +173,7 @@ script SkillProjectile extends AttackComponent
         -- Body-less entity -> Translate is safe and not overwritten by physics next frame.
         transform:Translate(self.DirectionX * self.Speed * delta, self.DirectionY * self.Speed * delta)
 
-        if self.consumed then
+        if self.consumed or self.VisualOnly then
             return
         end
 
@@ -175,12 +196,21 @@ script SkillProjectile extends AttackComponent
     -- "spawn effect after N seconds" timer. This is the actual fix for the detonates-in-place
     -- bug: the effect now happens exactly where and when the bolt lands, because it lands.
     method void OnAttack(Entity defender)
-        if self.HitEffectRUID ~= "" and isvalid(defender) then
+        if isvalid(defender) then
             local t = defender.TransformComponent
             if isvalid(t) then
                 local p = t.WorldPosition
-                _EffectService:PlayEffect(self.HitEffectRUID, self.Entity,
-                    Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+                if self.HitEffectRUID ~= "" then
+                    _EffectService:PlayEffect(self.HitEffectRUID, self.Entity,
+                        Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+                end
+                if self.HitSoundRUID ~= "" then
+                    _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)
+                end
+            end
+            -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
+            if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
+                _SkillBuffs:OnSkillHitMonster(self.CasterUserId, defender, self.SkillId)
             end
         end
 
@@ -195,16 +225,25 @@ script SkillProjectile extends AttackComponent
         -- the only place the damage VALUE comes from. SkillId/Level/CasterUserId are relayed
         -- from spawn time instead of re-derived from `attacker`, because `attacker` here is this
         -- projectile entity, not the caster - it has no PlayerComponent to read a userId from.
-        return math.floor(_SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId))
+        -- DamageMul: N발 스킬의 첫 투사체는 ×N (표시는 GetDisplayHitCount 가 N타로 나눈다).
+        return math.floor(_SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId) * self.DamageMul)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
-        -- No crit system yet - same as SkillAttack.CalcCritical.
+        -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 예전처럼 false(스킬엔 확률 크리 없음).
+        -- ⚠ 부모(AttackComponent.CalcCritical)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐.
+        if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
+            return _SkillBuffs:IsGuaranteedCrit(self.CasterUserId)
+        end
         return false
     end
 
+    method float GetCriticalDamageRate()
+        return self.CritDamageRate
+    end
+
     method int32 GetDisplayHitCount(string attackInfo)
-        local n = math.floor(self.HitCount)
+        local n = math.floor(self.DisplayHits)
         if n < 1 then
             return 1
         end

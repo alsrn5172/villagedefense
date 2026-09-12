@@ -7,6 +7,10 @@ script SkillCaster extends Logic
     --   서버 → 클라 CastResult   : 성공/실패와 쿨다운, castId 를 돌려준다. 실패면 그 castId 의 클라 락을 푼다.
     --   클라 ReleaseCastLock     : 락 타이머·서버 거절이 수렴하는 유일한 해제 경로(castId 가 다르면 무시).
     -- 최종 판정은 항상 서버다. 클라 결과는 표시용이다.
+    -- b/skill-archer-thief-pirate (2026-09-12):
+    --   · 재시전 스킬(슈퍼 트랜스폼 SK_P21): 그 버프가 켜져 있는 동안은 쿨다운 게이트를 건너뛰고 쿨다운도 새로 시작하지 않는다(SkillBuffs.IsRecastActive).
+    --     실행기(SkillExecutors.ExecuteBuff)가 "활성 중 재시전 = 주먹 공격" 으로 푼다. MP 는 매번 든다.
+    --   · 실행기 사전 조건(SkillExecutors.PreCheck): 메소 익스플로전(SK_T31)은 주변 동전이 0 개면 MP·쿨다운·사용 횟수 소모 없이 거절.
 
     -- SummonManager.SpendMp(B · PR #41 · main 24204a3 에 머지됨)를 쓴다. 2026-09-10 사용자 지시로 켬 — 시전마다 MP 차감, 매직 가드 흡수분도 SpendMp 로.
     -- false 로 두면 MP 게이트(GetEcon.mp >= MpCost)만 검사하고 차감은 하지 않는다(과거 대기 모드).
@@ -66,11 +70,23 @@ script SkillCaster extends Logic
             SK_W21 = 0.6,
             SK_W22 = 0.6,
             SK_W31 = 1.5,
+            -- b/skill-archer-thief-pirate (2026-09-12): 원작 공격 딜레이 근사. 컷신형 궁(폭풍의 화살 · 함포 사격)은 컷신이 끝날 때까지.
+            SK_A11 = 0.4,   -- 더블 샷
+            SK_A21 = 1.2,   -- 스나이핑: 선딜 1s(CSV Duration) + 발사
+            SK_A31 = 3.5,   -- 폭풍의 화살: 파이널 에임 컷신(Duration 1.5 뒤 발사) + 여운
+            SK_T11 = 0.4,   -- 럭키 세븐
+            SK_T21 = 0.5,   -- 다크 사이트
+            SK_T22 = 0.6,   -- 쉐도우 파트너
+            SK_T31 = 2.5,   -- 메소 익스플로전: 동전 연쇄 폭발(Duration 0.6) + 중심 폭발
+            SK_P11 = 0.5,   -- 섬머솔트 킥
+            SK_P21 = 0.6,   -- 슈퍼 트랜스폼(변신) · 변신 중 재시전(주먹)도 같은 값
+            SK_P22 = 0.6,   -- 에너지 쉴드
+            SK_P31 = 3.5,   -- 함포 사격: 드레드노트 컷신(Duration 1) + 6파 폭격 ≈2.3s
         }
     end
 
     method boolean IsMovementSkill(table skill)
-        -- 이동 스킬 = behavior BLINK (SK_M13 텔레포트). 시전 락을 무시하고, 자기 락도 안 건다. 양쪽 인스턴스 공용.
+        -- 이동 스킬 = behavior BLINK (SK_M13 텔레포트 · SK_A22 닷지). 시전 락을 무시하고, 자기 락도 안 건다. 양쪽 인스턴스 공용.
         return skill ~= nil and skill.behavior == "BLINK"
     end
 
@@ -99,7 +115,9 @@ script SkillCaster extends Logic
         if not canUse.ok then
             return self:FinishCast(skillId, canUse)
         end
-        if _PlayerSkillState:LocalIsOnCooldown(skillId) then
+        -- 재시전 스킬(슈퍼 트랜스폼): 그 버프가 미러에 켜져 있으면 쿨다운 게이트를 건너뛴다(서버가 다시 판정).
+        local isRecast = _SkillBuffs ~= nil and _SkillBuffs:LocalIsRecastActive(skillId)
+        if not isRecast and _PlayerSkillState:LocalIsOnCooldown(skillId) then
             local remaining = _PlayerSkillState:LocalCooldownRemaining(skillId)
             return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)" })
         end
@@ -237,7 +255,6 @@ script SkillCaster extends Logic
     @ExecSpace("Server")
     method void RequestCast(string skillId, integer castId)
         -- castId: 클라가 발급한 시전 번호. 결과(CastResult)에 그대로 돌려줘 클라가 "이미 지난 시전"의 응답을 무시할 수 있게 한다.
-        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local uid = senderUserId
         _SkillDatabase:EnsureLoaded()
 
@@ -260,8 +277,9 @@ script SkillCaster extends Logic
             self:CastResult(skillId, false, canUse.reason, 0, castId, uid)
             return
         end
-        -- 4. 쿨다운
-        if _PlayerSkillState:IsOnCooldown(uid, skillId) then
+        -- 4. 쿨다운 — 재시전 스킬(슈퍼 트랜스폼 SK_P21)은 그 버프가 켜져 있는 동안 건너뛴다(SkillBuffs.IsRecastActive).
+        local isRecast = _SkillBuffs ~= nil and _SkillBuffs:IsRecastActive(uid, skillId)
+        if not isRecast and _PlayerSkillState:IsOnCooldown(uid, skillId) then
             local remaining = _PlayerSkillState:GetCooldownRemaining(uid, skillId)
             self:CastResult(skillId, false, "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)", 0, castId, uid)
             return
@@ -279,6 +297,16 @@ script SkillCaster extends Logic
         if skill.useLimit > 0 and _PlayerSkillState:GetUseCount(uid, skillId) >= skill.useLimit then
             self:CastResult(skillId, false, "use limit reached (" .. tostring(skill.useLimit) .. ")", 0, castId, uid)
             return
+        end
+        -- 5-1. 실행기 사전 조건 (b/skill-archer-thief-pirate): 메소 익스플로전(SK_T31)은 반경 안 동전이 0 개면 소모 없이 거절.
+        --      MP 차감(6) 앞에 둔다 — 거절된 시전은 아무것도 소모하지 않는다.
+        local casterEntity = _UserService:GetUserEntityByUserId(uid)
+        if _SkillExecutors ~= nil and isvalid(casterEntity) then
+            local pre = _SkillExecutors:PreCheck(skillId, skill, casterEntity)
+            if pre ~= nil and not pre.ok then
+                self:CastResult(skillId, false, pre.reason, 0, castId, uid)
+                return
+            end
         end
         -- 6. MP — 원장은 SummonManager.econ (A). 차감은 SpendMp 만 (UseSpendMp 참조).
         local mp = 0
@@ -310,8 +338,13 @@ script SkillCaster extends Logic
         else
             self.castLockUntil[uid] = now + lockSeconds * 0.9
         end
+        -- 재시전(변신 중 주먹)은 쿨다운을 새로 시작하지 않는다 — 변신 시전 때 시작한 쿨다운이 그대로 흐른다. 클라에는 남은 값을 돌려준다.
         local cooldown = _SkillDatabase:CooldownAt(skillId, level)
-        _PlayerSkillState:StartCooldown(uid, skillId, cooldown)
+        if isRecast then
+            cooldown = _PlayerSkillState:GetCooldownRemaining(uid, skillId)
+        else
+            _PlayerSkillState:StartCooldown(uid, skillId, cooldown)
+        end
         if skill.useLimit > 0 then
             _PlayerSkillState:IncrementUseCount(uid, skillId)
         end
@@ -322,7 +355,7 @@ script SkillCaster extends Logic
             _PlayerMotion:PlaySkill(uid, skillId)
         end
 
-        local caster = _UserService:GetUserEntityByUserId(uid)
+        local caster = casterEntity
         if isvalid(caster) then
             self:EnsureSkillAttack(caster)
             _SkillExecutors:Execute(skill.behavior, skillId, skill, caster, level)
@@ -339,7 +372,7 @@ script SkillCaster extends Logic
         end
         self:SendEvent(evt)
 
-        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " (" .. uid .. ")")
+        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " recast=" .. tostring(isRecast) .. " (" .. uid .. ")")
         self:CastResult(skillId, true, "ok", cooldown, castId, uid)
     end
 

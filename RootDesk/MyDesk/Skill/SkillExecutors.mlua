@@ -14,6 +14,14 @@ script SkillExecutors extends Logic
     --   ORIGIN    BuffTag 가 있고 EffectUnit 이 ATK_PCT 가 아닌 행(불굴의 진 SK_W31)은 피해 없이 그 버프를 Duration 동안 켠다(컷신 = 시전 락).
     --   TAUNT     도발(SK_W22): 반경(BaseEffect) 상자 안 적 몬스터를 시전자 위치로 끌어모으고 Duration 동안 시전자를 고정 추격시킨다(StateChaseMonster.SetTarget).
     --   PASSIVE   아이언 바디(SK_W12) 반사는 SkillBuffs.OnPlayerHitEvent(플레이어 HitEvent) 가 한다.
+    -- b/skill-archer-thief-pirate (2026-09-12 · 추가기획1 궁수·도적·해적 표):
+    --   PROJECTILE projectileDelayFromDuration(스나이핑 SK_A21)은 CSV Duration 만큼 선딜 뒤 발사 · projectilePreferBoss 는 보스 우선 조준 ·
+    --              HitCount>1(더블 샷 SK_A11 · 럭키 세븐 SK_T11)은 볼리(SkillAttack.SpawnProjectile) · 스프라이트(ball)·hit 사운드는 effectOverrides/extraSounds.
+    --   BLINK      닷지(SK_A22): 이동은 SkillMovement.TryDodge(스폰 로케이션) · 도착 확인 뒤 GUARANTEED_CRIT 버프(BuffTag 가 있는 BLINK 행).
+    --   BUFF_SELF  recastAttack(슈퍼 트랜스폼 SK_P21): 그 버프가 켜져 있는 동안의 재시전은 버프 갱신이 아니라 주먹 공격(ExecuteTransformPunch).
+    --              에너지 쉴드(SK_P22 · Duration 0)는 SkillBuffs 가 "깨질 때까지" 로 넣는다.
+    --   ORIGIN     originModes: line(폭풍의 화살 SK_A31 · 앞쪽 직선 상자 관통) · meso(메소 익스플로전 SK_T31 · 반경 안 메소 동전 개수 × 50%) ·
+    --              barrage(함포 사격 SK_P31 · HitCount 를 파로 나눈 연속 폭격). PreCheck(메소 동전 0 개 = 거절)는 SkillCaster 가 MP 앞에서 부른다.
 
     -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
     -- is one line here.
@@ -30,6 +38,9 @@ script SkillExecutors extends Logic
     -- skill_id -> cast sound RUID override; anything not listed uses defaultCastSound.
     property table castSounds = {}
     property string defaultCastSound = "c98d8cb8066e4fcaabe5ad8437c4e0d1"
+
+    -- skill_id -> { hit = RUID(투사체·타격 명중음), punch = RUID(변신 중 주먹), wave = RUID(폭격 파마다) }. 없으면 그 소리 없음.
+    property table extraSounds = {}
 
     -- EntryKey of the shared projectile model every behavior="PROJECTILE" skill spawns
     -- (RootDesk/MyDesk/Models/Skills/SkillProjectile.model). One model, one script.SkillProjectile
@@ -91,6 +102,41 @@ script SkillExecutors extends Logic
 
     property string TeleportEnhancedDepartParticle = ""   -- "" (2026-09-10 사용자 요청 "원작 외 이펙트 제거"): 강화도 출발 파티클 없이 원작 텔레포트 마스터리 도착 이펙트만
 
+    -- ───────────── b/skill-archer-thief-pirate ─────────────
+    -- ORIGIN 변형 (skillId -> "line" | "meso" | "barrage"). BuildHandlerTable 에서 채운다. 없으면 기존(화면 전체 1회 / originSingleTarget 폭발).
+    property table originModes = {}
+
+    -- PROJECTILE 중 CSV Duration 만큼 선딜 뒤 발사하는 스킬 (skillId -> true). 스나이핑 SK_A21.
+    property table projectileDelayFromDuration = {}
+
+    -- PROJECTILE 중 보스 우선 조준 (skillId -> true). 스나이핑 SK_A21.
+    property table projectilePreferBoss = {}
+
+    -- BUFF_SELF 중 "그 버프가 켜져 있는 동안의 재시전 = 공격" 인 스킬 (skillId -> true). 슈퍼 트랜스폼 SK_P21.
+    property table recastAttack = {}
+
+    -- 함포 사격(barrage): HitCount 를 이만큼의 파로 나눈다 · 파 간격(초 · 몬스터 무적 0.4s 보다 길게) · 파마다 떨어지는 폭탄 연출 개수 · 폭탄 흩뿌림(반지름 비율).
+    property integer BarrageWaves = 6
+
+    property number BarrageInterval = 0.45
+
+    property integer BarrageBombsPerWave = 3
+
+    property number BarrageScatter = 0.6
+
+    -- 폭풍의 화살(line): 직선 상자 높이(world unit · 발부터 위로) · 직선 위에 순차 재생할 hit 클립 개수.
+    property number LineHeight = 2.5
+
+    property integer LineHitEffects = 4
+
+    -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초) · 표시 타수 상한(피해 배율은 동전 개수 그대로).
+    property number MesoExplodeInterval = 0.06
+
+    property integer MesoDisplayHitsMax = 15
+
+    -- 메소 동전 모델(A 의 Farm/MesoCoin · FarmReward.DropCoins 의 CoinModelId 와 같은 EntryKey).
+    property string MesoCoinModelId = "mesocoin"
+
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
     @ExecSpace("ServerOnly")
@@ -131,6 +177,21 @@ script SkillExecutors extends Logic
         -- 파워 스트라이크(SK_W11): 추가기획1 전사 A "단일 대상 강한 공격" — 앞쪽 상자 안 최근접 하나. 섬머솔트 킥(SK_P11)은 상자 전부 그대로.
         self.meleeSingleTarget = {
             SK_W11 = true,
+        }
+        -- b/skill-archer-thief-pirate
+        self.originModes = {
+            SK_A31 = "line",      -- 폭풍의 화살: 앞쪽 직선 상자(Range × LineHeight) 안 전부 관통
+            SK_T31 = "meso",      -- 메소 익스플로전: 반경 안 메소 동전 N 개 소모 → atk × 50% × N
+            SK_P31 = "barrage",   -- 함포 사격: HitCount(30)를 BarrageWaves 파로 나눈 연속 폭격
+        }
+        self.projectileDelayFromDuration = {
+            SK_A21 = true,        -- 스나이핑: Duration(1s) 선딜
+        }
+        self.projectilePreferBoss = {
+            SK_A21 = true,
+        }
+        self.recastAttack = {
+            SK_P21 = true,        -- 슈퍼 트랜스폼: 변신 중 재시전 = 주먹
         }
     end
 
@@ -182,6 +243,69 @@ script SkillExecutors extends Logic
                 -- 원본 픽셀 크기가 1920×1080 화면보다 작아 scale 1.4 로 화면을 채운다 (2026-09-10 사용자 제보 "화면을 못 채우고 낮다" → 1차 보정 · 스크린샷으로 재조정).
                 cast = { ruid = "132f5fc6a6614ea4bc9a52f27877c1ce", noFlip = true, offsetY = 1.0, scale = 1.4 },
             },
+            --
+            -- b/skill-archer-thief-pirate (2026-09-12 · 사용자 요청 "원작과 같은 모습 · 다른 직업과 겹치지 않게"): 15종 전부 원작 팩 RUID(msw-search 리소스 API).
+            -- 다섯 직업 사이에 같은 RUID 는 없다(같은 직업 안의 재사용만: 스나이핑 화살 스프라이트 = 더블 샷 ball). 엔진 파티클 폴백은 쓰지 않는다.
+            -- 색인에 없는 원작(궁수 300.img · 신궁 스나이핑 · 도적 400.img 다크 사이트 · 해적 500.img · 슈퍼 트랜스포메이션)은 같은 계열의 현행 팩으로 대체 — 각 행 주석.
+            -- spec 키 추가: ball(투사체 스프라이트 · SpriteRUID) · depart(출발 지점 고정 재생) · punchCast/punchImpact(변신 중 재시전 주먹) ·
+            --               coinHits(동전마다 순환 재생) · offsetX(cast/loop 부착 x · 바라보는 쪽 +).
+            SK_A11 = {   -- 더블 샷 — skill/3300.img/skill/33001105 더블 샷(와일드헌터 · 궁수 300.img 는 색인에 없음): effect 8프레임 · ball/0 화살(60×20) · hit/0
+                cast = { ruid = "963362c63ba74293b734e35fa623b90f" },
+                impact = { ruid = "c5e5ec5781d84d22b4fd065ccfcc8987" },
+                ball = { ruid = "3ee73e25ce47428ca656d6bf0a04e603" },
+            },
+            SK_A21 = {   -- 스나이핑 — skill/324.img/skill/3241004 얼티밋 스나이핑(신궁 스나이핑 3221001 은 색인에 없음): special(640×294 · 조준 사격 연출) · hit/0(232×229)
+                cast = { ruid = "d537bc5fc2524da59e7049d2e454517f" },
+                impact = { ruid = "b1675336f2e34748910386e0d36f0aab" },
+                ball = { ruid = "3ee73e25ce47428ca656d6bf0a04e603" },   -- 같은 직업(더블 샷)의 화살 스프라이트 재사용
+            },
+            SK_A22 = {   -- 닷지 — 출발 지점에 skill/40000.img/skill/400004147 백스텝샷 effect(109×94 · 뒤로 빠지는 궁수). 도착 이펙트 없음(마법사 텔레포트 링과 겹치지 않게).
+                depart = { ruid = "4797106d3d1c415a9af3eb9475edbbc9" },
+            },
+            SK_A31 = {   -- 폭풍의 화살 — skill/324.img/skill/3241500 파이널 에임(신궁 오리진 · 기획서 추천): screen 133프레임 컷신(1456×860 · 세이크리드 바스티온과 같은 보정) · hit/0(187×180)
+                cast = { ruid = "e73ca8e6f7d64c3c9de9e12010f9c93a", noFlip = true, offsetY = 1.0, scale = 1.4 },
+                impact = { ruid = "b36801c6a25e4581952e0df59111daeb" },
+            },
+            SK_T11 = {   -- 럭키 세븐 — skill/400.img/skill/4001344 럭키 세븐: effect 6프레임 · hit/0(46×46) · 표창 스프라이트 = 수비 표창 아이템(5d2441df… · 28×28)
+                cast = { ruid = "0ae88fa494e743158da6ddb81c0c55f2" },
+                impact = { ruid = "458e72f0720a4584a9a7fc3642b6e601" },
+                ball = { ruid = "5d2441df6e6f4446beb45b301cdba0f2" },
+            },
+            SK_T21 = {   -- 다크 사이트 — skill/1400.img/skill/14001003 다크 사이트(나이트워커 · 400.img 은 색인에 없음): effect 4프레임(61×39 · 은신 연기). 은신 자체는 SkillBuffs 가 알파로.
+                cast = { ruid = "abdf05be0b3e4146a6271c4ee1f3b1b1" },
+            },
+            SK_T22 = {   -- 쉐도우 파트너 — skill/411.img/skill/4111002 쉐도우 파트너: effect 16프레임(132×136 · 시전) · loop = special/stand1(52×68 · 분신 서 있기) 을 시전자 뒤(offsetX -0.45)에 반복
+                cast = { ruid = "8ef08d990aeb452bad114479f6bc76fd", noFlip = true },
+                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.45 },
+            },
+            SK_T31 = {   -- 메소 익스플로전 — skill/424.img/skill/4241006 메소 익스플로젼 VI: effect(380×276 · 시전자) + effect0(475×314 · 폭발 중심) · 동전마다 skill/40000.img/skill/400004110 hit/0~8
+                cast = { ruid = "486883a76bae45e3b7c3d55a08265ea9", noFlip = true, offsetY = 0.5, scale = 1.3 },
+                impact = { ruid = "538c9a0b06d44519a0d5c8d0e2e61e1f", scale = 1.2 },
+                coinHits = {
+                    "644458b8c91949b4b4b84ff949eba8ca", "01399ad0be5b416cb8e7b546ef198ee6", "1f4f8390a4b84b1e971a0c4c5dc81a6a",
+                    "5fc67eff43b347858b8792087abc132f", "f1dd8ae11b3c4ba18ab81a195f9f6882", "f6c771d1edb94d8eb75dd6ebbe2b4f5c",
+                    "cb3643f3c74b446c93efd7f3dd4e2d56", "22e843a7a31941829a6cd66752fbcf0e", "28833d6cff7948958a50986e9c9a7b5d",
+                },
+            },
+            SK_P11 = {   -- 섬머솔트 킥 — skill/1500.img/skill/15001002 섬머솔트 킥(스트라이커 · 해적 500.img 는 색인에 없음): effect 7프레임(103×130 · 뒤돌려차기 호) · hit/0(66×72 · 맞은 대상마다)
+                cast = { ruid = "5cd1f5621b774bcbaa84898f79e98772" },
+                impact = { ruid = "2c2e5530dc0e4d15b89f4dae9a7cc1a9" },
+            },
+            SK_P21 = {   -- 슈퍼 트랜스폼 — 변신: skill/40005.img/skill/400051004 라이트닝 폼 effect(194×223) + special(209×168) 루프 · 주먹: skill/40000.img/skill/400004139 스크류 펀치 effect(235×120) + hit(129×115)
+                -- 원작 슈퍼 트랜스포메이션(512.img/5121003)·트랜스포메이션(511.img/5111005)은 색인에 없다. 변신 외형은 SkillBuffs.SetAvatarTint(푸른 틴트) + 이 루프.
+                cast = { ruid = "69f4c5050b7945b5b42b987001134d76", noFlip = true },
+                loop = { ruid = "8fb4311eb34248978f5d47c0f68e67f2", noFlip = true },
+                punchCast = { ruid = "4f97bf6aecbc4687aa83e60e763aaf89" },
+                punchImpact = { ruid = "108745e2c8bb476a9855f716fd9adadd" },
+            },
+            SK_P22 = {   -- 에너지 쉴드 — 원작에 없는 스킬: 시전 = skill/5111.img/skill/51111004 effect(154×172) · 보호막 루프 = skill/14210.img/skill/142100004 싸이킥 실드 special(169×169 · 몸을 감싸는 막)
+                cast = { ruid = "6a227a1bb432465099e41008a29af5ff", noFlip = true },
+                loop = { ruid = "28d6092c83044fb78e3d77453cf4eff8", noFlip = true, offsetY = 0.6 },
+            },
+            SK_P31 = {   -- 함포 사격 — skill/524.img/skill/5241500 드레드노트(캡틴 오리진 · 기획서 추천): screen 79프레임 컷신(1434×835) · 폭탄 = skill/522.img/skill/5221022 배틀쉽 봄버 hit/0(217×187 · 파마다 3발)
+                cast = { ruid = "d35352dca42144a7bb7e64735fe364bf", noFlip = true, offsetY = 1.0, scale = 1.4 },
+                impact = { ruid = "354977ce7834417fb4fe29598c2e31b8" },
+            },
         }
     end
 
@@ -200,6 +324,26 @@ script SkillExecutors extends Logic
             SK_W21 = "8257cc62a72149e09abc7bd4daa69bf5",   -- 하이퍼 바디 Use
             SK_W22 = "5f100db0c97746d2b3aa2a4c92c1d6e0",   -- 노블 디맨드 Use
             SK_W31 = "aa96c1117c634a23b56440be8de39037",   -- 세이크리드 바스티온
+            -- b/skill-archer-thief-pirate: 원작 팩 _audio/Use (팩에 소리가 없는 얼티밋 스나이핑·파이널 에임·드레드노트는 같은 이름의 오디오 검색 1순위). 다른 직업과 겹치지 않는다.
+            SK_A11 = "8faeed3b8ca64163a5121864db093e7a",   -- 더블 샷 Use
+            SK_A21 = "c7a0c92342ba4d0db2550170cd6cc721",   -- 스나이핑 (오디오 검색 1순위)
+            SK_A22 = "2e47b3c180744c3cb5c1f815f736e858",   -- 백스텝샷 Use
+            SK_A31 = "623628022c0942128e018e804bf15e1d",   -- 파이널 에임 (오디오 검색 1순위)
+            SK_T11 = "879c81c8fc274aea87dc673de48ab5d1",   -- 럭키 세븐 Use
+            SK_T21 = "be18b6cf4ef54178b6bd2bde33bddd27",   -- 다크 사이트 Use
+            SK_T22 = "6c7c28167b9049419435cc53001cef0c",   -- 쉐도우 파트너 Use
+            SK_T31 = "acb0f70275b7422dbcc8a395cbbd9d28",   -- 메소 익스플로젼 Hit (팩 400004110)
+            SK_P11 = "6010e41f9225432e9e5dd0d0ed4cb276",   -- 섬머솔트 킥 Use
+            SK_P21 = "6642a39d3fae404cb334e24a93df6b58",   -- 라이트닝 폼 Use (변신)
+            SK_P22 = "668564fe8e91483ebe5656e97ccee5cc",   -- 51111004 Use
+            SK_P31 = "38dd6c9b0c694158b8c1227bf16d6c0e",   -- 드레드노트 (오디오 검색 1순위)
+        }
+        self.extraSounds = {
+            SK_A11 = { hit = "956ddfb53d7845ce972acab3e51b05e1" },     -- 더블 샷 Hit
+            SK_T11 = { hit = "48c2f4049db54b3b88b9144320d3d41a" },     -- 럭키 세븐 Hit
+            SK_P11 = { hit = "8e7b0c6fdc68437982d245033acaa1da" },     -- 섬머솔트 킥 Hit
+            SK_P21 = { punch = "80ad9290460845f18e49478784bcc1b1" },   -- 스크류 펀치 Use (변신 중 주먹)
+            SK_P31 = { wave = "8fd7da623fe54f359638e4004216440a" },    -- 배틀쉽 봄버 Attack1 (파마다)
         }
     end
 
@@ -213,6 +357,38 @@ script SkillExecutors extends Logic
             return
         end
         executorFn(skillId, skillData, casterEntity, level)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table PreCheck(string skillId, table skill, Entity casterEntity)
+        -- 실행기 사전 조건. SkillCaster.RequestCast 가 MP 차감 앞에서 부른다 — 여기서 거절되면 아무것도 소모되지 않는다.
+        -- 메소 익스플로전(SK_T31): 반경 안 시전자가 주울 수 있는 메소 동전이 0 개면 거절(UseLimit 1 인 궁을 헛되이 쓰지 않게).
+        if self.originModes[skillId] == "meso" then
+            if not isvalid(casterEntity.PlayerComponent) then return { ok = false, reason = "no PlayerComponent" } end
+            local radius = skill.range
+            if radius <= 0 then radius = 3 end
+            local coins = self:FindMesoCoins(casterEntity, radius, casterEntity.PlayerComponent.UserId)
+            if #coins == 0 then
+                return { ok = false, reason = "no meso nearby (r=" .. tostring(radius) .. ")" }
+            end
+        end
+        return { ok = true, reason = "ok" }
+    end
+
+    method string GetSpecRuid(string skillId, string stage)
+        -- effectOverrides[skillId][stage].ruid 또는 "". ball(투사체 스프라이트) · impact · punchImpact 등을 꺼낼 때.
+        local entry = self.effectOverrides[skillId]
+        if entry == nil then return "" end
+        local spec = entry[stage]
+        if spec == nil or spec.ruid == nil then return "" end
+        return spec.ruid
+    end
+
+    method string GetExtraSound(string skillId, string key)
+        -- extraSounds[skillId][key] 또는 "".
+        local entry = self.extraSounds[skillId]
+        if entry == nil then return "" end
+        return entry[key] or ""
     end
 
     method void PlayStageEffect(string skillId, string stage, Entity casterEntity, Vector3 pos, any fallbackParticleType)
@@ -231,7 +407,7 @@ script SkillExecutors extends Logic
 
         if spec ~= nil then
             if spec.ruid ~= nil then
-                if stage == "cast" then
+                if stage == "cast" or stage == "punchCast" then
                     -- 2026-09-09 버그 수정: 에너지볼트를 오른쪽으로 쏘면 시전 이펙트가 캐릭터 뒤(왼쪽)에 남았다.
                     -- 원인 ① 메이플 원본 스킬 이펙트는 전부 "왼쪽을 보는" 기준으로 그려져 있고 pivot 이 캐릭터
                     --        앞쪽(=왼쪽)에 박혀 있다. 뒤집지 않으면 오른쪽을 볼 때만 등 뒤에 뜬다
@@ -245,11 +421,11 @@ script SkillExecutors extends Logic
                     -- impact 단계(AOE·ORIGIN 의 캐스터 위치 폭발)는 지면에 고정되는 게 맞아 그대로 둔다.
                     local facing = self:GetFacingX(casterEntity)
                     local opt = {}
-                    -- noFlip: 버프 오라·화면 컷신처럼 좌우 대칭인 연출은 뒤집지 않는다. offsetY/scale: 팩 클립의 pivot 이 발이 아닐 때 보정.
+                    -- noFlip: 버프 오라·화면 컷신처럼 좌우 대칭인 연출은 뒤집지 않는다. offsetX(바라보는 쪽 +)/offsetY/scale: 팩 클립의 pivot 이 발이 아닐 때 보정.
                     opt["FlipX"] = (facing > 0) and not spec.noFlip
                     local s = spec.scale or 1
-                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(0, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
-                    log("SkillExecutors: cast effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]))
+                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+                    log("SkillExecutors: " .. stage .. " effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]))
                 else
                     local s = spec.scale or 1
                     _EffectService:PlayEffect(spec.ruid, casterEntity, Vector3(pos.x, pos.y + (spec.offsetY or 0), pos.z), 0, Vector3(s, s, 1), false)
@@ -276,24 +452,24 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void PlayBuffLoop(string skillId, string buffTag, Entity casterEntity, number duration)
-        -- effectOverrides[skillId].loop 가 있으면(하이퍼 바디 "affected" 오라) 시전자에 붙여 duration 동안 반복 재생한다.
-        -- 같은 태그를 재시전하면 먼저 지우고 새로 건다. 버프 만료(SkillBuffs.ExpireBuff)와 같은 길이의 타이머로 지운다.
+        -- effectOverrides[skillId].loop 가 있으면(하이퍼 바디 "affected" 오라 · 쉐도우 파트너 분신 · 변신 오라 · 보호막) 시전자에 붙여 duration 동안 반복 재생한다.
+        -- 같은 태그를 재시전하면 먼저 지우고 새로 건다. 버프 만료(SkillBuffs.ExpireBuff)와 같은 길이의 타이머로 지우고, 조기 종료는 StopBuffLoop 가 지운다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.loop == nil or entry.loop.ruid == nil then return end
         if not isvalid(casterEntity.PlayerComponent) then return end
         local userId = casterEntity.PlayerComponent.UserId
+        self:StopBuffLoop(userId, buffTag)
         local perUser = self.buffLoopEffects[userId]
         if perUser == nil then
             perUser = {}
             self.buffLoopEffects[userId] = perUser
         end
-        if perUser[buffTag] ~= nil then
-            _EffectService:RemoveEffect(perUser[buffTag])
-            perUser[buffTag] = nil
-        end
         local spec = entry.loop
         local s = spec.scale or 1
-        local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(0, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true)
+        local facing = self:GetFacingX(casterEntity)
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
         perUser[buffTag] = serial
         _TimerService:SetTimerOnce(function()
             if perUser[buffTag] == serial then
@@ -302,6 +478,18 @@ script SkillExecutors extends Logic
             end
         end, duration)
         log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " serial=" .. tostring(serial) .. " for " .. tostring(duration) .. "s")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void StopBuffLoop(string userId, string buffTag)
+        -- 버프 루프 이펙트 제거(재시전 · 만료 전 종료: 다크 사이트 회피 · 보호막 소진 · 매치 초기화). 없으면 아무것도 안 한다. SkillBuffs.OnBuffEnded 가 부른다.
+        local perUser = self.buffLoopEffects[userId]
+        if perUser == nil then return end
+        local serial = perUser[buffTag]
+        if serial == nil then return end
+        _EffectService:RemoveEffect(serial)
+        perUser[buffTag] = nil
+        log("SkillExecutors: buff loop effect stopped " .. buffTag .. " serial=" .. tostring(serial) .. " (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -330,6 +518,23 @@ script SkillExecutors extends Logic
         -- place - root cause: it never spawned a travelling entity). Cast-stage visuals still
         -- play immediately here; impact now fires from the projectile's own OnAttack once it
         -- actually lands (SkillProjectile.mlua), not from a fixed "ahead of the caster" position.
+        -- b/skill-archer-thief-pirate: 스나이핑(SK_A21)은 CSV Duration 선딜 뒤에 연출·발사(projectileDelayFromDuration · 시전 락이 그동안 자세를 잡아 둔다).
+        local delay = 0
+        if self.projectileDelayFromDuration[skillId] then delay = skillData.duration end
+        if delay <= 0 then
+            self:FireProjectile(skillId, skillData, casterEntity, level)
+            return
+        end
+        log("SkillExecutors: PROJECTILE " .. skillId .. " aiming " .. tostring(delay) .. "s")
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            self:FireProjectile(skillId, skillData, casterEntity, level)
+        end, delay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FireProjectile(string skillId, table skillData, Entity casterEntity, number level)
+        -- 시전 연출 + 투사체 스폰. ExecuteProjectile 이 즉시 또는 선딜 뒤에 부른다.
         local pos = casterEntity.TransformComponent.WorldPosition
         self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
         self:PlayCastSound(skillId, casterEntity)
@@ -344,7 +549,8 @@ script SkillExecutors extends Logic
         -- wiring - see SkillAttack.mlua for why that crossing point lives there.
         skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
             skillData.range, skillData.speed, skillData.hitCount, self:GetImpactEffectRuid(skillId),
-            skillData.spawnOffsetY)
+            skillData.spawnOffsetY, self:GetSpecRuid(skillId, "ball"), self:GetExtraSound(skillId, "hit"),
+            self.projectilePreferBoss[skillId] == true)
     end
 
     method string GetImpactEffectRuid(string skillId)
@@ -376,16 +582,22 @@ script SkillExecutors extends Logic
     end
 
     method void ExecuteBlink(string skillId, table skillData, Entity casterEntity, number level)
-        -- 텔레포트(SK_M13) · 텔레포트 강화(SK_M21). 이동 자체는 소유 클라가 RequestCast 전에 끝냈다(SkillMovement · 클라 우선).
+        -- 텔레포트(SK_M13) · 텔레포트 강화(SK_M21) · 닷지(SK_A22). 이동 자체는 소유 클라가 RequestCast 전에 끝냈다(SkillMovement · 클라 우선).
         -- 서버는 출발 이펙트·사운드를 지금 재생하고, BlinkArrivalDelay 뒤(위치 동기화 후) 도착 이펙트와
         -- 도착 지점 광역 피해(EffectUnit ATK_PCT · BaseEffect > 0 인 BLINK 행 = SK_M21 · 추가기획1 C)를 재생한다.
+        -- BuffTag 가 있는 BLINK 행(닷지 · GUARANTEED_CRIT)은 도착 뒤 그 버프를 DurationAt 동안 켠다.
         local from = casterEntity.TransformComponent.WorldPosition
         local dealsArrivalDamage = skillData.effectUnit == "ATK_PCT" and skillData.baseEffect > 0
-        -- 출발 이펙트는 "depart" 단계 = 출발 좌표에 고정(시전자에 붙이면 이미 옮겨진 클라에서는 도착점에 뜬다). effectOverrides 에 depart 항목이 없으면 파티클 폴백.
+        local hasBuff = skillData.buffTag ~= nil and skillData.buffTag ~= ""
+        -- 출발 이펙트는 "depart" 단계 = 출발 좌표에 고정(시전자에 붙이면 이미 옮겨진 클라에서는 도착점에 뜬다). effectOverrides 에 depart 항목이 있으면 그 RUID(닷지 백스텝샷), 없으면 파티클 이름.
         -- 출발 파티클: 일반 = TeleportDepartParticle(원 없는 폭발), 강화 = TeleportEnhancedDepartParticle. 퍼지는 원(도착 CircleBurst)은 강화 전용.
         local departName = self.TeleportDepartParticle
         if dealsArrivalDamage then departName = self.TeleportEnhancedDepartParticle end
-        if departName ~= nil and departName ~= "" then
+        local entry = self.effectOverrides[skillId]
+        if entry ~= nil and entry.depart ~= nil and entry.depart.ruid ~= nil then
+            self:PlayStageEffect(skillId, "depart", casterEntity, from, nil)
+            departName = "ruid"
+        elseif departName ~= nil and departName ~= "" then
             self:PlayStageEffect(skillId, "depart", casterEntity, from, self:ParticleByName(departName))
         end
         log("SkillExecutors: BLINK " .. skillId .. " depart particle=" .. departName)
@@ -394,10 +606,18 @@ script SkillExecutors extends Logic
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
             local to = casterEntity.TransformComponent.WorldPosition
-            -- 도착 링(CircleBurst)은 일반·강화 공통 (2026-09-10 최종: 일반 = 링만, 강화 = 출발 폭발 EnergyExplosion + 링 + 피해).
-            self:PlayStageEffect(skillId, "impact", casterEntity, to, BasicParticleType.CircleBurst)
+            -- 도착 링(CircleBurst)은 마법사 텔레포트 공통 (2026-09-10 최종: 일반 = 링만, 강화 = 출발 폭발 EnergyExplosion + 링 + 피해). 버프형 BLINK(닷지)는 링 없음(직업 간 겹침 방지).
+            local ringFallback = BasicParticleType.CircleBurst
+            if hasBuff then ringFallback = nil end
+            self:PlayStageEffect(skillId, "impact", casterEntity, to, ringFallback)
             log("SkillExecutors: BLINK " .. skillId .. " server saw from=(" .. tostring(from.x) .. "," .. tostring(from.y)
-                .. ") to=(" .. tostring(to.x) .. "," .. tostring(to.y) .. ") arrivalDamage=" .. tostring(dealsArrivalDamage))
+                .. ") to=(" .. tostring(to.x) .. "," .. tostring(to.y) .. ") arrivalDamage=" .. tostring(dealsArrivalDamage) .. " buff=" .. tostring(skillData.buffTag))
+            if hasBuff and _SkillBuffs ~= nil and isvalid(casterEntity.PlayerComponent) then
+                local duration = _SkillDatabase:DurationAt(skillId, level)
+                _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, duration)
+                if duration <= 0 then duration = _SkillBuffs.NoExpireSeconds end
+                self:PlayBuffLoop(skillId, skillData.buffTag, casterEntity, duration)
+            end
             if not dealsArrivalDamage then return end
 
             local skillAttack = casterEntity:GetComponent("script.SkillAttack")
@@ -450,6 +670,15 @@ script SkillExecutors extends Logic
         -- BUFF_SELF / BUFF_ALLY. 시각·사운드 뒤 버프 원장에 BuffTag 를 켠다(SkillBuffs.ApplyBuff · Duration = DurationAt).
         -- 매직 가드(SK_M22 · MAGIC_GUARD): 효과는 SkillBuffs 가 조회 시점에 푼다 — 피격 흡수(AbsorbDamage · A 의 PlayerHit 연결 대기),
         -- 공격 시 현재 MP % 추가 피해(SkillDatabase.DamageAt), 스킬 MP 소모 ×1.5(SkillCaster). BUFF_ALLY 의 대상 확장은 후속.
+        -- 슈퍼 트랜스폼(SK_P21 · recastAttack): 변신(SUPER_TRANSFORM)이 켜져 있는 동안의 재시전은 버프 갱신이 아니라 주먹 공격(ExecuteTransformPunch).
+        local uid = ""
+        if isvalid(casterEntity.PlayerComponent) then uid = casterEntity.PlayerComponent.UserId end
+        if self.recastAttack[skillId] and _SkillBuffs ~= nil and uid ~= "" and skillData.buffTag ~= nil and skillData.buffTag ~= ""
+            and _SkillBuffs:IsActive(uid, skillData.buffTag) then
+            self:ExecuteTransformPunch(skillId, skillData, casterEntity, level)
+            return
+        end
+
         local pos = casterEntity.TransformComponent.WorldPosition
         self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
         self:PlayCastSound(skillId, casterEntity)
@@ -462,13 +691,42 @@ script SkillExecutors extends Logic
             log_warning("SkillExecutors: SkillBuffs not loaded, buff " .. skillData.buffTag .. " not applied for " .. skillId)
             return
         end
-        if not isvalid(casterEntity.PlayerComponent) then
+        if uid == "" then
             log_warning("SkillExecutors: caster has no PlayerComponent, cannot apply buff for " .. skillId)
             return
         end
         local duration = _SkillDatabase:DurationAt(skillId, level)
-        _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, duration)
+        _SkillBuffs:ApplyBuff(uid, skillId, skillData.buffTag, level, duration)
+        -- Duration 0(에너지 쉴드 = 깨질 때까지)은 SkillBuffs 가 NoExpireSeconds 로 넣는다 — 루프도 같은 길이(조기 종료는 StopBuffLoop).
+        if duration <= 0 then duration = _SkillBuffs.NoExpireSeconds end
         self:PlayBuffLoop(skillId, skillData.buffTag, casterEntity, duration)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteTransformPunch(string skillId, table skillData, Entity casterEntity, number level)
+        -- 슈퍼 트랜스폼(SK_P21) 변신 중 재시전: "전방의 다수 적에게 주먹 공격" — 앞쪽 Range(3) × MeleeArcHeight 상자 안 전부에 BaseEffect 300~500%(HitCount 회).
+        -- 쿨다운·버프는 건드리지 않는다(SkillCaster 가 재시전 게이트로 넘겼다). 연출 = punchCast(시전자 부착 · 스크류 펀치) · punchImpact(맞은 대상마다) · punch 사운드.
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayStageEffect(skillId, "punchCast", casterEntity, pos, nil)
+        self:PlaySoundRuid(self:GetExtraSound(skillId, "punch"), casterEntity, pos)
+
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping punch for " .. skillId)
+            return
+        end
+        local dirX = self:GetFacingX(casterEntity)
+        local range = skillData.range
+        if range <= 0 then range = 1 end
+        local hitCount = skillData.hitCount
+        if hitCount <= 0 then hitCount = 1 end
+        skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "punchImpact")
+        skillAttack:DealSkillDamage(skillId, level, {
+            posX = pos.x + dirX * range / 2, posY = pos.y + self.MeleeArcHeight / 2,
+            sizeX = range, sizeY = self.MeleeArcHeight,
+            hitCount = hitCount,
+        })
+        log("SkillExecutors: TRANSFORM PUNCH " .. skillId .. " range=" .. tostring(range) .. " dir=" .. tostring(dirX) .. " lv=" .. tostring(level))
     end
 
     @ExecSpace("ServerOnly")
@@ -565,6 +823,19 @@ script SkillExecutors extends Logic
             return
         end
 
+        -- b/skill-archer-thief-pirate: 변형 오리진은 각자 타이밍(CSV Duration)을 안에서 푼다.
+        local mode = self.originModes[skillId]
+        if mode == "line" then
+            self:ExecuteLineOrigin(skillId, skillData, casterEntity, level)
+            return
+        elseif mode == "meso" then
+            self:ExecuteMesoOrigin(skillId, skillData, casterEntity, level)
+            return
+        elseif mode == "barrage" then
+            self:ExecuteBarrageOrigin(skillId, skillData, casterEntity, level)
+            return
+        end
+
         _TimerService:SetTimerOnce(function()
             if chargeSerial ~= 0 then _ParticleService:RemoveParticle(chargeSerial) end
             if not isvalid(casterEntity) then return end
@@ -591,6 +862,180 @@ script SkillExecutors extends Logic
             self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
             skillAttack:DealSkillDamage(skillId, level, screen)
         end, skillData.duration)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteLineOrigin(string skillId, table skillData, Entity casterEntity, number level)
+        -- 폭풍의 화살(SK_A31 · 추가기획1 궁수 궁 "직선 관통 초고피해 (컷신)"): 컷신(cast · 파이널 에임 screen)이 돈 뒤 CSV Duration 시점에
+        -- 앞쪽 직선 상자(가로 Range(15) · 세로 LineHeight) 안 몬스터 전부에 BaseEffect 4000% HitCount 회 — 상자라 전부 "관통" 이다.
+        -- 연출: 맞은 대상마다 hit/0(SkillAttack.OnAttack) + 직선 위 LineHitEffects 지점에 순차 hit/0(대상이 없어도 화살이 지나간 것을 보인다).
+        local delay = skillData.duration
+        if delay < 0 then delay = 0 end
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+            if not isvalid(skillAttack) then
+                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping line damage for " .. skillId)
+                return
+            end
+            local p = casterEntity.TransformComponent.WorldPosition
+            local dirX = self:GetFacingX(casterEntity)
+            local range = skillData.range
+            if range <= 0 then range = 1 end
+            local hitCount = skillData.hitCount
+            if hitCount <= 0 then hitCount = 1 end
+            local hitRuid = self:GetSpecRuid(skillId, "impact")
+            skillAttack.PendingImpactRuid = hitRuid
+            skillAttack:DealSkillDamage(skillId, level, {
+                posX = p.x + dirX * range / 2, posY = p.y + self.LineHeight / 2,
+                sizeX = range, sizeY = self.LineHeight,
+                hitCount = hitCount,
+            })
+            if hitRuid ~= "" then
+                local n = self.LineHitEffects
+                for k = 1, n do
+                    local ex = p.x + dirX * range * k / (n + 1)
+                    local ey = p.y + 0.6
+                    _TimerService:SetTimerOnce(function()
+                        if not isvalid(casterEntity) then return end
+                        _EffectService:PlayEffect(hitRuid, casterEntity, Vector3(ex, ey, p.z), 0, Vector3(1, 1, 1), false)
+                    end, k * 0.08)
+                end
+            end
+            log("SkillExecutors: LINE " .. skillId .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range) .. " height=" .. tostring(self.LineHeight) .. " lv=" .. tostring(level))
+        end, delay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table FindMesoCoins(Entity casterEntity, number radius, string userId)
+        -- 시전자 반경 radius 안의 메소 동전(A 의 mesocoin 모델 · 같은 맵 · 아직 안 주움 · 시전자가 주울 수 있는 것 = DropOwner 가 없거나 IsPickableBy). 가까운 순 정렬 없음.
+        local found = {}
+        local map = casterEntity.CurrentMap
+        local t = casterEntity.TransformComponent
+        if not isvalid(map) or not isvalid(t) then return found end
+        local p = t.WorldPosition
+        local all = _EntityService:GetEntitiesSpawnedByModelId(self.MesoCoinModelId)
+        if all == nil then return found end
+        local r2 = radius * radius
+        for _, coin in ipairs(all) do
+            if isvalid(coin) and coin.CurrentMap == map and isvalid(coin.TransformComponent) then
+                local mc = coin.MesoCoin
+                local collected = isvalid(mc) and mc.Collected
+                if not collected then
+                    local pickable = true
+                    local own = coin:GetComponent("script.DropOwner")
+                    if isvalid(own) then pickable = own:IsPickableBy(userId) end
+                    if pickable then
+                        local cp = coin.TransformComponent.WorldPosition
+                        local dx = cp.x - p.x
+                        local dy = cp.y - p.y
+                        if dx * dx + dy * dy <= r2 then
+                            table.insert(found, coin)
+                        end
+                    end
+                end
+            end
+        end
+        return found
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteMesoOrigin(string skillId, table skillData, Entity casterEntity, number level)
+        -- 메소 익스플로전(SK_T31 · 추가기획1 도적 궁 "메소를 소환해서 주변 지역을 다 폭발 · 50% × 주변 메소 갯수"):
+        --   반경 Range(6) 안의 메소 동전 N 개(FindMesoCoins · PreCheck 가 N ≥ 1 을 보장)를 MesoExplodeInterval 간격으로 하나씩 터뜨리고(coinHits 순환 · 동전 소멸),
+        --   CSV Duration(0.6) 시점에 반지름 안 몬스터 전부에 atk × BaseEffect 50% × N (DealSkillDamageCircleScaled · 표시 타수는 min(N, MesoDisplayHitsMax)).
+        --   동전은 Collected 로 먼저 잠가 자석·줍기가 같은 프레임에 가져가지 않게 한다. 픽파켓으로 떨어뜨린 동전이 재료다(자동획득을 끄면 남는다).
+        if not isvalid(casterEntity.PlayerComponent) then return end
+        local uid = casterEntity.PlayerComponent.UserId
+        local radius = skillData.range
+        if radius <= 0 then radius = 3 end
+        local coins = self:FindMesoCoins(casterEntity, radius, uid)
+        local n = #coins
+        local entry = self.effectOverrides[skillId]
+        local hits = {}
+        if entry ~= nil and entry.coinHits ~= nil then hits = entry.coinHits end
+        for i, coin in ipairs(coins) do
+            local mc = coin.MesoCoin
+            if isvalid(mc) then mc.Collected = true end
+            local cp = coin.TransformComponent.WorldPosition
+            local ex = cp.x
+            local ey = cp.y
+            local ez = cp.z
+            local ruid = nil
+            if #hits > 0 then ruid = hits[((i - 1) % #hits) + 1] end
+            _TimerService:SetTimerOnce(function()
+                if ruid ~= nil and isvalid(casterEntity) then
+                    _EffectService:PlayEffect(ruid, casterEntity, Vector3(ex, ey + 0.3, ez), 0, Vector3(1, 1, 1), false)
+                end
+                if isvalid(coin) then coin:Destroy() end
+            end, (i - 1) * self.MesoExplodeInterval)
+        end
+        local delay = skillData.duration
+        if delay <= 0 then delay = 0.6 end
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+            if not isvalid(skillAttack) then
+                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping meso damage for " .. skillId)
+                return
+            end
+            local p = casterEntity.TransformComponent.WorldPosition
+            self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(p.x, p.y + 0.5, p.z), nil)
+            local display = n
+            if display > self.MesoDisplayHitsMax then display = self.MesoDisplayHitsMax end
+            skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, n, display)
+            log("SkillExecutors: MESO " .. skillId .. " coins=" .. tostring(n) .. " r=" .. tostring(radius) .. " -> " .. tostring(_SkillDatabase:RatioAt(skillId, level) * n) .. "% (" .. uid .. ")")
+        end, delay)
+        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins over " .. tostring(n * self.MesoExplodeInterval) .. "s, damage at +" .. tostring(delay) .. "s")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteBarrageOrigin(string skillId, table skillData, Entity casterEntity, number level)
+        -- 함포 사격(SK_P31 · 추가기획1 해적 궁 "광역 연속 폭격 (컷신) · 150% × 30회"): 컷신(cast · 드레드노트 screen) 뒤 CSV Duration 시점부터
+        --   HitCount(30)를 BarrageWaves(6) 파로 나눠 BarrageInterval(0.45s · 몬스터 무적 0.4s 보다 길게) 간격으로 시전자 중심 반지름 Range(8) 안 전부에
+        --   파당 타수 × 150% (DealSkillDamageCircleScaled · 표시 = 파당 타수). 합계 = 30 × 150%. 파마다 폭탄 hit 클립 BarrageBombsPerWave 개 + wave 사운드.
+        local radius = skillData.range
+        if radius <= 0 then radius = 3 end
+        local hitCount = math.floor(skillData.hitCount)
+        if hitCount <= 0 then hitCount = 1 end
+        local waves = self.BarrageWaves
+        if waves < 1 then waves = 1 end
+        if waves > hitCount then waves = hitCount end
+        local perWave = math.floor(hitCount / waves)
+        local remainder = hitCount - perWave * waves
+        local lead = skillData.duration
+        if lead < 0 then lead = 0 end
+        local bombRuid = self:GetSpecRuid(skillId, "impact")
+        local waveSound = self:GetExtraSound(skillId, "wave")
+        for w = 1, waves do
+            local hits = perWave
+            if w <= remainder then hits = hits + 1 end
+            if hits > 0 then
+                _TimerService:SetTimerOnce(function()
+                    if not isvalid(casterEntity) then return end
+                    local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+                    if not isvalid(skillAttack) then
+                        log_warning("SkillExecutors: no script.SkillAttack on caster, skipping barrage wave for " .. skillId)
+                        return
+                    end
+                    local p = casterEntity.TransformComponent.WorldPosition
+                    if bombRuid ~= "" then
+                        for b = 1, self.BarrageBombsPerWave do
+                            -- 결정적 흩뿌림(한 프레임 안의 RandomDouble 은 거의 같은 값): 파·폭탄 번호로 각도와 거리를 정한다.
+                            local angle = w * 0.9 + b * 2.1
+                            local dist = radius * self.BarrageScatter * (0.35 + 0.65 * (((b + w) % 3) / 2))
+                            local bx = p.x + math.cos(angle) * dist
+                            local by = p.y + 0.4 + math.abs(math.sin(angle)) * dist * 0.35
+                            _EffectService:PlayEffect(bombRuid, casterEntity, Vector3(bx, by, p.z), 0, Vector3(1, 1, 1), false)
+                        end
+                    end
+                    self:PlaySoundRuid(waveSound, casterEntity, p)
+                    skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, hits, hits)
+                    log("SkillExecutors: BARRAGE " .. skillId .. " wave " .. tostring(w) .. "/" .. tostring(waves) .. " hits=" .. tostring(hits) .. " r=" .. tostring(radius))
+                end, lead + (w - 1) * self.BarrageInterval)
+            end
+        end
+        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits from +" .. tostring(lead) .. "s every " .. tostring(self.BarrageInterval) .. "s")
     end
 
     @ExecSpace("ServerOnly")
@@ -640,6 +1085,9 @@ script SkillExecutors extends Logic
             return
         end
 
+        -- 상자 전부(섬머솔트 킥 SK_P11): 맞은 대상마다 impact 클립·hit 사운드(SkillAttack.OnAttack · b/skill-archer-thief-pirate).
+        skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "impact")
+        skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
         skillAttack:DealSkillDamage(skillId, level, box)
     end
 
@@ -738,6 +1186,13 @@ script SkillExecutors extends Logic
     method void PlayCastSound(string skillId, Entity casterEntity)
         local soundId = self.castSounds[skillId] or self.defaultCastSound
         local pos = casterEntity.TransformComponent.WorldPosition
+        _SoundService:PlaySoundAtPos(soundId, pos, casterEntity, 1.0)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlaySoundRuid(string soundId, Entity casterEntity, Vector3 pos)
+        -- 임의 RUID 사운드(변신 중 주먹 · 폭격 파). "" 이면 없음.
+        if soundId == nil or soundId == "" then return end
         _SoundService:PlaySoundAtPos(soundId, pos, casterEntity, 1.0)
     end
 

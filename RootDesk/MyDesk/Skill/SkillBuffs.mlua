@@ -10,15 +10,25 @@ script SkillBuffs extends Logic
     --   GetDamageMul(userId)            HP 가 받는 피해 배율 (매직 가드 = 1 − 흡수율)
     --   AbsorbDamage(userId, damage)    흡수분을 MP 로 돌리고 HP 가 받을 피해를 돌려준다 (매직 가드 본체)
     --   IsInvincible(userId)            INVULNERABLE(불굴의 진)
-    --   GetShield(userId) · GetReflectRatio(userId) · ConsumeEvadeOnce(userId)  후속 태그 자리 — 지금은 기본값
-    --   ModifyIncomingDamage(userId, damage)  위 셋을 한 번에: 무적 → 0 · 하이퍼 바디 감소 → 매직 가드 흡수. A 의 PlayerHit.OnHit 이 __base 전에 한 줄로 부른다.
+    --   GetShield(userId)               에너지 쉴드(SK_P22) 남은 보호막 · AbsorbByShield(userId, damage) 가 깎는다
+    --   ConsumeEvadeOnce(userId)        다크 사이트(SK_T21) 1회 회피 — true 를 돌려주며 버프를 끝낸다
+    --   GetReflectRatio(userId)         아이언 바디 반사율
+    --   ModifyIncomingDamage(userId, damage)  전부 한 번에: 무적 → 0 · 다크 사이트 회피 → 0 · 보호막 → 하이퍼 바디 감소 → 매직 가드 흡수. A 의 PlayerHit.OnHit 이 __base 전에 한 줄로 부른다.
     -- b/skill-magician 은 MAGIC_GUARD 를, b/skill-warrior(추가기획1 전사 표)는 아래 셋을 채운다:
     --   REFLECT_HP_PCT 아이언 바디(SK_W12 · 패시브): 플레이어 HitEvent 를 여기서 직접 구독(AttachHitListener)해 공격자에게 최대 HP × 5~25% 를
     --                  되돌려 준다(SkillAttack.DealFlatDamageToTarget). 들어오는 피해를 바꾸지 않으므로 A 연결 없이 동작한다.
     --   HYPER_BODY     하이퍼 바디(SK_W21 · 버프): 최대 HP +20~60% 는 A 의 StatService BUFF 레이어(SetLayerCsv · 계약상 B 몫)로 넣고,
     --                  피해 −20~40% 는 GetDamageMul/ReduceDamage 로 낸다(A 의 PlayerHit 연결 대기).
     --   INVULNERABLE   불굴의 진(SK_W31 · 궁): 8초 무적. IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
-    -- GetShield · ConsumeEvadeOnce 는 아직 계약 자리(기본값).
+    -- b/skill-archer-thief-pirate (2026-09-12 · 추가기획1 궁수·도적·해적 표) 가 채우는 태그:
+    --   GUARANTEED_CRIT 닷지(SK_A22 · BLINK 도착 뒤 6~10초): IsGuaranteedCrit → SkillAttack/SkillProjectile.CalcCritical 이 반드시 true(배율 2.0).
+    --   DARK_SIGHT      다크 사이트(SK_T21 · 10초): 아바타 알파 0.35(SetAlpha · 전 클라). 첫 피격 1회 무효 = ConsumeEvadeOnce. A 연결 전엔 HitEvent 뒤 HP 전액 되돌림(자가 배선).
+    --   SHADOW_PARTNER  쉐도우 파트너(SK_T22 · 60초): GetOutgoingDamageMul = 1 + 100% → SkillDatabase.DamageAt 이 곱한다. 분신 클립은 SkillExecutors.PlayBuffLoop.
+    --   ENERGY_SHIELD   에너지 쉴드(SK_P22 · 깨질 때까지): 시전 시 최대 HP × 10~30% 를 shields 에 넣고 피격마다 깎는다(AbsorbByShield). 0 이 되면 버프 종료.
+    --                   A 연결 전엔 HitEvent 뒤 흡수분 HP 되돌림(자가 배선). Duration 0 은 NoExpireSeconds 로 바꿔 원장에 넣는다.
+    --   SUPER_TRANSFORM 슈퍼 트랜스폼(SK_P21 · 30초): 소유 클라가 미러를 보고 InputSpeed·JumpForce ×(1 + Secondary 30%) (ApplyLocalTransformStats) · 아바타 틴트(SetColor).
+    --                   활성 중 같은 키 재시전 = 주먹 공격(SkillCaster.IsRecastActive 가 쿨다운 게이트를 건너뛴다 · SkillExecutors.ExecuteTransformPunch).
+    --   STACK_GAIN      픽파켓(SK_T12 · 패시브): 스킬 타격마다 OnSkillHitMonster 가 메소 동전(A 의 mesocoin + DropOwner) 1~2 개를 드랍한다. 기본 공격 훅은 A 의 PlayerAttack.OnAttack 대기.
     -- MP 원장은 SummonManager.econ (A). 흡수분 차감은 SpendMp 가 연결된 뒤(SkillCaster.UseSpendMp) 만 — econ.mp 직접 쓰기 금지.
 
     -- [서버] userId -> buffTag -> 버프 레코드
@@ -27,7 +37,7 @@ script SkillBuffs extends Logic
     -- [서버] ApplyBuff 마다 증가. 재시전으로 갱신된 버프를 옛 만료 타이머가 지우지 않게 한다.
     property integer buffStamp = 0
 
-    -- [클라] 로컬 유저 미러: buffTag -> { level, endsAt }
+    -- [클라] 로컬 유저 미러: buffTag -> { level, endsAt, skillId }
     property table mirrorBuffs = {}
 
     -- 매직 가드: 활성 중 스킬 MP 소모 배율 (추가기획1 "스킬 사용 시 소모 MP 가 50% 증가"). CSV 에 열이 없어 코드 상수.
@@ -42,21 +52,81 @@ script SkillBuffs extends Logic
     -- 아이언 바디(SK_W12)의 BuffTag. 패시브라 버프 원장이 아니라 스킬 레벨(JobPassiveLogic.PassiveRatio)에서 읽는다.
     property string TagReflect = "REFLECT_HP_PCT"
 
+    -- b/skill-archer-thief-pirate 태그 (계약서 §0-2 BuffTag 값 그대로)
+    property string TagGuaranteedCrit = "GUARANTEED_CRIT"
+
+    property string TagDarkSight = "DARK_SIGHT"
+
+    property string TagShadowPartner = "SHADOW_PARTNER"
+
+    property string TagEnergyShield = "ENERGY_SHIELD"
+
+    property string TagSuperTransform = "SUPER_TRANSFORM"
+
+    -- 픽파켓(SK_T12)의 BuffTag. 패시브 — 스킬 레벨에서 "타격당 메소 개수(1~2)" 를 읽는다.
+    property string TagPickpocket = "STACK_GAIN"
+
     -- 아이언 바디 반사를 끈다(디버그). true 면 반사 없이 로그만.
     property boolean ReflectEnabled = true
 
     -- 매직 가드 임시 자가 배선(HitEvent 뒤 HP 되돌리기). A 의 PlayerHit 정식 연결 후 false 로.
     property boolean MagicGuardSelfWire = true
 
+    -- 다크 사이트·에너지 쉴드 임시 자가 배선(HitEvent 뒤 HP 되돌리기). A 가 PlayerHit 에서 ModifyIncomingDamage 를 부르게 되면 false 로(안 끄면 두 번).
+    property boolean DarkSightSelfWire = true
+
+    property boolean EnergyShieldSelfWire = true
+
+    -- "깨질 때까지" 버프(에너지 쉴드 · CSV Duration 0)가 원장에 들어갈 때 쓰는 지속(초). 만료 타이머는 사실상 안 돈다.
+    property number NoExpireSeconds = 100000
+
+    -- 다크 사이트 은신 알파. 1 = 불투명.
+    property number DarkSightAlpha = 0.35
+
+    -- 슈퍼 트랜스폼 아바타 틴트(라이트닝 폼 · 푸른빛). 만료 시 (1,1,1,1) 로.
+    property number TransformTintR = 0.6
+
+    property number TransformTintG = 0.85
+
+    property number TransformTintB = 1.0
+
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
+
+    -- [서버] userId -> 에너지 쉴드 남은 보호막(정수). 버프가 없으면 무시된다(GetShield 가 0).
+    property table shields = {}
 
     -- [서버] userId -> 플레이어 엔티티 HitEvent 핸들러 (AttachHitListener). OnEndPlay 에서 전부 끊는다.
     property table hitHandlers = {}
 
     property any userEnterHandler = nil
 
-    -- ───────────────────────── 서버: 피격 리스너 (아이언 바디) ─────────────────────────
+    -- [클라] 슈퍼 트랜스폼 로컬 스탯(이동속도·점프력) 적용 상태. 미러에 태그가 나타나면 적용, 사라지면 복구.
+    property boolean transformStatsApplied = false
+
+    property number transformBaseSpeed = 1
+
+    property number transformBaseJump = 0
+
+    property number transformMul = 1
+
+    -- [서버] 픽파켓 중복 방지: userId -> targetEntity -> 마지막 드랍 시각. "1번(타수 아님)" = 같은 대상은 PickpocketDedupeSeconds 안에 한 번.
+    property table pickpocketLast = {}
+
+    property number PickpocketDedupeSeconds = 0.5
+
+    -- 픽파켓 동전 모델(A 의 Farm/MesoCoin · FarmReward.DropCoins 와 같은 EntryKey). 주인은 DropOwner 로 시전자에게.
+    property string MesoCoinModelId = "mesocoin"
+
+    -- 픽파켓 드랍 소리(원작 픽 파킷 _audio/Use). 연타 때 시끄럽지 않게 PickpocketSoundInterval 로 제한.
+    property string PickpocketSoundRuid = "eb009eb4ce0443068bbec5369f256b35"
+
+    property number PickpocketSoundInterval = 0.3
+
+    @HideFromInspector
+    property number pickpocketSoundAt = -10
+
+    -- ───────────────────────── 서버: 피격 리스너 (아이언 바디 · 자가 배선 흡수) ─────────────────────────
 
     @ExecSpace("ServerOnly")
     method void OnBeginPlay()
@@ -109,12 +179,26 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method void OnPlayerHitEvent(string userId, HitEvent event)
-        -- 아이언 바디(SK_W12): 맞을 때마다 공격자에게 "본인 최대 HP × 반사율(5~25%)" 만큼 되돌려 준다.
         -- HitEvent 는 피해가 이미 확정된 뒤에 온다 — 들어오는 피해는 여기서 못 바꾼다(그건 A 의 PlayerHit → ModifyIncomingDamage).
-        -- 공격자가 몬스터(플레이어 아님 · 진영상 적)일 때만. 보스 투사체처럼 공격자가 투사체 엔티티면 Monster 충돌 그룹이 아니라 맞지 않는다(로그만).
-        -- 매직 가드(SK_M22) 임시 자가 배선(2026-09-10 · A 의 PlayerHit → ModifyIncomingDamage 연결 전): HitEvent 는 피해 확정 뒤라 HP 가 이미 깎였다 →
-        -- 흡수분을 MP 로 내고(AbsorbDamage · SpendMp) 같은 양의 HP 를 한 틱 뒤에 되돌려 준다. 한 방에 죽는 피해는 못 살린다(정식 경로에서만 가능).
-        if self.MagicGuardSelfWire then self:MagicGuardRefund(userId, event.TotalDamage) end
+        -- 그래서 A 연결 전까지의 임시 자가 배선은 전부 "HP 를 되돌리는" 방식이다(한 방에 죽는 피해는 못 살린다 · 정식 경로에서만 가능):
+        --   ① 다크 사이트(SK_T21): 첫 피격 1회 = 전액 되돌림 + 버프 종료. 회피한 타격은 아래(보호막·매직 가드·반사)로 안 내려간다.
+        --   ② 에너지 쉴드(SK_P22): 보호막이 남은 만큼 되돌리고 보호막을 깎는다. 0 이 되면 버프 종료.
+        --   ③ 매직 가드(SK_M22): 남은 피해의 흡수율만큼 MP 로 내고(AbsorbDamage · SpendMp) 같은 양의 HP 를 되돌린다.
+        --   ④ 아이언 바디(SK_W12): 공격자에게 최대 HP × 반사율(5~25%) 만큼 되돌려 준다 — 몬스터(플레이어 아님 · 진영상 적)일 때만.
+        local damage = event.TotalDamage or 0
+        if self.DarkSightSelfWire and damage > 0 and self:GetBuff(userId, self.TagDarkSight) ~= nil then
+            self:ConsumeEvadeOnce(userId)
+            self:RefundHp(userId, damage, "DARK_SIGHT evade")
+            return
+        end
+        if self.EnergyShieldSelfWire and damage > 0 then
+            local absorbed = self:AbsorbByShield(userId, damage)
+            if absorbed > 0 then
+                self:RefundHp(userId, absorbed, "ENERGY_SHIELD")
+                damage = damage - absorbed
+            end
+        end
+        if self.MagicGuardSelfWire then self:MagicGuardRefund(userId, damage) end
 
         local ratio = self:GetReflectRatio(userId)
         if ratio <= 0 then return end
@@ -143,6 +227,21 @@ script SkillBuffs extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void RefundHp(string userId, integer amount, string why)
+        -- 자가 배선 공통: 이미 깎인 HP 를 한 틱 뒤에 amount 만큼 되돌린다(최대 HP 상한 · 사망 시 없음).
+        if amount == nil or amount <= 0 then return end
+        _TimerService:SetTimerOnce(function()
+            local player = _UserService:GetUserEntityByUserId(userId)
+            if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+            local pc = player.PlayerComponent
+            if pc:IsDead() then return end
+            local before = pc.Hp
+            pc.Hp = math.min(before + amount, pc.MaxHp)
+            log("[Buff] " .. why .. " hp refund +" .. tostring(amount) .. " (" .. tostring(before) .. " -> " .. tostring(pc.Hp) .. ") (" .. userId .. ")")
+        end, 0.05)
+    end
+
+    @ExecSpace("ServerOnly")
     method void MagicGuardRefund(string userId, integer damage)
         -- 매직 가드 임시 자가 배선 본체. A 가 PlayerHit 에서 ModifyIncomingDamage 를 부르게 되면 MagicGuardSelfWire=false 로 끈다(안 끄면 흡수가 두 번).
         if damage == nil or damage <= 0 then return end
@@ -150,15 +249,7 @@ script SkillBuffs extends Logic
         local hpDamage = self:AbsorbDamage(userId, damage)
         local refund = damage - hpDamage
         if refund <= 0 then return end
-        _TimerService:SetTimerOnce(function()
-            local player = _UserService:GetUserEntityByUserId(userId)
-            if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
-            local pc = player.PlayerComponent
-            if pc:IsDead() then return end
-            local before = pc.Hp
-            pc.Hp = math.min(before + refund, pc.MaxHp)
-            log("[Buff] MAGIC_GUARD hp refund +" .. tostring(refund) .. " (" .. tostring(before) .. " -> " .. tostring(pc.Hp) .. ") (" .. userId .. ")")
-        end, 0.05)
+        self:RefundHp(userId, refund, "MAGIC_GUARD")
     end
 
     -- ───────────────────────── 서버: 원장 ─────────────────────────
@@ -178,9 +269,12 @@ script SkillBuffs extends Logic
     @ExecSpace("ServerOnly")
     method void ApplyBuff(string userId, string skillId, string buffTag, number level, number duration)
         -- BUFF_SELF 실행기(SkillExecutors.ExecuteBuff)가 부른다. 같은 태그가 이미 있으면 덮어쓴다(재시전 = 갱신).
-        -- duration <= 0 이면 아무것도 안 한다. 효과값(ratio · secondary)은 SkillInfo 행의 레벨 공식으로 여기서 한 번 계산해 둔다.
+        -- duration <= 0 이면 아무것도 안 한다 — 단 에너지 쉴드(Duration 0 = 깨질 때까지)는 NoExpireSeconds 로 바꿔 넣는다.
+        -- 효과값(ratio · secondary)은 SkillInfo 행의 레벨 공식으로 여기서 한 번 계산해 둔다.
         local u = self:EnsureUser(userId)
-        if u == nil or buffTag == nil or buffTag == "" or duration <= 0 then return end
+        if u == nil or buffTag == nil or buffTag == "" then return end
+        if duration <= 0 and buffTag == self.TagEnergyShield then duration = self.NoExpireSeconds end
+        if duration <= 0 then return end
         _SkillDatabase:EnsureLoaded()
         local now = _UtilLogic.ServerElapsedSeconds
         self.buffStamp = self.buffStamp + 1
@@ -197,6 +291,7 @@ script SkillBuffs extends Logic
         if buffTag == self.TagHyperBody then
             self:ApplyHyperBodyHp(userId, ratio)
         end
+        self:OnBuffStarted(userId, buffTag, ratio)
         self:PushBuffs(userId)
     end
 
@@ -212,7 +307,81 @@ script SkillBuffs extends Logic
         if buffTag == self.TagHyperBody then
             self:ClearHyperBodyHp(userId)
         end
+        self:OnBuffEnded(userId, buffTag)
         self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EndBuffNow(string userId, string buffTag, string why)
+        -- 만료 전 종료(다크 사이트 회피 · 보호막 소진). 옛 만료 타이머는 stamp 가 남아 있지 않아 무시된다.
+        local u = self.buffs[userId]
+        if u == nil or u[buffTag] == nil then return end
+        u[buffTag] = nil
+        log("[Buff] OFF " .. buffTag .. " (" .. why .. ") (" .. userId .. ")")
+        if buffTag == self.TagHyperBody then
+            self:ClearHyperBodyHp(userId)
+        end
+        self:OnBuffEnded(userId, buffTag)
+        self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnBuffStarted(string userId, string buffTag, number ratio)
+        -- 태그별 시작 처리(b/skill-archer-thief-pirate). 보호막 값·아바타 알파/틴트. 이동속도·점프력은 소유 클라가 미러를 보고 한다.
+        if buffTag == self.TagEnergyShield then
+            local player = _UserService:GetUserEntityByUserId(userId)
+            local maxHp = 0
+            if isvalid(player) and isvalid(player.PlayerComponent) then maxHp = player.PlayerComponent.MaxHp end
+            local amount = math.floor(maxHp * ratio / 100)
+            if amount < 0 then amount = 0 end
+            self.shields[userId] = amount
+            log("[Buff] ENERGY_SHIELD shield=" .. tostring(amount) .. " (" .. tostring(ratio) .. "% of maxHp " .. tostring(maxHp) .. ") (" .. userId .. ")")
+        elseif buffTag == self.TagDarkSight then
+            self:SetAvatarAlpha(userId, self.DarkSightAlpha)
+        elseif buffTag == self.TagSuperTransform then
+            self:SetAvatarTint(userId, true)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnBuffEnded(string userId, string buffTag)
+        -- 태그별 종료 처리: 보호막 제거 · 알파/틴트 복구 · 루프 이펙트 제거(SkillExecutors.StopBuffLoop).
+        if buffTag == self.TagEnergyShield then
+            self.shields[userId] = nil
+        elseif buffTag == self.TagDarkSight then
+            self:SetAvatarAlpha(userId, 1)
+        elseif buffTag == self.TagSuperTransform then
+            self:SetAvatarTint(userId, false)
+        end
+        if _SkillExecutors ~= nil then
+            _SkillExecutors:StopBuffLoop(userId, buffTag)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void SetAvatarAlpha(string userId, number alpha)
+        -- 아바타 알파(전 클라). AvatarRendererComponent.SetAlpha 는 Client ExecSpace — 서버에서 부르면 모든 클라에서 실행된다.
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(player) then return end
+        local avatar = player.AvatarRendererComponent
+        if not isvalid(avatar) then return end
+        avatar:SetAlpha(alpha)
+        log("[Buff] avatar alpha=" .. tostring(alpha) .. " (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void SetAvatarTint(string userId, boolean on)
+        -- 슈퍼 트랜스폼 변신 외형: 아바타 틴트(전 클라). 끄면 흰색(1,1,1,1) = 원래 색.
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(player) then return end
+        local avatar = player.AvatarRendererComponent
+        if not isvalid(avatar) then return end
+        if on then
+            avatar:SetColor(self.TransformTintR, self.TransformTintG, self.TransformTintB, 1)
+        else
+            avatar:SetColor(1, 1, 1, 1)
+        end
+        log("[Buff] avatar tint=" .. tostring(on) .. " (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -290,7 +459,13 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method void ResetMatchState(string userId)
-        -- 매치 시작 시 버프를 전부 비운다 (PlayerSkillState.ResetMatchState 와 짝). 하이퍼 바디 HP 보너스도 같이.
+        -- 매치 시작 시 버프를 전부 비운다 (PlayerSkillState.ResetMatchState 와 짝). 하이퍼 바디 HP 보너스·보호막·알파·틴트도 같이.
+        local u = self.buffs[userId]
+        if u ~= nil then
+            for tag, _ in pairs(u) do
+                self:OnBuffEnded(userId, tag)
+            end
+        end
         self.buffs[userId] = {}
         self:ClearHyperBodyHp(userId)
         self:PushBuffs(userId)
@@ -300,9 +475,10 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method number GetDamageMul(string userId)
-        -- HP 가 받는 피해 배율(조회용 · 곱). 무적 = 0. 하이퍼 바디 = ×(1 − 피해 감소 20~40%). 매직 가드 = ×(1 − 흡수율 35~75%). 없으면 1.
-        -- 실제 감산은 ModifyIncomingDamage 가 같은 순서로 한다(매직 가드는 MP 잔량에 따라 배율과 다를 수 있다).
+        -- HP 가 받는 피해 배율(조회용 · 곱). 무적·다크 사이트(다음 1회) = 0. 하이퍼 바디 = ×(1 − 피해 감소 20~40%). 매직 가드 = ×(1 − 흡수율 35~75%). 없으면 1.
+        -- 실제 감산은 ModifyIncomingDamage 가 같은 순서로 한다(보호막·매직 가드는 잔량에 따라 배율과 다를 수 있다).
         if self:IsInvincible(userId) then return 0 end
+        if self:GetBuff(userId, self.TagDarkSight) ~= nil then return 0 end
         local mul = 1
         local hb = self:GetBuff(userId, self.TagHyperBody)
         if hb ~= nil then
@@ -331,14 +507,20 @@ script SkillBuffs extends Logic
     @ExecSpace("ServerOnly")
     method integer ModifyIncomingDamage(string userId, integer damage)
         -- A 의 PlayerHit 가 HP 감산 전에 한 줄로 부르는 단일 진입점. 반환 = HP 가 실제로 받을 피해.
-        --   ① 불굴의 진(INVULNERABLE) → 0   ② 하이퍼 바디 감소(ReduceDamage)   ③ 매직 가드 흡수(AbsorbDamage · MP 차감 포함)
-        -- 개별 조회(IsInvincible/GetDamageMul/AbsorbDamage)를 따로 부르는 것과 결과가 같다 — 둘 다 쓰지는 말 것(흡수 MP 가 두 번 빠진다).
+        --   ① 불굴의 진(INVULNERABLE) → 0   ② 다크 사이트 1회 회피(ConsumeEvadeOnce) → 0   ③ 에너지 쉴드(AbsorbByShield)
+        --   ④ 하이퍼 바디 감소(ReduceDamage)   ⑤ 매직 가드 흡수(AbsorbDamage · MP 차감 포함)
+        -- 개별 조회를 따로 부르는 것과 결과가 같다 — 둘 다 쓰지는 말 것(흡수 MP·보호막이 두 번 빠진다). 정식 연결 시 *SelfWire 스위치를 끈다.
         if damage == nil or damage <= 0 then return 0 end
         if self:IsInvincible(userId) then
             log("[Buff] INVULNERABLE blocked " .. tostring(damage) .. " (" .. userId .. ")")
             return 0
         end
-        local d = self:ReduceDamage(userId, damage)
+        if self:ConsumeEvadeOnce(userId) then
+            log("[Buff] DARK_SIGHT evaded " .. tostring(damage) .. " (" .. userId .. ")")
+            return 0
+        end
+        local d = damage - self:AbsorbByShield(userId, damage)
+        d = self:ReduceDamage(userId, d)
         d = self:AbsorbDamage(userId, d)
         return d
     end
@@ -384,8 +566,28 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method integer GetShield(string userId)
-        -- 에너지 쉴드(SK_P22) 자리. 지금은 0.
-        return 0
+        -- 에너지 쉴드(SK_P22 · ENERGY_SHIELD) 남은 보호막. 버프가 없으면 0.
+        if self:GetBuff(userId, self.TagEnergyShield) == nil then return 0 end
+        local s = self.shields[userId] or 0
+        if s < 0 then s = 0 end
+        return math.floor(s)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer AbsorbByShield(string userId, integer damage)
+        -- 보호막이 damage 를 먼저 받는다. 반환 = 보호막이 흡수한 양(HP 가 받을 피해 = damage − 반환값). 0 이 되면 버프를 끝낸다("깨짐").
+        if damage == nil or damage <= 0 then return 0 end
+        local shield = self:GetShield(userId)
+        if shield <= 0 then return 0 end
+        local absorbed = damage
+        if absorbed > shield then absorbed = shield end
+        local remain = shield - absorbed
+        self.shields[userId] = remain
+        log("[Buff] ENERGY_SHIELD absorb " .. tostring(absorbed) .. "/" .. tostring(damage) .. " -> shield " .. tostring(remain) .. " (" .. userId .. ")")
+        if remain <= 0 then
+            self:EndBuffNow(userId, self.TagEnergyShield, "shield broken")
+        end
+        return absorbed
     end
 
     @ExecSpace("ServerOnly")
@@ -398,8 +600,39 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method boolean ConsumeEvadeOnce(string userId)
-        -- 다크 사이트(SK_T21) "공격 한 번 회피" 자리. 지금은 false.
-        return false
+        -- 다크 사이트(SK_T21 · DARK_SIGHT): 활성이면 이번 피격을 회피(true)하고 버프를 끝낸다("회피하면 해제"). 아니면 false.
+        if self:GetBuff(userId, self.TagDarkSight) == nil then return false end
+        self:EndBuffNow(userId, self.TagDarkSight, "evaded")
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsGuaranteedCrit(string userId)
+        -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 모든 스킬 타격이 크리티컬(SkillAttack/SkillProjectile.CalcCritical).
+        -- 기본 공격에도 적용하려면 A 의 PlayerAttack.CalcCritical 이 이걸 먼저 보면 된다.
+        return self:GetBuff(userId, self.TagGuaranteedCrit) ~= nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetOutgoingDamageMul(string userId)
+        -- 쉐도우 파트너(SK_T22 · SHADOW_PARTNER): 활성 중 스킬 피해 ×(1 + BaseEffect 100%) = 2배. 없으면 1. SkillDatabase.DamageAt 이 곱한다.
+        local sp = self:GetBuff(userId, self.TagShadowPartner)
+        if sp == nil then return 1 end
+        return 1 + sp.ratio / 100
+    end
+
+    method string RecastTagOf(string skillId)
+        -- 재시전 스킬 → 활성이어야 하는 태그. 슈퍼 트랜스폼(SK_P21)만. 양쪽 인스턴스 공용.
+        if skillId == "SK_P21" then return self.TagSuperTransform end
+        return ""
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsRecastActive(string userId, string skillId)
+        -- 이 스킬이 "활성 중 재시전" 상태인가(슈퍼 트랜스폼 변신 중 = 주먹). SkillCaster.RequestCast 가 쿨다운 게이트를 건너뛸 때 본다.
+        local tag = self:RecastTagOf(skillId)
+        if tag == "" then return false end
+        return self:GetBuff(userId, tag) ~= nil
     end
 
     -- ───────────────────────── 서버: 스킬 시스템 내부 조회 ─────────────────────────
@@ -425,11 +658,63 @@ script SkillBuffs extends Logic
         return math.floor(mp * mg.secondary / 100)
     end
 
+    @ExecSpace("ServerOnly")
+    method void OnSkillHitMonster(string userId, Entity target, string skillId)
+        -- 픽파켓(SK_T12 · STACK_GAIN): 스킬로 몬스터를 때릴 때마다 메소 동전 1~2 개를 그 자리에 드랍한다(추가기획1 "1번(타수 아님) 때리면 · 기존 드랍 영향 X").
+        -- SkillAttack.OnAttack / SkillProjectile.OnAttack 이 타격마다 부른다. 같은 대상은 PickpocketDedupeSeconds 안에 한 번만(볼리·다타 = 1번).
+        -- 동전은 A 의 mesocoin 모델 + DropOwner(주인 = 시전자) — FarmReward.DropCoins 와 같은 스폰 경로. 자동획득이 켜져 있으면 곧 빨려 온다.
+        if _JobPassiveLogic == nil or not isvalid(target) or isvalid(target.PlayerComponent) then return end
+        local perHit = _JobPassiveLogic:PassiveRatio(userId, self.TagPickpocket)
+        if perHit <= 0 then return end
+
+        local now = _UtilLogic.ServerElapsedSeconds
+        local per = self.pickpocketLast[userId]
+        if per == nil then
+            per = {}
+            self.pickpocketLast[userId] = per
+        end
+        for k, t in pairs(per) do
+            if not isvalid(k) or now - t > 30 then per[k] = nil end
+        end
+        local last = per[target]
+        if last ~= nil and now - last < self.PickpocketDedupeSeconds then return end
+        per[target] = now
+
+        -- 1.25 → 1개 + 25% 확률로 1개 더 (표 "소수점 안되면 5렙에만 2개" 대신 소수점을 확률로 푼다).
+        local count = math.floor(perHit)
+        local frac = perHit - count
+        if frac > 0 and _UtilLogic:RandomDouble() < frac then count = count + 1 end
+        if count <= 0 then return end
+
+        local map = target.CurrentMap
+        local t = target.TransformComponent
+        if not isvalid(map) or not isvalid(t) then return end
+        local tp = t.WorldPosition
+        local dropped = 0
+        for i = 1, count do
+            local ox = (_UtilLogic:RandomDouble() - 0.5) * 0.6
+            local coin = _SpawnService:SpawnByModelId(self.MesoCoinModelId, "Meso", Vector3(tp.x + ox, tp.y + 0.3, 0), map)
+            if isvalid(coin) then
+                coin:AddComponent("script.DropOwner")
+                local own = coin:GetComponent("script.DropOwner")
+                if isvalid(own) then own.OwnerUserId = userId end
+                dropped = dropped + 1
+            else
+                log_error("[Buff] PICKPOCKET coin spawn failed — modelId=" .. self.MesoCoinModelId)
+            end
+        end
+        if now - self.pickpocketSoundAt >= self.PickpocketSoundInterval then
+            self.pickpocketSoundAt = now
+            _SoundService:PlaySoundAtPos(self.PickpocketSoundRuid, tp, target, 1.0)
+        end
+        log("[Buff] PICKPOCKET +" .. tostring(dropped) .. " meso at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ")")
+    end
+
     -- ───────────────────────── 서버 → 클라 미러 ─────────────────────────
 
     @ExecSpace("ServerOnly")
     method void PushBuffs(string userId)
-        -- 미러 동기화: "MAGIC_GUARD:3:1234.5,INVULNERABLE:1:1300" (태그:레벨:만료시각 · ServerElapsedSeconds 기준).
+        -- 미러 동기화: "MAGIC_GUARD:3:1234.5:SK_M22,INVULNERABLE:1:1300:SK_W31" (태그:레벨:만료시각:스킬 · ServerElapsedSeconds 기준).
         -- 테이블은 ExecSpace 경계를 못 넘는다(LEA-3036) → 한 줄 문자열 (PlayerSkillState.PushState 와 같은 방식).
         local u = self.buffs[userId]
         local parts = {}
@@ -437,7 +722,7 @@ script SkillBuffs extends Logic
             local now = _UtilLogic.ServerElapsedSeconds
             for tag, b in pairs(u) do
                 if b.endsAt > now then
-                    table.insert(parts, tag .. ":" .. tostring(b.level) .. ":" .. tostring(b.endsAt))
+                    table.insert(parts, tag .. ":" .. tostring(b.level) .. ":" .. tostring(b.endsAt) .. ":" .. tostring(b.skillId))
                 end
             end
         end
@@ -446,12 +731,20 @@ script SkillBuffs extends Logic
 
     @ExecSpace("Client")
     method void SyncBuffs(string csv)
-        -- 서버가 밀어 준 활성 버프 목록으로 미러를 통째로 바꾼다.
+        -- 서버가 밀어 준 활성 버프 목록으로 미러를 통째로 바꾼다. 그 뒤 로컬 스탯 버프(슈퍼 트랜스폼)를 미러에 맞춘다.
         self.mirrorBuffs = {}
-        for tag, lv, ends in string.gmatch(csv, "([^,:]+):([^,:]*):([^,]*)") do
-            self.mirrorBuffs[tag] = { level = tonumber(lv) or 0, endsAt = tonumber(ends) or 0 }
+        for entry in string.gmatch(csv, "[^,]+") do
+            local fields = {}
+            for f in string.gmatch(entry, "[^:]*") do
+                if f ~= "" then table.insert(fields, f) end
+            end
+            local tag = fields[1]
+            if tag ~= nil and tag ~= "" then
+                self.mirrorBuffs[tag] = { level = tonumber(fields[2]) or 0, endsAt = tonumber(fields[3]) or 0, skillId = fields[4] or "" }
+            end
         end
         log("[Buff] mirror <- '" .. csv .. "'")
+        self:ApplyLocalTransformStats()
     end
 
     -- ───────────────────────── 클라: 미러 접근자 ─────────────────────────
@@ -479,6 +772,68 @@ script SkillBuffs extends Logic
         -- 클라 예측용 MP 소모 배율 (SkillCaster.Cast 의 MP 게이트). 서버 GetMpCostMul 과 같은 규칙.
         if self:LocalIsActive(self.TagMagicGuard) then return self.MagicGuardMpCostMul end
         return 1
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalIsRecastActive(string skillId)
+        -- 클라 예측: 이 스킬이 활성 중 재시전 상태인가(슈퍼 트랜스폼 변신 중). SkillCaster.Cast 가 쿨다운 예측 게이트를 건너뛸 때 본다.
+        local tag = self:RecastTagOf(skillId)
+        if tag == "" then return false end
+        return self:LocalIsActive(tag)
+    end
+
+    @ExecSpace("ClientOnly")
+    method number GetLocalInputSpeed()
+        -- 시전 락이 InputSpeed 를 0 으로 눌러 둔 동안엔 락이 캐시한 값이 "진짜" 속도다(SkillCaster.LockPresentation).
+        if _SkillCaster ~= nil and _SkillCaster.castLockActive and _SkillCaster.hasCachedInputSpeed then
+            return _SkillCaster.cachedInputSpeed
+        end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.MovementComponent) then return 1 end
+        return player.MovementComponent.InputSpeed
+    end
+
+    @ExecSpace("ClientOnly")
+    method void SetLocalInputSpeed(number v)
+        -- 락 중이면 캐시를 바꿔 락 해제 때 그 값으로 풀리게 하고, 아니면 바로 쓴다. 변신 시전 자체가 0.6s 락을 걸기 때문에 필요하다.
+        if _SkillCaster ~= nil and _SkillCaster.castLockActive and _SkillCaster.hasCachedInputSpeed then
+            _SkillCaster.cachedInputSpeed = v
+            return
+        end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.MovementComponent) then return end
+        player.MovementComponent.InputSpeed = v
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyLocalTransformStats()
+        -- 슈퍼 트랜스폼(SK_P21): 미러에 SUPER_TRANSFORM 이 있으면 소유 클라의 InputSpeed·JumpForce 를 ×(1 + Secondary%) 로, 사라지면 원래 값으로.
+        -- 플레이어 이동은 클라 소유라 서버가 쓰면 안 된다(SkillCaster 락과 같은 원칙). 한 번만 적용/복구(transformStatsApplied).
+        local active = self:LocalIsActive(self.TagSuperTransform)
+        if active == self.transformStatsApplied then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.MovementComponent) then return end
+        local movement = player.MovementComponent
+        if active then
+            local b = self.mirrorBuffs[self.TagSuperTransform]
+            local skillId = b.skillId
+            if skillId == nil or skillId == "" then skillId = "SK_P21" end
+            _SkillDatabase:EnsureLoaded()
+            local secondary = _SkillDatabase:SecondaryAt(skillId, b.level)
+            self.transformMul = 1 + secondary / 100
+            self.transformBaseSpeed = self:GetLocalInputSpeed()
+            self.transformBaseJump = movement.JumpForce
+            self:SetLocalInputSpeed(self.transformBaseSpeed * self.transformMul)
+            movement.JumpForce = self.transformBaseJump * self.transformMul
+            self.transformStatsApplied = true
+            log("[Buff] SUPER_TRANSFORM local stats ON x" .. tostring(self.transformMul) .. " speed " .. tostring(self.transformBaseSpeed) .. " -> " .. tostring(self.transformBaseSpeed * self.transformMul)
+                .. " jump " .. tostring(self.transformBaseJump) .. " -> " .. tostring(movement.JumpForce))
+        else
+            self:SetLocalInputSpeed(self.transformBaseSpeed)
+            movement.JumpForce = self.transformBaseJump
+            self.transformStatsApplied = false
+            log("[Buff] SUPER_TRANSFORM local stats OFF speed -> " .. tostring(self.transformBaseSpeed) .. " jump -> " .. tostring(self.transformBaseJump))
+        end
     end
 
 end
