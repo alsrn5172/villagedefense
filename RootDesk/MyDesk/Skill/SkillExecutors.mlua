@@ -193,11 +193,22 @@ script SkillExecutors extends Logic
             if not isvalid(player) then return end
             local s = self.CutscenePrewarmScale
             local n = 0
+            local seen = {}
             for skillId, entry in pairs(self.effectOverrides) do
                 local spec = entry.cast
                 if spec ~= nil and spec.ruid ~= nil and spec.scale ~= nil and spec.noFlip then
                     _EffectService:PlayEffectAttached(spec.ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
                     n = n + 1
+                end
+                -- 파워 스트라이크 찌르기 잔상(thrust · 무기별)도 첫 재생이 늦게 떴다(2026-09-13 Play 프레임) → 같이 예열. 같은 RUID 는 한 번만.
+                if entry.thrust ~= nil then
+                    for _, t in pairs(entry.thrust) do
+                        if t.ruid ~= nil and not seen[t.ruid] then
+                            seen[t.ruid] = true
+                            _EffectService:PlayEffectAttached(t.ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
+                            n = n + 1
+                        end
+                    end
                 end
             end
             log("SkillExecutors: cutscene prewarm x" .. tostring(n) .. " (" .. userId .. ")")
@@ -284,9 +295,17 @@ script SkillExecutors extends Logic
             -- b/skill-warrior (2026-09-10 · 사용자 요청 "원작과 같은 모습 · 다른 직업과 겹치지 않게"): 전사 4종은 전부 원작 스킬 팩의 RUID (msw-search 리소스 API 로 확인).
             -- 마법사도 같은 날 원작 팩으로 바꿨다(위). 두 직업이 같은 RUID 를 쓰는 곳은 없고, 전사 쪽엔 엔진 파티클 폴백을 하나도 쓰지 않는다 → 겹침 없음.
             -- spec 키: ruid · noFlip(화면 연출은 좌우 뒤집기 없음) · offsetY(부착 위치 · world unit) · scale. loop = 버프 지속 동안 반복(ExecuteBuff) · mob = 대상 몬스터에 부착(ExecuteTaunt).
-            SK_W11 = {   -- 파워 스트라이크 — skill/800033.img/skill/80003316 (파워 스트라이크): effect 6프레임 + hit/0
+            SK_W11 = {   -- 파워 스트라이크 — skill/800033.img/skill/80003316 (파워 스트라이크): effect 6프레임(충전 섬광) + hit/0
+                -- thrust = 2단 찌르기 잔상(팩 afterimage/…/stabOF · 2026-09-13 원작 영상 재현 · ExecutePowerStrikeCombo): 무기 종류(PlayerMotion.WeaponTypeOf)별 — 두손검 swordTL(128×60) · 한손검 swordTS(84×36).
+                -- 팩 원점이 이미 잔상 시작(손 근처)에 있어 offset 은 작은 보정값(Play 프레임 대조 · 0.6/0.45 로 두면 검 위 한 칸 떠서 보였다).
+                -- 내려찍기 잔상(afterimage/swingT1)은 팩에 sprite 로만 있어 EffectService 로 못 튼다 → 1단은 아바타 모션(swingO1/T1)만.
                 cast = { ruid = "522793cef4ff4b79bdf73b9eda9386f8" },
                 impact = { ruid = "dad03b3a528348bf98295b01edd621a4" },
+                thrust = {
+                    SWORD_2H = { ruid = "d0515d7c8aef446d98e553a7f7c02696", offsetX = 0.25, offsetY = -0.15 },
+                    SWORD_1H = { ruid = "84edb5f7381c47fcb18dccd7c0a12c81", offsetX = 0.05, offsetY = -0.15 },
+                    DEFAULT = { ruid = "84edb5f7381c47fcb18dccd7c0a12c81", offsetX = 0.05, offsetY = -0.15 },
+                },
             },
             SK_W21 = {   -- 하이퍼 바디 — skill/000.img/skill/0008003 (하이퍼 바디): effect 12프레임(시전) + affected 7프레임(지속 중 반복)
                 cast = { ruid = "2e96311164ef44e384f03de145c9b604", noFlip = true },
@@ -1137,6 +1156,12 @@ script SkillExecutors extends Logic
             hitCount = hitCount,
         }
 
+        if skillId == "SK_W11" then
+            -- 파워 스트라이크: 원작(현행 히어로) 2단 콤보 재현 (2026-09-13 사용자 영상). 단일 대상 규칙은 그대로(앞쪽 상자 최근접 하나).
+            self:ExecutePowerStrikeCombo(skillId, skillData, casterEntity, level, skillAttack, box)
+            return
+        end
+
         if self.meleeSingleTarget[skillId] then
             -- 단일 대상(파워 스트라이크 SK_W11): 앞쪽 상자 안 최근접 하나에 HitCount 회. 없으면 소모(MP·쿨다운)는 그대로 — 원작 헛스윙과 같다.
             local target = skillAttack:FindSkillTarget(skillId, box, false)
@@ -1154,6 +1179,69 @@ script SkillExecutors extends Logic
         skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "impact")
         skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
         skillAttack:DealSkillDamage(skillId, level, box)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecutePowerStrikeCombo(string skillId, table skillData, Entity casterEntity, number level, any skillAttack, table box)
+        -- 파워 스트라이크(SK_W11) — 사용자 제공 원작 영상(2026-09-13 · 히어로 두손검) 순서(영상 섬광 0.45 → 내려찍기 착지 0.90 → 찌르기 잔상 1.35 → 끝 1.62 를 섬광 기준 0 으로 옮긴 값):
+        --   t=0     충전 섬광(effectOverrides.cast = 팩 effect · ExecuteMeleeArc 가 이미 재생) + Use 사운드 + 전투 자세(SkillCaster.PlaySkill → WeaponMotion SK_W11 = alert · 검을 들고 멈춘다)
+        --   t=0.20  내려찍기 모션(WeaponMotion SK_W11_1 = swingO1/swingT1 · 약 0.3s 뒤 착지)
+        --   t=0.50  1타(앞쪽 상자 최근접 하나 · 표 피해의 절반) + hit/0
+        --   t=0.75  찌르기 모션(WeaponMotion SK_W11_2 = stabOF)
+        --   t=0.85  찌르기 잔상(팩 afterimage/stabOF · 두손검 swordTL / 한손검 swordTS · effectOverrides.thrust[무기] · 팔이 다 뻗은 뒤)
+        --   t=0.95  2타(절반) + hit/0
+        -- 두 타의 합 = 표의 150%→300%(HitCount 1 유지 · 각 0.5배 · SkillAttack.DealSkillDamageToTargetScaled). 시전 락 1.2s(SkillCaster.castLockOverrides). 조정은 아래 상수.
+        local chopAt = 0.2
+        local hit1At = 0.5
+        local thrustAt = 0.75
+        local afterimageAt = 0.85
+        local hit2At = 0.95
+        local uid = ""
+        if isvalid(casterEntity.PlayerComponent) then uid = casterEntity.PlayerComponent.UserId end
+        local hitRuid = self:GetSpecRuid(skillId, "impact")
+        local function strike(index, mul)
+            if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            local target = skillAttack:FindSkillTarget(skillId, box, false)
+            if not isvalid(target) then
+                log("SkillExecutors: POWER STRIKE hit" .. tostring(index) .. " no target in front — consumed")
+                return
+            end
+            local tp = target.TransformComponent.WorldPosition
+            if hitRuid ~= "" then
+                _EffectService:PlayEffect(hitRuid, casterEntity, Vector3(tp.x, tp.y + 0.5, tp.z), 0, Vector3(1, 1, 1), false)
+            end
+            skillAttack:DealSkillDamageToTargetScaled(skillId, level, target, mul, 1)
+        end
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            if _PlayerMotion ~= nil and uid ~= "" then _PlayerMotion:PlaySkill(uid, skillId .. "_1") end
+        end, chopAt)
+        _TimerService:SetTimerOnce(function() strike(1, 0.5) end, hit1At)
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            if _PlayerMotion ~= nil and uid ~= "" then _PlayerMotion:PlaySkill(uid, skillId .. "_2") end
+        end, thrustAt)
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) then return end
+            local wt = ""
+            if _PlayerMotion ~= nil and uid ~= "" then wt = _PlayerMotion:WeaponTypeOf(uid) end
+            local entry = self.effectOverrides[skillId]
+            local thrust = nil
+            if entry ~= nil and entry.thrust ~= nil then
+                thrust = entry.thrust[wt]
+                if thrust == nil then thrust = entry.thrust.DEFAULT end
+            end
+            if thrust ~= nil and thrust.ruid ~= nil then
+                local facing = self:GetFacingX(casterEntity)
+                local opt = {}
+                opt["FlipX"] = (facing > 0)
+                local s = thrust.scale or 1
+                _EffectService:PlayEffectAttached(thrust.ruid, casterEntity, Vector3((thrust.offsetX or 0) * facing, thrust.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+            end
+            log("SkillExecutors: POWER STRIKE thrust weapon=" .. tostring(wt) .. " afterimage=" .. tostring(thrust ~= nil))
+        end, afterimageAt)
+        _TimerService:SetTimerOnce(function() strike(2, 0.5) end, hit2At)
+        log("SkillExecutors: POWER STRIKE combo " .. skillId .. " chop@" .. tostring(chopAt) .. " hit1@" .. tostring(hit1At) .. " thrust@" .. tostring(thrustAt) .. " hit2@" .. tostring(hit2At))
     end
 
     @ExecSpace("ServerOnly")
