@@ -43,7 +43,7 @@
 | 픽파켓 | `skill/421.img/skill/4211003` 픽 파킷 | icon · Use(드랍음 · 0.3s 제한) |
 | 다크 사이트 | `skill/1400.img/skill/14001003` 다크 사이트(나이트워커) | icon · effect · Use |
 | 쉐도우 파트너 | `skill/411.img/skill/4111002` 쉐도우 파트너 | icon · effect(cast · noFlip) · special/stand1(분신 루프 · 시전자 뒤 offsetX −0.45) · Use |
-| 메소 익스플로전 | `skill/424.img/skill/4241006` 메소 익스플로젼 VI + `skill/40000.img/skill/400004110` 메소 익스플로젼 | icon · effect(cast) · effect0(impact 중심) · hit/0~8(동전마다 순환) · Hit(시전음) |
+| 메소 익스플로전 | `skill/424.img/skill/4241500` 일도양단(섀도어 오리진 · 2026-09-13 추가) + `skill/424.img/skill/4241006` 메소 익스플로젼 VI + `skill/40000.img/skill/400004110` 메소 익스플로젼 | screen(컷신 1455×858 · cast) · icon(4241006) · effect0(impact 중심) · hit/0~8(동전마다 순환 · 컷신 중) · 오디오 "일도양단" 1순위(시전음) |
 | 섬머솔트 킥 | `skill/1500.img/skill/15001002` 섬머솔트 킥(스트라이커) | icon · effect · hit/0 · Use/Hit |
 | 선원 관리 | `skill/520.img/skill/5201012` 서먼 크루 | icon |
 | 슈퍼 트랜스폼 | `skill/40005.img/skill/400051004` 라이트닝 폼 + `skill/40000.img/skill/400004139` 스크류 펀치 | icon · effect(cast) · special(변신 루프) · Use · 주먹: effect(punchCast) · hit(punchImpact) · Use(punch) |
@@ -156,3 +156,10 @@
 - Play 에서 잡아 고친 것 1건(`361ea2e`): 메소 익스플로전 동전 탐색 — `_EntityService:GetEntitiesSpawnedByModelId("mesocoin")` 은 0(`"model://mesocoin"` 이어야 잡힘) → 맵 자식 `script.MesoCoin` 컴포넌트로.
 - 🟡 미확인: 포커스 보스 리젠 토스트(여섯갈래길에 보스 없음 · 보스맵 Play 필요) · 다크 사이트·에너지 쉴드 **자가 배선**(HitEvent 뒤 HP 되돌림 · 접촉 피격이 안 나서 `ModifyIncomingDamage` 경로만 확인) · 얼티밋 스나이핑 `special` 의 pivot/방향 · 두 컷신의 offsetY/scale 미세 조정.
 - ⚠ 발견(기존 구조 · 이 PR 밖): **투사체 스킬로 잡은 몬스터는 보상이 없다** — `[FarmReward] Monster_… killed with no player damage — 보상 없음`. 투사체 엔티티가 공격자라 A 의 `FarmReward.HandleHitEvent` 가 플레이어 피해로 안 센다(에너지볼트도 같음 · feature/skill 때부터). 근접(섬머솔트 킥·파워 스트라이크)은 정상. 후속 PR 안: `SkillProjectile.OnUpdate` 의 명중을 시전자의 `SkillAttack.DealSkillDamageToTarget` 로 넘겨 공격자 = 플레이어로 만든다(크리·픽파켓 훅도 한곳으로 모인다).
+
+## 2026-09-13 — 메소 익스플로전 컷신 (사용자 질문 "도적은 컷신이 없나")
+
+- 추가기획1 표의 "(컷신 제작)" 을 섀도어 오리진 **일도양단**(`skill/424.img/skill/4241500` · screen 85프레임 1455×858)으로 채웠다. 도적 오리진 팩은 6차 img 규칙(`X24.img` 섀도어 · `X14.img` 나이트로드 = 생사여탈 `skill/414.img/skill/4141500`)으로 찾았다.
+- `SkillExecutors.effectOverrides.SK_T31.cast` = 일도양단 screen(noFlip · offsetY 1.0 · scale 1.4 · 다른 두 컷신과 같은 보정) · `impact` 는 메소 익스플로젼 VI effect0 그대로 · `castSounds.SK_T31` = 오디오 검색 "일도양단" 1순위.
+- 타이밍: CSV `SK_T31` Duration 0.6 → **1.6**(컷신 뒤 피해) · `ExecuteMesoOrigin` 이 동전 연쇄 폭발을 피해 시점 0.15s 전에 끝나도록 역산해 시작(컷신 중 터진다) · `SkillCaster.castLockOverrides.SK_T31` 2.5 → 3.5.
+- 🟡 Play 재확인 필요(컷신 위치·타이밍).
