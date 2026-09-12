@@ -446,6 +446,47 @@ script SkillExecutors extends Logic
             return
         end
         executorFn(skillId, skillData, casterEntity, level)
+        self:PlayMotionSequence(skillId, casterEntity)
+    end
+
+    method any GetMotionSequence(string skillId)
+        -- 시전 뒤 이어지는 캐릭터 모션(WeaponMotion 행 접미사 · 시전 뒤 초). SkillCaster.RequestCast 가 시전 순간 <SkillId> 행을 재생하고, 나머지는 이 순서대로.
+        -- 2026-09-13 사용자 요청 "하이퍼 바디·도발·불굴의 진에 캐릭터 애니메이션": 원작 버프 자세(alert2)는 메이커 아바타에 없다(Play 확인: alert2~alert7 은 없는 이름과
+        -- 같이 stand 로 남는다 · 있는 것 = alert·heal·swing/stab/shoot·proneStab 등 14 상태 + 무기 공격 액션) →
+        --   하이퍼 바디 = heal(손 들어 올리기) → 0.7s 서 있기 · 도발 = swingO2/swingT2(머리 위 큰 휘두르기) → 0.7s 서 있기 · 불굴의 진 = heal → 0.7s alert(전투 자세 = "진") → 1.6s 서 있기.
+        -- Onetime 모션은 마지막 프레임이 다음 움직임까지 남으므로 _END 행(stand1/stand2 ZigzagLoop)으로 되돌린다. 파워 스트라이크는 ExecutePowerStrikeCombo 가 따로 순서를 낸다.
+        local sequences = {
+            SK_W21 = { { suffix = "_END", at = 0.7 } },
+            SK_W22 = { { suffix = "_END", at = 0.7 } },
+            SK_W31 = { { suffix = "_2", at = 0.7 }, { suffix = "_END", at = 5.5 } },   -- 컷신(세이크리드 바스티온 screen · Play 실측 ≈4.8s 에 걷힘)이 걷힌 뒤 전투 자세가 잠깐 보이고 서 있기
+        }
+        return sequences[skillId]
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayMotionSequence(string skillId, Entity casterEntity)
+        -- GetMotionSequence 의 단계마다 타이머로 _PlayerMotion:PlaySkill(uid, "<SkillId><suffix>"). 그 무기에 그 행이 없으면(PlayerMotion.Find 가 무기 기본 공격 행으로 폴백) 건너뛴다 —
+        -- 버프 뒤에 엉뚱한 휘두르기가 나오지 않게.
+        local seq = self:GetMotionSequence(skillId)
+        if seq == nil or _PlayerMotion == nil or not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
+        local uid = casterEntity.PlayerComponent.UserId
+        local wt = _PlayerMotion:WeaponTypeOf(uid)
+        if wt == "" then return end
+        local fallback = _PlayerMotion:Find(wt, "")
+        local scheduled = 0
+        for _, step in ipairs(seq) do
+            local motionId = skillId .. step.suffix
+            local row = _PlayerMotion:Find(wt, motionId)
+            if row ~= nil and row ~= fallback then
+                _TimerService:SetTimerOnce(function()
+                    if isvalid(casterEntity) then _PlayerMotion:PlaySkill(uid, motionId) end
+                end, step.at)
+                scheduled = scheduled + 1
+            else
+                log_warning("SkillExecutors: motion sequence " .. motionId .. " has no WeaponMotion row for " .. wt .. " — skipped")
+            end
+        end
+        log("SkillExecutors: motion sequence " .. skillId .. " weapon=" .. wt .. " steps=" .. tostring(scheduled) .. "/" .. tostring(#seq))
     end
 
     @ExecSpace("ServerOnly")
