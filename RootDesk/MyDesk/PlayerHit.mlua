@@ -8,13 +8,43 @@ script PlayerHit extends HitComponent
 	property number LastHitTime = 0
 
 	method boolean IsHitTarget(string attackInfo)
+		-- 피격 무적 시간(ImmuneCooldown 1s). 불굴의 진(SK_W31) 동안은 B SkillBuffs.GetHitImmuneMul(0.5) 배 = 절반 (2026-09-13 사용자 요청).
+		-- ⚠ @ExecSpace 를 붙이거나 파라미터를 바꾸면 LEA-3014 SignatureMismatch (Faction/MonsterHit 과 같은 규칙).
 		local currentTime = _UtilLogic.ElapsedSeconds
-		if self.LastHitTime + self.ImmuneCooldown < currentTime then
-			self.LastHitTime = _UtilLogic.ElapsedSeconds
+		local cooldown = self.ImmuneCooldown
+		if self:IsServer() and _SkillBuffs ~= nil then
+			cooldown = cooldown * _SkillBuffs:GetHitImmuneMul(self:OwnerUserId())
+		end
+		if self.LastHitTime + cooldown < currentTime then
+			self.LastHitTime = currentTime
 			return true
 		end
-		
+
 		return false
+	end
+
+	method void OnHit(Entity attacker, integer damage, boolean isCritical, string attackInfo, int32 hitCount)
+		-- 피격 처리 진입점(엔진 HitComponent.OnHit 오버라이드 · 시그니처는 부모 그대로 · ExecSpace 없음).
+		-- 불굴의 진(SK_W31 · 2026-09-13 사용자 변경 "8초간 HP 최대치 고정 · 피격 경직·넉백 없음 · 피격 무적 시간 절반") 동안은
+		-- 기본 피격 처리(HP 감산 → HIT 상태 = 경직·넉백 · 피해 표시 · HitEvent)를 통째로 건너뛰고 B SkillBuffs.OnUnyieldingHit 에 넘긴다
+		-- (HP 를 최대치로 되돌리고 아이언 바디 반사만 그대로). 그 외에는 엔진 기본 동작 그대로.
+		if self:IsServer() and _SkillBuffs ~= nil then
+			local uid = self:OwnerUserId()
+			if uid ~= "" and _SkillBuffs:IsUnyielding(uid) then
+				_SkillBuffs:OnUnyieldingHit(uid, attacker, damage)
+				return
+			end
+		end
+		__base:OnHit(attacker, damage, isCritical, attackInfo, hitCount)
+	end
+
+	method string OwnerUserId()
+		-- 이 피격 컴포넌트가 붙은 플레이어의 userId. 플레이어 엔티티가 아니면 "".
+		local pc = self.Entity.PlayerComponent
+		if isvalid(pc) then
+			return pc.UserId
+		end
+		return ""
 	end
 
 end
