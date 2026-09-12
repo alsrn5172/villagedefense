@@ -72,6 +72,20 @@ script SpectateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean Blocked(string userId)
+		-- 🔴 **관전자는 아무것도 못 한다** (사용자 확정 2026-09-10).
+		--    Enter 가 컨트롤러·피격·중력·진영만 껐더니, 숨은 캐릭터로 **넥서스를 클릭해 점령**하고
+		--    시설을 짓고 상점을 열 수 있었다. 월드 클릭(TouchReceive)과 UI 창은 캐릭터가 안 움직여도
+		--    그대로 살아 있어서, 서버 RPC 를 막지 않으면 소용이 없다.
+		--    → 상태를 바꾸는 Server RPC 는 전부 첫 줄에서 이걸 물어본다.
+		--    (읽기 전용 RPC — RequestView · RequestStats · RequestInventory · RequestSync — 는 막지 않는다.
+		--     관전자도 남의 판을 들여다보는 건 관전의 목적이다.)
+		if userId == nil or userId == "" then return false end
+		if self.spectators == nil or self.spectators[userId] == nil then return false end
+		if _UIToast ~= nil then _UIToast:ShowMessage("관전 중에는 할 수 없습니다", userId) end
+		return true
+	end
+	@ExecSpace("ServerOnly")
 	method void Enter(string userId)
 		-- 탈락 → 관전 진입: 캐릭터 숨김·무력화, 관전 바 켜기, 자율 카메라.
 		if self.spectators == nil then self.spectators = {} end
@@ -93,6 +107,31 @@ script SpectateService extends Logic
 		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(true, userId) end
 		self:PushTargets()
 		log("[Spectate] enter " .. userId .. " map=" .. tostring(ent.CurrentMapName))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LeaveSpectate(string userId)
+		-- 관전 해제 (WO-019). "로비로" 를 눌렀을 때 MatchSessionLogic.LeaveToLobby 가 부른다.
+		-- 🔴 Enter 가 바꾼 것을 **하나씩 정확히 되돌린다.** 하나라도 빠뜨리면 로비에서
+		--    투명하거나 못 움직이거나 중력이 0인 채로 돌아다니게 된다.
+		local spec = (self.spectators ~= nil) and self.spectators[userId] or nil
+		if spec == nil then return end
+
+		self:DestroyRig(spec)
+		self.spectators[userId] = nil
+
+		local ent = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(ent) then
+			ent:SetVisible(true)
+			if isvalid(ent.PlayerControllerComponent) then ent.PlayerControllerComponent.Enable = true end
+			if isvalid(ent.HitComponent) then ent.HitComponent.Enable = true end
+			if isvalid(ent.RigidbodyComponent) then ent.RigidbodyComponent.Gravity = 1 end
+		end
+
+		self:SetSpectating(false, userId)
+		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(false, userId) end
+		self:PushTargets()
+		log("[Spectate] leave " .. userId)
 	end
 
 	@ExecSpace("ServerOnly")
