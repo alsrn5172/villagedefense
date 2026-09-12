@@ -134,3 +134,25 @@
   - **해적 R**: 컷신 → `BARRAGE SK_P31 scheduled 6 waves x5` · `wave 1/6 hits=5` … `dealt SK_P31 circle … mul=5 display=5` ×6
   - **포커스**(궁수 · 보스맵에서 보스 처치): `[JobPassive] FOCUS toast -> … 리젠까지 N초` · 10초 전 토스트
 - 🟡 런타임 미검증 API(근거 `.d.mlua`·팀 코드): `GetChildComponentsByTypeName("SpawnLocationComponent")` · `_EntityService:GetEntitiesSpawnedByModelId("mesocoin")` · `AvatarRendererComponent:SetAlpha/SetColor` 서버 호출의 전 클라 반영 · `MovementComponent.JumpForce` 클라 쓰기 · `SpriteRendererComponent.SpriteRUID` 서버 쓰기 반영 · `GetDisplayHitCount` 의 표시 분할(피해 합이 N배인지).
+
+## 2026-09-12 — Maker Play 검증 (Maker MCP 자동 조작 · 15종 전부 실행 확인)
+
+- **build: 오류 0 · 경고 1**(A `ParseStatCsv` LWA-1111 · 기준선과 같음) · 린트 정보 120 — Maker `refresh` 직후 · 새 `.codeblock` 없음.
+- 방법: Maker 가 `강화하고살아남기`(b/skill-warrior) 폴더를 연 채였고 사용자가 폴더 전환을 원치 않아, **이 브랜치의 B 파일 10개 + A 의 `Match/SpectateService.mlua`(#46 `Blocked` · 그 폴더엔 아직 없음)를 임시 복사 → refresh → Play → 검증 뒤 백업으로 원복**(git 조작 없음 · 원복 후 `git status` 동일 확인 · 백업 `메월드폴더/usual-folder-backup-20260912`). 키 입력·서버/클라 스크립트·스크린샷·로그 채집 전부 MCP 도구 호출. 여섯갈래길 달팽이. 테스트 임시값 없음(직업 = 서버 `ChangeJob` · Lv30/전 스킬/MP = `DevStatRemote.RequestLevel(29)` + `RequestDevSetup` · 자동획득 OFF = `RequestSetAutoPickup(false)`). userId 20372100010310953.
+- 부팅: `SkillDatabase: resolved dataset 'SkillInfo', loaded 26 rows` · `[Buff] SkillBuffs ready (hit listener for reflect)` · `[JobPassive] focus boss timer started (2.0s)` · `SkillHotbar: wired 8 hotbar keys` · 오류·`Symbol not found` 0.
+- **궁수 Q**: `SkillAttack: spawned projectile SK_A11 speed=12 … target=Monster_SixPathCrossway_SP001_… volley=2 sprite=true` · 화살 2발·2타 표시(스크린샷) · 달팽이 처치.
+- **궁수 W**: `SkillExecutors: PROJECTILE SK_A21 aiming 1s` → 1초 뒤 `FindSkillTarget SK_A21 candidates=2 preferBoss=true -> Monster_…` · `spawned projectile SK_A21 speed=20 … preferBoss=true` · 375 표시(75×500%).
+- **궁수 E**: `SkillMovement: SK_A22 dodge from=(-15.9,-3.9) to=(-5.7,0.6) branch=spawn-location(1) map=SixPathCrossway` · `BLINK SK_A22 depart particle=ruid` · `… buff=GUARANTEED_CRIT` · `[Buff] ON GUARANTEED_CRIT skill=SK_A22 lv=5 dur=10` · 서버 조회 `IsGuaranteedCrit=true remain=8.2`.
+- **궁수 R**: `cast effect SK_A31 attached`(파이널 에임 화면 컷신 · 스크린샷) → 1.5초 뒤 `SkillAttack: dealt SK_A31 lv=1 hits=1` · `SkillExecutors: LINE SK_A31 dir=-1 range=15 height=2.5`. ⚠ 첫 재생은 에셋 로딩으로 컷신이 피해보다 늦게 떴다(2회차 확인 필요).
+- **도적 Q**: `spawned projectile SK_T11 speed=14 … volley=2 sprite=true`(수비 표창) · 타격마다 `[Buff] PICKPOCKET +2 meso at Monster_… (perHit=2.0 skill=SK_T11)` · 동전 바닥 드랍(스크린샷 · 자동획득 OFF) · 볼리 2발에 드랍 1회(중복 방지).
+- **도적 W**: `[Buff] ON DARK_SIGHT skill=SK_T21 lv=5 dur=10` · `avatar alpha=0.35`(반투명 스크린샷) · 서버 `ModifyIncomingDamage(1000)` 1회차 → `[Buff] DARK_SIGHT evaded 1000` · 0 · `[Buff] OFF DARK_SIGHT (evaded)` · `alpha=1` · 2회차 1000 그대로(회피는 1회).
+- **도적 E**: `[Buff] ON SHADOW_PARTNER skill=SK_T22 lv=5 dur=60 ratio=100` · `buff loop effect SK_T22 SHADOW_PARTNER`(시전자 뒤 검은 분신 스크린샷) · 이후 Q `SkillDatabase: DamageAt SK_T11 base=90 x2.0 (shadowPartner) -> 180`.
+- **도적 R**: 동전 0개 → `server result SK_T31 … ok=false reason='no meso nearby (r=6)'`(MP·쿨·사용 횟수 소모 없음) · 동전 4개 → `[Summon] -mp 50` · `MESO SK_T31 detonating 4 coins over 0.24s, damage at +0.6s` → `dealt SK_T31 circle r=6 … mul=4 display=4` · `MESO SK_T31 coins=4 r=6 -> 200%`.
+- **해적 Q**: `cast effect SK_P11` · `dealt SK_P11 lv=5 hits=1` · `[FarmReward] Monster_… top=2037… dmg=206`(75×275%) · `dropped 1 coins`.
+- **해적 W**: `[Buff] ON SUPER_TRANSFORM skill=SK_P21 lv=5 dur=30 ratio=500 secondary=30` · `avatar tint=true`(푸른 틴트 스크린샷) · `buff loop effect SK_P21` · 클라 `[Buff] SUPER_TRANSFORM local stats ON x1.3 speed 2.0 -> 2.6 jump 0.9 -> 1.17` · W 재입력 `punchCast effect SK_P21` · `dealt SK_P21 lv=5` · `TRANSFORM PUNCH SK_P21 range=3` · `cast SK_P21 ok=true … cd=58.301 … recast=true`(쿨 유지).
+- **해적 E**: `[Buff] ON ENERGY_SHIELD … dur=100000.0 ratio=30` · `ENERGY_SHIELD shield=60435 (30% of maxHp 201450)` · 서버 `ModifyIncomingDamage(5000)` → `absorb 5000/5000 -> shield 55435` · HP 0 · `(70000)` → `absorb 55435/70000 -> shield 0` · `[Buff] OFF ENERGY_SHIELD (shield broken)` · `buff loop effect stopped` · HP 14565.
+- **해적 R**: `cast effect SK_P31`(드레드노트 컷신) · `BARRAGE SK_P31 scheduled 6 waves x5(+0) hits from +1s every 0.45s` → `wave 1/6 hits=5 r=8` … `wave 6/6`(각 `dealt SK_P31 circle r=8 … mul=5 display=5`) · 스크린샷에 5타 표시.
+- 핫바: 세 직업 Q/W/E/R 전부 `HOTBAR: slot… cast ok=true`(직업별 byJob).
+- Play 에서 잡아 고친 것 1건(`361ea2e`): 메소 익스플로전 동전 탐색 — `_EntityService:GetEntitiesSpawnedByModelId("mesocoin")` 은 0(`"model://mesocoin"` 이어야 잡힘) → 맵 자식 `script.MesoCoin` 컴포넌트로.
+- 🟡 미확인: 포커스 보스 리젠 토스트(여섯갈래길에 보스 없음 · 보스맵 Play 필요) · 다크 사이트·에너지 쉴드 **자가 배선**(HitEvent 뒤 HP 되돌림 · 접촉 피격이 안 나서 `ModifyIncomingDamage` 경로만 확인) · 얼티밋 스나이핑 `special` 의 pivot/방향 · 두 컷신의 offsetY/scale 미세 조정.
+- ⚠ 발견(기존 구조 · 이 PR 밖): **투사체 스킬로 잡은 몬스터는 보상이 없다** — `[FarmReward] Monster_… killed with no player damage — 보상 없음`. 투사체 엔티티가 공격자라 A 의 `FarmReward.HandleHitEvent` 가 플레이어 피해로 안 센다(에너지볼트도 같음 · feature/skill 때부터). 근접(섬머솔트 킥·파워 스트라이크)은 정상. 후속 PR 안: `SkillProjectile.OnUpdate` 의 명중을 시전자의 `SkillAttack.DealSkillDamageToTarget` 로 넘겨 공격자 = 플레이어로 만든다(크리·픽파켓 훅도 한곳으로 모인다).
