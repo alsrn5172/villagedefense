@@ -164,3 +164,11 @@
 - 타이밍: CSV `SK_T31` Duration 0.6 → **1.6**(컷신 뒤 피해) · `ExecuteMesoOrigin` 이 동전 연쇄 폭발을 피해 시점 0.15s 전에 끝나도록 역산해 시작(컷신 중 터진다) · `SkillCaster.castLockOverrides.SK_T31` 2.5 → 3.5.
 - Play 확인(같은 방식 · 폴더 임시 복사): 2회차 시전에서 일도양단 컷신(먹 베기 → 파란 메소 폭발) 정상 · `dealt SK_T31 circle r=6 … mul=4` · 피해가 컷신 1.6s 시점에 맞음. **첫 시전은 컷신이 아예 안 떴다**(파이널 에임과 같은 세션 첫 재생 에셋 로딩) → 아래 예열.
 - **컷신 예열**(`SkillExecutors.StartCutscenePrewarm` · `CutscenePrewarm` 스위치): `UserEnterEvent`(+ 이미 입장한 유저) 3s 뒤 `effectOverrides` 의 화면 컷신 cast 5종(불굴의 진·대마법·폭풍의 화살·메소 익스플로전·함포 사격 = `noFlip + scale` 인 항목)을 그 유저 발밑 −40 에 scale 0.01 로 한 번 재생(피해·소리 없음). Play 확인: `cutscene prewarm x5` 뒤 **첫 시전에 컷신 즉시**(0.6s 스크린샷에 이미 화면 가득). 마법사·전사 컷신에도 같은 효과.
+
+## 2026-09-13 — 스킬별 캐릭터 모션 (사용자 제보 "전사가 검을 들면 애니메이션이 이상하다")
+
+- 원인: `WeaponMotion.csv`(A 표)에 무기별 기본 행만 있어 **모든 스킬이 그 무기의 기본 공격 모션**(한손검 swingO1)을 재생했다 — 하이퍼 바디·도발·불굴의 진 같은 버프도 검을 휘둘렀다. `PlayerMotion.Find` 는 `<SkillId>|<WeaponType>` 행이 있으면 그것을 먼저 쓴다(구현맵 §2 "B 가 표만 채운다").
+- **`RootDesk/MyDesk/WeaponMotion.csv` 에 스킬별 행 20개 추가**(행 추가만 · 헤더·A 행 불변 · 협업-규칙 §2-1): 파워 스트라이크 swingO2(한손)/swingT2(두손) · 버프·컷신(하이퍼 바디·도발·불굴의 진·매직 가드·대마법·다크 사이트·쉐도우 파트너·메소 익스플로전·슈퍼 트랜스폼·에너지 쉴드·함포 사격) = **alert**(원작 버프 자세) · 스나이핑 shoot2 · 폭풍의 화살 shootF · 섬머솔트 킥 swingPF · 변신 중 주먹 `SK_P21_RECAST` swingP2. 기본 공격 행이 이미 맞는 것(더블 샷 shoot1 · 럭키 세븐 swingO3 · 에너지볼트 swingO1)은 행을 안 넣었다. 액션 이름은 원작 아바타 액션 집합(쉐도우 파트너 팩의 special/* 목록 = alert·swingO1~3·swingOF·swingP1/2/PF·swingT1~3/TF·stabO/T·shoot1/2/F)에서 골랐다.
+- `SkillCaster.RequestCast`: 재시전(변신 중 주먹)이면 `_PlayerMotion:PlaySkill(uid, skillId .. "_RECAST")` — 행이 없으면 `PlayerMotion.Find` 가 무기 기본 행으로 폴백.
+- Play 확인(무기 장착 = 서버 스크립트로 `InventoryService.GiveItem` + `EquipService.Apply` · 확대 스크린샷): `[Motion] weapon motion table loaded: 27 rows` · `no row` 경고 0 · 파워 스트라이크 = 한손검 큰 휘두르기 · 하이퍼 바디 = 서 있는 자세(alert) · 럭키 세븐 = 아대 던지기(표창 날아감) · 다크 사이트 = 반투명 서 있기 · 섬머솔트 킥 = 발차기 + 206 · K 창 아이콘 전부 표시(해적·전사 탭 스크린샷).
+- 🟡 A 에게: 너클 기본 행 `MOTION_KNUCKLE` 이 swingO1(검 휘두르기)이다 — A 행이라 손대지 않았다. swingP1(주먹)로 바꾸는 것을 권한다. 아이콘 4종(포커스·선원 관리·슈퍼 트랜스폼·에너지 쉴드)은 원작이 색인에 없어 같은 계열 팩 아이콘 — 바꿀 것이 있으면 CSV `IconRUID` 한 칸.
