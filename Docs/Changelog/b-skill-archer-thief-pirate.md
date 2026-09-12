@@ -202,6 +202,13 @@
 - `WeaponMotion.csv`(B 행만 · A 행·헤더 불변): `SK_W21`/`SK_W22`/`SK_W31` 6행 값 변경(alert → heal / swingO2·T2 / heal) · 새 행 `SK_W31_2`(alert) 2행 · `SK_W21_END`/`SK_W22_END`/`SK_W31_END` 6행. 합계 32 B 행(표 39행).
 - Play 확인(한손검·두손검 · W/E/R): `[Motion] weapon motion table loaded: 39 rows` · `motion sequence SK_W21 weapon=SWORD_1H steps=1/1` · `SK_W22 … 1/1` · `SK_W31 … 2/2`(두손검도 같음) · `no row`·`no WeaponMotion` 경고 0 · 빌드 0. 확대 스크린샷: 하이퍼 바디 = 빛기둥 아래 손 들기 → 서 있기 · 도발 = 머리 위 큰 휘두르기 → 서 있기 · 불굴의 진 = 컷신이 화면을 덮는 동안 손 들기·전투 자세, 걷힌 뒤 서 있기.
 - **같은 날 사용자 재요청 "세 스킬은 공격 동작이 아니라 전투 중 대기 자세로"** → 셋 다 `alert`(전투 대기 자세) **ZigzagLoop**(2프레임 왕복이라 서서 흔들리는 대기 동작으로 보인다) · `_END` 로 서 있기 복귀(하이퍼 바디·도발 1.0s · 불굴의 진 5.5s). `SK_W31_2` 행 2개 삭제(표 37행 · B 행 30). heal·swingO2/T2 는 쓰지 않는다.
+- **다시 제보 "너무 정적이고 몬스터와 충돌할 때 동작과 같다"** — 맞다: 엔진 HIT 상태(피격)도 `alert` 1배속을 튼다. → 셋 다 **시전 순간 `heal`(손 들어 올리기 한 번) → 0.75s 뒤 `_2` = `alert` 2.5배속 ZigzagLoop(빠른 전투 자세 · 피격의 1배속과 구분) → `_END`**(하이퍼 바디·도발 1.5s · 불굴의 진 5.5s). `SK_W21_2`·`SK_W22_2`·`SK_W31_2` 행 6개(표 43행 · B 행 36). 시전 모션이 키 입력 +0.3s 쯤에야 클라에 보여(RequestCast 뒤 서버→클라) `_2` 를 0.5 로 두면 손 든 모습이 0.2s 뿐이라 0.75 로. Play 프레임: 키 +0.3~0.7s 손 들기 → 빠른 전투 자세 → 서 있기(하이퍼 바디·도발 · `motion sequence … steps=2/2`).
+
+## 2026-09-13 — 전사·마법사 스킬 아이콘 복구 (사용자 제보 "아이콘이 사라졌다")
+
+- 원인: 전사·마법사 11행의 `IconRUID` 는 **어느 브랜치에도 커밋된 적이 없고**(main · b/skill-magician · b/skill-warrior 전부 빈칸) `강화하고살아남기` 폴더의 **미커밋 작업본**(2026-09-12 백업 `usual-folder-backup-20260912/RootDesk/MyDesk/SkillInfo.csv` · `pending-uncommitted.patch`)에만 있었다. 이 브랜치 검증 때 워크트리의 `SkillInfo.csv` 를 그 폴더에 복사하면서 K 창에서 사라졌다.
+- 복구: 백업의 11개 `IconRUID`(원작 팩 icon · 파워 스트라이크 5c61ff8d… 하이퍼 바디 a4cbb593… 도발 5595ad7b… 불굴의 진 855413d1… 아이언 바디 52162587… 에너지볼트 2d2fd410… 연성 5c6b6d40… 텔레포트 강화 5da1079f… 매직 가드 4c930291… 대마법 e0e09640… 텔레포트 7696c267…)와 각 행 `#Note` 끝의 "원작 팩 … (icon · cast · hit · sound)" 기록을 브랜치 CSV 에 넣었다(B 행 · 헤더 불변 · BOM/CRLF 유지). 백업의 쿨다운 0(SK_W11/W21/W22)·UseLimit 0(SK_W31) 은 테스트값이라 **가져오지 않았다**.
+- Play 확인: K 창(창을 연 채 F10 으로 직업 전환 → `ShowTab … jobLine=MAGICIAN rows=3/2/1` · `WARRIOR`) 1·2·3차 탭 전부 아이콘 표시.
 
 ## 2026-09-13 — 불굴의 진 효과 변경 (사용자: "8초간 최대 HP 100% 고정 · 피격 경직·넉백 없음 · 피격 무적 시간 절반")
 
