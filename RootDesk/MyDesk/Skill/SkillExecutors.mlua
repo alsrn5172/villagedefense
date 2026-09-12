@@ -137,6 +137,17 @@ script SkillExecutors extends Logic
     -- 메소 동전 모델(A 의 Farm/MesoCoin · FarmReward.DropCoins 의 CoinModelId 와 같은 EntryKey).
     property string MesoCoinModelId = "mesocoin"
 
+    -- 컷신 예열(2026-09-13 Play 실측): 화면 크기 screen 클립(1400×850 · 60~130프레임)은 그 세션에서 처음 재생할 때 에셋 로딩 때문에 몇 초 뒤에야 뜨거나
+    -- 아예 안 보였다(파이널 에임 · 일도양단 모두 2회차부터 즉시). 유저가 들어오면 CutscenePrewarmDelay 뒤 각 컷신 RUID 를 그 유저에 붙여 보이지 않는 크기로 한 번 재생해
+    -- 클라가 미리 받아 두게 한다. 목록은 effectOverrides 의 cast 중 scale 이 있는 화면 연출(불굴의 진·대마법·폭풍의 화살·메소 익스플로전·함포 사격).
+    property boolean CutscenePrewarm = true
+
+    property number CutscenePrewarmDelay = 3
+
+    property number CutscenePrewarmScale = 0.01
+
+    property any prewarmEnterHandler = nil
+
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
     @ExecSpace("ServerOnly")
@@ -144,6 +155,53 @@ script SkillExecutors extends Logic
         self:BuildHandlerTable()
         self:BuildEffectOverrides()
         self:BuildCastSounds()
+        self:StartCutscenePrewarm()
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnEndPlay()
+        if self.prewarmEnterHandler ~= nil then
+            _UserService:DisconnectEvent(UserEnterEvent, self.prewarmEnterHandler)
+            self.prewarmEnterHandler = nil
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void StartCutscenePrewarm()
+        -- 입장 유저마다(이미 들어온 유저 포함) 컷신 예열을 건다(SkillBuffs.OnBeginPlay 와 같은 UserEnterEvent 패턴).
+        if not self.CutscenePrewarm then return end
+        self.prewarmEnterHandler = _UserService:ConnectEvent(UserEnterEvent, self.OnPrewarmUserEnter)
+        for _, user in ipairs(_UserService.UserEntities.Values) do
+            if isvalid(user) and isvalid(user.PlayerComponent) then
+                self:PrewarmCutscenesFor(user.PlayerComponent.UserId)
+            end
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnPrewarmUserEnter(UserEnterEvent event)
+        if event.UserId ~= nil and event.UserId ~= "" then
+            self:PrewarmCutscenesFor(event.UserId)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PrewarmCutscenesFor(string userId)
+        -- CutscenePrewarmDelay 뒤 화면 컷신 클립을 전부 그 유저 발밑 아래(보이지 않는 곳)에 아주 작게 한 번 재생한다. 피해·사운드 없음.
+        _TimerService:SetTimerOnce(function()
+            local player = _UserService:GetUserEntityByUserId(userId)
+            if not isvalid(player) then return end
+            local s = self.CutscenePrewarmScale
+            local n = 0
+            for skillId, entry in pairs(self.effectOverrides) do
+                local spec = entry.cast
+                if spec ~= nil and spec.ruid ~= nil and spec.scale ~= nil and spec.noFlip then
+                    _EffectService:PlayEffectAttached(spec.ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
+                    n = n + 1
+                end
+            end
+            log("SkillExecutors: cutscene prewarm x" .. tostring(n) .. " (" .. userId .. ")")
+        end, self.CutscenePrewarmDelay)
     end
 
     @ExecSpace("ServerOnly")
