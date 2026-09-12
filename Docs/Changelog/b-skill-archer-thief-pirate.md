@@ -191,4 +191,14 @@
 - 순서(콤보 상수): 0.2 내려찍기 모션 → **0.45 내려찍기 잔상 + 1타**(`effectOverrides.SK_W11.swing[무기]` · `PickWeaponSpec`) → 0.75 찌르기 → **0.85 찌르기 잔상(1.3배) + 2타**.
 - 사용자 제보(같은 날) "마지막 찌르기에서 이펙트가 먼저 뜨고 공격이 뒤에 온다": 처음엔 잔상 0.85 · 2타 0.95 로 타이머가 따로였다 → **잔상과 타격을 한 타이머(같은 프레임)** 로 합쳤다(1타·내려찍기 잔상도 같이 0.42/0.5 → 0.45 한 타이머). Play: `hit1+arc@0.45 … hit2+flame@0.85` · 스크린샷에서 잔상과 225 표시가 같은 프레임.
 - 그래도 사용자 눈에는 잔상이 먼저(피해 숫자·피격 반응이 클라에 그려지기까지 한 박자 더) → 사용자 제안 "이펙트를 조금 늦추면 같아진다": **2타를 먼저 부르고 찌르기 잔상은 `thrustFxDelay`(0.1s) 뒤**(0.85 타격 · 0.95 잔상). 상수 하나로 조정. Play: `dealt SK_W11` 다음에 `thrust flame … (+0.1s after hit2)` · 두손검·한손검 · 빌드 0.
+
+## 2026-09-13 — 하이퍼 바디·도발·불굴의 진 캐릭터 애니메이션 (사용자 요청 "버프에도 원작 표준 동작을, 없으면 어울리는 것")
+
+- **원작 표준 버프 동작(alert2)은 메이커 아바타에 없다.** Play 로 `_PlayerMotion:PlayAction` 에 이름을 직접 넣어 확인: `alert2`·`alert3`~`alert7` 은 없는 이름(`zzzNope`)·`stand1` 과 같은 서 있기 그대로 = 미지원. 있는 것 = 14 상태(`alert`·`heal`·`stand1/2`·`prone`…) + 무기 공격 액션(`swingO1~3/T1~3`·`stabO/T`·`shoot1/2`·`proneStab`). 그래서 어울리는 것으로:
+  - 하이퍼 바디 `SK_W21` = **`heal`**(손을 들어 올리는 시전 동작 · 팩 시전 이펙트 빛기둥 아래에서 손 들기) → 0.7s 뒤 서 있기.
+  - 도발 `SK_W22` = **`swingO2`(한손) / `swingT2`(두손)**(머리 위로 크게 휘두르는 "덤벼라" 동작 · 노블 디맨드 이펙트와 같이) → 0.7s 뒤 서 있기.
+  - 불굴의 진 `SK_W31` = **`heal` → 0.7s `alert`(전투 자세 = "진")** → 5.5s 서 있기. 세이크리드 바스티온 컷신이 화면을 완전히 덮어(Play 실측 ≈4.8s 에 걷힘) 그동안의 동작은 안 보이고, 걷힌 뒤 전투 자세 → 서 있기가 보인다(시전 락 1.5s 뒤 움직이면 그 즉시 풀림).
+- **Onetime 모션은 마지막 프레임이 다음 움직임까지 남는다**(Play 실측 · 파워 스트라이크 찌르기 자세도 같음) → 손을 든 채 멈추지 않게 **`_END` 행(stand1 한손 / stand2 두손 · ZigzagLoop)으로 되돌린다.** `SkillExecutors.GetMotionSequence/PlayMotionSequence`(Execute 끝에서 호출): 스킬별 `{접미사, 초}` 목록을 타이머로 `_PlayerMotion:PlaySkill(uid, "<SkillId><접미사>")`. 그 무기에 행이 없으면(`PlayerMotion.Find` 가 기본 공격 행으로 폴백) 건너뛴다 — 버프 뒤에 엉뚱한 휘두르기가 나오지 않게.
+- `WeaponMotion.csv`(B 행만 · A 행·헤더 불변): `SK_W21`/`SK_W22`/`SK_W31` 6행 값 변경(alert → heal / swingO2·T2 / heal) · 새 행 `SK_W31_2`(alert) 2행 · `SK_W21_END`/`SK_W22_END`/`SK_W31_END` 6행. 합계 32 B 행(표 39행).
+- Play 확인(한손검·두손검 · W/E/R): `[Motion] weapon motion table loaded: 39 rows` · `motion sequence SK_W21 weapon=SWORD_1H steps=1/1` · `SK_W22 … 1/1` · `SK_W31 … 2/2`(두손검도 같음) · `no row`·`no WeaponMotion` 경고 0 · 빌드 0. 확대 스크린샷: 하이퍼 바디 = 빛기둥 아래 손 들기 → 서 있기 · 도발 = 머리 위 큰 휘두르기 → 서 있기 · 불굴의 진 = 컷신이 화면을 덮는 동안 손 들기·전투 자세, 걷힌 뒤 서 있기.
 - Play 확인(두손검·한손검 · 같은 방법): `sprite flash SK_W11_swing ruid=98d2124f… facing=-1 scale=1 0.25s` / `…32aff8b2…` · `dealt SK_W11 … mul=0.5` ×2 · `thrust … afterimage=true` · 빌드 오류 0. 확대 스크린샷: 내려찍기 착지에 붉은 호(캐릭터 앞 · 발끝에서 머리 위까지) → 찌르기에 더 커진 붉은 잔상(검 선 위).
