@@ -1,0 +1,62 @@
+@Struct
+script AccountProfile
+
+	-- 계정 영구 데이터의 **직렬화 미러** (WO-018 S1 · datastorage.md §4.9 · 계약서 §0-5).
+	--
+	-- 왜 원장(AccountData)을 그대로 직렬화하지 않고 미러를 두나:
+	--   ① 저장 스키마와 런타임 원장을 분리해 둬야 필드를 늘려도 옛 세이브가 안 깨진다
+	--   ② 신규 계정 기본값(Init)과 필드 누락 전방 호환(Deserialize 의 `or 기본값`)이 한 곳에 모인다
+	--
+	-- 🔴 인코딩은 _HttpService:JSONEncode 를 쓴다. _UtilLogic:TableToString 은 쓰지 마라 —
+	--    중첩 테이블이 **에러 없이 사라진다** (datastorage.md §4.9 경고).
+	--
+	-- 필드 이름은 계약서 §0-5 규약을 따른다: 도메인 접두사 `account_*` 필수 · `SchemaVersion` 필수.
+
+	-- 스키마 버전. 계약서 §0-5 "M1 최초값 1". 0 = 아직 Init 도 안 한 상태.
+	property integer SchemaVersion = 0
+
+	-- 계정 레벨. 🔴 매치 레벨(SummonManager.econ.level)과 다르다 — 그건 매치마다 사라진다.
+	property integer account_level = 1
+
+	-- 발록의 심장 — GDD §3 이 정한 **유일한 계정 카운터**. 난이도 ★ 해금·소모에 쓴다 (WO-022).
+	property integer account_balrogHeart = 0
+
+	-- 해금 목록. 쉼표로 이어 붙인 문자열이다.
+	-- 목록을 중첩 테이블로 두지 않는 이유: 필드가 단순할수록 바이트가 작고 Credit 이 싸다
+	-- (Credit = 값 4,000바이트당 1). 항목이 많아지면 그때 별도 저장 키로 뺀다.
+	property string account_unlocks = ""
+
+	method void Init()
+		-- 신규 계정 기본값. 🔴 기본값은 여기에 둔다. Deserialize 에 두면 옛 세이브를 덮어쓴다.
+		self.SchemaVersion = 1
+		self.account_level = 1
+		self.account_balrogHeart = 0
+		self.account_unlocks = ""
+	end
+
+	method boolean Serialize(table out)
+		-- "Profile" 아래 중첩으로 담는다. 나중에 구조가 바뀌어도 그 밖은 안 건드린다.
+		local t = {}
+		out["Profile"] = t
+		t["SchemaVersion"] = self.SchemaVersion
+		t["account_level"] = self.account_level
+		t["account_balrogHeart"] = self.account_balrogHeart
+		t["account_unlocks"] = self.account_unlocks
+		return true
+	end
+
+	method boolean Deserialize(table src)
+		-- src 가 이 구조를 갖기 전의 옛 세이브면 Init() 기본값을 그대로 둔다.
+		if src == nil then return true end
+		local t = src["Profile"]
+		if t == nil then return true end
+
+		-- `x or 기본값` 이 필드 누락 전방 호환을 담당한다. 새 필드를 추가해도 옛 세이브가 안 깨진다.
+		self.SchemaVersion = t["SchemaVersion"] or 1
+		self.account_level = t["account_level"] or 1
+		self.account_balrogHeart = t["account_balrogHeart"] or 0
+		self.account_unlocks = t["account_unlocks"] or ""
+		return true
+	end
+
+end

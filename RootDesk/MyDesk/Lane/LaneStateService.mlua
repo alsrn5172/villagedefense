@@ -200,6 +200,15 @@ script LaneStateService extends Logic
 	-- ── 원장 ────────────────────────────────────────────────────
 
 	@ExecSpace("ServerOnly")
+	method void ResetMatchAll()
+		-- 매치 시작 초기화 (WO-019). 🔴 유저별이 아니라 **판 전체** 초기화다.
+		-- 시설 HP·레벨·수비대·창고·훈련이 마을 단위로 들어 있어 통째로 비운다.
+		-- 시설 엔티티 자체는 LaneFacilityService 가 마을 연결 시 다시 만든다.
+		self.states = {}
+		log("[Lane] 마을 상태 원장 초기화")
+	end
+
+	@ExecSpace("ServerOnly")
 	method any EnsureVillage(string villageId)
 		-- 없으면 초기 상태: 시설 3종 Lv1 만피 생존 · 수비대 0 · 훈련 Lv1 · 창고 빈칸.
 		if villageId == nil or villageId == "" then return nil end
@@ -409,6 +418,31 @@ script LaneStateService extends Logic
 		self:SendEvent(ev)
 		self:Toast(owner, "넥서스 파괴 — 탈락. 관전 모드로 전환합니다")
 		if _SpectateService ~= nil then _SpectateService:Enter(owner) end
+		-- 계정 데이터 확정 (WO-018). 탈락자는 새 매치에 참가할 수 있으므로 여기서 한 번 굳혀 둔다.
+		-- 🔴 여기서 _DataStorageService 를 직접 부르지 않는다. 저장 창구는 _PlayerDBManager 하나뿐이다.
+		-- 매치 자원(메소·주화·장비·시설)은 계정에 안 들어간다 — AccountData 가 계정 필드만 들고 있다.
+		if _PlayerDBManager ~= nil then _PlayerDBManager:RequestFlush(owner) end
+		-- 🔴 **전원 탈락이면 매치를 끝내야 한다.** 안 알리면 Running 이 true 로 남아
+		--    로비에서 다음 매치를 영영 시작할 수 없다 (WO-023).
+		if _MatchSessionLogic ~= nil then _MatchSessionLogic:OnPlayerEliminated(owner) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ForfeitByUser(string userId)
+		-- 🔴 게임 도중 **포기**(사용자 확정 2026-09-10): 넥서스 체력을 즉시 0 으로 만들고 탈락시킨다.
+		--    "다른 사람들에게 마지막 모습이 남는다" 는 곧 **넥서스 HP 0 · ELIMINATED 로 기록된다**는 뜻이다.
+		--    피해 판정을 거치지 않는다 — 공격자도 없고 방어 계수도 끼면 안 된다.
+		--    🔴 **서버가 스스로 마을을 찾는다.** 클라가 villageId 나 피해량을 넘기면 안 된다.
+		local v = self:StateOfUser(userId)
+		if v == nil then return false end
+		local core = v.towers["CORE"]
+		if core == nil or not core.alive then return false end   -- 이미 탈락했다. 두 번 태우지 않는다
+		core.hp = 0
+		core.alive = false
+		log("[Lane] " .. v.id .. " FORFEIT by " .. userId .. " — 넥서스 0")
+		self:Eliminate(v.id)
+		self:Changed(v.id, "CORE")
+		return true
 	end
 
 	-- ── 뷰 ─────────────────────────────────────────────────────
@@ -602,6 +636,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestTowerAction(string stage, string action)
 		-- 강화 / 수리 / 재건. 비용은 빅토리아 주화.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
@@ -648,6 +683,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestRecruit(string unitKey)
 		-- 모집: 도감에서 해금(Lv1+)한 몬스터만 · 묶음(8마리)당 지역재화 8개(지금은 다이아몬드) → 최전방 시설 앞에 즉시 스폰. 10묶음 상한.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
@@ -675,6 +711,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestUnlockCollection(string monsterIdStr)
 		-- 도감 해금(Lv1): 지역재화 8개(지금은 다이아몬드) → 모집 가능.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
@@ -700,6 +737,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestLevelCollection(string monsterIdStr)
 		-- 도감 레벨업(Lv2~5): 꿈의 조각 3/5/10/15 · 배율 1.5/2.2/3.3/5.0 (MonsterTraining MELEE 행).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다") return end
@@ -741,6 +779,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestTrain(string monsterIdStr)
 		-- 몬스터 조련사: 해금한 몬스터 강화(Lv2~5 · 꿈의 조각 3/5/10/15 · 수비 몬스터 HP·공격 배율 1.5/2.2/3.3/5.0). 실패도 뷰를 돌려줘 클라 waiting 을 푼다.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
@@ -766,6 +805,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestStorageMove(string itemId, integer count, string dir)
 		-- 마을 창고 넣기/꺼내기 (스택형만).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
@@ -795,6 +835,7 @@ script LaneStateService extends Logic
 		-- 파병 (WO-014 · 2026-09-09): 보유 수비대 앞에서부터 n묶음을 **통째로**(FIFO) 빼내 대상 마을 대기열에 넣는다.
 		-- 실제 이동은 다음 웨이브다 — MatchSessionLogic 이 SpawnWave 직후 DispatchService.Release 를 부른다. 그 전까지 취소할 수 있다.
 		-- 원장(v.defenders)과 엔티티(DefenderService.units) 를 **함께** 비운다. 원장만 지우면 몬스터가 마을에 남는다(예전 스텁의 버그).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
@@ -859,6 +900,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestDispatchCancel(string orderId)
 		-- 투입 전 취소 (GDD §4.3): 대기열에서 빼고 내 수비대로 되돌린다 — 원장 묶음 복귀 + 최전방에 재스폰.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil or _DispatchService == nil then return end
@@ -887,6 +929,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestDimensionGate(string targetVillageId)
 		-- 차원 관문(스텁): 에너지 코어 1 소모. 실제 이동은 Map/ 포탈 훅 연결 후.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		if targetVillageId == self:VillageOfUser(uid) then self:Toast(uid, "내 마을은 걸어서 갑니다") return end
 		if _InventoryService == nil or _InventoryService:CountItem(uid, "ENERGY_CORE") < 1 then self:Toast(uid, "에너지 코어가 없습니다") return end
@@ -900,6 +943,7 @@ script LaneStateService extends Logic
 	@ExecSpace("Server")
 	method void RequestDevHit(string stage, integer damage)
 		-- 🧪 개발용: 내 마을 시설에 피해. DevStatRemote.Enabled 일 때만.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)

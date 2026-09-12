@@ -1,0 +1,66 @@
+@Logic
+script MatchResetService extends Logic
+
+	-- 매치 시작 시 **모든 매치 원장을 비우는 단일 진입점** (WO-019).
+	--
+	-- 🔴 왜 필요한가: 이 프로젝트의 원장은 전부 `@Logic` 이다. `@Logic` 은 맵 전환은 물론
+	--    매치가 끝나도 살아남는다 — 자동으로 비워지는 장치가 **하나도 없다**. 그래서 로비를
+	--    거쳐 두 번째 매치를 시작하면 이전 판의 메소·주화·장비·인벤토리·스탯·시설·수비대·
+	--    소유 마을·탈락 기록을 **그대로 들고 시작한다.**
+	--
+	-- 🔴 초기화 진입점을 여기 하나로 모은다. 9곳에 흩어두면 원장이 하나 늘 때 빠뜨리고,
+	--    빠뜨린 건 에러가 아니라 "이상하게 유리한 두 번째 판"으로 조용히 나타난다.
+	--
+	-- 🔴 **부르는 데가 두 곳이다** (2026-09-10):
+	--   · 매치 시작       `ResetForMatch(userIds)` — 판 전체 + 참가자 전원
+	--   · 매치를 떠날 때  `ResetUser(userId)` — MatchSessionLogic:LeaveToLobby 가 그 한 명만
+	--     시작할 때만 비우면 **탈락하고 승강장으로 나와도 스킬·전직·레벨이 그대로 보인다.**
+	--     실제로 그 증상이 났다. 로비는 매치 밖이니 거기서는 깨끗해야 한다.
+	--     ⚠️ 떠날 때는 `ResetUser` 만 부른다 — `ResetForMatch` 를 부르면 **남아서 싸우는
+	--     사람들의 마을·소유권 원장까지 날아간다.**
+	--
+	-- 두 종류가 있다:
+	--   · 유저별  `ResetMatchState(userId)` — 참가자마다 한 번씩
+	--   · 판 전체 `ResetMatchAll()`        — 마을·소유권처럼 유저 키가 아닌 원장. 한 번만
+	--
+	-- ⚠️ 계정 데이터(AccountData)는 **절대 건드리지 않는다.** 그건 매치를 넘어 살아남아야 하는
+	--    유일한 것이고, WO-018 이 DataStorage 로 따로 관리한다.
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch(table userIds)
+		-- 매치 시작 직전에 MatchSessionLogic:StartMatch 가 부른다.
+		local n = (userIds ~= nil) and #userIds or 0
+		log("[MatchReset] 시작 — 참가자 " .. tostring(n) .. "명")
+
+		-- ── 판 전체 (유저 키가 아닌 원장) ──────────────────────────
+		if _LaneStateService ~= nil then _LaneStateService:ResetMatchAll() end
+		if _VillageOwnership ~= nil then _VillageOwnership:ResetMatchAll() end
+
+		-- ── 유저별 ────────────────────────────────────────────────
+		for i = 1, n do
+			self:ResetUser(userIds[i])
+		end
+
+		log("[MatchReset] 완료")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetUser(string userId)
+		-- 한 참가자의 매치 원장을 전부 비운다.
+		-- 🔴 순서가 있다: 스탯은 장비를 참조하므로 장비를 먼저 비우고 스탯을 재계산해야
+		--    "장비는 없는데 스탯엔 장비 보너스가 남는" 상태를 안 만든다.
+		if userId == nil or userId == "" then return end
+
+		if _EquipService ~= nil then _EquipService:ResetMatchState(userId) end
+		if _InventoryService ~= nil then _InventoryService:ResetMatchState(userId) end
+		if _SummonManager ~= nil then _SummonManager:ResetMatchState(userId) end
+		if _StatService ~= nil then _StatService:ResetMatchState(userId) end
+		if _PlayerSkillState ~= nil then _PlayerSkillState:ResetMatchState(userId) end
+		-- 🔴 B 의 스킬 작업이 머지되면서 들어온 원장. 메서드는 B 가 만들어 뒀는데
+		--    여기 배선이 빠져 있어서 버프가 매치를 넘어 살아남았다 (2026-09-10).
+		if _SkillBuffs ~= nil then _SkillBuffs:ResetMatchState(userId) end
+
+		log("[MatchReset] user " .. userId)
+	end
+
+end

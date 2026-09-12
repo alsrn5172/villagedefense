@@ -4,6 +4,14 @@ script SkillAttack extends AttackComponent
     -- The single path through which ALL skill damage leaves the player - later the basic
     -- attack will route through this same component too. Damage always comes from
     -- _SkillDatabase:DamageAt(skillId, level, userId) (R5) - never a character stat, never a constant.
+    --
+    -- b/skill-archer-thief-pirate (2026-09-12):
+    --   · N타(HitCount>1)는 AttackFast 를 N번 부르는 대신 1번 부르고 피해 ×N · 표시 N타(PendingDamageMul/PendingDisplayHits).
+    --     같은 프레임의 2번째 AttackFast 부터는 MonsterHit.ImmuneCooldown(0.4s) 에 걸려 전부 무효였다. HitCount 1 인 기존 스킬은 결과가 같다.
+    --   · DealSkillDamageCircleScaled: 반지름 피해에 배율·표시 타수를 따로 준다(함포 사격 6파 · 메소 익스플로전 동전 개수).
+    --   · OnAttack: 타격마다 impact 클립(PendingImpactRuid)·hit 사운드 + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
+    --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리 · 배율 2.0.
+    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해).
 
     @HideFromInspector
     property any Shape = nil
@@ -23,6 +31,29 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property number PendingLevel = 1
 
+    -- 이번 타격 패스의 피해 배율(HitCount 또는 파당 타수 · 동전 개수). CalcDamage 가 DamageAt 에 곱한다. 패스가 끝나면 1 로.
+    @HideFromInspector
+    property number PendingDamageMul = 1
+
+    -- 이번 타격 패스의 표시 타수(GetDisplayHitCount). 패스가 끝나면 1 로.
+    @HideFromInspector
+    property integer PendingDisplayHits = 1
+
+    -- 이번 타격 패스에서 맞은 대상마다 재생할 impact 클립 RUID(OnAttack). 비면 없음.
+    @HideFromInspector
+    property string PendingImpactRuid = ""
+
+    -- 이번 타격 패스에서 맞은 대상마다 재생할 hit 사운드 RUID(OnAttack). 비면 없음.
+    @HideFromInspector
+    property string PendingHitSound = ""
+
+    -- 이번 타격 패스의 스킬 id(OnAttack 의 픽파켓 훅용). 평값(flat)·probe 패스는 "".
+    @HideFromInspector
+    property string PendingSkillId = ""
+
+    -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
+    property number CritDamageRate = 2.0
+
     -- Per-caster spawn counter for unique projectile entity names (map-wide uniqueness
     -- requirement - msw-combat-system/references/projectile.md "Name uniqueness"). Prefixed
     -- with the caster's userId in SpawnProjectile so two different players firing the same
@@ -41,6 +72,9 @@ script SkillAttack extends AttackComponent
     -- LookDirectionX 부호를 곱해 좌/우 대칭으로 적용한다. SkillInfo.csv 에 SpawnOffsetX 열이 없어 코드 기본값으로 둔다 —
     -- 열로 승격하려면 헤더 변경이라 협업-규칙 §1-5(스키마-계약 선행 PR + 공지)를 먼저 거쳐야 한다.
     property number ProjectileSpawnOffsetX = 0.5
+
+    -- 볼리(더블 샷 · 럭키 세븐): 2발째부터의 발사 간격(초). 2발째부터는 VisualOnly(피해 없음).
+    property number VolleyInterval = 0.12
 
     -- 단일 대상 선택 (대마법 SK_M31 · b/skill-magician). PlayerAttack.AttackNormal 의 2패스(probe 로 후보 수집 → 하나만 실제 타격)와 같은 꼴.
     -- Candidates 는 "probe" 패스 동안만 채워지고, SingleTarget 이 잡혀 있는 동안 IsAttackTarget 이 그 하나만 통과시킨다.
@@ -86,6 +120,26 @@ script SkillAttack extends AttackComponent
         self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
     end
 
+    @ExecSpace("ServerOnly")
+    method void BeginPass(string skillId, number level, number mul, integer displayHits)
+        -- 타격 패스 시작: CalcDamage/GetDisplayHitCount/OnAttack 이 읽는 값을 한 번에 세팅한다. EndPass 와 짝.
+        self.PendingLevel = level
+        self.PendingSkillId = skillId
+        if mul == nil or mul < 1 then mul = 1 end
+        self.PendingDamageMul = mul
+        if displayHits == nil or displayHits < 1 then displayHits = 1 end
+        self.PendingDisplayHits = math.floor(displayHits)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EndPass()
+        self.PendingDamageMul = 1
+        self.PendingDisplayHits = 1
+        self.PendingSkillId = ""
+        self.PendingImpactRuid = ""
+        self.PendingHitSound = ""
+    end
+
     -- @ExecSpace("Server"): the whole SkillHotbar -> SkillCaster -> SkillExecutors chain runs
     -- ClientOnly/unspecified-on-the-client today, but AttackFast/damage resolution needs
     -- server authority. "Server" (not "ServerOnly") is what lets a client caller reach this -
@@ -96,7 +150,8 @@ script SkillAttack extends AttackComponent
     -- safe shape, so this side-steps that uncertainty entirely.
     @ExecSpace("Server")
     method void DealSkillDamage(string skillId, number level, table shape)
-        self.PendingLevel = level
+        -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         self:EnsureShape()
 
         self.Shape.Position = Vector2(shape.posX, shape.posY)
@@ -106,9 +161,10 @@ script SkillAttack extends AttackComponent
         local hitCount = shape.hitCount
         if hitCount == nil or hitCount < 1 then hitCount = 1 end
 
-        for i = 1, hitCount do
-            self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
-        end
+        -- N타 = 1회 AttackFast × 피해 N배 · 표시 N타 (2026-09-12 · 무적시간 때문에 N회 호출은 1회만 유효했다).
+        self:BeginPass(skillId, level, hitCount, hitCount)
+        self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        self:EndPass()
 
         log("SkillAttack: dealt " .. skillId .. " lv=" .. tostring(level) .. " hits=" .. tostring(hitCount))
     end
@@ -134,12 +190,49 @@ script SkillAttack extends AttackComponent
             return 0
         end
         local userId = attacker.PlayerComponent.UserId
-        return math.floor(_SkillDatabase:DamageAt(attackInfo, self.PendingLevel, userId))
+        return math.floor(_SkillDatabase:DamageAt(attackInfo, self.PendingLevel, userId) * self.PendingDamageMul)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
-        -- No crit system yet - always false, same as the AttackComponent default.
+        -- 닷지(SK_A22 · GUARANTEED_CRIT · b/skill-archer-thief-pirate) 활성이면 반드시 크리티컬. 그 외엔 false(스킬엔 확률 크리 없음 · 예전과 같다).
+        -- ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐이라 ServerOnly 인 SkillBuffs 를 불러도 된다.
+        if attackInfo == self.FlatTag or attackInfo == self.ProbeTag then return false end
+        if _SkillBuffs ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
+            return _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId)
+        end
         return false
+    end
+
+    method float GetCriticalDamageRate()
+        return self.CritDamageRate
+    end
+
+    method int32 GetDisplayHitCount(string attackInfo)
+        if attackInfo == self.FlatTag or attackInfo == self.ProbeTag then return 1 end
+        local n = self.PendingDisplayHits
+        if n < 1 then return 1 end
+        return n
+    end
+
+    method void OnAttack(Entity defender)
+        -- 타격마다(대상마다) impact 클립·hit 사운드 + 픽파켓 훅. probe 패스는 IsAttackTarget 이 false 라 여기 오지 않는다.
+        if not isvalid(defender) then return end
+        if self.PendingImpactRuid ~= "" or self.PendingHitSound ~= "" then
+            local t = defender.TransformComponent
+            if isvalid(t) then
+                local p = t.WorldPosition
+                if self.PendingImpactRuid ~= "" then
+                    _EffectService:PlayEffect(self.PendingImpactRuid, self.Entity, Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+                end
+                if self.PendingHitSound ~= "" then
+                    _SoundService:PlaySoundAtPos(self.PendingHitSound, p, self.Entity, 1.0)
+                end
+            end
+        end
+        -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다. 평값(반사) 패스는 PendingSkillId 가 "" 라 제외.
+        if self.PendingSkillId ~= "" and _SkillBuffs ~= nil and isvalid(self.Entity.PlayerComponent) then
+            _SkillBuffs:OnSkillHitMonster(self.Entity.PlayerComponent.UserId, defender, self.PendingSkillId)
+        end
     end
 
     method boolean IsAttackTarget(Entity defender, string attackInfo)
@@ -228,6 +321,7 @@ script SkillAttack extends AttackComponent
         self.Shape.Angle = 0
 
         self.PendingFlatDamage = math.floor(amount)
+        self.PendingSkillId = ""
         self.SingleTarget = target
         self:AttackFast(self.Shape, self.FlatTag, CollisionGroups.Monster)
         self.SingleTarget = nil
@@ -238,24 +332,30 @@ script SkillAttack extends AttackComponent
 
     @ExecSpace("ServerOnly")
     method void DealSkillDamageCircle(string skillId, number level, number cx, number cy, number radius, number hitCount)
-        -- 원형 범위 타격(대마법 폭발 · b/skill-magician). CircleShape(Environment/NativeScripts/Misc/CircleShape.d.mlua) 를 호출마다 만든다 —
-        -- 반지름이 스킬마다 달라 상자 Shape 처럼 재사용할 이득이 없다. 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → DamageAt).
-        self.PendingLevel = level
+        -- 원형 범위 타격(대마법 폭발 · b/skill-magician). 배율 = 표시 타수 = hitCount (DealSkillDamageCircleScaled 참조).
+        self:DealSkillDamageCircleScaled(skillId, level, cx, cy, radius, hitCount, hitCount)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSkillDamageCircleScaled(string skillId, number level, number cx, number cy, number radius, number mul, number displayHits)
+        -- 원형 범위 타격 + 피해 배율·표시 타수 분리 (함포 사격 파당 5타 · 메소 익스플로전 동전 개수 × 50%).
+        -- CircleShape(Environment/NativeScripts/Misc/CircleShape.d.mlua) 를 호출마다 만든다 — 반지름이 스킬마다 달라 상자 Shape 처럼 재사용할 이득이 없다.
+        -- 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → DamageAt × PendingDamageMul).
         if radius <= 0 then radius = 1 end
-        if hitCount == nil or hitCount < 1 then hitCount = 1 end
+        if mul == nil or mul < 1 then mul = 1 end
+        if displayHits == nil or displayHits < 1 then displayHits = 1 end
         local circle = CircleShape(Vector2(cx, cy), radius)
-        for i = 1, hitCount do
-            self:AttackFast(circle, skillId, CollisionGroups.Monster)
-        end
-        log("SkillAttack: dealt " .. skillId .. " circle r=" .. tostring(radius) .. " at (" .. tostring(cx) .. "," .. tostring(cy) .. ") lv=" .. tostring(level) .. " hits=" .. tostring(hitCount))
+        self:BeginPass(skillId, level, mul, math.floor(displayHits))
+        self:AttackFast(circle, skillId, CollisionGroups.Monster)
+        self:EndPass()
+        log("SkillAttack: dealt " .. skillId .. " circle r=" .. tostring(radius) .. " at (" .. tostring(cx) .. "," .. tostring(cy) .. ") lv=" .. tostring(level) .. " mul=" .. tostring(mul) .. " display=" .. tostring(displayHits))
     end
 
     @ExecSpace("ServerOnly")
     method void DealSkillDamageToTarget(string skillId, number level, Entity target, number hitCount)
-        -- 단일 대상 타격: 대상 위치에 SingleTargetBoxSize 상자를 놓고 SingleTarget 필터로 그 하나만 hitCount 회.
+        -- 단일 대상 타격: 대상 위치에 SingleTargetBoxSize 상자를 놓고 SingleTarget 필터로 그 하나만 (피해 ×hitCount · 표시 hitCount 타).
         -- 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → SkillDatabase.DamageAt).
         if not isvalid(target) or not isvalid(target.TransformComponent) then return end
-        self.PendingLevel = level
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
         self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
@@ -264,12 +364,33 @@ script SkillAttack extends AttackComponent
         if hitCount == nil or hitCount < 1 then hitCount = 1 end
 
         self.SingleTarget = target
-        for i = 1, hitCount do
-            self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
-        end
+        self:BeginPass(skillId, level, hitCount, hitCount)
+        self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        self:EndPass()
         self.SingleTarget = nil
 
         log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " hits=" .. tostring(hitCount))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSkillDamageToTargetScaled(string skillId, number level, Entity target, number mul, number displayHits)
+        -- 단일 대상 타격 + 피해 배율·표시 타수 분리(파워 스트라이크 2단 콤보 = 0.5 × 2). DealSkillDamageToTarget 과 같은 경로.
+        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
+        self:EnsureShape()
+        local p = target.TransformComponent.WorldPosition
+        self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
+        self.Shape.Size = Vector2(self.SingleTargetBoxSize.x, self.SingleTargetBoxSize.y)
+        self.Shape.Angle = 0
+        if mul == nil or mul <= 0 then mul = 1 end
+        if displayHits == nil or displayHits < 1 then displayHits = 1 end
+
+        self.SingleTarget = target
+        self:BeginPass(skillId, level, mul, math.floor(displayHits))
+        self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        self:EndPass()
+        self.SingleTarget = nil
+
+        log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " mul=" .. tostring(mul) .. " display=" .. tostring(displayHits))
     end
 
     -- Spawns a real travelling script.SkillProjectile entity for behavior="PROJECTILE" skills.
@@ -282,8 +403,13 @@ script SkillAttack extends AttackComponent
     -- the same source and side C:\vd's PlayerAttack.mlua:22 reads it from (team-validated:
     -- positive = right, negative = left). Passing a client-read value instead would be trusting
     -- the client for something the server can read itself off the same entity.
+    --
+    -- b/skill-archer-thief-pirate: spriteRuid(화살·표창 스프라이트 · "" = 모델 기본 에너지볼트) · hitSoundRuid · preferBoss(스나이핑 보스 우선) ·
+    -- hitCount > 1 = 볼리(첫 발 피해 ×N · 표시 N타, 이후 발은 VolleyInterval 간격으로 VisualOnly).
     @ExecSpace("Server")
-    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY)
+    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY, string spriteRuid, string hitSoundRuid, boolean preferBoss)
+        -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local caster = self.Entity
         local transform = caster.TransformComponent
         local controller = caster.PlayerControllerComponent
@@ -303,58 +429,91 @@ script SkillAttack extends AttackComponent
         if range <= 0 then range = 1 end
         if speed <= 0 then speed = self.DefaultProjectileSpeed end
         if hitCount < 1 then hitCount = 1 end
+        if spriteRuid == nil then spriteRuid = "" end
+        if hitSoundRuid == nil then hitSoundRuid = "" end
+        if preferBoss == nil then preferBoss = false end
 
-        self.projectileCount = self.projectileCount + 1
         local userId = caster.PlayerComponent.UserId
-        local name = "SkillProj_" .. userId .. "_" .. skillId .. "_" .. tostring(self.projectileCount)
-
         local pos = transform.WorldPosition
         -- 조준(2026-09-10 3차 · 사용자 결정): 바라보는 방향 앞쪽 Range 상자(발부터 위로 AimSearchHeight) 안 최근접 몬스터 — 뒤쪽은 제외.
-        -- 대상이 있으면 그쪽으로 유도 발사, 없으면 바라보는 방향 직선.
+        -- 대상이 있으면 그쪽으로 유도 발사, 없으면 바라보는 방향 직선. 스나이핑(preferBoss)은 보스가 있으면 보스.
         local target = nil
         if self.AimProjectileAtTarget then
             target = self:FindSkillTarget(skillId, {
                 posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
                 sizeX = range, sizeY = self.AimSearchHeight,
-            }, false)
+            }, preferBoss)
             if not isvalid(target) then target = nil end
         end
         -- x: 대상 쪽(없으면 바라보는 방향)으로 ProjectileSpawnOffsetX 만큼 앞(시전 이펙트가 뜨는 자리). y: CSV SpawnOffsetY(발 → 손 높이).
         local spawnPos = Vector3(pos.x + dirX * self.ProjectileSpawnOffsetX, pos.y + spawnOffsetY, pos.z)
+        local lifetime = range / speed
+        if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
+
+        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false)
+        if mover == nil then return end
+
+        -- 볼리: 2발째부터 VisualOnly. 첫 발이 이미 ×hitCount 피해를 지고 있다(무적시간 때문에 2발째 피해는 어차피 무효).
+        for i = 2, math.floor(hitCount) do
+            _TimerService:SetTimerOnce(function()
+                if not isvalid(caster) or not isvalid(caster.TransformComponent) then return end
+                local p2 = caster.TransformComponent.WorldPosition
+                local sp2 = Vector3(p2.x + dirX * self.ProjectileSpawnOffsetX, p2.y + spawnOffsetY, p2.z)
+                local t2 = target
+                if not isvalid(t2) then t2 = nil end
+                self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true)
+            end, (i - 1) * self.VolleyInterval)
+        end
+
+        local targetName = "none"
+        if target ~= nil then targetName = tostring(target.Name) end
+        log("SkillAttack: spawned projectile " .. skillId .. " speed=" .. tostring(speed)
+            .. " lifetime=" .. tostring(lifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName .. " volley=" .. tostring(hitCount)
+            .. " sprite=" .. tostring(spriteRuid ~= "") .. " preferBoss=" .. tostring(preferBoss)
+            .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
+            .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * self.ProjectileSpawnOffsetX) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method any SpawnOneProjectile(string skillId, number level, string projectileModelId, Vector3 spawnPos, Entity map, number dirX, any target, number speed, number lifetime, string hitEffectRuid, string spriteRuid, string hitSoundRuid, string userId, number damageMul, boolean visualOnly)
+        -- 투사체 엔티티 1개 스폰 + 설정. 반환 = script.SkillProjectile (실패 nil). SpawnProjectile(첫 발·볼리)이 부른다.
+        self.projectileCount = self.projectileCount + 1
+        local name = "SkillProj_" .. userId .. "_" .. skillId .. "_" .. tostring(self.projectileCount)
         local proj = _SpawnService:SpawnByModelId(projectileModelId, name, spawnPos, map)
         if not isvalid(proj) then
             log_error("SkillAttack: projectile spawn failed model=" .. tostring(projectileModelId) .. " for " .. skillId)
-            return
+            return nil
         end
 
         local mover = proj:GetComponent("script.SkillProjectile")
         if not isvalid(mover) then
             log_warning("SkillAttack: spawned projectile missing script.SkillProjectile for " .. skillId)
-            return
+            return nil
+        end
+
+        -- 스킬별 스프라이트(화살·표창). SpriteRUID 는 @Sync 라 서버 쓰기가 클라에 반영된다. 비면 모델 기본(에너지볼트).
+        if spriteRuid ~= nil and spriteRuid ~= "" then
+            local sprite = proj.SpriteRendererComponent
+            if isvalid(sprite) then sprite.SpriteRUID = spriteRuid end
         end
 
         mover.Speed = speed
-        mover.MaxLifetime = range / speed
+        mover.MaxLifetime = lifetime
         mover.SkillId = skillId
         mover.Level = level
         mover.CasterUserId = userId
-        mover.HitCount = hitCount
-        mover.HitEffectRUID = hitEffectRuid
+        mover.HitCount = damageMul
+        mover.DamageMul = damageMul
+        mover.DisplayHits = damageMul
+        mover.VisualOnly = visualOnly
+        mover.HitEffectRUID = hitEffectRuid or ""
+        mover.HitSoundRUID = hitSoundRuid or ""
         -- SetDirection (not a direct DirectionX assignment) so the sprite flips to match.
         mover:SetDirection(dirX)
-
-        -- 조준 대상이 있으면 유도(SetTarget · 매 프레임 재조준) + 수명 연장. 대상 선택은 위(스폰 전)에서 끝났다.
-        local targetName = "none"
-        if target ~= nil then
-            mover.MaxLifetime = mover.MaxLifetime * self.HomingLifetimeMul
+        if target ~= nil and isvalid(target) then
             mover:SetTarget(target)
-            targetName = tostring(target.Name)
         end
-
-        log("SkillAttack: spawned projectile " .. name .. " speed=" .. tostring(speed)
-            .. " lifetime=" .. tostring(mover.MaxLifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName
-            .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
-            .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * self.ProjectileSpawnOffsetX) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
+        return mover
     end
 
 end
