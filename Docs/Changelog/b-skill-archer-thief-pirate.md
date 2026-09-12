@@ -181,4 +181,12 @@
 - `WeaponMotion.csv`(A 표 · B 가 추가한 행 안에서만 변경 · 헤더·A 행 불변): `SK_W11` = **alert**(섬광 동안 검을 들고 멈춤 · swingO2/T2 에서 변경) · 새 행 `SK_W11_1` = swingO1(한손)/swingT1(두손) 내려찍기 · 새 행 `SK_W11_2` = stabOF 찌르기(한손·두손). 합계 24행(이전 20).
 - 컷신 예열(`PrewarmCutscenesFor`)에 찌르기 잔상 RUID 2종을 포함(같은 RUID 는 1회) — 첫 시전에서 잔상이 한 박자 늦게 뜨던 것(세션 첫 재생 로딩) 대책. Play: `cutscene prewarm x7`.
 - Play 확인(폴더 임시 복사 · 두손검 `WEAPON_WARRIOR_2H_T10` · 한손검 `WEAPON_WARRIOR_T10` · 2타까지 보려고 서버 스크립트로 주황버섯 HP 를 크게 올림 = Play 메모리뿐, 커밋 없음): `POWER STRIKE combo SK_W11 chop@0.2 hit1@0.5 thrust@0.75 hit2@0.95` · `SkillAttack: dealt SK_W11 to Monster_… mul=0.5 display=1` **×2**(225 + 225 표시 · 크리) · `POWER STRIKE thrust weapon=SWORD_2H afterimage=true`(한손검 SWORD_1H 도 같음) · `[Motion] weapon motion table loaded: 31 rows` · `no row` 경고 0 · 빌드 오류 0. 확대 스크린샷: 섬광 + 검 든 자세 → 머리 위 내려찍기(붉은 hit) → 찌르기 + 검 선에 맞은 붉은 잔상(두손검 긴 잔상 · 한손검 짧은 잔상).
-- 🟡 내려찍기 잔상(팩 afterimage/swordTL/swingT1)은 sprite 로만 있어 EffectService 로 재생할 수 없다 → 1단은 아바타 모션 + hit/0 만(영상의 붉은 호 잔상은 없음). 다른 스킬의 호 이펙트를 빌리면 "다른 직업과 겹치지 말 것" 에 걸려 넣지 않았다.
+- ~~내려찍기 잔상(팩 afterimage/swordTL/swingT1)은 sprite 로만 있어 EffectService 로 재생할 수 없다 → 1단은 아바타 모션 + hit/0 만~~ → 아래 "불꽃 잔상" 절에서 해결.
+
+### 2026-09-13 — 파워 스트라이크 불꽃 잔상 (사용자 요청 "마지막 찌르기의 불꽃을 조금 더 크게 · 그 전 한 번 휘두를 때 휘두르는 자리에도 불꽃")
+
+- **찌르기 잔상 확대**: `effectOverrides.SK_W11.thrust[*].scale` 1 → **1.3**(두손검·한손검). pivot 이 아래쪽이라 키우면 살짝 내려가 `offsetY` −0.15 → −0.05.
+- **내려찍기 잔상 추가**: 같은 파워 스트라이크 팩(`skill/800033.img/skill/80003316`)의 `afterimage/swordTL/swingT1/2/0`(두손검 · 168×120 · `98d2124f4c2740758a7ed92fb5aa3af1`) · `afterimage/swordTS/swingT1/2/0`(한손검 · 136×84 · `32aff8b26faa43ec9fb143f97a52ad73`) = 원작이 내려찍기에 그리는 붉은 호 잔상 그대로(영상 t=0.90 프레임). 다른 직업 팩을 빌리지 않았다.
+- 이 둘은 팩에 **1프레임 sprite** 로만 있다(2프레임인 찌르기는 animationclip). `_EffectService:PlayEffectAttached` 에 sprite RUID 를 넘기면 아무것도 안 뜬다(Play 확인 · 로그·오류 없음) → **`SkillExecutors.PlaySpriteFlash`**: B 의 투사체 모델 `model://skillprojectile`(SpriteRenderer + `script.SkillProjectile` · `Models/Skills`)을 시전자 위치(+무기별 offset)에 스폰해 `SpriteRUID` 를 잔상 sprite 로 바꾸고 `VisualOnly`(판정 없음) · `Speed 0` · `MaxLifetime = seconds`(0.25s 뒤 스스로 Destroy) · 방향은 `SetDirection`(Scale.x 부호 · 팩 sprite 는 왼쪽 보기) · pivot 은 sprite 자산(WZ 원점) 그대로. 새 모델·A 파일 없음.
+- 순서(콤보 상수): 0.2 내려찍기 모션 → **0.42 내려찍기 잔상**(`effectOverrides.SK_W11.swing[무기]` · `PickWeaponSpec`) → 0.5 1타 → 0.75 찌르기 → 0.85 찌르기 잔상(1.3배) → 0.95 2타.
+- Play 확인(두손검·한손검 · 같은 방법): `sprite flash SK_W11_swing ruid=98d2124f… facing=-1 scale=1 0.25s` / `…32aff8b2…` · `dealt SK_W11 … mul=0.5` ×2 · `thrust … afterimage=true` · 빌드 오류 0. 확대 스크린샷: 내려찍기 착지에 붉은 호(캐릭터 앞 · 발끝에서 머리 위까지) → 찌르기에 더 커진 붉은 잔상(검 선 위).
