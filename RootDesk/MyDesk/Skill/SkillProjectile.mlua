@@ -29,7 +29,10 @@ script SkillProjectile extends AttackComponent
     property any TargetEntity = nil
 
     -- 대상 발 위치에서 몸통 중심까지 올리는 높이(world unit). 몬스터 스프라이트 피벗이 발이라 0 이면 발끝을 노린다.
-    property number TargetAimOffsetY = 0.5
+    -- b/skill-archer-motion (2026-09-13 사용자 제보 "더블 샷 화살이 대상 조금 위로 지나간다"): 조준점은 AimPointOf — 대상에 HitComponent 가 있으면 그 콜라이더 중심
+    -- (ColliderOffset · A 의 Monster.FitHitboxToSprite 가 stand 클립 크기·피벗으로 맞춘 값)을 노리고, 없을 때만 이 값. 0.5 는 작은 몬스터(버섯·달팽이 ≈0.4 높이)보다 높아
+    -- 화살이 머리 위를 지나 손 높이(스폰 0.5)에서 수평으로 날았다 → 0.3.
+    property number TargetAimOffsetY = 0.3
 
     property number Speed = 8
 
@@ -135,9 +138,24 @@ script SkillProjectile extends AttackComponent
         local me = self.Entity.TransformComponent
         if not isvalid(me) then return false end
         local p = me.WorldPosition
-        local t = target.TransformComponent.WorldPosition
-        self:SetDirection2D(t.x - p.x, (t.y + self.TargetAimOffsetY) - p.y)
+        local aim = self:AimPointOf(target)
+        self:SetDirection2D(aim.x - p.x, aim.y - p.y)
         return true
+    end
+
+    method Vector3 AimPointOf(Entity target)
+        -- 조준점(월드) = 대상 HitComponent 콜라이더 중심(발 + ColliderOffset · BoxSize 가 0 이 아닐 때). 없으면 발 + TargetAimOffsetY.
+        -- OnAttack 의 명중 이펙트 위치도 같은 점을 쓴다(화살이 닿은 곳에 hit 클립). ExecSpace 없음 = 서버 피격 파이프라인(OnAttack)에서도 부른다.
+        local t = target.TransformComponent.WorldPosition
+        local hit = target.HitComponent
+        if isvalid(hit) then
+            local off = hit.ColliderOffset
+            local size = hit.BoxSize
+            if off ~= nil and size ~= nil and size.y > 0 then
+                return Vector3(t.x + off.x, t.y + off.y, t.z)
+            end
+        end
+        return Vector3(t.x, t.y + self.TargetAimOffsetY, t.z)
     end
 
     @ExecSpace("ServerOnly")
@@ -201,8 +219,9 @@ script SkillProjectile extends AttackComponent
             if isvalid(t) then
                 local p = t.WorldPosition
                 if self.HitEffectRUID ~= "" then
-                    _EffectService:PlayEffect(self.HitEffectRUID, self.Entity,
-                        Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+                    -- 명중 이펙트는 조준점(콜라이더 중심)에 — 예전 발 + 0.5 는 작은 몬스터 머리 위에 떴다(b/skill-archer-motion).
+                    local aim = self:AimPointOf(defender)
+                    _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, aim, 0, Vector3(1, 1, 1), false)
                 end
                 if self.HitSoundRUID ~= "" then
                     _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)

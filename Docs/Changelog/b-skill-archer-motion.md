@@ -35,3 +35,12 @@
   - E/Shift 닷지: `SkillMovement: SK_A22 dodge … branch=spawn-location(N)` · `motion sequence SK_A22 weapon=BOW steps=2/2 cancelledPrev=0` · 도착 지점에서 팔 흔들기 → 빠른 전투 자세 → 서 있기 · `[Buff] ON GUARANTEED_CRIT`
   - R 폭풍의 화살: `motion sequence SK_A31 weapon=BOW steps=2/2` · `LINE SK_A31 …` 1.5초 · 컷신이 걷힌 뒤 서 있기(컷신 길이를 스크린샷 시각으로 재면 `_END` 조정)
   - 빌드: 오류 0 · 경고 수 기존과 같음(PR 본문 "build warnings: N before → N after" 에 기입)
+
+### 2026-09-13 — 제보 반영 ② 공격은 전부 활 쏘기 동작 · 화살 조준점 · 스나이핑 연출 방향
+
+- 제보 셋(사용자 Play 17:37 · Maker 로그로 확인): ① "궁수는 활 쏘는 공격 동작으로 · 공격 전부" ② "더블 샷 화살이 대상 조금 위로 지나간다 · 맞추는 몬스터로 날아가야" ③ "스나이핑 공격 연출이 바라보는 방향으로 나가야".
+- **그 Play 는 이 브랜치 이전 상태였다**: 로그에 `weapon motion table loaded: 54 rows`(이 브랜치 62) · `aim marker`/`motion sequence SK_A…` 없음 · 스나이핑 cast 이펙트가 1초 뒤에 남. 17:02 에 Maker 폴더로 복사한 파일 중 **`WeaponMotion.csv` 는 Maker 종료(18:19) 때 메모리 사본(54행)으로 되돌아갔다** — CSV 는 복사 뒤 Reimport 하지 않고 Play/종료하면 되돌아간다(협업-규칙 §5). 이번엔 Maker 를 닫은 상태에서 복사 → 다음에 월드를 열면 자동 동기화.
+- ① 공격 3종 시전 행 전부 **shoot1**(활 쏘기 · 원작 활 스킬 action): 더블 샷 **1.2배속 한 동작**(원작 = shoot1 한 번에 화살 2발 · 처음 넣은 2발째 행 `SK_A11_2` 와 순서 삭제) · 스나이핑 **0.4배속 당기기 → `_2` shoot1 1.5배속**(원작 신궁은 석궁 shoot2 지만 이 월드 궁수 무기는 활 · 재시작이 안 돼도 0.4배속 클립의 발사 프레임이 1초 근처) · 폭풍의 화살 0.5배속 → `_2` **shoot1** 1.5배속(shootF 에서). 표 62 → **61행**(B 54).
+- ② `SkillProjectile.AimPointOf(target)`: 대상 **HitComponent 콜라이더 중심**(발 + `ColliderOffset` · A 의 `Monster.FitHitboxToSprite` 가 stand 클립 크기·피벗으로 맞춘 값 · `BoxSize.y > 0` 일 때)을 매 프레임 노린다 · 없으면 발 + `TargetAimOffsetY` **0.5 → 0.3**. 예전엔 발 + 0.5 를 노려 손 높이(스폰 0.5)에서 수평으로 날아 버섯·달팽이(≈0.4 높이) 머리 위를 지나갔다. 명중 이펙트(`OnAttack`)도 같은 점(예전 발 + 0.5). 같은 투사체를 쓰는 에너지볼트·럭키 세븐·스나이핑도 몸통 중심으로 간다.
+- ③ 예전 스나이핑 cast = 얼티밋 스나이핑 `special`(640×294 · 가로 줄기): 썸네일 프레임을 보면 **핵이 왼쪽 끝 · 줄기가 오른쪽으로 뻗고 후반 불덩이가 왼→오로 이동 = 오른쪽을 보고 그려진 클립** → 왼쪽 기준 뒤집기(FlipX = 오른쪽 볼 때)가 정반대로 걸려 양쪽 다 뒤로 나갔다. 이 브랜치의 새 팩 effect(3221007 · 조준 문양 + 왼쪽으로 퍼지는 빛살)·ball(화살촉 왼쪽)은 원작 관례대로 왼쪽 기준 → 지금 규칙으로 앞을 향한다. 예외용 spec `nativeRight = true`(오른쪽 기준 클립 → 뒤집기 반전)를 `PlayStageEffect` 에 추가 — 새 조준 연출이 뒤로 나가면 그 한 칸.
+- 🟡 Play 미검증(사용자 확인): 입장 `[Motion] weapon motion table loaded: 61 rows` · Q 활 한 번 쏘기 + 화살 2발이 몬스터 몸통으로 내려가며 명중 · W 키 입력 순간 조준 문양이 앞쪽 + `aim marker SK_A21 on …` → 1초 뒤 큰 화살이 앞으로 · `motion sequence SK_A21 weapon=BOW steps=1/1` · R 컷신 뒤 서 있기.
