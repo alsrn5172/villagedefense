@@ -217,6 +217,10 @@ script SkillExecutors extends Logic
     -- false = 예전 선형(첫 틱부터 같은 각속도 · 땅에 선 채로 기울기 시작).
     property boolean BackflipEase = true
 
+    -- 회전이 차지하는 구간(전체의 비율 · 2026-09-13 사용자 요청 "회전은 빠르게 · 뛰어오르기와 착지만 늘려 전체 길이는 그대로"): 전체 seconds 의 가운데 이 비율 동안만 한 바퀴 돌고,
+    -- 앞뒤(각 (1 − 비율)/2)는 돌지 않고 뛰어오르기/내려오기만. 0.4 = 0.4s 중 0.12 상승 → 0.16 회전 → 0.12 착지. spec.backflip.spinFraction 이 있으면 그것. 1 = 예전(내내 회전).
+    property number BackflipSpinFraction = 0.4
+
     -- 클라: userId → 진행 중인 백덤블링 { t = Transform, pos = 원래 Position, rot = 원래 ZRotation, timer = 타이머 id, elapsed }. 연타면 이전 것을 원위치로 되돌리고 새로 돈다.
     property table backflipClientState = {}
 
@@ -488,7 +492,8 @@ script SkillExecutors extends Logic
                 --   2026-09-13 제보 "회전이 부자연스럽다" → 처음엔 0.65s 로 늦췄다가 "원래 속도로 되돌리고 부자연스러운 원인을 찾아 조금만 고쳐라" → seconds 0.4 · hitDelay 0.2 · 락 0.6 복원.
                 --   원인: 각속도가 처음부터 일정해서(선형) 첫 틱(0.04s)에 이미 36° 기울어 **땅에 선 채로 넘어가기 시작**하고 360° 에서 뚝 멈췄다(점프는 그때 겨우 0.16 떠 있음).
                 --   고침: 회전각에만 smoothstep(BackflipEase · p²(3−2p)) — 뛰어오르며 천천히 기울기 시작 → 정점에서 가장 빠르게 → 착지하며 바로 선다. 점프 포물선·시간은 그대로.
-                backflip = { delay = 0.08, seconds = 0.4, height = 0.45, centerY = 0.35, hitDelay = 0.2 },
+                --   2026-09-13 "회전은 빠르게 · 뛰어오르기와 착지만 늘려 전체는 그대로": spinFraction 0.4 = 0.4s 중 0.12 상승(안 돎) → 0.16 회전 → 0.12 착지(안 돎) · 피해 0.2 = 회전 한가운데.
+                backflip = { delay = 0.08, seconds = 0.4, height = 0.45, centerY = 0.35, hitDelay = 0.2, spinFraction = 0.4 },
             },
             SK_P21 = {   -- 슈퍼 트랜스폼 — 변신: skill/40005.img/skill/400051004 라이트닝 폼 effect(194×223) + special(209×168) 루프 · 주먹: skill/40000.img/skill/400004139 스크류 펀치 effect(235×120) + hit(129×115)
                 -- 원작 슈퍼 트랜스포메이션(512.img/5121003)·트랜스포메이션(511.img/5111005)은 색인에 없다. 변신 외형은 SkillBuffs.SetAvatarTint(푸른 틴트) + 이 루프.
@@ -1906,14 +1911,17 @@ script SkillExecutors extends Logic
         local seconds = spec.seconds or self.BackflipSeconds
         local height = spec.height or self.BackflipHeight
         local centerY = spec.centerY or self.BackflipCenterY
-        self:BackflipClient(uid, facing, delay, seconds, height, centerY)
-        log("SkillExecutors: BACKFLIP facing=" .. tostring(facing) .. " delay=" .. tostring(delay) .. " seconds=" .. tostring(seconds) .. " height=" .. tostring(height) .. " (" .. uid .. ")")
+        local spinFraction = spec.spinFraction or self.BackflipSpinFraction
+        if spinFraction <= 0 or spinFraction > 1 then spinFraction = 1 end
+        self:BackflipClient(uid, facing, delay, seconds, height, centerY, spinFraction)
+        log("SkillExecutors: BACKFLIP facing=" .. tostring(facing) .. " delay=" .. tostring(delay) .. " seconds=" .. tostring(seconds) .. " height=" .. tostring(height) .. " spin=" .. tostring(spinFraction) .. " (" .. uid .. ")")
     end
 
     @ExecSpace("Multicast")
-    method void BackflipClient(string uid, number facing, number delay, number seconds, number height, number centerY)
+    method void BackflipClient(string uid, number facing, number delay, number seconds, number height, number centerY, number spinFraction)
         -- 모든 클라(서버 인스턴스는 건너뛴다 · GetAvatarRootEntity 는 ClientOnly): 그 유저 아바타 루트의 ZRotation 을 facing×360° 돌리고,
         -- Position 을 회전 중심 보정(centerY·sinθ, centerY·(1−cosθ)) + 포물선(height·4p(1−p))으로 옮긴 뒤 원래 값으로 되돌린다. BackflipTickSeconds 마다 갱신.
+        -- spinFraction: 회전은 전체의 가운데 이 비율 동안만(빠르게) · 앞뒤는 뛰어오르기/착지만(2026-09-13 사용자 요청 · 전체 길이 seconds 는 그대로).
         -- 같은 유저의 이전 백덤블링이 아직 돌고 있으면(연타) 먼저 원위치로 되돌리고 새로 시작한다. 엔티티가 사라지면(맵 이동·퇴장) 타이머만 정리한다.
         if not self:IsClient() then return end
         if uid == nil or uid == "" or seconds == nil or seconds <= 0 then return end
@@ -1956,9 +1964,12 @@ script SkillExecutors extends Logic
                 if self.backflipClientState[uid] == state then self.backflipClientState[uid] = nil end
                 return
             end
-            -- 각도는 완급(BackflipEase · smoothstep) · 점프 포물선은 선형 p 그대로 → 떠오르며 기울기 시작해 정점에서 가장 빠르게 돌고 착지하며 바로 선다.
-            local q = p
-            if self.BackflipEase then q = p * p * (3 - 2 * p) end
+            -- 각도: 전체의 가운데 spinFraction 구간에서만 0→1(그 안에서 BackflipEase smoothstep) · 점프 포물선은 전체 p 그대로 → 상승(안 돎) → 정점 근처에서 빠르게 한 바퀴 → 착지(안 돎).
+            local sf = spinFraction
+            if sf == nil or sf <= 0 or sf > 1 then sf = 1 end
+            local q = (p - (1 - sf) / 2) / sf
+            if q < 0 then q = 0 elseif q > 1 then q = 1 end
+            if self.BackflipEase then q = q * q * (3 - 2 * q) end
             local deg = facing * 360 * q
             local rad = math.rad(deg)
             t.ZRotation = baseRot + deg
