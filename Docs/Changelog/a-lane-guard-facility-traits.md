@@ -252,3 +252,8 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 2. 65/3 을 `floor` 로 21×3 = 63 (2 손실) → 배율(`HitMul`) 대신 **k 번째/n**(`HitPart`/`HitParts`)을 넘겨 `CalcDamage` 가 `floor(full·k/n) − floor(full·(k−1)/n)` 로 나눈다. 3발 합 = 원 피해.
 3. 리모콘 `Remote` 가 발신자의 맵을 서버에서 확인하지 않았다 → `GetUserEntityByUserId(uid).CurrentMap == self.Entity` 검사 추가.
 - 재검증(Play 26초): 노틸러스 `land part=1/3 · 2/3 · 3/3` 각 30건 · 다른 포탑 `part=0/0` · 헤네시스 `land hits=5/5` · `land hits=0` 0건 · Error 0.
+
+2차(새 세션 · 같은 프롬프트)는 1차와 **겹치는 항목 없이** 2건을 냈다 — 매뉴얼대로 직접 파일을 열어 확정:
+1. "SplitHits 가 표적마다 CSV 수만큼 쏴 3표적이면 9발 — 의도는 max(CSV 수, 표적 수)" → **기각.** 프롬프트에 옛 설계 문구가 남아 있던 것이고, 표적마다 3발·각 1/3 이 사용자 결정(위 결정 항목). 계약서 A-2-18 대로.
+2. "죽은 플레이어를 배제하지 않아 사망·리스폰 중에도 조준·지연 피해·발사체 추적이 이어진다" → **수정.** `FactionAttack.IsDeadTarget`(Monster.IsDead + `PlayerComponent:IsDead()`)를 `CollectNearestEnemies`·`HitTarget` 에, `TurretAI.IsDeadEntity`·`LaneShot.TargetAlive` 에도 플레이어 사망 검사 추가.
+- 재검증(Play 22초): `volley` 33 · `land` 101 · `land hits=0` 0건 · 노틸러스 `part=3/3` 25건 · Error 0(플레이어가 매 스윙 후보라 `IsDead()` 호출 경로도 돌았다).
