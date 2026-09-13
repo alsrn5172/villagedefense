@@ -4,6 +4,12 @@ script PortalNetwork extends Logic
 	@HideFromInspector
 	property string TableName = "PortalRoutes"
 
+	-- 🔴 이 맵으로 가는 노선은 **바인딩하지 않는다** (WO-017 발록 방 입구).
+	--    PortalEntityRef 를 걸면 엔진 PortalComponent 가 저장소를 안 거치고 바로 옮긴다 —
+	--    입장권·배정 검사를 통째로 건너뛴다. ↑키로만 들어가고, 목적지는 서버(BalrogRoomService)가 정한다.
+	--    나오는 방향(방 → 마을)은 막을 이유가 없어 평소대로 바인딩한다.
+	property string GatedToMap = "Sleepywood_Boss_JrBalrog"
+
 	@HideFromInspector
 	property number RetryInterval = 0.25
 
@@ -27,6 +33,9 @@ script PortalNetwork extends Logic
 
 	@HideFromInspector
 	property number invalidCount = 0
+
+	@HideFromInspector
+	property number gatedCount = 0
 
 	@HideFromInspector
 	property number retryElapsed = 0
@@ -113,6 +122,12 @@ script PortalNetwork extends Logic
 		end
 
 		if closestPortal ~= "" then
+			-- 🔴 발록 방 입구는 클라가 옮기지 않는다. 입장권·배정·점유는 서버 원장이 판정한다 (WO-017).
+			if closestToMap == self.GatedToMap then
+				log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> 발록 방 (서버 배정)")
+				if _BalrogRoomService ~= nil then _BalrogRoomService:RequestEnter() end
+				return
+			end
 			log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> " .. closestToMap .. "/" .. closestToPortal)
 			player.PlayerComponent:MoveToEntityByPath("/maps/" .. closestToMap .. "/" .. closestToPortal)
 		end
@@ -160,6 +175,7 @@ script PortalNetwork extends Logic
 		self.routeCount = 0
 		self.boundCount = 0
 		self.invalidCount = 0
+		self.gatedCount = 0
 		self.finished = false
 
 		local tableData = _DataService:GetTable(self.TableName)
@@ -190,6 +206,13 @@ script PortalNetwork extends Logic
 					self:RecordInvalid(row, "required column is empty")
 				elseif seenKeys[key] then
 					self:RecordInvalid(row, "duplicate source portal")
+				elseif toMap == self.GatedToMap then
+					-- 🔴 발록 방 입구 — routes 에 안 넣는다. 넣고 BindRow 에서 건너뛰면 AttemptBindings 가
+					--    완료로 안 세서 RetryTimeout 뒤 "해석 실패" 경고로 잘못 남긴다.
+					--    클라 ↑키(TryMoveByUpArrow)는 표를 직접 읽으므로 이 행을 여전히 찾는다.
+					seenKeys[key] = true
+					self.gatedCount = self.gatedCount + 1
+					log("[PortalNetwork] gated " .. row.routeId .. " " .. fromMap .. "/" .. fromPortal .. " -> " .. toMap .. " (서버 배정)")
 				else
 					seenKeys[key] = true
 					table.insert(self.routes, row)
@@ -198,7 +221,7 @@ script PortalNetwork extends Logic
 			end
 		end
 
-		log("[PortalNetwork] routes=" .. tostring(self.routeCount) .. " bound=0 invalid=" .. tostring(self.invalidCount))
+		log("[PortalNetwork] routes=" .. tostring(self.routeCount) .. " bound=0 invalid=" .. tostring(self.invalidCount) .. " gated=" .. tostring(self.gatedCount))
 	end
 
 	@ExecSpace("ServerOnly")
