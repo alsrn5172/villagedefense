@@ -177,6 +177,11 @@ script SkillExecutors extends Logic
     -- 서버: userId → 분신이 숨겨진 동안의 끝 시각(ServerElapsedSeconds). 그동안 PlayShadowMimic · PlayBuffLoop(SHADOW_PARTNER) 는 아무것도 그리지 않는다.
     property table shadowHiddenUntil = {}
 
+    -- 분신(루프·따라하기 클립)의 OrderInLayer. 플레이어 렌더 층 = 밟은 발판의 SortingLayer + OrderInLayer 4(Npc/NpcSpawner · PortalNetwork 주석 · NPC 는 3 · 몬스터·보스 2) →
+    -- 분신은 같은 층에 2 로 두면 항상 플레이어 뒤(원작 쉐도우 파트너 = 캐릭터 뒤에 그려진다). 2026-09-13 제보 "오른쪽을 볼 때 분신이 앞을 가린다": 이펙트 기본 층(Default)은
+    -- 플레이어 앞이고, 던지기 클립(special/swingT3)은 pivot 이 뒤쪽이라 팔이 발보다 44px 앞까지 뻗어 뒤집힌 쪽(오른쪽)에서 캐릭터 몸을 덮었다. ApplyShadowSorting.
+    property integer ShadowOrderInLayer = 2
+
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
     @ExecSpace("ServerOnly")
@@ -402,7 +407,8 @@ script SkillExecutors extends Logic
                 -- mimic(b/skill-thief-motion · 2026-09-13): 같은 팩의 special/<action> 클립(분신이 그 동작을 하는 3프레임 실루엣 · 전부 52~70px · pivot 은 stand1 과 같은 발) — PlayMotion 이 재생한
                 --   WeaponMotion CoreAction 이름으로 찾아 분신이 한 번 따라 한다(PlayShadowMimic). 없는 이름(stand1 = 루프 자체)은 따라 하지 않는다. 팩 목록엔 create2~4·walk·jump 등도 있다.
                 cast = { ruid = "8ef08d990aeb452bad114479f6bc76fd", noFlip = true },
-                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.45 },
+                -- behindPlayer: 루프·따라하기 클립을 플레이어 뒤 층에 그린다(ApplyShadowSorting · 발판 SortingLayer + ShadowOrderInLayer).
+                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.45, behindPlayer = true },
                 mimic = {
                     swingT3 = "15a76a6ee450459a97fe44e3ad9283d0",   -- 표창 던지기(럭키 세븐 · 메소 익스플로전 폭발)
                     swingO3 = "fc164d4b226e4a22bab992992cdfdd4c",   -- 아대 기본 행(A 후보값)이 쓰이는 경우
@@ -784,6 +790,7 @@ script SkillExecutors extends Logic
         local facing = self:GetFacingX(casterEntity)
         local opt = {}
         opt["FlipX"] = (facing > 0) and not spec.noFlip
+        if spec.behindPlayer then self:ApplyShadowSorting(opt, casterEntity) end
         local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
         perUser[buffTag] = serial
         _TimerService:SetTimerOnce(function()
@@ -833,10 +840,23 @@ script SkillExecutors extends Logic
         local facing = self:GetFacingX(player)
         local opt = {}
         opt["FlipX"] = (facing > 0) and not spec.noFlip
+        if spec.behindPlayer then self:ApplyShadowSorting(opt, player) end
         _EffectService:PlayEffectAttached(ruid, player, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
 
         self:ScheduleShadowRestore(uid, self.ShadowMimicSeconds)
-        log("SkillExecutors: shadow mimic " .. action .. " facing=" .. tostring(facing) .. " (" .. uid .. ")")
+        log("SkillExecutors: shadow mimic " .. action .. " facing=" .. tostring(facing) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]) .. " (" .. uid .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyShadowSorting(table opt, Entity player)
+        -- 분신을 플레이어 뒤에 그리는 렌더 층(b/skill-thief-motion): 플레이어 렌더 층은 밟은 발판의 SortingLayer 를 따라가므로(A · NpcSpawner/PortalNetwork) 그 층 + ShadowOrderInLayer(2 < 플레이어 4).
+        -- 발판을 못 찾으면(A 의 LaneFacilityService.SortingLayerBelow = "" · 발 아래 3유닛 안에 발판 없음) 옵션을 안 넣어 예전처럼 기본 층(플레이어 앞)에 그린다.
+        if _LaneFacilityService == nil or not isvalid(player) or not isvalid(player.TransformComponent) then return end
+        local p = player.TransformComponent.WorldPosition
+        local layer = _LaneFacilityService:SortingLayerBelow(player.CurrentMap, p.x, p.y)
+        if layer == nil or layer == "" then return end
+        opt["SortingLayer"] = layer
+        opt["OrderInLayer"] = self.ShadowOrderInLayer
     end
 
     @ExecSpace("ServerOnly")
@@ -945,7 +965,7 @@ script SkillExecutors extends Logic
         if h == nil or h <= 0 then h = 2.5 end
         local target = skillAttack:FindSkillTarget(skillId, {
             posX = pos.x + dirX * range / 2, posY = pos.y + h / 2,
-            sizeX = range, sizeY = h,
+            sizeX = range, sizeY = h, floorY = pos.y,
         }, self.projectilePreferBoss[skillId] == true)
         if not isvalid(target) then
             log("SkillExecutors: aim marker " .. skillId .. " no target in front (range=" .. tostring(range) .. ")")

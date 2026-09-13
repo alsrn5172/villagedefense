@@ -102,6 +102,11 @@ script SkillAttack extends AttackComponent
 
     property number AimSearchHeight = 2.5
 
+    -- 같은 층 판정(b/skill-thief-motion · 2026-09-13 제보 "2층에서 던진 표창이 아래층 몬스터도 죽였다"): 투사체 조준·명중은 발이 시전자 발보다 이만큼(world unit) 이상 낮은
+    -- 몬스터를 뺀다. 탐색 상자는 발부터 위로만 뻗지만 키 큰 몬스터가 아래층에서 상자 안으로 머리를 내밀면 잡혔고, 표창 판정 상자(0.8)도 발 아래로 0.3 내려간다.
+    -- 0.6 = 경사 발판(내리막 앞 몬스터 ≈0.3~0.5 낮음)은 허용 · 한 층 아래(≥1)는 제외. 원작 표창·화살도 아래층은 안 맞는다. 위쪽(높은 발판)은 상자 높이 그대로 허용.
+    property number AimFloorTolerance = 0.6
+
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
@@ -256,6 +261,7 @@ script SkillAttack extends AttackComponent
     method any FindSkillTarget(string skillId, table shape, boolean preferBoss)
         -- shape 상자(posX/posY/sizeX/sizeY) 안 몬스터 중 하나를 고른다: preferBoss 면 보스(script.BossSkillRunner 보유) 우선,
         -- 그다음 시전자에게 가장 가까운 것. 없으면 nil. 피해 없음(probe 패스).
+        -- shape.floorY 가 있으면(투사체 조준 · 조준 표시) 발이 floorY − AimFloorTolerance 보다 낮은 후보는 뺀다(아래층 제외 · b/skill-thief-motion).
         self:EnsureShape()
         self.Shape.Position = Vector2(shape.posX, shape.posY)
         self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
@@ -267,24 +273,29 @@ script SkillAttack extends AttackComponent
         local origin = self.Entity.TransformComponent.WorldPosition
         local best = nil
         local bestScore = math.huge
+        local belowFloor = 0
         for _, cand in ipairs(self.Candidates) do
             if isvalid(cand) and isvalid(cand.TransformComponent) then
                 local p = cand.TransformComponent.WorldPosition
-                local dx = p.x - origin.x
-                local dy = p.y - origin.y
-                local score = dx * dx + dy * dy
-                if preferBoss and isvalid(cand:GetComponent("script.BossSkillRunner")) then
-                    score = score - 1000000   -- 보스는 거리와 무관하게 앞으로
-                end
-                if score < bestScore then
-                    best = cand
-                    bestScore = score
+                if shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
+                    belowFloor = belowFloor + 1
+                else
+                    local dx = p.x - origin.x
+                    local dy = p.y - origin.y
+                    local score = dx * dx + dy * dy
+                    if preferBoss and isvalid(cand:GetComponent("script.BossSkillRunner")) then
+                        score = score - 1000000   -- 보스는 거리와 무관하게 앞으로
+                    end
+                    if score < bestScore then
+                        best = cand
+                        bestScore = score
+                    end
                 end
             end
         end
         local bestName = "none"
         if isvalid(best) then bestName = tostring(best.Name) end
-        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
+        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
         self.Candidates = {}
         return best
     end
@@ -447,7 +458,7 @@ script SkillAttack extends AttackComponent
         if self.AimProjectileAtTarget then
             target = self:FindSkillTarget(skillId, {
                 posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
-                sizeX = range, sizeY = self.AimSearchHeight,
+                sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
             }, preferBoss)
             if not isvalid(target) then target = nil end
         end
@@ -458,6 +469,10 @@ script SkillAttack extends AttackComponent
 
         local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false, sc)
         if mover == nil then return end
+        -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요.
+        mover.SameFloorOnly = true
+        mover.FloorY = pos.y
+        mover.FloorTolerance = self.AimFloorTolerance
 
         -- 볼리: 2발째부터 VisualOnly. 첫 발이 이미 ×hitCount 피해를 지고 있다(무적시간 때문에 2발째 피해는 어차피 무효).
         for i = 2, math.floor(hitCount) do
