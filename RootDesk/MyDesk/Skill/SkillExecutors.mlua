@@ -34,6 +34,10 @@ script SkillExecutors extends Logic
     --   캐릭터 모션(너클 KNUCKLE 행): 섬머솔트 킥 = swingPF(뛰어오르는 피니시) · 슈퍼 트랜스폼 변신/에너지 쉴드 = 비공격 버프 순서(heal 왕복 → alert → stand1) ·
     --   변신 중 재시전(주먹) = swingP2 훅(순서 없음 · Execute 가 IsRecastCast 로 `_RECAST` 순서 id 를 쓴다) · 함포 사격 = alert → 폭격 파마다 잽/훅(BarrageInterval 간격) → 마지막 파 swingPF → stand1.
     --   섬머솔트 킥 팩 = skill/40000.img/skill/400004134 써머솔트 킥 강화(해적 계열 VI · effect·hit 그림은 스트라이커 15001002 와 같고 아이콘이 해적 원작).
+    --   2026-09-13 사용자 요청 "섬머솔트 킥은 원작처럼 백덤블링 · 슈퍼 트랜스폼은 원작(황금 불꽃 형태)처럼":
+    --   백덤블링 = 아바타에 회전 액션이 없으므로 아바타 루트 엔티티의 Transform 을 모든 클라에서 직접 한 바퀴 돌린다(PlayBackflip → BackflipClient Multicast · 몸 가운데 축 · 포물선 점프) ·
+    --   피해는 회전 중(spec.backflip.hitDelay)에. 황금 불꽃 형태 = 원작 Morph 스프라이트는 MSW 라이브러리에 없어 아바타 황금 틴트(SkillBuffs) + 황금 불꽃 루프(effectOverrides.SK_P21.loop)로 근사 ·
+    --   컷신 동안은 분신처럼 루프를 내린다(HideTransformLoopFor).
 
     -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
     -- is one line here.
@@ -195,6 +199,24 @@ script SkillExecutors extends Logic
     property table shadowFacing = {}
 
     property table shadowFacingTimers = {}
+
+    -- 섬머솔트 킥 백덤블링(b/skill-pirate-motion · 2026-09-13 사용자 요청 "원작처럼 백덤블링"): 아바타에 회전 액션이 없어 아바타 루트 엔티티(몸·머리·파츠 전부)의 Transform 을
+    -- 클라마다 직접 돌린다(BackflipClient). 기본값 — effectOverrides[skill].backflip 의 delay/seconds/height/centerY 가 있으면 그것.
+    --   BackflipSeconds  한 바퀴 도는 시간(초) · BackflipHeight 포물선 정점 높이(월드 단위 · 1 = 100px) · BackflipCenterY 회전 중심 = 발 위 이만큼(아바타 키 ≈ 0.7 → 가운데 0.35 ·
+    --   아바타 루트 pivot 이 이미 몸 가운데면 0) · BackflipTickSeconds 회전 갱신 간격.
+    property number BackflipSeconds = 0.4
+
+    property number BackflipHeight = 0.45
+
+    property number BackflipCenterY = 0.35
+
+    property number BackflipTickSeconds = 0.02
+
+    -- 클라: userId → 진행 중인 백덤블링 { t = Transform, pos = 원래 Position, rot = 원래 ZRotation, timer = 타이머 id, elapsed }. 연타면 이전 것을 원위치로 되돌리고 새로 돈다.
+    property table backflipClientState = {}
+
+    -- 서버: userId → 컷신 뒤 슈퍼 트랜스폼 황금 불꽃 루프 복귀 타이머 id(HideTransformLoopFor).
+    property table transformRestoreTimers = {}
 
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
@@ -448,11 +470,17 @@ script SkillExecutors extends Logic
                 -- 그림은 예전 스트라이커 15001002(effect 5cd1f562… · hit 2c2e5530…)와 같다(썸네일 프레임 비교 · 크기·프레임 수 동일) — 아이콘이 해적 원작 붉은색이라 계열을 맞췄다. 팩엔 CharLevel/10~25 별 변형도 있다(미사용).
                 cast = { ruid = "3c5e92e92ef14b2a84ff5dbe3fc75746" },
                 impact = { ruid = "66301df42b9d420bb74fe958fbcfa7b7" },
+                -- backflip(2026-09-13 사용자 요청 "원작처럼 백덤블링"): 아바타 루트를 모든 클라에서 한 바퀴(PlayBackflip). delay = 시전 뒤 이만큼 있다가(swingPF 웅크림 프레임 뒤) ·
+                --   seconds = 한 바퀴 · height = 정점 높이 · centerY = 회전 중심(발 위) · hitDelay = 피해 시점(회전 중 발차기가 뜨는 때 · 시전 락 0.6 안). 값은 전부 Play 로 맞춘다.
+                backflip = { delay = 0.08, seconds = 0.4, height = 0.45, centerY = 0.35, hitDelay = 0.2 },
             },
             SK_P21 = {   -- 슈퍼 트랜스폼 — 변신: skill/40005.img/skill/400051004 라이트닝 폼 effect(194×223) + special(209×168) 루프 · 주먹: skill/40000.img/skill/400004139 스크류 펀치 effect(235×120) + hit(129×115)
                 -- 원작 슈퍼 트랜스포메이션(512.img/5121003)·트랜스포메이션(511.img/5111005)은 색인에 없다. 변신 외형은 SkillBuffs.SetAvatarTint(푸른 틴트) + 이 루프.
                 cast = { ruid = "69f4c5050b7945b5b42b987001134d76", noFlip = true },
-                loop = { ruid = "8fb4311eb34248978f5d47c0f68e67f2", noFlip = true },
+                -- loop(2026-09-13 사용자 요청 "원작 슈퍼 트랜스포메이션(황금 불꽃 형태)처럼" · 표 오른쪽 이미지): 원작 Morph 스프라이트(변신한 몸)는 MSW 라이브러리에 없다(검색 0) →
+                --   아바타를 황금 틴트(SkillBuffs.TransformTint · 1.0/0.82/0.2)로 물들이고 그 위에 황금 불꽃 루프(bebd39c5… · 152×148 · 12프레임 · 좌우 대칭이라 noFlip)를 붙여 "불타는 황금 형태" 로 근사.
+                --   pivot 은 오프라인에서 못 읽어 가운데로 가정(offsetY 0.35 = 몸통 · scale 0.7 ≈ 106px · 아바타 ≈ 70px) — 발에 붙거나 너무 크면 이 두 값. 예전 루프 = 라이트닝 폼 special 8fb4311e…(주황 고리).
+                loop = { ruid = "bebd39c5d4644c5ba9d884306bdf6b81", noFlip = true, offsetY = 0.35, scale = 0.7 },
                 punchCast = { ruid = "4f97bf6aecbc4687aa83e60e763aaf89" },
                 punchImpact = { ruid = "108745e2c8bb476a9855f716fd9adadd" },
             },
@@ -793,6 +821,8 @@ script SkillExecutors extends Logic
                     -- 화면 컷신(scale + noFlip · 예열 목록과 같은 기준)이면 쉐도우 파트너 분신을 컷신 동안 숨긴다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
                     if stage == "cast" and spec.scale ~= nil and spec.noFlip and isvalid(casterEntity.PlayerComponent) then
                         self:HideShadowFor(casterEntity.PlayerComponent.UserId, spec.cutsceneSeconds or self.CutsceneShadowHideSeconds)
+                        -- 슈퍼 트랜스폼 황금 불꽃 루프도 같은 이유로 컷신 동안 내린다(b/skill-pirate-motion · 함포 사격 R 을 변신 중에 쓸 때).
+                        self:HideTransformLoopFor(casterEntity.PlayerComponent.UserId, spec.cutsceneSeconds or self.CutsceneShadowHideSeconds)
                     end
                 else
                     local s = spec.scale or 1
@@ -987,6 +1017,29 @@ script SkillExecutors extends Logic
         self.shadowHiddenUntil[uid] = _UtilLogic.ServerElapsedSeconds + seconds
         self:ScheduleShadowRestore(uid, seconds)
         log("SkillExecutors: shadow hidden for cutscene " .. tostring(seconds) .. "s (" .. uid .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void HideTransformLoopFor(string uid, number seconds)
+        -- 화면 컷신 동안 슈퍼 트랜스폼(SK_P21 · SUPER_TRANSFORM) 황금 불꽃 루프를 내리고, 끝나면 남은 버프 시간만큼 다시 건다(b/skill-pirate-motion · 분신 HideShadowFor 와 같은 이유:
+        -- 부착 루프는 컷신 위에 그려진다). 버프가 없으면 아무것도 안 한다. 아바타 황금 틴트는 그대로(컷신이 덮는다). 가장 최근 예약만 남긴다.
+        if _SkillBuffs == nil or uid == nil or uid == "" or seconds == nil or seconds <= 0 then return end
+        local tag = _SkillBuffs.TagSuperTransform
+        if _SkillBuffs:GetBuff(uid, tag) == nil then return end
+        self:StopBuffLoop(uid, tag)
+        local prev = self.transformRestoreTimers[uid]
+        if prev ~= nil then _TimerService:ClearTimer(prev) end
+        self.transformRestoreTimers[uid] = _TimerService:SetTimerOnce(function()
+            self.transformRestoreTimers[uid] = nil
+            local player = _UserService:GetUserEntityByUserId(uid)
+            if not isvalid(player) or _SkillBuffs == nil then return end
+            local buff = _SkillBuffs:GetBuff(uid, tag)
+            if buff == nil then return end
+            local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
+            if remain <= 0 then return end
+            self:PlayBuffLoop("SK_P21", tag, player, remain)
+        end, seconds)
+        log("SkillExecutors: transform loop hidden for cutscene " .. tostring(seconds) .. "s (" .. uid .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -1650,10 +1703,99 @@ script SkillExecutors extends Logic
             return
         end
 
+        -- 백덤블링(섬머솔트 킥 SK_P11 · b/skill-pirate-motion): effectOverrides[skill].backflip 이 있으면 아바타를 한 바퀴 돌리고(PlayBackflip · 모든 클라),
+        -- 피해는 hitDelay 뒤(회전 중 발차기가 뜨는 시점)에 준다. 상자는 시전 순간 위치 그대로(시전 락 동안 못 움직인다).
+        local flip = nil
+        local entry = self.effectOverrides[skillId]
+        if entry ~= nil then flip = entry.backflip end
+        if flip ~= nil then
+            self:PlayBackflip(casterEntity, flip)
+            local hitDelay = flip.hitDelay or 0
+            if hitDelay > 0 then
+                _TimerService:SetTimerOnce(function()
+                    if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+                    skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "impact")
+                    skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
+                    skillAttack:DealSkillDamage(skillId, level, box)
+                end, hitDelay)
+                return
+            end
+        end
+
         -- 상자 전부(섬머솔트 킥 SK_P11): 맞은 대상마다 impact 클립·hit 사운드(SkillAttack.OnAttack · b/skill-archer-thief-pirate).
         skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "impact")
         skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
         skillAttack:DealSkillDamage(skillId, level, box)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayBackflip(Entity casterEntity, table spec)
+        -- 섬머솔트 킥 백덤블링(b/skill-pirate-motion · 2026-09-13 사용자 요청 "원작처럼 백덤블링"): 메이커 아바타엔 회전하는 액션이 없다(swingPF 는 뛰어오르기만).
+        -- → 아바타 루트 엔티티(AvatarRendererComponent:GetAvatarRootEntity · 몸·머리·파츠 전부 · 플레이어 루트가 아니라 물리·발판 판정엔 영향 없음)의 Transform 을 모든 클라에서
+        --   직접 한 바퀴 돌린다(BackflipClient · Multicast). 회전 중심은 발이 아니라 몸 가운데(centerY 보정)이고 그동안 포물선(height)으로 뛰어오른다. WeaponMotion 의 swingPF 와 같이 재생된다.
+        -- 방향: 오른쪽을 볼 때 +360(반시계 = 머리가 뒤·왼쪽으로 넘어가는 백덤블링) · 왼쪽을 볼 때 −360. facing 은 서버의 LookDirectionX(GetFacingX).
+        if not isvalid(casterEntity.PlayerComponent) then return end
+        local uid = casterEntity.PlayerComponent.UserId
+        local facing = self:GetFacingX(casterEntity)
+        local delay = spec.delay or 0
+        local seconds = spec.seconds or self.BackflipSeconds
+        local height = spec.height or self.BackflipHeight
+        local centerY = spec.centerY or self.BackflipCenterY
+        self:BackflipClient(uid, facing, delay, seconds, height, centerY)
+        log("SkillExecutors: BACKFLIP facing=" .. tostring(facing) .. " delay=" .. tostring(delay) .. " seconds=" .. tostring(seconds) .. " height=" .. tostring(height) .. " (" .. uid .. ")")
+    end
+
+    @ExecSpace("Multicast")
+    method void BackflipClient(string uid, number facing, number delay, number seconds, number height, number centerY)
+        -- 모든 클라(서버 인스턴스는 건너뛴다 · GetAvatarRootEntity 는 ClientOnly): 그 유저 아바타 루트의 ZRotation 을 facing×360° 돌리고,
+        -- Position 을 회전 중심 보정(centerY·sinθ, centerY·(1−cosθ)) + 포물선(height·4p(1−p))으로 옮긴 뒤 원래 값으로 되돌린다. BackflipTickSeconds 마다 갱신.
+        -- 같은 유저의 이전 백덤블링이 아직 돌고 있으면(연타) 먼저 원위치로 되돌리고 새로 시작한다. 엔티티가 사라지면(맵 이동·퇴장) 타이머만 정리한다.
+        if not self:IsClient() then return end
+        if uid == nil or uid == "" or seconds == nil or seconds <= 0 then return end
+        local player = _UserService:GetUserEntityByUserId(uid)
+        if not isvalid(player) or not isvalid(player.AvatarRendererComponent) then return end
+        local root = player.AvatarRendererComponent:GetAvatarRootEntity()
+        if not isvalid(root) or not isvalid(root.TransformComponent) then
+            log_warning("SkillExecutors: backflip — avatar root entity not found (" .. uid .. ")")
+            return
+        end
+        local t = root.TransformComponent
+        local prev = self.backflipClientState[uid]
+        if prev ~= nil then
+            _TimerService:ClearTimer(prev.timer)
+            if isvalid(prev.t) then
+                prev.t.ZRotation = prev.rot
+                prev.t.Position = prev.pos
+            end
+            self.backflipClientState[uid] = nil
+        end
+        local basePos = Vector3(t.Position.x, t.Position.y, t.Position.z)
+        local baseRot = t.ZRotation
+        local tick = self.BackflipTickSeconds
+        if tick <= 0 then tick = 0.02 end
+        local state = { t = t, pos = basePos, rot = baseRot, timer = 0, elapsed = -(delay or 0) }
+        self.backflipClientState[uid] = state
+        state.timer = _TimerService:SetTimerRepeat(function()
+            if not isvalid(root) or not isvalid(t) then
+                _TimerService:ClearTimer(state.timer)
+                if self.backflipClientState[uid] == state then self.backflipClientState[uid] = nil end
+                return
+            end
+            state.elapsed = state.elapsed + tick
+            if state.elapsed < 0 then return end
+            local p = state.elapsed / seconds
+            if p >= 1 then
+                t.ZRotation = baseRot
+                t.Position = basePos
+                _TimerService:ClearTimer(state.timer)
+                if self.backflipClientState[uid] == state then self.backflipClientState[uid] = nil end
+                return
+            end
+            local deg = facing * 360 * p
+            local rad = math.rad(deg)
+            t.ZRotation = baseRot + deg
+            t.Position = Vector3(basePos.x + centerY * math.sin(rad), basePos.y + centerY * (1 - math.cos(rad)) + height * 4 * p * (1 - p), basePos.z)
+        end, tick)
     end
 
     @ExecSpace("ServerOnly")
