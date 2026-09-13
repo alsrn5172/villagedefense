@@ -1,0 +1,36 @@
+# b/skill-pirate-motion — 해적 스킬 캐릭터 애니메이션 · 섬머솔트 킥 원작 계열 팩 · 표 재대조 (B)
+
+> Draft PR #58 `[b/skill-pirate-motion] 해적 스킬 캐릭터 애니메이션 — 섬머솔트 킥·슈퍼 트랜스폼·에너지 쉴드·함포 사격 · 섬머솔트 킥 원작 계열 팩 · 표 재대조` · base `b/skill-thief-motion`(PR #57 · 스택 — 도적 편의 `PlayMotion` / `ResolveMotionRow` / `GetMotionSequence(skillId, skillData)` / `PlayShadowMimic` 위에 얹는다). 이 브랜치의 조각 로그. 릴리스 때 `Docs/CHANGELOG.md` 로 합친다(협업-규칙 §11).
+> 근거: 사용자의 해적 표 이미지("해적 — 오래 버티는 자" · 2026-09-13) · 요청 "표대로 재확인 · 원작과 같거나 비슷하게 · 공격 스킬은 공격 동작 · 비공격 스킬은 사용이 보이는 동작". 계약 변경 없음(새 표·열·열거값·이벤트 없음 · `WeaponMotion.csv` 는 A 표에 B 행 추가/B 행 값 변경만). #55 마법사 · #56 궁수 · #57 도적 편과 같은 형태의 해적 편.
+
+## 2026-09-13 — 해적 5종 표 재대조 · 캐릭터 애니메이션 · 섬머솔트 킥 팩 교체
+
+- `origin/main` 은 이 브랜치의 base 가 이미 담고 있다(사용자 지시 "main 먼저 pull" · `git fetch` 결과 새 커밋 0 → 병합 커밋 없음).
+- 표(해적 · 이미지판 · 해금/효과/Lv.1→5) 대조 — **CSV 값 변경 0**(`SkillInfo.csv` 는 SK_P11 의 IconRUID·#Note 만):
+
+| 슬롯 | 표 | CSV / 코드 | 결과 |
+|---|---|---|---|
+| A 섬머솔트 킥 Q · 해금 10 | 백덤블링하며 공격 · 125% → 275% | ReqLevel 10 · BaseEffect 125 · +37.5/lv(Lv5 275) · 앞쪽 Range 2 상자 전부(`ExecuteMeleeArc`) · 맞은 대상마다 hit 클립 | ✅ (백덤블링 = 이번 편 swingPF 모션) |
+| B 선원 관리(패시브) · 10 | 모집·훈련 재화 절감 · 15% → 35% | 10 · RATIO 15 · +5/lv(Lv5 35) · `JobPassiveLogic.GetJobCostMul`(A 의 CostResolver 적용점 대기 · #54 그대로) | ✅ |
+| C 슈퍼 트랜스폼 W · 20 | 변신 · 이동속도·점프력 증가 · 지속 중 누르면 전방 다수에 주먹 · 지속 30초 · 쿨 60초 · 300~500% | 20 · Duration 30 · Cooldown 60 · BaseEffect 300 · +50/lv(Lv5 500) · Secondary 30 = 속도·점프 +30%(표에 수치 없음 · TENTATIVE 그대로) · 재시전 = 앞쪽 Range 3 상자 주먹(`ExecuteTransformPunch`) | ✅ |
+| D 에너지 쉴드 E · 20 | 최대 체력에 비례한 쉴드 · 쿨 30초 · 최대 체력의 10~30% | 20 · HP_PCT 10 · +5/lv(Lv5 30) · Cooldown 30 · Duration 0 = 깨질 때까지 | ✅ |
+| 궁 함포 사격 R · 30 | 광역 연속 폭격(컷신 · 캡틴 오리진 추천) · 150% × 30회 | 30 · 150 · HitCount 30 · 6파 × 5타 · 드레드노트(캡틴 오리진 5241500) 컷신 · UseLimit 1 | ✅ |
+
+- **원작 팩 재검색**(msw-search 리소스 API · 2026-09-13): **`skill/40000.img/skill/400004134` 써머솔트 킥 강화(해적 계열 VI)** 가 새로 잡혔다 — effect 7프레임 103×130 · hit/0 5프레임 66×72 · Use/Hit 사운드 · CharLevel/10~25 변형. 썸네일 프레임을 펼쳐 비교하니 **그림은 예전 스트라이커 15001002 와 같고**(크기·프레임 수·모양 동일) 아이콘만 다르다(VI = 해적 원작 붉은 발차기 · 스트라이커 = 초록). 해적 원작 500.img/5001002 는 여전히 색인에 없으므로 같은 계열인 이쪽으로 교체: `SkillInfo.csv` SK_P11 `IconRUID` 16475656… · `effectOverrides.SK_P11` cast 3c5e92e9… / impact 66301df4… · `castSounds` 85398b7f… / `extraSounds.hit` 1b54e033…. 슈퍼 트랜스포메이션(512.img)·에너지 차지 계열은 여전히 색인에 없음 → 라이트닝 폼 + 스크류 펀치 · 싸이킥 실드 그대로.
+- **캐릭터 애니메이션** — `RootDesk/MyDesk/WeaponMotion.csv`(A 표 · B 행 추가/B 행 값 변경만 · 헤더·A 행 불변 · 협업-규칙 §2-1): KNUCKLE 행 5 → **16**(표 62 → **73행**) + `SkillExecutors.GetMotionSequence` 해적 3종. 검(나무 검)을 든 해적·맨손 해적도 `ResolveMotionRow` ②(직업 기본 무기 KNUCKLE 의 스킬 전용 행)로 재생된다(#55).
+  - 액션 이름 근거: 쉐도우 파트너 팩(4111002)의 `special/<action>` 썸네일 실루엣(GIF 프레임을 System.Drawing 으로 펼쳐 확인 · #57 과 같은 방법) — **`swingPF` = 웅크림 → 다리를 들고 뛰어오름 → 착지(4프레임)**, `swingP1` = 잽(팔을 앞으로), `swingP2` = 훅(팔을 뒤로 뺐다가 앞으로). 아바타엔 백덤블링(회전)이 없으니 뛰어오르는 swingPF 가 표 "백덤블링하며 공격" 에 가장 가깝다.
+  - 섬머솔트 킥 `SK_P11`(공격): 시전 행 **swingPF 1배속** 한 동작(#54 의 "미검증 후보" 를 실루엣으로 확정 · 시전 락 0.5). 순서 없음.
+  - 슈퍼 트랜스폼 `SK_P21`(변신 = 비공격): 전사 버프·매직 가드와 같은 순서 — **heal 1.5배속 ZigzagLoop**(시전 락 0.6 동안 · 라이트닝 폼 시전 이펙트와 같이) → `_2` 1.0 alert 2.5배속 → `_END` 1.6 **stand1**(너클 = 한손 분류). 예전 행 = alert 1배속 Onetime(피격 HIT 와 같아 보이는 자세). 원작 슈퍼 트랜스포메이션은 몸이 통째로 바뀌는 연출이라 아바타에 없음 → 틴트 + 라이트닝 폼 루프(#54) 그대로.
+  - 변신 중 재시전 `SK_P21_RECAST`(주먹 = 공격): **swingP2 훅 1.2배속**(시전 락 0.6 안 · 스크류 펀치 이펙트와 같이). 순서 없음 — `SkillExecutors.Execute` 가 실행기보다 **먼저** `IsRecastCast`(recastAttack + BuffTag 활성 · ExecuteBuff 의 분기와 같은 조건 · 한 메서드로 합침)로 순서 id 를 `SK_P21_RECAST` 로 바꿔 넘긴다. 예전엔 재시전 뒤에도 변신 순서(`_2` alert · `_END` stand)가 붙었을 것(주먹 1.0s 뒤 전투 자세 → 1.6s 서 있기). 변신 뒤 1.6s 안에 바로 주먹을 치면 변신 순서의 `_2`/`_END` 는 취소되지 않고 그대로 흐른다(주먹 뒤 서 있기 복귀 = 무해).
+  - 에너지 쉴드 `SK_P22`(비공격): 같은 순서(1.0 / 1.6 · 시전 락 0.6 · 싸이킥 실드 보호막 루프가 몸을 감싼다). 예전 행 = alert Onetime.
+  - 함포 사격 `SK_P31`(공격 · 컷신): 시전 행 **alert**(드레드노트 컷신 아래 자세 · 그대로) → **폭격 파마다 주먹**: `_2` ~ `_7` 을 `ExecuteBarrageOrigin` 과 같은 시점(첫 파 = CSV Duration 1.0 · 이후 `BarrageInterval` 0.45 간격 · 파 수 = `BarrageWaves` 6 · HitCount 상한)에 — 잽 swingP1 2배속 / 훅 swingP2 2배속을 번갈아(같은 액션 재전송의 재시작 여부가 🟡 미확인이라 파마다 다른 액션) · 마지막 6파(3.25s) = **swingPF 1.5배속** 피니시 → `_END` 5.5 stand1. 드레드노트 screen 79프레임은 세이크리드 바스티온(89프레임 ≈4.8s 실측) 비례로 ≈4.3s 추정 — 컷신이 걷히면 피니시의 마지막 프레임이 잠깐 보이고 5.5s 에 서 있기. `GetMotionSequence` 가 파 수·간격을 실행기 상수(`BarrageWaves`/`BarrageInterval`)에서 읽으므로 상수를 바꾸면 모션도 같이 옮겨 간다(행은 `_2` ~ `_7` 6개 — 파를 늘리면 행도 추가).
+  - 선원 관리 `SK_P12` 는 패시브(시전 없음) → 행 없음. 너클 기본 행 `MOTION_KNUCKLE`(swingO1 · A 행)은 그대로(#54 부터 swingP1 권장 · A 판단).
+- 🟡 **Play 미검증**(사용자가 직접 확인 · MCP 는 요청 시에만 · 2026-09-13 지시). 확인 항목(기대 로그 · 해적 Lv30 DEV 세팅 · 너클 장착 권장 · 검을 들거나 맨손이어도 KNUCKLE 행으로 재생):
+  - 입장: `[Motion] weapon motion table loaded: 73 rows` · `cutscene prewarm x5`(변화 없음)
+  - Q 섬머솔트 킥: `motion sequence` 없음 · 웅크렸다 뛰어오르는 피니시 한 번 + 붉은 발차기 아이콘(K 창) + 같은 노란 호 이펙트 · 맞은 대상마다 hit 클립 · Use/Hit 소리(팩이 바뀌어 소리가 조금 다를 수 있음)
+  - W 슈퍼 트랜스폼(첫 시전): `[Buff] ON SUPER_TRANSFORM` · `motion sequence SK_P21 weapon=KNUCKLE steps=2/2` · 손 들기 왕복 → 빠른 전투 자세 → 서 있기 · 틴트 + 라이트닝 폼 루프
+  - W 재시전(변신 중): `TRANSFORM PUNCH SK_P21` · 훅 한 번 + 스크류 펀치 이펙트 · **`motion sequence` 로그 없음**(순서 id `SK_P21_RECAST` = 항목 없음) · 주먹 뒤에 전투 자세/서 있기가 새로 붙지 않는다
+  - E 에너지 쉴드: `[Buff] ON ENERGY_SHIELD` · `motion sequence SK_P22 weapon=KNUCKLE steps=2/2` · 손 들기 왕복 → 빠른 전투 자세 → 서 있기 · 보호막 루프
+  - R 함포 사격: `BARRAGE SK_P31 scheduled 6 waves` · `motion sequence SK_P31 weapon=KNUCKLE steps=7/7` · 컷신 아래 1.0s 부터 0.45s 마다 잽/훅(안 보일 수 있음) · 컷신이 걷힌 뒤 피니시 마지막 프레임 → 5.5s 서 있기(컷신 길이를 스크린샷 시각으로 재면 `_END` 조정)
+  - 빌드: 오류 0 · 경고 수 기존과 같음(PR 본문 "build warnings: N before → N after" 에 기입)
+  - Maker 가 열린 채 파일을 복사했다 → Play 전에 **Reimport All**(CSV 는 Reimport 없이 Play/종료하면 메모리 사본으로 되돌아간다 · 협업-규칙 §5).
