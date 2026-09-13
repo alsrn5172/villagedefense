@@ -1,24 +1,36 @@
 @Component
 script LaneTestDriver extends Component
 
-	-- 🧪 시설 연출 테스트맵 구동기 (WO-025 · 2026-09-14 · 사용자 요청). 테스트맵(Test_Lane_Fx) 루트에 붙는다.
+	-- 🧪 시설 연출 테스트맵 구동기 + 임시 리모콘 (WO-025 · 2026-09-14 · 사용자 요청). 테스트맵(Test_Lane_Fx) 루트에 붙는다.
 	-- 플레이어가 이 맵에 **들어오면** 다섯 마을의 레인을 전부 이 맵의 5줄로 바꾸고(LaneFacilityService.UseTestLanes),
-	-- 넥서스·억제기·포탑을 줄마다 놓은 뒤, 주기적으로 오른쪽 끝에서 미니언을 1마리씩 보낸다(우→좌).
-	-- 🔴 들어오기 전엔 아무것도 하지 않는다 — 실제 매치 레인은 그대로다. 테스트 세션 전용이며 그룹 월드에서는 이 맵으로 오는 포탈이 없다.
+	-- 넥서스·억제기·포탑을 줄마다 놓은 뒤, 주기적으로 오른쪽 끝에서 약한 몬스터를 줄마다 SpawnCount 마리 보낸다(우→좌 · 광역/단일/3표적 확인용).
+	-- 🔴 들어오기 전엔 아무것도 하지 않는다 — 실제 매치 레인은 그대로다. Maker Play 전용이며 그룹 월드에서는 이 맵으로 오는 포탈이 없다.
+	--
+	-- 리모콘(키보드 · 클라 → 서버 RPC · 마을×구조물 하나를 골라 조작한다 · 사용자 2026-09-14):
+	--   [ ]  마을 이전/다음 (헤네시스 → 커닝 → 엘리니아 → 노틸러스 → 페리온)
+	--   , .  구조물 이전/다음 (넥서스 → 억제기 → 포탑)
+	--   '    고른 시설 Lv +1 (상한이면 Lv1 로 순환)
+	--   ;    고른 시설 파괴
+	--   /    고른 시설 재건 (Lv 유지 · 만피)
+	--   \    전체 초기화 (전부 Lv1 생존으로 재배치 + 미니언 제거)
+	-- 결과는 토스트로 알려 준다: "리모콘 ▸ 커닝 포탑 · Lv2 · 생존".
 
 	property boolean Enabled = true
 
-	-- 미니언 투입 간격(초) · 마을당 1마리 (사용자 2026-09-14 "너무 많이 나온다" → 4 → 8초 · HP 400 → 150 · 줄당 동시 3마리 상한)
+	-- 미니언 투입 간격(초) · 마을당 SpawnCount 마리 (사용자 2026-09-14 "약한 몬스터 5마리씩")
 	property number SpawnInterval = 8.0
 
-	property integer MonsterId = 2230101
+	-- 달팽이(100000 · 도감 HP 17) — 광역이 여럿을 맞히는지, 단일이 하나만 맞히는지 보이도록 약하게.
+	property integer MonsterId = 100000
 
-	property integer BaseHp = 150
+	property integer BaseHp = 60
 
-	property integer BaseAttack = 15
+	property integer BaseAttack = 10
+
+	property integer SpawnCount = 5
 
 	-- 줄(마을)당 살아 있는 미니언 상한. 넘으면 그 줄은 이번 라운드에 안 보낸다.
-	property integer MaxAlivePerLane = 3
+	property integer MaxAlivePerLane = 12
 
 	@HideFromInspector
 	property boolean active = false
@@ -29,10 +41,112 @@ script LaneTestDriver extends Component
 	@HideFromInspector
 	property integer pollId = 0
 
-	@ExecSpace("ServerOnly")
+	@HideFromInspector
+	property any keyHandler = nil
+
+	-- 리모콘 선택 (서버 · 테스트는 한 사람이 한다)
+	@HideFromInspector
+	property integer selVillage = 1
+
+	@HideFromInspector
+	property integer selStage = 3
+
 	method void OnBeginPlay()
-		-- 맵 루트 컴포넌트에는 OnMapEnter 가 안 오는 경우가 있어(2026-09-14 실측 · Maker 가 이 맵에서 바로 Play 할 때 포함) 0.5초마다 이 맵의 유저를 직접 살핀다.
-		self.pollId = _TimerService:SetTimerRepeat(function() self:Poll() end, 0.5)
+		-- 서버: 맵 루트 컴포넌트에는 OnMapEnter 가 안 오는 경우가 있어(2026-09-14 실측) 0.5초마다 이 맵의 유저를 직접 살핀다.
+		-- 클라: 리모콘 키 입력 연결.
+		if self:IsServer() then
+			self.pollId = _TimerService:SetTimerRepeat(function() self:Poll() end, 0.5)
+		elseif self:IsClient() and self.Enabled then
+			self.keyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- 리모콘 키 → 서버 명령 문자열. 테스트맵에 있을 때만.
+		local me = _UserService.LocalPlayer
+		if not isvalid(me) or me.CurrentMap ~= self.Entity then return end
+		local k = event.key
+		local cmd = ""
+		if k == KeyboardKey.LeftBracket then cmd = "VPREV"
+		elseif k == KeyboardKey.RightBracket then cmd = "VNEXT"
+		elseif k == KeyboardKey.Comma then cmd = "SPREV"
+		elseif k == KeyboardKey.Period then cmd = "SNEXT"
+		elseif k == KeyboardKey.Quote then cmd = "LVUP"
+		elseif k == KeyboardKey.Semicolon then cmd = "DESTROY"
+		elseif k == KeyboardKey.Slash then cmd = "REBUILD"
+		elseif k == KeyboardKey.Backslash then cmd = "RESET"
+		end
+		if cmd ~= "" then self:Remote(cmd) end
+	end
+
+	@ExecSpace("Server")
+	method void Remote(string cmd)
+		-- 리모콘 명령 (클라 → 서버). Maker Play + 활성화된 테스트맵에서만.
+		if not self.active or _LaneStateService == nil or _LaneFacilityService == nil then return end
+		local villages = _LaneFacilityService:TestVillages()
+		local stages = { "CORE", "SUPPRESSOR", "TOWER" }
+		-- 서버 스크립트에서 직접 부르면 senderUserId 가 없다 → 토스트만 건너뛴다.
+		local uid = senderUserId or ""
+		if cmd == "VPREV" then self.selVillage = ((self.selVillage - 2) % #villages) + 1
+		elseif cmd == "VNEXT" then self.selVillage = (self.selVillage % #villages) + 1
+		elseif cmd == "SPREV" then self.selStage = ((self.selStage - 2) % #stages) + 1
+		elseif cmd == "SNEXT" then self.selStage = (self.selStage % #stages) + 1
+		elseif cmd == "RESET" then
+			for _, v in ipairs(villages) do
+				for _, s in ipairs(stages) do _LaneStateService:TestSetFacilityLevel(v, s, 1) end
+			end
+			self:ClearMinions()
+			_LaneFacilityService:UseTestLanes(self.Entity.Name)
+			if uid ~= "" then _LaneStateService:Toast(uid, "리모콘 ▸ 전체 초기화 (전부 Lv1 · 미니언 제거)") end
+			log("[LaneTest] remote RESET by " .. tostring(uid))
+			return
+		end
+		local v = villages[self.selVillage]
+		local s = stages[self.selStage]
+		local st = _LaneStateService:FacilityState(v, s)
+		if st == nil then return end
+		if cmd == "LVUP" then
+			local max = _LaneStateService:FacilityMaxLevel(s)
+			local nextLv = st.lv + 1
+			if nextLv > max then nextLv = 1 end
+			_LaneStateService:TestSetFacilityLevel(v, s, nextLv)
+		elseif cmd == "DESTROY" then
+			_LaneStateService:TestDestroyFacility(v, s)
+		elseif cmd == "REBUILD" then
+			_LaneStateService:TestSetFacilityLevel(v, s, st.lv)
+		end
+		st = _LaneStateService:FacilityState(v, s)
+		local msg = "리모콘 ▸ " .. self:VillageName(v) .. " " .. self:StageName(s) .. " · Lv" .. tostring(st.lv) .. " · " .. (st.alive and "생존" or "파괴")
+		if uid ~= "" then _LaneStateService:Toast(uid, msg) end
+		log("[LaneTest] remote " .. cmd .. " → " .. v .. ":" .. s .. " lv=" .. tostring(st.lv) .. " alive=" .. tostring(st.alive))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string VillageName(string villageId)
+		-- 토스트용 마을 이름.
+		local names = { HENESYS = "헤네시스", KERNING = "커닝시티", ELLINIA = "엘리니아", NAUTILUS = "노틸러스", PERION = "페리온" }
+		return names[villageId] or villageId
+	end
+
+	@ExecSpace("ServerOnly")
+	method string StageName(string stage)
+		-- 토스트용 구조물 이름.
+		local names = { CORE = "넥서스", SUPPRESSOR = "억제기", TOWER = "포탑" }
+		return names[stage] or stage
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearMinions()
+		-- 이 맵의 테스트 미니언(Minion_*) 전부 제거.
+		local n = 0
+		for _, c in ipairs(self.Entity.Children:ToTable()) do
+			if isvalid(c) and string.find(c.Name, "Minion_", 1, true) == 1 then
+				c:Destroy()
+				n = n + 1
+			end
+		end
+		log("[LaneTest] cleared minions=" .. tostring(n))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -72,6 +186,9 @@ script LaneTestDriver extends Component
 		_LaneFacilityService:UseTestLanes(mapName)
 		-- 첫 라운드는 타이머에 맡긴다(직접 부르면 반복 타이머의 첫 틱과 겹쳐 두 번 나왔다 · 2026-09-14 실측).
 		self.timerId = _TimerService:SetTimerRepeat(function() self:SpawnRound() end, self.SpawnInterval)
+		if isvalid(ent) and isvalid(ent.PlayerComponent) and _LaneStateService ~= nil then
+			_LaneStateService:Toast(ent.PlayerComponent.UserId, "테스트 리모콘: [ ] 마을 · , . 구조물 · ' Lv+1 · ; 파괴 · / 재건 · \\ 초기화")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -91,30 +208,36 @@ script LaneTestDriver extends Component
 
 	@ExecSpace("ServerOnly")
 	method void SpawnRound()
-		-- 마을마다 사냥터2 시작점(오른쪽 끝)에 미니언 1마리 — 그 줄에 MaxAlivePerLane 미만일 때만. 스펙은 MinionFlowService.SpawnWave 와 같은 꼴.
+		-- 마을마다 사냥터2 시작점(오른쪽 끝)에 미니언 SpawnCount 마리 — 그 줄이 MaxAlivePerLane 미만일 때만. 스펙은 MinionFlowService.SpawnWave 와 같은 꼴.
 		local spec = { monsterId = self.MonsterId, baseHp = self.BaseHp, baseAttack = self.BaseAttack, hpMul = 1.0, atkMul = 1.0, expBase = 0, mesoBase = 0, coinChance = 0, hpRatio = 1.0, namePart = "T" }
 		local n = 0
 		local skipped = 0
 		for _, v in ipairs(_LaneFacilityService:TestVillages()) do
 			if self:AliveCount(v) >= self.MaxAlivePerLane then
 				skipped = skipped + 1
-			elseif isvalid(_MinionFlowService:SpawnMinion(v, "LANE2", spec)) then
-				n = n + 1
+			else
+				for i = 1, self.SpawnCount do
+					if isvalid(_MinionFlowService:SpawnMinion(v, "LANE2", spec)) then n = n + 1 end
+				end
 			end
 		end
 		log("[LaneTest] round: minions=" .. tostring(n) .. " skipped(full)=" .. tostring(skipped))
 	end
 
-	@ExecSpace("ServerOnly")
 	method void OnEndPlay()
-		-- 타이머 정리.
-		if self.timerId ~= 0 then
-			_TimerService:ClearTimer(self.timerId)
-			self.timerId = 0
-		end
-		if self.pollId ~= 0 then
-			_TimerService:ClearTimer(self.pollId)
-			self.pollId = 0
+		-- 타이머·키 입력 정리.
+		if self:IsServer() then
+			if self.timerId ~= 0 then
+				_TimerService:ClearTimer(self.timerId)
+				self.timerId = 0
+			end
+			if self.pollId ~= 0 then
+				_TimerService:ClearTimer(self.pollId)
+				self.pollId = 0
+			end
+		elseif self:IsClient() and self.keyHandler ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.keyHandler)
+			self.keyHandler = nil
 		end
 	end
 

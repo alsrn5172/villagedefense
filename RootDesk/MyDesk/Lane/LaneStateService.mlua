@@ -101,6 +101,8 @@ script LaneStateService extends Logic
 					flight = tonumber(t:GetCell(i, "FlightSec")), arc = tonumber(t:GetCell(i, "ArcHeight")), stick = tonumber(t:GetCell(i, "StickSec")),
 					launchY = tonumber(t:GetCell(i, "LaunchOffsetY")), castY = tonumber(t:GetCell(i, "CastOffsetY")),
 					faceDeg = tonumber(t:GetCell(i, "FaceDeg")) or 180,
+					-- SplitHits(2026-09-14 · 노틸러스): true 면 발사체마다 도착 시 피해를 나눠 준다(표적당 발사체 수로 등분).
+					split = (tostring(t:GetCell(i, "SplitHits")) == "true"),
 				}
 				n = n + 1
 			end
@@ -377,6 +379,47 @@ script LaneStateService extends Logic
 		if v == nil or v.towers[stage] == nil then return nil end
 		local t = v.towers[stage]
 		return { lv = t.lv, hp = t.hp, max = self:MaxHp(stage, t.lv), alive = t.alive }
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TestSetFacilityLevel(string villageId, string stage, integer lv)
+		-- 🧪 테스트 리모콘(LaneTestDriver · Maker Play 전용 · 사용자 2026-09-14): 비용 없이 시설 Lv 를 놓고 만피·생존으로 되돌린 뒤 Changed(색·전투·연출 갱신).
+		-- 상한 = TowerConfig 행 수(포탑·억제기 3 · 넥서스 1). 출시 월드에선 아무 일도 안 한다. 반환 = 실제 놓인 Lv(0 = 실패).
+		if not Environment:IsMakerPlay() then return 0 end
+		local v = self:EnsureVillage(villageId)
+		local d = self.towerDef[stage]
+		if v == nil or d == nil or v.towers[stage] == nil then return 0 end
+		local t = v.towers[stage]
+		t.lv = math.max(1, math.min(lv, #d.maxHp))
+		t.hp = self:MaxHp(stage, t.lv)
+		t.alive = true
+		self:Changed(villageId, stage)
+		return t.lv
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer FacilityMaxLevel(string stage)
+		-- 시설 단계의 최대 Lv = TowerConfig 행 수(포탑·억제기 3 · 넥서스 1). 표가 없으면 1.
+		local d = (self.towerDef ~= nil) and self.towerDef[stage] or nil
+		if d == nil or d.maxHp == nil then return 1 end
+		return math.max(1, #d.maxHp)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean TestDestroyFacility(string villageId, string stage)
+		-- 🧪 테스트 리모콘: 시설을 즉시 파괴(HP 0 · alive=false) → 파괴 알림 + Changed(중립 · 부서진 그림 · 최전방 갱신 · 수비대 재집결).
+		-- 순차 무적 게이트를 건너뛴다(테스트 전용). 넥서스는 탈락(Eliminate) 없이 파괴만. 출시 월드에선 아무 일도 안 한다.
+		if not Environment:IsMakerPlay() then return false end
+		local v = self:EnsureVillage(villageId)
+		if v == nil or v.towers[stage] == nil then return false end
+		local t = v.towers[stage]
+		if not t.alive then return false end
+		t.hp = 0
+		t.alive = false
+		log("[Lane] " .. villageId .. " " .. stage .. " DESTROYED by TestRemote")
+		if self.towerDef[stage] ~= nil then self:FacilityAlert(villageId, self.towerDef[stage].name .. " 파괴! (리모콘)") end
+		self:Changed(villageId, stage)
+		return true
 	end
 
 	@ExecSpace("ServerOnly")

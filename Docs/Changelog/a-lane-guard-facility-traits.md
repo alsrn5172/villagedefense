@@ -216,3 +216,32 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 6. `Attack()` 반환을 그룹별로 따로 모음(`AppendHits` · `{r1, r2}` 의 nil 구멍).
 - 지적 6(관전 진입 시 `Faction.Team="Neutral"` 을 복귀 때 되돌리지 않음 · `SpectateService`)은 이 PR 밖 → 별도 작업 칩으로 남김.
 - 재검증(Play 30초): `volley` 72 · `land` 69 · `land hits=0` 0건 · 순서 volley → ENEMY/land 유지 · Error 0. (한 줄에 미니언이 1마리씩만 들어와 다중 표적 경로는 로그로 못 봤다.)
+
+## 2026-09-14 (4차) — 페리온 직선 · 수평 발사 포물선 · 노틸러스 3분할 · 테스트 리모콘 · 달팽이 5마리 (사용자 피드백)
+
+### 결정
+- **페리온 창은 직선 + 한 템포 빨리**: `FacilityAttackFx` 페리온 3행 `ArcHeight 0` · `FlightSec 0.45 → 0.3`.
+- **포물선은 위로 솟지 않는다** — 수평으로 나가서 떨어진다: `LaneShot` y = start + (aim − start)·u^(1+ArcHeight), 출발 방향은 항상 수평. `ArcHeight` 열의 의미가 "최고 높이" → **"낙하 곡률"**(0 = 직선)로 바뀜(계약서 A-2-18). 헤네시스 1.2 · 커닝 1.0 · 노틸러스 1.8 값은 그대로 두고 실물 보고 조정.
+- **노틸러스 3분할**(사용자 "같은 데미지를 3분할로 3번"): 새 열 `SplitHits`(`#Note` 앞 · 이 PR 의 신규 CSV 라 헤더 공지 대상 아님) — `true` 면 **표적마다** CSV 개수(3)만큼 쏘고 발사체마다 도착 시각에 1/3 피해(`FactionAttack.HitTarget(target, mul)` · `HitMul` → `CalcDamage`). 표적 5이면 15발이 0.1초 간격 3파로 나가고 표적마다 합은 온전한 한 방(광역 유지). 처음엔 "발사체를 표적에 나눠 보내고 표적별 등분"으로 짰는데 표적이 3 이상이면 발마다 온전 피해가 돼 3분할이 안 보였다 → 표적마다 3발로 바꿈.
+- **테스트 리모콘**(`LaneTestDriver` · 클라 키 → 서버 RPC · 마을×구조물 하나를 골라 조작): `[` `]` 마을 · `,` `.` 구조물 · `'` Lv+1(상한이면 Lv1 순환) · `;` 파괴 · `/` 재건(Lv 유지·만피) · `\` 전체 초기화(전부 Lv1 생존 재배치 + 미니언 제거). 결과는 토스트 "리모콘 ▸ 커닝 포탑 · Lv2 · 생존". 서버 쪽은 `LaneStateService.TestSetFacilityLevel / TestDestroyFacility / FacilityMaxLevel`(Maker Play 전용 · 비용 없음 · 순차 무적 게이트 무시 · 넥서스 파괴는 탈락 없이).
+- **테스트 미니언**: 좀비버섯 1마리 → **달팽이(100000) 5마리씩** 8초마다(HP 60 · 공격 10 · 줄당 상한 12) — 광역/단일/3표적이 눈에 보이게.
+
+### 변경 파일
+| 파일 | 변경 |
+|---|---|
+| `Lane/LaneShot.mlua` | 수평 발사 낙하 곡선 · 출발 방향 수평 |
+| `Lane/LaneAttackFx.mlua` | `SplitHits` · 발사체별 Land(1/n) · `Land(attack, targets, mul)` |
+| `Faction/FactionAttack.mlua` | `HitTarget(target, mul)` · `HitMul` → `CalcDamage` |
+| `Lane/LaneStateService.mlua` | `SplitHits` 로드 · `TestSetFacilityLevel` · `TestDestroyFacility` · `FacilityMaxLevel` |
+| `Lane/LaneFacilityService.mlua` | `ApplyAttackFx` 가 `SplitHits` 전달 |
+| `Lane/LaneTestDriver.mlua` | 리모콘(키 입력 · 선택 · 토스트) · 달팽이 5마리 |
+| `FacilityAttackFx.csv` | `SplitHits` 열 · 노틸러스 true · 페리온 직선/0.3초 |
+| `Docs/스키마-계약.md` A-2-18 · `Docs/tools/check-integrity.cjs` | `SplitHits` 열 · `ArcHeight` 의미 |
+
+### 검증 (2026-09-14 · 개인 월드 Play · `Test_Lane_Fx` · 2회)
+- 진단 errors 0 · 런타임 Error/LEA 0 · `FacilityAttackFx loaded: 15/15`
+- 달팽이: 8초마다 `round: minions=25`(5마을 × 5) · 다섯 포탑 전부 `volley … targets=5`(광역이 5마리 잡힘 · 커닝은 `targets=1` 단일)
+- 노틸러스 3분할: `volley n=15 targets=5 mode=SHOT split` → `land hits=1/1 mul=0.33` × 90건, `mul=1.00` 0건 · 다른 포탑은 `mul=1.00` · `land hits=0` 0건
+- 페리온 `ArcHeight 0 · FlightSec 0.3` 적용(직선은 눈 확인)
+- 리모콘(서버 스크립트로 `Remote` 직접 호출): `VNEXT → KERNING:TOWER` · `LVUP` ×4 → Lv 2→3→**1**(순환)→2 · `DESTROY → alive=false`(`DESTROYED by TestRemote` + Changed) · `REBUILD → alive=true Lv2 유지` · `SPREV → SUPPRESSOR` 파괴 · `SNEXT`/`VNEXT` ×3 → `PERION:TOWER` · `LVUP → Lv2`. 매 명령 뒤 `[Facility] combat …` 재적용.
+- **눈 확인(사용자)**: 키 입력(`[` `]` `,` `.` `'` `;` `/` `\`)과 토스트 문구 · 수평 발사 낙하 곡선(헤네시스 1.2 · 커닝 1.0 · 노틸러스 1.8 — 더 평평하게 하려면 값 ↑) · 페리온 직선 창 방향 · 노틸러스 3파 포탄 · 달팽이 5마리 광역/단일.
