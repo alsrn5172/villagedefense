@@ -32,9 +32,16 @@ script SkillBuffs extends Logic
     --                   활성 중 같은 키 재시전 = 주먹 공격(SkillCaster.IsRecastActive 가 쿨다운 게이트를 건너뛴다 · SkillExecutors.ExecuteTransformPunch).
     --   STACK_GAIN      픽파켓(SK_T12 · 패시브): 스킬 타격마다 OnSkillHitMonster 가 메소 동전(A 의 mesocoin + DropOwner) 1~2 개를 드랍한다. 기본 공격 훅은 A 의 PlayerAttack.OnAttack 대기.
     -- MP 원장은 SummonManager.econ (A). 흡수분 차감은 SpendMp 가 연결된 뒤(SkillCaster.UseSpendMp) 만 — econ.mp 직접 쓰기 금지.
+    -- b/skill-thief-motion (2026-09-13 사용자 요청 "모든 직업의 궁은 사용 중 무적"):
+    --   궁 시전 무적   버프 태그가 아니라 시각 창(castInvulnUntil · 유저별 끝 시각): SkillCaster.RequestCast 가 궁(Behavior ORIGIN · 직업별 R · 대마법·불굴의 진·폭풍의 화살·메소 익스플로전·함포 사격)의
+    --                  시전 락 길이(castLockOverrides · 컷신 포함)만큼 BeginCastInvulnerability 로 연다. 그동안 PlayerHit.OnHit 은 기본 피격 처리(HP 감산·경직·넉백·피해 표시·HitEvent)를
+    --                  통째로 건너뛰고(OnCastInvulnerableHit = 로그만) IsInvincible 도 true 라 ModifyIncomingDamage/GetDamageMul 은 0. 불굴의 진은 자기 8초 버프가 이어서 덮는다.
 
     -- [서버] userId -> buffTag -> 버프 레코드
     property table buffs = {}
+
+    -- [서버] userId -> 궁 시전 무적이 끝나는 시각(ServerElapsedSeconds). 없거나 지났으면 무적 아님. BeginCastInvulnerability / IsCastInvulnerable.
+    property table castInvulnUntil = {}
 
     -- [서버] ApplyBuff 마다 증가. 재시전으로 갱신된 버프를 옛 만료 타이머가 지우지 않게 한다.
     property integer buffStamp = 0
@@ -249,6 +256,36 @@ script SkillBuffs extends Logic
     method boolean IsUnyielding(string userId)
         -- 불굴의 진 활성인가. PlayerHit.OnHit(엔진 훅 · ExecSpace 없음)이 서버에서 본다 — IsGuaranteedCrit 와 같은 규칙(서버 원장 · 클라에선 항상 false).
         return self:GetBuff(userId, self.TagInvulnerable) ~= nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method void BeginCastInvulnerability(string userId, number seconds, string skillId)
+        -- 궁 시전 무적 창을 연다(b/skill-thief-motion · 전 직업 궁). SkillCaster.RequestCast 가 궁(ORIGIN)의 시전 락 길이로 부른다. 더 긴 창이 이미 열려 있으면 그대로.
+        if userId == nil or userId == "" or seconds == nil or seconds <= 0 then return end
+        local untilAt = _UtilLogic.ServerElapsedSeconds + seconds
+        local cur = self.castInvulnUntil[userId]
+        if cur ~= nil and cur > untilAt then return end
+        self.castInvulnUntil[userId] = untilAt
+        log("[Buff] ULTIMATE invulnerable " .. tostring(seconds) .. "s skill=" .. tostring(skillId) .. " (" .. userId .. ")")
+    end
+
+    method boolean IsCastInvulnerable(string userId)
+        -- 궁 시전 무적 창 안인가. PlayerHit.OnHit(ExecSpace 없음)이 서버에서 본다 — 클라에선 표가 비어 항상 false. 지난 창은 지운다.
+        local untilAt = self.castInvulnUntil[userId]
+        if untilAt == nil then return false end
+        if _UtilLogic.ServerElapsedSeconds >= untilAt then
+            self.castInvulnUntil[userId] = nil
+            return false
+        end
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnCastInvulnerableHit(string userId, Entity attacker, integer damage)
+        -- 궁 시전 무적 중 피격(PlayerHit.OnHit 이 기본 처리 대신 부른다): HP 감산·경직·넉백·피해 표시·HitEvent 전부 없음 — 로그만.
+        local attackerName = "?"
+        if isvalid(attacker) then attackerName = tostring(attacker.Name) end
+        log("[Buff] ULTIMATE hit ignored dmg=" .. tostring(damage) .. " from " .. attackerName .. " (" .. userId .. ")")
     end
 
     method number GetHitImmuneMul(string userId)
@@ -549,6 +586,7 @@ script SkillBuffs extends Logic
             end
         end
         self.buffs[userId] = {}
+        self.castInvulnUntil[userId] = nil
         self:ClearHyperBodyHp(userId)
         self:PushBuffs(userId)
     end
@@ -644,6 +682,8 @@ script SkillBuffs extends Logic
         -- 불굴의 진(SK_W31 · INVULNERABLE) 활성이면 true. SkillExecutors.ExecuteOrigin 의 버프 분기가 8초 켠다.
         -- 2026-09-13 부터 "피격 자체가 없는 무적" 이 아니다 — 피격은 등록되고(무적 시간 절반) HP 만 최대치로 고정된다(PlayerHit.OnHit → OnUnyieldingHit).
         -- ModifyIncomingDamage 의 ① 단계는 그대로 0 을 돌려준다(HP 가 어차피 고정이라 결과는 같다).
+        -- 궁 시전 무적(IsCastInvulnerable · 전 직업 궁 · b/skill-thief-motion)도 여기 포함 — 정식 경로(ModifyIncomingDamage)에서도 0.
+        if self:IsCastInvulnerable(userId) then return true end
         return self:GetBuff(userId, self.TagInvulnerable) ~= nil
     end
 

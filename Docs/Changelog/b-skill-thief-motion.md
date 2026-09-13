@@ -69,3 +69,13 @@
 - 제보(⑤의 정확한 뜻): "처음엔 뒤에 뜨지만 좌↔우로 방향을 바꾸면 분신이 안 움직여 앞에 남는다". 원인: 부착 이펙트의 localPosition(offsetX × facing)·FlipX 는 **걸 때 한 번** 정해지고, 플레이어 facing(`LookDirectionX`)은 Transform 을 뒤집지 않아 이펙트가 따라오지 않는다. 그동안은 스킬을 쓸 때(따라하기 복귀)만 새 쪽으로 옮겨 갔다.
 - 고침: `EnsureShadowFacingPoll` — 분신 루프를 걸 때 facing 을 기억하고(`shadowFacing[uid]`), 버프 동안 `ShadowFacingPollSeconds`(0.1) 마다 `GetFacingX` 를 읽어 다르면 남은 버프 시간만큼 루프를 새 쪽으로 다시 건다(`PlayBuffLoop` · 로그 `shadow re-anchored behind (facing 1 -> -1)`). 유저당 타이머 하나 · 버프가 끝나면(`GetBuff` nil) 스스로 멈춤 · 따라하기 중(루프 없음)·컷신 숨김 중엔 건너뛴다(그 복귀가 새 쪽으로 건다). 되걸 때 서 있기 클립이 0프레임부터 다시 시작하지만 3프레임 흔들림이라 티 안 남. 방향키를 빠르게 왕복하면 로그 2줄씩(`stopped` + `buff loop effect`)이 찍힌다.
 - 🟡 Play 미검증(사용자 확인): E 뒤 좌·우로 돌 때마다 `shadow re-anchored behind` + 분신이 항상 등 뒤 · 60초 뒤 `[Buff] OFF SHADOW_PARTNER` 이후 로그 없음(타이머 종료).
+
+## 2026-09-13 — 전 직업 궁 사용 중 무적 (사용자 요청)
+
+- 요청: "모든 직업의 궁은 사용 중 무적". 궁 = `SkillInfo.csv` Behavior **ORIGIN** 5행(불굴의 진 SK_W31 · 대마법 SK_M31 · 폭풍의 화살 SK_A31 · 메소 익스플로전 SK_T31 · 함포 사격 SK_P31 · 전부 ReqTier 3 · 직업별 R). 다른 Behavior 엔 ORIGIN 이 없어 그 한 조건으로 고른다.
+- 구현(버프 태그가 아니라 시각 창 · 계약 변경 없음 — 새 표·열·열거값·이벤트 없음):
+  - `SkillCaster.RequestCast`: 시전 락을 건 직후 `skill.behavior == "ORIGIN"` 이면 `_SkillBuffs:BeginCastInvulnerability(uid, lockSeconds, skillId)` — 길이 = **시전 락**(`castLockOverrides` · 대마법·폭풍의 화살·메소 익스플로전·함포 사격 3.5s = 컷신+여운 · 불굴의 진 1.5s 뒤엔 자기 8초 INVULNERABLE 버프가 이어서 덮는다). 한 곳(castLockOverrides)만 고치면 무적 길이도 같이 간다.
+  - `SkillBuffs`: `castInvulnUntil[uid]`(끝 시각 · 더 긴 창이 열려 있으면 유지) · `IsCastInvulnerable(uid)`(ExecSpace 없음 · 지난 창은 지움 · 클라는 항상 false) · `OnCastInvulnerableHit`(로그만) · `IsInvincible` 에 포함(→ `ModifyIncomingDamage`/`GetDamageMul` 0 · A 의 정식 연결에서도 0) · `ResetMatchState` 가 창을 지운다.
+  - `RootDesk/MyDesk/PlayerHit.mlua`(루트 · `Docs/스킬-모션-구현맵.md` §1 은 B 의 "피격" 파일 · 소유 확인은 #54 부터 A 에 flag 그대로): `OnHit` 이 불굴의 진 분기 다음에 `IsCastInvulnerable` 이면 **기본 피격 처리를 통째로 건너뛴다**(HP 감산·HIT 경직·넉백·피해 표시·HitEvent 없음 → 컷신 중 맞아도 밀리지 않는다). `IsHitTarget` 의 무적 시간은 그대로(창이 끝나면 곧바로 평소대로).
+- 로그: R 시전 `[Buff] ULTIMATE invulnerable 3.5s skill=SK_x31` · 그동안 맞으면 `[Buff] ULTIMATE hit ignored dmg=N from Monster_…` · 정식 경로면 `[Buff] INVULNERABLE blocked N`.
+- 🟡 Play 미검증(사용자 확인 · 다섯 직업 R 을 몬스터 옆에서): 컷신 동안 HP 불변 + 피해 숫자·넉백 없음 · 3.5s(전사 1.5s + 8s 버프) 뒤 다시 맞는다 · 텔레포트/닷지(BLINK)·일반 스킬엔 로그 없음.
