@@ -38,3 +38,13 @@
   - R 메소 익스플로전(동전 근처): `MESO SK_T31 detonating N coins` · `motion sequence SK_T31 weapon=CLAW steps=2/2` · 1.6s `dealt SK_T31 circle … mul=N` · 컷신이 걷힌 뒤 던지기 마지막 프레임 → 5.5s 서 있기(컷신 길이를 스크린샷 시각으로 재면 `_END` 조정)
   - 빌드: 오류 0 · 경고 수 기존과 같음(PR 본문 "build warnings: N before → N after" 에 기입)
   - Maker 가 열린 채 파일을 복사했다 → Play 전에 **Reimport All**(CSV 는 Reimport 없이 Play/종료하면 메모리 사본으로 되돌아간다 · 협업-규칙 §5).
+
+### 2026-09-13 — 제보 반영 ① 표창은 시전 이펙트 중심에서 · ② 컷신 동안 분신 숨김
+
+- 제보 둘(사용자 Play 뒤): ① "럭키 세븐 표창이 이펙트 중심을 향해 날아가야" ② "쉐도우 파트너 중 R 을 누르면 컷신 내내 분신이 보인다".
+- ① **표창 스폰점 = 시전 이펙트(초승달 던지기 궤적) 중심.** 럭키 세븐 팩 effect(0ae88fa4…)의 프레임 pivot 이 (105, 1)/40×52 · (111, −1)/60×44 처럼 그림 바깥 오른쪽에 있어 클립은 pivot 의 **앞쪽 0.65~1.05 · 위 0~0.5** 에 그려진다(썸네일 = 오른쪽 캐릭터 쪽으로 오목한 초승달) → 중심 (앞 0.85, 위 0.25). 표창은 공통 스폰점(앞 0.5 · CSV SpawnOffsetY 0.5)에서 나가 초승달보다 **뒤·위**에서 출발했다.
+  - `effectOverrides.SK_T11.spawn = { offsetX = 1.02, offsetY = 0.09 }` — 표창 스프라이트 pivot (−3, −2)/28×28 때문에 그림 중심이 엔티티보다 뒤 0.17 · 위 0.16 이라 그만큼 보정한 값(엔티티가 (1.02, 0.09) 면 그림 중심이 (0.85, 0.25)). 🟡 Play 프레임으로 미세 조정(핵심은 초승달 중심에서 출발하는가).
+  - 배선: `FireProjectile` 이 spec.spawn 의 offsetX(앞 · 0 = 공통 `ProjectileSpawnOffsetX`)/offsetY(CSV SpawnOffsetY 대신)를 읽어 `SkillAttack.SpawnProjectile(…, preferBoss, **spawnOffsetX**)` 마지막 인자로 넘긴다(볼리 2발째도 같은 점 · 로그 `offsetX=` 에 반영). 다른 스킬은 spawn 이 없어 그대로. `.codeblock` 은 메서드 시그니처를 담지 않아 변경 없음.
+- ② **컷신 동안 분신 숨김** — 분신 루프·따라하기 클립은 화면 컷신 위에 그려진다. `PlayStageEffect` 가 컷신형 cast(spec.scale + noFlip · 예열 목록과 같은 기준)를 재생할 때 `HideShadowFor(uid, spec.cutsceneSeconds or CutsceneShadowHideSeconds 5.5)`: 서 있기 루프를 내리고(`StopBuffLoop`) `shadowHiddenUntil[uid]` 동안 `PlayShadowMimic`(1.6s 의 swingT3 따라하기 포함)·`PlayBuffLoop(SHADOW_PARTNER)`(그 사이 E 재시전)를 막고, 끝나면 `ScheduleShadowRestore` 가 남은 버프 시간만큼 루프를 다시 건다(메소 익스플로전 `_END` 5.5 = 서 있기 복귀와 같은 시점 · 일도양단 길이가 더 짧으면 `SK_T31.cast.cutsceneSeconds` 로 한 칸). 버프가 없으면 아무것도 안 한다. 도적 외 직업의 컷신에도 같은 규칙(분신이 없으니 무해).
+  - 같이 고친 것: `PlayShadowMimic` 의 조건을 "루프가 떠 있음" 에서 **"버프 활성 + 숨김 아님"** 으로 — 연타(럭키 세븐 0.4s 락 < 0.6s 복귀)면 앞 동작의 복귀 전이라 루프가 없어 두 번째 던지기를 안 따라 했다. 복귀 타이머는 `ScheduleShadowRestore` 한 곳(가장 최근 예약만 · 컷신 복귀는 `shadowHiddenUntil` 을 먼저 푼다).
+- 🟡 Play 미검증(사용자 확인): Q 로그 `spawned projectile SK_T11 … offsetX=±1.02 offsetY=0.09` + 표창이 초승달 가운데서 나가는 프레임 · 분신 켠 채 Q 연타 → 매번 `shadow mimic swingT3` · 분신 켠 채 R → `shadow hidden for cutscene 5.5s` · 컷신 중 분신·따라하기 없음 · 5.5s `buff loop effect SK_T22 … for <남은 초>s` 로 복귀.
