@@ -9,6 +9,11 @@ script SkillExecutors extends Logic
     --   BUFF_SELF 버프 원장(SkillBuffs.ApplyBuff)에 BuffTag 를 Duration 동안 켠다 — 매직 가드(SK_M22).
     --   ORIGIN    originSingleTarget 에 있는 스킬(대마법 SK_M31)은 화면 안 단일 대상(보스 우선 · 없으면 최근접)에 HitCount 회. 나머지는 화면 전체 1회.
     --   PASSIVE   시전 없음 — 값은 JobPassiveLogic(연성 SK_M12) 이 스킬 레벨에서 읽는다.
+    -- b/skill-warrior (추가기획1 전사 표):
+    --   MELEE_ARC meleeSingleTarget 에 있는 스킬(파워 스트라이크 SK_W11)은 앞쪽 상자 안 최근접 하나에 HitCount 회. 나머지(섬머솔트 킥)는 상자 전부.
+    --   ORIGIN    BuffTag 가 있고 EffectUnit 이 ATK_PCT 가 아닌 행(불굴의 진 SK_W31)은 피해 없이 그 버프를 Duration 동안 켠다(컷신 = 시전 락).
+    --   TAUNT     도발(SK_W22): 반경(BaseEffect) 상자 안 적 몬스터를 시전자 위치로 끌어모으고 Duration 동안 시전자를 고정 추격시킨다(StateChaseMonster.SetTarget).
+    --   PASSIVE   아이언 바디(SK_W12) 반사는 SkillBuffs.OnPlayerHitEvent(플레이어 HitEvent) 가 한다.
 
     -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
     -- is one line here.
@@ -43,6 +48,26 @@ script SkillExecutors extends Logic
 
     -- ORIGIN 탐색 상자 = PC 가시 영역(12.8×7.2 world unit · platform.md §5). 화면 전체 광역과 단일 대상 후보 탐색이 같이 쓴다.
     property Vector2 ScreenBoxSize = Vector2(12.8, 7.2)
+
+    -- MELEE_ARC 중 단일 대상으로 푸는 스킬 (skillId -> true). BuildHandlerTable 에서 채운다.
+    property table meleeSingleTarget = {}
+
+    -- 근접 호 상자 높이(world unit). 발 위치부터 위로.
+    property number MeleeArcHeight = 1.5
+
+    -- TAUNT: 상자 안 적을 시전자 위치로 끌어모을지(false 면 대상 전환만). 보스(script.BossSkillRunner)는 값과 무관하게 끌지 않는다.
+    property boolean TauntPull = true
+
+    -- TAUNT: 끌어모을 때 시전자 좌우로 벌리는 간격(world unit). i번째 몬스터는 ±(간격 × ceil(i/2)).
+    property number TauntPullSpacing = 0.6
+
+    -- TAUNT: Duration(CSV) 이 0 일 때 쓰는 고정 추격 시간(초).
+    property number TauntDefaultSeconds = 5
+
+    -- [서버] 도발로 SetTarget 한 몬스터의 원래 IsChaseNearPlayer 값 복구용: entity -> { value, stamp }
+    property table tauntRestore = {}
+
+    property integer tauntStamp = 0
 
     -- 대마법(SK_M31) 폭발 연출(ExecuteBlast) 파라미터. 반지름 자체는 CSV Range 가 정한다(0 이면 BlastDefaultRadius).
     property number BlastDefaultRadius = 2.5
@@ -99,6 +124,10 @@ script SkillExecutors extends Logic
         -- 대마법(SK_M31): 추가기획1 "단일 대상 초고피해 (컷신)" — 화면 전체 광역에서 단일 대상으로 바뀐 행(기획 정리 ⚠️ 변경 · 발록전이 목표).
         self.originSingleTarget = {
             SK_M31 = true,
+        }
+        -- 파워 스트라이크(SK_W11): 추가기획1 전사 A "단일 대상 강한 공격" — 앞쪽 상자 안 최근접 하나. 섬머솔트 킥(SK_P11)은 상자 전부 그대로.
+        self.meleeSingleTarget = {
+            SK_W11 = true,
         }
     end
 
@@ -420,6 +449,20 @@ script SkillExecutors extends Logic
         end
         self:PlayCastSound(skillId, casterEntity)
 
+        -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 시전 즉시 버프를 Duration(8초) 동안 켠다.
+        -- 컷신은 SkillCaster.castLockOverrides 가 만들고, 무적 판정은 SkillBuffs.IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
+        if skillData.buffTag ~= nil and skillData.buffTag ~= "" and skillData.effectUnit ~= "ATK_PCT" then
+            if _SkillBuffs == nil or not isvalid(casterEntity.PlayerComponent) then
+                log_warning("SkillExecutors: ORIGIN " .. skillId .. " buff branch needs SkillBuffs + PlayerComponent — skipped")
+                return
+            end
+            local duration = _SkillDatabase:DurationAt(skillId, level)
+            _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, duration)
+            self:PlayStageEffect(skillId, "impact", casterEntity, pos, BasicParticleType.Aura)
+            log("SkillExecutors: ORIGIN " .. skillId .. " buff " .. skillData.buffTag .. " for " .. tostring(duration) .. "s (no damage)")
+            return
+        end
+
         _TimerService:SetTimerOnce(function()
             if chargeSerial ~= 0 then _ParticleService:RemoveParticle(chargeSerial) end
             if not isvalid(casterEntity) then return end
@@ -476,20 +519,115 @@ script SkillExecutors extends Logic
         local hitCount = skillData.hitCount
         if hitCount <= 0 then hitCount = 1 end
 
-        skillAttack:DealSkillDamage(skillId, level, {
-            posX = pos.x + dirX * range / 2, posY = pos.y + 0.5,
-            sizeX = range, sizeY = 1.5,
+        local box = {
+            posX = pos.x + dirX * range / 2, posY = pos.y + self.MeleeArcHeight / 2,
+            sizeX = range, sizeY = self.MeleeArcHeight,
             hitCount = hitCount,
-        })
+        }
+
+        if self.meleeSingleTarget[skillId] then
+            -- 단일 대상(파워 스트라이크 SK_W11): 앞쪽 상자 안 최근접 하나에 HitCount 회. 없으면 소모(MP·쿨다운)는 그대로 — 원작 헛스윙과 같다.
+            local target = skillAttack:FindSkillTarget(skillId, box, false)
+            if not isvalid(target) then
+                log("SkillExecutors: MELEE_ARC " .. skillId .. " no target in front — cast consumed")
+                return
+            end
+            local targetPos = target.TransformComponent.WorldPosition
+            self:PlayStageEffect(skillId, "impact", casterEntity, targetPos, BasicParticleType.SparkExplosion)
+            skillAttack:DealSkillDamageToTarget(skillId, level, target, hitCount)
+            return
+        end
+
+        skillAttack:DealSkillDamage(skillId, level, box)
     end
 
     @ExecSpace("ServerOnly")
     method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
-        -- 도발: 시각·사운드만. 어그로 전환은 몬스터 AI(A 의 Monster/) 와 계약한 뒤 붙인다.
+        -- 도발(SK_W22 · 추가기획1 전사 D "주변 몬스터를 한곳에 모음"): 반경(BaseEffect 3→5 · RatioAt) 상자 안의 적 몬스터를
+        --   ① 시전자 발 위치로 끌어모으고(RigidbodyComponent.SetWorldPosition · StateChaseMonster.GuardAgainstFlyAway 와 같은 호출 · 보스 제외)
+        --   ② Duration 동안 시전자를 고정 추격하게 한다(StateChaseMonster.SetTarget = 자동 탐색 잠금). 만료 시 원래 IsChaseNearPlayer 로 되돌린다.
+        -- A 의 Monster 훅 `Taunt(target, seconds)`(구현항목-결정 §3) 가 생기면 이 두 줄을 그 호출로 바꾸면 된다. 🟡 끌어모으기(발판 다른 몹)는 런타임 미검증.
         local pos = casterEntity.TransformComponent.WorldPosition
-        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
+        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Nova)
         self:PlayCastSound(skillId, casterEntity)
-        log("SkillExecutors: TAUNT " .. skillId .. " — 어그로 효과 미구현 (몬스터 AI 계약 대기)")
+
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping taunt for " .. skillId)
+            return
+        end
+
+        local radius = _SkillDatabase:RatioAt(skillId, level)
+        if radius <= 0 then radius = 1 end
+        local seconds = _SkillDatabase:DurationAt(skillId, level)
+        if seconds <= 0 then seconds = self.TauntDefaultSeconds end
+
+        local found = skillAttack:FindSkillTargets(skillId, {
+            posX = pos.x, posY = pos.y,
+            sizeX = radius * 2, sizeY = radius * 2,
+        })
+
+        self.tauntStamp = self.tauntStamp + 1
+        local stamp = self.tauntStamp
+        local taunted = 0
+        local pulled = 0
+        local slot = 0
+        for _, mob in ipairs(found) do
+            if isvalid(mob) and (_FactionLogic == nil or _FactionLogic:IsEnemy(casterEntity, mob)) then
+                -- 팀 코드와 같은 점 접근(entity.StateChaseMonster · Monster.mlua/BossSkillRunner). GetComponent("script.…") 는 StateComponent 파생에 nil 을 줬다(2026-09-10 Play 실측).
+                -- 배회형 몹(StateMoveMonster · 여섯갈래길 달팽이)은 이 컴포넌트가 없어 대상 전환 없이 끌어모으기만 된다.
+                local chase = mob.StateChaseMonster
+                if isvalid(chase) then
+                    -- 원래 값은 첫 도발 때만 기억한다(연속 도발로 잠긴 값을 원래 값으로 오인하지 않게).
+                    local rec = self.tauntRestore[mob]
+                    if rec == nil then
+                        rec = { value = chase.IsChaseNearPlayer }
+                        self.tauntRestore[mob] = rec
+                    end
+                    rec.stamp = stamp
+                    chase:SetTarget(casterEntity)
+                    taunted = taunted + 1
+                end
+                local isBoss = isvalid(mob:GetComponent("script.BossSkillRunner"))
+                local body = mob.RigidbodyComponent
+                if self.TauntPull and not isBoss and isvalid(body) then
+                    slot = slot + 1
+                    local side = 1
+                    if slot % 2 == 0 then side = -1 end
+                    local offset = side * self.TauntPullSpacing * math.ceil(slot / 2)
+                    body:SetWorldPosition(Vector2(pos.x + offset, pos.y))
+                    pulled = pulled + 1
+                end
+            end
+        end
+
+        if taunted > 0 then
+            _TimerService:SetTimerOnce(function()
+                self:ReleaseTaunt(stamp)
+            end, seconds)
+        end
+        log("SkillExecutors: TAUNT " .. skillId .. " radius=" .. tostring(radius) .. " candidates=" .. tostring(#found)
+            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " for " .. tostring(seconds) .. "s")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ReleaseTaunt(integer stamp)
+        -- 도발 만료: 이 stamp 로 잠근 몬스터만 원래 IsChaseNearPlayer 로 되돌린다(그 사이 다시 도발된 몹은 새 stamp 라 건너뛴다).
+        -- 되돌리면 StateChaseMonster.IsTargetValid 가 다시 거리 검사를 하므로 멀어진 시전자는 자연히 놓는다. 죽은/사라진 몹은 표에서 지운다.
+        local released = 0
+        for mob, rec in pairs(self.tauntRestore) do
+            if not isvalid(mob) then
+                self.tauntRestore[mob] = nil
+            elseif rec.stamp == stamp then
+                local chase = mob.StateChaseMonster
+                if isvalid(chase) then
+                    chase.IsChaseNearPlayer = rec.value
+                end
+                self.tauntRestore[mob] = nil
+                released = released + 1
+            end
+        end
+        log("SkillExecutors: TAUNT released " .. tostring(released) .. " (stamp " .. tostring(stamp) .. ")")
     end
 
     @ExecSpace("ServerOnly")
