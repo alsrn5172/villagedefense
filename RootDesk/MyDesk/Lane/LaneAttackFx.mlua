@@ -3,10 +3,12 @@ script LaneAttackFx extends Component
 
 	-- 시설 공격 연출 (WO-025 · 2026-09-14 · 사용자 배정). 시설(포탑·억제기) 엔티티에 붙는다.
 	-- 값은 FacilityAttackFx.csv(마을 × 시설 × Lv · 계약서 A-2-18) → LaneFacilityService.ApplyCombat 이 레벨에 맞춰 넣는다. Mode 가 비면 아무것도 안 한다(현행 유지).
-	-- TurretAI 가 FactionAttack.DoAttack 직후 OnVolley(실제로 맞은 엔티티 목록)를 부른다.
-	-- 🔴 연출 전용 — 데미지는 발사 순간 상자 판정으로 이미 들어갔다. 발사체(LaneShot)는 맞은 표적을 향해 시설 머리 위에서 포물선으로 날아가 도착 시 hit 이펙트.
-	--   SHOT     : CountMin~CountMax 개 발사체를 IntervalSec 간격으로(0 = 동시 · 살짝 흩어짐) 표적에 나눠 쏜다. Ball2Ruid 가 있으면 짝수 번째는 그 그림(페리온 Lv3).
-	--   CAST_HIT : 발사체 없이 시전(CastRuid · 시설 위치) + 적중(HitRuid · 표적 위치)만 (엘리니아 마법).
+	-- TurretAI 가 공격 시점에 Fire(FactionAttack) 를 부른다 (Mode 가 비면 IsDelayed=false → TurretAI 가 옛 DoAttack 즉시 판정).
+	-- 🔴 피해는 연출이 **도착하는 순간**에 들어간다 (사용자 2026-09-14): Fire 가 FactionAttack.SelectTargets 로 표적만 고르고(피해 없음) 연출을 띄운 뒤,
+	--    FlightSec 뒤 Land 가 살아 있는 표적마다 FactionAttack.HitTarget (표적당 1회 · 발사체 수와 무관). 시설이 사라지면 대기 중인 피해도 취소(OnEndPlay).
+	--   SHOT     : CountMin~CountMax 개 발사체(LaneShot · 시설 머리 위 → 표적 포물선 유도)를 IntervalSec 간격으로(0 = 동시 · 살짝 흩어짐) 표적에 나눠 쏜다.
+	--              hit 이펙트는 LaneShot 이 도착 지점에 띄운다. Ball2Ruid 가 있으면 짝수 번째는 그 그림(페리온 Lv3).
+	--   CAST_HIT : 발사체 없음. 시전(CastRuid · 마법진 · 시설 위치) 지금 → FlightSec 뒤 표적 위치에 적중(HitRuid · 번개) + 피해 (엘리니아 마법).
 
 	property string Mode = ""
 
@@ -80,41 +82,58 @@ script LaneAttackFx extends Component
 	end
 
 	@ExecSpace("ServerOnly")
-	method void OnVolley(any hits)
-		-- 한 번의 공격(스윙)마다 TurretAI 가 부른다. hits = FactionAttack.LastHits(실제로 맞은 엔티티 목록).
-		if self.Mode == nil or self.Mode == "" then return end
-		local targets = {}
-		if hits ~= nil then
-			for _, e in ipairs(hits) do
-				if isvalid(e) and isvalid(e.TransformComponent) then table.insert(targets, e) end
-			end
-		end
+	method boolean IsDelayed()
+		-- 이 시설의 피해가 연출 도착 시점으로 미뤄지는가 (Mode 가 SHOT / CAST_HIT 이면 true). TurretAI 가 Fire 와 DoAttack 을 가른다.
+		return self.Mode == "SHOT" or self.Mode == "CAST_HIT"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Fire(any attack)
+		-- 한 번의 공격(스윙)마다 TurretAI 가 부른다. attack = 이 시설의 FactionAttack.
+		-- 표적 선별(피해 없음) → 시전/발사체 연출 → FlightSec 뒤 Land(피해 + CAST_HIT 적중 이펙트). 표적이 없으면 아무것도 안 띄운다(공포탄 없음).
+		if not self:IsDelayed() or not isvalid(attack) then return end
+		local targets = attack:SelectTargets()
+		if targets == nil or #targets == 0 then return end
 		local origin = self.Entity.TransformComponent.WorldPosition
 		if self.CastRuid ~= "" then
 			self:PlayFx(self.CastRuid, Vector3(origin.x, origin.y + self.CastOffsetY, 0), self.Scale)
 		end
-		if #targets == 0 then return end
-		if self.Mode == "CAST_HIT" then
-			for _, tgt in ipairs(targets) do self:PlayFx(self.HitRuid, self:AimPoint(tgt), self.HitScale) end
-			return
-		end
-		if self.BallRuid == "" then return end
-		local n = math.max(1, self.CountMin)
-		if self.CountMax > self.CountMin then n = _UtilLogic:RandomIntegerRange(self.CountMin, self.CountMax) end
-		local launch = Vector3(origin.x, origin.y + self.LaunchOffsetY, 0)
-		for i = 1, n do
-			local target = targets[((i - 1) % #targets) + 1]
-			local ruid = self.BallRuid
-			if self.Ball2Ruid ~= "" and i % 2 == 0 then ruid = self.Ball2Ruid end
-			local delay = (i - 1) * self.IntervalSec
-			if delay <= 0 then
-				self:SpawnShot(target, ruid, launch)
-			else
-				local id = _TimerService:SetTimerOnce(function() self:SpawnShot(target, ruid, launch) end, delay)
-				table.insert(self.timers, id)
+		local n = 0
+		if self.Mode == "SHOT" and self.BallRuid ~= "" then
+			n = math.max(1, self.CountMin)
+			if self.CountMax > self.CountMin then n = _UtilLogic:RandomIntegerRange(self.CountMin, self.CountMax) end
+			local launch = Vector3(origin.x, origin.y + self.LaunchOffsetY, 0)
+			for i = 1, n do
+				local target = targets[((i - 1) % #targets) + 1]
+				local ruid = self.BallRuid
+				if self.Ball2Ruid ~= "" and i % 2 == 0 then ruid = self.Ball2Ruid end
+				local delay = (i - 1) * self.IntervalSec
+				if delay <= 0 then
+					self:SpawnShot(target, ruid, launch)
+				else
+					local id = _TimerService:SetTimerOnce(function() self:SpawnShot(target, ruid, launch) end, delay)
+					table.insert(self.timers, id)
+				end
 			end
 		end
+		-- 피해는 첫 발사체가 도착하는 FlightSec 뒤 (CAST_HIT 은 마법진 → 번개 지연). 시설이 먼저 사라지면 OnEndPlay 가 취소한다.
+		local land = _TimerService:SetTimerOnce(function() self:Land(attack, targets) end, math.max(0.05, self.FlightSec))
+		table.insert(self.timers, land)
 		log("[AttackFx] " .. self.Entity.Name .. " volley n=" .. tostring(n) .. " targets=" .. tostring(#targets) .. " mode=" .. self.Mode)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Land(any attack, any targets)
+		-- 도착: 표적마다 살아 있으면 피해 1회(FactionAttack.HitTarget · 발사체 수와 무관). CAST_HIT 은 표적 위치에 적중 이펙트도 여기서.
+		if not isvalid(self.Entity) or not isvalid(attack) or targets == nil then return end
+		local hitN = 0
+		for _, tgt in ipairs(targets) do
+			if isvalid(tgt) and isvalid(tgt.TransformComponent) then
+				if self.Mode == "CAST_HIT" then self:PlayFx(self.HitRuid, self:AimPoint(tgt), self.HitScale) end
+				if attack:HitTarget(tgt) then hitN = hitN + 1 end
+			end
+		end
+		log("[AttackFx] " .. self.Entity.Name .. " land hits=" .. tostring(hitN) .. "/" .. tostring(#targets))
 	end
 
 	@ExecSpace("ServerOnly")

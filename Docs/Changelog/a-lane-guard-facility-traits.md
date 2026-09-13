@@ -172,3 +172,37 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 엘리니아 줄(바닥 7.85): 넥서스 y 8.96(+1.112) · 억제기 8.85(+0.995) · 포탑 8.42(+0.57) — 표 오프셋대로
 - 미니언: 8초마다 `round: minions=5 skipped(full)=0`(첫 틱은 즉시) · 확인 시점 생존 4마리(HP 150 이라 포탑에 바로 죽는다 · 상한 3 은 아직 안 걸림) · 노틸러스 `volley n=3` 정상
 - **눈 확인(사용자)**: 배율·오프셋은 리소스 피벗 계산값이라 투명 여백·그림자만큼 떠 보이거나 잠길 수 있다 → `FacilitySprite.csv` 의 `Scale`/`GroundOffset` 칸만 조정. 노틸러스 포탄 출발 높이는 `FacilityAttackFx.LaunchOffsetY`.
+
+## 2026-09-14 (3차) — 피해를 연출 도착 시점으로 + 노틸러스 포탄 크기 + 엘리니아 마법진→번개 (사용자 눈 확인 피드백)
+
+### 피드백 → 원인
+| 피드백 | 원인 |
+|---|---|
+| "몬스터가 먼저 피격당하고 공격이 날아가서 이펙트가 터진다. 유도탄은 맞으면 피격당해야지" | 설계가 "연출 전용" — `DoAttack` 이 발사 순간 상자 판정으로 피해를 주고, 발사체는 **맞은 표적**을 향해 뒤늦게 날아갔다 |
+| "커닝시티 포탑은 플레이어한텐 투사체를 잘 날리는데 몬스터한텐 안 날린다" | 같은 원인의 극단: 커닝 단일 ×5 가 테스트 미니언(HP 150)을 **발사 순간 한 방에** 죽여서 `LaneShot.Launch` 가 "표적 이미 죽음" 으로 발사체를 즉시 지웠다. 플레이어는 안 죽으니 날아갔다 |
+| "노틸러스 포탄이 너무 작다" | N-1 그림 188×58 중 공은 50px — 0.4 배면 0.2 유닛 |
+| "엘리니아 마법진 공격이 왜 포탑 쪽에 나오나. 마법진(스프라이트 없나?) 뒤 잠시 후 번개가 몬스터 쪽에" | `CastRuid` 에 넣은 것이 마법진이 아니라 **스킬 effect(번개 링)** 라 번개가 시설 위치에서 터졌고, 표적 쪽 `hit/0` 은 작았다 |
+
+### 결정 (구조 변경 · 계약서 A-2-18 개정)
+- **피해 = 연출 도착 시점.** `TurretAI` → 행이 있는 시설은 `LaneAttackFx.Fire(attack)`: `FactionAttack.SelectTargets`(DoAttack 과 같은 상자 · 피해 없음 · 가까운 순 MaxTargets 개, 0 이면 전부≤64) → 시전/발사체 연출 → **`FlightSec` 뒤 `Land`** 가 살아 있는 표적마다 `FactionAttack.HitTarget`(표적 피격 상자를 덮는 상자 + `AllowedHits` 로 그 표적만 · 표적당 1회 · 발사체 수와 무관). 시설이 사라지면 대기 피해 취소(`OnEndPlay`). 행이 없는 시설(억제기 · 옛 포탑)·수비대·미니언은 `DoAttack` 즉시 판정 그대로.
+- 발사체는 이제 **살아 있는 표적**을 향해 출발하므로 커닝도 미니언에게 날아간다. 표적이 비행 중 다른 데서 죽으면 마지막 조준점까지 가서 박힘/터짐(기존).
+- `FactionAttack.HitRect(ent)` 로 피격 상자 계산을 뽑아 `CollectNearestEnemies` 와 `HitTarget` 이 같이 쓴다. `OnVolley`/`LastHits` 계약 폐기(`LastHits` 는 로그용으로만 남김).
+- 노틸러스 `Scale` 0.4/0.4/0.25 → **0.9/0.75/0.35**.
+- 엘리니아: `CastRuid` = **마법진**(Lv1·2 파란 룬 `999c9bef` 177×190 8프레임 · Lv3 보라 별 `826cd0bd` 357×379 22프레임 · 시설 가운데 `CastOffsetY 0.55`) → **0.6초 뒤**(`FlightSec`) 표적 위치에 **번개 = 옛 시전 effect**(`55bb9e09`/`b4c27d2c`/`ef24cda6` · HitScale 0.5/0.4/0.9) + 피해. `CAST_HIT` 에서 `FlightSec` = 시전→적중 지연.
+
+### 변경 파일
+| 파일 | 변경 |
+|---|---|
+| `Faction/FactionAttack.mlua` | `HitRect` · `SelectTargets` · `HitTarget` |
+| `Faction/TurretAI.mlua` | 연출 있으면 `fx:Fire(attack)`, 없으면 `DoAttack` |
+| `Lane/LaneAttackFx.mlua` | `IsDelayed` · `Fire` · `Land` (`OnVolley` 삭제) |
+| `Lane/LaneShot.mlua` | 주석만(피해는 Land) |
+| `FacilityAttackFx.csv` | 노틸러스 3행 Scale · 엘리니아 3행 Cast/Hit RUID·Scale·FlightSec·CastOffsetY |
+| `Docs/스키마-계약.md` A-2-18 · 허브 `WorkOrders/WO-025` 위험도 | 지연 피해로 개정 |
+
+### 검증 (2026-09-14 · 개인 월드 Play · `Test_Lane_Fx`)
+- 빌드 Error 0(Info 만 · `IsDelayed`/`Fire` LIA-1115 는 `---@type` 정적 분석 한계 · 런타임 정상) · 런타임 Error/LEA 0
+- 순서가 바뀌었다: `volley n=… targets=1` → (FlightSec 뒤) `[FactionAttack] … -> ENEMY Minion_…` + `land hits=1/1`. 30초 동안 volley 143 · land 139(4건은 비행 중) · `land hits=0` 0건
+- 커닝: `volley n=1 targets=1` → `land hits=1/1` 반복 · 12초 샘플링에서 **커닝 발사체 2개 실제 스폰**(HENESYS 30 · NAUTILUS 26 · PERION 9) — 전에는 표적이 발사 순간 죽어 0개
+- 엘리니아: `volley n=0 targets=1 mode=CAST_HIT`(발사체 없음) → 0.6초 뒤 `land hits=1/1`(번개 + 피해)
+- **눈 확인(사용자)**: 마법진 그림·위치(시설 가운데 +0.55)·번개 크기(HitScale 0.5/0.4/0.9) · 노틸러스 포탄 0.9/0.75/0.35 · 도착 순간 피격 플래시가 이펙트와 맞는지. 어긋나면 `FacilityAttackFx.csv` 칸만.

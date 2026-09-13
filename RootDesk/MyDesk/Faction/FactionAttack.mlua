@@ -29,7 +29,7 @@ script FactionAttack extends AttackComponent
 	@HideFromInspector
 	property any AllowedHits = nil
 
-	-- 마지막 DoAttack 에서 실제로 맞은 엔티티 목록 (연출용 · LaneAttackFx 가 읽는다). 엔진 Attack 이 돌려준 HitComponent 의 Entity.
+	-- 마지막 DoAttack/HitTarget 에서 실제로 맞은 엔티티 목록 (로그·디버그용). 엔진 Attack 이 돌려준 HitComponent 의 Entity.
 	@HideFromInspector
 	property any LastHits = nil
 
@@ -49,10 +49,34 @@ script FactionAttack extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method table HitRect(Entity cand)
+		-- 엔티티 피격 상자(월드): 중심 cx·cy, 반폭 hw·반높이 hh = HitComponent.BoxSize/ColliderOffset × |Scale|.
+		-- 상자가 없거나 0 이면 0.8×1.2 기본(미니언 히트박스와 같은 크기 · 발 +0.6 중심).
+		local p = cand.TransformComponent.WorldPosition
+		local r = { cx = p.x, cy = p.y + 0.6, hw = 0.4, hh = 0.6 }
+		local hit = cand.HitComponent
+		if isvalid(hit) then
+			local sc = cand.TransformComponent.Scale
+			local sx = math.abs(sc.x)
+			local sy = math.abs(sc.y)
+			if sx == 0 then sx = 1 end
+			if sy == 0 then sy = 1 end
+			local bw = hit.BoxSize.x * sx
+			local bh = hit.BoxSize.y * sy
+			if bw > 0 and bh > 0 then
+				r.hw = bw * 0.5
+				r.hh = bh * 0.5
+				r.cx = p.x + hit.ColliderOffset.x * sx
+				r.cy = p.y + hit.ColliderOffset.y * sy
+			end
+		end
+		return r
+	end
+
+	@ExecSpace("ServerOnly")
 	method table CollectNearestEnemies(Vector2 center, Vector2 size, integer limit)
-		-- 공격 상자(center·size) 안의 적을 가까운 순으로 최대 limit 개 고른다 (MaxTargets 용 사전 선별).
+		-- 공격 상자(center·size) 안의 적을 가까운 순으로 최대 limit 개 고른다 (MaxTargets 사전 선별 · SelectTargets).
 		-- 후보 = 맵의 script.Faction 보유 엔티티 + 이 맵의 플레이어 (TurretAI.FindNearestEnemy 와 같은 집합).
-		-- 상자 판정은 엔티티 Transform 위치 기준이라 엔진의 히트박스 판정과 약간 다를 수 있다 — 고른 대상이 실제로 안 맞으면 그 슬롯은 비는 셈이다.
 		local picked = {}
 		local map = self.Entity.CurrentMap
 		if not isvalid(map) then return picked end
@@ -86,30 +110,10 @@ script FactionAttack extends AttackComponent
 				local dead = isvalid(monster) and monster.IsDead
 				if not dead then
 					local p = cand.TransformComponent.WorldPosition
-					-- 후보의 **피격 상자**(발 기준 · Scale 반영)와 공격 상자의 겹침으로 판정한다 — 엔진의 히트 판정과 같은 기준.
+					-- 후보의 **피격 상자**(HitRect · Scale 반영)와 공격 상자의 겹침으로 판정한다 — 엔진의 히트 판정과 같은 기준.
 					-- 🔴 트랜스폼 점으로 재면 시설이 발판보다 GroundOffset 만큼 떠 있어 통로 위 적이 세로로 빠진다(2026-09-13 실측 · 커닝 포탑이 한 번도 안 쐈다).
-					--    상자가 없거나 0 이면 0.8×1.2 기본(미니언 히트박스와 같은 크기).
-					local cx = p.x
-					local cy = p.y + 0.6
-					local hw = 0.4
-					local hh = 0.6
-					local hit = cand.HitComponent
-					if isvalid(hit) then
-						local sc = cand.TransformComponent.Scale
-						local sx = math.abs(sc.x)
-						local sy = math.abs(sc.y)
-						if sx == 0 then sx = 1 end
-						if sy == 0 then sy = 1 end
-						local bw = hit.BoxSize.x * sx
-						local bh = hit.BoxSize.y * sy
-						if bw > 0 and bh > 0 then
-							hw = bw * 0.5
-							hh = bh * 0.5
-							cx = p.x + hit.ColliderOffset.x * sx
-							cy = p.y + hit.ColliderOffset.y * sy
-						end
-					end
-					if math.abs(cx - center.x) <= halfW + hw and math.abs(cy - center.y) <= halfH + hh then
+					local r = self:HitRect(cand)
+					if math.abs(r.cx - center.x) <= halfW + r.hw and math.abs(r.cy - center.y) <= halfH + r.hh then
 						local dx = p.x - myPos.x
 						local dy = p.y - myPos.y
 						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy })
@@ -174,6 +178,52 @@ script FactionAttack extends AttackComponent
 		end
 		self.LastHits = hits
 		self.AllowedHits = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SelectTargets()
+		-- 지연 피해(발사체·시전 · LaneAttackFx.Fire) 용: DoAttack 과 **같은 상자**로 피해 없이 표적만 고른다.
+		-- 가까운 순 MaxTargets 개, 0 이면 상자 안 전부(상한 64). 피해는 연출이 도착할 때 HitTarget 으로 하나씩.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then return {} end
+		local dir = -1
+		if transform.Scale.x < 0 then dir = 1 end
+		local pos = transform.WorldPosition
+		local center = Vector2(pos.x + self.AttackReach * dir, pos.y + 0.5)
+		local limit = self.MaxTargets
+		if limit <= 0 then limit = 64 end
+		return self:CollectNearestEnemies(center, self.AttackBoxSize, limit)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HitTarget(Entity target)
+		-- 지연 피해: 발사체 도착 / 시전 완료 시점에 target **하나에게만** 일반 피해(CalcDamage)를 준다 (사용자 2026-09-14 "유도탄은 맞아야 피격").
+		-- 상자는 표적의 피격 상자(HitRect)를 덮게 놓고 AllowedHits 로 그 표적만 허용 → 옆의 적은 맞지 않는다. 죽었거나 사라졌으면 false.
+		if self.Shape == nil or not isvalid(target) or not isvalid(target.TransformComponent) then return false end
+		---@type Monster
+		local mon = target.Monster
+		if isvalid(mon) and mon.IsDead then return false end
+		local r = self:HitRect(target)
+		self.Shape.Position = Vector2(r.cx, r.cy)
+		self.Shape.Size = Vector2(math.max(1.6, r.hw * 2 + 0.2), math.max(2.4, r.hh * 2 + 0.2))
+		self.Shape.Angle = 0
+		self.SwingHits = {}
+		local allowed = {}
+		allowed[target.Id] = true
+		self.AllowedHits = allowed
+		local hits = {}
+		local r1 = self:Attack(self.Shape, "faction", CollisionGroups.Monster)
+		local r2 = self:Attack(self.Shape, "faction", CollisionGroups.Player)
+		for _, res in ipairs({ r1, r2 }) do
+			if res ~= nil then
+				for _, hc in ipairs(res) do
+					if isvalid(hc) and isvalid(hc.Entity) then table.insert(hits, hc.Entity) end
+				end
+			end
+		end
+		self.LastHits = hits
+		self.AllowedHits = nil
+		return #hits > 0
 	end
 
 	@ExecSpace("ServerOnly")
