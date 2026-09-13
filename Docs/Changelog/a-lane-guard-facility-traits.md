@@ -245,3 +245,10 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 페리온 `ArcHeight 0 · FlightSec 0.3` 적용(직선은 눈 확인)
 - 리모콘(서버 스크립트로 `Remote` 직접 호출): `VNEXT → KERNING:TOWER` · `LVUP` ×4 → Lv 2→3→**1**(순환)→2 · `DESTROY → alive=false`(`DESTROYED by TestRemote` + Changed) · `REBUILD → alive=true Lv2 유지` · `SPREV → SUPPRESSOR` 파괴 · `SNEXT`/`VNEXT` ×3 → `PERION:TOWER` · `LVUP → Lv2`. 매 명령 뒤 `[Facility] combat …` 재적용.
 - **눈 확인(사용자)**: 키 입력(`[` `]` `,` `.` `'` `;` `/` `\`)과 토스트 문구 · 수평 발사 낙하 곡선(헤네시스 1.2 · 커닝 1.0 · 노틸러스 1.8 — 더 평평하게 하려면 값 ↑) · 페리온 직선 창 방향 · 노틸러스 3파 포탄 · 달팽이 5마리 광역/단일.
+
+### Codex 리뷰 반영 (2026-09-14 · 사용자 "codex 열심히 시켜" · 읽기 전용 · 새 세션 2회 대조)
+1차 지적 3건 전부 수정:
+1. `HitTarget` 이 분할 배율을 사망 검사 **앞에** 놓아 죽은 표적에서 되돌리지 않았다 → 다음 즉시 공격이 배율을 물려받을 수 있었다. 사망 검사 뒤로 옮기고 모든 경로에서 0 으로 복구.
+2. 65/3 을 `floor` 로 21×3 = 63 (2 손실) → 배율(`HitMul`) 대신 **k 번째/n**(`HitPart`/`HitParts`)을 넘겨 `CalcDamage` 가 `floor(full·k/n) − floor(full·(k−1)/n)` 로 나눈다. 3발 합 = 원 피해.
+3. 리모콘 `Remote` 가 발신자의 맵을 서버에서 확인하지 않았다 → `GetUserEntityByUserId(uid).CurrentMap == self.Entity` 검사 추가.
+- 재검증(Play 26초): 노틸러스 `land part=1/3 · 2/3 · 3/3` 각 30건 · 다른 포탑 `part=0/0` · 헤네시스 `land hits=5/5` · `land hits=0` 0건 · Error 0.

@@ -40,9 +40,13 @@ script FactionAttack extends AttackComponent
 	@HideFromInspector
 	property integer ReflectDamage = 0
 
-	-- HitTarget 전용: 이번 타격의 피해 비율(노틸러스 3분할 = 1/3). Attack() 이 동기라 호출 뒤 1.0 으로 되돌린다.
+	-- HitTarget 전용: 분할 타격의 k 번째/n (노틸러스 3분할 = 1/3 · 2/3 · 3/3). 0 = 온전한 한 방. Attack() 이 동기라 호출 뒤 0 으로 되돌린다.
+	-- k 번째 몫 = floor(피해·k/n) − floor(피해·(k−1)/n) 이라 n 발 합이 정확히 원 피해다(Codex 리뷰 2026-09-14 · 65/3 를 21×3=63 으로 잃던 것).
 	@HideFromInspector
-	property number HitMul = 1.0
+	property integer HitPart = 0
+
+	@HideFromInspector
+	property integer HitParts = 0
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -219,14 +223,21 @@ script FactionAttack extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean HitTarget(Entity target, number mul)
-		-- 지연 피해: 발사체 도착 / 시전 완료 시점에 target **하나에게만** 일반 피해(CalcDamage × mul)를 준다 (사용자 2026-09-14 "유도탄은 맞아야 피격").
-		-- mul = 이 타격의 피해 비율 (1 = 온전 · 노틸러스 3분할 = 1/3 · SplitHits). 상자는 표적의 피격 상자(HitRect)를 덮게 놓고 AllowedHits 로 그 표적만 허용. 죽었거나 사라졌으면 false.
+	method boolean HitTarget(Entity target, integer part, integer parts)
+		-- 지연 피해: 발사체 도착 / 시전 완료 시점에 target **하나에게만** 일반 피해(CalcDamage)를 준다 (사용자 2026-09-14 "유도탄은 맞아야 피격").
+		-- part/parts = 분할 타격의 k 번째/n (노틸러스 3발 · SplitHits). parts ≤ 1 이면 온전한 한 방. 상자는 표적의 피격 상자(HitRect)를 덮게 놓고 AllowedHits 로 그 표적만 허용. 죽었거나 사라졌으면 false.
 		if self.Shape == nil or not isvalid(target) or not isvalid(target.TransformComponent) then return false end
-		self.HitMul = (mul ~= nil and mul > 0) and mul or 1.0
 		---@type Monster
 		local mon = target.Monster
 		if isvalid(mon) and mon.IsDead then return false end
+		-- 🔴 분할 배율은 사망 검사 **뒤에** 놓고 모든 경로에서 0 으로 되돌린다(죽은 표적에서 되돌리지 않으면 다음 즉시 공격이 물려받는다 · Codex 리뷰 2026-09-14).
+		if parts ~= nil and parts > 1 and part ~= nil and part >= 1 then
+			self.HitPart = part
+			self.HitParts = parts
+		else
+			self.HitPart = 0
+			self.HitParts = 0
+		end
 		local r = self:HitRect(target)
 		self.Shape.Position = Vector2(r.cx, r.cy)
 		self.Shape.Size = Vector2(math.max(1.6, r.hw * 2 + 0.2), math.max(2.4, r.hh * 2 + 0.2))
@@ -240,7 +251,8 @@ script FactionAttack extends AttackComponent
 		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
 		self.LastHits = hits
 		self.AllowedHits = nil
-		self.HitMul = 1.0
+		self.HitPart = 0
+		self.HitParts = 0
 		return #hits > 0
 	end
 
@@ -330,8 +342,12 @@ script FactionAttack extends AttackComponent
 			mul = mul * self.PlayerDamageMul
 		end
 
-		-- 분할 타격(HitTarget mul · 노틸러스 3발 = 1/3 씩). 즉시 판정(DoAttack)에선 항상 1.0.
-		return math.floor(self.BaseDamage * mul * self.HitMul)
+		local full = math.floor(self.BaseDamage * mul)
+		-- 분할 타격(HitTarget part/parts · 노틸러스 3발): k 번째 몫 = floor(full·k/n) − floor(full·(k−1)/n) → n 발 합 = full. 즉시 판정(DoAttack)에선 parts=0.
+		if self.HitParts > 1 and self.HitPart >= 1 then
+			return math.floor(full * self.HitPart / self.HitParts) - math.floor(full * (self.HitPart - 1) / self.HitParts)
+		end
+		return full
 	end
 
 end
