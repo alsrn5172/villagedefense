@@ -1,0 +1,98 @@
+@Component
+script LaneTestDriver extends Component
+
+	-- 🧪 시설 연출 테스트맵 구동기 (WO-025 · 2026-09-14 · 사용자 요청). 테스트맵(Test_Lane_Fx) 루트에 붙는다.
+	-- 플레이어가 이 맵에 **들어오면** 다섯 마을의 레인을 전부 이 맵의 5줄로 바꾸고(LaneFacilityService.UseTestLanes),
+	-- 넥서스·억제기·포탑을 줄마다 놓은 뒤, 주기적으로 오른쪽 끝에서 미니언을 1마리씩 보낸다(우→좌).
+	-- 🔴 들어오기 전엔 아무것도 하지 않는다 — 실제 매치 레인은 그대로다. 테스트 세션 전용이며 그룹 월드에서는 이 맵으로 오는 포탈이 없다.
+
+	property boolean Enabled = true
+
+	-- 미니언 투입 간격(초) · 마을당 1마리
+	property number SpawnInterval = 4.0
+
+	property integer MonsterId = 2230101
+
+	property integer BaseHp = 400
+
+	property integer BaseAttack = 15
+
+	@HideFromInspector
+	property boolean active = false
+
+	@HideFromInspector
+	property integer timerId = 0
+
+	@HideFromInspector
+	property integer pollId = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 맵 루트 컴포넌트에는 OnMapEnter 가 안 오는 경우가 있어(2026-09-14 실측 · Maker 가 이 맵에서 바로 Play 할 때 포함) 0.5초마다 이 맵의 유저를 직접 살핀다.
+		self.pollId = _TimerService:SetTimerRepeat(function() self:Poll() end, 0.5)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Poll()
+		-- 맵에 플레이어가 있으면 활성화하고 폴링을 멈춘다.
+		if self.active then
+			if self.pollId ~= 0 then _TimerService:ClearTimer(self.pollId) self.pollId = 0 end
+			return
+		end
+		if not isvalid(self.Entity.MapComponent) then return end
+		local users = _UserService:GetUsersByMapComponent(self.Entity.MapComponent)
+		if users == nil then return end
+		for _, u in ipairs(users) do
+			if isvalid(u) and isvalid(u.PlayerComponent) then
+				self:Activate(u)
+				return
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity ent)
+		-- 플레이어가 들어오면 1회 활성화 (폴링과 같은 경로).
+		if isvalid(ent) and isvalid(ent.PlayerComponent) then self:Activate(ent) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Activate(Entity ent)
+		-- 레인을 이 맵 5줄로 바꾸고 시설 배치 + 미니언 투입 시작.
+		if not self.Enabled or self.active then return end
+		-- 🔴 Maker Play 에서만. 출시 월드에서 누가 이 맵에 들어와도 실제 레인을 건드리지 않는다.
+		if not Environment:IsMakerPlay() then return end
+		if _LaneFacilityService == nil or _MinionFlowService == nil or _LaneFacilityService.laneRows == nil then return end
+		self.active = true
+		local mapName = self.Entity.Name
+		log("[LaneTest] activate on " .. mapName .. " by " .. tostring(isvalid(ent) and ent.Name or "?"))
+		_LaneFacilityService:UseTestLanes(mapName)
+		self.timerId = _TimerService:SetTimerRepeat(function() self:SpawnRound() end, self.SpawnInterval)
+		self:SpawnRound()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnRound()
+		-- 마을마다 사냥터2 시작점(오른쪽 끝)에 미니언 1마리. 스펙은 MinionFlowService.SpawnWave 와 같은 꼴.
+		local spec = { monsterId = self.MonsterId, baseHp = self.BaseHp, baseAttack = self.BaseAttack, hpMul = 1.0, atkMul = 1.0, expBase = 0, mesoBase = 0, coinChance = 0, hpRatio = 1.0, namePart = "T" }
+		local n = 0
+		for _, v in ipairs(_LaneFacilityService:TestVillages()) do
+			if isvalid(_MinionFlowService:SpawnMinion(v, "LANE2", spec)) then n = n + 1 end
+		end
+		log("[LaneTest] round: minions=" .. tostring(n))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 타이머 정리.
+		if self.timerId ~= 0 then
+			_TimerService:ClearTimer(self.timerId)
+			self.timerId = 0
+		end
+		if self.pollId ~= 0 then
+			_TimerService:ClearTimer(self.pollId)
+			self.pollId = 0
+		end
+	end
+
+end

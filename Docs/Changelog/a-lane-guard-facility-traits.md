@@ -121,3 +121,22 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - Lv 진화: HENESYS lv2 → `ball=ca66b992… count=6~8`, volley `n=7/6` · KERNING lv3 → K-1 `564d5045… scale=0.35 stick=0.35` · PERION lv3 → `ball2=9b8899ca… count=2`, volley `n=2`
 - 발사체 실물: 수동 발사 후 표적 파괴 → +0.25s `Shot_…@(12.30,-1.18)`(공중 · 포물선) → +0.6s `@(11.10,-3.20)`(발 높이에 박힘) → +1.3s 0개(0.35초 뒤 소멸) · 누적 스폰 22개 전부 소멸(누수 없음)
 - **눈 확인(사용자)**: 크기·그림 방향(특히 페리온 창 `FaceDeg 270` 가정)·출발점 높이·hit 위치·서버 이동의 끊김. 엘리니아·노틸러스는 지형(S2) 뒤.
+
+## 2026-09-14 — 시설 연출 테스트맵 `Test_Lane_Fx` (사용자 요청)
+
+### 무엇
+한 맵에 **5줄**(위부터 헤네시스·커닝·엘리니아·노틸러스·페리온 · 줄 간격 = 포탑 높이 × 1.3 = 2.93)을 깔고, 줄마다 왼쪽부터 넥서스(x −8) · 억제기(−2) · 포탑(+4)을 세운 뒤 오른쪽 끝(+11.4)에서 4초마다 미니언을 1마리씩 보낸다(우→좌). 다섯 마을 연출을 한 화면에서 본다 — 엘리니아·노틸러스도 여기선 지형이 있어 보인다.
+
+### 구성
+- `map/Test_Lane_Fx.map` — maple 템플릿 + 바닥 그림 20장(각각 `CustomFootholdComponent` · HillNorth `LaneGround_0` 과 같은 꼴) + 루트에 `script.LaneTestDriver`. `Global/SectorConfig.config` 에 `map://Test_Lane_Fx` 등록.
+- `Lane/LaneTestDriver.mlua` — 맵에 플레이어가 있으면(0.5초 폴링 · `OnMapEnter` 는 맵 루트에선 안 왔다) `LaneFacilityService:UseTestLanes()` 로 다섯 마을 레인을 이 맵 5줄로 바꾸고 시설 재배치 + 미니언 투입. **`Environment:IsMakerPlay()` 일 때만** — 출시 월드에선 아무 일도 안 한다. 이 맵으로 오는 포탈은 없다(테스트는 서버 스크립트 `MoveToMapPosition("Test_Lane_Fx", Vector2(-11, 14.3))` 로 이동).
+- `Lane/LaneFacilityService.mlua` — `UseTestLanes(mapName)` + `TestLane*` property(줄 위치·간격·시설 x). 🔴 실제 레인을 덮어쓰므로 테스트 뒤엔 Play 재시작.
+- **시설은 시설을 겨누지 않는다** (`FactionAttack.IsAttackTarget`/`CollectNearestEnemies` · `TurretAI.FindNearestEnemy`) — 줄이 가까워 윗줄 억제기가 아랫줄 시설을 쏘던 것. 실제 맵에선 마을이 달라 만날 일이 없다.
+
+### 배운 것 (메모리에도 기록)
+- 새 `.map` 은 refresh 로 안 읽힌다 → **Reimport All** 필요(그 전엔 `LEA-3015`).
+- 빌더 `upsertComponent` 는 `@type` 을 뒤에 붙인다 → body 에 `"@type"` 을 첫 키로 직접.
+- 커스텀 발판은 **그림(mapobject) 엔티티**에 붙여야 런타임에 잡힌다. 빈 엔티티나 루트 `FootholdsByLayer` 손굽기는 무시 → 몬스터가 −60 까지 추락했다.
+
+### 검증
+`[LaneTest] activate` → `TEST LANES … spacing=2.93` → 15개 시설 `Test_Lane_Fx` 에 스폰 → 4초마다 `round: minions=5` → 발판 raycast 5줄 전부 true(발판 34→54) → 매 스윙 `[AttackFx] volley` 헤네시스 3~4 · 커닝 1 · 노틸러스 3 · 페리온 1(엘리니아는 CAST_HIT) · Error 0.

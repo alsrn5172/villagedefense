@@ -40,6 +40,22 @@ script LaneFacilityService extends Logic
 	@HideFromInspector
 	property any laneRows = nil
 
+	-- 🧪 테스트맵 레인 (WO-025 · LaneTestDriver 가 호출). 한 맵에 5줄 — 위부터 헤네시스·커닝·엘리니아·노틸러스·페리온. 줄 간격 = 포탑 높이(2×GroundOffset)의 1.3배.
+	property number TestLaneTopY = 13.7
+
+	property number TestLaneSpacingMul = 1.3
+
+	property number TestLaneMinX = -12.0
+
+	property number TestLaneMaxX = 12.0
+
+	-- 줄 안 배치: 넥서스 → 억제기 → 포탑 (왼쪽 → 오른쪽 · 미니언은 오른쪽 끝에서 온다)
+	property number TestLaneNexusX = -8.0
+
+	property number TestLaneSuppressorX = -2.0
+
+	property number TestLaneTowerX = 4.0
+
 	method void OnBeginPlay()
 		-- 서버: LaneConfig 를 읽고 마을마다 넥서스를 놓는다 (맵 엔티티는 서버 시작 시 전부 로드돼 있다).
 		if not self:IsServer() then return end
@@ -82,6 +98,44 @@ script LaneFacilityService extends Logic
 		-- 마을·역할의 LaneConfig 행.
 		if self.laneRows == nil or self.laneRows[villageId] == nil then return nil end
 		return self.laneRows[villageId][role]
+	end
+
+	method any TestVillages()
+		-- 테스트맵 줄 순서(위 → 아래).
+		return { "HENESYS", "KERNING", "ELLINIA", "NAUTILUS", "PERION" }
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseTestLanes(string mapName)
+		-- 🧪 다섯 마을의 레인 행을 전부 테스트맵의 5줄로 바꾸고 시설을 다시 놓는다 (LaneTestDriver · 플레이어가 테스트맵에 들어왔을 때만).
+		-- 세 역할(LANE2 포탑 · LANE1 억제기 · VILLAGE 넥서스)이 같은 맵 같은 줄에 x 만 다르게 선다. 미니언은 오른쪽 끝(MaxX)에서 스폰돼 왼쪽으로 걷는다.
+		-- 레인 끝(EndTriggerX)은 줄 왼쪽 밖에 둬서 절대 닿지 않는다 — 시설과 싸우기만 한다.
+		-- 🔴 실제 매치 레인을 덮어쓴다. 이 세션에서 테스트가 끝나면 Play 를 다시 시작한다.
+		local spacing = self:GroundOffset("HENESYS", "TOWER") * 2 * self.TestLaneSpacingMul
+		self.laneRows = {}
+		for i, vid in ipairs(self:TestVillages()) do
+			local y = self.TestLaneTopY - (i - 1) * spacing
+			local function row(slotX, spawnX)
+				return { mapName = mapName, pathMinX = self.TestLaneMinX, pathMaxX = self.TestLaneMaxX, pathY = y, spawnX = spawnX, endX = self.TestLaneMinX - 5, slotX = slotX, slotY = y, speedMul = 1.0 }
+			end
+			self.laneRows[vid] = {
+				LANE2 = row(self.TestLaneTowerX, self.TestLaneMaxX - 0.6),
+				LANE1 = row(self.TestLaneSuppressorX, 0),
+				VILLAGE = row(self.TestLaneNexusX, 0),
+			}
+		end
+		-- 기존 시설·HP바 정리 후 재배치
+		for key, ent in pairs(self.entities or {}) do if isvalid(ent) then ent:Destroy() end end
+		for key, bar in pairs(self.bars or {}) do if bar ~= nil and isvalid(bar.ent) then bar.ent:Destroy() end end
+		self.entities = {}
+		self.bars = {}
+		for _, vid in ipairs(self:TestVillages()) do
+			if _LaneStateService ~= nil then _LaneStateService:EnsureVillage(vid) end
+			self:SpawnFacility(vid, "CORE")
+			self:SpawnFacility(vid, "SUPPRESSOR")
+			self:SpawnFacility(vid, "TOWER")
+		end
+		log("[Facility] TEST LANES on " .. mapName .. " spacing=" .. string.format("%.2f", spacing) .. " topY=" .. tostring(self.TestLaneTopY))
 	end
 
 	@ExecSpace("ServerOnly")
