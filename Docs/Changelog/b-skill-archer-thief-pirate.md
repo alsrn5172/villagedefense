@@ -225,3 +225,28 @@
   - 버프 없음 5.2초: 피격 3회, 간격 **1.00s**·3.29s(무적 1s) · HP 201450 → 201447 · **HIT 상태 25샘플(≈피격당 0.4s 경직)**.
   - 불굴의 진 10초: `ON INVULNERABLE dur=8` → `OFF` 정확히 8초 뒤(04:49:12 → 04:49:20 · 샘플 상 7.92s 활성) · 활성 중 피격 5회, 간격 **0.52 · 0.51 · 0.51 · 0.53s**(= 무적 0.5s · 나머지 간격은 몹 자체 공격 텀) · 활성 중 **HP < 최대치 샘플 0/…** · **HIT 상태 0** · 피격 순간 x 변화 0(밀림 없음) · 버프가 끝난 뒤 첫 피격(37.55s)부터 다시 HIT 상태 · 무적 1s.
 - Play 확인(두손검·한손검 · 같은 방법): `sprite flash SK_W11_swing ruid=98d2124f… facing=-1 scale=1 0.25s` / `…32aff8b2…` · `dealt SK_W11 … mul=0.5` ×2 · `thrust … afterimage=true` · 빌드 오류 0. 확대 스크린샷: 내려찍기 착지에 붉은 호(캐릭터 앞 · 발끝에서 머리 위까지) → 찌르기에 더 커진 붉은 잔상(검 선 위).
+
+## 2026-09-13 — 마법사 5종 표 재대조 · 캐릭터 애니메이션 (사용자 요청 "표대로 재확인 · 공격 스킬은 공격 동작 · 비공격 스킬은 사용이 보이는 동작")
+
+- `origin/main` 재확인(사용자 지시 "main 먼저 pull"): 브랜치가 이미 main 을 전부 담고 있다(`HEAD..origin/main` 빈 목록) → 병합 커밋 없음.
+- 표(마법사 · 이미지판 · 해금/효과/Lv.1→5) 대조 — **CSV 값 변경 0**:
+
+| 슬롯 | 표 | CSV / 코드 | 결과 |
+|---|---|---|---|
+| A 에너지볼트 Q · 해금 10 | 지정 위치 광역 · 140% → 220% | ReqLevel 10 · BaseEffect 140 · +20/lv · 앞쪽 최근접 유도 투사체 | ✅ |
+| B 연성(패시브) · 10 | 장비 강화 비용 절감 30% → 50% | 10 · 30 · +5 · `JobPassiveLogic.GetJobCostMul(ENHANCE)` | ✅ |
+| C 텔레포트 강화 shift · 20 | 쿨 절반 · 이동 거리 +30% · 도착 광역 · 쿨 2 → 1초 | 20 · Cooldown 2 · −0.25/lv · Range 3.25(= 2.5×1.3) · 도착 AoE 110→150% | ✅ |
+| D 매직 가드 E · 20 | 45초 · 쿨 1분 · 피해의 35~75% MP 대신 · 공격 시 현재 MP 5% 추가 피해 · 소모 MP +50% | Duration 45 · Cooldown 60 · 35 +10/lv · Secondary 5 · `MagicGuardMpCostMul` 1.5 | ✅ |
+| 궁 대마법 R · 30 | 단일 대상 초고피해(컷신 · 썬콜 오리진) · 6000% 고정 | 30 · 6000 · MaxLevel 1 · UseLimit 1 · 프로즌 라이트닝 screen 컷신 | ✅ 값 · ⚠ 형태는 **반지름 3 폭발**(보스 우선 중심 · 2026-09-09 사용자 결정 그대로 유지 · 되돌리면 `ExecuteBlast` → `DealSkillDamageToTarget` 한 곳) |
+| 특이사항 텔레포트 shift · 10 | 초보자 더블 점프 → 텔레포트 | ReqLevel 10 · Shift + `SkillHotbar.OnJumpKeyDown`(공중 1회) | ✅ |
+
+- 원작 팩(icon · cast · hit · sound)은 전부 기존대로(`SkillInfo.csv` `#Note`). 이번 변경은 **캐릭터 모션만**.
+- **`RootDesk/MyDesk/WeaponMotion.csv`**(A 표 · B 행 추가/B 행 값 변경만 · 헤더·A 행 불변 · 협업-규칙 §2-1): 마법사 WAND 행 2 → **9**(표 43 → **50행** · B 행 36 → 43).
+  - 에너지볼트 `SK_M11` = **swingO2**(완드 머리 위 휘두르기 · 원작 마법사 공격 스윙 계열 · 기본 공격 swingO1 과 구분). 원작 WZ 의 `action` 값(swingO1/O2)은 색인이 오프라인이라 미확인 — 다르면 한 칸.
+  - 텔레포트 `SK_M13` · 텔레포트 강화 `SK_M21` = **heal 2배속 Onetime**(손 들기 한 번 · 원작 텔레포트는 몸 동작 없음). `SkillCaster.RequestCast` 의 "BLINK 는 모션 생략" 을 **전용 행이 있을 때만 재생**(`HasOwnMotionRow` · `PlayerMotion.Find` 가 무기 기본 행으로 폴백하면 false)으로 바꿨다 — 행이 없는 이동 스킬(닷지 SK_A22)은 예전처럼 생략. Onetime 은 마지막 프레임이 다음 움직임까지 남는다 → 텔레포트 뒤 가만히 있으면 손 든 채 멈춘다. 이동 스킬엔 시전 락이 없어 `_END`(서 있기) 를 넣으면 걷는 중에 서 있기 자세가 덮어쓸 수 있어 넣지 않았다(사용자 판단 항목).
+  - 매직 가드 `SK_M22` = 전사 버프(하이퍼 바디)와 같은 순서: **heal 1.5배속 ZigzagLoop**(시전 락 0.6s) → 1.0s `_2` alert 2.5배속 왕복 → 1.6s `_END` stand1. (alert Onetime 1행 → 3행)
+  - 대마법 `SK_M31` = **heal 1.5배속 ZigzagLoop**(충전 2초 = CSV Duration) → **2.0s `_2` swingO3**(폭발 순간 완드를 위로 휘두르기 = 공격 동작 · `ExecuteBlast` 와 같은 시점) → 5.5s `_END` stand1. 프로즌 라이트닝 컷신이 아바타를 덮는 구간은 안 보일 수 있다(세이크리드 바스티온은 ≈4.8s 에 걷혔고 이 컷신은 미실측).
+  - 연성 `SK_M12` 는 패시브(시전 없음) → 행 없음.
+- `SkillExecutors.GetMotionSequence` += `SK_M22`(`_2` 1.0 · `_END` 1.6) · `SK_M31`(`_2` 2.0 · `_END` 5.5). `SkillCaster.HasOwnMotionRow(uid, motionId)`(ServerOnly) 신설.
+- 전제: `PlayerMotion.PlaySkill` 은 **장착 무기**로 행을 찾는다 → 완드(`WEAPON_MAGICIAN_T10/T20/T30` · WeaponType WAND)를 장착해야 보인다. 맨손은 A 의 설계상 모션 없음.
+- 🟡 **Play 미검증**(사용자가 직접 확인 · MCP 는 요청 시에만): 기대 로그 `[Motion] weapon motion table loaded: 50 rows` · Q 완드 휘두르기 · Shift 뒤 손 들기(+ `no row` 경고 0) · E `motion sequence SK_M22 weapon=WAND steps=2/2` · R 충전 중 팔 흔들기 → 폭발 순간 휘두르기 · `motion sequence SK_M31 weapon=WAND steps=2/2`.

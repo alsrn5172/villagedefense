@@ -90,6 +90,17 @@ script SkillCaster extends Logic
         return skill ~= nil and skill.behavior == "BLINK"
     end
 
+    @ExecSpace("ServerOnly")
+    method boolean HasOwnMotionRow(string uid, string motionId)
+        -- WeaponMotion.csv 에 "<motionId>|<장착 무기>" 행이 따로 있는가. 무기 기본 공격 행으로의 폴백(PlayerMotion.Find 의 두 번째 분기)은 false.
+        -- 이동 스킬(BLINK)의 모션 게이트 — 전용 행이 없는 이동 스킬이 무기 기본 스윙을 재생하지 않게. 맨손(WeaponTypeOf "")도 false(PlaySkill 도 맨손은 재생 안 함).
+        if _PlayerMotion == nil then return false end
+        local wt = _PlayerMotion:WeaponTypeOf(uid)
+        if wt == nil or wt == "" then return false end
+        local row = _PlayerMotion:Find(wt, motionId)
+        return row ~= nil and row ~= _PlayerMotion:Find(wt, "")
+    end
+
     method number GetCastLockSeconds(string skillId)
         local v = self.castLockOverrides[skillId]
         if v == nil then v = self.DefaultCastLockSeconds end
@@ -351,13 +362,17 @@ script SkillCaster extends Logic
             _PlayerSkillState:IncrementUseCount(uid, skillId)
         end
 
-        -- 모션(시전당 1회). 이동 스킬(BLINK)은 재생하지 않는다 — WeaponMotion.csv 에 스킬 행이 없으면 무기 기본 공격 모션(완드 swingO1)으로
-        -- 조용히 폴백해서 텔레포트에 "휘두르기 + 후딜" 이 붙었다(2026-09-09 제보). 원작 텔레포트는 공격 모션도 후딜도 없다.
-        if _PlayerMotion ~= nil and not isMove then
+        -- 모션(시전당 1회). 이동 스킬(BLINK)은 WeaponMotion.csv 에 **그 스킬 전용 행이 있을 때만** 재생한다(HasOwnMotionRow) — 행이 없으면 PlayerMotion.Find 가
+        -- 무기 기본 공격 모션(완드 swingO1)으로 조용히 폴백해서 텔레포트에 "휘두르기 + 후딜" 이 붙었다(2026-09-09 제보 → 그때는 BLINK 전부 생략).
+        -- 2026-09-13 사용자 요청 "비공격 스킬도 사용이 보이는 동작" → 텔레포트(SK_M13)·텔레포트 강화(SK_M21)는 전용 행(heal 2배속 손 들기)을 넣어 재생하고,
+        -- 행이 없는 이동 스킬(닷지 SK_A22)은 예전처럼 생략한다. 이동 스킬엔 시전 락이 없으니 모션이 이동을 막지는 않는다.
+        if _PlayerMotion ~= nil then
             -- 재시전(변신 중 주먹)은 WeaponMotion 의 "<SkillId>_RECAST" 행(스크류 펀치 = swingP2)을 먼저 찾고, 없으면 무기 기본 행으로 폴백한다(PlayerMotion.Find).
             local motionId = skillId
             if isRecast then motionId = skillId .. "_RECAST" end
-            _PlayerMotion:PlaySkill(uid, motionId)
+            if not isMove or self:HasOwnMotionRow(uid, motionId) then
+                _PlayerMotion:PlaySkill(uid, motionId)
+            end
         end
 
         local caster = casterEntity
