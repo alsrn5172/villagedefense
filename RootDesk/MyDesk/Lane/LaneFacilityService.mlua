@@ -90,7 +90,9 @@ script LaneFacilityService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void ApplyCombat(string villageId, string stage)
-		-- 시설의 진영·전투 부품을 원장 상태에 맞춘다: 살아 있으면 방어 진영(2x) · 파괴되면 중립(미니언이 지나친다). 포탑은 Lv 별 공격력·사거리·쿨타임.
+		-- 시설의 진영·전투 부품을 원장 상태에 맞춘다: 살아 있으면 방어 진영(2x) · 파괴되면 중립(미니언이 지나친다).
+		-- 공격 수치 = 단계 공통(대플레이어 계수 · 대상 수) + 단계별(포탑 = TowerConfig Lv · 억제기 = SUPPRESSOR_ATTACK 특성이 있을 때만) + 마을별 특성(VillageFacilityTrait).
+		-- 🔴 값은 전부 표에서 온다 — 마을 이름을 코드에 박지 않는다. 특성 행이 하나도 없으면 WO-021 이전 동작과 같다(포탑 광역 · 억제기 무공격).
 		local ent = self.entities[villageId .. ":" .. stage]
 		if not isvalid(ent) then return end
 		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
@@ -99,25 +101,137 @@ script LaneFacilityService extends Logic
 		if isvalid(faction) then
 			if alive then faction.Team = tostring(20 + self:TeamSlot(villageId)) else faction.Team = _FactionLogic.NeutralTeam end
 		end
-		if stage == "TOWER" and t ~= nil and _LaneStateService.towerDef ~= nil then
-			local d = _LaneStateService.towerDef.TOWER
-			local lv = math.min(t.lv, #d.attack)
-			local atk = ent.FactionAttack
-			local ai = ent.TurretAI
-			local range = d.range[lv] or 3.0
-			if isvalid(atk) then
-				atk.BaseDamage = math.floor(d.attack[lv] or 30)
-				-- 세로 4: 포탑 트랜스폼이 발판보다 0.81 위라 높이 2 면 통로 위 미니언(발 기준 히트박스)을 못 덮었다(실측 2026-09-07).
+		if t == nil or _LaneStateService.towerDef == nil then return end
+		local lv = t.lv
+		local tower = _LaneStateService.towerDef.TOWER
+		local towerLv = math.min(lv, #tower.attack)
+		local attacks = false
+		local baseDamage = 0
+		local range = 0
+		local cooldown = 1.5
+		local maxTargets = math.floor(_LaneStateService:TraitValue(villageId, stage, "MAX_TARGETS", lv))
+		if stage == "TOWER" then
+			attacks = true
+			baseDamage = tower.attack[towerLv] or 30
+			range = tower.range[towerLv] or 3.0
+			cooldown = (tower.attackSpeed and tower.attackSpeed[towerLv]) or 1.5
+			-- 커닝 포탑 (TOWER_SINGLE_MUL): 원거리 단일 · 기존 데미지 ×N. 단일 = 대상 1 (상자를 표적에 좁게 놓는 건 FactionAttack.DoAttack 이 한다).
+			local single = _LaneStateService:TraitValue(villageId, stage, "TOWER_SINGLE_MUL", lv)
+			if single > 0 then
+				baseDamage = baseDamage * single
+				maxTargets = 1
+			end
+		elseif stage == "SUPPRESSOR" then
+			-- 억제기 자체 공격 (SUPPRESSOR_ATTACK · 헤네시스): 데미지 = 포탑 데미지 표 × 배율. 포탑 표를 **억제기 자신의 Lv** 로 읽는다(포탑 Lv 와 무관 — 억제기 강화가 곧 화력 · WO-021 결정).
+			local mul = _LaneStateService:TraitValue(villageId, stage, "SUPPRESSOR_ATTACK", lv)
+			if mul > 0 then
+				attacks = true
+				local supp = _LaneStateService.towerDef.SUPPRESSOR
+				local suppLv = math.min(lv, #supp.maxHp)
+				baseDamage = (tower.attack[towerLv] or 30) * mul
+				-- 사거리·쿨타임은 TowerConfig SUPPRESSOR 행(F-1 미정 · 지금 0). 0 이면 **같은 Lv 포탑 값을 차용**해 동작만 검증한다. F-1 이 오면 CSV 만 채운다.
+				range = (supp.range and supp.range[suppLv]) or 0
+				cooldown = (supp.attackSpeed and supp.attackSpeed[suppLv]) or 0
+				if range <= 0 then range = tower.range[towerLv] or 3.0 end
+				if cooldown <= 0 then cooldown = (tower.attackSpeed and tower.attackSpeed[towerLv]) or 1.5 end
+			end
+		end
+		---@type FactionAttack
+		local atk = ent.FactionAttack
+		if isvalid(atk) then
+			-- 단계 공통: 대플레이어 계수(WO-016 · 시설이 플레이어를 때릴 때 ×PlayerDamageMul · 잠정 10) · 대상 수 제한(WO-021 · 0 = 무제한).
+			atk.PlayerDamageMul = _LaneStateService.PlayerDamageMul
+			atk.MaxTargets = math.max(0, maxTargets)
+			if attacks then
+				atk.BaseDamage = math.floor(baseDamage)
+				-- 세로 4: 시설 트랜스폼이 발판보다 0.81 위라 높이 2 면 통로 위 미니언(발 기준 히트박스)을 못 덮었다(실측 2026-09-07). 커닝 단일도 세로는 그대로.
 				atk.AttackBoxSize = Vector2(range * 2, 4.0)
 				atk.AttackReach = 0
 			end
-			if isvalid(ai) then
-				ai.AttackRange = range
-				ai.AttackCooldown = (d.attackSpeed and d.attackSpeed[lv]) or 1.5
-				ai.PreferMinions = true
-				ai.Enable = alive
+		end
+		---@type TurretAI
+		local ai = ent.TurretAI
+		if isvalid(ai) then
+			ai.AttackRange = range
+			ai.AttackCooldown = cooldown
+			ai.PreferMinions = true
+			ai.Enable = alive and attacks
+		end
+		-- 오라 특성 (AURA_SPEED · AURA_ATK · AURA_REGEN): Lv 값을 컨트롤러에 넣는다. 파괴되면 0 = 효과 없음(타이머는 두고 재건 시 값만 돌아온다).
+		---@type FactionAuraController
+		local aura = ent.FactionAuraController
+		local auraSpd = 0
+		if isvalid(aura) then
+			local auraAtk = 0
+			local auraRegen = 0
+			if alive then
+				auraSpd = _LaneStateService:TraitValue(villageId, stage, "AURA_SPEED", lv)
+				auraAtk = _LaneStateService:TraitValue(villageId, stage, "AURA_ATK", lv)
+				auraRegen = _LaneStateService:TraitValue(villageId, stage, "AURA_REGEN", lv)
+			end
+			aura.AllySpeedBonus = auraSpd
+			aura.AllyAtkBonus = auraAtk
+			aura.AllyRegenPerSec = auraRegen
+		end
+		if attacks or isvalid(aura) then
+			log(string.format("[Facility] combat %s:%s lv=%d alive=%s attacks=%s dmg=%d range=%.1f cd=%.2f maxTargets=%d playerMul=%.1f auraSpeed=%.2f",
+				villageId, stage, lv, tostring(alive), tostring(attacks), math.floor(baseDamage), range, cooldown, math.max(0, maxTargets), _LaneStateService.PlayerDamageMul, auraSpd))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HasAuraTrait(string villageId, string stage)
+		-- 마을×시설에 오라 특성(AURA_SPEED · AURA_ATK · AURA_REGEN)이 하나라도 있는가. 표가 정본.
+		if _LaneStateService == nil then return false end
+		return _LaneStateService:HasTrait(villageId, stage, "AURA_SPEED")
+			or _LaneStateService:HasTrait(villageId, stage, "AURA_ATK")
+			or _LaneStateService:HasTrait(villageId, stage, "AURA_REGEN")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AttachAura(Entity ent, string villageId, string stage)
+		-- 오라 특성용 부품 (WO-021 · 커닝 억제기 이속 등): FactionAuraController(판정 · 이 엔티티에 붙는다) + AuraEmitter(소스 표시 · 띠 그림).
+		-- 버프 3종은 기존 컨트롤러의 AllySpeedBonus/AllyAtkBonus/AllyRegenPerSec 를 그대로 쓴다(새 버프 없음). 값은 ApplyCombat 이 Lv 에 맞춰 넣는다.
+		---@type FactionAuraController
+		local aura = ent:AddComponent("script.FactionAuraController")
+		if not isvalid(aura) then
+			log_warning("[Facility] FactionAuraController add failed " .. villageId .. ":" .. stage)
+			return
+		end
+		-- 원문 "아군들(플레이어, 수비대)" — 플레이어도 대상. 시설 오라는 아군 버프만: 적 디버프·피해감소 계열은 전부 0.
+		aura.AffectPlayer = true
+		aura.AllyAtkBonus = 0
+		aura.AllySpeedBonus = 0
+		aura.AllyDmgTakenReduce = 0
+		aura.AllyRegenPerSec = 0
+		aura.EnemyAtkPenalty = 0
+		aura.EnemySpeedPenalty = 0
+		aura.EnemyDmgTakenIncrease = 0
+		aura.EnemyDotPerSec = 0
+		-- 범위(AuraWidth/Height/OffsetY)는 F-2 미정 → 컨트롤러 기본값(8×3 · 발밑 +1.0)으로 동작만 검증.
+		-- 띠 그림(AuraEmitter)은 컨트롤러를 맵에서 찾는데 여기선 시설에 있어 못 찾는다 → Fallback 을 같은 값으로 맞추고 크기를 다시 잰다.
+		-- ('emitter' 는 mlua 예약어라 이름을 drawer 로 쓴다)
+		---@type AuraEmitter
+		local drawer = ent:AddComponent("script.AuraEmitter")
+		if isvalid(drawer) then
+			drawer.FallbackWidth = aura.AuraWidth
+			drawer.FallbackHeight = aura.AuraHeight
+			drawer.FallbackOffsetY = aura.AuraOffsetY
+			---@type Entity
+			local pic = drawer.AuraEntity
+			if isvalid(pic) then
+				drawer:ApplySize(pic)
+				-- 자식 트랜스폼은 부모 Scale(시설 0.25)을 타므로 그대로 두면 띠가 1/4 로 그려진다 → 부모 배율만큼 되돌린다(판정은 월드 좌표라 영향 없음).
+				local ps = ent.TransformComponent.Scale
+				local sx = (ps.x ~= 0) and math.abs(ps.x) or 1
+				local sy = (ps.y ~= 0) and math.abs(ps.y) or 1
+				local s = pic.TransformComponent.Scale
+				pic.TransformComponent.Scale = Vector3(s.x / sx, s.y / sy, 1)
+				local p = pic.TransformComponent.Position
+				pic.TransformComponent.Position = Vector3(p.x / sx, p.y / sy, p.z)
 			end
 		end
+		log("[Facility] aura attached " .. villageId .. ":" .. stage)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -270,15 +384,22 @@ script LaneFacilityService extends Logic
 		local faction = ent:AddComponent("script.Faction")
 		if isvalid(faction) then faction.Team = tostring(20 + self:TeamSlot(villageId)) end
 		if isvalid(ent.HitComponent) then ent.HitComponent.CollisionGroup = CollisionGroups.Monster end
-		if stage == "TOWER" then
+		-- 포탑 = 항상 공격. 억제기 = FactionAttack(반사·공격 겸용) + TurretAI(SUPPRESSOR_ATTACK 특성이 있을 때만 ApplyCombat 이 켠다) — WO-021.
+		-- 마을별 특성은 VillageFacilityTrait.csv 가 정본 — 여기서 마을 이름으로 분기하지 않는다.
+		if stage == "TOWER" or stage == "SUPPRESSOR" then
 			local atk = ent:AddComponent("script.FactionAttack")
 			if not isvalid(atk) then log_warning("[Facility] FactionAttack add failed") end
 			---@type TurretAI
 			local ai = ent:AddComponent("script.TurretAI")
 			if not isvalid(ai) then log_warning("[Facility] TurretAI add failed") end
-			-- 포탑은 표적을 따라 몸을 돌리지 않는다(사용자 2026-09-09 "얘가 자꾸 움직이냐").
+			-- 시설은 표적을 따라 몸을 돌리지 않는다(사용자 2026-09-09 "얘가 자꾸 움직이냐").
 			-- 공격 상자가 좌우 대칭(AttackReach 0 · 폭 range*2)이라 방향을 고정해도 사거리는 그대로다.
-			if isvalid(ai) then ai.FixedFacing = true end
+			if isvalid(ai) then
+				ai.FixedFacing = true
+				ai.Enable = (stage == "TOWER")
+			end
+			-- 오라 특성(AURA_*)이 있는 시설엔 오라 부품도. 값은 ApplyCombat 이 Lv 에 맞춰 넣는다.
+			if self:HasAuraTrait(villageId, stage) then self:AttachAura(ent, villageId, stage) end
 		end
 		self.entities[key] = ent
 		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(villageId, stage) + self:BarOffset(villageId, stage))

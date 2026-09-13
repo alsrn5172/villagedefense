@@ -26,10 +26,33 @@ script LaneStateService extends Logic
 	-- 해금·모집 재화를 마을 지역재화(REGION_*)로 쓸지. false = 다이아몬드 임시 (사용자 2026-09-07).
 	property boolean UseRegionalMaterial = false
 
+	-- ── 침범 안정장치 (WO-016 · 추가기획2) — 잠정값은 전부 property (미정-값.md E-1·E-2). 값이 정해지면 여기만 바꾼다. ──
+	-- 수비대·포탑(공격하는 억제기 포함)이 **플레이어**를 때릴 때 곱하는 계수. 원문 "(계수-기본10)배" → 기본 10.0 (E-1 잠정).
+	-- 읽는 곳 = DefenderService.SpawnOne · LaneFacilityService.ApplyCombat 두 군데뿐. 미니언에는 안 붙는다(FactionAttack 기본 1.0).
+	property number PlayerDamageMul = 10.0
+
+	-- 억제기·넥서스 피격 알림의 도배 방지 간격(초). 마을×단계별로 마지막 알림 시각을 들고 판정한다 (E-2 잠정).
+	property number HitAlertInterval = 5.0
+
+	-- true 면 피격·파괴 알림을 전원에게(전체 공지 · 마을 이름 접두). 기본 = 마을 주인만 (E-2 잠정).
+	property boolean HitAlertToAll = false
+
+	-- 무적 시설을 때린 침범자에게 사유를 알려주는 최소 간격(초 · 공격자별). 근접 연타 도배 방지.
+	property number InvaderNoticeInterval = 3.0
+
+	-- 마을 × 시설 × 특성 (VillageFacilityTrait.csv · 계약서 A-2-17 · WO-021). traitDef[villageId][stage][traitKey] = { lv1, lv2, lv3 }
+	@HideFromInspector
+	property any traitDef = nil
+
+	-- 침범자별 마지막 무적 안내 시각 (userId → ElapsedSeconds).
+	@HideFromInspector
+	property any noticeAt = nil
+
 	method void OnBeginPlay()
 		-- 서버만 원장. 표를 읽는다.
 		if not self:IsServer() then return end
 		self.states = {}
+		self.noticeAt = {}
 		self.villages = {
 			{ id = "HENESYS", name = "헤네시스", mat = "REGION_HENESYS_SPORE", prefix = "Henesys" },
 			{ id = "KERNING", name = "커닝시티", mat = "REGION_KERNING_THIEF_COIN", prefix = "KerningCity" },
@@ -40,7 +63,51 @@ script LaneStateService extends Logic
 		self:LoadTowerDef()
 		self:LoadTrainDef()
 		self:LoadSpriteDef()
+		self:LoadTraitDef()
 		log("[Lane] LaneStateService ready (server · village ledger)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadTraitDef()
+		-- VillageFacilityTrait.csv(계약서 A-2-17 · WO-021). 표가 없거나 비면 특성 0건 = 현행 동작 그대로.
+		-- 🔴 마을별 분기를 코드에 박지 않는다 — 값은 전부 이 표에서 온다. Enabled=false 행은 없는 것과 같다. Lv2/Lv3 빈 칸 = Lv1 값.
+		self.traitDef = {}
+		local t = _DataService:GetTable("VillageFacilityTrait")
+		if t == nil then
+			log_warning("[Lane] VillageFacilityTrait dataset not found — 마을별 특성 없음")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local villageId = t:GetCell(i, "VillageId") or ""
+			local stage = t:GetCell(i, "Stage") or ""
+			local key = t:GetCell(i, "TraitKey") or ""
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if enabled and villageId ~= "" and stage ~= "" and key ~= "" then
+				if self.traitDef[villageId] == nil then self.traitDef[villageId] = {} end
+				if self.traitDef[villageId][stage] == nil then self.traitDef[villageId][stage] = {} end
+				local lv1 = tonumber(t:GetCell(i, "Lv1")) or 0
+				self.traitDef[villageId][stage][key] = { lv1, tonumber(t:GetCell(i, "Lv2")) or lv1, tonumber(t:GetCell(i, "Lv3")) or lv1 }
+				n = n + 1
+			end
+		end
+		log("[Lane] VillageFacilityTrait loaded: " .. tostring(n) .. "/" .. tostring(t:GetRowCount()) .. " rows")
+	end
+
+	method number TraitValue(string villageId, string stage, string key, integer lv)
+		-- 마을×시설×특성의 Lv 값. 행이 없으면 0 (= 특성 없음). Lv 는 1~3 으로 클램프.
+		if self.traitDef == nil then return 0 end
+		local v = self.traitDef[villageId]
+		if v == nil or v[stage] == nil or v[stage][key] == nil then return 0 end
+		local vals = v[stage][key]
+		return vals[math.max(1, math.min(3, lv))] or 0
+	end
+
+	method boolean HasTrait(string villageId, string stage, string key)
+		-- 그 특성 행이 있는가 (Enabled 행만 로드되므로 있으면 켜진 것).
+		if self.traitDef == nil then return false end
+		local v = self.traitDef[villageId]
+		return v ~= nil and v[stage] ~= nil and v[stage][key] ~= nil
 	end
 
 	@ExecSpace("ServerOnly")
@@ -377,23 +444,76 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void ApplyDamage(string villageId, string stage, integer damage, string attackerName)
-		-- 시설 피격 (LaneFacility → 여기). HP 0 → 파괴 1회 이벤트. 넥서스 파괴 = 탈락(Eliminate).
+	method string ApplyDamage(string villageId, string stage, integer damage, string attackerName)
+		-- 시설 피격 (LaneFacility → 여기 · 모든 시설 피해의 유일한 관문). HP 0 → 파괴 1회 이벤트. 넥서스 파괴 = 탈락(Eliminate).
+		-- 돌려주는 값: "" = 피해 적용 · "INVALID" = 없는/죽은 시설 · "TOWER"/"SUPPRESSOR" = 그 최전방 시설이 살아 있어 **무적으로 거절**(호출부가 침범자 안내에 쓴다).
 		local v = self:EnsureVillage(villageId)
-		if v == nil then return end
+		if v == nil then return "INVALID" end
 		local t = v.towers[stage]
-		if t == nil or not t.alive or damage <= 0 then return end
+		if t == nil or not t.alive or damage <= 0 then return "INVALID" end
+		-- 🔴 순차 무적 게이트 (WO-016 · 원문 "포탑이 살아있으면 억제기는 무적, 억제기 살아있으면 넥서스 무적").
+		--    판정은 FrontStage 하나로 끝난다 — 살아 있는 최전방이 아닌 시설은 피해를 받지 않는다. 별도 순서 상수를 만들지 않는다.
+		--    피해 출처를 가리지 않는다(플레이어·미니언·dev 치트 전부). 미니언은 앞 시설부터 순서대로 오므로 이 게이트가 no-op 이다.
+		local front = self:FrontStage(v)
+		if front ~= stage then
+			log("[Lane] " .. villageId .. " " .. stage .. " hit REJECTED (front=" .. front .. " alive) by " .. tostring(attackerName) .. " dmg=" .. tostring(damage))
+			return front
+		end
 		t.hp = math.max(0, t.hp - damage)
 		local destroyed = false
 		if t.hp == 0 then
 			t.alive = false
 			destroyed = true
 			log("[Lane] " .. villageId .. " " .. stage .. " DESTROYED by " .. tostring(attackerName))
-			local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
-			if owner ~= "" and stage ~= "CORE" then self:Toast(owner, self.towerDef[stage].name .. " 파괴!") end
+			-- 파괴 알림은 세 단계 전부 (WO-016 — 넥서스도 · 예전엔 stage ~= "CORE" 조건으로 빠져 있었다). 넥서스는 곧이어 Eliminate 의 탈락 토스트가 덮는다.
+			self:FacilityAlert(villageId, self.towerDef[stage].name .. " 파괴!")
+		elseif stage ~= "TOWER" then
+			-- 피격 알림 정책 (WO-016): 포탑 = 파괴만 · 억제기·넥서스 = 공격받기만 해도. 남은 HP 비율 포함 · 도배 방지 간격.
+			self:HitAlert(v, stage, t)
 		end
 		if destroyed and stage == "CORE" then self:Eliminate(villageId) end
 		self:Changed(villageId, stage)
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FacilityAlert(string villageId, string message)
+		-- 시설 알림 대상 (E-2 잠정): 기본 = 마을 주인만. HitAlertToAll 이면 전원에게 마을 이름을 붙여서.
+		if self.HitAlertToAll then
+			if _UIToast ~= nil then _UIToast:ShowMessage(self:VillageName(villageId) .. " " .. message) end
+			return
+		end
+		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
+		if owner ~= "" then self:Toast(owner, message) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void HitAlert(any v, string stage, any t)
+		-- 억제기·넥서스 피격 알림 (WO-016): 남은 HP 비율을 실어서. 마을×단계별로 HitAlertInterval 안에는 한 번만.
+		-- 마지막 알림 시각은 원장 v 안에 두어 ResetMatchAll 로 같이 비워진다.
+		if v.alertAt == nil then v.alertAt = {} end
+		local now = _UtilLogic.ElapsedSeconds
+		local last = v.alertAt[stage]
+		if last ~= nil and now - last < self.HitAlertInterval then return end
+		v.alertAt[stage] = now
+		local pct = math.floor(100 * t.hp / math.max(1, self:MaxHp(stage, t.lv)))
+		log("[Lane] " .. v.id .. " " .. stage .. " hit alert " .. tostring(pct) .. "%")
+		self:FacilityAlert(v.id, self.towerDef[stage].name .. " 피격! (" .. tostring(pct) .. "%)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void NoticeInvader(string userId, string stage, string frontStage)
+		-- 무적 시설을 때린 침범자에게 사유 토스트 (WO-016). 공격자별 InvaderNoticeInterval 안에는 한 번만(근접 연타 도배 방지).
+		-- 최전방 판정은 ApplyDamage 가 돌려준 값(frontStage)을 그대로 쓴다 — 여기서 다시 계산하지 않는다.
+		if userId == nil or userId == "" then return end
+		if self.noticeAt == nil then self.noticeAt = {} end
+		local now = _UtilLogic.ElapsedSeconds
+		local last = self.noticeAt[userId]
+		if last ~= nil and now - last < self.InvaderNoticeInterval then return end
+		self.noticeAt[userId] = now
+		local frontName = (self.towerDef[frontStage] ~= nil) and self.towerDef[frontStage].name or tostring(frontStage)
+		local stageName = (self.towerDef[stage] ~= nil) and self.towerDef[stage].name or tostring(stage)
+		self:Toast(userId, frontName .. "이(가) 살아 있는 동안 " .. stageName .. "은(는) 공격할 수 없다")
 	end
 
 	@ExecSpace("ServerOnly")

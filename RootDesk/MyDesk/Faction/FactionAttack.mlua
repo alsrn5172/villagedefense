@@ -7,17 +7,91 @@ script FactionAttack extends AttackComponent
 
 	property number AttackReach = 0.5
 
+	-- 대플레이어 계수 (WO-016 · 추가기획2 "수비대 몬스터와 포탑은 플레이어 상대로는 (계수-기본10)배").
+	-- 🔴 기본값은 반드시 1.0 — 이 컴포넌트는 포탑·수비대·미니언이 공유한다. 10 을 여기 박으면 미니언까지 10배가 된다.
+	--    10.0 으로 올리는 곳은 DefenderService.SpawnOne(수비대) · LaneFacilityService.ApplyCombat(시설) 두 군데뿐이다.
+	property number PlayerDamageMul = 1.0
+
+	-- 한 번의 공격이 때릴 수 있는 최대 대상 수 (WO-021). 0 = 무제한(현행 · 포탑 광역). 넘치면 **가까운 순**으로 고른다.
+	-- 🔴 기본값 0 을 바꾸지 마라 — 포탑 광역이 조용히 좁아진다. 헤네시스 억제기 = 3 · 커닝 포탑 = 1.
+	property integer MaxTargets = 0
+
+	-- 단일 대상(MaxTargets=1) 모드의 공격 상자 가로. 상자를 표적 위치에 좁게 놓아 "단일 원거리"로 보이게 한다. 세로는 AttackBoxSize.y 그대로(포탑 4.0 유지).
+	property number SingleTargetBoxWidth = 1.2
+
 	@HideFromInspector
 	property any Shape = nil
 
 	@HideFromInspector
 	property any SwingHits = nil
 
+	-- MaxTargets > 0 일 때 이번 스윙에서 허용된 대상 Id 집합 (DoAttack 이 가까운 순으로 고른다).
+	@HideFromInspector
+	property any AllowedHits = nil
+
+	-- 반사 공격(DoReflect) 전용: 이번 반사의 유일한 대상 Id 와 고정 피해량. attackInfo == "reflect" 일 때만 쓴다.
+	@HideFromInspector
+	property string ReflectTargetId = ""
+
+	@HideFromInspector
+	property integer ReflectDamage = 0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 공격 도형과 중복타 방지 테이블을 준비한다.
 		self.Shape = BoxShape(Vector2.zero, self.AttackBoxSize, 0)
 		self.SwingHits = {}
+		self.AllowedHits = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method table CollectNearestEnemies(Vector2 center, Vector2 size, integer limit)
+		-- 공격 상자(center·size) 안의 적을 가까운 순으로 최대 limit 개 고른다 (MaxTargets 용 사전 선별).
+		-- 후보 = 맵의 script.Faction 보유 엔티티 + 이 맵의 플레이어 (TurretAI.FindNearestEnemy 와 같은 집합).
+		-- 상자 판정은 엔티티 Transform 위치 기준이라 엔진의 히트박스 판정과 약간 다를 수 있다 — 고른 대상이 실제로 안 맞으면 그 슬롯은 비는 셈이다.
+		local picked = {}
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then return picked end
+		local halfW = size.x * 0.5
+		local halfH = size.y * 0.5
+		local candidates = {}
+		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
+		if factions ~= nil then
+			for _, comp in ipairs(factions) do
+				if isvalid(comp) and isvalid(comp.Entity) then table.insert(candidates, comp.Entity) end
+			end
+		end
+		local mapComp = map.MapComponent
+		if isvalid(mapComp) then
+			local users = _UserService:GetUsersByMapComponent(mapComp)
+			if users ~= nil then
+				for _, user in ipairs(users) do
+					if isvalid(user) and not (_SpectateService ~= nil and _SpectateService:IsSpectatorEntity(user)) then
+						table.insert(candidates, user)
+					end
+				end
+			end
+		end
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local inBox = {}
+		for _, cand in ipairs(candidates) do
+			if cand ~= self.Entity and isvalid(cand.TransformComponent) and _FactionLogic:IsEnemy(self.Entity, cand) then
+				---@type Monster
+				local monster = cand.Monster
+				local dead = isvalid(monster) and monster.IsDead
+				if not dead then
+					local p = cand.TransformComponent.WorldPosition
+					if math.abs(p.x - center.x) <= halfW and math.abs(p.y - center.y) <= halfH then
+						local dx = p.x - myPos.x
+						local dy = p.y - myPos.y
+						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy })
+					end
+				end
+			end
+		end
+		table.sort(inBox, function(a, b) return a.d < b.d end)
+		for i = 1, math.min(limit, #inBox) do table.insert(picked, inBox[i].ent) end
+		return picked
 	end
 
 	@ExecSpace("ServerOnly")
@@ -27,22 +101,63 @@ script FactionAttack extends AttackComponent
 		if not isvalid(transform) or self.Shape == nil then
 			return
 		end
-		
+
 		-- 몬스터 스프라이트는 기본적으로 왼쪽을 보므로, Scale.x 가 음수일 때 오른쪽을 향한다.
 		local dir = -1
 		if transform.Scale.x < 0 then
 			dir = 1
 		end
-		
+
 		local pos = transform.WorldPosition
-		self.Shape.Position = Vector2(pos.x + self.AttackReach * dir, pos.y + 0.5)
-		self.Shape.Size = self.AttackBoxSize
+		local center = Vector2(pos.x + self.AttackReach * dir, pos.y + 0.5)
+		local size = self.AttackBoxSize
+
+		-- 대상 수 제한 (WO-021): 상자 안 적을 가까운 순으로 MaxTargets 개만 허용. 0 이면 현행 그대로(제한 없음).
+		self.AllowedHits = nil
+		if self.MaxTargets > 0 then
+			local picked = self:CollectNearestEnemies(center, size, self.MaxTargets)
+			if #picked == 0 then return end
+			self.AllowedHits = {}
+			for _, e in ipairs(picked) do self.AllowedHits[e.Id] = true end
+			-- 단일 대상이면 상자를 표적 위치에 좁게 놓는다(커닝 포탑 "원거리 단일"). 세로는 그대로 — 포탑 세로 4.0 을 줄이면 통로 미니언을 놓친다(2026-09-07 실측).
+			if self.MaxTargets == 1 then
+				local tp = picked[1].TransformComponent.WorldPosition
+				center = Vector2(tp.x, tp.y + 0.5)
+				size = Vector2(self.SingleTargetBoxWidth, self.AttackBoxSize.y)
+			end
+			log("[FactionAttack] " .. self.Entity.Name .. " limited targets=" .. tostring(#picked) .. "/" .. tostring(self.MaxTargets))
+		end
+
+		self.Shape.Position = center
+		self.Shape.Size = size
 		self.Shape.Angle = 0
-		
+
 		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다.
 		self.SwingHits = {}
 		self:Attack(self.Shape, "faction", CollisionGroups.Monster)
 		self:Attack(self.Shape, "faction", CollisionGroups.Player)
+		self.AllowedHits = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoReflect(Entity target, integer amount)
+		-- 반사 피해 (WO-021 · 페리온 억제기): target **하나에게만** amount 를 고정 피해로 준다.
+		-- 엔진 Attack 파이프라인을 태워 플레이어 사망·미니언 Dead 처리를 엔진/Monster 에 맡긴다 (HP 직접 대입은 사망 경로를 건너뛴다).
+		-- 🔴 재귀 방지: 대상이 target 하나로 고정되고(IsAttackTarget), 시설끼리는 서로 공격 대상이 아니라 반사가 반사를 부르지 않는다.
+		if not isvalid(target) or amount <= 0 or self.Shape == nil or not isvalid(target.TransformComponent) then return end
+		local tp = target.TransformComponent.WorldPosition
+		self.ReflectTargetId = target.Id
+		self.ReflectDamage = amount
+		-- 대상 몸통을 덮는 상자 (몬스터 발 기준 히트박스 · 플레이어 몸통 둘 다 커버).
+		self.Shape.Position = Vector2(tp.x, tp.y + 0.6)
+		self.Shape.Size = Vector2(1.6, 2.4)
+		self.Shape.Angle = 0
+		self.SwingHits = {}
+		self.AllowedHits = nil
+		self:Attack(self.Shape, "reflect", CollisionGroups.Monster)
+		self:Attack(self.Shape, "reflect", CollisionGroups.Player)
+		self.ReflectTargetId = ""
+		self.ReflectDamage = 0
 	end
 
 	method boolean IsAttackTarget(Entity defender, string attackInfo)
@@ -51,41 +166,59 @@ script FactionAttack extends AttackComponent
 		if not isvalid(defender) then
 			return false
 		end
-		
+
 		if defender == self.Entity then
 			return false
 		end
-		
+
+		-- 반사(DoReflect)는 지정한 대상 하나만. 상자에 같이 걸린 다른 적은 맞지 않는다.
+		if attackInfo == "reflect" and defender.Id ~= self.ReflectTargetId then
+			return false
+		end
+
+		-- 대상 수 제한(MaxTargets): DoAttack 이 가까운 순으로 고른 집합 밖은 거른다.
+		if self.AllowedHits ~= nil and self.AllowedHits[defender.Id] ~= true then
+			return false
+		end
+
 		-- 그룹별 2회 호출로 같은 대상이 중복 판정되는 것을 막는다.
 		local key = defender.Id
 		if self.SwingHits ~= nil and self.SwingHits[key] == true then
 			return false
 		end
-		
+
 		if _FactionLogic:GetRelation(self.Entity, defender) ~= "ENEMY" then
 			return false
 		end
-		
+
 		if self.SwingHits ~= nil then
 			self.SwingHits[key] = true
 		end
-		
-		log("[FactionAttack] " .. self.Entity.Name .. " -> ENEMY " .. defender.Name)
-		
+
+		log("[FactionAttack] " .. self.Entity.Name .. " -> ENEMY " .. defender.Name .. (attackInfo == "reflect" and " (reflect)" or ""))
+
 		return __base:IsAttackTarget(defender, attackInfo)
 	end
 
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
-		-- 최종 데미지 = BaseDamage * 공격력 버프 배율.
+		-- 최종 데미지 = BaseDamage * 공격력 버프 배율 (* 대플레이어 계수). 반사는 고정 피해 그대로.
 		-- ⚠ 반환 타입은 부모와 동일한 integer 여야 한다 (number/int 로 쓰면 시그니처 불일치).
+		if attackInfo == "reflect" then
+			return self.ReflectDamage
+		end
 		local mul = 1.0
-		
+
 		---@type Buff
 		local buff = self.Entity.Buff
 		if isvalid(buff) then
 			mul = buff.AtkMul
 		end
-		
+
+		-- 대플레이어 계수 (WO-016): 맞는 쪽이 플레이어면 PlayerDamageMul 을 곱한다. 기본 1.0 이라 미니언·야생 몹 공격은 그대로다.
+		if isvalid(defender) and isvalid(defender.PlayerComponent) then
+			mul = mul * self.PlayerDamageMul
+		end
+
 		return math.floor(self.BaseDamage * mul)
 	end
 

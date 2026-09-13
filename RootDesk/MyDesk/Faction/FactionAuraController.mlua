@@ -41,6 +41,10 @@ script FactionAuraController extends Component
 
 	property number AuraLogInterval = 2.0
 
+	-- 플레이어별로 StatService 에 마지막으로 보낸 이속 배수 (userId → mul). 값이 바뀔 때만 RPC 를 보내기 위한 기록.
+	@HideFromInspector
+	property any PlayerSpeedApplied = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 인스펙터에서 지정한 플레이어 팀을 FactionLogic 에 반영하고, 오라 타이머를 시작한다.
@@ -64,10 +68,23 @@ script FactionAuraController extends Component
 
 	@ExecSpace("ServerOnly")
 	method void OnEndPlay()
-		-- 타이머를 반드시 정리한다. 남겨두면 맵을 나간 뒤에도 계속 돈다.
+		-- 타이머를 반드시 정리한다. 남겨두면 맵을 나간 뒤에도 계속 돈다. 플레이어에게 준 이속 배수도 되돌린다.
 		if self.TimerId ~= 0 then
 			_TimerService:ClearTimer(self.TimerId)
 			self.TimerId = 0
+		end
+		self:ResetPlayerSpeedExcept(nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetPlayerSpeedExcept(any keep)
+		-- 이번 틱에 안 보인 플레이어(맵을 나감 등)의 이속 배수를 1.0 으로 되돌린다. keep = 이번 틱 대상 userId 집합(nil 이면 전부 되돌림).
+		if self.PlayerSpeedApplied == nil or _StatService == nil then return end
+		for uid, mul in pairs(self.PlayerSpeedApplied) do
+			if (keep == nil or keep[uid] == nil) and mul ~= 1.0 then
+				_StatService:SetAuraSpeedMul(uid, 1.0)
+				self.PlayerSpeedApplied[uid] = nil
+			end
 		end
 	end
 
@@ -232,13 +249,18 @@ script FactionAuraController extends Component
 		end
 		
 		-- 결과 커밋
+		local seenPlayers = {}
 		for i = 1, count do
 			local target = targets[i]
 			if isvalid(target) and not self:IsDeadEntity(target) then
 				self:Commit(target, atk[i], spd[i], dmg[i], regen[i])
+				local pc = target.PlayerComponent
+				if isvalid(pc) then seenPlayers[pc.UserId] = true end
 			end
 		end
-		
+		-- 이 맵을 떠난 플레이어는 대상에서 빠지므로 여기서 배수를 되돌린다 (안 하면 오라 밖에서도 빨라진 채 남는다).
+		self:ResetPlayerSpeedExcept(seenPlayers)
+
 		self:LogAuraState(targets, atk, spd, dmg, regen, count, #sources)
 	end
 
@@ -281,6 +303,18 @@ script FactionAuraController extends Component
 	@ExecSpace("ServerOnly")
 	method void Commit(Entity target, number atkMul, number speedMul, number dmgMul, number regenPerSec)
 		-- 계산된 값을 Buff 에 기록하고, 이동속도와 HP 에 즉시 반영한다.
+		-- 플레이어 이속은 InputSpeed 가 아니라 RigidbodyComponent.WalkSpeed 가 정한다(StatService 실측 2026-09-05) → StatService 의 오라 배수로 넘긴다.
+		-- 값이 바뀔 때만 보낸다(틱이 4Hz 라 매번 보내면 Client RPC 도배). Buff 유무와 무관하게 먼저 처리한다.
+		local pc = target.PlayerComponent
+		if isvalid(pc) and _StatService ~= nil then
+			if self.PlayerSpeedApplied == nil then self.PlayerSpeedApplied = {} end
+			local uid = pc.UserId
+			local mul = math.max(speedMul, self.MinMultiplier)
+			if self.PlayerSpeedApplied[uid] ~= mul then
+				self.PlayerSpeedApplied[uid] = mul
+				_StatService:SetAuraSpeedMul(uid, mul)
+			end
+		end
 		local buff = self:EnsureBuff(target)
 		if not isvalid(buff) then
 			return
