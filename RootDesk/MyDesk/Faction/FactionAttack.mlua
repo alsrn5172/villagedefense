@@ -82,11 +82,19 @@ script FactionAttack extends AttackComponent
 		if not isvalid(map) then return picked end
 		local halfW = size.x * 0.5
 		local halfH = size.y * 0.5
+		-- 🔴 같은 엔티티를 두 번 넣지 않는다(플레이어는 script.Faction 도 갖고 유저 목록에도 있다). 지연 피해(HitTarget)는 표적당 1회라 중복이 곧 2배 피해다.
 		local candidates = {}
+		local seen = {}
+		local function addCand(e)
+			if isvalid(e) and not seen[e.Id] then
+				seen[e.Id] = true
+				table.insert(candidates, e)
+			end
+		end
 		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
 		if factions ~= nil then
 			for _, comp in ipairs(factions) do
-				if isvalid(comp) and isvalid(comp.Entity) then table.insert(candidates, comp.Entity) end
+				if isvalid(comp) then addCand(comp.Entity) end
 			end
 		end
 		local mapComp = map.MapComponent
@@ -95,9 +103,17 @@ script FactionAttack extends AttackComponent
 			if users ~= nil then
 				for _, user in ipairs(users) do
 					if isvalid(user) and not (_SpectateService ~= nil and _SpectateService:IsSpectatorEntity(user)) then
-						table.insert(candidates, user)
+						addCand(user)
 					end
 				end
+			end
+		end
+		-- 야생 몹(script.Monster 만 있고 script.Faction 없음)도 후보 — 옛 DoAttack 상자 판정이 부수적으로 맞히던 것을 유지(리뷰 2026-09-14).
+		-- 단 정렬에서 뒤로 민다: 미니언·플레이어가 먼저, 야생 몹은 남는 자리만.
+		local monsters = map:GetChildComponentsByTypeName("script.Monster", true)
+		if monsters ~= nil then
+			for _, comp in ipairs(monsters) do
+				if isvalid(comp) then addCand(comp.Entity) end
 			end
 		end
 		local myPos = self.Entity.TransformComponent.WorldPosition
@@ -116,12 +132,15 @@ script FactionAttack extends AttackComponent
 					if math.abs(r.cx - center.x) <= halfW + r.hw and math.abs(r.cy - center.y) <= halfH + r.hh then
 						local dx = p.x - myPos.x
 						local dy = p.y - myPos.y
-						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy })
+						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy, wild = not isvalid(cand.Faction) })
 					end
 				end
 			end
 		end
-		table.sort(inBox, function(a, b) return a.d < b.d end)
+		table.sort(inBox, function(a, b)
+			if a.wild ~= b.wild then return not a.wild end
+			return a.d < b.d
+		end)
 		for i = 1, math.min(limit, #inBox) do table.insert(picked, inBox[i].ent) end
 		return picked
 	end
@@ -164,20 +183,22 @@ script FactionAttack extends AttackComponent
 		self.Shape.Size = size
 		self.Shape.Angle = 0
 
-		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다. 맞은 엔티티는 LastHits 에 모아 둔다(연출용).
+		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다. 맞은 엔티티는 LastHits 에 모아 둔다(로그용).
 		self.SwingHits = {}
 		local hits = {}
-		local r1 = self:Attack(self.Shape, "faction", CollisionGroups.Monster)
-		local r2 = self:Attack(self.Shape, "faction", CollisionGroups.Player)
-		for _, res in ipairs({ r1, r2 }) do
-			if res ~= nil then
-				for _, hc in ipairs(res) do
-					if isvalid(hc) and isvalid(hc.Entity) then table.insert(hits, hc.Entity) end
-				end
-			end
-		end
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Monster), hits)
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
 		self.LastHits = hits
 		self.AllowedHits = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AppendHits(any res, any hits)
+		-- 엔진 Attack() 반환(HitComponent 목록 · nil 일 수 있다)을 hits 에 엔티티로 보탠다. 그룹별로 따로 부른다 — {r1, r2} 로 묶으면 r1 이 nil 일 때 r2 가 구멍에 가려진다(리뷰 2026-09-14).
+		if res == nil or hits == nil then return end
+		for _, hc in ipairs(res) do
+			if isvalid(hc) and isvalid(hc.Entity) then table.insert(hits, hc.Entity) end
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -212,15 +233,8 @@ script FactionAttack extends AttackComponent
 		allowed[target.Id] = true
 		self.AllowedHits = allowed
 		local hits = {}
-		local r1 = self:Attack(self.Shape, "faction", CollisionGroups.Monster)
-		local r2 = self:Attack(self.Shape, "faction", CollisionGroups.Player)
-		for _, res in ipairs({ r1, r2 }) do
-			if res ~= nil then
-				for _, hc in ipairs(res) do
-					if isvalid(hc) and isvalid(hc.Entity) then table.insert(hits, hc.Entity) end
-				end
-			end
-		end
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Monster), hits)
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
 		self.LastHits = hits
 		self.AllowedHits = nil
 		return #hits > 0

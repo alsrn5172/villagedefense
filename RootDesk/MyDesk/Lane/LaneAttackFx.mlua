@@ -60,11 +60,17 @@ script LaneAttackFx extends Component
 
 	@ExecSpace("ServerOnly")
 	method void OnEndPlay()
-		-- 대기 중인 지연 발사를 전부 취소한다(시설이 사라진 뒤 발사되지 않게).
+		-- 대기 중인 지연 발사·피해를 전부 취소한다(시설이 사라진 뒤 발사되거나 피해가 들어가지 않게). timers 는 {id=true} 집합 · 콜백이 스스로 지운다.
 		if self.timers ~= nil then
-			for _, id in ipairs(self.timers) do _TimerService:ClearTimer(id) end
+			for id, _ in pairs(self.timers) do _TimerService:ClearTimer(id) end
 		end
 		self.timers = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Forget(integer id)
+		-- 발사된 타이머를 집합에서 지운다(누적 방지 · 리뷰 2026-09-14).
+		if self.timers ~= nil and id ~= 0 then self.timers[id] = nil end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -102,6 +108,8 @@ script LaneAttackFx extends Component
 		if self.Mode == "SHOT" and self.BallRuid ~= "" then
 			n = math.max(1, self.CountMin)
 			if self.CountMax > self.CountMin then n = _UtilLogic:RandomIntegerRange(self.CountMin, self.CountMax) end
+			-- 🔴 표적마다 발사체가 최소 1개 — 맞는 표적에 날아가는 게 없으면 "유도탄은 맞아야 피격" 이 깨진다(리뷰 2026-09-14). 표적이 적으면 CSV 개수 그대로.
+			n = math.max(n, #targets)
 			local launch = Vector3(origin.x, origin.y + self.LaunchOffsetY, 0)
 			for i = 1, n do
 				local target = targets[((i - 1) % #targets) + 1]
@@ -111,26 +119,37 @@ script LaneAttackFx extends Component
 				if delay <= 0 then
 					self:SpawnShot(target, ruid, launch)
 				else
-					local id = _TimerService:SetTimerOnce(function() self:SpawnShot(target, ruid, launch) end, delay)
-					table.insert(self.timers, id)
+					local id = 0
+					id = _TimerService:SetTimerOnce(function()
+						self:Forget(id)
+						self:SpawnShot(target, ruid, launch)
+					end, delay)
+					self.timers[id] = true
 				end
 			end
 		end
 		-- 피해는 첫 발사체가 도착하는 FlightSec 뒤 (CAST_HIT 은 마법진 → 번개 지연). 시설이 먼저 사라지면 OnEndPlay 가 취소한다.
-		local land = _TimerService:SetTimerOnce(function() self:Land(attack, targets) end, math.max(0.05, self.FlightSec))
-		table.insert(self.timers, land)
+		local land = 0
+		land = _TimerService:SetTimerOnce(function()
+			self:Forget(land)
+			self:Land(attack, targets)
+		end, math.max(0.05, self.FlightSec))
+		self.timers[land] = true
 		log("[AttackFx] " .. self.Entity.Name .. " volley n=" .. tostring(n) .. " targets=" .. tostring(#targets) .. " mode=" .. self.Mode)
 	end
 
 	@ExecSpace("ServerOnly")
 	method void Land(any attack, any targets)
-		-- 도착: 표적마다 살아 있으면 피해 1회(FactionAttack.HitTarget · 발사체 수와 무관). CAST_HIT 은 표적 위치에 적중 이펙트도 여기서.
+		-- 도착: 표적마다 살아 있으면 피해 1회(FactionAttack.HitTarget · 발사체 수와 무관). CAST_HIT 은 **실제로 맞았을 때만** 표적 위치에 번개.
 		if not isvalid(self.Entity) or not isvalid(attack) or targets == nil then return end
 		local hitN = 0
 		for _, tgt in ipairs(targets) do
 			if isvalid(tgt) and isvalid(tgt.TransformComponent) then
-				if self.Mode == "CAST_HIT" then self:PlayFx(self.HitRuid, self:AimPoint(tgt), self.HitScale) end
-				if attack:HitTarget(tgt) then hitN = hitN + 1 end
+				local aim = self:AimPoint(tgt)
+				if attack:HitTarget(tgt) then
+					hitN = hitN + 1
+					if self.Mode == "CAST_HIT" then self:PlayFx(self.HitRuid, aim, self.HitScale) end
+				end
 			end
 		end
 		log("[AttackFx] " .. self.Entity.Name .. " land hits=" .. tostring(hitN) .. "/" .. tostring(#targets))

@@ -206,3 +206,13 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 커닝: `volley n=1 targets=1` → `land hits=1/1` 반복 · 12초 샘플링에서 **커닝 발사체 2개 실제 스폰**(HENESYS 30 · NAUTILUS 26 · PERION 9) — 전에는 표적이 발사 순간 죽어 0개
 - 엘리니아: `volley n=0 targets=1 mode=CAST_HIT`(발사체 없음) → 0.6초 뒤 `land hits=1/1`(번개 + 피해)
 - **눈 확인(사용자)**: 마법진 그림·위치(시설 가운데 +0.55)·번개 크기(HitScale 0.5/0.4/0.9) · 노틸러스 포탄 0.9/0.75/0.35 · 도착 순간 피격 플래시가 이펙트와 맞는지. 어긋나면 `FacilityAttackFx.csv` 칸만.
+
+### 리뷰 반영 (2026-09-14 · 사용자 "울트라" 허가로 리뷰 에이전트 1개 · 지적 6건 중 5건 수정)
+1. `CollectNearestEnemies` 후보에 **야생 몹**(`script.Monster` 만 있고 `script.Faction` 없음) 추가 — 옛 `DoAttack` 상자가 부수적으로 맞히던 것을 유지. 정렬은 미니언·플레이어 먼저, 야생 몹은 남는 자리.
+2. 후보 **중복 제거**(플레이어는 `script.Faction` 도 갖고 유저 목록에도 있다) — 지연 피해는 표적당 1회라 중복 = 2배 피해였다.
+3. SHOT 발사체 수 `n = max(CSV 개수, 표적 수)` — 발사체가 안 날아간 표적이 피해를 받는 일 없음.
+4. `LaneAttackFx.timers` 를 {id=true} 집합으로 · 콜백이 스스로 지움(매치 내내 누적되던 것).
+5. CAST_HIT 번개는 `HitTarget` 이 실제로 맞았을 때만(죽은 표적·중립 시설엔 안 뜸).
+6. `Attack()` 반환을 그룹별로 따로 모음(`AppendHits` · `{r1, r2}` 의 nil 구멍).
+- 지적 6(관전 진입 시 `Faction.Team="Neutral"` 을 복귀 때 되돌리지 않음 · `SpectateService`)은 이 PR 밖 → 별도 작업 칩으로 남김.
+- 재검증(Play 30초): `volley` 72 · `land` 69 · `land hits=0` 0건 · 순서 volley → ENEMY/land 유지 · Error 0. (한 줄에 미니언이 1마리씩만 들어와 다중 표적 경로는 로그로 못 봤다.)
