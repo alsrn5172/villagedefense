@@ -56,3 +56,9 @@
   - R 대마법: `motion sequence SK_M31 weapon=WAND steps=2/2` · `BLAST … r=3`. 프레임 +0.6/+2.3/+4.7 = 프로즌 라이트닝 컷신이 화면 전체(캐릭터 안 보임) → +6.3 서 있기(`_END`). 예상대로 컷신 아래 동작은 안 보인다.
   - 맨손(`UNEQUIP type=[]`) 텔레포트: `weapon=WAND steps=2/2` · +0.9 팔 든 자세.
 - 남는 것: 텔레포트 첫 0.5s 는 도착 이펙트가 캐릭터를 가린다(원작 이펙트 그대로) · 대마법은 컷신 구조상 서 있기 복귀만 보인다.
+
+### 2026-09-13 — 텔레포트만 캐릭터 애니메이션 제거 (사용자 요청)
+
+- 사용자 요청 "마법사 텔레포트의 캐릭터 애니메이션만 제거". 텔레포트(SK_M13)·텔레포트 강화(SK_M21 · 배우면 같은 Shift 로 대신 나가는 행)의 WeaponMotion WAND 행 **6개 삭제**(`SK_M13`/`_2`/`_END` · `SK_M21`/`_2`/`_END` · 표 54 → **48행** · B 행 41) + `SkillExecutors.GetMotionSequence` 의 두 항목 삭제. 행이 없으니 `SkillCaster.RequestCast` 의 BLINK ownRowOnly 규칙으로 시전 행도 재생되지 않는다(경고 로그 없음 · 원작 텔레포트도 몸 동작 없음). 매직 가드·대마법·에너지볼트는 그대로.
+- 되돌리려면 행 6개(2026-09-13 `cb60c21` 시점 값) + `GetMotionSequence` 두 줄.
+- 🟡 Play 미검증(사용자 확인): 입장 `[Motion] weapon motion table loaded: 48 rows` · Shift 뒤 `motion sequence` 로그 없음 · 도착 이펙트만.
