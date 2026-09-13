@@ -201,6 +201,12 @@ script SkillExecutors extends Logic
 
     property table shadowFacingTimers = {}
 
+    -- 서버: userId → 루프 자세 덮어쓰기(슈퍼 트랜스폼 달리기 · runPose): { startFrame, endFrame, offsetY, zRot } — 살피기 타이머가 넣고 PlayBuffLoop 가 읽는다. nil = 기본 자세.
+    property table loopPose = {}
+
+    -- 서버: userId → 달리기 감지 상태 { lastX, moving, phase }.
+    property table runPoseState = {}
+
     -- 섬머솔트 킥 백덤블링(b/skill-pirate-motion · 2026-09-13 사용자 요청 "원작처럼 백덤블링"): 아바타에 회전 액션이 없어 아바타 루트 엔티티(몸·머리·파츠 전부)의 Transform 을
     -- 클라마다 직접 돌린다(BackflipClient). 기본값 — effectOverrides[skill].backflip 의 delay/seconds/height/centerY 가 있으면 그것.
     --   BackflipSeconds  한 바퀴 도는 시간(초) · BackflipHeight 포물선 정점 높이(월드 단위 · 1 = 100px) · BackflipCenterY 회전 중심 = 발 위 이만큼(아바타 키 ≈ 0.7 → 가운데 0.35 ·
@@ -514,7 +520,10 @@ script SkillExecutors extends Logic
                 --   원작 슈퍼 트랜스포메이션 대조(2026-09-13 "원작을 참고해 부자연스러운 부분 고쳐라"): ① 0프레임은 페이드인(희미)이라 0~2 반복이면 매 주기 어두워졌다 → **1~2 프레임만** 반복(원작 형태는 꺼지지 않는 불꽃) ·
                 --   ② 1~2프레임 pivot (25,10)/(13,11) 이 그림 왼쪽에 있어 불꽃 캐릭터의 가운데가 anchor 보다 21~29px **뒤**, 발이 10px **아래** 였다 → offsetX 0.25(바라보는 쪽 앞) · offsetY 0.1 로 아바타 위에 겹친다 ·
                 --   ③ 크기(≈1.15 유닛 · 아바타 0.7)는 원작처럼 커진 형태 그대로 · 방향은 followFacing · 속도/점프 +30% · 30초/쿨 60 은 표 그대로. 팩에 걷기/공격 프레임이 없어 이동 중엔 미끄러진다(한계).
-                loop = { ruid = "4f97bf6aecbc4687aa83e60e763aaf89", startFrame = 1, endFrame = 2, offsetX = 0.25, offsetY = 0.1, followFacing = true, avatarAlpha = 0.35 },
+                --   2026-09-14 제보 "깜빡이면 안 된다 · 달릴 땐 불꽃 캐릭터도 달리는 것처럼": 1↔2프레임은 pivot 이 (25,10)/(13,11) 로 달라 12px 씩 튀어 깜빡여 보였다 → 서 있을 땐 **1프레임 한 장**(startFrame = endFrame = 1 · 92×112 · 가운데 = anchor 뒤 21px → offsetX 0.21).
+                --   runPose: 살피기 타이머(EnsureShadowFacingPoll · 0.1s)가 x 이동을 감지하면 1~2프레임 교대 + 위아래 bobY + 앞으로 leanDeg 기울여 다시 걸어 달리는 느낌(팩에 달리기 프레임이 없어 만든 주기) · 멈추면 서 있기 한 장으로.
+                loop = { ruid = "4f97bf6aecbc4687aa83e60e763aaf89", startFrame = 1, endFrame = 1, offsetX = 0.21, offsetY = 0.1, followFacing = true, avatarAlpha = 0.35,
+                    runPose = { startFrame = 1, endFrame = 2, bobY = 0.06, leanDeg = 8, minStep = 0.02 } },
                 --   punchCast = 3~6프레임(궤적만)을 앞으로 2.5 유닛 옮겨 재생 → 캐릭터 그림 부분이 시전자 위에 오고 궤적이 앞쪽 0~3.1 유닛(Range 3)으로 뻗는다(scale 0.8 · 306~329px × 0.8 ≈ 2.45~2.63). 예전엔 offset 0 이라
                 --   궤적이 캐릭터 뒤로 뻗고 불꽃 캐릭터가 3 유닛 뒤에 떴다.
                 punchCast = { ruid = "4f97bf6aecbc4687aa83e60e763aaf89", startFrame = 3, endFrame = 6, offsetX = 2.5, scale = 0.8 },
@@ -931,10 +940,21 @@ script SkillExecutors extends Logic
         opt["FlipX"] = (facing > 0) and not spec.noFlip
         -- behindPlayer(분신 · facing 살피기까지) / sortBehind(슈퍼 트랜스폼 불꽃 · 층만 뒤로 · 좌우 대칭이라 살피기 없음): 플레이어 렌더 층 뒤에 그린다.
         if spec.behindPlayer or spec.sortBehind then self:ApplyShadowSorting(opt, casterEntity) end
-        -- startFrame/endFrame: 클립의 일부 프레임만 반복(슈퍼 트랜스폼 = 스크류 펀치 effect 0~2프레임의 불꽃 캐릭터).
-        if spec.startFrame ~= nil then opt["StartFrameIndex"] = spec.startFrame end
-        if spec.endFrame ~= nil then opt["EndFrameIndex"] = spec.endFrame end
-        local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
+        -- startFrame/endFrame: 클립의 일부 프레임만 반복(슈퍼 트랜스폼 = 스크류 펀치 effect 의 불꽃 캐릭터). loopPose[userId](달리기 자세 · runPose)가 있으면 프레임·높이·기울기를 그것으로.
+        local pose = self.loopPose[userId]
+        local startFrame = spec.startFrame
+        local endFrame = spec.endFrame
+        local offY = spec.offsetY or 0
+        local zRot = 0
+        if pose ~= nil then
+            if pose.startFrame ~= nil then startFrame = pose.startFrame end
+            if pose.endFrame ~= nil then endFrame = pose.endFrame end
+            if pose.offsetY ~= nil then offY = pose.offsetY end
+            if pose.zRot ~= nil then zRot = pose.zRot * (facing > 0 and -1 or 1) end   -- 앞으로 기울기: 오른쪽을 볼 땐 시계(−) · 왼쪽은 반시계(+)
+        end
+        if startFrame ~= nil then opt["StartFrameIndex"] = startFrame end
+        if endFrame ~= nil then opt["EndFrameIndex"] = endFrame end
+        local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, offY, 0), zRot, Vector3(s, s, 1), true, opt)
         perUser[buffTag] = serial
         -- avatarAlpha / hideAvatar(슈퍼 트랜스폼 · 불꽃 캐릭터로 교체): 루프가 떠 있는 동안 아바타를 avatarAlpha(hideAvatar = 0)로 투명하게(전 클라 · SkillBuffs.SetAvatarAlpha 와 같은 호출).
         -- 이미 적용돼 있으면(재시전·돌아섬 · keepAvatarHidden) 다시 부르지 않는다. RemoveBuffLoop 가 1 로 되돌린다.
@@ -974,7 +994,10 @@ script SkillExecutors extends Logic
                 perUser[buffTag] = nil
             end
         end, duration)
-        log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " serial=" .. tostring(serial) .. " for " .. tostring(duration) .. "s")
+        -- 달리기 자세로 되거는 동안(0.1s 마다)은 로그를 생략한다.
+        if pose == nil then
+            log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " serial=" .. tostring(serial) .. " for " .. tostring(duration) .. "s")
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -1005,6 +1028,11 @@ script SkillExecutors extends Logic
         local perUser = self.buffLoopEffects[userId]
         if perUser == nil then return false end
         local had = false
+        -- 버프 종료·컷신 숨김(keepAvatarHidden 아님)이면 달리기 자세 상태도 지운다(되걸 때 기본 자세부터).
+        if not keepAvatarHidden then
+            self.loopPose[userId] = nil
+            self.runPoseState[userId] = nil
+        end
         if perUser[buffTag .. "#hidden"] then
             had = true
             if not keepAvatarHidden then
@@ -1110,18 +1138,51 @@ script SkillExecutors extends Logic
                 if id ~= nil then _TimerService:ClearTimer(id) end
                 self.shadowFacingTimers[uid] = nil
                 self.shadowFacing[uid] = nil
+                self.loopPose[uid] = nil
+                self.runPoseState[uid] = nil
                 return
             end
             if self:IsShadowHidden(uid) then return end
             local perUser = self.buffLoopEffects[uid]
             if perUser == nil or perUser[buffTag] == nil then return end
             local player = _UserService:GetUserEntityByUserId(uid)
-            if not isvalid(player) then return end
+            if not isvalid(player) or not isvalid(player.TransformComponent) then return end
             local facing = self:GetFacingX(player)
-            if facing == self.shadowFacing[uid] then return end
+            local turned = (facing ~= self.shadowFacing[uid])
+            -- 달리기 자세(runPose · 슈퍼 트랜스폼 · 2026-09-14 "달릴 땐 불꽃 캐릭터도 달리는 것처럼"): 살피기 간격 동안 x 가 minStep 이상 움직였으면 달리는 중 → 틱마다 phase 를 바꿔
+            -- 1~2프레임 교대 + bobY 위아래 + leanDeg 앞 기울기로 되건다(PlayBuffLoop 가 loopPose 를 읽는다). 멈추면 기본 자세(한 장)로 한 번 되건다. 컷신 숨김 중(루프 없음)은 위에서 이미 나갔다.
+            local poseChanged = false
+            local entry = self.effectOverrides[skillId]
+            local runSpec = nil
+            if entry ~= nil and entry.loop ~= nil then runSpec = entry.loop.runPose end
+            if runSpec ~= nil then
+                local x = player.TransformComponent.WorldPosition.x
+                local st = self.runPoseState[uid]
+                if st == nil then
+                    st = { lastX = x, moving = false, phase = false }
+                    self.runPoseState[uid] = st
+                end
+                local moving = math.abs(x - st.lastX) > (runSpec.minStep or 0.02)
+                st.lastX = x
+                if moving then
+                    st.phase = not st.phase
+                    st.moving = true
+                    local bob = 0
+                    if st.phase then bob = runSpec.bobY or 0 end
+                    self.loopPose[uid] = { startFrame = runSpec.startFrame, endFrame = runSpec.endFrame, offsetY = (entry.loop.offsetY or 0) + bob, zRot = runSpec.leanDeg or 0 }
+                    poseChanged = true
+                elseif st.moving then
+                    st.moving = false
+                    self.loopPose[uid] = nil
+                    poseChanged = true
+                end
+            end
+            if not turned and not poseChanged then return end
             local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
             if remain <= 0 then return end
-            log("SkillExecutors: shadow re-anchored behind (facing " .. tostring(self.shadowFacing[uid]) .. " -> " .. tostring(facing) .. ") (" .. uid .. ")")
+            if turned then
+                log("SkillExecutors: shadow re-anchored behind (facing " .. tostring(self.shadowFacing[uid]) .. " -> " .. tostring(facing) .. ") (" .. uid .. ")")
+            end
             self:PlayBuffLoop(skillId, buffTag, player, remain)
         end, self.ShadowFacingPollSeconds)
     end
