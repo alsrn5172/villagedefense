@@ -478,25 +478,52 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method table ResolveMotionRow(string uid, string motionId, boolean ownRowOnly)
+        -- WeaponMotion 행 해석. 반환 { row, weaponType } (row nil = 재생할 것 없음). 순서:
+        --   ① 장착 무기의 스킬 전용 행 → ② 직업 기본 무기(JobDefaultWeaponType)의 스킬 전용 행 → ③ (ownRowOnly 가 아니면) 장착 무기의 기본 공격 행 → ④ 맨손이면 직업 기본 무기의 기본 공격 행.
+        -- ② 가 핵심(2026-09-13 Play 로그): 마법사가 **나무 검(SWORD_1H)** 을 든 채 시전하니 WAND 행이 하나도 안 맞아 `no WeaponMotion row for SWORD_1H — skipped`
+        -- 이 찍히고, 매직 가드 시전 행은 검 기본 스윙(swingO1)으로 폴백했다. heal·alert·stand1 같은 몸 동작은 무기와 무관하므로 직업 무기의 행을 그대로 쓴다.
+        local out = { row = nil, weaponType = "" }
+        if _PlayerMotion == nil or uid == nil or uid == "" then return out end
+        local equipped = _PlayerMotion:WeaponTypeOf(uid) or ""
+        local job = ""
+        if _PlayerSkillState ~= nil then job = _PlayerSkillState:GetJobId(uid) or "" end
+        local jobWt = self:JobDefaultWeaponType(job)
+        local function ownRow(wt)
+            if wt == nil or wt == "" then return nil end
+            local r = _PlayerMotion:Find(wt, motionId)
+            if r ~= nil and r ~= _PlayerMotion:Find(wt, "") then return r end
+            return nil
+        end
+        local r = ownRow(equipped)
+        if r ~= nil then out.row = r out.weaponType = equipped return out end
+        if jobWt ~= equipped then
+            r = ownRow(jobWt)
+            if r ~= nil then out.row = r out.weaponType = jobWt return out end
+        end
+        if ownRowOnly then return out end
+        local wt = equipped
+        if wt == "" then wt = jobWt end
+        if wt ~= "" then
+            out.row = _PlayerMotion:Find(wt, "")
+            out.weaponType = wt
+        end
+        return out
+    end
+
+    @ExecSpace("ServerOnly")
     method boolean PlayMotion(string uid, string motionId, boolean ownRowOnly)
-        -- WeaponMotion 행을 찾아 그 유저의 클라에서 재생한다(A 의 PlayerMotion.PlayAction 을 그대로 부른다 · A 파일 편집 없음).
-        -- 장착 무기 → 맨손이면 직업 기본 무기 순으로 조회. ownRowOnly = 스킬 전용 행만 재생(무기 기본 공격 행으로의 폴백 금지 · 이동 스킬 / 순서 단계).
+        -- WeaponMotion 행을 찾아(ResolveMotionRow) 그 유저의 클라에서 재생한다(A 의 PlayerMotion.PlayAction 을 그대로 부른다 · A 파일 편집 없음).
+        -- ownRowOnly = 스킬 전용 행만 재생(무기 기본 공격 행으로의 폴백 금지 · 이동 스킬 / 순서 단계).
         -- SkillCaster.RequestCast(시전 행) · PlayMotionSequence(_2/_END) · ExecutePowerStrikeCombo(_1/_2) 가 전부 이 한 곳을 쓴다.
-        if _PlayerMotion == nil or uid == nil or uid == "" then return false end
-        local wt = self:MotionWeaponTypeOf(uid)
-        if wt == "" then
-            log("SkillExecutors: motion " .. tostring(motionId) .. " skipped — no weapon and no job default weapon type")
+        local res = self:ResolveMotionRow(uid, motionId, ownRowOnly)
+        if res.row == nil then
+            if not ownRowOnly then
+                log_warning("SkillExecutors: motion " .. tostring(motionId) .. " has no WeaponMotion row (equipped/job/default) — skipped")
+            end
             return false
         end
-        local row = _PlayerMotion:Find(wt, motionId)
-        if row == nil then
-            log_warning("SkillExecutors: motion " .. tostring(motionId) .. " has no WeaponMotion row for " .. wt .. " (and no weapon default) — skipped")
-            return false
-        end
-        if ownRowOnly and row == _PlayerMotion:Find(wt, "") then
-            return false
-        end
-        _PlayerMotion:PlayAction(row.core, row.parts, row.rate, row.playType, uid)
+        _PlayerMotion:PlayAction(res.row.core, res.row.parts, res.row.rate, res.row.playType, uid)
         return true
     end
 
@@ -532,35 +559,31 @@ script SkillExecutors extends Logic
         local seq = self:GetMotionSequence(skillId)
         if seq == nil or _PlayerMotion == nil or not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
         local uid = casterEntity.PlayerComponent.UserId
-        -- 장착 무기, 맨손이면 직업 기본 무기(MotionWeaponTypeOf · 2026-09-13 "맨손이면 아무것도 안 나온다" 대책).
-        local wt = self:MotionWeaponTypeOf(uid)
-        if wt == "" then
-            log("SkillExecutors: motion sequence " .. skillId .. " skipped — no weapon and no job default weapon type")
-            return
-        end
         -- 이 유저의 이전 순서가 아직 진행 중이면 취소(텔레포트 연타 · 버프 직후 텔레포트): 새 시전의 시전 행(SkillCaster 가 방금 재생)이 이전 _END 에 끊기지 않게.
         local pending = self.motionSeqTimers[uid]
         if pending ~= nil then
             for _, id in ipairs(pending) do _TimerService:ClearTimer(id) end
         end
         local ids = {}
-        local fallback = _PlayerMotion:Find(wt, "")
         local scheduled = 0
+        local usedWt = ""
         for _, step in ipairs(seq) do
             local motionId = skillId .. step.suffix
-            local row = _PlayerMotion:Find(wt, motionId)
-            if row ~= nil and row ~= fallback then
+            -- 행 해석은 ResolveMotionRow(장착 무기 전용 행 → 직업 기본 무기 전용 행 · 기본 공격 행 폴백 없음). 지금 없는 행은 예약하지 않는다(재생 시점에도 같은 규칙으로 다시 해석).
+            local res = self:ResolveMotionRow(uid, motionId, true)
+            if res.row ~= nil then
+                usedWt = res.weaponType
                 local id = _TimerService:SetTimerOnce(function()
                     if isvalid(casterEntity) then self:PlayMotion(uid, motionId, true) end
                 end, step.at)
                 table.insert(ids, id)
                 scheduled = scheduled + 1
             else
-                log_warning("SkillExecutors: motion sequence " .. motionId .. " has no WeaponMotion row for " .. wt .. " — skipped")
+                log_warning("SkillExecutors: motion sequence " .. motionId .. " has no WeaponMotion row (equipped or job weapon) — skipped")
             end
         end
         self.motionSeqTimers[uid] = ids
-        log("SkillExecutors: motion sequence " .. skillId .. " weapon=" .. wt .. " steps=" .. tostring(scheduled) .. "/" .. tostring(#seq)
+        log("SkillExecutors: motion sequence " .. skillId .. " weapon=" .. usedWt .. " steps=" .. tostring(scheduled) .. "/" .. tostring(#seq)
             .. " cancelledPrev=" .. tostring(pending ~= nil and #pending or 0))
     end
 

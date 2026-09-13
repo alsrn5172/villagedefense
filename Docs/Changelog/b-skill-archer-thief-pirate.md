@@ -268,3 +268,14 @@
 - 호출처 교체: `SkillCaster.RequestCast`(시전 행 · `ownRowOnly = isMove` → `HasOwnMotionRow` 삭제) · `PlayMotionSequence`(`_2`/`_END`) · `ExecutePowerStrikeCombo`(`_1`/`_2`). 잔상(`PickWeaponSpec`)은 실제 장착 무기 기준 그대로(맨손 전사는 잔상 없음).
 - 그래도 안 보이는 경우(설계상): ① **달리면서 텔레포트** — 상태기 MOVE 가 걷기 애니메이션을 계속 밀어넣어 시전 동작을 덮는다(시전 락이 없어 SkillCaster 처럼 StateComponent 를 끄지 않음) → 서서 Shift. ② **대마법** — 프로즌 라이트닌 screen 컷신(1445×859 · 1.4배)이 시전 순간부터 아바타를 덮는다 → 충전 동작은 컷신 아래에 있고, 컷신이 걷힌 뒤 `_END`(5.5s) 서 있기만 보일 수 있다(불굴의 진과 같은 구조 · 클립 길이 미실측).
 - 🟡 **Play 미검증**(사용자 확인): 맨손 마법사로 E → `motion sequence SK_M22 weapon=WAND steps=2/2` (weapon=WAND 가 맨손에서도 찍혀야 한다) · 팔 흔들기 → 빠른 전투 자세 → 서 있기. 표 로드 `[Motion] weapon motion table loaded: 54 rows`.
+
+### 2026-09-13 — 원인 확정(Maker MCP 로그) · 장착 무기와 직업 무기가 다를 때의 행 해석 · Play 검증 ✅
+
+- **원인**: 사용자 캐릭터가 마법사인데 **나무 검(`WEAPON_WOODEN_SWORD` · SWORD_1H)** 을 든 채 시전 → `PlayerMotion.WeaponTypeOf` = SWORD_1H → 마법사 행(WAND)이 하나도 안 맞아 `motion sequence SK_M22_2 has no WeaponMotion row for SWORD_1H — skipped` · `steps=0/2`(16:12~16:14 사용자 Play 로그 · 표는 54행 로드됨). 매직 가드 시전 행은 검 기본 스윙(swingO1)으로 폴백. 맨손 가설(앞 절)은 틀렸고, 앞 절의 맨손 폴백은 그대로 유효.
+- **`SkillExecutors.ResolveMotionRow(uid, motionId, ownRowOnly)`** → `{ row, weaponType }`: ① 장착 무기의 스킬 전용 행 → ② **직업 기본 무기의 스킬 전용 행** → ③ (ownRowOnly 아니면) 장착 무기 기본 공격 행 → ④ 맨손이면 직업 기본 무기 기본 공격 행. `PlayMotion` · `PlayMotionSequence` 가 이것을 쓴다(순서 로그의 `weapon=` 은 실제로 쓴 행의 무기).
+- **Play 검증(Maker MCP · 여섯갈래길 · 마법사 Lv30 · DEV 세팅 · 나무 검 장착 `EQUIP … type=[SWORD_1H] job=MAGICIAN`)** — 빌드 오류 0:
+  - E 매직 가드: `[Motion] weapon motion table loaded: 54 rows` · `motion sequence SK_M22 weapon=WAND steps=2/2 cancelledPrev=0`. 확대 프레임: +0.35 팔 들어 올림(heal) → +0.7 팔 든 채(시전 이펙트 아래) → +1.1 빠른 전투 자세(검 앞으로) → +1.8 서 있기.
+  - 텔레포트(`_SkillCaster:Cast('SK_M21')` · 핫바와 같은 입구): `motion sequence SK_M21 weapon=WAND steps=2/2 cancelledPrev=2`(직전 매직 가드 순서 취소). 프레임: +0.3 도착 이펙트(텔레포트 마스터리 불꽃)가 캐릭터를 덮음 → +0.6 팔 들어 올림 → +0.95 빠른 전투 자세 → +1.4 서 있기.
+  - R 대마법: `motion sequence SK_M31 weapon=WAND steps=2/2` · `BLAST … r=3`. 프레임 +0.6/+2.3/+4.7 = 프로즌 라이트닝 컷신이 화면 전체(캐릭터 안 보임) → +6.3 서 있기(`_END`). 예상대로 컷신 아래 동작은 안 보인다.
+  - 맨손(`UNEQUIP type=[]`) 텔레포트: `weapon=WAND steps=2/2` · +0.9 팔 든 자세.
+- 남는 것: 텔레포트 첫 0.5s 는 도착 이펙트가 캐릭터를 가린다(원작 이펙트 그대로) · 대마법은 컷신 구조상 서 있기 복귀만 보인다.
