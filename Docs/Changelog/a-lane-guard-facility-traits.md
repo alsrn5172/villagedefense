@@ -83,4 +83,41 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - **F-1** 억제기 사거리 = 포탑과 동일 → `TowerConfig.csv` SUPPRESSOR 3행에 `Range 3.0/3.5/4.0` 기입. 쿨타임(`AttackSpeed` = 한 발 뒤 다음 발까지 초)은 사용자 질문 상태라 **포탑과 동일 1.5/1.3/1.1 로 잠정** 기입 — 다르면 CSV 칸만. 코드의 "0 이면 포탑 값 차용" 은 안전망으로 유지.
 - **F-2** 오라 범위 = 포탑 가로너비의 3배 · 중앙 유지 → `LaneFacilityService.AuraWidthMul = 3.0` × `HitWidth 2.0` = 가로 **6.0**(기존 기본 8.0) · 세로 3.0 · 시설 중심 대칭.
 - **F-6** 반사 상한 없음 → `ReflectCap = 0` 그대로(안전망).
-- 검증: refresh → Play → `towerDef.SUPPRESSOR range/attackSpeed` 가 CSV 값으로 읽히는지 · `[AuraEmitter] … rect=6.0 x 3.0` · 커닝 수비대 `affected=2` 유지.
+- 검증: refresh → Play → `towerDef.SUPPRESSOR range/attackSpeed` 가 CSV 값으로 읽히는지 · `[AuraEmitter] … rect=6.0 x 3.0` · 커닝 수비대 `affected=2` 유지. ✅ 로그 확인(3.0/3.5/4.0 · 1.5/1.3/1.1 · rect=6.0 x 3.0 · affected=2).
+
+## 2026-09-14 — WO-025 포탑 공격 이펙트 (발사체 · 적중 · 시전 · 마을별 Lv1~3)
+
+### 배경
+포탑 공격에 연출이 없었다(상자 판정만). 사용자가 팩(스킬 리소스)에서 **ball(날아가는 것) + hit(도착 폭발)** 짝을 골라 다섯 마을 × Lv3 을 배정(2026-09-14 · `WorkOrders/WO-025`).
+규칙: 모든 발사체는 **포물선** · 시설 **머리 위에서 출발** · **유도탄** · 커닝은 빗나가 땅에 박히면 0.35초 뒤 소멸 · 엘리니아는 발사체 없이 시전 마법진(시설) + 적중(표적) 분리.
+
+### 결정
+- **연출 전용.** 데미지는 지금처럼 발사 순간 `FactionAttack.DoAttack` 상자 판정. `DoAttack` 이 엔진 `Attack()` 반환값(맞은 HitComponent)을 `LastHits` 로 남기고, `TurretAI` 가 그 직후 `LaneAttackFx:OnVolley(LastHits)` 를 부른다 → 발사체는 **실제로 맞은 표적**으로만 간다. 표적이 먼저 죽으면 마지막 조준점까지 간 뒤 박히거나(StickSec) 그 자리에서 터진다.
+- **표 하나(`FacilityAttackFx` · A-2-18)** 에 마을×시설×Lv 행. `ApplyCombat` 이 레벨에 맞는 행을 넣으므로 강화하면 연출이 진화한다. 행이 없으면 아무 연출도 없다(억제기 등 현행).
+- 발사체 = `Models/Effects/LaneShot.model`(TransformOnly + SpriteRenderer · `model://laneshot`) + `Lane/LaneShot.mlua`. 서버가 매 프레임 `WorldPosition` 을 쓴다(Body 없음). 비행 시간 고정(`FlightSec`) · 포물선 `ArcHeight·sin(πu)` · 진행 방향으로 `ZRotation`(그림 원래 방향 `FaceDeg` 기준 · 좌우 그림은 FlipX 로 위아래 뒤집힘 방지).
+- 적중·시전은 `_EffectService:PlayEffect`(엔티티 없이 한 장). 출발점 = 시설 위치 + `GroundOffset`(그림 절반 높이 = 머리 위) · CSV `LaunchOffsetY` 로 덮을 수 있다.
+- 크기(`Scale`/`HitScale`)는 1유닛=100px 기준 어림값 — **실물 보고 CSV 칸만 조정.**
+
+### 사용자 배정 (CSV 15행)
+헤네시스 H-2 3~4개 → H-3 6~8개 → H-9 6~8개 · 커닝 K-6 표창(1.2배) → K-9 단품 → K-1 대형 수리검(0.35배 · 땅 0.35초) · 엘리니아 E-1 → E-2(VI) → E-3(엘리멘탈 블래스트 · CAST_HIT) · 노틸러스 N-1 → N-2 → N-6(0.25배) 각 3발 0.1초 간격 · 페리온 P-3 일반 → special/0 → 둘 다 2발.
+
+### 변경 파일
+| 파일 | 무엇 |
+|---|---|
+| `RootDesk/MyDesk/FacilityAttackFx.csv` + `.userdataset` | **신규** 15행 |
+| `RootDesk/MyDesk/Lane/LaneAttackFx.mlua` (+`.codeblock`) | **신규** 시설 컴포넌트 — 발사 규칙(개수·간격·Ball/Ball2 교대·CAST_HIT) |
+| `RootDesk/MyDesk/Lane/LaneShot.mlua` (+`.codeblock`) | **신규** 발사체 — 포물선 유도 · 도착 hit · 땅 박힘 · 회전 |
+| `RootDesk/MyDesk/Models/Effects/LaneShot.model` (+`Effects.directory`) | **신규** 순수 스프라이트 엔티티(ModelBuilder · TransformOnly 템플릿) |
+| `Faction/FactionAttack.mlua` | `LastHits`(맞은 엔티티 목록) |
+| `Faction/TurretAI.mlua` | `DoAttack` 직후 `LaneAttackFx:OnVolley` 훅 3줄(조준 로직 무수정) |
+| `Lane/LaneStateService.mlua` | `LoadFxDef` · `AttackFx(villageId, stage, lv)` |
+| `Lane/LaneFacilityService.mlua` | 시설 스폰 시 `LaneAttackFx` 부착 · `ApplyCombat` → `ApplyAttackFx`(레벨별 행 주입) |
+| `Docs/스키마-계약.md` · `Docs/tools/check-integrity.cjs` | A-2-18 · 등록서 갱신 · CANONICAL/PK |
+
+### 검증 (2026-09-14 · 개인 월드 Play · 서버 스크립트)
+- `[Lane] FacilityAttackFx loaded: 15/15 rows` · `check-integrity` C1/C3/C4 통과 · 진단 errors 0 · 런타임 Error 0 · 신규 Warning 0
+- `combat HENESYS:TOWER … fx=SHOT` · KERNING/PERION `fx=SHOT` · 억제기 `fx=`(행 없음 → 연출 없음)
+- 매 스윙 `[AttackFx] Facility_HENESYS_TOWER volley n=3~4 targets=6~7` · KERNING `n=1` · PERION `n=1`
+- Lv 진화: HENESYS lv2 → `ball=ca66b992… count=6~8`, volley `n=7/6` · KERNING lv3 → K-1 `564d5045… scale=0.35 stick=0.35` · PERION lv3 → `ball2=9b8899ca… count=2`, volley `n=2`
+- 발사체 실물: 수동 발사 후 표적 파괴 → +0.25s `Shot_…@(12.30,-1.18)`(공중 · 포물선) → +0.6s `@(11.10,-3.20)`(발 높이에 박힘) → +1.3s 0개(0.35초 뒤 소멸) · 누적 스폰 22개 전부 소멸(누수 없음)
+- **눈 확인(사용자)**: 크기·그림 방향(특히 페리온 창 `FaceDeg 270` 가정)·출발점 높이·hit 위치·서버 이동의 끊김. 엘리니아·노틸러스는 지형(S2) 뒤.

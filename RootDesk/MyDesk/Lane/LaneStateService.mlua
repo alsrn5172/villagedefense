@@ -48,6 +48,10 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property any noticeAt = nil
 
+	-- 시설 공격 연출 (FacilityAttackFx.csv · 계약서 A-2-18 · WO-025). fxDef[villageId][stage][lv] = 행 테이블
+	@HideFromInspector
+	property any fxDef = nil
+
 	method void OnBeginPlay()
 		-- 서버만 원장. 표를 읽는다.
 		if not self:IsServer() then return end
@@ -64,7 +68,55 @@ script LaneStateService extends Logic
 		self:LoadTrainDef()
 		self:LoadSpriteDef()
 		self:LoadTraitDef()
+		self:LoadFxDef()
 		log("[Lane] LaneStateService ready (server · village ledger)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadFxDef()
+		-- FacilityAttackFx.csv(계약서 A-2-18 · WO-025 · 사용자 배정 2026-09-14). 마을 × 시설 × Lv 의 발사체/적중/시전 RUID 와 발사 규칙. 표가 없거나 비면 연출 없음(현행).
+		-- 빈 숫자 칸 = 코드 기본값(LaneAttackFx property). LaunchOffsetY 빈칸 = 시설 그림 절반 높이(GroundOffset).
+		self.fxDef = {}
+		local t = _DataService:GetTable("FacilityAttackFx")
+		if t == nil then
+			log_warning("[Lane] FacilityAttackFx dataset not found — 시설 공격 연출 없음")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local villageId = t:GetCell(i, "VillageId") or ""
+			local stage = t:GetCell(i, "Stage") or ""
+			local lv = math.floor(tonumber(t:GetCell(i, "Level")) or 0)
+			local mode = t:GetCell(i, "Mode") or ""
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if enabled and villageId ~= "" and stage ~= "" and lv >= 1 and mode ~= "" then
+				if self.fxDef[villageId] == nil then self.fxDef[villageId] = {} end
+				if self.fxDef[villageId][stage] == nil then self.fxDef[villageId][stage] = {} end
+				self.fxDef[villageId][stage][lv] = {
+					mode = mode,
+					ball = t:GetCell(i, "BallRuid") or "", ball2 = t:GetCell(i, "Ball2Ruid") or "",
+					hit = t:GetCell(i, "HitRuid") or "", cast = t:GetCell(i, "CastRuid") or "",
+					countMin = tonumber(t:GetCell(i, "CountMin")), countMax = tonumber(t:GetCell(i, "CountMax")),
+					interval = tonumber(t:GetCell(i, "IntervalSec")), scale = tonumber(t:GetCell(i, "Scale")), hitScale = tonumber(t:GetCell(i, "HitScale")),
+					flight = tonumber(t:GetCell(i, "FlightSec")), arc = tonumber(t:GetCell(i, "ArcHeight")), stick = tonumber(t:GetCell(i, "StickSec")),
+					launchY = tonumber(t:GetCell(i, "LaunchOffsetY")), castY = tonumber(t:GetCell(i, "CastOffsetY")),
+					faceDeg = tonumber(t:GetCell(i, "FaceDeg")) or 180,
+				}
+				n = n + 1
+			end
+		end
+		log("[Lane] FacilityAttackFx loaded: " .. tostring(n) .. "/" .. tostring(t:GetRowCount()) .. " rows")
+	end
+
+	method any AttackFx(string villageId, string stage, integer lv)
+		-- 마을×시설×Lv 의 연출 행. 없으면 nil. Lv 는 있는 것 중 가장 가까운 아래 레벨로 내려간다(Lv3 행이 없으면 Lv2).
+		if self.fxDef == nil then return nil end
+		local v = self.fxDef[villageId]
+		if v == nil or v[stage] == nil then return nil end
+		for l = math.max(1, math.min(3, lv)), 1, -1 do
+			if v[stage][l] ~= nil then return v[stage][l] end
+		end
+		return nil
 	end
 
 	@ExecSpace("ServerOnly")
