@@ -54,17 +54,27 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - `mlua-diagnose`: 수정 7파일 **errors 0 · warnings 0** (남은 `LIA-1114` Info 는 기존 노이즈 · `SetAuraSpeedMul not found` Info 는 교차 파일 인덱스 지연) ✅
 - `check-integrity`: **전부 통과** · `[C1] VillageFacilityTrait` · `[C3] VillageFacilityTrait (VillageId+Stage+TraitKey)` · `[C4]` 짝 OK · 경고 4건 = `main` 기준선 4건(신규 0) ✅
 - Maker 빌드 로그: refresh 2회 · 에러 0 ✅
-- 🔴 **런타임 검증 미완** — Maker 의 개인 월드가 이 워크트리가 아닌 폴더에 물려 있어 Play 로그에 `[Lane] VillageFacilityTrait loaded` 가 없다(옛 코드가 돌았다).
-  워크트리를 개인 월드에 물려 `Reimport All` 한 뒤 아래를 본다:
-  1. `[Lane] VillageFacilityTrait loaded: 5/5 rows` · `[Facility] combat HENESYS:SUPPRESSOR ... attacks=true maxTargets=3` · `KERNING:TOWER ... maxTargets=1 dmg=150` · `[Facility] aura attached KERNING:SUPPRESSOR`
-  2. 포탑 생존 상태에서 억제기 공격 → `hit REJECTED (front=TOWER alive)` + 침범자 토스트 1회(3초) · HP 그대로 · 반사 없음
-  3. 순서대로 파괴 → 전부 정상 · 넥서스 파괴 토스트 → 탈락
-  4. 미니언 웨이브가 포탑을 깎는지(게이트 no-op)
-  5. 억제기 연타 10초 → 피격 알림 2회 이하 · `hit alert NN%`
-  6. `[Defender] Defender_… InputSpeed=…(x2)` · 리쉬 80% 밖으로 안 튐
-  7. 수비대·포탑에 맞아 보기 → 대몬스터 대비 약 10배 · 미니언에 맞으면 배수 없음
-  8. 헤네시스 억제기가 미니언을 때림 · 4마리 이상 몰려도 `limited targets=3/3` · 커닝·페리온 억제기 무공격
-  9. 커닝 포탑 1마리만 · 통로 미니언 놓치지 않음(세로 4.0)
-  10. 커닝 억제기 오라: `[Stat] aura speed mul=1.1` · 수비대 `InputSpeed` = ×2 × 1.1 · 오라 밖으로 나가면 `mul=1` 복귀
-  11. 페리온 억제기 때리면 `REFLECT x10 = N -> 공격자` · 로그 폭주 없음 · 무적 중엔 반사 없음
-  12. 억제기 파괴 후 미니언 ×1.3 · exp ×1.2 그대로(무회귀) · 헤네시스·페리온 포탑 광역 그대로(무회귀)
+- ✅ **런타임 검증 (2026-09-13 · 워크트리를 개인 월드에 물려 Play · 서버 스크립트로 시나리오 구동 · 로그 증거)**
+
+| # | 확인 | 증거 |
+|---|---|---|
+| 로드 | 표 로드 | `[Lane] VillageFacilityTrait loaded: 5/5 rows` |
+| WO-016 3·4 | 포탑 생존 시 억제기·넥서스 무적 | `ApplyDamage` 반환 `TOWER`/`TOWER` · `hit REJECTED (front=TOWER alive)` · HP 1200/1200 · 2000/2000 그대로 · 포탑만 700/800 |
+| WO-016 5 | 순서대로는 뚫림 | 포탑 파괴 → `front TOWER -> SUPPRESSOR` → 억제기 파괴 → `front -> CORE` → 넥서스 파괴 → `HENESYS ELIMINATED` (수비대 despawn 2) |
+| WO-016 7·8·9 | 알림 정책·도배 방지 | 포탑 피격 무알림 · 억제기 연타 3회 → `hit alert 99%` **1회** · 5초 뒤 재타 → `hit alert 96%` · 넥서스 피격 → `CORE hit alert 95%` · 파괴 알림 3단계 전부(`FacilityAlert`) |
+| WO-016 10 | 수비대 이속 ×2 | `Defender_… InputSpeed=1.3 (x2.0)` = 도감 0.65 × 2 · `Buff.BaseSpeed=1.3`(오라가 되돌리지 않음) |
+| WO-016 12·13 | 대플레이어 계수 | 수비대·포탑·억제기 `playerMul=10.0` · 미니언 경로(`MinionFlowService`) 무수정 = 1.0 (코드 확인) |
+| WO-016 14 | dev 치트 경로 | `RequestDevHit` → 같은 `ApplyDamage` 관문 (코드 경로 · 별도 실행 없음) |
+| WO-021 3·4 | 헤네시스 억제기 공격 · 3마리 | `combat HENESYS:SUPPRESSOR attacks=true dmg=60(=30×2) range=3.0 cd=1.50 maxTargets=3` · 적 5마리 중 매 스윙 `limited targets=3/3` + ENEMY 3줄 · HP 60 단위 감소 |
+| WO-021 5 | 다른 마을 억제기 무공격 | `KERNING:SUPPRESSOR attacks=false` · `PERION:SUPPRESSOR attacks=false` · TurretAI Enable=false |
+| WO-021 6·7 | 커닝 포탑 단일 5배 | `combat KERNING:TOWER dmg=150 maxTargets=1` · 매 스윙 `limited targets=1/1` + ENEMY 1줄 · HP 150 단위(700/100/400) · 세로 4.0 유지 |
+| WO-021 8·9 | 커닝 억제기 이속 오라 · 수비대 합성 | `aura attached KERNING:SUPPRESSOR` · `[Aura] affected=2 \| Defender_KERNING_1 spd=1.10` · 수비대 `InputSpeed=1.43 = 1.3 × 1.1` · 플레이어 경로 `SetAuraSpeedMul(1.1)` → `[Stat] aura speed mul=1.1` → 클라 `walk=1.54`, 1.0 복귀 → `walk=1.4` |
+| WO-021 10·11·12 | 페리온 반사 · 무적 중 반사 없음 · 무한루프 없음 | 포탑 생존: 공격자 타격 → `REJECTED` · 반사 없음 / 포탑 파괴 후: `REFLECT x10 = 200 -> VEnemyPR` · `(reflect)` 1줄 · 억제기 1200→1180 · 공격자 1000→800 · 재귀 로그 없음 |
+| WO-021 14 | 포탑 광역 무회귀 | 헤네시스 포탑 매 스윙 적 4마리 전부 ENEMY(제한 로그 없음) |
+| 무회귀 | 기존 경고 | 런타임 Warning 은 기존 `BossCatalog 6130101` · `LWA-3048`(수비대 MonsterAttack+FactionAttack 공존 · 이전부터) 뿐 · Error 0 |
+
+**검증 중 잡은 버그 2건 (수정 후 재검증 통과)**
+1. `FactionAttack.CollectNearestEnemies` 가 **트랜스폼 점**으로 상자 판정 → 시설이 발판보다 GroundOffset 만큼 떠 있어 통로 위 적이 세로로 빠짐(커닝 포탑이 한 번도 안 쐈다). → 후보의 **피격 상자(HitComponent · Scale 반영) 겹침**으로 판정.
+2. `FactionAuraController.AuraOffsetY` 기본 1.0 은 바닥에 선 옛 포탑 기준 → 시설에 붙이면 사각형이 바닥 위 1.1~4.1 에 떠서 `affected=0`. → `AttachAura` 가 `1.0 − GroundOffset` 으로 바닥 +1.0 에 중심을 둠.
+
+**미검증(사용자 눈 확인)**: 침범자 토스트 문구·표시(주인 없는 테스트라 토스트 대상 없음) · 오라 띠 그림 위치 · 실제 플레이어가 커닝 오라 안에 서 있을 때 이속(경로는 `SetAuraSpeedMul` 로 확인) · 수비대 리쉬 오버슛(코드상 매 프레임 방향 0 처리).
