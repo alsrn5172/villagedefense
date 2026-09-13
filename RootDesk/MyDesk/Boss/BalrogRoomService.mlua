@@ -10,6 +10,9 @@ script BalrogRoomService extends Logic
 	--   · 진입 = 마을 포탈 1개 → 서버가 배정된 방으로 보낸다 (A안).
 	--   · 90초 만료 · 사망 · 걸어서 나감 = 도전 종료. 배정은 유지한다.
 	--   · 발록 재생성 금지는 필요 없다 — 발록 하나가 죽는 순간 매치가 끝난다.
+	--   · **여러 번에 나눠 잡아도 된다** — 도전 사이에 발록 HP 가 회복되지 않는다. 대신 도전마다 입장권을 낸다.
+	--     그래서 도전 창 밖에서는 발록이 **맞지 않게** 한다(무적). 창 밖 처치를 무효로 하고 풀 HP 로 되돌리던
+	--     첫 구현은 "회복되지 않는다" 를 어겨서 버렸다 (2026-09-13).
 	--
 	-- 🔴 발록 HP 를 따로 저장하지 않는다. 방마다 발록 엔티티가 계속 떠 있고 자연회복이 없으며,
 	--    방을 나가면 추격 대상이 맵 검사에서 먼저 풀린다(StateChaseMonster.IsTargetValid).
@@ -21,7 +24,8 @@ script BalrogRoomService extends Logic
 	--
 	-- Codex 2회 리뷰로 고친 것 (2026-09-11)
 	--   · 발록 생사는 **매 프레임** 본다 — 0.25초 폴링이면 그 사이 두 방이 죽을 때 방 번호로 갈렸다.
-	--   · 처치는 **도전 중(방 안 · 90초 마감 전)** 일 때만 인정한다. 마감은 서버 시각 절댓값이다.
+	--   · 발록은 **도전 중(도착 ~ 90초 마감)에만 맞는다** — 마감·사망·이탈·탈락 순간 HitComponent 를 끈다.
+	--     그래서 마감 뒤 처치가 원천적으로 안 나온다. 마감은 서버 시각 절댓값 · 프레임 단위로 닫는다.
 	--   · 입장권은 요청 때 개수만 보고 **도착했을 때** 뺀다 — 이동에 실패하면 안 쓴 것이 된다.
 	--   · 내보낼 사람 표식(evict)은 **방 밖이 확인될 때까지** 남긴다 — 죽어서 부활 대기 · 옮기는 중 탈락 ·
 	--     이동이 늦는 경우 모두 결국 마을로 나오게 한다.
@@ -146,7 +150,8 @@ script BalrogRoomService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void BeginMatch(any userIds)
-		-- 매치 시작. MatchSessionLogic.StartMatch 가 이전 판 원장을 비운 직후 부른다.
+		-- 매치 시작. MatchSessionLogic.StartMatch 가 이전 판 원장을 비우고 시계를 켠(Running = true) 뒤에 부른다.
+		-- 🔴 Running 보다 먼저 부르면 OnUpdate 가 "감시 중 + Running 꺼짐" 을 매치 종료로 읽어 곧바로 감시를 끈다.
 		-- ① 방에 남은 사람을 승강장으로  ② 참가 순서대로 한 번 고정 배정  ③ 6방 발록을 새로 깐다.
 		self:ClearLedger()
 		self:ClearStragglers()
@@ -217,6 +222,7 @@ script BalrogRoomService extends Logic
 		if isvalid(b) then
 			self.bosses[room] = b
 			self.lastHp[room] = self:BossMaxHp()
+			self:SetBossVulnerable(room, false)   -- 누가 도착해 도전을 시작해야 맞는다
 		end
 	end
 
@@ -282,8 +288,44 @@ script BalrogRoomService extends Logic
 		-- 이 사람이 지금 그 방에서 도전 중인가 — 도착했고 · 아직 방 주인이고 · 90초 마감 전.
 		if userId == nil or userId == "" then return false end
 		if self.occupant[room] ~= userId or self.phase[userId] ~= "in" then return false end
+		-- 마감 경계는 세 곳(IsChallengeLive · CloseExpiredWindows · CheckOccupants)이 같다: now >= 마감 이면 닫힘.
 		local dl = self.deadline[userId]
-		return dl ~= nil and self:Now() <= dl
+		return dl ~= nil and self:Now() < dl
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBossVulnerable(integer room, boolean on)
+		-- 그 방 발록이 맞는가. 🔴 도전 창(도착 ~ 90초 마감 · 사망 · 이탈 전) 안에서만 true.
+		--    SpectateService 가 관전자를 무적으로 만드는 것과 같은 스위치(HitComponent.Enable)다.
+		--    AttackFast 계열(평타 · 스킬 · 소환수)은 전부 여기서 막힌다. 안 막히는 건 지속 피해 오라뿐인데,
+		--    그건 정규 사망 경로(Monster:Dead)를 타므로 CheckBosses 가 잡는다.
+		local b = self.bosses[room]
+		if not isvalid(b) then return end
+		local hit = b.HitComponent
+		if not isvalid(hit) or hit.Enable == on then return end
+		hit.Enable = on
+		log("[BalrogRoom] 방" .. tostring(room) .. " 발록 " .. (on and "맞기 시작" or "무적"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CloseExpiredWindows()
+		-- 매 프레임 — 도전 창이 닫힌 방은 **그 즉시** 무적으로 되돌린다: 90초 마감 · 사망 · 방을 떠남 · 접속 끊김.
+		-- 내보내기(Evict · Release)는 0.25초 틱이 하지만, 맞는 창은 여기서 프레임 단위로 닫는다 —
+		-- 그 0.25초 사이에 죽은 사람 · 나간 사람의 남은 투사체 · 소환수 피해가 들어가지 않게 (Codex 09-13 B).
+		local now = self:Now()
+		for i = 1, #self.rooms do
+			local uid = self.occupant[i] or ""
+			if uid ~= "" and self.phase[uid] == "in" then
+				local dl = self.deadline[uid]
+				local closed = dl == nil or now >= dl
+				if not closed then
+					local player = _UserService:GetUserEntityByUserId(uid)
+					closed = not isvalid(player) or not isvalid(player.PlayerComponent)
+						or player.PlayerComponent:IsDead() or not self:IsInMap(player, self.rooms[i])
+				end
+				if closed then self:SetBossVulnerable(i, false) end
+			end
+		end
 	end
 
 	-- ── 입장 (클라 → 서버) ──────────────────────────────────────────
@@ -378,6 +420,7 @@ script BalrogRoomService extends Logic
 		end
 		self.phase[userId] = "in"
 		self.deadline[userId] = self:Now() + self.ChallengeSeconds
+		self:SetBossVulnerable(room, true)   -- 🔴 여기서만 맞기 시작한다
 		self:Toast(userId, "발록 방 " .. tostring(room) .. " — " .. tostring(math.floor(self.ChallengeSeconds)) .. "초")
 		log("[BalrogRoom] ARRIVE " .. userId .. " 방" .. tostring(room) .. " 영혼석 -" .. tostring(need) ..
 			" 발록HP=" .. tostring(self.lastHp[room] or -1))
@@ -389,7 +432,11 @@ script BalrogRoomService extends Logic
 	method void Release(string userId)
 		-- 도전 상태만 푼다. 배정은 그대로다(고정 배정 · HP 그대로 재도전).
 		local room = self:RoomOf(userId)
-		if room ~= 0 and self.occupant[room] == userId then self.occupant[room] = "" end
+		if room ~= 0 and self.occupant[room] == userId then
+			self.occupant[room] = ""
+			-- 🔴 도전이 끝나면 즉시 무적 — 마감 뒤 처치 · 나간 뒤 남은 소환수 피해를 막는다.
+			self:SetBossVulnerable(room, false)
+		end
 		self.phase[userId] = nil
 		self.moveStart[userId] = nil
 		self.deadline[userId] = nil
@@ -435,12 +482,13 @@ script BalrogRoomService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
-		-- 매 프레임: 발록 생사(선취 판정). 0.25초마다: 방 안 사람 · 내보낼 사람.
+		-- 매 프레임: 마감 지난 방 무적 · 발록 생사(선취 판정). 0.25초마다: 방 안 사람 · 내보낼 사람.
 		if not self.active then return end
 		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then
 			self:OnMatchOver()
 			return
 		end
+		self:CloseExpiredWindows()
 		self:CheckBosses()
 		if self.Winner ~= "" then return end
 		self.tickAcc = self.tickAcc + delta
@@ -455,7 +503,9 @@ script BalrogRoomService extends Logic
 		-- 매치가 끝났다. 도전을 전부 닫고 감시를 멈춘다.
 		-- 방에 남은 사람은 결과 화면의 "로비로" 가 승강장으로 보낸다. 끝내 안 누르면 다음 BeginMatch 가 치운다.
 		-- ⚠️ owner · bosses · lastHp 는 남긴다 — 결과 화면이 DamageOf 로 읽는다. 다음 BeginMatch 가 비운다.
+		-- 🔴 모든 방을 무적으로 — 도전 중에 매치가 끝나면 그 방 발록이 결과 화면 동안에도 맞는다 (Codex 09-13 A·B).
 		for i = 1, #self.rooms do
+			self:SetBossVulnerable(i, false)
 			self.occupant[i] = ""
 		end
 		self.phase = {}
@@ -490,15 +540,15 @@ script BalrogRoomService extends Logic
 					dead = true
 				end
 				if dead then
-					if self:IsChallengeLive(uid, i) then
-						self:DeclareWinner(i)
-						return
+					if not self:IsChallengeLive(uid, i) then
+						-- 발록은 도전 창 밖에서 무적이라 여기 오는 건 ① 마감과 같은 프레임에 들어간 처치
+						-- ② HitComponent 를 안 거치는 지속 피해 오라(FactionAuraController.ApplyRegen → Dead) 뿐이다.
+						-- 1인 1방이라 그 방 주인 말고는 때릴 사람이 없다 → 주인의 처치로 인정한다.
+						-- 🔴 풀 HP 로 되돌리지 않는다 — "도전 사이에 HP 가 회복되지 않는다" (사용자 확정 2026-09-13).
+						log_warning("[BalrogRoom] 방" .. tostring(i) .. " 발록이 도전 창 밖에서 죽었다 — 주인 처치로 인정 (" .. tostring(uid) .. ")")
 					end
-					-- 🔴 도전 중이 아닐 때 죽었다 — 90초 마감 뒤, 또는 방을 나간 뒤의 소환수·지속 피해.
-					--    선취로 인정하지 않는다. 그 방이 계속 이길 수 있게 발록을 새로 깐다.
-					log_warning("[BalrogRoom] 방" .. tostring(i) .. " 발록 사망 무효 — 도전 중이 아니었다 (" .. tostring(uid) .. ")")
-					self:Toast(uid, "도전 시간 밖의 처치는 인정되지 않습니다 — 발록이 다시 나타났습니다")
-					self:ResetRoomBoss(i)
+					self:DeclareWinner(i)
+					return
 				end
 			end
 		end

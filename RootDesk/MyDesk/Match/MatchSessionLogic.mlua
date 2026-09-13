@@ -129,14 +129,10 @@ script MatchSessionLogic extends Logic
 			log_error("[Match] MatchResetService 없음 — 이전 판 상태가 남은 채 시작한다")
 		end
 
-		-- 발록 방 6개: 참가 순서대로 고정 배정 + 6방 발록 새로 깔기 (WO-017).
-		-- 🔴 발록 방은 비인스턴스 맵이라 매치가 끝나도 발록이 안 치워진다. 여기서 안 깔면
-		--    다음 판이 이전 판의 죽은 방·깎인 HP 를 물려받는다.
-		if _BalrogRoomService ~= nil then
-			_BalrogRoomService:BeginMatch(self.participants)
-		else
-			log_error("[Match] BalrogRoomService 없음 — 발록 방 배정 없이 시작한다 (승리 조건이 동작하지 않는다)")
-		end
+		-- 🔴 시계를 켜기 전에 이전 판 발록 감시부터 끈다 (active=false · 원장 비움). 이전 판 감시가 남은 채
+		--    Running 이 먼저 켜지면 그 사이 프레임에 BalrogRoomService.OnUpdate 가 **이전 판 원장**으로 돌아
+		--    이전 판에 죽은 발록을 새 판 승리로 읽을 수 있다 (Codex 09-13 A·B). 배정·발록 리셋은 아래 BeginMatch.
+		if _BalrogRoomService ~= nil then _BalrogRoomService:ClearLedger() end
 
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
@@ -146,6 +142,18 @@ script MatchSessionLogic extends Logic
 		self.Expired = false
 		self.Running = true
 		self:SetPhase(1)
+
+		-- 발록 방 6개: 참가 순서대로 고정 배정 + 6방 발록 새로 깔기 (WO-017).
+		-- 🔴 발록 방은 비인스턴스 맵이라 매치가 끝나도 발록이 안 치워진다. 여기서 안 깔면
+		--    다음 판이 이전 판의 죽은 방·깎인 HP 를 물려받는다.
+		-- 🔴 반드시 Running = true **뒤에** 부른다. BalrogRoomService.OnUpdate 는 "감시 중인데 Running 이 꺼져 있다"
+		--    를 매치 종료로 읽고 감시를 멈춘다 — 앞에서 부르면 그 사이에 프레임이 한 번만 끼어도
+		--    방 감시가 시작하자마자 꺼진다 (2026-09-13 런타임에서 실제로 났다: 시작 직후 active=false).
+		if _BalrogRoomService ~= nil then
+			_BalrogRoomService:BeginMatch(self.participants)
+		else
+			log_error("[Match] BalrogRoomService 없음 — 발록 방 배정 없이 시작한다 (승리 조건이 동작하지 않는다)")
+		end
 		log("[Match] START players=" .. tostring(#self.participants) .. " diff=" .. tostring(self.Difficulty) ..
 			" profile=" .. self.Profile .. " duration=" .. tostring(self.MatchDuration) .. "s")
 	end
@@ -392,6 +400,9 @@ script MatchSessionLogic extends Logic
 		if _BalrogRoomService ~= nil and _BalrogRoomService:ClaimPendingWinner() then return end
 		self.Expired = true
 		self.Running = false
+		-- 🔴 발록 방 도전을 **지금** 닫는다 (모든 방 무적 · 감시 중지). BalrogRoomService.OnUpdate 가 다음 프레임에
+		--    알아채길 기다리면 결과 화면이 뜬 뒤 한 프레임 동안 발록이 맞는다 (Codex 09-13 A·B).
+		if _BalrogRoomService ~= nil and _BalrogRoomService.active then _BalrogRoomService:OnMatchOver() end
 		log("[Match] EXPIRED at " .. string.format("%.1f", self.Elapsed) .. "s (duration=" .. tostring(self.MatchDuration) .. "s profile=" .. self.Profile .. " waves=" .. tostring(self.waveIndex) .. ")")
 		local ev = MatchPhaseChangedEvent()
 		ev.MatchId = ""
