@@ -260,3 +260,11 @@
 - `SkillExecutors.PlayMotionSequence`: 유저별 진행 중 순서의 타이머 id 를 `motionSeqTimers[uid]` 에 두고 **새 시전이 오면 이전 순서를 `ClearTimer`** — 텔레포트 연타(쿨 1s)에서 이전 `_END`(서 있기)가 새 시전의 heal 왕복을 0.5s 만에 끊던 것 방지. 로그에 `cancelledPrev=N`.
 - `WeaponMotion.csv`: 표 50 → **54행**(B 행 47). 걷는 중 텔레포트하면 상태기(MOVE)가 걷기 애니메이션을 계속 밀어넣어(SkillCaster 주석 · 그래서 시전 락 중 StateComponent 를 끈다) 시전 동작이 안 보일 수 있다 — 서서 텔레포트할 때 보인다.
 - 🟡 **Play 미검증**(사용자 확인): `[Motion] weapon motion table loaded: 54 rows` · Shift 뒤 `motion sequence SK_M13 weapon=WAND steps=2/2 cancelledPrev=0` · 연타 두 번째 `cancelledPrev=2` · R `SK_M31 … steps=2/2` · 폭발 순간 전투 자세.
+
+### 2026-09-13 — 제보 "텔레포트·매직 가드·대마법 애니메이션이 안 보인다" → 맨손 대책
+
+- 런타임 로그는 못 봤다(Maker MCP 미연결 · `Player.log` 에는 스크립트 `log()` 가 안 남는다). 코드에서 찾은 가장 유력한 원인: **`PlayerMotion.PlaySkill` 은 장착 무기(`WeaponTypeOf`)로 행을 찾고, 맨손이면 경고도 없이 아무것도 재생하지 않는다.** `PlayMotionSequence` 도 맨손이면 조용히 return. 마법사가 완드(`WEAPON_MAGICIAN_T10`)를 안 들고 있으면 이번에 넣은 세 애니메이션 전부 무재생 — 세 스킬이 같이 안 보인다는 제보와 맞는다.
+- 대책(B 파일만 · A 의 공개 API 사용): **`SkillExecutors.PlayMotion(uid, motionId, ownRowOnly)`** 한 곳으로 모션 재생을 모았다 — `MotionWeaponTypeOf` = 장착 무기, 맨손이면 **직업 기본 무기**(`JobDefaultWeaponType`: MAGICIAN→WAND · WARRIOR→SWORD_1H · ARCHER→BOW · THIEF→CLAW · PIRATE→KNUCKLE · 초보자 "" = 예전처럼 무재생) 로 `PlayerMotion.Find` → `PlayerMotion.PlayAction(core, parts, rate, playType, uid)`(A 의 Client 메서드 · PlaySkill 이 부르는 것과 같은 호출). heal·alert·stand1 은 몸 동작이라 무기 없이도 그대로 나온다. 행이 없으면 `no WeaponMotion row` 경고 · 맨손+초보자면 `skipped — no weapon and no job default` 로그.
+- 호출처 교체: `SkillCaster.RequestCast`(시전 행 · `ownRowOnly = isMove` → `HasOwnMotionRow` 삭제) · `PlayMotionSequence`(`_2`/`_END`) · `ExecutePowerStrikeCombo`(`_1`/`_2`). 잔상(`PickWeaponSpec`)은 실제 장착 무기 기준 그대로(맨손 전사는 잔상 없음).
+- 그래도 안 보이는 경우(설계상): ① **달리면서 텔레포트** — 상태기 MOVE 가 걷기 애니메이션을 계속 밀어넣어 시전 동작을 덮는다(시전 락이 없어 SkillCaster 처럼 StateComponent 를 끄지 않음) → 서서 Shift. ② **대마법** — 프로즌 라이트닌 screen 컷신(1445×859 · 1.4배)이 시전 순간부터 아바타를 덮는다 → 충전 동작은 컷신 아래에 있고, 컷신이 걷힌 뒤 `_END`(5.5s) 서 있기만 보일 수 있다(불굴의 진과 같은 구조 · 클립 길이 미실측).
+- 🟡 **Play 미검증**(사용자 확인): 맨손 마법사로 E → `motion sequence SK_M22 weapon=WAND steps=2/2` (weapon=WAND 가 맨손에서도 찍혀야 한다) · 팔 흔들기 → 빠른 전투 자세 → 서 있기. 표 로드 `[Motion] weapon motion table loaded: 54 rows`.
