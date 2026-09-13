@@ -250,3 +250,13 @@
 - `SkillExecutors.GetMotionSequence` += `SK_M22`(`_2` 1.0 · `_END` 1.6) · `SK_M31`(`_2` 2.0 · `_END` 5.5). `SkillCaster.HasOwnMotionRow(uid, motionId)`(ServerOnly) 신설.
 - 전제: `PlayerMotion.PlaySkill` 은 **장착 무기**로 행을 찾는다 → 완드(`WEAPON_MAGICIAN_T10/T20/T30` · WeaponType WAND)를 장착해야 보인다. 맨손은 A 의 설계상 모션 없음.
 - 🟡 **Play 미검증**(사용자가 직접 확인 · MCP 는 요청 시에만): 기대 로그 `[Motion] weapon motion table loaded: 50 rows` · Q 완드 휘두르기 · Shift 뒤 손 들기(+ `no row` 경고 0) · E `motion sequence SK_M22 weapon=WAND steps=2/2` · R 충전 중 팔 흔들기 → 폭발 순간 휘두르기 · `motion sequence SK_M31 weapon=WAND steps=2/2`.
+
+### 2026-09-13 — 텔레포트·매직 가드·대마법 = 전사 버프와 같은 캐릭터 애니메이션 (사용자 요청 "공격 동작 말고 전사 것처럼")
+
+- 셋 다 **heal 1.5배속 ZigzagLoop(팔을 위아래로 계속 흔드는 시전 동작) → `_2` alert 2.5배속 왕복(빠른 전투 자세) → `_END` stand1 서 있기** — 하이퍼 바디·도발·불굴의 진(v4)과 같은 순서. 공격 스윙은 에너지볼트(SK_M11 swingO2)에만 남는다.
+  - 텔레포트 `SK_M13` · 텔레포트 강화 `SK_M21`: heal 2배속 Onetime 한 번 → 위 순서로. 시전 락이 없고 쿨이 1s 까지 줄어드니 `_2` **0.75** · `_END` **1.2**(전사 v3 실측 "시전 모션은 키 +0.3s 에야 보인다 → 0.5 는 너무 짧다"). 새 행 `SK_M13_2`·`SK_M13_END`·`SK_M21_2`·`SK_M21_END` 4행.
+  - 매직 가드 `SK_M22`: 이미 같은 순서(1.0 / 1.6) — 변경 없음.
+  - 대마법 `SK_M31`: `_2` 를 **swingO3(공격 스윙) → alert 2.5배속 왕복**으로. 시점은 그대로 2.0(충전 끝 = 폭발) · `_END` 5.5.
+- `SkillExecutors.PlayMotionSequence`: 유저별 진행 중 순서의 타이머 id 를 `motionSeqTimers[uid]` 에 두고 **새 시전이 오면 이전 순서를 `ClearTimer`** — 텔레포트 연타(쿨 1s)에서 이전 `_END`(서 있기)가 새 시전의 heal 왕복을 0.5s 만에 끊던 것 방지. 로그에 `cancelledPrev=N`.
+- `WeaponMotion.csv`: 표 50 → **54행**(B 행 47). 걷는 중 텔레포트하면 상태기(MOVE)가 걷기 애니메이션을 계속 밀어넣어(SkillCaster 주석 · 그래서 시전 락 중 StateComponent 를 끈다) 시전 동작이 안 보일 수 있다 — 서서 텔레포트할 때 보인다.
+- 🟡 **Play 미검증**(사용자 확인): `[Motion] weapon motion table loaded: 54 rows` · Shift 뒤 `motion sequence SK_M13 weapon=WAND steps=2/2 cancelledPrev=0` · 연타 두 번째 `cancelledPrev=2` · R `SK_M31 … steps=2/2` · 폭발 순간 전투 자세.
