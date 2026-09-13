@@ -91,6 +91,14 @@ script SkillCaster extends Logic
         return skill ~= nil and skill.behavior == "BLINK"
     end
 
+    method number GetUltimateInvulnMul(string skillId)
+        -- 궁 시전 무적 창 배율(컷신 길이 × 이 값 · 2026-09-13 b/skill-pirate-motion). 기본 1 = 컷신 내내 피격 무시.
+        -- 불굴의 진 SK_W31 = 0: 전사는 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 아이언 바디 반사 유지)로 버틴다 — "전사는 컷신 뒤 8초 HP 100% · 무적 시간 절반" 요청.
+        -- 전사도 컷신 동안 피격을 무시하게 하려면 1(전부) 또는 0.5(절반)로 한 칸.
+        if skillId == "SK_W31" then return 0 end
+        return 1
+    end
+
     method number GetCastLockSeconds(string skillId)
         local v = self.castLockOverrides[skillId]
         if v == nil then v = self.DefaultCastLockSeconds end
@@ -342,9 +350,21 @@ script SkillCaster extends Logic
             self.castLockUntil[uid] = now + lockSeconds * 0.9
         end
         -- 궁(Behavior ORIGIN · 직업별 R · 대마법·불굴의 진·폭풍의 화살·메소 익스플로전·함포 사격) 시전 중 무적(2026-09-13 사용자 요청 "모든 직업의 궁은 사용 중 무적" · b/skill-thief-motion):
-        -- 시전 락 길이(castLockOverrides · 컷신 포함) 동안 SkillBuffs 가 피격을 통째로 무시한다(PlayerHit.OnHit → OnCastInvulnerableHit · ModifyIncomingDamage 0). 불굴의 진은 그 뒤 자기 8초 버프.
+        -- SkillBuffs 가 피격을 통째로 무시한다(PlayerHit.OnHit → OnCastInvulnerableHit · ModifyIncomingDamage 0).
+        -- 2026-09-13 사용자 요청 ② (b/skill-pirate-motion): 창 길이 = 시전 락이 아니라 **컷신 길이**(SkillExecutors.GetCutsceneSeconds · effectOverrides cast.cutsceneSeconds · 없으면 시전 락) × GetUltimateInvulnMul —
+        -- "다른 직업은 컷신 동안 단순히 피격 무시" · 전사(불굴의 진)는 0 = 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 반사 유지)로 버틴다.
         if skill.behavior == "ORIGIN" and _SkillBuffs ~= nil and lockSeconds > 0 then
-            _SkillBuffs:BeginCastInvulnerability(uid, lockSeconds, skillId)
+            local invuln = lockSeconds
+            if _SkillExecutors ~= nil then
+                local cs = _SkillExecutors:GetCutsceneSeconds(skillId)
+                if cs > 0 then invuln = cs end
+            end
+            invuln = invuln * self:GetUltimateInvulnMul(skillId)
+            if invuln > 0 then
+                _SkillBuffs:BeginCastInvulnerability(uid, invuln, skillId)
+            else
+                log("[Skill] ultimate " .. skillId .. " uses its own buff instead of cast invulnerability (" .. uid .. ")")
+            end
         end
         -- 재시전(변신 중 주먹)은 쿨다운을 새로 시작하지 않는다 — 변신 시전 때 시작한 쿨다운이 그대로 흐른다. 클라에는 남은 값을 돌려준다.
         local cooldown = _SkillDatabase:CooldownAt(skillId, level)

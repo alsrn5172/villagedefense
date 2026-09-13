@@ -87,3 +87,12 @@
   - ③ 그대로 둔 것: 크기 ≈1.15 유닛(아바타 0.7 · 원작처럼 커진 형태) · followFacing(0.1s) · 속도/점프 +30% · 30초/쿨 60(표) · 시전 = 라이트닝 폼 황금 번개 기둥.
   - 한계(팩에 없는 것): 변신 몸의 걷기·점프·공격 프레임 → 이동 중 불꽃 캐릭터는 미끄러지고, 재시전 주먹은 궤적(3~6프레임)만. 백덤블링 때 불꽃은 돌지 않는다(루프는 플레이어 루트에 붙고 회전은 아바타 루트).
 - 🟡 Play 미검증(사용자 확인): W → 로그 `avatar alpha 0.35 under buff loop SUPER_TRANSFORM` · 불꽃 캐릭터가 아바타 위에 정확히 겹치고(앞·뒤로 치우치면 offsetX ±0.1) 발이 바닥에 · 매 주기 어두워지지 않음 · 30초 뒤 `avatar shown again` · 희미한 아바타로 주먹 모션이 비친다.
+
+### 2026-09-13 — 요청 ⑧ 궁 무적 정리: "전사는 컷신 뒤 8초 HP 100% + 무적 시간 절반 · 다른 직업은 컷신 동안 단순 피격 무시"
+
+- 바탕: `b/skill-thief-motion` cf9fcf1(전 직업 궁 시전 중 무적 · `SkillCaster.BeginCastInvulnerability` · `SkillBuffs.castInvulnUntil/IsCastInvulnerable` · `PlayerHit.OnHit` 건너뜀)을 이 브랜치에 병합(49be649 · 충돌 없음). 그 구현은 창 길이가 **시전 락**(전사 1.5 · 나머지 3.5)이라 컷신(4.3~7.2s)을 다 덮지 못했고, 전사는 피격 무시 1.5s + 시전부터 8초 HP 고정이 겹쳤다.
+- **컷신 길이를 데이터로**: `effectOverrides[궁].cast.cutsceneSeconds` — 전사 세이크리드 바스티온 **4.8**(실측) · 마법사 프로즌 라이트닝 **5.0**(92f) · 궁수 파이널 에임 **7.2**(133f) · 도적 일도양단 **4.6**(85f) · 해적 드레드노트 **4.3**(79f · 전부 89f = 4.8s 비례 추정). `SkillExecutors.GetCutsceneSeconds(skillId)`. 분신/변신 루프 숨김(`HideShadowFor`/`HideTransformLoopFor`)도 이 값을 쓴다(예전 일괄 5.5).
+- **다른 직업(마·궁·도·해)**: `SkillCaster.RequestCast` 의 궁 무적 창 = **컷신 길이**(없으면 시전 락) × `GetUltimateInvulnMul`(기본 1) → 컷신 동안 피격 통째로 무시(HP·경직·넉백·표시 없음 · 로그 `[Buff] ULTIMATE invulnerable <컷신>s`).
+- **전사(불굴의 진)**: `GetUltimateInvulnMul("SK_W31") = 0` → 피격 무시 창 없음. 대신 `effectOverrides.SK_W31.buffExtendsByCutscene = true` → `ExecuteOrigin` 이 INVULNERABLE 버프를 시전 즉시 **컷신 4.8 + CSV Duration 8 = 12.8초**로 건다: 컷신 내내 + 컷신 뒤 8초 동안 HP 100% 고정(`StartUnyielding` 0.1s 틱) · 경직/넉백 없음 · **피격 무적 시간 절반**(`UnyieldingImmuneMul` 0.5 · 이미 있던 값 = "무적 시간 절반" 요청) · 아이언 바디 반사 유지. 로그 `ORIGIN SK_W31 buff INVULNERABLE for 12.8s (8 + cutscene 4.8, no damage)`.
+  - 해석: "전사는 컷신 뒤 8초 HP 100% · 무적 시간 절반 / 다른 직업은 **단순히** 피격 무시" 를 "전사는 피격 무시가 아니라 HP 고정 방식(컷신부터 컷신 뒤 8초까지)" 로 읽었다. 전사도 컷신 동안 피격을 무시하게 하려면 `GetUltimateInvulnMul` 의 0 → 1(전부) 또는 0.5(절반) 한 칸 · 고정을 컷신 뒤부터만 걸려면 `buffExtendsByCutscene` 대신 지연 시작(한 줄 상담).
+- 🟡 Play 미검증(사용자 확인): 해적 R → `[Buff] ULTIMATE invulnerable 4.3s skill=SK_P31` · 컷신 중 맞아도 `ULTIMATE hit ignored` 만 · 컷신이 걷힌 직후부터 정상 피격 / 전사 R → `ultimate SK_W31 uses its own buff instead of cast invulnerability` + `buff INVULNERABLE for 12.8s` · 컷신 중·후 12.8초 동안 `UNYIELDING hit ignored`(HP 그대로 · 반사) · 12.8s 에 `[Buff] OFF INVULNERABLE`.
