@@ -208,7 +208,7 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - **눈 확인(사용자)**: 마법진 그림·위치(시설 가운데 +0.55)·번개 크기(HitScale 0.5/0.4/0.9) · 노틸러스 포탄 0.9/0.75/0.35 · 도착 순간 피격 플래시가 이펙트와 맞는지. 어긋나면 `FacilityAttackFx.csv` 칸만.
 
 ### 리뷰 반영 (2026-09-14 · 사용자 "울트라" 허가로 리뷰 에이전트 1개 · 지적 6건 중 5건 수정)
-1. `CollectNearestEnemies` 후보에 **야생 몹**(`script.Monster` 만 있고 `script.Faction` 없음) 추가 — 옛 `DoAttack` 상자가 부수적으로 맞히던 것을 유지. 정렬은 미니언·플레이어 먼저, 야생 몹은 남는 자리.
+1. ~~`CollectNearestEnemies` 후보에 야생 몹 추가~~ → **되돌림.** 사용자 규칙(2026-09-14): **시설이 때리는 건 플레이어와 미니언뿐, 야생 몹은 안 때린다.** `FactionAttack.FacilityMayHit(defender)` 한 곳에 박고 `IsAttackTarget`(즉시 판정 · 억제기 `DoAttack` 포함)·`CollectNearestEnemies`(지연 판정)·`TurretAI.FindNearestEnemy`(조준) 셋이 같이 쓴다. 시설끼리 제외도 이 문이 대신한다.
 2. 후보 **중복 제거**(플레이어는 `script.Faction` 도 갖고 유저 목록에도 있다) — 지연 피해는 표적당 1회라 중복 = 2배 피해였다.
 3. SHOT 발사체 수 `n = max(CSV 개수, 표적 수)` — 발사체가 안 날아간 표적이 피해를 받는 일 없음.
 4. `LaneAttackFx.timers` 를 {id=true} 집합으로 · 콜백이 스스로 지움(매치 내내 누적되던 것).

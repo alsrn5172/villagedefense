@@ -73,6 +73,15 @@ script FactionAttack extends AttackComponent
 		return r
 	end
 
+	method boolean FacilityMayHit(Entity defender)
+		-- 시설(포탑·억제기·넥서스)의 표적 규칙: **플레이어(PlayerComponent)와 미니언(script.MinionUnit)만** 때린다 (사용자 2026-09-14 "야생 몹은 안 때린다").
+		-- 야생 몹·다른 시설·수비대는 전부 제외. 시설이 아닌 공격자(수비대·미니언)는 이 규칙과 무관하게 true.
+		-- ⚠ @ExecSpace 없음 — IsAttackTarget(부모 ExecSpace=All)에서 부른다.
+		if not isvalid(self.Entity.LaneFacility) then return true end
+		if not isvalid(defender) then return false end
+		return isvalid(defender.PlayerComponent) or isvalid(defender.MinionUnit)
+	end
+
 	@ExecSpace("ServerOnly")
 	method table CollectNearestEnemies(Vector2 center, Vector2 size, integer limit)
 		-- 공격 상자(center·size) 안의 적을 가까운 순으로 최대 limit 개 고른다 (MaxTargets 사전 선별 · SelectTargets).
@@ -108,19 +117,11 @@ script FactionAttack extends AttackComponent
 				end
 			end
 		end
-		-- 야생 몹(script.Monster 만 있고 script.Faction 없음)도 후보 — 옛 DoAttack 상자 판정이 부수적으로 맞히던 것을 유지(리뷰 2026-09-14).
-		-- 단 정렬에서 뒤로 민다: 미니언·플레이어가 먼저, 야생 몹은 남는 자리만.
-		local monsters = map:GetChildComponentsByTypeName("script.Monster", true)
-		if monsters ~= nil then
-			for _, comp in ipairs(monsters) do
-				if isvalid(comp) then addCand(comp.Entity) end
-			end
-		end
+		-- 🔴 야생 몹은 후보가 아니다 — 시설이 때리는 건 **플레이어와 미니언뿐**(사용자 2026-09-14). FacilityMayHit 이 거른다.
 		local myPos = self.Entity.TransformComponent.WorldPosition
 		local inBox = {}
-		local iAmFacility = isvalid(self.Entity.LaneFacility)
 		for _, cand in ipairs(candidates) do
-			if cand ~= self.Entity and isvalid(cand.TransformComponent) and _FactionLogic:IsEnemy(self.Entity, cand) and not (iAmFacility and isvalid(cand.LaneFacility)) then
+			if cand ~= self.Entity and isvalid(cand.TransformComponent) and _FactionLogic:IsEnemy(self.Entity, cand) and self:FacilityMayHit(cand) then
 				---@type Monster
 				local monster = cand.Monster
 				local dead = isvalid(monster) and monster.IsDead
@@ -132,15 +133,12 @@ script FactionAttack extends AttackComponent
 					if math.abs(r.cx - center.x) <= halfW + r.hw and math.abs(r.cy - center.y) <= halfH + r.hh then
 						local dx = p.x - myPos.x
 						local dy = p.y - myPos.y
-						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy, wild = not isvalid(cand.Faction) })
+						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy })
 					end
 				end
 			end
 		end
-		table.sort(inBox, function(a, b)
-			if a.wild ~= b.wild then return not a.wild end
-			return a.d < b.d
-		end)
+		table.sort(inBox, function(a, b) return a.d < b.d end)
 		for i = 1, math.min(limit, #inBox) do table.insert(picked, inBox[i].ent) end
 		return picked
 	end
@@ -272,8 +270,9 @@ script FactionAttack extends AttackComponent
 			return false
 		end
 
-		-- 시설은 시설을 치지 않는다 (WO-025 · 2026-09-14): 실제 맵에선 마을이 달라 만날 일이 없고, 테스트맵처럼 줄이 겹치면 윗줄 억제기가 아랫줄 시설을 쏜다.
-		if isvalid(self.Entity.LaneFacility) and isvalid(defender.LaneFacility) then
+		-- 시설은 플레이어·미니언만 친다 (사용자 2026-09-14 · 야생 몹 제외). 시설끼리도 여기서 걸러진다(테스트맵처럼 줄이 겹치면 윗줄 억제기가 아랫줄 시설을 쏘던 것 · WO-025).
+		-- 즉시 판정(DoAttack · 억제기)과 지연 판정(HitTarget) 둘 다 이 문을 지난다.
+		if not self:FacilityMayHit(defender) then
 			return false
 		end
 
