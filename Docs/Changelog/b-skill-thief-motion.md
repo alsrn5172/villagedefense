@@ -63,3 +63,9 @@
 - ⑥ **표에는 럭키 세븐 사거리 값이 없다**(효과 열 = "표창 2개를 날린다" · Lv 열 = %). CSV `Range 6`(앞으로 6유닛 · #54 TENTATIVE)·`Speed 14` 는 B 값 그대로. 세로는 2026-09-10 사용자 결정(앞쪽 Range 상자 · **발부터 위로** 2.5 · 뒤·아래 제외)이 정본인데 두 구멍이 있었다: (a) 아래층의 키 큰 몬스터가 상자 안으로 머리를 내밀면 후보가 돼 표창이 유도로 내려가 맞혔다 · (b) 표창 판정 상자(0.8×0.8 · 엔티티 중심)가 스폰 높이 0.09 에서 발 아래 0.31 까지 내려가(②에서 초승달 높이로 낮추며 생김 · 예전 0.5 땐 0.1 위) 아래층 몬스터 머리를 스쳤다.
   - 고침: **같은 층 판정** `SkillAttack.AimFloorTolerance = 0.6` — `FindSkillTarget` 은 `shape.floorY`(시전자 발) 보다 0.6 이상 낮은 발의 후보를 뺀다(`SpawnProjectile` 조준 · `PlayAimMarker` 조준 표시 · 로그 `belowFloor=N`) · `SkillProjectile.IsAttackTarget` 오버라이드(A 의 `Boss/BossProjectileAttack` 과 같은 `__base` 형태 · ExecSpace 없음)가 `SameFloorOnly`(투사체 전부 · `FloorY` = 시전자 발)로 아래층 대상을 명중에서 뺀다. 0.6 = 경사 발판의 내리막 몬스터(≈0.3~0.5)는 허용 · 한 층 아래(≥1)는 제외. 위쪽(높은 발판)은 상자 높이 2.5 그대로 허용. 에너지볼트·더블 샷·스나이핑도 같은 규칙(원작도 아래층은 안 맞는다).
 - 🟡 Play 미검증(사용자 확인): 분신 켠 채 오른쪽 보고 Q → 분신 팔이 캐릭터 **뒤**로 지나감 + 로그 `layer=MapLayer…/2` · 2층에서 아래층 몬스터 쪽으로 Q → `FindSkillTarget SK_T11 … belowFloor=1 -> none`(또는 같은 층 대상) · 표창이 아래층 몬스터를 스쳐도 피해 없음.
+
+### 2026-09-13 — 제보 반영 ⑦ 방향을 바꾸면 분신이 등 뒤로 따라온다
+
+- 제보(⑤의 정확한 뜻): "처음엔 뒤에 뜨지만 좌↔우로 방향을 바꾸면 분신이 안 움직여 앞에 남는다". 원인: 부착 이펙트의 localPosition(offsetX × facing)·FlipX 는 **걸 때 한 번** 정해지고, 플레이어 facing(`LookDirectionX`)은 Transform 을 뒤집지 않아 이펙트가 따라오지 않는다. 그동안은 스킬을 쓸 때(따라하기 복귀)만 새 쪽으로 옮겨 갔다.
+- 고침: `EnsureShadowFacingPoll` — 분신 루프를 걸 때 facing 을 기억하고(`shadowFacing[uid]`), 버프 동안 `ShadowFacingPollSeconds`(0.1) 마다 `GetFacingX` 를 읽어 다르면 남은 버프 시간만큼 루프를 새 쪽으로 다시 건다(`PlayBuffLoop` · 로그 `shadow re-anchored behind (facing 1 -> -1)`). 유저당 타이머 하나 · 버프가 끝나면(`GetBuff` nil) 스스로 멈춤 · 따라하기 중(루프 없음)·컷신 숨김 중엔 건너뛴다(그 복귀가 새 쪽으로 건다). 되걸 때 서 있기 클립이 0프레임부터 다시 시작하지만 3프레임 흔들림이라 티 안 남. 방향키를 빠르게 왕복하면 로그 2줄씩(`stopped` + `buff loop effect`)이 찍힌다.
+- 🟡 Play 미검증(사용자 확인): E 뒤 좌·우로 돌 때마다 `shadow re-anchored behind` + 분신이 항상 등 뒤 · 60초 뒤 `[Buff] OFF SHADOW_PARTNER` 이후 로그 없음(타이머 종료).
