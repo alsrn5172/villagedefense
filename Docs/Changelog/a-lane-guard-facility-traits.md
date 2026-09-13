@@ -140,3 +140,35 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 
 ### 검증
 `[LaneTest] activate` → `TEST LANES … spacing=2.93` → 15개 시설 `Test_Lane_Fx` 에 스폰 → 4초마다 `round: minions=5` → 발판 raycast 5줄 전부 true(발판 34→54) → 매 스윙 `[AttackFx] volley` 헤네시스 3~4 · 커닝 1 · 노틸러스 3 · 페리온 1(엘리니아는 CAST_HIT) · Error 0.
+
+## 2026-09-14 (2차) — 테스트 미니언 완화 + 임시 시설 그림 배율 `FacilitySprite.Scale` (사용자 피드백)
+
+### 무엇
+- **"좀비 버섯 너무 많이 나온다"** → `Lane/LaneTestDriver`: 투입 간격 4 → **8초**, HP 400 → **150**, **줄당 동시 3마리 상한**(`MaxAlivePerLane` · `Minion_<마을>_` 자식 중 안 죽은 것을 센다), 첫 라운드는 반복 타이머에만(직접 호출과 겹쳐 두 번 나오던 것).
+- **"기본값 sprite 포탑·억제기 크기가 이상해"** → 원인: 2026-09-08 에 시설 `.model` 3종을 헤네시스 전용 아트(900px급) 기준 **`Scale 0.25`** 로 낮췄는데, 임시 그림(엘리니아·노틸러스 포탑 180×320 · 억제기 172×156 · 커닝/엘리니아/노틸러스 넥서스 104×172)도 같은 0.25 를 타서 **0.4~0.8 유닛(손톱)** 이 됐고, 그 행의 `GroundOffset`(1.785/1.665/1.125)은 옛 배율 실측값이라 허공에 떠 있었다.
+  → `FacilitySprite.csv` 에 **`Scale` 열**(`#Note` 앞 · 빈 칸 = `.model` 0.25 유지 · 🔴 헤더 변경 → #40 공지) 추가. 임시 그림 7행만 헤네시스 아트 높이 **2.25** 에 맞춰 채우고 `GroundOffset`·`BarOffset` 을 리소스 피벗으로 다시 계산(HP바는 전부 바닥 +2.325 로 같게):
+
+| 그림 | Scale | GroundOffset | BarOffset |
+|---|---|---|---|
+| 임시 포탑 `781d0548`(피벗 바닥 25%) | 0.703 | 0.57 | 1.755 |
+| 임시 억제기 `ccdeb5e0`(FlipY · 피벗 56%) | 1.442 | 0.995 | 1.33 |
+| 임시 넥서스 `8adca861`(피벗 49%) | 1.308 | 1.112 | 1.213 |
+
+- `FacilityAttackFx` 노틸러스 3행 `LaunchOffsetY 1.68` — 임시 포탑은 피벗이 바닥 쪽이라 기본값(GroundOffset)이면 포탄이 몸통 가운데서 나간다 → 꼭대기 높이.
+
+### 변경 파일
+| 파일 | 변경 |
+|---|---|
+| `Lane/LaneTestDriver.mlua` | 간격 8s · HP 150 · `MaxAlivePerLane 3` · `AliveCount` |
+| `Lane/LaneStateService.mlua` | `Scale` 열 로드 · `FacilityScale(village, stage)` |
+| `Lane/LaneFacilityService.mlua` | 스폰 시 표 배율로 `TransformComponent.Scale` 을 덮는다(히트박스·오라 드로어보다 먼저) |
+| `FacilitySprite.csv` | 🔴 **헤더 변경**(`Scale` 열) + 임시 그림 7행 |
+| `FacilityAttackFx.csv` | 노틸러스 3행 `LaunchOffsetY 1.68` |
+| `Docs/스키마-계약.md` A-2-4b · `Docs/tools/check-integrity.cjs` | `Scale` 열 |
+
+### 검증 (2026-09-14 · 개인 월드 Play · `Test_Lane_Fx`)
+- `FacilitySprite loaded: 15 rows applied` · `FacilityAttackFx loaded: 15/15` · `check-integrity` 전부 통과 · 진단 errors 0 · 런타임 Error/LEA 0
+- 스폰 배율(서버 스크립트 되읽기): 임시 넥서스 3개 `scale=(1.308,1.308)` · 임시 억제기 2개 `1.442` · 임시 포탑 2개 `0.703` · 전용 아트 8개는 `0.250` 그대로 · 히트박스 월드 크기 넥서스 2.40×2.22 · 억제기 2.00×1.99 · 포탑 2.00×1.14(피벗이 바닥 쪽이라 아래 절반)
+- 엘리니아 줄(바닥 7.85): 넥서스 y 8.96(+1.112) · 억제기 8.85(+0.995) · 포탑 8.42(+0.57) — 표 오프셋대로
+- 미니언: 8초마다 `round: minions=5 skipped(full)=0`(첫 틱은 즉시) · 확인 시점 생존 4마리(HP 150 이라 포탑에 바로 죽는다 · 상한 3 은 아직 안 걸림) · 노틸러스 `volley n=3` 정상
+- **눈 확인(사용자)**: 배율·오프셋은 리소스 피벗 계산값이라 투명 여백·그림자만큼 떠 보이거나 잠길 수 있다 → `FacilitySprite.csv` 의 `Scale`/`GroundOffset` 칸만 조정. 노틸러스 포탄 출발 높이는 `FacilityAttackFx.LaunchOffsetY`.

@@ -120,7 +120,7 @@ const CANONICAL = {
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
   LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
   TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
-  FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,FlipX,#Note",
+  FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,FlipX,Scale,#Note",
   VillageFacilityTrait: "VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note",
   FacilityAttackFx: "VillageId,Stage,Level,Mode,BallRuid,Ball2Ruid,HitRuid,CastRuid,CountMin,CountMax,IntervalSec,Scale,HitScale,FlightSec,ArcHeight,StickSec,LaunchOffsetY,CastOffsetY,FaceDeg,Enabled,#Note",
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",

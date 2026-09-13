@@ -8,14 +8,17 @@ script LaneTestDriver extends Component
 
 	property boolean Enabled = true
 
-	-- 미니언 투입 간격(초) · 마을당 1마리
-	property number SpawnInterval = 4.0
+	-- 미니언 투입 간격(초) · 마을당 1마리 (사용자 2026-09-14 "너무 많이 나온다" → 4 → 8초 · HP 400 → 150 · 줄당 동시 3마리 상한)
+	property number SpawnInterval = 8.0
 
 	property integer MonsterId = 2230101
 
-	property integer BaseHp = 400
+	property integer BaseHp = 150
 
 	property integer BaseAttack = 15
+
+	-- 줄(마을)당 살아 있는 미니언 상한. 넘으면 그 줄은 이번 라운드에 안 보낸다.
+	property integer MaxAlivePerLane = 3
 
 	@HideFromInspector
 	property boolean active = false
@@ -67,19 +70,39 @@ script LaneTestDriver extends Component
 		local mapName = self.Entity.Name
 		log("[LaneTest] activate on " .. mapName .. " by " .. tostring(isvalid(ent) and ent.Name or "?"))
 		_LaneFacilityService:UseTestLanes(mapName)
+		-- 첫 라운드는 타이머에 맡긴다(직접 부르면 반복 타이머의 첫 틱과 겹쳐 두 번 나왔다 · 2026-09-14 실측).
 		self.timerId = _TimerService:SetTimerRepeat(function() self:SpawnRound() end, self.SpawnInterval)
-		self:SpawnRound()
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AliveCount(string villageId)
+		-- 이 맵에서 살아 있는 그 마을 미니언 수 (이름 접두 Minion_<마을>_).
+		local n = 0
+		local prefix = "Minion_" .. villageId .. "_"
+		for _, c in ipairs(self.Entity.Children:ToTable()) do
+			if isvalid(c) and string.find(c.Name, prefix, 1, true) == 1 then
+				---@type Monster
+				local mon = c.Monster
+				if not (isvalid(mon) and mon.IsDead) then n = n + 1 end
+			end
+		end
+		return n
 	end
 
 	@ExecSpace("ServerOnly")
 	method void SpawnRound()
-		-- 마을마다 사냥터2 시작점(오른쪽 끝)에 미니언 1마리. 스펙은 MinionFlowService.SpawnWave 와 같은 꼴.
+		-- 마을마다 사냥터2 시작점(오른쪽 끝)에 미니언 1마리 — 그 줄에 MaxAlivePerLane 미만일 때만. 스펙은 MinionFlowService.SpawnWave 와 같은 꼴.
 		local spec = { monsterId = self.MonsterId, baseHp = self.BaseHp, baseAttack = self.BaseAttack, hpMul = 1.0, atkMul = 1.0, expBase = 0, mesoBase = 0, coinChance = 0, hpRatio = 1.0, namePart = "T" }
 		local n = 0
+		local skipped = 0
 		for _, v in ipairs(_LaneFacilityService:TestVillages()) do
-			if isvalid(_MinionFlowService:SpawnMinion(v, "LANE2", spec)) then n = n + 1 end
+			if self:AliveCount(v) >= self.MaxAlivePerLane then
+				skipped = skipped + 1
+			elseif isvalid(_MinionFlowService:SpawnMinion(v, "LANE2", spec)) then
+				n = n + 1
+			end
 		end
-		log("[LaneTest] round: minions=" .. tostring(n))
+		log("[LaneTest] round: minions=" .. tostring(n) .. " skipped(full)=" .. tostring(skipped))
 	end
 
 	@ExecSpace("ServerOnly")
