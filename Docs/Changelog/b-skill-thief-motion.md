@@ -48,3 +48,9 @@
 - ② **컷신 동안 분신 숨김** — 분신 루프·따라하기 클립은 화면 컷신 위에 그려진다. `PlayStageEffect` 가 컷신형 cast(spec.scale + noFlip · 예열 목록과 같은 기준)를 재생할 때 `HideShadowFor(uid, spec.cutsceneSeconds or CutsceneShadowHideSeconds 5.5)`: 서 있기 루프를 내리고(`StopBuffLoop`) `shadowHiddenUntil[uid]` 동안 `PlayShadowMimic`(1.6s 의 swingT3 따라하기 포함)·`PlayBuffLoop(SHADOW_PARTNER)`(그 사이 E 재시전)를 막고, 끝나면 `ScheduleShadowRestore` 가 남은 버프 시간만큼 루프를 다시 건다(메소 익스플로전 `_END` 5.5 = 서 있기 복귀와 같은 시점 · 일도양단 길이가 더 짧으면 `SK_T31.cast.cutsceneSeconds` 로 한 칸). 버프가 없으면 아무것도 안 한다. 도적 외 직업의 컷신에도 같은 규칙(분신이 없으니 무해).
   - 같이 고친 것: `PlayShadowMimic` 의 조건을 "루프가 떠 있음" 에서 **"버프 활성 + 숨김 아님"** 으로 — 연타(럭키 세븐 0.4s 락 < 0.6s 복귀)면 앞 동작의 복귀 전이라 루프가 없어 두 번째 던지기를 안 따라 했다. 복귀 타이머는 `ScheduleShadowRestore` 한 곳(가장 최근 예약만 · 컷신 복귀는 `shadowHiddenUntil` 을 먼저 푼다).
 - 🟡 Play 미검증(사용자 확인): Q 로그 `spawned projectile SK_T11 … offsetX=±1.02 offsetY=0.09` + 표창이 초승달 가운데서 나가는 프레임 · 분신 켠 채 Q 연타 → 매번 `shadow mimic swingT3` · 분신 켠 채 R → `shadow hidden for cutscene 5.5s` · 컷신 중 분신·따라하기 없음 · 5.5s `buff loop effect SK_T22 … for <남은 초>s` 로 복귀.
+
+### 2026-09-13 — 제보 반영 ③ 표창은 이펙트가 뜰 때 · ④ 표창 조금 더 크게
+
+- 제보: "럭키 세븐 표창이 다 나간 뒤에 이펙트가 뜬다 — 이펙트가 켜질 때 표창이 나가야" · "표창을 조금 더 크게".
+- ③ 원인: 팩 effect(0ae88fa4…) **0프레임이 4×4 빈 프레임**이라 초승달은 1프레임부터 보이는데, 표창 두 발(0 · +0.12s)은 시전과 같은 틱에 스폰됐다. → `effectOverrides.SK_T11.spawn.delay = 0.2`: `FireProjectile` 이 시전 연출·Use 사운드(·던지기 모션은 RequestCast 순간)는 그대로 두고 `SpawnProjectile` 만 delay 뒤 타이머로 부른다(볼리 2발째는 그 +0.12 · 시전 락 0.4s 안). 실제 프레임 딜레이는 오프라인에서 못 읽는다(썸네일 GIF 는 150ms 정규화) → 🟡 0.2 부터 · 표창이 초승달보다 늦으면 0.15 · 아직 이르면 0.25 로 한 칸(spec 한 숫자). 로그 `PROJECTILE SK_T11 launch in 0.2s (after cast effect)`.
+- ④ `spawn.scale = 1.3` → `SpawnProjectile(…, spawnOffsetX, **spriteScale**)` 새 마지막 인자 → `SpawnOneProjectile` 이 `SetDirection` 앞에 `Transform.Scale = (1.3, 1.3, 1)`(PlaySpriteFlash 와 같은 순서 · ApplyFacing 은 부호만 바꾼다). 판정 상자(`RangeX/Y` 0.8 월드 단위)는 그대로. 로그 `spawned projectile SK_T11 … scale=1.3`. 다른 스킬은 1.
