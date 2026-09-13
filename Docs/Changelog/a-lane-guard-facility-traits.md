@@ -78,3 +78,9 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 2. `FactionAuraController.AuraOffsetY` 기본 1.0 은 바닥에 선 옛 포탑 기준 → 시설에 붙이면 사각형이 바닥 위 1.1~4.1 에 떠서 `affected=0`. → `AttachAura` 가 `1.0 − GroundOffset` 으로 바닥 +1.0 에 중심을 둠.
 
 **미검증(사용자 눈 확인)**: 침범자 토스트 문구·표시(주인 없는 테스트라 토스트 대상 없음) · 오라 띠 그림 위치 · 실제 플레이어가 커닝 오라 안에 서 있을 때 이속(경로는 `SetAuraSpeedMul` 로 확인) · 수비대 리쉬 오버슛(코드상 매 프레임 방향 0 처리).
+
+### 2026-09-13 (2차) — F 값 확정 반영 (사용자)
+- **F-1** 억제기 사거리 = 포탑과 동일 → `TowerConfig.csv` SUPPRESSOR 3행에 `Range 3.0/3.5/4.0` 기입. 쿨타임(`AttackSpeed` = 한 발 뒤 다음 발까지 초)은 사용자 질문 상태라 **포탑과 동일 1.5/1.3/1.1 로 잠정** 기입 — 다르면 CSV 칸만. 코드의 "0 이면 포탑 값 차용" 은 안전망으로 유지.
+- **F-2** 오라 범위 = 포탑 가로너비의 3배 · 중앙 유지 → `LaneFacilityService.AuraWidthMul = 3.0` × `HitWidth 2.0` = 가로 **6.0**(기존 기본 8.0) · 세로 3.0 · 시설 중심 대칭.
+- **F-6** 반사 상한 없음 → `ReflectCap = 0` 그대로(안전망).
+- 검증: refresh → Play → `towerDef.SUPPRESSOR range/attackSpeed` 가 CSV 값으로 읽히는지 · `[AuraEmitter] … rect=6.0 x 3.0` · 커닝 수비대 `affected=2` 유지.
