@@ -68,3 +68,12 @@
   - **재시전 공격 이펙트** = `punchCast = { 같은 clip, startFrame 3, endFrame 6, offsetX 2.5, scale 0.8 }` — 궤적 프레임만 앞으로 2.5 유닛 옮겨(그림의 캐릭터 부분이 시전자 위에 오고) 궤적이 **앞쪽 0~3.1 유닛**(Range 3)으로 뻗는다. `PlayStageEffect` 의 부착 분기에도 startFrame/endFrame 옵션을 넣었다. 맞은 대상마다 punchImpact(129×115 · pivot 가운데)는 그대로.
   - 컷신(함포 사격 R) 동안은 `HideTransformLoopFor` 가 불꽃 캐릭터·틴트 왕복을 내리고 컷신 뒤 되건다(그대로).
 - 🟡 Play 미검증(사용자 확인): Q 회전이 0.65s 로 느려지고 피해 숫자가 회전 중간에 · W → 즉시 캐릭터 위에 불타는 황금 캐릭터(0~2프레임 반복 · 좌우로 돌면 따라 뒤집힘 · 로그 `buff loop effect SK_P21 SUPER_TRANSFORM` + `shadow re-anchored behind` 는 돌아설 때) · W 재시전 → 궤적이 **앞으로** 3 유닛 뻗고 뒤에는 아무것도 안 뜬다 · 프레임 범위 옵션이 안 먹으면(전체 10프레임이 돈다) 이 두 옵션 키 이름을 EffectService.d.mlua 로 재확인.
+
+### 2026-09-13 — 제보 ⑥ 백덤블링 원래 속도 복원 + 부자연스러운 원인 한 가지 · 슈퍼 트랜스폼 "원래 캐릭터를 불꽃 캐릭터로 교체"
+
+- **백덤블링 속도 복원**: seconds 0.65 → **0.4** · hitDelay 0.35 → **0.2** · 시전 락 0.8 → **0.6**(제보 ⑤ 이전 값).
+- **부자연스러웠던 원인(진단)**: 회전각이 **선형**(처음부터 끝까지 같은 각속도)이라 첫 틱(0.04s)에 이미 36° 기울어 — 점프는 그때 겨우 0.16 유닛 떠 있다 — **땅에 선 채로 뒤로 넘어가기 시작**했고, 360° 에서 뚝 멈춰 착지 직전까지 최고 속도로 돌았다. 진짜 백덤블링은 떠오르면서 기울기 시작해 정점에서 가장 빠르게 돌고 착지하며 바로 선다.
+  - **고침(작은 조정 한 가지)**: `BackflipEase = true` — `BackflipClient` 가 회전각 진행에만 smoothstep(q = p²(3−2p))을 건다. 점프 포물선·시간·높이·피해 시점은 그대로. 비교: p = 0.1 에서 예전 36° → 지금 10° · p = 0.5 에서 둘 다 180°(정점) · p = 0.9 에서 예전 324° → 지금 350°. 예전 느낌으로 돌리려면 `BackflipEase = false` 한 줄.
+- **슈퍼 트랜스폼 = 불꽃 캐릭터만**: `SK_P21.loop.hideAvatar = true` — `PlayBuffLoop` 가 루프를 건 뒤 `AvatarRendererComponent.SetAlpha(0)`(전 클라 · 다크 사이트의 `SkillBuffs.SetAvatarAlpha` 와 같은 호출)로 원래 캐릭터를 숨기고, `RemoveBuffLoop(userId, buffTag, keepAvatarHidden)` 가 버프 종료(`StopBuffLoop`)·컷신 숨김 때 알파 1 로 되돌린다(재시전·돌아섬의 재걸기는 `keepAvatarHidden = true` 로 깜빡임 없이 유지). 틴트 왕복(tintPulse)은 안 보이므로 뺐다(spec 주석에 되돌리는 한 줄).
+  - 한계: 원작 변신 몸의 걷기·공격 프레임은 팩에 없어 불꽃 캐릭터(스크류 펀치 effect 0~2프레임 · 서 있기)가 **미끄러지듯** 이동하고, 주먹(swingP2)·백덤블링 회전 같은 아바타 모션은 변신 중 보이지 않는다. 좌우는 followFacing 이 0.1s 마다 맞춘다.
+- 🟡 Play 미검증(사용자 확인): Q 가 떠오르며 기울기 시작해 착지하며 바로 선다(0.4s) · W → 원래 캐릭터가 사라지고(로그 `avatar hidden under buff loop SUPER_TRANSFORM`) 불꽃 캐릭터만 · 좌우로 돌면 불꽃 캐릭터가 뒤집힌다 · 30초 뒤 원래 캐릭터 복구(로그 `avatar shown again after buff loop`) · 변신 중 R 컷신 뒤에도 다시 숨겨진다.
