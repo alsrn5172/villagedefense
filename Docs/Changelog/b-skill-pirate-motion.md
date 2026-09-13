@@ -77,3 +77,13 @@
 - **슈퍼 트랜스폼 = 불꽃 캐릭터만**: `SK_P21.loop.hideAvatar = true` — `PlayBuffLoop` 가 루프를 건 뒤 `AvatarRendererComponent.SetAlpha(0)`(전 클라 · 다크 사이트의 `SkillBuffs.SetAvatarAlpha` 와 같은 호출)로 원래 캐릭터를 숨기고, `RemoveBuffLoop(userId, buffTag, keepAvatarHidden)` 가 버프 종료(`StopBuffLoop`)·컷신 숨김 때 알파 1 로 되돌린다(재시전·돌아섬의 재걸기는 `keepAvatarHidden = true` 로 깜빡임 없이 유지). 틴트 왕복(tintPulse)은 안 보이므로 뺐다(spec 주석에 되돌리는 한 줄).
   - 한계: 원작 변신 몸의 걷기·공격 프레임은 팩에 없어 불꽃 캐릭터(스크류 펀치 effect 0~2프레임 · 서 있기)가 **미끄러지듯** 이동하고, 주먹(swingP2)·백덤블링 회전 같은 아바타 모션은 변신 중 보이지 않는다. 좌우는 followFacing 이 0.1s 마다 맞춘다.
 - 🟡 Play 미검증(사용자 확인): Q 가 떠오르며 기울기 시작해 착지하며 바로 선다(0.4s) · W → 원래 캐릭터가 사라지고(로그 `avatar hidden under buff loop SUPER_TRANSFORM`) 불꽃 캐릭터만 · 좌우로 돌면 불꽃 캐릭터가 뒤집힌다 · 30초 뒤 원래 캐릭터 복구(로그 `avatar shown again after buff loop`) · 변신 중 R 컷신 뒤에도 다시 숨겨진다.
+
+### 2026-09-13 — 제보 ⑦ 타협안 "원래 아바타는 희미하게" · 원작 슈퍼 트랜스포메이션 대조로 부자연스러운 부분 정리
+
+- **타협안**: `SK_P21.loop.hideAvatar = true`(알파 0) → **`avatarAlpha = 0.35`** — `PlayBuffLoop` 가 `SetAlpha(avatarAlpha)`(hideAvatar 는 0 과 같음 · 전 클라), `RemoveBuffLoop` 가 1 로 복구(재시전·돌아섬은 유지). 희미한 아바타 덕에 주먹(swingP2)·백덤블링 회전·걷기가 불꽃 아래로 비친다.
+- **원작 대조로 고친 것**(원작 슈퍼 트랜스포메이션 = 캐릭터 자리에 더 큰 황금 형태 · 꺼지지 않는 불꽃 · 바라보는 쪽 · 속도/점프 상승 · 30초):
+  - ① 루프 프레임 **0~2 → 1~2**: 0프레임은 페이드인(희미)이라 매 주기(≈0.45s)마다 형태가 어두워졌다 — 원작은 일정한 불꽃. 1↔2 는 둘 다 밝고 윤곽만 조금 달라 자연스러운 일렁임.
+  - ② **위치**: 1~2프레임 pivot (25,10)/(13,11) 이 그림 왼쪽·아래에 있어 불꽃 캐릭터 가운데가 anchor 보다 21~29px **뒤**, 발이 ≈10px **아래**(바닥에 박힘)였다 → `offsetX 0.25`(바라보는 쪽 앞 · PlayBuffLoop 가 facing 을 곱한다) · `offsetY 0.1`.
+  - ③ 그대로 둔 것: 크기 ≈1.15 유닛(아바타 0.7 · 원작처럼 커진 형태) · followFacing(0.1s) · 속도/점프 +30% · 30초/쿨 60(표) · 시전 = 라이트닝 폼 황금 번개 기둥.
+  - 한계(팩에 없는 것): 변신 몸의 걷기·점프·공격 프레임 → 이동 중 불꽃 캐릭터는 미끄러지고, 재시전 주먹은 궤적(3~6프레임)만. 백덤블링 때 불꽃은 돌지 않는다(루프는 플레이어 루트에 붙고 회전은 아바타 루트).
+- 🟡 Play 미검증(사용자 확인): W → 로그 `avatar alpha 0.35 under buff loop SUPER_TRANSFORM` · 불꽃 캐릭터가 아바타 위에 정확히 겹치고(앞·뒤로 치우치면 offsetX ±0.1) 발이 바닥에 · 매 주기 어두워지지 않음 · 30초 뒤 `avatar shown again` · 희미한 아바타로 주먹 모션이 비친다.
