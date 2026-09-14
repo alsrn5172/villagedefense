@@ -17,6 +17,12 @@ script SkillWindowLogic extends Logic
     -- 클릭이 아니라 hover 로 뜬다(사용자 요청 2026-09-14). .ui 파일은 건드리지 않는다(협업-규칙 §10-3).
     property Entity descPanel = "0c466289-c778-4829-8ea4-816b24de67e9"
 
+    -- 실제로 쓰는 패널 엔티티. 위 property 는 UIBuilder 가 써 준 바인딩이 아니라 손으로 적은 UUID 라
+    -- 런타임에 안 붙을 수 있다(2026-09-14 2차까지 툴팁이 아무 반응 없던 유력한 원인) → 안 붙으면
+    -- 이미 동작이 확인된 descText 바인딩에서 부모로 거슬러 올라가 찾는다. 이후 코드는 전부 이것만 쓴다.
+    @HideFromInspector
+    property any tipPanel = nil
+
     -- 툴팁 치수(UI 좌표). 폭은 고정, 높이는 글 길이에 맞춰 GetPreferredHeight 로 잰다.
     property number TooltipWidth = 440
 
@@ -56,6 +62,17 @@ script SkillWindowLogic extends Logic
 
     @HideFromInspector
     property any messageTimerId = nil
+
+    -- ButtonState.Hover 가 한 번이라도 온 적이 있는지. 안 오는 환경이면 OnUpdate 의 커서 폴백이 돈다.
+    @HideFromInspector
+    property boolean hoverEventSeen = false
+
+    -- 폴백이 실제로 쓰였다는 로그를 한 번만 남기기 위한 플래그.
+    @HideFromInspector
+    property boolean pollLogged = false
+
+    @HideFromInspector
+    property number pollAccum = 0
 
     -- UITouchReceiveComponent 를 런타임에 붙일 수 있는 환경인지 한 번만 재고 기억한다(EnsureTouchReceiver).
     @HideFromInspector
@@ -171,17 +188,29 @@ script SkillWindowLogic extends Logic
         --      이 주는 커서 좌표와 같은 공간이 된다(InventoryUIController 툴팁과 같은 규칙).
         --   ② 피벗을 좌상단으로 → 커서 오른쪽 아래로 펼쳐진다.
         --   ③ 비워진 자리(140px)만큼 ListArea 를 늘린다 → 창에 빈 구멍이 남지 않는다.
+        local text = self.descText
+        if text == nil or not isvalid(text.Entity) then
+            log_warning("SkillWindowLogic: DescText binding missing - hover tooltip disabled")
+            return
+        end
+
+        -- descPanel property(손으로 적은 UUID)가 안 붙었으면 DescText 의 부모로 찾는다.
         local panel = self.descPanel
+        if not isvalid(panel) then
+            panel = text.Entity.Parent
+            log_warning("SkillWindowLogic: descPanel property did not bind - falling back to DescText.Parent")
+        end
         if not isvalid(panel) then
             log_warning("SkillWindowLogic: DescPanel not found - hover tooltip disabled")
             return
         end
+        self.tipPanel = panel
         local panelTransform = panel.UITransformComponent
-        local text = self.descText
-        if panelTransform == nil or text == nil then
-            log_warning("SkillWindowLogic: DescPanel/DescText transform missing - hover tooltip disabled")
+        if panelTransform == nil then
+            log_warning("SkillWindowLogic: DescPanel transform missing - hover tooltip disabled")
             return
         end
+        log("SkillWindowLogic: tooltip panel = " .. tostring(panel.Name))
 
         -- 먼저 "쓸 수 있다" 로 표시하고 배치를 바꾼다. 아래 한 줄이 엔진에서 막히더라도 툴팁 자체는
         -- (원래 자리에라도) 뜨게 하려는 것 — 2026-09-14 1차 시도에서 아무것도 안 뜬 뒤로, 어디까지
@@ -221,13 +250,21 @@ script SkillWindowLogic extends Logic
         if siblingCount > 0 then _UILogic:SetSiblingIndex(panelTransform, siblingCount - 1) end
         log("SkillWindowLogic: tooltip stage 3 - reparented to UIGroup root (siblings=" .. tostring(siblingCount) .. ")")
 
-        -- 설명 칸이 비운 자리만큼 목록을 아래로 늘린다(480 → 630 · 예전 DescPanel 아래 끝과 같은 높이).
+        -- 설명 칸이 있던 자리를 아예 없앤다(사용자 요청 2026-09-14 2차: "설명 나오던 공간도 지워줘").
+        -- 목록은 원래 높이(480) 그대로 두고 창 자체를 줄인다 → 목록 아래에 빈 회색 칸이 남지 않는다.
+        --   목록 아래 끝 = 222(위 여백) + 480 = 702 · 푸터(SKILL POINT) = 아래에서 84 · 사이 여백 16
+        --   → 창 높이 802. 창은 중앙 피벗이라 줄이면 위아래가 같이 당겨지고, 목록(위 고정)·푸터(아래 고정)는
+        --     각자 기준을 유지한다.
         local listEntity = self.listLayout.Entity
-        if isvalid(listEntity) and listEntity.UITransformComponent ~= nil then
-            local listTransform = listEntity.UITransformComponent
-            listTransform.RectSize = Vector2(listTransform.RectSize.x, listTransform.RectSize.y + 150)
+        if isvalid(listEntity) then
+            local windowEntity = listEntity.Parent
+            if isvalid(windowEntity) and windowEntity.UITransformComponent ~= nil then
+                local windowTransform = windowEntity.UITransformComponent
+                local listBottom = 222 + 480
+                windowTransform.RectSize = Vector2(windowTransform.RectSize.x, listBottom + 16 + 84)
+                log("SkillWindowLogic: tooltip stage 4 - window shrunk to " .. tostring(windowTransform.RectSize.y) .. " (desc slot removed)")
+            end
         end
-        log("SkillWindowLogic: tooltip ready (list grown by 150)")
 
         -- 행을 하나씩 옮겨 다닐 때는 다음 행의 Hover 가 툴팁을 갈아 끼우지만, 목록 밖으로 한 번에
         -- 빠져나가는 경우를 위해 목록 자체의 Exit 도 안전망으로 둔다(붙으면 좋고, 아니면 OnUpdate 가 받는다).
@@ -592,22 +629,91 @@ script SkillWindowLogic extends Logic
         -- Normal(= hover 해제)은 이 엔진에서 빠지는 경우가 있어(ApplyButtonPressVisual 주석) 내리는 것을
         -- 여기에만 맡기지 않는다 — 다음 행의 Hover · 목록 Exit · OnUpdate 의 IsPointerOverUI 가 같이 받는다.
         if event.state == ButtonState.Hover then
-            local uiPos = _UILogic:ScreenToUIPosition(_InputService:GetCursorPosition())
+            self.hoverEventSeen = true
+            log("SkillWindowLogic: hover(ButtonState) " .. skillId)
+            -- 먼저 띄우고(지난 좌표) 그 다음 커서 자리로 옮긴다. 좌표 변환이 막혀도 툴팁은 떠 있다.
             self.hoveredSkillId = skillId
-            self.lastTipX = uiPos.x
-            self.lastTipY = uiPos.y
-            self:ShowTooltip(skillId, uiPos.x, uiPos.y)
+            self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
+            self:MoveTooltipToCursor()
         elseif event.state == ButtonState.Normal then
             self:OnRowHoverExit(skillId)
         end
     end
 
     @ExecSpace("ClientOnly")
+    method void MoveTooltipToCursor()
+        -- 지금 커서 자리로 툴팁을 옮긴다. ShowPanelWithText 가 이미 켜 둔 뒤에 부른다.
+        local uiPos = _UILogic:ScreenToUIPosition(_InputService:GetCursorPosition())
+        self.lastTipX = uiPos.x
+        self.lastTipY = uiPos.y
+        if self.hoveredSkillId ~= "" then
+            self:ShowTooltip(self.hoveredSkillId, uiPos.x, uiPos.y)
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindRowUnderCursor()
+        -- hover 이벤트가 아예 안 오는 환경을 위한 폴백: 커서가 어느 행 사각형 안에 있는지 직접 잰다.
+        -- 행 복제본의 anchoredPosition 은 못 믿지만(엔진 내부 배치) ScreenToLocalUIPosition 은 실제
+        -- 변환 행렬을 쓰므로 별개 경로다. RowTemplate 피벗이 (0.5, 1) 좌상단 기준이라 행 안이면
+        -- x ∈ [-w/2, w/2] · y ∈ [-h, 0].
+        local cursor = _InputService:GetCursorPosition()
+        for _, entity in ipairs(self.rowEntities) do
+            if isvalid(entity) then
+                local rowTransform = entity.UITransformComponent
+                if rowTransform ~= nil then
+                    local point = _UILogic:ScreenToLocalUIPosition(cursor, rowTransform)
+                    local halfW = rowTransform.RectSize.x / 2
+                    local rowH = rowTransform.RectSize.y
+                    if point.x >= -halfW and point.x <= halfW and point.y <= 0 and point.y >= -rowH then
+                        return entity
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PollCursorHover()
+        -- ButtonState.Hover 가 한 번도 안 온 환경에서만 도는 폴백. 커서 아래 행을 찾아 툴팁을 맞춘다.
+        local row = self:FindRowUnderCursor()
+        if row == nil then
+            if self.hoveredSkillId ~= "" then
+                self.hoveredSkillId = ""
+                self:HideTooltip()
+            end
+            return
+        end
+        local skillId = string.sub(row.Name, 5) -- "Row_" 접두사 제거 (CreateRow)
+        if _SkillDatabase:GetSkill(skillId) == nil then return end -- DEV/안내 행
+        if skillId == self.hoveredSkillId then return end -- 같은 행이면 다시 그리지 않는다
+        if not self.pollLogged then
+            self.pollLogged = true
+            log("SkillWindowLogic: hover(poll fallback) " .. skillId .. " - ButtonState.Hover never fired")
+        end
+        self.hoveredSkillId = skillId
+        self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
+        self:MoveTooltipToCursor()
+    end
+
+    @ExecSpace("ClientOnly")
     method void OnUpdate(number delta)
-        -- 툴팁이 떠 있는데 커서가 UI 밖(= 게임 화면)으로 나간 경우의 안전망. Normal/Exit 가 빠져도
-        -- 툴팁이 화면에 남지 않는다. 떠 있지 않을 때는 비교 한 번으로 바로 빠진다.
+        -- ① hover 이벤트가 안 오는 환경이면 커서 폴백으로 직접 찾는다(창이 열려 있을 때만).
+        -- ② 툴팁이 떠 있는데 커서가 UI 밖(= 게임 화면)으로 나가면 내린다 — Normal/Exit 가 빠져도 안 남는다.
         if not self.tooltipReady then return end
-        if not isvalid(self.descPanel) or not self.descPanel.Enable then return end
+
+        -- 폴백은 매 프레임까지 필요 없다(커서 이동 감지에 0.08초면 충분하고, 혹시 이 경로가 엔진에서
+        -- 막혀 오류를 뱉더라도 로그가 60fps 로 쏟아지지 않는다).
+        if not self.hoverEventSeen and isvalid(self.rootGroup) and self.rootGroup.Enable then
+            self.pollAccum = self.pollAccum + delta
+            if self.pollAccum >= 0.08 then
+                self.pollAccum = 0
+                self:PollCursorHover()
+            end
+        end
+
+        if not isvalid(self.tipPanel) or not self.tipPanel.Enable then return end
         if not _InputService:IsPointerOverUI() then
             self.hoveredSkillId = ""
             self:HideTooltip()
@@ -677,7 +783,10 @@ script SkillWindowLogic extends Logic
         -- 행에 커서가 들어옴 → 그 스킬 툴팁. 위치는 행의 UITransform 이 아니라 커서 좌표에서 잡는다:
         -- ScrollLayoutGroup 이 배치하는 복제 행은 UITransform 이 실제 화면 위치를 돌려주지 않는다
         -- (InventoryUIController 의 GridView 복제 셀에서 확인된 것과 같은 엔진 동작).
+        self.hoverEventSeen = true
+        log("SkillWindowLogic: hover(UITouchEnter) " .. skillId)
         self.hoveredSkillId = skillId
+        self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
         local uiPos = _UILogic:ScreenToUIPosition(screenPoint)
         self.lastTipX = uiPos.x
         self.lastTipY = uiPos.y
@@ -714,21 +823,26 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void HideTooltip()
-        if self.tooltipReady and isvalid(self.descPanel) then self.descPanel.Enable = false end
+        if self.tooltipReady and isvalid(self.tipPanel) then self.tipPanel.Enable = false end
     end
 
     @ExecSpace("ClientOnly")
     method void ShowPanelWithText(string bodyText, number uiX, number uiY)
         -- 글 길이에 맞춰 높이를 재고, 커서 오른쪽 아래에 펼치되 화면 밖으로 나가면 반대쪽으로 접는다.
-        if not self.tooltipReady then return end
+        if not self.tooltipReady or not isvalid(self.tipPanel) then return end
         local innerWidth = self.TooltipWidth - self.TooltipPadding * 2
+
+        -- 글을 넣고 "먼저 켠다". 아래 높이 계산·좌표 변환 중 한 줄이 엔진에서 막히더라도 툴팁은 이미
+        -- 화면에 있다 — 2026-09-14 2차까지 아무것도 안 보였던 터라, 안 보이는 실패보다 자리가 틀린
+        -- 실패가 훨씬 낫다(어디가 막혔는지 바로 드러난다).
         self.descText.Text = bodyText
+        self.tipPanel.Enable = true
 
         local height = self.descText:GetPreferredHeight(bodyText, innerWidth) + self.TooltipPadding * 2
         if height < self.TooltipMinHeight then height = self.TooltipMinHeight end
         if height > self.TooltipMaxHeight then height = self.TooltipMaxHeight end
 
-        local panelTransform = self.descPanel.UITransformComponent
+        local panelTransform = self.tipPanel.UITransformComponent
         panelTransform.RectSize = Vector2(self.TooltipWidth, height)
         self.descText.Entity.UITransformComponent.RectSize = Vector2(innerWidth, height - self.TooltipPadding * 2)
 
@@ -749,8 +863,6 @@ script SkillWindowLogic extends Logic
         if py - height < -halfHeight then py = -halfHeight + height + 4 end
         if py > halfHeight then py = halfHeight - 4 end
         panelTransform.anchoredPosition = Vector2(px, py)
-
-        self.descPanel.Enable = true
     end
 
     @ExecSpace("ClientOnly")
