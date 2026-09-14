@@ -127,3 +127,9 @@
   - ② **계정 리소스 RUID 를 그룹 월드가 못 불러올 가능성** → `TransformFormSet` 스위치(SkillExecutors 속성 · 기본 `"custom"`): `formSets.custom` = B 가 만든 걷기 3장(계정 리소스) · `formSets.official` = 스크류 펀치 effect 의 **공식** 프레임 sprite 1·2(반드시 불러와짐 · pivot 이 그림 왼쪽·아래라 항목별 `ox/oy` 로 보정: f30bf46b… ox −0.225 oy 0.05 · 9bc8d968… ox −0.285 oy 0.06 · 걷기 = 두 자세 교대라 다리 움직임은 미묘). sprite 항목 = `{ ruid, ox, oy }`(`FormSprite` 가 문자열도 받는다) · `ApplyFormSprite` 가 SpriteRUID + Follow 오프셋(× facing)을 한 번에 적용. 로그 `buff form SK_P21 SUPER_TRANSFORM set=custom ruid=… follow=map-child`.
   - 진단 절차: custom 으로 여전히 안 보이면 `TransformFormSet = "official"` 한 줄 → 보이면 계정 리소스 접근 문제(그룹 리소스로 재업로드 · `asset_create_group_resource_storage_item` · 그룹 코드 필요) · official 로도 안 보이면 sprite 엔티티 자체 문제(로그 `buff form spawn failed` 여부 · `SkillForm_*` 엔티티가 하이라키에 있는지).
 - 🟡 Play 미검증(사용자 확인): W → 로그 `buff form … set=custom … follow=map-child` · 불꽃 캐릭터가 발밑에서 따라온다 · 안 보이면 위 절차.
+
+### 2026-09-14 — 제보 ⑬ 콘솔 `[CLIENT] RUID(b03dd531…) is unavailable now.` → 그룹 리소스로 재업로드
+
+- 원인 확정: 계정 리소스(내 리소스)는 이 **그룹 월드** 클라가 못 불러온다(A 의 `a-npc-village-ui` 조각 §"계정 자산" 과 같은 문제 · A 는 `a-lane-facility-sprites` 에서 **그룹 리소스 스토리지 groupCode `mIYbC`** 로 해결). 맵 아래 스폰 + FollowTarget(⑫)은 그대로 둔다(자식 스폰 의존 제거는 무해).
+- 같은 PNG 3장을 `asset_create_group_resource_storage_item`(groupCode mIYbC · 2단계 presigned PUT) + `asset_update_resource_storage_info`(pivot_x 0.5 · pivot_y 0.0 · Bilinear · Clamp)로 그룹 리소스에 등록: **stand `07864866a96a4860a7c80972f6ddf265` · walk_a `8fe698e1a57e47128216fa90451fc767` · walk_b `f4f9f95656a94d5aafc7cd5dcaec9887`** → `formSets.custom` 교체. 계정 RUID 3개(b03dd531/be02babc/f5e29b96)는 폐기(계정 리소스에 남아 있음 · 필요하면 `asset_delete_resource_storage_item`).
+- 🟡 사용자 요청으로 이번엔 **MCP 로 직접 확인**한다(아래 ⑭에 결과).
