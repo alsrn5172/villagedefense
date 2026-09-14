@@ -77,6 +77,10 @@ script SkillWindowLogic extends Logic
     @HideFromInspector
     property number pollAccum = 0
 
+    -- 툴팁 좌표 진단 로그를 처음 세 번만 남기기 위한 카운터(자리가 맞는 것이 확인되면 로그와 함께 제거).
+    @HideFromInspector
+    property integer posLogCount = 0
+
     -- UITouchReceiveComponent 를 런타임에 붙일 수 있는 환경인지 한 번만 재고 기억한다(EnsureTouchReceiver).
     @HideFromInspector
     property boolean touchReceiverTried = false
@@ -240,10 +244,22 @@ script SkillWindowLogic extends Logic
         panel.Enable = false
         log("SkillWindowLogic: tooltip stage 1 - text/panel styled")
 
-        panelTransform.RectSize = Vector2(self.TooltipWidth, self.TooltipMinHeight)
+        -- 창 밖(UIGroup 루트)으로 먼저 옮긴다. 앵커/피벗은 반드시 그 "다음"에 준다 — AttachTo 는 화면
+        -- 위치를 유지하려고 앵커와 anchoredPosition 을 부모 기준으로 다시 계산하므로, 먼저 줘 봐야
+        -- 덮어써진다(2026-09-14 4차 Play: 툴팁이 커서가 아니라 화면 좌상단에 붙어 나온 원인).
+        panel:AttachTo(self.rootGroup)
+        local siblingCount = 0
+        for _, _child in ipairs(self.rootGroup.Children) do siblingCount = siblingCount + 1 end
+        if siblingCount > 0 then _UILogic:SetSiblingIndex(panelTransform, siblingCount - 1) end
+        log("SkillWindowLogic: tooltip stage 2 - reparented to UIGroup root (siblings=" .. tostring(siblingCount) .. ")")
+
+        -- 앵커를 루트 정중앙에 고정하고 피벗을 좌상단으로 → anchoredPosition 이 곧 "화면 중앙 기준
+        -- 툴팁 좌상단 좌표" 가 되고, ScreenToLocalUIPosition(루트) 이 주는 커서 좌표와 같은 공간이 된다.
         panelTransform.AnchorsMin = Vector2(0.5, 0.5)
         panelTransform.AnchorsMax = Vector2(0.5, 0.5)
         panelTransform.Pivot = Vector2(0, 1)
+        panelTransform.RectSize = Vector2(self.TooltipWidth, self.TooltipMinHeight)
+        panelTransform.anchoredPosition = Vector2(0, 0)
 
         -- 툴팁 안쪽 글: 좌상단 정렬로 여러 줄을 위에서부터 채운다(붙박이 칸일 때는 가운데 정렬이었다).
         local textTransform = text.Entity.UITransformComponent
@@ -252,15 +268,7 @@ script SkillWindowLogic extends Logic
         textTransform.Pivot = Vector2(0, 1)
         textTransform.anchoredPosition = Vector2(self.TooltipPadding, -self.TooltipPadding)
         textTransform.RectSize = Vector2(self.TooltipWidth - self.TooltipPadding * 2, self.TooltipMinHeight - self.TooltipPadding * 2)
-        log("SkillWindowLogic: tooltip stage 2 - transforms set")
-
-        -- 창 밖(UIGroup 루트)으로 옮긴다 → 창·목록보다 나중에 그려져 행 위에 뜬다. 루트가 중앙 피벗이라
-        -- anchoredPosition 이 ScreenToUIPosition 커서 좌표와 같은 공간이 된다.
-        panel:AttachTo(self.rootGroup)
-        local siblingCount = 0
-        for _, _child in ipairs(self.rootGroup.Children) do siblingCount = siblingCount + 1 end
-        if siblingCount > 0 then _UILogic:SetSiblingIndex(panelTransform, siblingCount - 1) end
-        log("SkillWindowLogic: tooltip stage 3 - reparented to UIGroup root (siblings=" .. tostring(siblingCount) .. ")")
+        log("SkillWindowLogic: tooltip stage 3 - transforms set after reparent")
 
         -- 설명 칸이 있던 자리를 아예 없앤다(사용자 요청 2026-09-14 2차: "설명 나오던 공간도 지워줘").
         -- 목록은 원래 높이(480) 그대로 두고 창 자체를 줄인다 → 목록 아래에 빈 회색 칸이 남지 않는다.
@@ -664,12 +672,32 @@ script SkillWindowLogic extends Logic
     @ExecSpace("ClientOnly")
     method void MoveTooltipToCursor()
         -- 지금 커서 자리로 툴팁을 옮긴다. ShowPanelWithText 가 이미 켜 둔 뒤에 부른다.
-        local uiPos = _UILogic:ScreenToUIPosition(_InputService:GetCursorPosition())
+        local uiPos = self:CursorInRootSpace()
         self.lastTipX = uiPos.x
         self.lastTipY = uiPos.y
+        -- 자리가 또 어긋나면 숫자로 보이게 처음 세 번만 남긴다(맞으면 지운다).
+        if self.posLogCount < 3 then
+            self.posLogCount = self.posLogCount + 1
+            local rootTransform = self.rootGroup.UITransformComponent
+            local rootSize = "nil"
+            if rootTransform ~= nil then rootSize = tostring(rootTransform.RectSize.x) .. "x" .. tostring(rootTransform.RectSize.y) end
+            log("SkillWindowLogic: tooltip pos cursorUI=(" .. tostring(math.floor(uiPos.x)) .. "," .. tostring(math.floor(uiPos.y)) .. ") root=" .. rootSize)
+        end
         if self.hoveredSkillId ~= "" then
             self:ShowTooltip(self.hoveredSkillId, uiPos.x, uiPos.y)
         end
+    end
+
+    @ExecSpace("ClientOnly")
+    method Vector2 CursorInRootSpace()
+        -- 커서를 "UIGroup 루트 피벗(정중앙) 기준" 좌표로. 툴팁의 anchoredPosition 과 같은 공간이라
+        -- 그대로 대입하면 커서 옆에 붙는다.
+        -- ScreenToUIPosition 은 "가장 위 UI" 기준이라 어떤 UIGroup 이 기준인지 보장되지 않는다
+        -- (2026-09-14 4차: 툴팁이 엉뚱한 자리에 떴다) → 기준 트랜스폼을 명시하는 쪽을 쓴다.
+        local cursor = _InputService:GetCursorPosition()
+        local rootTransform = self.rootGroup.UITransformComponent
+        if rootTransform == nil then return _UILogic:ScreenToUIPosition(cursor) end
+        return _UILogic:ScreenToLocalUIPosition(cursor, rootTransform)
     end
 
     @ExecSpace("ClientOnly")
@@ -808,10 +836,8 @@ script SkillWindowLogic extends Logic
         log("SkillWindowLogic: hover(UITouchEnter) " .. skillId)
         self.hoveredSkillId = skillId
         self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
-        local uiPos = _UILogic:ScreenToUIPosition(screenPoint)
-        self.lastTipX = uiPos.x
-        self.lastTipY = uiPos.y
-        self:ShowTooltip(skillId, uiPos.x, uiPos.y)
+        -- 이벤트에 실려 온 좌표도 결국 화면 좌표라, 커서와 같은 변환(루트 기준)을 쓴다.
+        self:MoveTooltipToCursor()
     end
 
     @ExecSpace("ClientOnly")
