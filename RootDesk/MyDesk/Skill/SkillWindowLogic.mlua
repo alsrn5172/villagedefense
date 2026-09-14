@@ -32,11 +32,6 @@ script SkillWindowLogic extends Logic
 
     property number TooltipMaxHeight = 560
 
-    -- 커서 기준 펼침 방향(오른쪽 아래). 화면 밖으로 나가면 ShowPanelWithText 가 반대쪽으로 접는다.
-    property number TooltipOffsetX = 18
-
-    property number TooltipOffsetY = -12
-
     -- 배우기 실패 사유 등 짧은 알림이 떠 있는 시간(초). 설명 칸이 없어져 대신 쓰는 자리다.
     property number MessageSeconds = 2.5
 
@@ -56,12 +51,9 @@ script SkillWindowLogic extends Logic
     @HideFromInspector
     property string hoveredSkillId = ""
 
-    -- 마지막으로 툴팁을 띄운 UI 좌표. ShowFloatingMessage 가 같은 자리에 알림을 띄우는 데 쓴다.
+    -- 지금 커서가 올라가 있는 행 엔티티. 툴팁 자리를 이 행의 트랜스폼에서 잡는다(PlaceTooltip).
     @HideFromInspector
-    property number lastTipX = 0
-
-    @HideFromInspector
-    property number lastTipY = 0
+    property any hoveredRow = nil
 
     @HideFromInspector
     property any messageTimerId = nil
@@ -76,10 +68,6 @@ script SkillWindowLogic extends Logic
 
     @HideFromInspector
     property number pollAccum = 0
-
-    -- 툴팁 좌표 진단 로그를 처음 세 번만 남기기 위한 카운터(자리가 맞는 것이 확인되면 로그와 함께 제거).
-    @HideFromInspector
-    property integer posLogCount = 0
 
     -- UITouchReceiveComponent 를 런타임에 붙일 수 있는 환경인지 한 번만 재고 기억한다(EnsureTouchReceiver).
     @HideFromInspector
@@ -386,7 +374,7 @@ script SkillWindowLogic extends Logic
                 self:ShowFloatingMessage(reason)
             elseif self.hoveredSkillId ~= "" then
                 -- 성공(또는 단순 갱신): 커서가 아직 올라가 있는 행의 툴팁을 새 레벨·새 수치로 다시 그린다.
-                self:ShowTooltip(self.hoveredSkillId, self.lastTipX, self.lastTipY)
+                self:ShowTooltip(self.hoveredSkillId)
             end
         end
     end
@@ -617,7 +605,7 @@ script SkillWindowLogic extends Logic
         -- (2026-09-14 1차 시도: UITouchEnterEvent 로만 걸었더니 툴팁이 아예 안 떴다 — 복제 행에는
         --  UITouchReceiveComponent 가 없고 런타임 AddComponent 도 먹지 않은 것으로 본다. 아래쪽에서
         --  UITouch 쪽도 "붙으면 좋고" 로 같이 걸되, 실패해도 여기까지는 이미 배선이 끝나 있게 순서를 뒤에 둔다.)
-        local hoverHandler = row:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, event) end)
+        local hoverHandler = row:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
         table.insert(self.rowHandlers, { entity = row, conn = hoverHandler, eventType = ButtonStateChangeEvent })
 
         local plusEntity = row:GetChildByName("BtnPlus")
@@ -632,7 +620,7 @@ script SkillWindowLogic extends Logic
         table.insert(self.rowHandlers, { entity = plusEntity, conn = plusStateHandler, eventType = ButtonStateChangeEvent })
 
         -- "+" 위에 있을 때도 그 행의 툴팁을 유지한다(행에서 "+" 로 넘어가면 행의 Normal 이 먼저 올 수 있다).
-        local plusHoverHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, event) end)
+        local plusHoverHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
         table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHoverHandler, eventType = ButtonStateChangeEvent })
 
         -- 보조 경로: UITouchEnter/Exit 가 실제로 오면 더 정확하다(좌표가 이벤트에 실려 온다).
@@ -646,74 +634,26 @@ script SkillWindowLogic extends Logic
         -- (ButtonStateChangeEvent 주 경로만으로도 툴팁은 뜬다).
         self:EnsureTouchReceiver(row)
         if row.UITouchReceiveComponent == nil then return end
-        local enterHandler = row:ConnectEvent(UITouchEnterEvent, function(event) self:OnRowHoverEnter(skillId, event.TouchPoint) end)
+        local enterHandler = row:ConnectEvent(UITouchEnterEvent, function(event) self:OnRowHoverEnter(skillId, row) end)
         table.insert(self.rowHandlers, { entity = row, conn = enterHandler, eventType = UITouchEnterEvent })
         local exitHandler = row:ConnectEvent(UITouchExitEvent, function() self:OnRowHoverExit(skillId) end)
         table.insert(self.rowHandlers, { entity = row, conn = exitHandler, eventType = UITouchExitEvent })
     end
 
     @ExecSpace("ClientOnly")
-    method void OnRowButtonState(string skillId, ButtonStateChangeEvent event)
-        -- Hover = 커서가 행에 올라옴 → 그 자리에 툴팁. 좌표는 이벤트에 없으므로 지금 커서를 읽는다.
+    method void OnRowButtonState(string skillId, Entity row, ButtonStateChangeEvent event)
+        -- Hover = 커서가 행에 올라옴 → 그 행 옆에 툴팁(자리는 PlaceTooltip 이 행 트랜스폼으로 잡는다).
         -- Normal(= hover 해제)은 이 엔진에서 빠지는 경우가 있어(ApplyButtonPressVisual 주석) 내리는 것을
         -- 여기에만 맡기지 않는다 — 다음 행의 Hover · 목록 Exit · OnUpdate 의 IsPointerOverUI 가 같이 받는다.
         if event.state == ButtonState.Hover then
             self.hoverEventSeen = true
             log("SkillWindowLogic: hover(ButtonState) " .. skillId)
-            -- 먼저 띄우고(지난 좌표) 그 다음 커서 자리로 옮긴다. 좌표 변환이 막혀도 툴팁은 떠 있다.
             self.hoveredSkillId = skillId
-            self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
-            self:MoveTooltipToCursor()
+            self.hoveredRow = row
+            self:ShowTooltip(skillId)
         elseif event.state == ButtonState.Normal then
             self:OnRowHoverExit(skillId)
         end
-    end
-
-    @ExecSpace("ClientOnly")
-    method void MoveTooltipToCursor()
-        -- 지금 커서 자리로 툴팁을 옮긴다. ShowPanelWithText 가 이미 켜 둔 뒤에 부른다.
-        self:SyncCursorUiPos()
-        if self.hoveredSkillId ~= "" then
-            self:ShowTooltip(self.hoveredSkillId, self.lastTipX, self.lastTipY)
-        end
-    end
-
-    @ExecSpace("ClientOnly")
-    method void SyncCursorUiPos()
-        -- 커서를 "UIGroup 루트 피벗(정중앙) 기준" 좌표로 바꿔 lastTipX/lastTipY 에 넣는다. 툴팁의
-        -- anchoredPosition 과 같은 공간이라 그대로 대입하면 커서 옆에 붙는다.
-        --
-        -- 값을 return 하지 않고 프로퍼티에 넣는 이유: Vector2 를 선언 반환형으로 둔 메서드가 런타임에
-        -- nil 을 돌려줬다(2026-09-14 5차 빌드 로그 LIA-1114 "'nil' 에서 'x'을 찾을 수 없습니다" →
-        -- uiPos.x 에서 죽어 툴팁이 제자리에 머물렀다). 네이티브 구조체를 user-script 메서드 반환형으로
-        -- 쓰지 않는다 — SkillDatabase.CanLearn 이 테이블로 감싸는 것과 같은 회피다.
-        local cursor = _InputService:GetCursorPosition()
-        if cursor == nil then return end
-
-        -- 기준은 "툴팁의 실제 부모" 다. anchoredPosition 은 부모 앵커(정중앙으로 맞춰 둔) 기준이므로,
-        -- 커서도 같은 부모 기준으로 바꿔야 서로 맞는다. rootGroup 으로 고정해 두면 AttachTo 가
-        -- 실패했을 때(부모가 Window 인 채) 계산이 전부 어긋난다 — 2026-09-14 6차에서 세로가 크게
-        -- 밀려 나온 것이 이 경우로 보인다.
-        local parentTransform = self:TooltipParentTransform()
-        local point = nil
-        if parentTransform ~= nil then
-            point = _UILogic:ScreenToLocalUIPosition(cursor, parentTransform)
-        end
-        if point == nil then
-            point = _UILogic:ScreenToUIPosition(cursor)
-        end
-        if point == nil then return end -- 변환이 둘 다 막히면 지난 좌표를 그대로 쓴다
-        self.lastTipX = point.x
-        self.lastTipY = point.y
-
-        -- ⚠ 진단용(자리가 맞는 것이 확인되면 제거): hover 로그 바로 옆에 숫자가 남게 매번 찍는다.
-        local parentName = "nil"
-        local parentSize = "nil"
-        if parentTransform ~= nil then
-            parentName = tostring(parentTransform.Entity.Name)
-            parentSize = tostring(math.floor(parentTransform.RectSize.x)) .. "x" .. tostring(math.floor(parentTransform.RectSize.y))
-        end
-        log("SkillWindowLogic: tooltip pos cursor=(" .. tostring(math.floor(cursor.x)) .. "," .. tostring(math.floor(cursor.y)) .. ") local=(" .. tostring(math.floor(self.lastTipX)) .. "," .. tostring(math.floor(self.lastTipY)) .. ") parent=" .. parentName .. " " .. parentSize)
     end
 
     @ExecSpace("ClientOnly")
@@ -769,8 +709,8 @@ script SkillWindowLogic extends Logic
             log("SkillWindowLogic: hover(poll fallback) " .. skillId .. " - ButtonState.Hover never fired")
         end
         self.hoveredSkillId = skillId
-        self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
-        self:MoveTooltipToCursor()
+        self.hoveredRow = row
+        self:ShowTooltip(skillId)
     end
 
     @ExecSpace("ClientOnly")
@@ -855,16 +795,14 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void OnRowHoverEnter(string skillId, Vector2 screenPoint)
-        -- 행에 커서가 들어옴 → 그 스킬 툴팁. 위치는 행의 UITransform 이 아니라 커서 좌표에서 잡는다:
-        -- ScrollLayoutGroup 이 배치하는 복제 행은 UITransform 이 실제 화면 위치를 돌려주지 않는다
-        -- (InventoryUIController 의 GridView 복제 셀에서 확인된 것과 같은 엔진 동작).
+    method void OnRowHoverEnter(string skillId, Entity row)
+        -- 행에 커서가 들어옴 → 그 스킬 툴팁. 자리는 PlaceTooltip 이 이 행의 트랜스폼으로 잡는다
+        -- (화면 좌표 변환은 쓰지 않는다 — 2026-09-14 4~6차에서 계속 어긋났다).
         self.hoverEventSeen = true
         log("SkillWindowLogic: hover(UITouchEnter) " .. skillId)
         self.hoveredSkillId = skillId
-        self:ShowTooltip(skillId, self.lastTipX, self.lastTipY)
-        -- 이벤트에 실려 온 좌표도 결국 화면 좌표라, 커서와 같은 변환(루트 기준)을 쓴다.
-        self:MoveTooltipToCursor()
+        self.hoveredRow = row
+        self:ShowTooltip(skillId)
     end
 
     @ExecSpace("ClientOnly")
@@ -883,7 +821,7 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void ShowTooltip(string skillId, number uiX, number uiY)
+    method void ShowTooltip(string skillId)
         -- 툴팁 한 장을 채운다. 수치는 전부 SkillDatabase(= SkillInfo.csv 한 곳)에서 읽고 여기서 다시
         -- 계산하지 않는다 — 표 값이 바뀌면 CSV 만 고치면 된다.
         if not self.tooltipReady then return end
@@ -892,7 +830,7 @@ script SkillWindowLogic extends Logic
         local level = _PlayerSkillState:LocalSkillLevel(skillId)
         local playerTier = _PlayerSkillState:LocalTier()
         local playerLevel = _PlayerSkillState:LocalLevel()
-        self:ShowPanelWithText(self:BuildTooltipText(skill, level, playerTier, playerLevel), uiX, uiY)
+        self:ShowPanelWithText(self:BuildTooltipText(skill, level, playerTier, playerLevel))
     end
 
     @ExecSpace("ClientOnly")
@@ -901,7 +839,7 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void ShowPanelWithText(string bodyText, number uiX, number uiY)
+    method void ShowPanelWithText(string bodyText)
         -- 글 길이에 맞춰 높이를 재고, 커서 오른쪽 아래에 펼치되 화면 밖으로 나가면 반대쪽으로 접는다.
         if not self.tooltipReady or not isvalid(self.tipPanel) then return end
         local innerWidth = self.TooltipWidth - self.TooltipPadding * 2
@@ -920,24 +858,68 @@ script SkillWindowLogic extends Logic
         panelTransform.RectSize = Vector2(self.TooltipWidth, height)
         self.descText.Entity.UITransformComponent.RectSize = Vector2(innerWidth, height - self.TooltipPadding * 2)
 
-        -- 경계도 좌표와 같은 기준(툴팁의 실제 부모)으로 잰다. 서로 다른 기준을 섞으면 클램프가
-        -- 엉뚱하게 걸려 툴팁이 화면 가장자리에 붙는다. stretch 앵커가 런타임에 100x100 으로 붕괴하는
-        -- 경우가 있어(InventoryUIController 주석의 refresh 앵커 버그) 작으면 1920x1080 으로 되돌린다.
+        self:PlaceTooltip(panelTransform, height)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlaceTooltip(any panelTransform, number height)
+        -- 자리 잡기는 화면 좌표 → UI 좌표 변환을 쓰지 않는다. 그 변환으로 세 번 연속 자리가 어긋났고
+        -- (2026-09-14 4~6차) 이 세션에서는 Maker MCP 가 없어 내가 직접 확인할 수단도 없다.
+        -- 대신 UI 공간 안에서만 계산한다: 호버한 행의 WorldPosition 을 툴팁 부모의 로컬 좌표로 바꾸고
+        -- (UITransformComponent.ToLocalPoint · 전부 UI 공간), 창 바깥 옆에 그 행과 같은 높이로 붙인다.
+        -- 원작 메이플도 스킬 창 옆에 붙여 목록을 가리지 않는다.
+        --
+        -- 기준이 두 개인 점에 주의: 위치는 "툴팁의 실제 부모" 로컬 좌표, 화면 경계는 UIGroup 루트 크기.
+        -- Window 는 루트 정중앙에 앵커돼 있어(ui 원본 anchoredPosition 0,0 · 앵커 0.5,0.5) 두 좌표계의
+        -- 원점이 같다 — 그래서 섞어 써도 어긋나지 않는다.
         local halfWidth = 960
         local halfHeight = 540
-        local parentTransform = self:TooltipParentTransform()
-        if parentTransform ~= nil and parentTransform.RectSize.x > 400 then
-            halfWidth = parentTransform.RectSize.x / 2
-            halfHeight = parentTransform.RectSize.y / 2
+        local rootTransform = self.rootGroup.UITransformComponent
+        if rootTransform ~= nil and rootTransform.RectSize.x > 400 then
+            halfWidth = rootTransform.RectSize.x / 2
+            halfHeight = rootTransform.RectSize.y / 2
         end
 
-        local px = uiX + self.TooltipOffsetX
-        local py = uiY + self.TooltipOffsetY
-        if px + self.TooltipWidth > halfWidth then px = uiX - self.TooltipOffsetX - self.TooltipWidth end
+        -- 창 반폭: 툴팁을 창 오른쪽 바깥에 놓기 위한 기준.
+        local windowHalfWidth = 320
+        local windowTransform = self:WindowTransform()
+        if windowTransform ~= nil and windowTransform.RectSize.x > 100 then
+            windowHalfWidth = windowTransform.RectSize.x / 2
+        end
+
+        -- 호버한 행의 세로 위치(부모 로컬). 못 구하면 창 위쪽 기준으로 둔다.
+        local rowY = halfHeight - 240
+        local parentTransform = self:TooltipParentTransform()
+        if isvalid(self.hoveredRow) and parentTransform ~= nil then
+            local rowTransform = self.hoveredRow.UITransformComponent
+            if rowTransform ~= nil then
+                local localPoint = parentTransform:ToLocalPoint(rowTransform.WorldPosition)
+                if localPoint ~= nil then rowY = localPoint.y end
+            end
+        end
+
+        -- 창 오른쪽 바깥 → 화면을 넘으면 왼쪽 바깥.
+        local px = windowHalfWidth + 12
+        if px + self.TooltipWidth > halfWidth then px = -windowHalfWidth - 12 - self.TooltipWidth end
         if px < -halfWidth then px = -halfWidth + 4 end
-        if py - height < -halfHeight then py = -halfHeight + height + 4 end
-        if py > halfHeight then py = halfHeight - 4 end
+
+        -- 행 중심에 세로 중앙을 맞춘다(피벗이 좌상단이라 절반 위로).
+        local py = rowY + height / 2
+        if py > halfHeight - 4 then py = halfHeight - 4 end
+        if py - height < -halfHeight + 4 then py = -halfHeight + 4 + height end
+
         panelTransform.anchoredPosition = Vector2(px, py)
+        log("SkillWindowLogic: tooltip place rowY=" .. tostring(math.floor(rowY)) .. " -> (" .. tostring(math.floor(px)) .. "," .. tostring(math.floor(py)) .. ") h=" .. tostring(math.floor(height)) .. " bounds=" .. tostring(math.floor(halfWidth * 2)) .. "x" .. tostring(math.floor(halfHeight * 2)) .. " winHalfW=" .. tostring(math.floor(windowHalfWidth)))
+    end
+
+    @ExecSpace("ClientOnly")
+    method any WindowTransform()
+        -- 스킬 창 본체(ListArea 의 부모)의 UITransform.
+        local listEntity = self.listLayout.Entity
+        if not isvalid(listEntity) then return nil end
+        local windowEntity = listEntity.Parent
+        if not isvalid(windowEntity) then return nil end
+        return windowEntity.UITransformComponent
     end
 
     @ExecSpace("ClientOnly")
@@ -949,7 +931,7 @@ script SkillWindowLogic extends Logic
             return
         end
         self.hoveredSkillId = ""
-        self:ShowPanelWithText("<color=#FF6B6B>" .. message .. "</color>", self.lastTipX, self.lastTipY)
+        self:ShowPanelWithText("<color=#FF6B6B>" .. message .. "</color>")
         if self.messageTimerId ~= nil then _TimerService:ClearTimer(self.messageTimerId) end
         self.messageTimerId = _TimerService:SetTimerOnce(function()
             self.messageTimerId = nil
