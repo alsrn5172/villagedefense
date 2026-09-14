@@ -154,3 +154,9 @@
 - **사라짐 원인**: 화면 컷신 판정이 "cast 에 scale + noFlip 이 있다" 는 어림이었는데, ⑬ 에서 에너지 쉴드 cast(이뮨 배리어 pre · scale 0.85 · noFlip)에 그 둘이 붙자 E 가 컷신으로 잡혀 `HideTransformLoopFor` 가 변신 form 을 5.5초 `SetVisible(false)` 했다(아바타는 알파 0 이라 둘 다 안 보임). → 컷신 판정을 **`cast.cutsceneSeconds` 유무**(궁 5종만 가진 명시 필드)로 바꿨다(`PlayStageEffect` 의 분신/변신 숨김 · `PrewarmCutscenesFor` 예열 목록 둘 다).
 - **움직일 때 깜빡임**: official 세트의 걷기가 공식 1↔2프레임(팔·크기가 다른 두 자세) 교대라 0.1s 마다 형태가 바뀌어 깜빡임으로 보였다 → official 은 **walk 없음**(움직여도 1프레임 고정 · 미끄러짐). 걷는 다리가 필요하면 `TransformFormSet = "custom"`(B 제작 3장 · 같은 실루엣의 다리만 움직임).
 - 🟡 Play 미검증(사용자 확인 · MCP 생략 요청): W → E: 캐릭터가 사라지지 않고 큰 방울이 감싼다 · W 뒤 좌우 이동: 불꽃 캐릭터 한 장이 그대로 따라온다(깜빡임 0) · R(함포 사격)은 여전히 컷신 동안 form 을 숨겼다가 되살린다.
+
+### 2026-09-14 — 제보 ⑰ "변신 뒤 E 를 누르면 둥근 방울이 캐릭터보다 조금 늦게 따라온다"
+
+- 원인: 방울은 플레이어 엔티티에 **부착**(클라 로컬 · 지연 0)인데 변신 form 은 맵 아래 엔티티를 서버가 매 프레임 옮기는 follow 방식(⑫)이라 클라→서버→클라 왕복만큼 늦게 따라와 둘이 어긋났다(사용자 눈엔 "캐릭터" = 불꽃 form 이라 방울이 늦는 것처럼 보임).
+- 고침: `TransformFormAttach` 속성(기본 **"child"**) — form 을 플레이어 **자식 엔티티**로 스폰(`SpawnByModelId(..., casterEntity)`)해 로컬 `Position = (ox×facing, oy)` 로 둔다(`ApplyFormSprite` 가 FollowTarget 이 없으면 Position 에 쓴다). ⑫ 때 자식 스폰이 "안 보인다" 고 의심했던 것은 계정 RUID 문제였음이 ⑬⑭에서 확인됐으므로 되돌린다. `"follow"` 로 두면 예전 방식(서버 FollowTarget).
+- 🟡 Play 미검증(사용자 확인 · MCP 생략): W 뒤 좌우 이동 중 E → 방울과 불꽃 캐릭터가 같이 움직인다(로그 `buff form … attach=child`) · child 로 form 이 안 보이면 `TransformFormAttach = "follow"` 한 줄.

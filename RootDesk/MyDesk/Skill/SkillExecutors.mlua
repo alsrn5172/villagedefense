@@ -215,6 +215,11 @@ script SkillExecutors extends Logic
     -- (스크류 펀치 effect 의 공식 프레임 1·2 교대). B 제작 걷기 3장을 쓰려면 "custom".
     property string TransformFormSet = "official"
 
+    -- 변신 form 을 플레이어에 붙이는 방식(2026-09-14 제보 "변신 뒤 E 방울이 캐릭터보다 조금 늦게 따라온다"): "child" = 플레이어 **자식 엔티티**(클라 로컬 변환이라 지연 0 · 방울과 같은 기준) ·
+    -- "follow" = 맵 아래 + SkillProjectile.FollowTarget(서버가 매 프레임 옮김 · 왕복 지연만큼 늦게 따라와 방울과 어긋난다). ⑫ 때 "안 보인다" 는 계정 RUID 문제였지 자식 스폰 문제가 아니었으므로 child 로.
+    -- child 로 form 이 안 보이면 "follow" 로 한 칸.
+    property string TransformFormAttach = "child"
+
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
     property number BackflipDriftX = 0.35
@@ -1185,10 +1190,16 @@ script SkillExecutors extends Logic
         if not isvalid(fx) or item == nil then return end
         local sprite = fx.SpriteRendererComponent
         if isvalid(sprite) and item.ruid ~= nil and item.ruid ~= "" and sprite.SpriteRUID ~= item.ruid then sprite.SpriteRUID = item.ruid end
+        local ox = ((spec.offsetX or 0) + (item.ox or 0)) * facing
+        local oy = (spec.offsetY or 0) + (item.oy or 0)
         local mover = fx:GetComponent("script.SkillProjectile")
-        if isvalid(mover) then
-            mover.FollowOffsetX = ((spec.offsetX or 0) + (item.ox or 0)) * facing
-            mover.FollowOffsetY = (spec.offsetY or 0) + (item.oy or 0)
+        if isvalid(mover) and mover.FollowTarget ~= nil then
+            -- follow 방식: 서버 OnUpdate 가 대상 + 오프셋으로 옮긴다.
+            mover.FollowOffsetX = ox
+            mover.FollowOffsetY = oy
+        elseif isvalid(fx.TransformComponent) then
+            -- child 방식: 플레이어 자식이라 로컬 Position 이 곧 오프셋.
+            fx.TransformComponent.Position = Vector3(ox, oy, 0)
         end
     end
 
@@ -1216,7 +1227,11 @@ script SkillExecutors extends Logic
         self.spriteFlashCount = self.spriteFlashCount + 1
         local name = "SkillForm_" .. userId .. "_" .. buffTag .. "_" .. tostring(self.spriteFlashCount)
         local pos = casterEntity.TransformComponent.WorldPosition
-        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", name, Vector3(pos.x, pos.y, pos.z), map)
+        -- 붙이는 방식(TransformFormAttach): child = 플레이어 자식(지연 0) · follow = 맵 아래 + FollowTarget(서버 왕복 지연).
+        local asChild = (self.TransformFormAttach == "child")
+        local parent = map
+        if asChild then parent = casterEntity end
+        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", name, Vector3(pos.x, pos.y, pos.z), parent)
         if not isvalid(fx) then
             log_warning("SkillExecutors: buff form spawn failed " .. skillId .. " (" .. userId .. ")")
             return
@@ -1227,7 +1242,7 @@ script SkillExecutors extends Logic
             mover.Speed = 0
             mover.MaxLifetime = duration + 2
             mover.SkillId = skillId
-            mover.FollowTarget = casterEntity
+            if not asChild then mover.FollowTarget = casterEntity end
         end
         local s = spec.scale or 1
         if s <= 0 then s = 1 end
@@ -1245,7 +1260,7 @@ script SkillExecutors extends Logic
         end
         self.runPoseState[userId] = nil
         self:EnsureFormPoll(userId, skillId, buffTag)
-        log("SkillExecutors: buff form " .. skillId .. " " .. buffTag .. " set=" .. tostring(self.TransformFormSet) .. " ruid=" .. tostring(stand.ruid) .. " facing=" .. tostring(facing) .. " avatarAlpha=" .. tostring(dimAlpha) .. " follow=map-child for " .. tostring(duration) .. "s (" .. userId .. ")")
+        log("SkillExecutors: buff form " .. skillId .. " " .. buffTag .. " set=" .. tostring(self.TransformFormSet) .. " ruid=" .. tostring(stand.ruid) .. " facing=" .. tostring(facing) .. " avatarAlpha=" .. tostring(dimAlpha) .. " attach=" .. tostring(self.TransformFormAttach) .. " for " .. tostring(duration) .. "s (" .. userId .. ")")
         -- 이미 켜져 있는 에너지 쉴드 방울을 변신 크기로.
         self:ReplayShieldLoop(userId, "form spawned")
     end
