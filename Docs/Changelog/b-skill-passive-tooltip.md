@@ -7,9 +7,9 @@
 
 원작 메이플과 같은 방식으로 바꿨다. `.ui` 는 손대지 않고(협업-규칙 §10-3) 런타임 재배치만 한다.
 
-- **`DescPanel` 을 창에서 떼어 UIGroup 루트로** (`SkillWindowLogic.SetupTooltip`). 붙박이 "설명 칸" 이
-  사라지고, 같은 엔티티가 커서를 따라다니는 툴팁이 된다. 피벗 좌상단 · 커서 오른쪽 아래로 펼침 ·
-  화면 밖으로 나가면 반대쪽으로 접음(`ShowPanelWithText` · 인벤토리 툴팁과 같은 규칙).
+- **`DescPanel` 을 `Window` 안에서 마지막 자식으로** (`SkillWindowLogic.SetupTooltip` → `MakeLastChild`).
+  붙박이 "설명 칸" 이 사라지고, 같은 엔티티가 커서를 따라다니는 툴팁이 된다. 피벗 좌상단 ·
+  커서 오른쪽 아래로 항상 같은 거리 · 화면을 실제로 벗어날 때만 안쪽으로 민다(`PlaceTooltip`).
 - **행 hover → 툴팁** (`UITouchEnterEvent` / `UITouchExitEvent` · 복제 행에 `UITouchReceiveComponent` 를
   런타임에 붙인다). 행 클릭 → 설명 경로(`OnRowClicked`)는 삭제. 레벨 올리기는 그대로 "+" 버튼.
   목록 영역 자체의 Exit 를 안전망으로 둬서 행 Exit 가 빠져도 툴팁이 남지 않는다.
@@ -18,7 +18,7 @@
   `SkillDatabase.RatioAt/SecondaryAt/DurationAt/CooldownAt`(= `SkillInfo.csv` 한 곳)에서 읽는다.
 - **효과 문구표**(`BuildEffectLabels`): `BuffTag` → "반사 데미지 = 최대 HP의 {v}%" 처럼 표의 "효과" 열이
   그대로 읽히는 한 줄. 표시 문구일 뿐 새 열·새 표가 아니다 — **스키마 계약 변경 없음**.
-- 설명 칸이 비운 자리(140px)만큼 `ListArea` 를 480 → 630 으로 늘렸다.
+- 설명 칸이 비운 자리만큼 **창 높이를 802 로 줄였다**(목록은 480 그대로) → 목록 아래에 빈 회색 칸이 남지 않는다.
 - 설명 칸이 하던 나머지 역할 이전: 배우기 실패 사유·DEV 안내는 마지막 커서 자리에 2.5초 뜨는
   알림(`ShowFloatingMessage`)으로, 초보자 빈 목록 안내는 목록 안 안내 행(`CreateNoticeRow`)으로.
 
