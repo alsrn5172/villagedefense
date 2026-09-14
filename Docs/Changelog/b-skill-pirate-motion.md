@@ -148,3 +148,9 @@
 - **방울 크기**: 에너지 쉴드 cast/loop/loopEnd 에 `whileTransformed = { scale 1.4, offsetY 0.72 }` — `AdjustSpecForForm(spec, player)` 가 변신 form(`IsFormActive`)이 떠 있으면 그 값으로 그린다(불꽃 캐릭터 ≈1.16 유닛 · 지름 ≈1.57 · 중심 = 몸통 0.58 + pivot 보정). 순서 무관: `SpawnBuffForm` 끝에 `ReplayShieldLoop("form spawned")`, 변신 종료(`RemoveBuffLoop` 의 form 제거)에 `ReplayShieldLoop("form removed")` 가 켜져 있는 방울을 남은 시간만큼 새 크기로 되건다(끝 연출 없음 · 로그 `energy shield loop re-sized`).
 - **공식 애니메이션**: `TransformFormSet` 기본값을 `"official"` 로 — 서 있기 = 스크류 펀치 effect 공식 1프레임 sprite(f30bf46b…) · 걷기 = 공식 2·1프레임 교대(9bc8d968… ↔ f30bf46b…). 각 프레임의 pivot 보정 `ox`(+0.225 / +0.285 · facing 곱)·`oy`(0.05 / 0.06)를 sprite 교체와 같은 틱에 바꿔 튀지 않는다(⑫의 ox 부호가 반대였던 것을 고침). B 제작 걷기 3장(그룹 리소스)은 `"custom"` 으로 남겨 둔다.
 - 🟡 Play 미검증(사용자 확인): W → E: 방울이 불꽃 캐릭터를 감싼다(로그 `buff loop effect SK_P22 …` 뒤 크기) · E → W: `energy shield loop re-sized (form spawned)` 로 방울이 커진다 · 30초 뒤 `(form removed)` 로 원래 크기 · W 만: 불꽃 캐릭터가 플레이어 가운데(앞·뒤로 치우치면 ox ±0.05) · 걸으면 두 자세 교대.
+
+### 2026-09-14 — 제보 ⑯ "W 뒤 E 를 누르면 캐릭터가 사라진다" · "그냥 움직일 때 깜빡이면 안 된다"
+
+- **사라짐 원인**: 화면 컷신 판정이 "cast 에 scale + noFlip 이 있다" 는 어림이었는데, ⑬ 에서 에너지 쉴드 cast(이뮨 배리어 pre · scale 0.85 · noFlip)에 그 둘이 붙자 E 가 컷신으로 잡혀 `HideTransformLoopFor` 가 변신 form 을 5.5초 `SetVisible(false)` 했다(아바타는 알파 0 이라 둘 다 안 보임). → 컷신 판정을 **`cast.cutsceneSeconds` 유무**(궁 5종만 가진 명시 필드)로 바꿨다(`PlayStageEffect` 의 분신/변신 숨김 · `PrewarmCutscenesFor` 예열 목록 둘 다).
+- **움직일 때 깜빡임**: official 세트의 걷기가 공식 1↔2프레임(팔·크기가 다른 두 자세) 교대라 0.1s 마다 형태가 바뀌어 깜빡임으로 보였다 → official 은 **walk 없음**(움직여도 1프레임 고정 · 미끄러짐). 걷는 다리가 필요하면 `TransformFormSet = "custom"`(B 제작 3장 · 같은 실루엣의 다리만 움직임).
+- 🟡 Play 미검증(사용자 확인 · MCP 생략 요청): W → E: 캐릭터가 사라지지 않고 큰 방울이 감싼다 · W 뒤 좌우 이동: 불꽃 캐릭터 한 장이 그대로 따라온다(깜빡임 0) · R(함포 사격)은 여전히 컷신 동안 form 을 숨겼다가 되살린다.
