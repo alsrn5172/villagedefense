@@ -40,9 +40,19 @@
 ## 툴팁이 Footer(SKILL POINT) 밑에 깔리던 것 (사용자 재제보 2026-09-15)
 
 앞선 커밋(382d4f5)이 "마지막 자식으로 보낸다" 며 넣은 `SetSiblingIndex(자식수 - 1)` 가 원인이었다.
-0-based 를 가정한 계산인데 MSW 의 리스트 인덱스는 1-based 다(`ReadOnlyList.d.mlua` "1-based index").
-1-based 에서 `자식수 - 1` 은 **끝에서 두 번째** = Footer(SKILL POINT) 바로 아래 — 즉
-`Detach()` + `AttachTo()` 가 이미 끝에 붙여 놓은 것을 그 호출이 한 칸 되돌리고 있었다.
+0-based 를 가정한 계산인데 `_UILogic` 의 형제 인덱스는 **1-based** 다.
+
+**MCP 실측(2026-09-15, Play 중 클라 스크립트 + 스크린샷):**
+
+- `Window` 의 자식은 6개 — `TitleText BtnClose TabRow ListArea DescPanel Footer`.
+- 그 상태에서 `GetSiblingIndex(DescPanel)` = **5** → 1-based 확정. 따라서 `자식수 - 1` = 5 는
+  **끝에서 두 번째**, 정확히 `Footer`(SKILL POINT) 아래다 — 툴팁이 가려지던 그 자리.
+- `SetSiblingIndex(9999)` → 6 으로 잘리고 순서가 `... Footer DescPanel` 로 바뀐다.
+  같은 좌표에 띄운 전/후 스크린샷에서 툴팁 하단(`MP 5 · 쿨타임 2초 · SP 1`)이 푸터에 잘리던 것이
+  푸터 위로 올라오는 것을 확인했다.
+- `Detach()` + `AttachTo()` 는 **끝으로 보내지 않는다** — 순서가 그대로였다. 실제로 옮기는 것은
+  `SetSiblingIndex` 뿐이다.
+
 뒤따르던 검사도 `읽은 인덱스 < 자식수 - 1` 이라 방금 넣은 값과 같아 절대 참이 되지 않았고,
 로그에는 `last=true` 로 찍혀 성공한 것처럼 보였다.
 
