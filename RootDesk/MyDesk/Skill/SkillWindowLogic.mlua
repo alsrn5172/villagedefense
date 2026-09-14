@@ -69,6 +69,10 @@ script SkillWindowLogic extends Logic
     @HideFromInspector
     property number pollAccum = 0
 
+    -- 커서가 UI 밖에 연속으로 머문 시간(초). OnUpdate 의 툴팁 내리기 디바운스에 쓴다.
+    @HideFromInspector
+    property number offUiSeconds = 0
+
     -- UITouchReceiveComponent 를 런타임에 붙일 수 있는 환경인지 한 번만 재고 기억한다(EnsureTouchReceiver).
     @HideFromInspector
     property boolean touchReceiverTried = false
@@ -288,10 +292,14 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void SetSortOrder(any renderer, number order)
-        -- GUI 렌더러 하나를 다른 UI 위에 그리게 한다. OverrideSorting 을 켜야 부모(창)의 정렬을
-        -- 따르지 않고 자기 OrderInLayer 를 쓴다. 컴포넌트가 없으면 조용히 넘어간다.
+        -- GUI 렌더러 하나의 그리기 순서를 올린다. 컴포넌트가 없으면 조용히 넘어간다.
+        --
+        -- ⚠ OverrideSorting 은 절대 대입하지 않는다. .d.mlua 스텁에는 property 로 있지만 런타임에는
+        --   "cannot set OverrideSorting, no such field" 예외가 나고, 그 예외가 SetupTooltip →
+        --   OnBeginPlay 를 통째로 중단시킨다(2026-09-14 MCP 로 직접 확인). 그 여파로 ShowTab 이
+        --   아예 안 돌아 목록이 비고, 창 축소도 툴팁도 전부 실행되지 않았다 — 3~7차 증상의 진짜 원인.
+        --   앞으로 그리기 순서는 OrderInLayer + 계층 순서(AttachTo + SetSiblingIndex)로만 다룬다.
         if renderer == nil then return end
-        renderer.OverrideSorting = true
         renderer.OrderInLayer = order
     end
 
@@ -730,7 +738,15 @@ script SkillWindowLogic extends Logic
         end
 
         if not isvalid(self.tipPanel) or not self.tipPanel.Enable then return end
-        if not _InputService:IsPointerOverUI() then
+        -- 커서가 UI 밖으로 나가면 내린다. 단 한 프레임이라도 false 면 바로 지우던 것을 0.25초 연속으로
+        -- 바꿨다 — 한 프레임짜리 오판에 툴팁이 깜빡 사라지는 쪽이, 조금 늦게 사라지는 쪽보다 나쁘다.
+        -- (행의 Exit 는 UITouchExitEvent 가 제대로 받는다. MCP 실측 AddComponent supported=true)
+        if _InputService:IsPointerOverUI() then
+            self.offUiSeconds = 0
+            return
+        end
+        self.offUiSeconds = self.offUiSeconds + delta
+        if self.offUiSeconds >= 0.25 then
             self.hoveredSkillId = ""
             self:HideTooltip()
         end
@@ -903,8 +919,10 @@ script SkillWindowLogic extends Logic
         if px + self.TooltipWidth > halfWidth then px = -windowHalfWidth - 12 - self.TooltipWidth end
         if px < -halfWidth then px = -halfWidth + 4 end
 
-        -- 행 중심에 세로 중앙을 맞춘다(피벗이 좌상단이라 절반 위로).
-        local py = rowY + height / 2
+        -- 툴팁 위쪽 모서리를 행 위쪽 모서리에 맞춘다. rowY 는 행의 피벗(좌상단) 위치라 그대로 쓰면 된다
+        -- (2026-09-15 MCP 실측: 아이언 바디 행 rowY=17 = 그 행의 윗변). 예전처럼 height/2 를 더하면
+        -- 툴팁이 행보다 높이의 절반만큼 위로 뜬다.
+        local py = rowY
         if py > halfHeight - 4 then py = halfHeight - 4 end
         if py - height < -halfHeight + 4 then py = -halfHeight + 4 + height end
 
