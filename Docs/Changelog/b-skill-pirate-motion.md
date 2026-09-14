@@ -142,3 +142,9 @@
   - 스크린샷: W 직후 원래 캐릭터는 안 보이고 황금 불꽃 캐릭터가 이름표(jjoggi) 바로 위에 서 있음 · ← 홀드 중 4장에서 불꽃 캐릭터가 이름표와 같이 움직이며 걷기 자세(FORMPOS 샘플 ruid=8fe698e1… = walk_a) · 오른쪽으로 돌린 뒤 `scale=-1.0`(뒤집힘) · 발판 끝에서 떨어질 때도 같이 낙하(follow 유지).
   - 🟡 서버 스크립트로 읽은 플레이어/form 좌표는 낙하 중 최대 2.3 유닛 차이가 났지만(`server_main` 실행 컨텍스트가 읽는 플레이어 위치가 OnUpdate 시점과 다른 듯) 화면에선 이름표와 form 이 붙어 있어 시각적 문제 없음 · 걸음 폭·발 높이·다른 계정 화면은 사용자 확인.
 - 스크린샷 원본: `AppData/LocalLow/nexon/MapleStory Worlds/McpScreenshots/maker_play_20260914_1845*/1848*.png` · 대조 시트는 스크래치 `sheet_play_transform.png` / `sheet_play_walk.png`.
+
+### 2026-09-14 — 제보 ⑮ "W 뒤 E 를 누르면 노란 원이 변신 캐릭터 크기와 안 맞는다" · 요청 "W 는 공식 애니메이션을 써라" (MCP 검증 없이 사용자 확인)
+
+- **방울 크기**: 에너지 쉴드 cast/loop/loopEnd 에 `whileTransformed = { scale 1.4, offsetY 0.72 }` — `AdjustSpecForForm(spec, player)` 가 변신 form(`IsFormActive`)이 떠 있으면 그 값으로 그린다(불꽃 캐릭터 ≈1.16 유닛 · 지름 ≈1.57 · 중심 = 몸통 0.58 + pivot 보정). 순서 무관: `SpawnBuffForm` 끝에 `ReplayShieldLoop("form spawned")`, 변신 종료(`RemoveBuffLoop` 의 form 제거)에 `ReplayShieldLoop("form removed")` 가 켜져 있는 방울을 남은 시간만큼 새 크기로 되건다(끝 연출 없음 · 로그 `energy shield loop re-sized`).
+- **공식 애니메이션**: `TransformFormSet` 기본값을 `"official"` 로 — 서 있기 = 스크류 펀치 effect 공식 1프레임 sprite(f30bf46b…) · 걷기 = 공식 2·1프레임 교대(9bc8d968… ↔ f30bf46b…). 각 프레임의 pivot 보정 `ox`(+0.225 / +0.285 · facing 곱)·`oy`(0.05 / 0.06)를 sprite 교체와 같은 틱에 바꿔 튀지 않는다(⑫의 ox 부호가 반대였던 것을 고침). B 제작 걷기 3장(그룹 리소스)은 `"custom"` 으로 남겨 둔다.
+- 🟡 Play 미검증(사용자 확인): W → E: 방울이 불꽃 캐릭터를 감싼다(로그 `buff loop effect SK_P22 …` 뒤 크기) · E → W: `energy shield loop re-sized (form spawned)` 로 방울이 커진다 · 30초 뒤 `(form removed)` 로 원래 크기 · W 만: 불꽃 캐릭터가 플레이어 가운데(앞·뒤로 치우치면 ox ±0.05) · 걸으면 두 자세 교대.
