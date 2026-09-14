@@ -38,10 +38,17 @@ script SkillWindowLogic extends Logic
     -- 툴팁 렌더러의 OrderInLayer. 스킬 창(기본 0)보다 확실히 위. 다른 UI 가 더 높은 값을 쓰면 여기만 올리면 된다.
     property integer TooltipSortOrder = 5000
 
-    -- 커서 기준 툴팁 좌상단 오프셋(원작처럼 커서 바로 아래에 걸린다). 화면 끝에서는 반대쪽으로 뒤집힌다.
-    property number TooltipCursorOffsetX = -8
+    -- 커서 기준 툴팁 좌상단 오프셋. 항상 같은 거리에 뜬다(사용자 요청 2026-09-15: 위치가 들쭉날쭉해서
+    -- 읽기 불편하다) — 화면 끝에서 뒤집지 않고, 정말 화면을 벗어날 때만 살짝 밀어 넣는다.
+    property number TooltipCursorOffsetX = 18
 
-    property number TooltipCursorOffsetY = -14
+    property number TooltipCursorOffsetY = -18
+
+    -- 툴팁 안 스킬 아이콘 한 변(참고 이미지의 왼쪽 아이콘 칸).
+    property number TooltipIconSize = 68
+
+    -- 협업-규칙 §7-4 가 지정한 공용 흰색 9-slice. 구분선을 이걸 눕혀서 그린다(새 스프라이트 없음).
+    property string SharedWhiteNineSliceRUID = "f5e5fbd6dd224f2d8a5af320436b95f0"
 
     -- runtime state (client-only, not persisted)
     property integer currentTab = 0
@@ -56,9 +63,25 @@ script SkillWindowLogic extends Logic
     @HideFromInspector
     property string hoveredSkillId = ""
 
-    -- 지금 커서가 올라가 있는 행 엔티티. 툴팁 자리를 이 행의 트랜스폼에서 잡는다(PlaceTooltip).
+    -- 지금 커서가 올라가 있는 행 엔티티. 커서를 못 읽을 때 폴백 자리 계산에 쓴다(PlaceTooltip).
     @HideFromInspector
     property any hoveredRow = nil
+
+    -- 툴팁 안쪽 노드(BuildTooltipLayout 이 런타임에 복제해서 만든다).
+    @HideFromInspector
+    property any tipTitleEntity = nil
+
+    @HideFromInspector
+    property any tipIconEntity = nil
+
+    @HideFromInspector
+    property any tipRule1 = nil
+
+    @HideFromInspector
+    property any tipRule2 = nil
+
+    @HideFromInspector
+    property any tipBottomText = nil
 
     @HideFromInspector
     property any messageTimerId = nil
@@ -277,6 +300,10 @@ script SkillWindowLogic extends Logic
         textTransform.anchoredPosition = Vector2(self.TooltipPadding, -self.TooltipPadding)
         textTransform.RectSize = Vector2(self.TooltipWidth - self.TooltipPadding * 2, self.TooltipMinHeight - self.TooltipPadding * 2)
         log("SkillWindowLogic: tooltip stage 3 - transforms set after reparent")
+
+        -- 참고 이미지 배치(제목·구분선·아이콘·아래 블록)를 위한 안쪽 노드. 실제 좌표·크기는 매번
+        -- ShowPanelWithParts 가 글 길이에 맞춰 다시 잡는다. 복제가 막혀도 위 단계는 이미 끝나 있다.
+        self:BuildTooltipLayout(panel)
 
         -- 설명 칸이 있던 자리를 아예 없앤다(사용자 요청 2026-09-14 2차: "설명 나오던 공간도 지워줘").
         -- 목록은 원래 높이(480) 그대로 두고 창 자체를 줄인다 → 목록 아래에 빈 회색 칸이 남지 않는다.
@@ -601,7 +628,7 @@ script SkillWindowLogic extends Logic
         -- can still see Great Magic without being able to use it yet - pressing + still goes
         -- through PlayerSkillState.LearnSkill -> CanLearn exactly as before and reports the
         -- real reason as a floating message on failure (ShowFloatingMessage). 툴팁에도 같은 사유가
-        -- 한 줄로 들어간다(BuildTooltipText) - 커서만 올려도 왜 잠겼는지 보인다.
+        -- 한 줄로 들어간다(BuildTooltipParts) - 커서만 올려도 왜 잠겼는지 보인다.
         local requirements = _SkillDatabase:CanLearn(skill.id, playerJobLine, playerTier, playerLevel)
         local locked = not requirements.ok
         if locked then
@@ -862,7 +889,57 @@ script SkillWindowLogic extends Logic
         local level = _PlayerSkillState:LocalSkillLevel(skillId)
         local playerTier = _PlayerSkillState:LocalTier()
         local playerLevel = _PlayerSkillState:LocalLevel()
-        self:ShowPanelWithText(self:BuildTooltipText(skill, level, playerTier, playerLevel))
+        self:ShowPanelWithParts(self:BuildTooltipParts(skill, level, playerTier, playerLevel))
+    end
+
+    @ExecSpace("ClientOnly")
+    method table BuildTooltipParts(table skill, number level, number playerTier, number playerLevel)
+        -- 원작 스킬 툴팁(참고 이미지)의 네 덩이로 나눠 담는다:
+        --   title  = 가운데 정렬 스킬 이름
+        --   top    = 아이콘 오른쪽 블록 — [마스터 레벨 : N] · 종류/단축키 · 설명 · 필요 조건
+        --   bottom = 아래 블록 — [현재레벨 N] · 효과 수치 · 소모/쿨타임 · 다음 레벨
+        --   icon   = 스킬 아이콘 RUID
+        -- 수치는 전부 SkillDatabase(= SkillInfo.csv) 에서 온다.
+        local isPassive = skill.behavior == "PASSIVE"
+        local shownLevel = level
+        if shownLevel < 1 then shownLevel = 1 end
+
+        local top = {}
+        table.insert(top, "<color=#C8B88A>[마스터 레벨 : " .. self:Num(skill.maxLevel) .. "]</color>")
+        local kind = "액티브"
+        if isPassive then kind = "패시브 · 항상 적용" end
+        if not isPassive then
+            local keyName = ""
+            if _SkillHotbar ~= nil then keyName = _SkillHotbar:GetKeyNameForSkill(skill.id) end
+            if keyName ~= "" then kind = kind .. " · [" .. keyName .. "]" end
+        end
+        table.insert(top, "<color=#8FA2C4>" .. kind .. "</color>")
+        table.insert(top, skill.description)
+        local lockReason = self:LockReasonText(skill, playerTier, playerLevel)
+        if lockReason ~= "" then
+            table.insert(top, "<color=#FF6B6B>필요 : " .. lockReason .. "</color>")
+        else
+            table.insert(top, "<color=#8FA2C4>필요 : " .. self:Num(skill.requiredTier) .. "차 · " .. self:Num(skill.requiredLevel) .. "레벨</color>")
+        end
+
+        local bottom = {}
+        if level >= 1 then
+            table.insert(bottom, "<color=#C8B88A>[현재레벨 " .. self:Num(level) .. "]</color>")
+        else
+            table.insert(bottom, "<color=#C8B88A>[아직 배우지 않음 · Lv.1 기준]</color>")
+        end
+        local effect = self:FormatEffect(skill, shownLevel)
+        if effect ~= "" then table.insert(bottom, effect) end
+        local cost = self:FormatCost(skill, shownLevel)
+        if cost ~= "" then table.insert(bottom, cost) end
+        if level >= 1 and level < skill.maxLevel then
+            local nextEffect = self:FormatEffect(skill, level + 1)
+            if nextEffect ~= "" then
+                table.insert(bottom, "<color=#7FD87F>다음 레벨 → " .. nextEffect .. "</color>")
+            end
+        end
+
+        return { title = skill.name, top = table.concat(top, "\n"), bottom = table.concat(bottom, "\n"), icon = skill.icon }
     end
 
     @ExecSpace("ClientOnly")
@@ -871,26 +948,171 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void ShowPanelWithText(string bodyText)
-        -- 글 길이에 맞춰 높이를 재고, 커서 오른쪽 아래에 펼치되 화면 밖으로 나가면 반대쪽으로 접는다.
+    method void ShowPanelWithParts(table parts)
+        -- 참고 이미지 배치대로 쌓는다(위에서 아래로):
+        --   제목(가운데) → 가로줄 → [아이콘 | 설명 블록] → 가로줄 → 현재레벨 블록
+        -- 각 블록 높이는 GetPreferredHeight 로 재고, 그 합이 패널 높이가 된다.
         if not self.tooltipReady or not isvalid(self.tipPanel) then return end
-        local innerWidth = self.TooltipWidth - self.TooltipPadding * 2
 
-        -- 글을 넣고 "먼저 켠다". 아래 높이 계산·좌표 변환 중 한 줄이 엔진에서 막히더라도 툴팁은 이미
-        -- 화면에 있다 — 2026-09-14 2차까지 아무것도 안 보였던 터라, 안 보이는 실패보다 자리가 틀린
-        -- 실패가 훨씬 낫다(어디가 막혔는지 바로 드러난다).
-        self.descText.Text = bodyText
+        local pad = self.TooltipPadding
+        local width = self.TooltipWidth
+        local innerWidth = width - pad * 2
+        local iconSize = self.TooltipIconSize
+        local bodyX = pad + iconSize + 12
+        local bodyWidth = width - bodyX - pad
+
+        -- 글을 먼저 넣고 켠다 — 아래 계산 중 한 줄이 막혀도 툴팁은 이미 화면에 있다.
+        if isvalid(self.tipTitleEntity) then self.tipTitleEntity.TextGUIRendererComponent.Text = parts.title end
+        self.descText.Text = parts.top
+        if self.tipBottomText ~= nil then self.tipBottomText.Text = parts.bottom end
         self.tipPanel.Enable = true
 
-        local height = self.descText:GetPreferredHeight(bodyText, innerWidth) + self.TooltipPadding * 2
-        if height < self.TooltipMinHeight then height = self.TooltipMinHeight end
+        -- 비는 칸은 접는다 — 알림(ShowFloatingMessage)처럼 제목·아이콘·아래 블록이 없는 경우가 있다.
+        local hasTitle = parts.title ~= nil and parts.title ~= ""
+        local hasIcon = parts.icon ~= nil and parts.icon ~= ""
+        local hasBottom = self.tipBottomText ~= nil and parts.bottom ~= nil and parts.bottom ~= ""
+
+        -- 아이콘이 없으면 설명 블록이 패널 폭 전체를 쓴다.
+        local textX = bodyX
+        local textWidth = bodyWidth
+        if not hasIcon then
+            textX = pad
+            textWidth = innerWidth
+        end
+
+        local topHeight = self.descText:GetPreferredHeight(parts.top, textWidth)
+        if hasIcon and topHeight < iconSize then topHeight = iconSize end
+        local bottomHeight = 0
+        if hasBottom then
+            bottomHeight = self.tipBottomText:GetPreferredHeight(parts.bottom, innerWidth)
+        end
+
+        -- y 는 패널 위쪽에서 아래로(피벗 좌상단이라 음수).
+        local titleY = -pad
+        local titleHeight = 0
+        local bodyY = titleY
+        local rule1Y = 0
+        if hasTitle then
+            titleHeight = 32
+            rule1Y = titleY - titleHeight - 6
+            bodyY = rule1Y - 10
+        end
+        local rule2Y = bodyY - topHeight - 10
+        local bottomY = rule2Y - 10
+        local bodyBottom = bodyY - topHeight
+        if hasBottom then bodyBottom = bottomY - bottomHeight end
+        local height = -(bodyBottom - pad)
         if height > self.TooltipMaxHeight then height = self.TooltipMaxHeight end
 
         local panelTransform = self.tipPanel.UITransformComponent
-        panelTransform.RectSize = Vector2(self.TooltipWidth, height)
-        self.descText.Entity.UITransformComponent.RectSize = Vector2(innerWidth, height - self.TooltipPadding * 2)
+        panelTransform.RectSize = Vector2(width, height)
+
+        self:ShowTipNode(self.tipTitleEntity, hasTitle)
+        self:ShowTipNode(self.tipRule1, hasTitle)
+        self:ShowTipNode(self.tipIconEntity, hasIcon)
+        self:ShowTipNode(self.tipRule2, hasBottom)
+        if self.tipBottomText ~= nil then self:ShowTipNode(self.tipBottomText.Entity, hasBottom) end
+
+        if hasTitle then
+            self:PlaceTipNode(self.tipTitleEntity, 0, titleY, width, titleHeight)
+            self:PlaceTipNode(self.tipRule1, pad, rule1Y, innerWidth, 2)
+        end
+        if hasIcon then
+            self:PlaceTipNode(self.tipIconEntity, pad, bodyY, iconSize, iconSize)
+            self.tipIconEntity.SpriteGUIRendererComponent.ImageRUID = DataRef(parts.icon)
+            self.tipIconEntity.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1)
+        end
+        self:PlaceTipNode(self.descText.Entity, textX, bodyY, textWidth, topHeight)
+        if hasBottom then
+            self:PlaceTipNode(self.tipRule2, pad, rule2Y, innerWidth, 2)
+            self:PlaceTipNode(self.tipBottomText.Entity, pad, bottomY, innerWidth, bottomHeight)
+        end
 
         self:PlaceTooltip(panelTransform, height)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ShowTipNode(any entity, boolean visible)
+        -- 툴팁 안쪽 노드 하나를 켜고 끈다(비는 칸 접기).
+        if not isvalid(entity) then return end
+        entity:SetEnable(visible)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlaceTipNode(any entity, number x, number y, number w, number h)
+        -- 툴팁 내부 노드 하나를 패널 좌상단 기준으로 놓는다.
+        if not isvalid(entity) then return end
+        local t = entity.UITransformComponent
+        if t == nil then return end
+        t.AnchorsMin = Vector2(0, 1)
+        t.AnchorsMax = Vector2(0, 1)
+        t.Pivot = Vector2(0, 1)
+        t.anchoredPosition = Vector2(x, y)
+        t.RectSize = Vector2(w, h)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BuildTooltipLayout(any panel)
+        -- 참고 이미지 배치를 위해 툴팁 안쪽 노드를 런타임에 만든다(.ui 는 건드리지 않는다 · 협업-규칙 §10-3).
+        -- 전부 RowTemplate 의 자식을 복제해서 쓴다 — CreateRow 가 이미 쓰는 검증된 경로다.
+        local template = self.rowTemplate
+        if not isvalid(template) then return end
+
+        -- 제목(가운데 정렬)
+        local titleSrc = template:GetChildByName("NameText")
+        if isvalid(titleSrc) then
+            local title = titleSrc:Clone("TipTitle")
+            title:AttachTo(panel)
+            title:SetEnable(true)
+            local titleText = title.TextGUIRendererComponent
+            titleText.HorizontalAlignment = TextHorizontalAlignmentOption.Center
+            titleText.VerticalAlignment = TextVerticalAlignmentOption.Middle
+            titleText.FontSize = 24
+            titleText.FontColor = Color(1, 1, 1, 1)
+            titleText.Text = ""
+            self.tipTitleEntity = title
+        end
+
+        -- 가로줄 2개 — 협업-규칙 §7-4 가 지정한 공용 흰색 9-slice 를 얇게 늘려 쓴다(새 스프라이트 없음).
+        self.tipRule1 = self:CreateTipRule(template, panel, "TipRule1")
+        self.tipRule2 = self:CreateTipRule(template, panel, "TipRule2")
+
+        -- 스킬 아이콘
+        local iconSrc = template:GetChildByName("Icon")
+        if isvalid(iconSrc) then
+            local icon = iconSrc:Clone("TipIcon")
+            icon:AttachTo(panel)
+            icon:SetEnable(true)
+            self.tipIconEntity = icon
+        end
+
+        -- 아래 블록(현재레벨 · 효과 수치) — 위 설명과 같은 글꼴 설정을 그대로 물려받게 DescText 를 복제한다.
+        local bottom = self.descText.Entity:Clone("TipBottom")
+        bottom:AttachTo(panel)
+        bottom:SetEnable(true)
+        local bottomText = bottom.TextGUIRendererComponent
+        bottomText.HorizontalAlignment = TextHorizontalAlignmentOption.Left
+        bottomText.VerticalAlignment = TextVerticalAlignmentOption.Top
+        bottomText.Text = ""
+        self.tipBottomText = bottomText
+
+        log("SkillWindowLogic: tooltip layout built (title/rules/icon/bottom)")
+    end
+
+    @ExecSpace("ClientOnly")
+    method any CreateTipRule(any template, any panel, string name)
+        -- 얇은 가로 구분선 하나. Icon 스프라이트를 복제해 공용 9-slice 로 갈아 끼우고 회색으로 눕힌다.
+        local iconSrc = template:GetChildByName("Icon")
+        if not isvalid(iconSrc) then return nil end
+        local rule = iconSrc:Clone(name)
+        rule:AttachTo(panel)
+        rule:SetEnable(true)
+        local sprite = rule.SpriteGUIRendererComponent
+        if sprite ~= nil then
+            sprite.ImageRUID = DataRef(self.SharedWhiteNineSliceRUID)
+            sprite.Color = Color(0.38, 0.42, 0.52, 1)
+        end
+        return rule
     end
 
     @ExecSpace("ClientOnly")
@@ -950,13 +1172,13 @@ script SkillWindowLogic extends Logic
             log("SkillWindowLogic: tooltip place FALLBACK (cursor unavailable) rowY=" .. tostring(math.floor(rowY)))
         end
 
-        -- 오른쪽/아래로 넘치면 커서 반대쪽으로 접는다(원작도 화면 끝에서 뒤집힌다).
-        if px + self.TooltipWidth > halfWidth then px = px - self.TooltipWidth - self.TooltipCursorOffsetX * 2 end
-        if px < -halfWidth then px = -halfWidth + 4 end
-
-        -- py 는 툴팁의 위쪽 모서리(피벗 좌상단). 아래로 넘치면 커서 위쪽으로 뒤집어 올린다.
-        if py - height < -halfHeight + 4 then py = py + height - self.TooltipCursorOffsetY * 2 end
+        -- 커서와의 거리는 항상 같게 둔다(사용자 요청 2026-09-15). 예전에는 화면 끝에서 반대쪽으로
+        -- 뒤집었는데, 툴팁 높이가 스킬마다 달라서 어떤 스킬은 뒤집히고 어떤 스킬은 안 뒤집혀
+        -- 뜨는 자리가 들쭉날쭉했다. 이제 뒤집지 않고, 화면을 실제로 벗어날 때만 안쪽으로 민다.
+        if px + self.TooltipWidth > halfWidth - 4 then px = halfWidth - 4 - self.TooltipWidth end
+        if px < -halfWidth + 4 then px = -halfWidth + 4 end
         if py > halfHeight - 4 then py = halfHeight - 4 end
+        if py - height < -halfHeight + 4 then py = -halfHeight + 4 + height end
 
         panelTransform.anchoredPosition = Vector2(px, py)
         log("SkillWindowLogic: tooltip place -> (" .. tostring(math.floor(px)) .. "," .. tostring(math.floor(py)) .. ") h=" .. tostring(math.floor(height)) .. " bounds=" .. tostring(math.floor(halfWidth * 2)) .. "x" .. tostring(math.floor(halfHeight * 2)))
@@ -987,60 +1209,13 @@ script SkillWindowLogic extends Logic
             return
         end
         self.hoveredSkillId = ""
-        self:ShowPanelWithText("<color=#FF6B6B>" .. message .. "</color>")
+        -- 알림은 제목·아이콘 없이 위 블록만 쓴다(같은 배치 경로를 타되 비는 칸은 자동으로 접힌다).
+        self:ShowPanelWithParts({ title = "", top = "<color=#FF6B6B>" .. message .. "</color>", bottom = "", icon = "" })
         if self.messageTimerId ~= nil then _TimerService:ClearTimer(self.messageTimerId) end
         self.messageTimerId = _TimerService:SetTimerOnce(function()
             self.messageTimerId = nil
             if self.hoveredSkillId == "" then self:HideTooltip() end
         end, self.MessageSeconds)
-    end
-
-    @ExecSpace("ClientOnly")
-    method string BuildTooltipText(table skill, number level, number playerTier, number playerLevel)
-        -- 원작 메이플 스킬 툴팁 순서: 이름 → 종류·단축키·해금 → (못 배우는 사유) → 레벨 → 설명 → 수치 → 다음 레벨.
-        local isPassive = skill.behavior == "PASSIVE"
-        -- 아직 안 배운 스킬은 Lv.1 값을 미리 보여 준다(원작과 같음). 배운 뒤엔 지금 레벨 값.
-        local shownLevel = level
-        if shownLevel < 1 then shownLevel = 1 end
-
-        local lines = {}
-        table.insert(lines, "<color=#FFFFFF><b>" .. skill.name .. "</b></color>")
-
-        local kind = "액티브"
-        if isPassive then kind = "패시브 · 항상 적용" end
-        if not isPassive then
-            local keyName = ""
-            if _SkillHotbar ~= nil then keyName = _SkillHotbar:GetKeyNameForSkill(skill.id) end
-            if keyName ~= "" then kind = kind .. " · [" .. keyName .. "]" end
-        end
-        table.insert(lines, "<color=#8FA2C4>" .. kind .. " · " .. self:Num(skill.requiredTier) .. "차 · " .. self:Num(skill.requiredLevel) .. "레벨 해금</color>")
-
-        local lockReason = self:LockReasonText(skill, playerTier, playerLevel)
-        if lockReason ~= "" then
-            table.insert(lines, "<color=#FF6B6B>" .. lockReason .. "</color>")
-        end
-
-        table.insert(lines, "<color=#3F4759>──────────────────</color>")
-        table.insert(lines, "Lv. " .. self:Num(level) .. " / " .. self:Num(skill.maxLevel))
-        table.insert(lines, skill.description)
-
-        local effect = self:FormatEffect(skill, shownLevel)
-        if effect ~= "" then
-            table.insert(lines, "<color=#3F4759>──────────────────</color>")
-            table.insert(lines, effect)
-        end
-        local cost = self:FormatCost(skill, shownLevel)
-        if cost ~= "" then table.insert(lines, cost) end
-
-        -- 다음 레벨 미리보기: 배운 스킬이고 만렙이 아닐 때만. "+" 를 눌러 얻는 값이 그대로 보인다.
-        if level >= 1 and level < skill.maxLevel then
-            local nextEffect = self:FormatEffect(skill, level + 1)
-            if nextEffect ~= "" then
-                table.insert(lines, "<color=#7FD87F>다음 레벨 → " .. nextEffect .. "</color>")
-            end
-        end
-
-        return table.concat(lines, "\n")
     end
 
     @ExecSpace("ClientOnly")
