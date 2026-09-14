@@ -160,3 +160,9 @@
 - 원인: 방울은 플레이어 엔티티에 **부착**(클라 로컬 · 지연 0)인데 변신 form 은 맵 아래 엔티티를 서버가 매 프레임 옮기는 follow 방식(⑫)이라 클라→서버→클라 왕복만큼 늦게 따라와 둘이 어긋났다(사용자 눈엔 "캐릭터" = 불꽃 form 이라 방울이 늦는 것처럼 보임).
 - 고침: `TransformFormAttach` 속성(기본 **"child"**) — form 을 플레이어 **자식 엔티티**로 스폰(`SpawnByModelId(..., casterEntity)`)해 로컬 `Position = (ox×facing, oy)` 로 둔다(`ApplyFormSprite` 가 FollowTarget 이 없으면 Position 에 쓴다). ⑫ 때 자식 스폰이 "안 보인다" 고 의심했던 것은 계정 RUID 문제였음이 ⑬⑭에서 확인됐으므로 되돌린다. `"follow"` 로 두면 예전 방식(서버 FollowTarget).
 - 🟡 Play 미검증(사용자 확인 · MCP 생략): W 뒤 좌우 이동 중 E → 방울과 불꽃 캐릭터가 같이 움직인다(로그 `buff form … attach=child`) · child 로 form 이 안 보이면 `TransformFormAttach = "follow"` 한 줄.
+
+### 2026-09-14 — 제보 ⑱ "변신 중 캐릭터가 조금 투명하다"
+
+- 원인: 스크류 펀치 강화 effect 의 공식 1프레임 sprite 자체가 반투명(픽셀 최대 알파 187/255 = 73% · 원작에선 캐릭터 위에 겹쳐 그리는 오버레이 이펙트라서). 모델 Color 는 없음.
+- 고침: 같은 공식 프레임의 알파를 ×1.364(255/187 · 클램프) 올린 사본을 만들어(`gen_walk2.ps1 -AlphaBoost` · 몸 불투명 · 글로우는 비례해서 그대로 연함) 그룹 리소스(mIYbC)로 등록: **stand_opaque `375952add3fb402aa0328a27e2d44bf8` · walk_a_opaque `1214d0843ed84c1ca7dd74e0f0e22eee` · walk_b_opaque `a225555cf8c348bf8c8b10653c280697`**. official 세트 서 있기 = stand_opaque(ox/oy 0 · pivot 아래 가운데) · custom 세트 = 불투명 3장. 반투명 원본 RUID(07864866/8fe698e1/f4f9f956 · 팩 f30bf46b)는 예비.
+- 🟡 Play 미검증(사용자 확인): W → 불꽃 캐릭터 몸이 불투명(뒤 배경이 비치지 않음) · 글로우는 연하게 · 위치 그대로.
