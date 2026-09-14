@@ -57,6 +57,13 @@ script SkillWindowLogic extends Logic
     @HideFromInspector
     property any messageTimerId = nil
 
+    -- UITouchReceiveComponent 를 런타임에 붙일 수 있는 환경인지 한 번만 재고 기억한다(EnsureTouchReceiver).
+    @HideFromInspector
+    property boolean touchReceiverTried = false
+
+    @HideFromInspector
+    property boolean touchReceiverSupported = false
+
     -- 목록 영역을 벗어날 때 툴팁을 내리는 안전망(행 Exit 가 빠지는 경우 대비). OnEndPlay 에서 끊는다.
     property any listExitHandler = nil
 
@@ -176,55 +183,85 @@ script SkillWindowLogic extends Logic
             return
         end
 
-        panel:AttachTo(self.rootGroup)
-        -- 형제 중 마지막 = 가장 위에 그려진다. AttachTo 가 이미 끝에 붙이지만, 순서를 런타임 순서에
-        -- 맡기지 않고 못을 박아 둔다(Window 보다 뒤여야 행 위에 뜬다).
-        local siblingCount = 0
-        for _, _child in ipairs(self.rootGroup.Children) do siblingCount = siblingCount + 1 end
-        if siblingCount > 0 then _UILogic:SetSiblingIndex(panelTransform, siblingCount - 1) end
-        panelTransform.AlignmentOption = AlignmentType.Center
+        -- 먼저 "쓸 수 있다" 로 표시하고 배치를 바꾼다. 아래 한 줄이 엔진에서 막히더라도 툴팁 자체는
+        -- (원래 자리에라도) 뜨게 하려는 것 — 2026-09-14 1차 시도에서 아무것도 안 뜬 뒤로, 어디까지
+        -- 진행됐는지 로그로 바로 알 수 있게 단계마다 한 줄씩 남긴다.
+        self.tooltipReady = true
+        text.HorizontalAlignment = TextHorizontalAlignmentOption.Left
+        text.VerticalAlignment = TextVerticalAlignmentOption.Top
+        text.FontSize = 20
+        text.FontColor = Color(0.93, 0.93, 0.90, 1)
+        text.Text = ""
+        -- 원작 메이플 툴팁처럼 어두운 상자 + 밝은 글씨(참고 이미지). 스프라이트는 원래 것 그대로 쓰고
+        -- 색만 바꾼다 — 새 스프라이트를 만들지 않는다(협업-규칙 §7-4 스킨 규칙).
+        local panelSprite = panel.SpriteGUIRendererComponent
+        if panelSprite ~= nil then panelSprite.Color = Color(0.055, 0.063, 0.110, 0.96) end
+        panel.Enable = false
+        log("SkillWindowLogic: tooltip stage 1 - text/panel styled")
+
+        panelTransform.RectSize = Vector2(self.TooltipWidth, self.TooltipMinHeight)
         panelTransform.AnchorsMin = Vector2(0.5, 0.5)
         panelTransform.AnchorsMax = Vector2(0.5, 0.5)
         panelTransform.Pivot = Vector2(0, 1)
-        panelTransform.RectSize = Vector2(self.TooltipWidth, self.TooltipMinHeight)
 
         -- 툴팁 안쪽 글: 좌상단 정렬로 여러 줄을 위에서부터 채운다(붙박이 칸일 때는 가운데 정렬이었다).
         local textTransform = text.Entity.UITransformComponent
-        textTransform.AlignmentOption = AlignmentType.TopLeft
         textTransform.AnchorsMin = Vector2(0, 1)
         textTransform.AnchorsMax = Vector2(0, 1)
         textTransform.Pivot = Vector2(0, 1)
         textTransform.anchoredPosition = Vector2(self.TooltipPadding, -self.TooltipPadding)
         textTransform.RectSize = Vector2(self.TooltipWidth - self.TooltipPadding * 2, self.TooltipMinHeight - self.TooltipPadding * 2)
-        text.HorizontalAlignment = TextHorizontalAlignmentOption.Left
-        text.VerticalAlignment = TextVerticalAlignmentOption.Top
-        text.FontSize = 20
-        text.Text = ""
-        panel.Enable = false
+        log("SkillWindowLogic: tooltip stage 2 - transforms set")
+
+        -- 창 밖(UIGroup 루트)으로 옮긴다 → 창·목록보다 나중에 그려져 행 위에 뜬다. 루트가 중앙 피벗이라
+        -- anchoredPosition 이 ScreenToUIPosition 커서 좌표와 같은 공간이 된다.
+        panel:AttachTo(self.rootGroup)
+        local siblingCount = 0
+        for _, _child in ipairs(self.rootGroup.Children) do siblingCount = siblingCount + 1 end
+        if siblingCount > 0 then _UILogic:SetSiblingIndex(panelTransform, siblingCount - 1) end
+        log("SkillWindowLogic: tooltip stage 3 - reparented to UIGroup root (siblings=" .. tostring(siblingCount) .. ")")
 
         -- 설명 칸이 비운 자리만큼 목록을 아래로 늘린다(480 → 630 · 예전 DescPanel 아래 끝과 같은 높이).
         local listEntity = self.listLayout.Entity
         if isvalid(listEntity) and listEntity.UITransformComponent ~= nil then
             local listTransform = listEntity.UITransformComponent
             listTransform.RectSize = Vector2(listTransform.RectSize.x, listTransform.RectSize.y + 150)
-            -- 행을 하나씩 옮겨 다닐 때는 다음 행의 Enter 가 툴팁을 갈아 끼우지만, 목록 밖으로 한 번에
-            -- 빠져나가면 행 Exit 가 빠질 수 있다 → 목록 자체의 Exit 를 안전망으로 둔다.
-            self:EnsureTouchReceiver(listEntity)
-            self.listExitHandler = listEntity:ConnectEvent(UITouchExitEvent, function() self:OnListHoverExit() end)
         end
+        log("SkillWindowLogic: tooltip ready (list grown by 150)")
 
-        self.tooltipReady = true
-        log("SkillWindowLogic: tooltip ready (DescPanel detached to UIGroup root, list grown by 150)")
+        -- 행을 하나씩 옮겨 다닐 때는 다음 행의 Hover 가 툴팁을 갈아 끼우지만, 목록 밖으로 한 번에
+        -- 빠져나가는 경우를 위해 목록 자체의 Exit 도 안전망으로 둔다(붙으면 좋고, 아니면 OnUpdate 가 받는다).
+        -- AddComponent 가 막히는 환경일 수 있으니 반드시 마지막에 — 여기서 멈춰도 위는 다 끝나 있다.
+        if isvalid(listEntity) then
+            self:EnsureTouchReceiver(listEntity)
+            if listEntity.UITouchReceiveComponent ~= nil then
+                self.listExitHandler = listEntity:ConnectEvent(UITouchExitEvent, function() self:OnListHoverExit() end)
+                log("SkillWindowLogic: tooltip list-exit safety net wired")
+            end
+        end
     end
 
     @ExecSpace("ClientOnly")
     method void EnsureTouchReceiver(Entity entity)
         -- UITouchEnterEvent / UITouchExitEvent 는 UITouchReceiveComponent 가 내는 것이라, 그 컴포넌트가
-        -- 없는 엔티티(행 복제본 · ListArea)에는 런타임에 붙여 준다. ButtonComponent 의 클릭 경로와는
-        -- 별개라서 기존 행 클릭 · "+" 클릭에는 영향이 없다.
-        if entity.UITouchReceiveComponent == nil then
-            entity:AddComponent("UITouchReceiveComponent")
+        -- 없는 엔티티(행 복제본 · ListArea)에는 런타임에 붙여 본다. 이게 막히는 환경이라는 것이
+        -- 2026-09-14 1차 Play 에서 드러났으므로(툴팁 자체가 안 떴다) 이제 여기는 "되면 보너스" 다 —
+        -- 주 hover 경로는 ButtonStateChangeEvent 이고, 실패해도 툴팁은 뜬다.
+        --
+        -- 한 번 실패하면 행마다 다시 시도하며 로그를 더럽히므로, 시도 여부를 먼저 기록하고 부른다
+        -- (AddComponent 가 예외로 빠져나가도 플래그는 이미 세워져 있다).
+        if self.touchReceiverTried then
+            if not self.touchReceiverSupported then return end
         end
+        if entity.UITouchReceiveComponent ~= nil then
+            self.touchReceiverTried = true
+            self.touchReceiverSupported = true
+            return
+        end
+        self.touchReceiverTried = true
+        entity:AddComponent("UITouchReceiveComponent")
+        self.touchReceiverSupported = entity.UITouchReceiveComponent ~= nil
+        log("SkillWindowLogic: UITouchReceiveComponent AddComponent supported=" .. tostring(self.touchReceiverSupported))
     end
 
     -- ⚠ DEV: F10 직업 선택 순환 인덱스 (OnDevChooseJob). 전직 UI 가 생기면 함께 제거.
@@ -324,7 +361,7 @@ script SkillWindowLogic extends Logic
         -- 목록 행의 레벨 칸. 패시브는 "Lv.3  패시브" 처럼 태그가 붙어, 키가 없는 이유가 바로 보인다.
         local text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skillId))
         if skill ~= nil and skill.behavior == "PASSIVE" then
-            text = text .. "  <color=#4E8A4E>패시브</color>"
+            text = text .. "  <color=#7FD87F>패시브</color>"
         end
         return text
     end
@@ -443,6 +480,10 @@ script SkillWindowLogic extends Logic
             btn.Entity.SpriteGUIRendererComponent.Color = btn.Colors.PressedColor
         elseif event.state == ButtonState.Released or event.state == ButtonState.Clicked then
             self:SetTabHighlight(btn, tabIndex == self.currentTab)
+        elseif event.state == ButtonState.Hover then
+            -- 목록에서 탭 줄로 커서가 올라오면 툴팁을 내린다. OnUpdate 의 IsPointerOverUI 안전망은
+            -- 창 안에서의 이동은 못 잡으므로(둘 다 UI 위) 여기서 받는다.
+            self:OnListHoverExit()
         end
     end
 
@@ -504,11 +545,14 @@ script SkillWindowLogic extends Logic
 
         -- 원작 메이플처럼 행 위에 커서를 올리면 설명 툴팁(클릭이 아니라 hover). 예전의 행 클릭 →
         -- 아래 설명 칸 경로는 없앴다(사용자 요청 2026-09-14). 레벨 올리기는 그대로 "+" 버튼이다.
-        self:EnsureTouchReceiver(row)
-        local enterHandler = row:ConnectEvent(UITouchEnterEvent, function(event) self:OnRowHoverEnter(capturedId, event.TouchPoint) end)
-        table.insert(self.rowHandlers, { entity = row, conn = enterHandler, eventType = UITouchEnterEvent })
-        local exitHandler = row:ConnectEvent(UITouchExitEvent, function() self:OnRowHoverExit(capturedId) end)
-        table.insert(self.rowHandlers, { entity = row, conn = exitHandler, eventType = UITouchExitEvent })
+        --
+        -- 주 경로는 ButtonStateChangeEvent 다. 이 파일이 이미 복제 행/복제 "+" 에서 이 이벤트를 받아
+        -- 누름 색을 칠하고 있으므로(ApplyButtonPressVisual) 복제본에서 뜨는 것이 확인된 유일한 hover 신호다.
+        -- (2026-09-14 1차 시도: UITouchEnterEvent 로만 걸었더니 툴팁이 아예 안 떴다 — 복제 행에는
+        --  UITouchReceiveComponent 가 없고 런타임 AddComponent 도 먹지 않은 것으로 본다. 아래쪽에서
+        --  UITouch 쪽도 "붙으면 좋고" 로 같이 걸되, 실패해도 여기까지는 이미 배선이 끝나 있게 순서를 뒤에 둔다.)
+        local hoverHandler = row:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, event) end)
+        table.insert(self.rowHandlers, { entity = row, conn = hoverHandler, eventType = ButtonStateChangeEvent })
 
         local plusEntity = row:GetChildByName("BtnPlus")
         local plusHandler = plusEntity:ConnectEvent(ButtonClickEvent, function() self:OnPlusClicked(capturedId) end)
@@ -520,6 +564,54 @@ script SkillWindowLogic extends Logic
         local plusRestColor = plusEntity.SpriteGUIRendererComponent.Color
         local plusStateHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyButtonPressVisual(plusButton, plusRestColor, event) end)
         table.insert(self.rowHandlers, { entity = plusEntity, conn = plusStateHandler, eventType = ButtonStateChangeEvent })
+
+        -- "+" 위에 있을 때도 그 행의 툴팁을 유지한다(행에서 "+" 로 넘어가면 행의 Normal 이 먼저 올 수 있다).
+        local plusHoverHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, event) end)
+        table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHoverHandler, eventType = ButtonStateChangeEvent })
+
+        -- 보조 경로: UITouchEnter/Exit 가 실제로 오면 더 정확하다(좌표가 이벤트에 실려 온다).
+        -- 반드시 맨 마지막에 — AddComponent 가 실패해 여기서 멈춰도 위 배선은 이미 다 끝나 있다.
+        self:WireTouchHover(row, capturedId)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void WireTouchHover(Entity row, string skillId)
+        -- UITouchReceiveComponent 가 붙는 환경이면 Enter/Exit 도 같이 쓴다. 안 붙으면 조용히 넘어간다
+        -- (ButtonStateChangeEvent 주 경로만으로도 툴팁은 뜬다).
+        self:EnsureTouchReceiver(row)
+        if row.UITouchReceiveComponent == nil then return end
+        local enterHandler = row:ConnectEvent(UITouchEnterEvent, function(event) self:OnRowHoverEnter(skillId, event.TouchPoint) end)
+        table.insert(self.rowHandlers, { entity = row, conn = enterHandler, eventType = UITouchEnterEvent })
+        local exitHandler = row:ConnectEvent(UITouchExitEvent, function() self:OnRowHoverExit(skillId) end)
+        table.insert(self.rowHandlers, { entity = row, conn = exitHandler, eventType = UITouchExitEvent })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnRowButtonState(string skillId, ButtonStateChangeEvent event)
+        -- Hover = 커서가 행에 올라옴 → 그 자리에 툴팁. 좌표는 이벤트에 없으므로 지금 커서를 읽는다.
+        -- Normal(= hover 해제)은 이 엔진에서 빠지는 경우가 있어(ApplyButtonPressVisual 주석) 내리는 것을
+        -- 여기에만 맡기지 않는다 — 다음 행의 Hover · 목록 Exit · OnUpdate 의 IsPointerOverUI 가 같이 받는다.
+        if event.state == ButtonState.Hover then
+            local uiPos = _UILogic:ScreenToUIPosition(_InputService:GetCursorPosition())
+            self.hoveredSkillId = skillId
+            self.lastTipX = uiPos.x
+            self.lastTipY = uiPos.y
+            self:ShowTooltip(skillId, uiPos.x, uiPos.y)
+        elseif event.state == ButtonState.Normal then
+            self:OnRowHoverExit(skillId)
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- 툴팁이 떠 있는데 커서가 UI 밖(= 게임 화면)으로 나간 경우의 안전망. Normal/Exit 가 빠져도
+        -- 툴팁이 화면에 남지 않는다. 떠 있지 않을 때는 비교 한 번으로 바로 빠진다.
+        if not self.tooltipReady then return end
+        if not isvalid(self.descPanel) or not self.descPanel.Enable then return end
+        if not _InputService:IsPointerOverUI() then
+            self.hoveredSkillId = ""
+            self:HideTooltip()
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -670,7 +762,7 @@ script SkillWindowLogic extends Logic
             return
         end
         self.hoveredSkillId = ""
-        self:ShowPanelWithText("<color=#A33B33>" .. message .. "</color>", self.lastTipX, self.lastTipY)
+        self:ShowPanelWithText("<color=#FF6B6B>" .. message .. "</color>", self.lastTipX, self.lastTipY)
         if self.messageTimerId ~= nil then _TimerService:ClearTimer(self.messageTimerId) end
         self.messageTimerId = _TimerService:SetTimerOnce(function()
             self.messageTimerId = nil
@@ -687,7 +779,7 @@ script SkillWindowLogic extends Logic
         if shownLevel < 1 then shownLevel = 1 end
 
         local lines = {}
-        table.insert(lines, "<color=#1F1F1F><b>" .. skill.name .. "</b></color>")
+        table.insert(lines, "<color=#FFFFFF><b>" .. skill.name .. "</b></color>")
 
         local kind = "액티브"
         if isPassive then kind = "패시브 · 항상 적용" end
@@ -696,20 +788,20 @@ script SkillWindowLogic extends Logic
             if _SkillHotbar ~= nil then keyName = _SkillHotbar:GetKeyNameForSkill(skill.id) end
             if keyName ~= "" then kind = kind .. " · [" .. keyName .. "]" end
         end
-        table.insert(lines, "<color=#6B5B3E>" .. kind .. " · " .. self:Num(skill.requiredTier) .. "차 · " .. self:Num(skill.requiredLevel) .. "레벨 해금</color>")
+        table.insert(lines, "<color=#8FA2C4>" .. kind .. " · " .. self:Num(skill.requiredTier) .. "차 · " .. self:Num(skill.requiredLevel) .. "레벨 해금</color>")
 
         local lockReason = self:LockReasonText(skill, playerTier, playerLevel)
         if lockReason ~= "" then
-            table.insert(lines, "<color=#A33B33>" .. lockReason .. "</color>")
+            table.insert(lines, "<color=#FF6B6B>" .. lockReason .. "</color>")
         end
 
-        table.insert(lines, "<color=#9A8E78>──────────────────</color>")
+        table.insert(lines, "<color=#3F4759>──────────────────</color>")
         table.insert(lines, "Lv. " .. self:Num(level) .. " / " .. self:Num(skill.maxLevel))
         table.insert(lines, skill.description)
 
         local effect = self:FormatEffect(skill, shownLevel)
         if effect ~= "" then
-            table.insert(lines, "<color=#9A8E78>──────────────────</color>")
+            table.insert(lines, "<color=#3F4759>──────────────────</color>")
             table.insert(lines, effect)
         end
         local cost = self:FormatCost(skill, shownLevel)
@@ -719,7 +811,7 @@ script SkillWindowLogic extends Logic
         if level >= 1 and level < skill.maxLevel then
             local nextEffect = self:FormatEffect(skill, level + 1)
             if nextEffect ~= "" then
-                table.insert(lines, "<color=#3F7A3F>다음 레벨 → " .. nextEffect .. "</color>")
+                table.insert(lines, "<color=#7FD87F>다음 레벨 → " .. nextEffect .. "</color>")
             end
         end
 
