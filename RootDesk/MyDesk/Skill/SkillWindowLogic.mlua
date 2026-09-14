@@ -271,28 +271,16 @@ script SkillWindowLogic extends Logic
         --     루트 바로 밑 형제는 Window 서브트리보다 위로 오지 않는다.
         -- → 그래서 Window '안'의 마지막 자식으로 둔다. TabRow·ListArea·Footer 보다 뒤 = 그 위에 그려진다.
         --   Window 에는 Mask 가 없으므로 창 밖으로 삐져나와도 잘리지 않는다(ListArea 에만 Mask 가 있다).
+        --   ⚠ "마지막" 을 인덱스로 계산해서 넣지 않는다 — 규약이 확실하지 않아 한 칸 어긋난다(MakeLastChild).
         -- 앵커/피벗은 반드시 이 "다음"에 준다 — AttachTo 는 화면 위치를 유지하려고 앵커와
         -- anchoredPosition 을 새 부모 기준으로 다시 계산하므로, 먼저 줘 봐야 덮어써진다.
         local windowEntity = self:WindowEntity()
         if isvalid(windowEntity) then
             -- DescPanel 은 원래부터 Window 의 자식(Footer 앞)이라, 그냥 AttachTo 하면 자리가 그대로일 수
-            -- 있다. 한 번 떼었다 붙여 "끝에 추가" 를 강제한다.
+            -- 있다. 한 번 떼었다 붙여 "끝에 추가" 를 강제하고, 정말 끝인지는 MakeLastChild 가 확인한다.
             panel:Detach()
             panel:AttachTo(windowEntity)
-            local siblingCount = 0
-            for _, _child in ipairs(windowEntity.Children) do siblingCount = siblingCount + 1 end
-
-            -- 마지막 자리로 확실히 보낸다. 2026-09-15 제보: 마지막 자식으로 옮겼는데도 Footer(SKILL POINT)
-            -- 가 툴팁 위에 그려졌다 → DescPanel 이 원래 Window 의 자식이라 AttachTo 가 자리를 안 옮겼거나
-            -- SetSiblingIndex 의 인덱스 해석이 다를 수 있다. 넣고 나서 실제 인덱스를 읽어 확인하고,
-            -- 마지막이 아니면 큰 값으로 한 번 더 민다(엔진이 끝으로 잘라 주는 구현을 노린다).
-            _UILogic:SetSiblingIndex(panelTransform, siblingCount - 1)
-            local index = _UILogic:GetSiblingIndex(panelTransform)
-            if index < siblingCount - 1 then
-                _UILogic:SetSiblingIndex(panelTransform, 999)
-                index = _UILogic:GetSiblingIndex(panelTransform)
-            end
-            log("SkillWindowLogic: tooltip stage 2 - Window child index=" .. tostring(index) .. " of " .. tostring(siblingCount) .. " (last=" .. tostring(index >= siblingCount - 1) .. ")")
+            self:MakeLastChild(panel, windowEntity, panelTransform)
         else
             log_warning("SkillWindowLogic: Window entity not found - tooltip stays where it is")
         end
@@ -357,6 +345,55 @@ script SkillWindowLogic extends Logic
         --   앞으로 그리기 순서는 OrderInLayer + 계층 순서(AttachTo + SetSiblingIndex)로만 다룬다.
         if renderer == nil then return end
         renderer.OrderInLayer = order
+    end
+
+    @ExecSpace("ClientOnly")
+    method void MakeLastChild(any child, any parent, any childTransform)
+        -- 엔티티 하나를 형제 중 맨 마지막으로 보낸다. 그리기 순서를 계층으로만 다뤄야 하므로
+        -- (SetSortOrder 주석: OverrideSorting 대입 불가 → OrderInLayer 는 무의미) 툴팁이 창 위에 뜨는
+        -- 유일한 수단이다.
+        --
+        -- ⚠ 인덱스를 계산해서 넣지 않는다. 2026-09-15 제보("설명 칸이 SKILL POINT 칸 밑에 깔린다")의
+        --   원인이 정확히 그 계산이었다. 직전 커밋은 SetSiblingIndex(자식수 - 1) 로 0-based 를 가정했는데
+        --   MSW 의 리스트 인덱스는 1-based 다(ReadOnlyList.d.mlua "1-based index"). 1-based 라면
+        --   "자식수 - 1" 은 끝에서 두 번째 = Footer(SKILL POINT) 바로 아래다. 즉 Detach+AttachTo 가
+        --   이미 끝에 붙여 놓은 것을 그 호출이 한 칸 되돌렸다. 게다가 뒤따르던 검사가
+        --   `읽은 인덱스 < 자식수 - 1` 이라 방금 넣은 값과 같아 절대 참이 되지 않았고, 로그에는
+        --   last=true 로 찍혀 성공한 것처럼 보였다.
+        -- → 인덱스 규약을 아예 타지 않는다. "부모의 마지막 자식이 나인가" 를 엔티티로 직접 확인하고,
+        --   아니면 ① 큰 값으로 밀기(0/1-based 어느 쪽이든 끝으로 잘린다) ② 떼었다 다시 붙이기 순으로 고친다.
+        if not isvalid(parent) or not isvalid(child) then return end
+
+        -- 실제 순서를 이름으로 남긴다. 이게 맞는데도 여전히 Footer 가 위라면 원인은 계층이 아니라
+        -- .ui 에 저장된 OverrideSorting 이고, 그때는 UIBuilder 로 가야 한다 — 로그로 바로 갈린다.
+        local order = ""
+        for _, entity in ipairs(parent.Children) do order = order .. entity.Name .. " " end
+        log("SkillWindowLogic: tooltip stage 2 - " .. tostring(parent.Name) .. " children = " .. order)
+
+        if self:IsLastChild(parent, child) then
+            log("SkillWindowLogic: tooltip stage 2 - already last child (AttachTo appended)")
+            return
+        end
+        if childTransform ~= nil then
+            _UILogic:SetSiblingIndex(childTransform, 9999)
+            if self:IsLastChild(parent, child) then
+                log("SkillWindowLogic: tooltip stage 2 - moved last via SetSiblingIndex(9999)")
+                return
+            end
+        end
+        child:Detach()
+        child:AttachTo(parent)
+        log_warning("SkillWindowLogic: tooltip stage 2 - re-attached as fallback; last=" .. tostring(self:IsLastChild(parent, child)))
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean IsLastChild(any parent, any child)
+        -- 인덱스 규약(0-based/1-based)을 타지 않는 확인: 자식 목록의 마지막 원소가 그 엔티티인지 본다.
+        -- 비교는 Id 로 한다 — 엔티티 핸들은 접근할 때마다 다른 래퍼일 수 있어 == 를 믿지 않는다.
+        local last = nil
+        for _, entity in ipairs(parent.Children) do last = entity end
+        if not isvalid(last) then return false end
+        return last.Id == child.Id
     end
 
     @ExecSpace("ClientOnly")

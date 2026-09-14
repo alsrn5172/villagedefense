@@ -37,6 +37,21 @@
 추가기획1 표의 Lv.1→5 값과 `SkillInfo.csv` 의 `BaseEffect + (lv-1) × EffectPerLevel` 이 전부 일치하는 것을
 다시 확인했다. 바꾼 값 없음.
 
+## 툴팁이 Footer(SKILL POINT) 밑에 깔리던 것 (사용자 재제보 2026-09-15)
+
+앞선 커밋(382d4f5)이 "마지막 자식으로 보낸다" 며 넣은 `SetSiblingIndex(자식수 - 1)` 가 원인이었다.
+0-based 를 가정한 계산인데 MSW 의 리스트 인덱스는 1-based 다(`ReadOnlyList.d.mlua` "1-based index").
+1-based 에서 `자식수 - 1` 은 **끝에서 두 번째** = Footer(SKILL POINT) 바로 아래 — 즉
+`Detach()` + `AttachTo()` 가 이미 끝에 붙여 놓은 것을 그 호출이 한 칸 되돌리고 있었다.
+뒤따르던 검사도 `읽은 인덱스 < 자식수 - 1` 이라 방금 넣은 값과 같아 절대 참이 되지 않았고,
+로그에는 `last=true` 로 찍혀 성공한 것처럼 보였다.
+
+- **인덱스 규약을 아예 쓰지 않는다** (`MakeLastChild` · `IsLastChild`). "부모의 마지막 자식이 나인가" 를
+  `parent.Children` 의 마지막 원소와 `Id` 로 직접 확인하고, 아니면 ① 큰 값(9999)으로 밀기
+  (0/1-based 어느 쪽이든 끝으로 잘린다) ② 떼었다 다시 붙이기 순으로 고친다.
+- `Window` 의 자식 순서를 이름으로 로그에 남긴다. 순서가 맞는데도 Footer 가 위라면 원인은 계층이 아니라
+  `.ui` 에 저장된 `OverrideSorting` 이고, 그건 UIBuilder 로만 고칠 수 있다 — 로그 한 줄로 갈린다.
+
 ## 건드린 파일
 
 - `RootDesk/MyDesk/Skill/SkillWindowLogic.mlua`
