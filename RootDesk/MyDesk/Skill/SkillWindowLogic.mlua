@@ -672,32 +672,42 @@ script SkillWindowLogic extends Logic
     @ExecSpace("ClientOnly")
     method void MoveTooltipToCursor()
         -- 지금 커서 자리로 툴팁을 옮긴다. ShowPanelWithText 가 이미 켜 둔 뒤에 부른다.
-        local uiPos = self:CursorInRootSpace()
-        self.lastTipX = uiPos.x
-        self.lastTipY = uiPos.y
-        -- 자리가 또 어긋나면 숫자로 보이게 처음 세 번만 남긴다(맞으면 지운다).
-        if self.posLogCount < 3 then
-            self.posLogCount = self.posLogCount + 1
-            local rootTransform = self.rootGroup.UITransformComponent
-            local rootSize = "nil"
-            if rootTransform ~= nil then rootSize = tostring(rootTransform.RectSize.x) .. "x" .. tostring(rootTransform.RectSize.y) end
-            log("SkillWindowLogic: tooltip pos cursorUI=(" .. tostring(math.floor(uiPos.x)) .. "," .. tostring(math.floor(uiPos.y)) .. ") root=" .. rootSize)
-        end
+        self:SyncCursorUiPos()
         if self.hoveredSkillId ~= "" then
-            self:ShowTooltip(self.hoveredSkillId, uiPos.x, uiPos.y)
+            self:ShowTooltip(self.hoveredSkillId, self.lastTipX, self.lastTipY)
         end
     end
 
     @ExecSpace("ClientOnly")
-    method Vector2 CursorInRootSpace()
-        -- 커서를 "UIGroup 루트 피벗(정중앙) 기준" 좌표로. 툴팁의 anchoredPosition 과 같은 공간이라
-        -- 그대로 대입하면 커서 옆에 붙는다.
-        -- ScreenToUIPosition 은 "가장 위 UI" 기준이라 어떤 UIGroup 이 기준인지 보장되지 않는다
-        -- (2026-09-14 4차: 툴팁이 엉뚱한 자리에 떴다) → 기준 트랜스폼을 명시하는 쪽을 쓴다.
+    method void SyncCursorUiPos()
+        -- 커서를 "UIGroup 루트 피벗(정중앙) 기준" 좌표로 바꿔 lastTipX/lastTipY 에 넣는다. 툴팁의
+        -- anchoredPosition 과 같은 공간이라 그대로 대입하면 커서 옆에 붙는다.
+        --
+        -- 값을 return 하지 않고 프로퍼티에 넣는 이유: Vector2 를 선언 반환형으로 둔 메서드가 런타임에
+        -- nil 을 돌려줬다(2026-09-14 5차 빌드 로그 LIA-1114 "'nil' 에서 'x'을 찾을 수 없습니다" →
+        -- uiPos.x 에서 죽어 툴팁이 제자리에 머물렀다). 네이티브 구조체를 user-script 메서드 반환형으로
+        -- 쓰지 않는다 — SkillDatabase.CanLearn 이 테이블로 감싸는 것과 같은 회피다.
         local cursor = _InputService:GetCursorPosition()
+        if cursor == nil then return end
         local rootTransform = self.rootGroup.UITransformComponent
-        if rootTransform == nil then return _UILogic:ScreenToUIPosition(cursor) end
-        return _UILogic:ScreenToLocalUIPosition(cursor, rootTransform)
+        local point = nil
+        if rootTransform ~= nil then
+            point = _UILogic:ScreenToLocalUIPosition(cursor, rootTransform)
+        end
+        if point == nil then
+            point = _UILogic:ScreenToUIPosition(cursor)
+        end
+        if point == nil then return end -- 변환이 둘 다 막히면 지난 좌표를 그대로 쓴다
+        self.lastTipX = point.x
+        self.lastTipY = point.y
+
+        -- 자리가 또 어긋나면 숫자로 보이게 처음 세 번만 남긴다(맞으면 지운다).
+        if self.posLogCount < 3 then
+            self.posLogCount = self.posLogCount + 1
+            local rootSize = "nil"
+            if rootTransform ~= nil then rootSize = tostring(rootTransform.RectSize.x) .. "x" .. tostring(rootTransform.RectSize.y) end
+            log("SkillWindowLogic: tooltip pos cursor=(" .. tostring(math.floor(cursor.x)) .. "," .. tostring(math.floor(cursor.y)) .. ") ui=(" .. tostring(math.floor(self.lastTipX)) .. "," .. tostring(math.floor(self.lastTipY)) .. ") root=" .. rootSize)
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -712,10 +722,12 @@ script SkillWindowLogic extends Logic
                 local rowTransform = entity.UITransformComponent
                 if rowTransform ~= nil then
                     local point = _UILogic:ScreenToLocalUIPosition(cursor, rowTransform)
-                    local halfW = rowTransform.RectSize.x / 2
-                    local rowH = rowTransform.RectSize.y
-                    if point.x >= -halfW and point.x <= halfW and point.y <= 0 and point.y >= -rowH then
-                        return entity
+                    if point ~= nil then
+                        local halfW = rowTransform.RectSize.x / 2
+                        local rowH = rowTransform.RectSize.y
+                        if point.x >= -halfW and point.x <= halfW and point.y <= 0 and point.y >= -rowH then
+                            return entity
+                        end
                     end
                 end
             end
@@ -1058,7 +1070,8 @@ script SkillWindowLogic extends Logic
         if pattern == nil then return "" end
         -- gsub 은 (문자열, 치환 횟수) 두 값을 돌려준다. 선언 반환형이 하나뿐인 user-script 메서드에서
         -- 그대로 return 하면 안 되므로(SkillDatabase.CanLearn 주석의 LEA-3015 와 같은 제약) 한 번 받아 둔다.
-        local replaced = string.gsub(pattern, "{v}", self:Num(value))
+        -- 받는 변수도 둘로 — 하나만 두면 빌드가 LWA-1111 UnbalancedAssignment 를 띄운다.
+        local replaced, replacedCount = string.gsub(pattern, "{v}", self:Num(value))
         return replaced
     end
 
