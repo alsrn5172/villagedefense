@@ -234,7 +234,8 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 | `Faction/FactionAttack.mlua` | `HitTarget(target, mul)` · `HitMul` → `CalcDamage` |
 | `Lane/LaneStateService.mlua` | `SplitHits` 로드 · `TestSetFacilityLevel` · `TestDestroyFacility` · `FacilityMaxLevel` |
 | `Lane/LaneFacilityService.mlua` | `ApplyAttackFx` 가 `SplitHits` 전달 |
-| `Lane/LaneTestDriver.mlua` | 리모콘(키 입력 · 선택 · 토스트) · 달팽이 5마리 |
+| `Lane/LaneTestDriver.mlua` | 리모콘(키 입력 · 선택 · 토스트 · UI 명령 V/S · `PushState`/`PushRemoteState`) · 달팽이 5마리 |
+| `ui/LaneTestRemoteGroup.ui` · `Lane/LaneTestRemoteUI.mlua` | **신규** UI 리모콘 (아래 절) |
 | `FacilityAttackFx.csv` | `SplitHits` 열 · 노틸러스 true · 페리온 직선/0.3초 |
 | `Docs/스키마-계약.md` A-2-18 · `Docs/tools/check-integrity.cjs` | `SplitHits` 열 · `ArcHeight` 의미 |
 
@@ -245,6 +246,12 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 페리온 `ArcHeight 0 · FlightSec 0.3` 적용(직선은 눈 확인)
 - 리모콘(서버 스크립트로 `Remote` 직접 호출): `VNEXT → KERNING:TOWER` · `LVUP` ×4 → Lv 2→3→**1**(순환)→2 · `DESTROY → alive=false`(`DESTROYED by TestRemote` + Changed) · `REBUILD → alive=true Lv2 유지` · `SPREV → SUPPRESSOR` 파괴 · `SNEXT`/`VNEXT` ×3 → `PERION:TOWER` · `LVUP → Lv2`. 매 명령 뒤 `[Facility] combat …` 재적용.
 - **눈 확인(사용자)**: 키 입력(`[` `]` `,` `.` `'` `;` `/` `\`)과 토스트 문구 · 수평 발사 낙하 곡선(헤네시스 1.2 · 커닝 1.0 · 노틸러스 1.8 — 더 평평하게 하려면 값 ↑) · 페리온 직선 창 방향 · 노틸러스 3파 포탄 · 달팽이 5마리 광역/단일.
+
+### UI 리모콘 (2026-09-14 · 사용자 "리모콘이 UI 가 떠야 하는데 안 떠서 불편함 · 버튼으로")
+- 새 `ui/LaneTestRemoteGroup.ui`(UIBuilder · GroupOrder 12 · DefaultShow true · 오른쪽 가운데 420×560 패널 · 흰 둥근사각 9-slice 틴트): 마을 5 버튼 · 구조물 3 버튼 · 상태 글 · `Lv +1` / `파괴` / `재건` / `전체 초기화` · 키보드 힌트. 패널은 꺼진 채 시작.
+- 새 `Lane/LaneTestRemoteUI.mlua`(`@Logic` · 클라 · UUID 14개는 빌더 `write({bind})` 주입): 0.5초마다 로컬 플레이어의 맵에 `LaneTestDriver` 가 있으면 패널을 켜고 `RequestRemoteState`, 버튼 → `LaneTestDriver.Remote("V1~V5" / "S1~S3" / LVUP / DESTROY / REBUILD / RESET)`. 서버가 `PushRemoteState`(Client RPC) 로 "커닝시티 포탑 · Lv2 · 생존" 과 선택 강조(파랑)를 돌려준다. 키보드 키는 그대로 살아 있다.
+- 검증(Play · 클라 스크립트로 컨트롤러 `Send` 직접 호출): refresh 만으로 UI 그룹 등록(Reimport 불필요) · 테스트맵에서 `panel.Enable=true` · 초기 상태 "헤네시스 포탑 · Lv1 · 생존" · `V2 → S3 → LVUP` 뒤 상태 "커닝시티 포탑 · Lv2 · 생존" · 커닝 버튼 파랑(0.30,0.58,0.95) / 헤네시스 회청 · Error 0. **클릭 자체는 사용자 확인.**
+- ui_lint 경고 12건 = 버튼이 88×88 모바일 터치 기준 미만(PC 테스트 도구라 무시).
 
 ### Codex 리뷰 반영 (2026-09-14 · 사용자 "codex 열심히 시켜" · 읽기 전용 · 새 세션 2회 대조)
 1차 지적 3건 전부 수정:
