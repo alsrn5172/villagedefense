@@ -133,3 +133,12 @@
 - 원인 확정: 계정 리소스(내 리소스)는 이 **그룹 월드** 클라가 못 불러온다(A 의 `a-npc-village-ui` 조각 §"계정 자산" 과 같은 문제 · A 는 `a-lane-facility-sprites` 에서 **그룹 리소스 스토리지 groupCode `mIYbC`** 로 해결). 맵 아래 스폰 + FollowTarget(⑫)은 그대로 둔다(자식 스폰 의존 제거는 무해).
 - 같은 PNG 3장을 `asset_create_group_resource_storage_item`(groupCode mIYbC · 2단계 presigned PUT) + `asset_update_resource_storage_info`(pivot_x 0.5 · pivot_y 0.0 · Bilinear · Clamp)로 그룹 리소스에 등록: **stand `07864866a96a4860a7c80972f6ddf265` · walk_a `8fe698e1a57e47128216fa90451fc767` · walk_b `f4f9f95656a94d5aafc7cd5dcaec9887`** → `formSets.custom` 교체. 계정 RUID 3개(b03dd531/be02babc/f5e29b96)는 폐기(계정 리소스에 남아 있음 · 필요하면 `asset_delete_resource_storage_item`).
 - 🟡 사용자 요청으로 이번엔 **MCP 로 직접 확인**한다(아래 ⑭에 결과).
+
+### 2026-09-14 — ⑭ MCP 검증 결과(사용자 요청 · 스크래치 브리지 47831 · Maker 가 새 bridge_port 49727 에 스스로 재접속)
+
+- 절차: `maker_refresh_workspace` → `maker_play` → Lv30 · PIRATE · learn-all · `WEAPON_PIRATE_T10` 장착 → W → 스크린샷 → ←/→ 홀드 중 스크린샷 → 서버 스크립트로 플레이어/form 위치 샘플 → `maker_stop`. 두 번 실행(18:45 · 18:48).
+- 결과(빌드 오류 0 · `unavailable` 0건):
+  - `[Buff] ON SUPER_TRANSFORM` → `SkillExecutors: buff form SK_P21 SUPER_TRANSFORM set=custom ruid=07864866… facing=-1 avatarAlpha=0 follow=map-child for 30s` — **그룹 리소스 RUID 는 불러와진다**(계정 RUID 는 `is unavailable now` 였다).
+  - 스크린샷: W 직후 원래 캐릭터는 안 보이고 황금 불꽃 캐릭터가 이름표(jjoggi) 바로 위에 서 있음 · ← 홀드 중 4장에서 불꽃 캐릭터가 이름표와 같이 움직이며 걷기 자세(FORMPOS 샘플 ruid=8fe698e1… = walk_a) · 오른쪽으로 돌린 뒤 `scale=-1.0`(뒤집힘) · 발판 끝에서 떨어질 때도 같이 낙하(follow 유지).
+  - 🟡 서버 스크립트로 읽은 플레이어/form 좌표는 낙하 중 최대 2.3 유닛 차이가 났지만(`server_main` 실행 컨텍스트가 읽는 플레이어 위치가 OnUpdate 시점과 다른 듯) 화면에선 이름표와 form 이 붙어 있어 시각적 문제 없음 · 걸음 폭·발 높이·다른 계정 화면은 사용자 확인.
+- 스크린샷 원본: `AppData/LocalLow/nexon/MapleStory Worlds/McpScreenshots/maker_play_20260914_1845*/1848*.png` · 대조 시트는 스크래치 `sheet_play_transform.png` / `sheet_play_walk.png`.
