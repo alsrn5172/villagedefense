@@ -304,6 +304,12 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 미니언 진행 방향이 `AdvanceDir = −1` 고정이었다 → 레인 행(`endX ≥ spawnX` 면 +1)으로. `MinionUnit.EndDir` 로 끝 판정 부등호도 방향에 맞춤(실제 맵의 좌→우 레인도 이제 맞는다).
 - 🔴 첫 Play 에서 좌→우 줄 3개가 0발: `AddComponent` 순간 `FactionAI.OnBeginPlay` 가 먼저 돌아 `ResolvedDir` 이 팀 기본값(−1)으로 굳고, 그 뒤 넣은 `AdvanceDir` 은 무시됐다 → `ResolvedDir` 도 직접 덮음. 재검증(Play 1회): 다섯 포탑 전부 volley 8~19 · Error 0.
 
+### 발사 출발점 x 보정 `LaunchOffsetX` (2026-09-15 · 사용자 "헤네시스 포탑·억제기 발사 위치를 조정하고 싶다" → "추가해줘")
+- `FacilityAttackFx.csv` 에 `LaunchOffsetX` 열 추가(`LaunchOffsetY` 앞 · 유닛 · + 오른쪽 · 빈칸 = 0). **월드 기준**이라 시설 그림 `FlipX` 와 무관(마을마다 그림 방향이 고정) — 원하는 부호를 그대로 적는다. 지금은 전 행 빈칸(동작 변화 없음) · 헤네시스 포탑·억제기 6행은 사용자가 채운다.
+- 흐름: `LaneStateService.LoadFxDef`(`launchX`) → `LaneFacilityService.ApplyAttackFx`(`fx.LaunchOffsetX`) → `LaneAttackFx.Fire` 출발점 `origin.x + LaunchOffsetX`. 계약서 A-2-18 · `check-integrity` 정본 헤더 갱신.
+- 같이 커밋: 사용자가 미리 고쳐 둔 값 — 헤네시스 포탑·억제기 6행 `LaunchOffsetY −1`(시설 가운데보다 1 아래) · 엘리니아 Lv3 `CastOffsetX/Y 0.9/0.95`.
+- **눈 확인(사용자)**: 헤네시스 화살 출발점(x = `LaunchOffsetX` · y = `LaunchOffsetY`). 값 바꾸면 Stop → refresh → Play.
+
 ### 검증 (2026-09-15 · 개인 월드 Play 3회)
 - 새 아트: `FacilitySprite loaded: 15 rows` · 7개 시설 RUID 가 새 값(`b3d441e1`·`ab1b1a77`·`c581bd55`·`0784f6d9`·`6de3ebd1`·`2cb00b54`·`0b55fd5e`) · scale 0.25 · 위치가 새 GroundOffset 대로.
 - 헤네시스 억제기: `combat … attacks=true dmg=60 maxTargets=3 fx=SHOT` · 포탑 파괴 뒤 화살 volley 6회.
