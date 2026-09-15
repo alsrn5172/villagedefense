@@ -20,6 +20,10 @@
 - `RootDesk/MyDesk/ShopItem.csv`: 물약 상인에 `SHOP_POTION_BLUE`를 30메소로 추가했다. HP 물약과 같은 가격으로 구매 경로를 제공한다.
 - `RootDesk/MyDesk/Item/WorkshopUIController.mlua`: 물약 상인 상세 문구가 `HP +N` 고정이라 파란 포션이 `HP +0` 으로 보이던 것을 `HealHp`/`HealMp` 에 따라 `HP +N` · `MP +N` 으로 고쳤다 (Codex 검토 지적).
 
+## 2026-09-16 — S3 매치 시작 킷: 원장 생성 지급 삭제 → `ResetMatchState` 에서 장비 7 + 보석·재료 + 물약 5·5
+
+- `RootDesk/MyDesk/Item/InventoryService.mlua`: `EnsureUser` 의 스타터 킷 지급을 없애고(로비에서 창만 열어도 킷이 생기던 것) `GrantMatchKit(userId)` 를 신설해 매치 시작(`MatchResetService.ResetUser` → `ResetMatchState`)에서만 준다. 킷에 빨간 포션 5 · 파란 포션 5 를 더했다(사용자 결정: "매치 시작에 주고, 매치 끝엔 굳이 정리하지 않는다 — 다음 매치 시작이 비운다"). 게이트 프로퍼티는 `GiveStarterKit` → `GrantKitOnMatchStart`.
+
 ## 검증 (2026-09-16 · 개인 월드에 워크트리 물려 Play · 로그 근거)
 
 - 빌드 경고 이전 1 → 이후 1 (기존 `ParseStatCsv` LWA-1111 · 신규 0) · mLua 진단 3파일 0건 · `check-integrity` 전부 통과(경고 4건 기존)
@@ -27,3 +31,5 @@
   · ⑥ 물약 없음 토스트 · ⑨ 스킬 키 무간섭 · ⑪ 다른 창 무간섭은 코드 경로상 보장(토스트는 클라 RPC 라 서버 로그 없음) — 사용자 육안 항목
 - S2: 파란 포션 로드 ✅ `catalog blue=true icon=7e9b39b7… healMp=50 cdStart=13 shop=true` / 키 2 ✅ `+mp 50 -> mp=100` · `use POTION_BLUE mp 72→100`(상한 적용) / 등록 ✅ `quick slot 1 = POTION_RED` · `2 = POTION_BLUE` · 장비 등록은 거절 / 드롭 판정 ✅ `SlotAtScreen` s1=1 · s2=2 · 화면 중앙=0 · 드롭 흉내 → `quick slot 2 = POTION_RED` / 쿨 오버레이 ✅ t=0.12s 40% → 0.27s 85% → 0.52s 100% → 2.5s 85% → 5.5s 70% → 9.0s 40% · 남은 초 13→11→8→4
 - 🔴 사용자 육안 확인 필요: 실제 마우스 드래그&드롭과 슬롯 클릭(시뮬레이터가 UI 버튼 이벤트를 못 보냄) · 왼쪽 아래 배치 · 고스트 아이콘 · 상점 상세 `MP +50`
+- S3 매치 킷: 원장만 만들면 `ensure-only items=0` ✅ → `_MatchResetService:ResetUser` 뒤 `match kit given` · `items=11 red=5 blue=5 sword=1 shield=1 gem=5 spore=12` · 퀵슬롯 비워짐 ✅ · 빌드 경고 증가 0 · 진단 0
+  · 로비에서는 이제 인벤이 비어 있다 — 테스트하려면 매치 안내원 → 매치 만들기 → 시작(리스항구 도착 시 킷 지급)
