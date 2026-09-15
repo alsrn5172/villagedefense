@@ -259,6 +259,23 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - **엘리니아 Lv3 이펙트** — 사용자가 "마법진 말고 다른 이펙트여야 할 것 같다 · 스킬 다시 보여 달라" → 엘리멘탈 블래스트 팩 요소 전부 + Lv1·Lv2 팩 + 지금 마법진 2종을 움직이는 시트(`fx-ellinia-lv3.html`)로 보냄. 결정 대기.
 - 검증: Maker 가 사용자 Play 중이라 refresh 보류 — Stop 뒤 refresh → 억제기 `fx=SHOT` volley · 포탄 크기 안정 확인 예정. 🔴 Play 중에 CSV 를 고쳤으므로 Stop 뒤 디스크 되읽기(되돌려졌으면 스크립트 재실행).
 
+### 시설 전용 아트 7장 업로드·적용 (2026-09-15 · 사용자 `메월드폴더/리소스파일`)
+그룹 리소스 스토리지(`mIYbC`)에 2단계 업로드(presigned PUT · node fetch) → `FacilitySprite.csv` 행 교체. 오프셋은 PNG 불투명 경계 실측(Scale 0.25 · 중심 피벗): GroundOffset = 중심→불투명 바닥, BarOffset = 중심→불투명 꼭대기 + 0.1. `Scale` 칸은 비움(전용 아트는 0.25).
+
+| 행 | RUID | 픽셀 | GroundOffset | BarOffset |
+|---|---|---|---|---|
+| HENESYS SUPPRESSOR (석궁 버전 · 옛 `e20012f6` 교체) | `b3d441e1…` | 1214×1295 | 1.51 | 1.68 |
+| KERNING CORE (임시 넥서스 교체) | `ab1b1a77…` | 1230×1278 | 1.44 | 1.55 |
+| ELLINIA TOWER | `c581bd55…` | 1086×1448 | 1.77 | 1.86 |
+| ELLINIA SUPPRESSOR | `0784f6d9…` | 1208×1302 | 1.35 | 1.50 |
+| ELLINIA CORE | `6de3ebd1…` | 1122×1402 | 1.65 | 1.78 |
+| NAUTILUS TOWER | `2cb00b54…` | 1254×1254 | 1.36 | 1.16 |
+| NAUTILUS SUPPRESSOR | `0b55fd5e…` | 1254×1254 | 1.31 | 1.37 |
+
+- NAUTILUS CORE 는 사용자 말대로 "넥서스가 노틸러스 자체" 라 임시 넥서스 그대로(별도 아트 없음).
+- `FacilityAttackFx`: 노틸러스 `LaunchOffsetY` 빈칸(새 아트 머리 위 = 기본값) · 엘리니아 `CastOffsetY 0`(시설 가운데) · 헤네시스 억제기 `LaunchOffsetY 1.0`(석궁 높이 근처).
+- 🔴 실측이 아니라 계산값 — 투명 여백·그림자만큼 떠 보이면 `GroundOffset` 칸으로 조정(커닝·페리온 포탑처럼 일부러 잠기게 두는 것도 사용자 선택).
+
 ### Codex 리뷰 반영 (2026-09-14 · 사용자 "codex 열심히 시켜" · 읽기 전용 · 새 세션 2회 대조)
 1차 지적 3건 전부 수정:
 1. `HitTarget` 이 분할 배율을 사망 검사 **앞에** 놓아 죽은 표적에서 되돌리지 않았다 → 다음 즉시 공격이 배율을 물려받을 수 있었다. 사망 검사 뒤로 옮기고 모든 경로에서 0 으로 복구.
