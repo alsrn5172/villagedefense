@@ -18,6 +18,7 @@
 - `RootDesk/MyDesk/ItemInfo.csv`: `POTION_BLUE`(파란 포션, 아이콘 RUID `7e9b39b73f4945b1a8d77db6c99a6946`, 스택 99)을 추가했다. HP 물약과 대칭인 MP 회복 소모품을 인벤토리·퀵슬롯에서 쓰도록 한다.
 - `RootDesk/MyDesk/ConsumeInfo.csv`: `POTION_BLUE`의 MP +50과 Lv1 13초→Lv30 6초 쿨을 추가했다. HP 물약과 별도 쿨로 대칭 규칙을 유지한다.
 - `RootDesk/MyDesk/ShopItem.csv`: 물약 상인에 `SHOP_POTION_BLUE`를 30메소로 추가했다. HP 물약과 같은 가격으로 구매 경로를 제공한다.
+- `ui/QuickSlotGroup.ui` 후속(사용자 지시): 쿨타임 남은 초 `CoolText` 를 흰색 → **금색(`#FFD24A`) + 검은 테두리 3px** 로. 흰 글자가 반투명 오버레이 위에서 잘 안 보였다. 엔티티 UUID 는 그대로라 바인딩 변화 없음.
 - `RootDesk/MyDesk/Item/WorkshopUIController.mlua`: 물약 상인 상세 문구가 `HP +N` 고정이라 파란 포션이 `HP +0` 으로 보이던 것을 `HealHp`/`HealMp` 에 따라 `HP +N` · `MP +N` 으로 고쳤다 (Codex 검토 지적).
 
 ## 2026-09-16 — S3 매치 시작 킷: 원장 생성 지급 삭제 → `ResetMatchState` 에서 장비 7 + 보석·재료 + 물약 5·5
