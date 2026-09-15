@@ -26,6 +26,10 @@ script SkillExecutors extends Logic
     --   PROJECTILE 선딜 스킬(스나이핑)은 시전 순간 aim 단계(시전자 부착 조준 연출) + Use 사운드 + mob(앞쪽 대상에 조준 표시 · PlayAimMarker)를 내고 Duration 뒤 화살만 쏜다.
     --   캐릭터 모션: 공격 3종은 전부 활 쏘기 shoot1(사용자 요청) · GetMotionSequence 에 궁수 3종(스나이핑 발사 · 닷지 버프 순서 · 폭풍의 화살 발사/복귀) — 발사 시점은 CSV Duration 을 그대로 쓴다.
     --   투사체 조준점: SkillProjectile.AimPointOf = 대상 HitComponent 콜라이더 중심(제보 "더블 샷 화살이 대상 조금 위로 지나간다") · 명중 이펙트도 같은 점.
+    -- b/skill-thief-motion (2026-09-13 · 사용자의 도적 표 이미지 재대조 · CSV 값 변경 0):
+    --   캐릭터 모션(아대 CLAW 행): 럭키 세븐 = 표창 던지기 swingT3 · 다크 사이트/쉐도우 파트너 = 비공격 버프 순서(heal 왕복 → alert → stand1) · 메소 익스플로전 = alert → CSV Duration 에 swingT3 → stand1.
+    --   분신 따라하기(원작 쉐도우 파트너 = 분신이 시전자의 공격을 그대로 따라 한다): 쉐도우 파트너가 켜져 있으면 PlayMotion 이 재생한 동작을 분신이 시전자 뒤에서 한 번 따라 하고
+    --   (effectOverrides.SK_T22.mimic 의 팩 special/<action> 클립 · PlayShadowMimic) 서 있기 루프로 돌아온다. 피해 2배는 그대로 SkillBuffs.GetOutgoingDamageMul 한 줄.
 
     -- behavior -> executor method, single source of truth (see Execute()). Adding a behavior
     -- is one line here.
@@ -158,6 +162,35 @@ script SkillExecutors extends Logic
     -- 서버: userId → 진행 중인 모션 순서(PlayMotionSequence)의 타이머 id 목록. 새 시전이 오면 이전 순서를 취소한다 — 텔레포트(쿨 1s) 연타 때 이전 _END(서 있기)가
     -- 새 시전의 heal 왕복을 0.5s 만에 끊는 것을 막는다. 가장 최근 시전이 애니메이션을 가진다.
     property table motionSeqTimers = {}
+
+    -- 쉐도우 파트너 분신 따라하기(b/skill-thief-motion): 분신이 동작 클립(special/<action>)을 한 번 보여 주는 시간(초). 지나면 서 있기 루프(PlayBuffLoop)로 돌아온다.
+    -- 팩 special 클립은 3프레임(swingT3 · alert 등)이라 0.6s 면 한 번 도는 길이. 연타(럭키 세븐 0.4s 락)면 이전 복귀 타이머를 취소하고 새 동작으로 잇는다.
+    property number ShadowMimicSeconds = 0.6
+
+    -- 서버: userId → 분신 서 있기 루프 복귀 타이머 id(PlayShadowMimic · HideShadowFor 가 같이 쓴다).
+    property table shadowMimicTimers = {}
+
+    -- 화면 컷신(cast 에 scale + noFlip 이 있는 연출) 동안 분신을 숨기는 시간(초 · spec.cutsceneSeconds 가 있으면 그것). 2026-09-13 제보 "쉐도우 파트너 중 R(메소 익스플로전)을 누르면
+    -- 컷신 내내 분신이 보인다" — 분신 루프·따라하기 클립은 컷신 위에 그려진다. 컷신이 걷힌 뒤(메소 익스플로전 `_END` 5.5 와 같은 시점) 남은 버프 시간만큼 루프를 다시 건다.
+    property number CutsceneShadowHideSeconds = 5.5
+
+    -- 서버: userId → 분신이 숨겨진 동안의 끝 시각(ServerElapsedSeconds). 그동안 PlayShadowMimic · PlayBuffLoop(SHADOW_PARTNER) 는 아무것도 그리지 않는다.
+    property table shadowHiddenUntil = {}
+
+    -- 분신(루프·따라하기 클립)의 OrderInLayer. 플레이어 렌더 층 = 밟은 발판의 SortingLayer + OrderInLayer 4(Npc/NpcSpawner · PortalNetwork 주석 · NPC 는 3 · 몬스터·보스 2) →
+    -- 분신은 같은 층에 2 로 두면 항상 플레이어 뒤(원작 쉐도우 파트너 = 캐릭터 뒤에 그려진다). 2026-09-13 제보 "오른쪽을 볼 때 분신이 앞을 가린다": 이펙트 기본 층(Default)은
+    -- 플레이어 앞이고, 던지기 클립(special/swingT3)은 pivot 이 뒤쪽이라 팔이 발보다 44px 앞까지 뻗어 뒤집힌 쪽(오른쪽)에서 캐릭터 몸을 덮었다. ApplyShadowSorting.
+    property integer ShadowOrderInLayer = 2
+
+    -- 분신이 항상 등 뒤에 있도록 바라보는 쪽을 살피는 간격(초 · b/skill-thief-motion · 2026-09-13 제보 "방향을 바꾸면 분신이 안 움직여 앞에 남는다"):
+    -- 부착 이펙트의 localPosition 은 시전 때 한 번 정해지고(offsetX × facing) 플레이어 facing(LookDirectionX)은 Transform 을 뒤집지 않아 따라오지 않는다 →
+    -- 버프 중 이 간격으로 facing 을 읽어 바뀌었으면 루프를 새 쪽으로 다시 건다(PlayBuffLoop · 남은 시간). 따라하기(루프 없음)·컷신 숨김 중엔 건너뛴다(복귀가 새 쪽으로 건다).
+    property number ShadowFacingPollSeconds = 0.1
+
+    -- 서버: userId → 분신 루프를 걸었을 때의 facing(+1/−1) · 살피기 타이머 id.
+    property table shadowFacing = {}
+
+    property table shadowFacingTimers = {}
 
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
@@ -366,16 +399,36 @@ script SkillExecutors extends Logic
                 impact = { ruid = "b36801c6a25e4581952e0df59111daeb" },
             },
             SK_T11 = {   -- 럭키 세븐 — skill/400.img/skill/4001344 럭키 세븐: effect 6프레임 · hit/0(46×46) · 표창 스프라이트 = 수비 표창 아이템(5d2441df… · 28×28)
+                -- spawn(b/skill-thief-motion · 2026-09-13 제보 "표창이 이펙트 중심을 향해 날아가야"): 표창 스폰점을 시전 이펙트(초승달 던지기 궤적)의 중심에 맞춘다(FireProjectile → SpawnProjectile 의 스킬별 offset).
+                --   effect 클립 프레임 pivot = (105, 1) / 40×52 등 → 클립은 pivot 의 앞쪽 65~105px · 위 0~50px 에 그려진다 = 중심 (앞 0.85, 위 0.25). 표창 스프라이트 pivot (−3, −2) / 28×28 → 그림 중심이
+                --   엔티티보다 뒤 0.17 · 위 0.16 이라 그만큼 보정 → 엔티티 스폰 (앞 1.02, 위 0.09). 예전 값 = 공통 앞 0.5 · CSV SpawnOffsetY 0.5(손 높이) → 초승달보다 위·뒤에서 나갔다. Play 프레임으로 미세 조정.
+                --   delay 0.2(2026-09-13 제보 "표창이 다 나간 뒤 이펙트가 뜬다"): effect 0프레임 = 4×4 빈 프레임이라 초승달은 1프레임부터 보인다 → 표창을 초승달이 뜨는 시점에 맞춰 늦게 쏜다(소리·연출·던지기 모션은 시전 순간 그대로 ·
+                --   볼리 2발째는 그 +0.12). 실제 프레임 딜레이는 오프라인에서 못 읽어(썸네일 GIF 는 150ms 로 정규화) 0.2 부터 — 늦으면 0.15 · 이르면 0.25 로 한 칸.
+                --   scale 1.3 = 사용자 요청 "표창을 조금 더 크게"(28×28 스프라이트 · 판정 상자는 그대로).
                 cast = { ruid = "0ae88fa494e743158da6ddb81c0c55f2" },
                 impact = { ruid = "458e72f0720a4584a9a7fc3642b6e601" },
                 ball = { ruid = "5d2441df6e6f4446beb45b301cdba0f2" },
+                spawn = { offsetX = 1.02, offsetY = 0.09, delay = 0.2, scale = 1.3 },
             },
             SK_T21 = {   -- 다크 사이트 — skill/1400.img/skill/14001003 다크 사이트(나이트워커 · 400.img 은 색인에 없음): effect 4프레임(61×39 · 은신 연기). 은신 자체는 SkillBuffs 가 알파로.
                 cast = { ruid = "abdf05be0b3e4146a6271c4ee1f3b1b1" },
             },
             SK_T22 = {   -- 쉐도우 파트너 — skill/411.img/skill/4111002 쉐도우 파트너: effect 16프레임(132×136 · 시전) · loop = special/stand1(52×68 · 분신 서 있기) 을 시전자 뒤(offsetX -0.45)에 반복
+                -- mimic(b/skill-thief-motion · 2026-09-13): 같은 팩의 special/<action> 클립(분신이 그 동작을 하는 3프레임 실루엣 · 전부 52~70px · pivot 은 stand1 과 같은 발) — PlayMotion 이 재생한
+                --   WeaponMotion CoreAction 이름으로 찾아 분신이 한 번 따라 한다(PlayShadowMimic). 없는 이름(stand1 = 루프 자체)은 따라 하지 않는다. 팩 목록엔 create2~4·walk·jump 등도 있다.
                 cast = { ruid = "8ef08d990aeb452bad114479f6bc76fd", noFlip = true },
-                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.45 },
+                -- behindPlayer: 루프·따라하기 클립을 플레이어 뒤 층에 그리고(ApplyShadowSorting · 발판 SortingLayer + ShadowOrderInLayer), 방향을 바꾸면 등 뒤로 다시 건다(EnsureShadowFacingPoll).
+                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.45, behindPlayer = true },
+                mimic = {
+                    swingT3 = "15a76a6ee450459a97fe44e3ad9283d0",   -- 표창 던지기(럭키 세븐 · 메소 익스플로전 폭발)
+                    swingO3 = "fc164d4b226e4a22bab992992cdfdd4c",   -- 아대 기본 행(A 후보값)이 쓰이는 경우
+                    swingO1 = "edfb3dd0204f49e1a5dfac95520439b8",
+                    swingO2 = "07531c9679d44f7992d7c66871b5f551",
+                    stabO1 = "8736f22509854a2a873a12da0bdea57a",     -- 단검을 든 도적
+                    stabO2 = "087ddd3b2038432d8477a9ce1d2a4977",
+                    heal = "f713b8efdada4fd2ab5235331d510a7d",       -- 버프 순서 1단(손 들기)
+                    alert = "07002b4e493048e9a5f857b02e3ba51c",      -- 버프 순서 2단 · 메소 익스플로전 시전 자세
+                },
             },
             SK_T31 = {   -- 메소 익스플로전 — 컷신 = skill/424.img/skill/4241500 일도양단(섀도어 오리진 · Halve Cut) screen 85프레임(1455×858 · 세이크리드 바스티온과 같은 보정 · 2026-09-13 사용자 "도적 컷신" 요청)
                 -- 폭발 중심 = skill/424.img/skill/4241006 메소 익스플로젼 VI effect0(475×314) · 동전마다 skill/40000.img/skill/400004110 hit/0~8 (컷신이 도는 동안 연쇄 폭발 · ExecuteMesoOrigin)
@@ -532,6 +585,8 @@ script SkillExecutors extends Logic
             return false
         end
         _PlayerMotion:PlayAction(res.row.core, res.row.parts, res.row.rate, res.row.playType, uid)
+        -- 쉐도우 파트너 분신이 켜져 있으면 같은 동작을 시전자 뒤에서 따라 한다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
+        self:PlayShadowMimic(uid, res.row.core)
         return true
     end
 
@@ -556,12 +611,20 @@ script SkillExecutors extends Logic
         --   닷지 SK_A22       = 텔레포트와 같은 비공격 순서: heal 1.5배속 왕복(도착 지점) → `_2` 0.75 alert 2.5배속 → `_END` 1.2 stand2(활 = 두손 무기 분류).
         --   폭풍의 화살 SK_A31 = 시전 행 shoot1 0.5배속(컷신 아래 충전) → `_2` CSV Duration(1.5 = ExecuteLineOrigin 피해) shoot1 1.5배속 → `_END` 5.5(컷신 133프레임 ≈ 7s 면 컷신 아래 · 미실측).
         --   포커스 SK_A12 는 패시브(시전 없음) → 행 없음. 같은 액션 재전송(shoot1→shoot1)이 재시작되는지는 🟡 Play 확인 — 안 돼도 시전 행의 느린 당기기가 발사 시점 근처에 발사 프레임에 닿게 배속을 잡았다.
+        -- 도적 (b/skill-thief-motion · 2026-09-13 사용자의 도적 표 이미지 · 아대 CLAW 행 · 검을 든 도적·맨손 도적도 ResolveMotionRow ② 로 CLAW 행):
+        --   럭키 세븐 SK_T11        = 시전 행 swingT3 1.2배속 한 동작(원작 = 던지기 한 번에 표창 2개 · 팩 special/swingT3 실루엣 = 팔을 앞으로 뻗는 던지기) · 순서 없음.
+        --   다크 사이트 SK_T21      = 비공격 버프 순서(하이퍼 바디와 같은 1.0 / 1.6 · 시전 락 0.5) — 원작은 몸 동작 없이 반투명만이라 "사용이 보이는 동작" 요청으로 넣었다.
+        --   쉐도우 파트너 SK_T22    = 같은 순서(1.0 / 1.6 · 시전 락 0.6). 분신은 ExecuteBuff 뒤에 뜨므로 시전 행(heal)은 따라 하지 않고 `_2` alert 부터 따라 한다(PlayShadowMimic).
+        --   메소 익스플로전 SK_T31  = 시전 행 alert(컷신 아래 자세) → `_2` CSV Duration(1.6 = ExecuteMesoOrigin 피해·중심 폭발) swingT3 1.5배속(공격 동작) → `_END` 5.5(일도양단 85프레임 ≈ 4.6s 추정 뒤 서 있기).
+        --   픽파켓 SK_T12 는 패시브(시전 없음) → 행 없음.
         local dur = 0
         if skillData ~= nil and skillData.duration ~= nil then dur = skillData.duration end
         local snipeAt = 1.0
         local stormAt = 1.5
+        local mesoAt = 1.6
         if skillId == "SK_A21" and dur > 0 then snipeAt = dur end
         if skillId == "SK_A31" and dur > 0 then stormAt = dur end
+        if skillId == "SK_T31" and dur > 0 then mesoAt = dur end
         local sequences = {
             SK_W21 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
             SK_W22 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
@@ -571,6 +634,9 @@ script SkillExecutors extends Logic
             SK_A21 = { { suffix = "_2", at = snipeAt } },
             SK_A22 = { { suffix = "_2", at = 0.75 }, { suffix = "_END", at = 1.2 } },
             SK_A31 = { { suffix = "_2", at = stormAt }, { suffix = "_END", at = 5.5 } },
+            SK_T21 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
+            SK_T22 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
+            SK_T31 = { { suffix = "_2", at = mesoAt }, { suffix = "_END", at = 5.5 } },
         }
         return sequences[skillId]
     end
@@ -682,6 +748,10 @@ script SkillExecutors extends Logic
                     local s = spec.scale or 1
                     _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
                     log("SkillExecutors: " .. stage .. " effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]))
+                    -- 화면 컷신(scale + noFlip · 예열 목록과 같은 기준)이면 쉐도우 파트너 분신을 컷신 동안 숨긴다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
+                    if stage == "cast" and spec.scale ~= nil and spec.noFlip and isvalid(casterEntity.PlayerComponent) then
+                        self:HideShadowFor(casterEntity.PlayerComponent.UserId, spec.cutsceneSeconds or self.CutsceneShadowHideSeconds)
+                    end
                 else
                     local s = spec.scale or 1
                     _EffectService:PlayEffect(spec.ruid, casterEntity, Vector3(pos.x, pos.y + (spec.offsetY or 0), pos.z), 0, Vector3(s, s, 1), false)
@@ -714,6 +784,11 @@ script SkillExecutors extends Logic
         if entry == nil or entry.loop == nil or entry.loop.ruid == nil then return end
         if not isvalid(casterEntity.PlayerComponent) then return end
         local userId = casterEntity.PlayerComponent.UserId
+        -- 분신이 컷신 때문에 숨겨진 동안(HideShadowFor)은 걸지 않는다 — 숨김이 끝날 때 남은 시간만큼 다시 건다.
+        if _SkillBuffs ~= nil and buffTag == _SkillBuffs.TagShadowPartner and self:IsShadowHidden(userId) then
+            log("SkillExecutors: buff loop effect " .. skillId .. " skipped — shadow hidden by cutscene (" .. userId .. ")")
+            return
+        end
         self:StopBuffLoop(userId, buffTag)
         local perUser = self.buffLoopEffects[userId]
         if perUser == nil then
@@ -725,8 +800,14 @@ script SkillExecutors extends Logic
         local facing = self:GetFacingX(casterEntity)
         local opt = {}
         opt["FlipX"] = (facing > 0) and not spec.noFlip
+        if spec.behindPlayer then self:ApplyShadowSorting(opt, casterEntity) end
         local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
         perUser[buffTag] = serial
+        -- 분신(behindPlayer)은 걸 때의 facing 을 기억하고, 버프 동안 facing 이 바뀌면 등 뒤로 다시 건다(EnsureShadowFacingPoll).
+        if spec.behindPlayer then
+            self.shadowFacing[userId] = facing
+            self:EnsureShadowFacingPoll(userId, skillId, buffTag)
+        end
         _TimerService:SetTimerOnce(function()
             if perUser[buffTag] == serial then
                 _EffectService:RemoveEffect(serial)
@@ -746,6 +827,124 @@ script SkillExecutors extends Logic
         _EffectService:RemoveEffect(serial)
         perUser[buffTag] = nil
         log("SkillExecutors: buff loop effect stopped " .. buffTag .. " serial=" .. tostring(serial) .. " (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayShadowMimic(string uid, string action)
+        -- 쉐도우 파트너(SK_T22) 분신 따라하기(b/skill-thief-motion · 원작 = 분신이 시전자의 공격 동작을 그대로 따라 한다).
+        -- PlayMotion 이 WeaponMotion 행을 재생할 때마다 부른다. 분신 서 있기 루프(buffLoopEffects[uid][SHADOW_PARTNER])가 있고 effectOverrides.SK_T22.mimic 에
+        -- 그 CoreAction 의 팩 special/<action> 클립이 있으면: 루프를 내리고 → 같은 자리(시전자 뒤 · 지금 바라보는 쪽 기준)에 그 클립을 한 번 → ShadowMimicSeconds 뒤
+        -- 버프가 아직 켜져 있으면 남은 시간만큼 서 있기 루프를 다시 건다(PlayBuffLoop · 이때 바라보는 쪽도 새로 잡히므로 뒤돌아선 뒤의 첫 공격부터 분신이 등 뒤로 옮겨 온다).
+        -- 분신이 없거나(버프 OFF · 다른 직업) 모르는 동작(stand1 = 루프 자체 · shoot1 등)이면 아무것도 안 한다. 버프가 도중에 끝나면 OnBuffEnded → StopBuffLoop 가 새 루프도 지운다.
+        -- 조건은 "버프 활성" 이지 "루프가 떠 있음" 이 아니다 — 연타(럭키 세븐 0.4s 락 < ShadowMimicSeconds 0.6)면 앞 동작의 복귀 전이라 루프가 없어도 다음 동작을 이어서 따라 해야 한다.
+        -- 컷신으로 숨겨진 동안(HideShadowFor)은 따라 하지 않는다(컷신 위에 그려진다).
+        if _SkillBuffs == nil or uid == nil or uid == "" or action == nil or action == "" then return end
+        local tag = _SkillBuffs.TagShadowPartner
+        if _SkillBuffs:GetBuff(uid, tag) == nil then return end
+        if self:IsShadowHidden(uid) then return end
+        local entry = self.effectOverrides["SK_T22"]
+        if entry == nil or entry.mimic == nil or entry.loop == nil then return end
+        local ruid = entry.mimic[action]
+        if ruid == nil then return end
+        local player = _UserService:GetUserEntityByUserId(uid)
+        if not isvalid(player) then return end
+
+        self:StopBuffLoop(uid, tag)
+        local spec = entry.loop
+        local s = spec.scale or 1
+        local facing = self:GetFacingX(player)
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        if spec.behindPlayer then self:ApplyShadowSorting(opt, player) end
+        _EffectService:PlayEffectAttached(ruid, player, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+
+        self:ScheduleShadowRestore(uid, self.ShadowMimicSeconds)
+        log("SkillExecutors: shadow mimic " .. action .. " facing=" .. tostring(facing) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]) .. " (" .. uid .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EnsureShadowFacingPoll(string uid, string skillId, string buffTag)
+        -- 분신이 항상 등 뒤에 있게: 버프 동안 ShadowFacingPollSeconds 마다 facing(GetFacingX = LookDirectionX)을 읽어 루프를 걸었을 때와 다르면 남은 시간만큼 새 쪽으로 다시 건다.
+        -- 유저당 하나. 버프가 끝나면(GetBuff nil · 만료·매치 초기화) 타이머가 스스로 멈춘다. 따라하기 중(루프 없음)·컷신 숨김 중엔 건너뛴다 — 그 복귀(ScheduleShadowRestore)가 새 쪽으로 건다.
+        if self.shadowFacingTimers[uid] ~= nil then return end
+        self.shadowFacingTimers[uid] = _TimerService:SetTimerRepeat(function()
+            local buff = nil
+            if _SkillBuffs ~= nil then buff = _SkillBuffs:GetBuff(uid, buffTag) end
+            if buff == nil then
+                local id = self.shadowFacingTimers[uid]
+                if id ~= nil then _TimerService:ClearTimer(id) end
+                self.shadowFacingTimers[uid] = nil
+                self.shadowFacing[uid] = nil
+                return
+            end
+            if self:IsShadowHidden(uid) then return end
+            local perUser = self.buffLoopEffects[uid]
+            if perUser == nil or perUser[buffTag] == nil then return end
+            local player = _UserService:GetUserEntityByUserId(uid)
+            if not isvalid(player) then return end
+            local facing = self:GetFacingX(player)
+            if facing == self.shadowFacing[uid] then return end
+            local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
+            if remain <= 0 then return end
+            log("SkillExecutors: shadow re-anchored behind (facing " .. tostring(self.shadowFacing[uid]) .. " -> " .. tostring(facing) .. ") (" .. uid .. ")")
+            self:PlayBuffLoop(skillId, buffTag, player, remain)
+        end, self.ShadowFacingPollSeconds)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyShadowSorting(table opt, Entity player)
+        -- 분신을 플레이어 뒤에 그리는 렌더 층(b/skill-thief-motion): 플레이어 렌더 층은 밟은 발판의 SortingLayer 를 따라가므로(A · NpcSpawner/PortalNetwork) 그 층 + ShadowOrderInLayer(2 < 플레이어 4).
+        -- 발판을 못 찾으면(A 의 LaneFacilityService.SortingLayerBelow = "" · 발 아래 3유닛 안에 발판 없음) 옵션을 안 넣어 예전처럼 기본 층(플레이어 앞)에 그린다.
+        if _LaneFacilityService == nil or not isvalid(player) or not isvalid(player.TransformComponent) then return end
+        local p = player.TransformComponent.WorldPosition
+        local layer = _LaneFacilityService:SortingLayerBelow(player.CurrentMap, p.x, p.y)
+        if layer == nil or layer == "" then return end
+        opt["SortingLayer"] = layer
+        opt["OrderInLayer"] = self.ShadowOrderInLayer
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ScheduleShadowRestore(string uid, number seconds)
+        -- seconds 뒤 쉐도우 파트너 버프가 아직 켜져 있으면 남은 시간만큼 서 있기 루프를 다시 건다(PlayBuffLoop). 이전 복귀 예약은 취소(가장 최근 것만).
+        -- PlayShadowMimic(동작 클립 뒤) · HideShadowFor(컷신 뒤) 가 부른다.
+        local prev = self.shadowMimicTimers[uid]
+        if prev ~= nil then _TimerService:ClearTimer(prev) end
+        self.shadowMimicTimers[uid] = _TimerService:SetTimerOnce(function()
+            self.shadowMimicTimers[uid] = nil
+            -- 컷신 숨김 끝(HideShadowFor 가 예약한 복귀): 타이머가 끝 시각보다 한 틱 먼저 와도 PlayBuffLoop 의 숨김 가드에 걸리지 않게 먼저 푼다.
+            self.shadowHiddenUntil[uid] = nil
+            local player = _UserService:GetUserEntityByUserId(uid)
+            if not isvalid(player) or _SkillBuffs == nil then return end
+            local buff = _SkillBuffs:GetBuff(uid, _SkillBuffs.TagShadowPartner)
+            if buff == nil then return end
+            local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
+            if remain <= 0 then return end
+            self:PlayBuffLoop("SK_T22", _SkillBuffs.TagShadowPartner, player, remain)
+        end, seconds)
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsShadowHidden(string uid)
+        local untilAt = self.shadowHiddenUntil[uid]
+        if untilAt == nil then return false end
+        if _UtilLogic.ServerElapsedSeconds >= untilAt then
+            self.shadowHiddenUntil[uid] = nil
+            return false
+        end
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method void HideShadowFor(string uid, number seconds)
+        -- 화면 컷신 동안 쉐도우 파트너 분신을 숨긴다(b/skill-thief-motion · 2026-09-13 제보): 서 있기 루프를 내리고, seconds 동안 PlayShadowMimic · PlayBuffLoop(SHADOW_PARTNER) 를 막고,
+        -- 끝나면 남은 버프 시간만큼 루프를 다시 건다(ScheduleShadowRestore · 그때 바라보는 쪽 기준). 버프가 없으면 아무것도 안 한다. PlayStageEffect 가 컷신형 cast 마다 부른다.
+        if _SkillBuffs == nil or uid == nil or uid == "" or seconds == nil or seconds <= 0 then return end
+        local tag = _SkillBuffs.TagShadowPartner
+        if _SkillBuffs:GetBuff(uid, tag) == nil then return end
+        self:StopBuffLoop(uid, tag)
+        self.shadowHiddenUntil[uid] = _UtilLogic.ServerElapsedSeconds + seconds
+        self:ScheduleShadowRestore(uid, seconds)
+        log("SkillExecutors: shadow hidden for cutscene " .. tostring(seconds) .. "s (" .. uid .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -810,7 +1009,7 @@ script SkillExecutors extends Logic
         if h == nil or h <= 0 then h = 2.5 end
         local target = skillAttack:FindSkillTarget(skillId, {
             posX = pos.x + dirX * range / 2, posY = pos.y + h / 2,
-            sizeX = range, sizeY = h,
+            sizeX = range, sizeY = h, floorY = pos.y,
         }, self.projectilePreferBoss[skillId] == true)
         if not isvalid(target) then
             log("SkillExecutors: aim marker " .. skillId .. " no target in front (range=" .. tostring(range) .. ")")
@@ -837,10 +1036,33 @@ script SkillExecutors extends Logic
 
         -- SpawnProjectile (Server ExecSpace) does the actual spawn + facing/direction/damage
         -- wiring - see SkillAttack.mlua for why that crossing point lives there.
-        skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
-            skillData.range, skillData.speed, skillData.hitCount, self:GetImpactEffectRuid(skillId),
-            skillData.spawnOffsetY, self:GetSpecRuid(skillId, "ball"), self:GetExtraSound(skillId, "hit"),
-            self.projectilePreferBoss[skillId] == true)
+        -- 스폰점: effectOverrides[skill].spawn 이 있으면 그 offsetX(앞 · 0 = SkillAttack 공통값) / offsetY(CSV SpawnOffsetY 대신)로 — 럭키 세븐은 시전 이펙트(초승달) 중심(b/skill-thief-motion).
+        -- spawn.delay(초): 시전 연출·소리는 지금, 투사체는 delay 뒤 — 럭키 세븐 제보 "표창이 먼저 나가고 이펙트가 뒤에 뜬다"(팩 effect 0프레임이 4×4 빈 프레임이라 초승달은 1프레임부터 보인다).
+        -- spawn.scale: 투사체 스프라이트 크기 배율(판정 상자 RangeX/Y 는 그대로) — 럭키 세븐 "표창을 조금 더 크게".
+        local spawnX = 0
+        local spawnY = skillData.spawnOffsetY
+        local spawnDelay = 0
+        local spriteScale = 1
+        local entry = self.effectOverrides[skillId]
+        if entry ~= nil and entry.spawn ~= nil then
+            if entry.spawn.offsetX ~= nil then spawnX = entry.spawn.offsetX end
+            if entry.spawn.offsetY ~= nil then spawnY = entry.spawn.offsetY end
+            if entry.spawn.delay ~= nil then spawnDelay = entry.spawn.delay end
+            if entry.spawn.scale ~= nil then spriteScale = entry.spawn.scale end
+        end
+        local function spawnNow()
+            if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
+                skillData.range, skillData.speed, skillData.hitCount, self:GetImpactEffectRuid(skillId),
+                spawnY, self:GetSpecRuid(skillId, "ball"), self:GetExtraSound(skillId, "hit"),
+                self.projectilePreferBoss[skillId] == true, spawnX, spriteScale)
+        end
+        if spawnDelay > 0 then
+            log("SkillExecutors: PROJECTILE " .. skillId .. " launch in " .. tostring(spawnDelay) .. "s (after cast effect)")
+            _TimerService:SetTimerOnce(spawnNow, spawnDelay)
+        else
+            spawnNow()
+        end
     end
 
     method string GetImpactEffectRuid(string skillId)

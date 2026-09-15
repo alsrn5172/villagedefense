@@ -102,6 +102,11 @@ script SkillAttack extends AttackComponent
 
     property number AimSearchHeight = 2.5
 
+    -- 같은 층 판정(b/skill-thief-motion · 2026-09-13 제보 "2층에서 던진 표창이 아래층 몬스터도 죽였다"): 투사체 조준·명중은 발이 시전자 발보다 이만큼(world unit) 이상 낮은
+    -- 몬스터를 뺀다. 탐색 상자는 발부터 위로만 뻗지만 키 큰 몬스터가 아래층에서 상자 안으로 머리를 내밀면 잡혔고, 표창 판정 상자(0.8)도 발 아래로 0.3 내려간다.
+    -- 0.6 = 경사 발판(내리막 앞 몬스터 ≈0.3~0.5 낮음)은 허용 · 한 층 아래(≥1)는 제외. 원작 표창·화살도 아래층은 안 맞는다. 위쪽(높은 발판)은 상자 높이 그대로 허용.
+    property number AimFloorTolerance = 0.6
+
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
@@ -256,6 +261,7 @@ script SkillAttack extends AttackComponent
     method any FindSkillTarget(string skillId, table shape, boolean preferBoss)
         -- shape 상자(posX/posY/sizeX/sizeY) 안 몬스터 중 하나를 고른다: preferBoss 면 보스(script.BossSkillRunner 보유) 우선,
         -- 그다음 시전자에게 가장 가까운 것. 없으면 nil. 피해 없음(probe 패스).
+        -- shape.floorY 가 있으면(투사체 조준 · 조준 표시) 발이 floorY − AimFloorTolerance 보다 낮은 후보는 뺀다(아래층 제외 · b/skill-thief-motion).
         self:EnsureShape()
         self.Shape.Position = Vector2(shape.posX, shape.posY)
         self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
@@ -267,24 +273,29 @@ script SkillAttack extends AttackComponent
         local origin = self.Entity.TransformComponent.WorldPosition
         local best = nil
         local bestScore = math.huge
+        local belowFloor = 0
         for _, cand in ipairs(self.Candidates) do
             if isvalid(cand) and isvalid(cand.TransformComponent) then
                 local p = cand.TransformComponent.WorldPosition
-                local dx = p.x - origin.x
-                local dy = p.y - origin.y
-                local score = dx * dx + dy * dy
-                if preferBoss and isvalid(cand:GetComponent("script.BossSkillRunner")) then
-                    score = score - 1000000   -- 보스는 거리와 무관하게 앞으로
-                end
-                if score < bestScore then
-                    best = cand
-                    bestScore = score
+                if shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
+                    belowFloor = belowFloor + 1
+                else
+                    local dx = p.x - origin.x
+                    local dy = p.y - origin.y
+                    local score = dx * dx + dy * dy
+                    if preferBoss and isvalid(cand:GetComponent("script.BossSkillRunner")) then
+                        score = score - 1000000   -- 보스는 거리와 무관하게 앞으로
+                    end
+                    if score < bestScore then
+                        best = cand
+                        bestScore = score
+                    end
                 end
             end
         end
         local bestName = "none"
         if isvalid(best) then bestName = tostring(best.Name) end
-        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
+        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
         self.Candidates = {}
         return best
     end
@@ -406,8 +417,10 @@ script SkillAttack extends AttackComponent
     --
     -- b/skill-archer-thief-pirate: spriteRuid(화살·표창 스프라이트 · "" = 모델 기본 에너지볼트) · hitSoundRuid · preferBoss(스나이핑 보스 우선) ·
     -- hitCount > 1 = 볼리(첫 발 피해 ×N · 표시 N타, 이후 발은 VolleyInterval 간격으로 VisualOnly).
+    -- b/skill-thief-motion: spawnOffsetX(0 이면 ProjectileSpawnOffsetX) — 럭키 세븐은 시전 이펙트(초승달) 중심에서 표창이 나가야 해서 스킬별 앞쪽 거리를 받는다(effectOverrides.spawn).
+    --   spriteScale(마지막 인자 · 0/1 이면 그대로) = 투사체 스프라이트 크기 배율(Transform.Scale · 판정 상자 RangeX/Y 는 월드 크기라 안 커진다) — 럭키 세븐 표창 1.3.
     @ExecSpace("Server")
-    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY, string spriteRuid, string hitSoundRuid, boolean preferBoss)
+    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY, string spriteRuid, string hitSoundRuid, boolean preferBoss, number spawnOffsetX, number spriteScale)
         -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
         if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local caster = self.Entity
@@ -432,6 +445,10 @@ script SkillAttack extends AttackComponent
         if spriteRuid == nil then spriteRuid = "" end
         if hitSoundRuid == nil then hitSoundRuid = "" end
         if preferBoss == nil then preferBoss = false end
+        local ox = self.ProjectileSpawnOffsetX
+        if spawnOffsetX ~= nil and spawnOffsetX > 0 then ox = spawnOffsetX end
+        local sc = 1
+        if spriteScale ~= nil and spriteScale > 0 then sc = spriteScale end
 
         local userId = caster.PlayerComponent.UserId
         local pos = transform.WorldPosition
@@ -441,27 +458,31 @@ script SkillAttack extends AttackComponent
         if self.AimProjectileAtTarget then
             target = self:FindSkillTarget(skillId, {
                 posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
-                sizeX = range, sizeY = self.AimSearchHeight,
+                sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
             }, preferBoss)
             if not isvalid(target) then target = nil end
         end
-        -- x: 대상 쪽(없으면 바라보는 방향)으로 ProjectileSpawnOffsetX 만큼 앞(시전 이펙트가 뜨는 자리). y: CSV SpawnOffsetY(발 → 손 높이).
-        local spawnPos = Vector3(pos.x + dirX * self.ProjectileSpawnOffsetX, pos.y + spawnOffsetY, pos.z)
+        -- x: 대상 쪽(없으면 바라보는 방향)으로 ox(ProjectileSpawnOffsetX · 스킬별 spawnOffsetX 가 있으면 그것) 만큼 앞(시전 이펙트가 뜨는 자리). y: CSV SpawnOffsetY(발 → 손 높이 · 스킬별 덮어쓰기는 실행기가 넘긴다).
+        local spawnPos = Vector3(pos.x + dirX * ox, pos.y + spawnOffsetY, pos.z)
         local lifetime = range / speed
         if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
 
-        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false)
+        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false, sc)
         if mover == nil then return end
+        -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요.
+        mover.SameFloorOnly = true
+        mover.FloorY = pos.y
+        mover.FloorTolerance = self.AimFloorTolerance
 
         -- 볼리: 2발째부터 VisualOnly. 첫 발이 이미 ×hitCount 피해를 지고 있다(무적시간 때문에 2발째 피해는 어차피 무효).
         for i = 2, math.floor(hitCount) do
             _TimerService:SetTimerOnce(function()
                 if not isvalid(caster) or not isvalid(caster.TransformComponent) then return end
                 local p2 = caster.TransformComponent.WorldPosition
-                local sp2 = Vector3(p2.x + dirX * self.ProjectileSpawnOffsetX, p2.y + spawnOffsetY, p2.z)
+                local sp2 = Vector3(p2.x + dirX * ox, p2.y + spawnOffsetY, p2.z)
                 local t2 = target
                 if not isvalid(t2) then t2 = nil end
-                self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true)
+                self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc)
             end, (i - 1) * self.VolleyInterval)
         end
 
@@ -469,14 +490,14 @@ script SkillAttack extends AttackComponent
         if target ~= nil then targetName = tostring(target.Name) end
         log("SkillAttack: spawned projectile " .. skillId .. " speed=" .. tostring(speed)
             .. " lifetime=" .. tostring(lifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName .. " volley=" .. tostring(hitCount)
-            .. " sprite=" .. tostring(spriteRuid ~= "") .. " preferBoss=" .. tostring(preferBoss)
+            .. " sprite=" .. tostring(spriteRuid ~= "") .. " scale=" .. tostring(sc) .. " preferBoss=" .. tostring(preferBoss)
             .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
-            .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * self.ProjectileSpawnOffsetX) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
+            .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * ox) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end
 
     @ExecSpace("ServerOnly")
-    method any SpawnOneProjectile(string skillId, number level, string projectileModelId, Vector3 spawnPos, Entity map, number dirX, any target, number speed, number lifetime, string hitEffectRuid, string spriteRuid, string hitSoundRuid, string userId, number damageMul, boolean visualOnly)
-        -- 투사체 엔티티 1개 스폰 + 설정. 반환 = script.SkillProjectile (실패 nil). SpawnProjectile(첫 발·볼리)이 부른다.
+    method any SpawnOneProjectile(string skillId, number level, string projectileModelId, Vector3 spawnPos, Entity map, number dirX, any target, number speed, number lifetime, string hitEffectRuid, string spriteRuid, string hitSoundRuid, string userId, number damageMul, boolean visualOnly, number spriteScale)
+        -- 투사체 엔티티 1개 스폰 + 설정. 반환 = script.SkillProjectile (실패 nil). SpawnProjectile(첫 발·볼리)이 부른다. spriteScale = 스프라이트 크기 배율(b/skill-thief-motion · 1 = 그대로).
         self.projectileCount = self.projectileCount + 1
         local name = "SkillProj_" .. userId .. "_" .. skillId .. "_" .. tostring(self.projectileCount)
         local proj = _SpawnService:SpawnByModelId(projectileModelId, name, spawnPos, map)
@@ -508,6 +529,11 @@ script SkillAttack extends AttackComponent
         mover.VisualOnly = visualOnly
         mover.HitEffectRUID = hitEffectRuid or ""
         mover.HitSoundRUID = hitSoundRuid or ""
+        -- 스프라이트 크기 배율(럭키 세븐 표창 1.3): SetDirection 앞에 Scale 크기를 넣으면 ApplyFacing 이 부호만 바꾸고 크기는 지킨다(PlaySpriteFlash 와 같은 순서). 판정 상자는 월드 크기라 그대로.
+        if spriteScale ~= nil and spriteScale > 0 and spriteScale ~= 1 then
+            local pt = proj.TransformComponent
+            if isvalid(pt) then pt.Scale = Vector3(spriteScale, spriteScale, 1) end
+        end
         -- SetDirection (not a direct DirectionX assignment) so the sprite flips to match.
         mover:SetDirection(dirX)
         if target ~= nil and isvalid(target) then
