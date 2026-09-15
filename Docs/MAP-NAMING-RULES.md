@@ -11,7 +11,10 @@
 ```
 
 - `Region`: 지역 영문명. 예: `KerningCity`, `Henesys`, `Ellinia`, `Perion`, `Nautilus`, `LithHarbor`, `Sleepywood`
-- `Role`: `Village`, `Hunt`, `Boss` 중 하나
+- `Role`: `Village`, `Hunt`, `Boss`, `Lobby` 중 하나
+  - `Lobby` 는 **매치 밖**의 맵이다 (2026-09-10 · WO-019). 매치가 시작되기 전/끝난 뒤에만 쓰인다.
+    현재 `Orbis_Lobby_VictoriaStation`(승강장 · **시작맵**) · `Orbis_Lobby_VictoriaShip`(배 · 매치 대기실) 2개.
+    🔴 `Lobby` 맵은 `LaneConfig` · `MapMonsters` · `VillageNpcSector` 에 등록하지 않는다 — 매치 원장 밖이다.
 - `Detail`: 역할을 구별하는 PascalCase 영문 토큰
 - 구분자는 밑줄(`_`)만 사용한다. 토큰 안에는 영문자와 숫자만 사용한다.
 

@@ -15,6 +15,10 @@ script SkillMovement extends Logic
     --   · 이동 스킬은 시전 락을 걸지도 받지도 않는다(SkillCaster.IsMovementSkill · 원작 텔레포트 캔슬).
     -- 🟡 런타임 미검증 API(근거는 .d.mlua): MovementComponent:SetWorldPosition(Vector2) 클라 쓰기 · FootholdComponent:RaycastAll 반환 순서(순서에 의존하지 않는다) ·
     --    Foothold.NextFootholdId/PreviousFootholdId 체인 · GetCurrentFoothold 가 공중에서 nil 인지.
+    -- b/skill-archer-thief-pirate (2026-09-12): 닷지(SK_A22 · 추가기획1 궁수 D "맵에서 가장 안전한 구역(캐릭터 스폰 로케이션)으로 도망") = TryDodge.
+    --   · spawnBlinkSkills 에 있는 BLINK 행은 방향·거리 대신 **맵의 SpawnLocation** 으로 간다(SpawnLocationComponent 엔티티 · 이 맵에 들어온 지점에 가장 가까운 것).
+    --   · SpawnLocation 이 없는 맵은 이 맵에 들어온 위치(OnUpdate 가 맵 전환 순간 기록)로. 그것도 없으면 취소(부작용 0).
+    --   · 이동 뒤의 크리티컬 버프(GUARANTEED_CRIT)는 서버(SkillExecutors.ExecuteBlink)가 도착 확인 뒤 건다.
 
     -- 좌우 텔레포트 착지 탐색: 목적지에서 아래로 발판을 찾는 거리(world unit · 1 = 100px).
     property number LandingSearchDistance = 1.5
@@ -31,10 +35,57 @@ script SkillMovement extends Logic
     -- 발판 체인 추적 상한(무한 루프 방지).
     property integer MaxChainSteps = 64
 
+    -- 스폰 로케이션으로 가는 BLINK 행(skillId -> true). BuildTables 에서 채운다. 닷지 SK_A22.
+    property table spawnBlinkSkills = {}
+
+    -- [클라] 이 맵에 들어온 위치(닷지 폴백 · SpawnLocation 선택 기준). OnUpdate 가 CurrentMap 이름이 바뀌는 순간 기록한다.
+    @HideFromInspector
+    property string lastMapName = ""
+
+    @HideFromInspector
+    property number entryX = 0
+
+    @HideFromInspector
+    property number entryY = 0
+
+    @HideFromInspector
+    property boolean hasEntryPos = false
+
+    @ExecSpace("ClientOnly")
+    method void OnBeginPlay()
+        self.spawnBlinkSkills = {
+            SK_A22 = true,
+        }
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- 맵 전환 순간의 위치를 기록한다(닷지 "캐릭터 스폰 로케이션" 판정 기준). @Logic 엔 OnMapEnter 가 오지 않아 폴링한다.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local map = player.CurrentMap
+        if not isvalid(map) then return end
+        if map.Name ~= self.lastMapName then
+            self.lastMapName = map.Name
+            local t = player.TransformComponent
+            if isvalid(t) then
+                local p = t.WorldPosition
+                self.entryX = p.x
+                self.entryY = p.y
+                self.hasEntryPos = true
+                log("SkillMovement: map entry recorded " .. map.Name .. " at (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
+            end
+        end
+    end
+
     @ExecSpace("ClientOnly")
     method table TryTeleport(string skillId, table skill)
         -- 로컬 플레이어를 skill.range 만큼 옮긴다. 반환 { ok, reason, fromX, fromY, toX, toY, dirX, dirY, branch }.
         -- ok=false 면 아무것도 바꾸지 않았다. SkillCaster.Cast(BLINK) 만 부른다 — 게이트(배움·쿨다운·MP)는 거기서 이미 통과했다.
+        -- 스폰 로케이션형(닷지)은 TryDodge 로.
+        if self.spawnBlinkSkills[skillId] then
+            return self:TryDodge(skillId, skill)
+        end
         local player = _UserService.LocalPlayer
         if not isvalid(player) then
             return { ok = false, reason = "no local player" }
@@ -76,6 +127,74 @@ script SkillMovement extends Logic
             .. ") to=(" .. tostring(dest.x) .. "," .. tostring(dest.y) .. ") branch=" .. dest.branch .. " dist=" .. tostring(distance))
         return { ok = true, reason = dest.branch, fromX = origin.x, fromY = origin.y, toX = dest.x, toY = dest.y,
                  dirX = dir.x, dirY = dir.y, branch = dest.branch }
+    end
+
+    @ExecSpace("ClientOnly")
+    method table TryDodge(string skillId, table skill)
+        -- 닷지(SK_A22): 현재 맵의 SpawnLocation(이 맵에 들어온 지점에 가장 가까운 것)으로 즉시 이동. 없으면 맵 입장 위치. 그것도 없으면 취소.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then
+            return { ok = false, reason = "no local player" }
+        end
+        local pc = player.PlayerComponent
+        if isvalid(pc) and pc:IsDead() then
+            return { ok = false, reason = "dead" }
+        end
+        local transform = player.TransformComponent
+        local movement = player.MovementComponent
+        local map = player.CurrentMap
+        if not isvalid(transform) or not isvalid(movement) or not isvalid(map) then
+            return { ok = false, reason = "missing transform/movement/map" }
+        end
+        local origin = transform.WorldPosition
+        local dest = self:FindSpawnLocation(map, origin)
+        if dest == nil and self.hasEntryPos and self.lastMapName == map.Name then
+            dest = { x = self.entryX, y = self.entryY, branch = "map-entry" }
+        end
+        if dest == nil then
+            log("SkillMovement: " .. skillId .. " cancelled — no SpawnLocation in " .. tostring(map.Name))
+            return { ok = false, reason = "no spawn location" }
+        end
+        movement:SetWorldPosition(Vector2(dest.x, dest.y))
+        log("SkillMovement: " .. skillId .. " dodge from=(" .. tostring(origin.x) .. "," .. tostring(origin.y)
+            .. ") to=(" .. tostring(dest.x) .. "," .. tostring(dest.y) .. ") branch=" .. dest.branch .. " map=" .. tostring(map.Name))
+        return { ok = true, reason = dest.branch, fromX = origin.x, fromY = origin.y, toX = dest.x, toY = dest.y,
+                 dirX = 0, dirY = 0, branch = dest.branch }
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindSpawnLocation(Entity map, Vector3 origin)
+        -- 맵 안 SpawnLocationComponent 엔티티 중 기준점(이 맵 입장 위치 · 없으면 현재 위치)에 가장 가까운 것 { x, y, branch }. 없으면 nil.
+        -- 🟡 GetChildComponentsByTypeName("SpawnLocationComponent") 이름은 FootholdComponent 조회(Monster.mlua)와 같은 규칙으로 추정 — 로그로 확인.
+        local comps = map:GetChildComponentsByTypeName("SpawnLocationComponent", true)
+        if comps == nil then return nil end
+        local rx = origin.x
+        local ry = origin.y
+        if self.hasEntryPos and self.lastMapName == map.Name then
+            rx = self.entryX
+            ry = self.entryY
+        end
+        local best = nil
+        local bestD = math.huge
+        local count = 0
+        for _, c in ipairs(comps) do
+            local e = c.Entity
+            if isvalid(e) and isvalid(e.TransformComponent) then
+                count = count + 1
+                local p = e.TransformComponent.WorldPosition
+                local dx = p.x - rx
+                local dy = p.y - ry
+                local d = dx * dx + dy * dy
+                if d < bestD then
+                    bestD = d
+                    best = { x = p.x, y = p.y }
+                end
+            end
+        end
+        if best ~= nil then
+            best.branch = "spawn-location(" .. tostring(count) .. ")"
+        end
+        return best
     end
 
     @ExecSpace("ClientOnly")
