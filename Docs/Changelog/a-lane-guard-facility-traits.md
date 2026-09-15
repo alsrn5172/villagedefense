@@ -290,6 +290,12 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 새 열 `HitOffsetX`/`HitOffsetY`(`HitStartFrame` 뒤) · `CastOffsetX`(`CastOffsetY` 앞) → `LaneAttackFx.PlayHit`·시전 위치 · `LaneShot` 도착 hit. 값: Lv1·2 `HitOffsetY −0.5`(사용자 수치) · Lv3 Hit `(2.3, −0.9)` · Cast `(1.2, −0.4)`.
 - 검증(Play 1회): `fx cast=(1.20,-0.40) hit=(2.30,-0.90) start=26` · 클립 스폰 좌표가 표적 +(2.3, −0.9) · Error 0. 눈 확인은 사용자.
 
+### 엘리니아 눈 확인 2차 (2026-09-15 · 사용자)
+- "Lv3 이펙트가 두 번" → ① CAST_HIT 적중 이펙트를 표적마다가 아니라 **볼리당 1번**(가장 가까운 표적 자리)으로 · ② 클립 안전 수명 3초 → 1.5초(13프레임 뒤 한 바퀴 더 돌던 것).
+- "이펙트가 늦고 먼저 맞는다" → 클립 앞쪽의 작은 프레임을 건너뛴다: Lv1·2 `HitStartFrame 3`, Lv3 `29`(26~28 은 4~244px 점).
+- 마법진 위치(사용자 수치): Lv1·2 `CastOffset (−0.78/−0.94, +0.89/+1.06)`(중앙으로 절반 · 절반 위), Lv3 `(1.7, 3.54)`(너비 3.94 만큼 위). 피벗 실측: 파란 마법진은 피벗 기준 (+0.78, +0.74) 에 그려짐.
+- Play 검증 생략(토큰) — 값 변경 + 두 줄 코드. 눈 확인은 사용자.
+
 ### 검증 (2026-09-15 · 개인 월드 Play 3회)
 - 새 아트: `FacilitySprite loaded: 15 rows` · 7개 시설 RUID 가 새 값(`b3d441e1`·`ab1b1a77`·`c581bd55`·`0784f6d9`·`6de3ebd1`·`2cb00b54`·`0b55fd5e`) · scale 0.25 · 위치가 새 GroundOffset 대로.
 - 헤네시스 억제기: `combat … attacks=true dmg=60 maxTargets=3 fx=SHOT` · 포탑 파괴 뒤 화살 volley 6회.
