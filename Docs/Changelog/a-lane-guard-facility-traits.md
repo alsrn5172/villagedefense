@@ -299,6 +299,11 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 ### `CastFlipX` · `HitFlipX` 열 (2026-09-15 · 사용자 요청)
 - 시전/적중 이펙트 좌우 반전. `PlayEffect` 는 x 배율 음수, 프레임 클립은 `SpriteRenderer.FlipX`, 발사체 도착 hit 도 적용. 전부 `false` 로 두었다 — 필요한 행만 `true`.
 
+### 좌→우 마을은 테스트맵도 좌→우 (2026-09-15 · 사용자)
+- 엘리니아·페리온·노틸러스는 실제 맵이 좌→우라 테스트맵 줄을 거울로: 시설 x 부호 반전(포탑 −4 · 억제기 +2 · 넥서스 +8), 미니언은 왼쪽 끝 스폰 → 오른쪽 밖 endX. `LaneFacilityService.TestLaneLeftToRight`(쉼표 목록). 헤네시스·커닝은 우→좌 그대로.
+- 미니언 진행 방향이 `AdvanceDir = −1` 고정이었다 → 레인 행(`endX ≥ spawnX` 면 +1)으로. `MinionUnit.EndDir` 로 끝 판정 부등호도 방향에 맞춤(실제 맵의 좌→우 레인도 이제 맞는다).
+- 🔴 첫 Play 에서 좌→우 줄 3개가 0발: `AddComponent` 순간 `FactionAI.OnBeginPlay` 가 먼저 돌아 `ResolvedDir` 이 팀 기본값(−1)으로 굳고, 그 뒤 넣은 `AdvanceDir` 은 무시됐다 → `ResolvedDir` 도 직접 덮음. 재검증(Play 1회): 다섯 포탑 전부 volley 8~19 · Error 0.
+
 ### 검증 (2026-09-15 · 개인 월드 Play 3회)
 - 새 아트: `FacilitySprite loaded: 15 rows` · 7개 시설 RUID 가 새 값(`b3d441e1`·`ab1b1a77`·`c581bd55`·`0784f6d9`·`6de3ebd1`·`2cb00b54`·`0b55fd5e`) · scale 0.25 · 위치가 새 GroundOffset 대로.
 - 헤네시스 억제기: `combat … attacks=true dmg=60 maxTargets=3 fx=SHOT` · 포탑 파괴 뒤 화살 volley 6회.
