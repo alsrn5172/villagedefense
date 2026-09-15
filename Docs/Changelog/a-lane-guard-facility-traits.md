@@ -296,6 +296,9 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - 마법진 위치(사용자 수치): Lv1·2 `CastOffset (−0.78/−0.94, +0.89/+1.06)`(중앙으로 절반 · 절반 위), Lv3 `(1.7, 3.54)`(너비 3.94 만큼 위). 피벗 실측: 파란 마법진은 피벗 기준 (+0.78, +0.74) 에 그려짐.
 - Play 검증 생략(토큰) — 값 변경 + 두 줄 코드. 눈 확인은 사용자.
 
+### `CastFlipX` · `HitFlipX` 열 (2026-09-15 · 사용자 요청)
+- 시전/적중 이펙트 좌우 반전. `PlayEffect` 는 x 배율 음수, 프레임 클립은 `SpriteRenderer.FlipX`, 발사체 도착 hit 도 적용. 전부 `false` 로 두었다 — 필요한 행만 `true`.
+
 ### 검증 (2026-09-15 · 개인 월드 Play 3회)
 - 새 아트: `FacilitySprite loaded: 15 rows` · 7개 시설 RUID 가 새 값(`b3d441e1`·`ab1b1a77`·`c581bd55`·`0784f6d9`·`6de3ebd1`·`2cb00b54`·`0b55fd5e`) · scale 0.25 · 위치가 새 GroundOffset 대로.
 - 헤네시스 억제기: `combat … attacks=true dmg=60 maxTargets=3 fx=SHOT` · 포탑 파괴 뒤 화살 volley 6회.
