@@ -151,6 +151,10 @@ script SkillExecutors extends Logic
 
     property any prewarmEnterHandler = nil
 
+    -- 서버: userId → 진행 중인 모션 순서(PlayMotionSequence)의 타이머 id 목록. 새 시전이 오면 이전 순서를 취소한다 — 텔레포트(쿨 1s) 연타 때 이전 _END(서 있기)가
+    -- 새 시전의 heal 왕복을 0.5s 만에 끊는 것을 막는다. 가장 최근 시전이 애니메이션을 가진다.
+    property table motionSeqTimers = {}
+
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
     @ExecSpace("ServerOnly")
@@ -449,6 +453,80 @@ script SkillExecutors extends Logic
         self:PlayMotionSequence(skillId, casterEntity)
     end
 
+    method string JobDefaultWeaponType(string jobId)
+        -- 맨손일 때 모션 표(WeaponMotion)를 조회할 직업 기본 무기 종류(ItemInfo WeaponType 값). 초보자/미지정은 "" → 모션 없음(예전과 같음).
+        -- 2026-09-13 제보 "텔레포트·매직 가드·대마법 애니메이션이 안 보인다": PlayerMotion.PlaySkill 은 장착 무기로 행을 찾으므로 맨손이면 경고도 없이 아무것도 재생하지 않았다.
+        -- heal·alert·stand1 같은 몸 동작은 무기와 무관하니 직업 기본 무기의 행으로 재생한다.
+        if jobId == "MAGICIAN" then return "WAND"
+        elseif jobId == "WARRIOR" then return "SWORD_1H"
+        elseif jobId == "ARCHER" then return "BOW"
+        elseif jobId == "THIEF" then return "CLAW"
+        elseif jobId == "PIRATE" then return "KNUCKLE"
+        end
+        return ""
+    end
+
+    @ExecSpace("ServerOnly")
+    method string MotionWeaponTypeOf(string uid)
+        -- 모션 표 조회용 무기 종류: 장착 무기가 있으면 그것(PlayerMotion.WeaponTypeOf), 맨손이면 직업 기본 무기(JobDefaultWeaponType).
+        local wt = ""
+        if _PlayerMotion ~= nil then wt = _PlayerMotion:WeaponTypeOf(uid) or "" end
+        if wt ~= "" then return wt end
+        local job = ""
+        if _PlayerSkillState ~= nil then job = _PlayerSkillState:GetJobId(uid) or "" end
+        return self:JobDefaultWeaponType(job)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table ResolveMotionRow(string uid, string motionId, boolean ownRowOnly)
+        -- WeaponMotion 행 해석. 반환 { row, weaponType } (row nil = 재생할 것 없음). 순서:
+        --   ① 장착 무기의 스킬 전용 행 → ② 직업 기본 무기(JobDefaultWeaponType)의 스킬 전용 행 → ③ (ownRowOnly 가 아니면) 장착 무기의 기본 공격 행 → ④ 맨손이면 직업 기본 무기의 기본 공격 행.
+        -- ② 가 핵심(2026-09-13 Play 로그): 마법사가 **나무 검(SWORD_1H)** 을 든 채 시전하니 WAND 행이 하나도 안 맞아 `no WeaponMotion row for SWORD_1H — skipped`
+        -- 이 찍히고, 매직 가드 시전 행은 검 기본 스윙(swingO1)으로 폴백했다. heal·alert·stand1 같은 몸 동작은 무기와 무관하므로 직업 무기의 행을 그대로 쓴다.
+        local out = { row = nil, weaponType = "" }
+        if _PlayerMotion == nil or uid == nil or uid == "" then return out end
+        local equipped = _PlayerMotion:WeaponTypeOf(uid) or ""
+        local job = ""
+        if _PlayerSkillState ~= nil then job = _PlayerSkillState:GetJobId(uid) or "" end
+        local jobWt = self:JobDefaultWeaponType(job)
+        local function ownRow(wt)
+            if wt == nil or wt == "" then return nil end
+            local r = _PlayerMotion:Find(wt, motionId)
+            if r ~= nil and r ~= _PlayerMotion:Find(wt, "") then return r end
+            return nil
+        end
+        local r = ownRow(equipped)
+        if r ~= nil then out.row = r out.weaponType = equipped return out end
+        if jobWt ~= equipped then
+            r = ownRow(jobWt)
+            if r ~= nil then out.row = r out.weaponType = jobWt return out end
+        end
+        if ownRowOnly then return out end
+        local wt = equipped
+        if wt == "" then wt = jobWt end
+        if wt ~= "" then
+            out.row = _PlayerMotion:Find(wt, "")
+            out.weaponType = wt
+        end
+        return out
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean PlayMotion(string uid, string motionId, boolean ownRowOnly)
+        -- WeaponMotion 행을 찾아(ResolveMotionRow) 그 유저의 클라에서 재생한다(A 의 PlayerMotion.PlayAction 을 그대로 부른다 · A 파일 편집 없음).
+        -- ownRowOnly = 스킬 전용 행만 재생(무기 기본 공격 행으로의 폴백 금지 · 이동 스킬 / 순서 단계).
+        -- SkillCaster.RequestCast(시전 행) · PlayMotionSequence(_2/_END) · ExecutePowerStrikeCombo(_1/_2) 가 전부 이 한 곳을 쓴다.
+        local res = self:ResolveMotionRow(uid, motionId, ownRowOnly)
+        if res.row == nil then
+            if not ownRowOnly then
+                log_warning("SkillExecutors: motion " .. tostring(motionId) .. " has no WeaponMotion row (equipped/job/default) — skipped")
+            end
+            return false
+        end
+        _PlayerMotion:PlayAction(res.row.core, res.row.parts, res.row.rate, res.row.playType, uid)
+        return true
+    end
+
     method any GetMotionSequence(string skillId)
         -- 시전 뒤 이어지는 캐릭터 모션(WeaponMotion 행 접미사 · 시전 뒤 초). SkillCaster.RequestCast 가 시전 순간 <SkillId> 행을 재생하고, 나머지는 이 순서대로.
         -- 2026-09-13 사용자 요청 "하이퍼 바디·도발·불굴의 진은 공격 동작이 아니라 전투 중 대기 자세" → alert 로 했더니 제보 "몬스터와 충돌할 때(엔진 HIT 상태 = alert 1배속)와
@@ -458,38 +536,54 @@ script SkillExecutors extends Logic
         -- 원작 버프 자세(alert2)는 메이커 아바타에 없다(Play 확인: alert2~alert7 은 없는 이름과 같이 stand 로 남는다 · 있는 것 = 14 상태 + 무기 공격 액션).
         -- 왕복 재생은 다음 움직임까지 계속되므로 _END 행(stand1/stand2 ZigzagLoop)으로 되돌린다: 하이퍼 바디·도발 1.6s · 불굴의 진 5.5s(컷신 ≈4.8s 가 걷힌 뒤).
         -- 파워 스트라이크는 ExecutePowerStrikeCombo 가 따로 순서를 낸다.
+        -- 마법사 (2026-09-13 사용자 요청 "텔레포트·매직 가드·대마법은 공격 동작이 아니라 전사 버프와 같은 캐릭터 애니메이션" · 완드 WAND 행): 셋 다 heal 1.5배속 왕복 → `_2` alert 2.5배속 → `_END` 서 있기.
+        --   텔레포트 SK_M13/SK_M21 = **모션 없음**(2026-09-13 사용자 요청 "텔레포트만 캐릭터 애니메이션 제거" · 그전엔 `_2` 0.75 / `_END` 1.2 순서 · WeaponMotion 행 6개와 여기 항목을 뺐다 ·
+        --                            행이 없으니 SkillCaster 의 BLINK ownRowOnly 규칙으로 시전 행도 재생되지 않는다 · 원작 텔레포트도 몸 동작 없음). 되돌리려면 행 6개 + 여기 두 줄.
+        --   매직 가드 SK_M22 = 하이퍼 바디와 같은 1.0 / 1.6.
+        --   대마법 SK_M31   = 충전 2초(CSV Duration) 동안 heal 왕복 → `_2` 2.0(폭발 순간 = ExecuteBlast · 불굴의 진처럼 "진" 자세) → `_END` 5.5(컷신이 걷힌 뒤).
         local sequences = {
             SK_W21 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
             SK_W22 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
             SK_W31 = { { suffix = "_2", at = 1.5 }, { suffix = "_END", at = 5.5 } },
+            SK_M22 = { { suffix = "_2", at = 1.0 }, { suffix = "_END", at = 1.6 } },
+            SK_M31 = { { suffix = "_2", at = 2.0 }, { suffix = "_END", at = 5.5 } },
         }
         return sequences[skillId]
     end
 
     @ExecSpace("ServerOnly")
     method void PlayMotionSequence(string skillId, Entity casterEntity)
-        -- GetMotionSequence 의 단계마다 타이머로 _PlayerMotion:PlaySkill(uid, "<SkillId><suffix>"). 그 무기에 그 행이 없으면(PlayerMotion.Find 가 무기 기본 공격 행으로 폴백) 건너뛴다 —
+        -- GetMotionSequence 의 단계마다 타이머로 PlayMotion(uid, "<SkillId><suffix>", true). 그 무기에 그 행이 없으면(PlayerMotion.Find 가 무기 기본 공격 행으로 폴백) 건너뛴다 —
         -- 버프 뒤에 엉뚱한 휘두르기가 나오지 않게.
         local seq = self:GetMotionSequence(skillId)
         if seq == nil or _PlayerMotion == nil or not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
         local uid = casterEntity.PlayerComponent.UserId
-        local wt = _PlayerMotion:WeaponTypeOf(uid)
-        if wt == "" then return end
-        local fallback = _PlayerMotion:Find(wt, "")
+        -- 이 유저의 이전 순서가 아직 진행 중이면 취소(텔레포트 연타 · 버프 직후 텔레포트): 새 시전의 시전 행(SkillCaster 가 방금 재생)이 이전 _END 에 끊기지 않게.
+        local pending = self.motionSeqTimers[uid]
+        if pending ~= nil then
+            for _, id in ipairs(pending) do _TimerService:ClearTimer(id) end
+        end
+        local ids = {}
         local scheduled = 0
+        local usedWt = ""
         for _, step in ipairs(seq) do
             local motionId = skillId .. step.suffix
-            local row = _PlayerMotion:Find(wt, motionId)
-            if row ~= nil and row ~= fallback then
-                _TimerService:SetTimerOnce(function()
-                    if isvalid(casterEntity) then _PlayerMotion:PlaySkill(uid, motionId) end
+            -- 행 해석은 ResolveMotionRow(장착 무기 전용 행 → 직업 기본 무기 전용 행 · 기본 공격 행 폴백 없음). 지금 없는 행은 예약하지 않는다(재생 시점에도 같은 규칙으로 다시 해석).
+            local res = self:ResolveMotionRow(uid, motionId, true)
+            if res.row ~= nil then
+                usedWt = res.weaponType
+                local id = _TimerService:SetTimerOnce(function()
+                    if isvalid(casterEntity) then self:PlayMotion(uid, motionId, true) end
                 end, step.at)
+                table.insert(ids, id)
                 scheduled = scheduled + 1
             else
-                log_warning("SkillExecutors: motion sequence " .. motionId .. " has no WeaponMotion row for " .. wt .. " — skipped")
+                log_warning("SkillExecutors: motion sequence " .. motionId .. " has no WeaponMotion row (equipped or job weapon) — skipped")
             end
         end
-        log("SkillExecutors: motion sequence " .. skillId .. " weapon=" .. wt .. " steps=" .. tostring(scheduled) .. "/" .. tostring(#seq))
+        self.motionSeqTimers[uid] = ids
+        log("SkillExecutors: motion sequence " .. skillId .. " weapon=" .. usedWt .. " steps=" .. tostring(scheduled) .. "/" .. tostring(#seq)
+            .. " cancelledPrev=" .. tostring(pending ~= nil and #pending or 0))
     end
 
     @ExecSpace("ServerOnly")
@@ -1270,7 +1364,7 @@ script SkillExecutors extends Logic
         end
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
-            if _PlayerMotion ~= nil and uid ~= "" then _PlayerMotion:PlaySkill(uid, skillId .. "_1") end
+            if uid ~= "" then self:PlayMotion(uid, skillId .. "_1", true) end
         end, chopAt)
         -- 1타: 내려찍기 잔상 + 타격을 같은 프레임에.
         _TimerService:SetTimerOnce(function()
@@ -1285,7 +1379,7 @@ script SkillExecutors extends Logic
         end, hit1At)
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
-            if _PlayerMotion ~= nil and uid ~= "" then _PlayerMotion:PlaySkill(uid, skillId .. "_2") end
+            if uid ~= "" then self:PlayMotion(uid, skillId .. "_2", true) end
         end, thrustAt)
         -- 2타: 타격을 먼저, 찌르기 잔상은 thrustFxDelay 뒤(피해 표시가 늦게 그려지는 만큼 이펙트를 늦춰 눈에는 동시).
         local function thrustFlame()
