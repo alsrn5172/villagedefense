@@ -285,6 +285,11 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - → `FactionAttack.AttackBoxOffsetY`(기본 0.5 · 시설은 `2.0 − GroundOffset` = 상자가 바닥~바닥+4) · `TurretAI.RangeOffsetY`(시설은 `−GroundOffset` = 바닥에서 잰다). `ApplyCombat` 이 넣는다. [[vd-facility-transform-is-above-ground]] 규칙의 마지막 구멍.
 - 헤네시스 억제기 0발은 별개: 테스트맵에선 포탑이 앞에서 달팽이를 다 잡아 억제기까지 오지 않는다 → 리모콘으로 포탑을 파괴하니 `volley n=3~4 targets=2~3` · `land 3/3`.
 
+### 이펙트 위치 보정 (2026-09-15 · 사용자 "Lv3 출현 위치 이상 · Lv1·2 도 0.5 아래로")
+- 원인: 메이플 이펙트 클립은 **피벗이 시전자 원점**이라 그림 중심이 표적에서 벗어난다. 리소스 API `payload.frames[i].pivot` 실측(스크래치 `e3-pivots.cjs`): effect0 뒷 13프레임 중심 = 피벗에서 (−2.27, +0.87)유닛(0.5배) · E-3 effect 마법진 (−1.17, +0.37)(1.4배) · E-1/E-2 번개 +0.85/+0.73 위.
+- 새 열 `HitOffsetX`/`HitOffsetY`(`HitStartFrame` 뒤) · `CastOffsetX`(`CastOffsetY` 앞) → `LaneAttackFx.PlayHit`·시전 위치 · `LaneShot` 도착 hit. 값: Lv1·2 `HitOffsetY −0.5`(사용자 수치) · Lv3 Hit `(2.3, −0.9)` · Cast `(1.2, −0.4)`.
+- 검증(Play 1회): `fx cast=(1.20,-0.40) hit=(2.30,-0.90) start=26` · 클립 스폰 좌표가 표적 +(2.3, −0.9) · Error 0. 눈 확인은 사용자.
+
 ### 검증 (2026-09-15 · 개인 월드 Play 3회)
 - 새 아트: `FacilitySprite loaded: 15 rows` · 7개 시설 RUID 가 새 값(`b3d441e1`·`ab1b1a77`·`c581bd55`·`0784f6d9`·`6de3ebd1`·`2cb00b54`·`0b55fd5e`) · scale 0.25 · 위치가 새 GroundOffset 대로.
 - 헤네시스 억제기: `combat … attacks=true dmg=60 maxTargets=3 fx=SHOT` · 포탑 파괴 뒤 화살 volley 6회.

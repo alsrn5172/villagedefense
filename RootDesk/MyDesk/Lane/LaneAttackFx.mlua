@@ -41,6 +41,9 @@ script LaneAttackFx extends Component
 
 	property number CastOffsetY = 0
 
+	-- 시전 이펙트 x 보정(유닛). 메이플 클립 피벗이 그림 중심이 아닐 때 시설 가운데로 맞춘다(엘리니아 Lv3 effect 마법진 +1.2).
+	property number CastOffsetX = 0
+
 	-- ball 그림이 원래 향하는 각도(180 왼쪽 · 0 오른쪽 · 90 위 · 270 아래). LaneShot 이 진행 방향 회전에 쓴다.
 	property number FaceDeg = 180
 
@@ -51,6 +54,11 @@ script LaneAttackFx extends Component
 
 	-- 적중 클립의 시작 프레임(0 = 처음부터 · PlayEffect). >0 이면 LaneFxLogic.PlayClip 이 그 프레임부터만 보여 준다 (엘리니아 Lv3 effect0 뒷 13프레임 · 2026-09-15).
 	property integer HitStartFrame = 0
+
+	-- 적중 이펙트 위치 보정(유닛 · 표적 몸통 기준). 메이플 이펙트 클립은 피벗이 시전자 원점이라 그림 중심이 표적에서 벗어난다(엘리니아 Lv3 effect0 은 2.4 왼쪽·0.9 위).
+	property number HitOffsetX = 0
+
+	property number HitOffsetY = 0
 
 	@HideFromInspector
 	property integer seq = 0
@@ -87,9 +95,10 @@ script LaneAttackFx extends Component
 	end
 
 	@ExecSpace("ServerOnly")
-	method void PlayHit(Vector3 pos)
-		-- 적중 이펙트: HitStartFrame > 0 이면 그 프레임부터만(LaneFxLogic.PlayClip · 시설과 같은 SortingLayer), 아니면 PlayEffect.
+	method void PlayHit(Vector3 aim)
+		-- 적중 이펙트: 위치 = 표적 몸통 + HitOffset. HitStartFrame > 0 이면 그 프레임부터만(LaneFxLogic.PlayClip · 시설과 같은 SortingLayer), 아니면 PlayEffect.
 		if self.HitRuid == "" then return end
+		local pos = Vector3(aim.x + self.HitOffsetX, aim.y + self.HitOffsetY, 0)
 		if self.HitStartFrame > 0 and _LaneFxLogic ~= nil then
 			local fsr = self.Entity.SpriteRendererComponent
 			_LaneFxLogic:PlayClip(self.Entity.CurrentMap, self.HitRuid, pos, self.HitScale, self.HitStartFrame, isvalid(fsr) and fsr.SortingLayer or "")
@@ -120,7 +129,7 @@ script LaneAttackFx extends Component
 		if targets == nil or #targets == 0 then return end
 		local origin = self.Entity.TransformComponent.WorldPosition
 		if self.CastRuid ~= "" then
-			self:PlayFx(self.CastRuid, Vector3(origin.x, origin.y + self.CastOffsetY, 0), self.Scale)
+			self:PlayFx(self.CastRuid, Vector3(origin.x + self.CastOffsetX, origin.y + self.CastOffsetY, 0), self.Scale)
 		end
 		local n = 0
 		local flight = math.max(0.05, self.FlightSec)
@@ -131,7 +140,7 @@ script LaneAttackFx extends Component
 			local launch = Vector3(origin.x, origin.y + self.LaunchOffsetY, 0)
 			-- 🔴 발사체 사양은 **발사 순간** 값으로 고정한다 — 0.1초 간격 뒤 발이 나가기 전에 레벨업(ApplyAttackFx)이 끼면 옛 그림에 새 배율이 섞여
 			--    거대/초소형 포탄이 날아갔다(사용자 2026-09-14 "렙업했을 때 가끔 포탄이 이상하게 날아감").
-			local spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg }
+			local spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY }
 			if split then
 				-- 분할 타격(노틸러스 · 사용자 2026-09-14 "같은 데미지를 3분할로 3번"): **표적마다** CSV 개수(n)만큼 쏘고 발사체마다 도착 시각(delay + FlightSec)에 1/n 피해.
 				-- 표적마다 합은 온전한 한 방(광역 유지). k 번째 발은 모든 표적에 동시에 나간다(0.1초 간격 3파).
@@ -216,7 +225,7 @@ script LaneAttackFx extends Component
 	method void SpawnShot(Entity target, string ruid, Vector3 launch, any spec)
 		-- 발사체 하나: laneshot 모델을 출발점(살짝 흩뿌림)에 스폰 → 그림·크기·층 → LaneShot 부착 → Launch. spec = Fire 가 발사 순간 고정한 사양(없으면 현재 property).
 		if not isvalid(target) or not isvalid(self.Entity) then return end
-		if spec == nil then spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = math.max(0.05, self.FlightSec), arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg } end
+		if spec == nil then spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = math.max(0.05, self.FlightSec), arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY } end
 		local map = self.Entity.CurrentMap
 		if not isvalid(map) then return end
 		self.seq = self.seq + 1
@@ -250,6 +259,8 @@ script LaneAttackFx extends Component
 		shot.ArcHeight = spec.arc * (0.75 + _UtilLogic:RandomDouble() * 0.5)
 		shot.StickSec = spec.stick
 		shot.FaceDeg = spec.face
+		shot.HitOffsetX = spec.hitOffX or 0
+		shot.HitOffsetY = spec.hitOffY or 0
 		shot:Launch()
 	end
 
