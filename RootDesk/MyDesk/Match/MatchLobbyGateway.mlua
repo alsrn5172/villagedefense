@@ -67,7 +67,7 @@ script MatchLobbyGateway extends Logic
 	-- matches[matchId] = {
 	--   id, difficulty, host = userId, members = { userId... },
 	--   tokens = { [userId] = "3" },  -- 강퇴용 안정 식별자. userId 를 클라에 안 내보내려고 둔다
-	--   tokenSeq = 0, locked = false, timerId = 0, remain = 0, gen = 0
+	--   tokenSeq = 0, locked = false, timerId = 0, remain = 0, gen = 0, charged = false
 	-- }
 	@HideFromInspector
 	property any matches = nil
@@ -184,6 +184,7 @@ script MatchLobbyGateway extends Logic
 			timerId = 0,
 			remain = 0,
 			gen = 0,
+			charged = false,   -- 🔴 심장을 이미 뺐나. 영구 재화라 두 번 빼면 되돌릴 수 없다 (WO-022)
 		}
 		self.matches[m.id] = m
 		log("[Lobby] match " .. m.id .. " 생성 ★" .. tostring(difficulty) .. " host=" .. hostUserId)
@@ -267,8 +268,12 @@ script MatchLobbyGateway extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer HeartCost(integer difficulty, integer memberCount)
-		-- 난이도별 발록의 심장 소모 (기획: ★N = N개, **혼자면 1개 감면**).
-		-- ⚠️ 지금은 **표시·경고용으로만** 쓴다. 실제 차감은 WO-022 — 소모 시점(G-3)이 미정이다.
+		-- 난이도별 발록의 심장 소모. **값의 정본은 `DifficultyConfig.csv`** 다 (WO-022).
+		-- 🔴 여기에 숫자를 박지 마라 — 밸런스 값이 코드와 표 두 곳에 생기면 반드시 갈라진다.
+		if _BalrogHeartService ~= nil then
+			return _BalrogHeartService:CostOf(difficulty, memberCount)
+		end
+		-- 서비스가 아직 안 떴을 때의 최후 폴백 (★N = N개 · 혼자면 -1)
 		local n = difficulty
 		if memberCount <= 1 then n = n - 1 end
 		if n < 0 then n = 0 end
@@ -441,6 +446,24 @@ script MatchLobbyGateway extends Logic
 			self:Toast(userId, "이미 진행 중인 매치가 있습니다. 끝날 때까지 기다려 주세요")
 			return
 		end
+		-- 🔴 서비스가 없으면 **거절한다.** `~= nil` 로 감싸 두면 서비스가 안 떴을 때
+		--    검증도 차감도 건너뛴 채 공짜로 출발한다 (Codex A·B 공통 지적).
+		--    영구 재화는 "못 빼면 안 보낸다" 가 기본값이어야 한다.
+		if _BalrogHeartService == nil or _MatchSessionLogic == nil then
+			self:Toast(userId, "매치 시스템이 아직 준비되지 않았습니다. 잠시 뒤 다시 시작해 주세요")
+			log_error("[Lobby] START 거절 " .. m.id .. " — 필수 로직 없음 (Heart=" ..
+				tostring(_BalrogHeartService ~= nil) .. " Session=" .. tostring(_MatchSessionLogic ~= nil) .. ")")
+			return
+		end
+		-- 🔴 **심장이 모자라면 출발 자체를 막는다** (사용자 확정 G-2).
+		--    참가자 중 **한 명이라도** 못 내면 못 간다. 누가 몇 개 부족한지 주인에게 알린다.
+		--    ⚠️ 여기서 통과했어도 5초 카운트 사이에 값이 바뀔 수 있어 StartMatch 가 한 번 더 본다.
+		local miss = _BalrogHeartService:MissingReport(m.members, m.difficulty)
+		if miss ~= "" then
+			self:Toast(userId, miss)
+			log("[Lobby] START 거절 " .. m.id .. " — " .. miss)
+			return
+		end
 		self:LockMatch(m)
 		self:StartCountdown(m.id)
 	end
@@ -562,6 +585,42 @@ script MatchLobbyGateway extends Logic
 			return
 		end
 
+		-- 🔴 **여기가 소모 시점이다** (사용자 확정 G-3): 5초 카운트가 끝나 실제로 넘어가는 순간.
+		--    환불은 없다 — 포기하든 탈락하든 안 돌려준다.
+		--    ⚠️ **이동 전에** 뺀다. 옮긴 뒤에 실패하면 되돌릴 데가 없다.
+		--    ⚠️ m.charged 는 지금은 안전망일 뿐이다 — 아래에서 매치 항목 자체를 지우므로
+		--       같은 매치로 두 번 들어올 길이 없다. 그래도 남긴다: 재화는 영구라 나중에
+		--       재시도 경로가 생겼을 때 이 플래그가 없으면 두 번 빠진다.
+		-- 🔴 **빼기 전에 받을 곳이 있는지 먼저 본다** (Codex A·B 공통 지적).
+		--    아래에서 매치를 지우고 사람들을 옮기는데, 그 뒤 _MatchSessionLogic 이 없으면
+		--    시계도 안 돌고 매치도 없는 채 심장만 사라진다. 환불 수단이 없으니 여기서 막는다.
+		if _BalrogHeartService == nil or _MatchSessionLogic == nil then
+			m.locked = false   -- 목록에 다시 올려 준다
+			for i = 1, #m.members do
+				self:Toast(m.members[i], "매치 시스템이 준비되지 않아 출발하지 못했습니다")
+			end
+			log_error("[Lobby] START " .. matchId .. " 취소 — 필수 로직 없음 (Heart=" ..
+				tostring(_BalrogHeartService ~= nil) .. " Session=" .. tostring(_MatchSessionLogic ~= nil) .. ")")
+			self:PushRoom(m)
+			self:PushBrowse()
+			return
+		end
+
+		if not m.charged then
+			if not _BalrogHeartService:Charge(m.members, m.difficulty) then
+				m.locked = false   -- 목록에 다시 올려 준다
+				local miss = _BalrogHeartService:MissingReport(m.members, m.difficulty)
+				for i = 1, #m.members do
+					self:Toast(m.members[i], (miss ~= "") and miss or "출발하지 못했습니다. 잠시 뒤 다시 시도해 주세요")
+				end
+				log_warning("[Lobby] START " .. matchId .. " 취소 — 차감 실패")
+				self:PushRoom(m)
+				self:PushBrowse()
+				return
+			end
+			m.charged = true
+		end
+
 		-- 참가자를 먼저 복사한다. 아래에서 매치를 지우기 때문이다.
 		local players = {}
 		for i = 1, #m.members do table.insert(players, m.members[i]) end
@@ -582,11 +641,13 @@ script MatchLobbyGateway extends Logic
 		-- 🔴 매치 시계를 여기서 켠다. 예전엔 월드가 뜨면 자동으로 돌았는데(Running 기본 true),
 		--    그러면 로비에서 매칭하는 동안 시계가 흘러 TEST 프로필(225초)은 만료까지 갈 수 있었다.
 		--    이제 MatchSessionLogic.Running 기본값이 false 이고 이 호출이 유일한 시작 진입점이다.
+		-- nil 여부는 차감 **전에** 이미 확인했다(위). 여기서 없을 수는 없지만 방어로 남긴다.
 		if _MatchSessionLogic ~= nil then
 			_MatchSessionLogic:StartMatch(players, difficulty)
 		end
 
-		-- TODO(WO-022): 여기서 HeartCost 만큼 발록의 심장을 차감한다. 소모 시점(G-3)이 미정이라 아직 안 한다.
+		-- 심장 차감은 위에서 이미 끝났다 (이동 전 · WO-022 S1).
+		-- 🔴 순위별 **지급**은 아직 없다 — 순위 1순위인 발록 누적 피해를 재는 코드가 없다(WO-017).
 	end
 
 	-- ── 클라 통보 ───────────────────────────────────────────────────
