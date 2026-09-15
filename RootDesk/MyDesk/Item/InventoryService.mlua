@@ -48,6 +48,7 @@ script InventoryService extends Logic
 		if userId == nil or userId == "" then return end
 		if self.inv ~= nil then self.inv[userId] = nil end
 		if self.ready ~= nil then self.ready[userId] = nil end
+		if self.quick ~= nil then self.quick[userId] = nil end   -- 퀵슬롯 등록도 매치 단위 (WO-020 S2)
 		self:EnsureUser(userId)
 		self:PushInventory(userId)
 	end
@@ -192,6 +193,8 @@ script InventoryService extends Logic
 		if _InventoryUIController ~= nil then
 			_InventoryUIController:SetInventoryCsv(self:Serialize(userId), userId)
 		end
+		-- 퀵슬롯 HUD 도 같은 타이밍에 (수량 · 쿨 시작이 인벤토리 변경과 함께 바뀐다)
+		self:PushQuickSlots(userId)
 	end
 
 	-- ── 소모품 쿨타임 (WO-014 · 추가기획2) ──────────────────────────
@@ -281,43 +284,22 @@ script InventoryService extends Logic
 		if c.healHp > 0 then
 			pc.Hp = math.min(pc.Hp + c.healHp, pc.MaxHp)
 		end
-		-- HealMp: PlayerComponent 에 Mp 가 없어(d.mlua) M1 은 HP 만. MP 물약이 생기면 MP 원장 위치 확인 후 연결
+		-- HealMp: MP 원장은 SummonManager.econ — GrantMp 가 maxMp 상한과 HUD 갱신까지 한다 (2026-09-16 파란 포션과 함께 연결).
+		local mpBefore, mpAfter = 0, 0
+		if c.healMp > 0 and _SummonManager ~= nil then
+			local e = _SummonManager:GetEcon(userId)
+			mpBefore = (e ~= nil) and math.floor(e.mp or 0) or 0
+			_SummonManager:GrantMp(userId, c.healMp)
+			e = _SummonManager:GetEcon(userId)
+			mpAfter = (e ~= nil) and math.floor(e.mp or 0) or 0
+		end
 		self:RemoveItem(userId, it.itemId, 1)
 		self:PushInventory(userId)
-		log("[Item] use " .. it.itemId .. " hp " .. tostring(before) .. "→" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " (" .. userId .. ")")
-		if _UIToast ~= nil then _UIToast:ShowMessage(def.name .. " 사용 (HP +" .. tostring(pc.Hp - before) .. ")", userId) end
-	end
-
-	@ExecSpace("ServerOnly")
-	method string PickQuickPotion(string userId)
-		-- WO-020 결정: count > 0인 HP 회복 CONSUME만 후보로 삼는다.
-		-- 준비된 후보를 먼저 고르고, 그중 회복량이 작은 것을 고른다. 같으면 목록 앞쪽을 유지한다.
-		-- 준비된 후보가 없으면 가장 빨리 끝나는 쿨 후보를 돌려 기존 쿨타임 거절 토스트를 재사용한다.
-		local u = self:EnsureUser(userId)
-		if u == nil then return "" end
-		local now = _UtilLogic.ServerElapsedSeconds
-		local readyIid = ""
-		local readyHeal = 0
-		local cooldownIid = ""
-		local cooldownAt = 0
-		for _, it in ipairs(u.items) do
-			local def = _ItemCatalog:Get(it.itemId)
-			local c = (def ~= nil and def.type == "CONSUME") and _ItemCatalog:GetConsume(it.itemId) or nil
-			if it.count > 0 and c ~= nil and (c.healHp or 0) > 0 then
-				local readyAt = self:ReadyAt(userId, it.itemId)
-				if readyAt <= now then
-					if readyIid == "" or c.healHp < readyHeal then
-						readyIid = it.iid
-						readyHeal = c.healHp
-					end
-				elseif cooldownIid == "" or readyAt < cooldownAt then
-					cooldownIid = it.iid
-					cooldownAt = readyAt
-				end
-			end
+		log("[Item] use " .. it.itemId .. " hp " .. tostring(before) .. "→" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp " .. tostring(mpBefore) .. "→" .. tostring(mpAfter) .. " (" .. userId .. ")")
+		if _UIToast ~= nil then
+			local gain = (c.healMp > 0) and ("MP +" .. tostring(mpAfter - mpBefore)) or ("HP +" .. tostring(pc.Hp - before))
+			_UIToast:ShowMessage(def.name .. " 사용 (" .. gain .. ")", userId)
 		end
-		if readyIid ~= "" then return readyIid end
-		return cooldownIid
 	end
 
 	@ExecSpace("Server")
@@ -327,20 +309,114 @@ script InventoryService extends Logic
 		self:UseInstance(senderUserId, instanceId)
 	end
 
-	@ExecSpace("Server")
-	method void RequestQuickPotion()
-		-- 퀵 사용도 인벤토리 클릭과 같은 서버 권위 사용 본문으로 보낸다.
-		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
-		local iid = self:PickQuickPotion(senderUserId)
-		if iid == "" then
-			if _UIToast ~= nil then _UIToast:ShowMessage("쓸 수 있는 물약이 없습니다", senderUserId) end
+	-- ── 퀵슬롯 (WO-020 S2 · 2026-09-16) ──────────────────────────
+	-- 원장은 서버 메모리 quick[userId][slot] = itemId ("" = 빈 슬롯). 매치 중만 유지(ResetMatchState 가 비운다).
+	-- 슬롯은 자유 슬롯(사용자 결정) — 소모품이면 종류와 무관하게 어느 슬롯에나 등록된다.
+	-- 사용은 등록된 itemId 의 인스턴스 하나를 골라 UseInstance 를 태운다(검증·쿨·소모 로직 복사 없음).
+
+	@HideFromInspector
+	property any quick = nil
+
+	property integer QuickSlotCount = 2
+
+	@ExecSpace("ServerOnly")
+	method any QuickOf(string userId)
+		if self.quick == nil then self.quick = {} end
+		local q = self.quick[userId]
+		if q == nil then
+			q = {}
+			for i = 1, self.QuickSlotCount do q[i] = "" end
+			self.quick[userId] = q
+		end
+		return q
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetQuickSlot(string userId, integer slot, string itemId)
+		-- 등록/해제. itemId "" 면 비운다. 소모품(CONSUME + ConsumeInfo)만 받는다.
+		if slot < 1 or slot > self.QuickSlotCount then return end
+		local q = self:QuickOf(userId)
+		if itemId ~= nil and itemId ~= "" then
+			local def = _ItemCatalog:Get(itemId)
+			if def == nil or def.type ~= "CONSUME" or _ItemCatalog:GetConsume(itemId) == nil then
+				if _UIToast ~= nil then _UIToast:ShowMessage("퀵슬롯에는 소모품만 등록할 수 있습니다", userId) end
+				return
+			end
+		else
+			itemId = ""
+		end
+		q[slot] = itemId
+		log("[Item] quick slot " .. tostring(slot) .. " = " .. ((itemId ~= "") and itemId or "(empty)") .. " (" .. userId .. ")")
+		self:PushQuickSlots(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseQuickSlot(string userId, integer slot)
+		-- 슬롯에 등록된 아이템의 인스턴스 하나(목록 앞쪽 · count > 0)를 골라 기존 사용 경로를 태운다.
+		if slot < 1 or slot > self.QuickSlotCount then return end
+		local itemId = self:QuickOf(userId)[slot]
+		if itemId == "" then
+			if _UIToast ~= nil then _UIToast:ShowMessage("퀵슬롯 " .. tostring(slot) .. " 이 비어 있습니다 — 인벤토리에서 끌어다 놓으세요", userId) end
 			return
 		end
-		local userId = senderUserId
-		local it = self:Find(senderUserId, iid)
-		local itemId = (it ~= nil) and it.itemId or ""
-		log("[Item] quick potion -> " .. itemId .. " (" .. iid .. ") (" .. userId .. ")")
-		self:UseInstance(senderUserId, iid)
+		local u = self:EnsureUser(userId)
+		local iid = ""
+		if u ~= nil then
+			for _, it in ipairs(u.items) do
+				if it.itemId == itemId and (it.count or 0) > 0 then
+					iid = it.iid
+					break
+				end
+			end
+		end
+		if iid == "" then
+			local def = _ItemCatalog:Get(itemId)
+			if _UIToast ~= nil then _UIToast:ShowMessage(((def ~= nil) and def.name or itemId) .. " 이(가) 없습니다", userId) end
+			return
+		end
+		log("[Item] quick slot " .. tostring(slot) .. " -> " .. itemId .. " (" .. iid .. ") (" .. userId .. ")")
+		self:UseInstance(userId, iid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string SerializeQuick(string userId)
+		-- "slot|itemId|count|remainSec|totalSec;..." — 클라 QuickSlotController.SetQuickSlots 가 그린다.
+		local q = self:QuickOf(userId)
+		local now = _UtilLogic.ServerElapsedSeconds
+		local parts = {}
+		for slot = 1, self.QuickSlotCount do
+			local itemId = q[slot] or ""
+			local count, remain, total = 0, 0, 0
+			if itemId ~= "" then
+				count = self:CountItem(userId, itemId)
+				remain = math.max(0, self:ReadyAt(userId, itemId) - now)
+				total = self:CooldownOf(userId, _ItemCatalog:GetConsume(itemId))
+			end
+			table.insert(parts, tostring(slot) .. "|" .. itemId .. "|" .. tostring(count) .. "|" .. string.format("%.2f", remain) .. "|" .. string.format("%.2f", total))
+		end
+		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushQuickSlots(string userId)
+		-- 소유 클라의 퀵슬롯 HUD 를 갱신한다. PushInventory 가 같이 부르므로 수량·쿨 시작이 함께 내려간다.
+		if _QuickSlotController ~= nil then
+			_QuickSlotController:SetQuickSlots(self:SerializeQuick(userId), userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetQuickSlot(integer slot, string itemId)
+		-- 클라(인벤토리 셀 → 퀵슬롯 드래그&드롭)가 부른다.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		self:SetQuickSlot(senderUserId, slot, itemId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestQuickSlot(integer slot)
+		-- 클라(키 1·2 / 슬롯 클릭)가 부른다. RequestUse 와 같은 관전자 가드.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		self:UseQuickSlot(senderUserId, slot)
 	end
 
 	@ExecSpace("Server")

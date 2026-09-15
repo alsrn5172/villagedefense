@@ -125,11 +125,16 @@ script InventoryUIController extends Logic
 	@HideFromInspector
 	property any cellIndexByIid = nil
 
-	@HideFromInspector
-	property any hKey = nil
+	-- 퀵슬롯 드래그&드롭 등록 (WO-020 S2): 인벤 셀을 끌어 퀵슬롯에 놓는다. 고스트는 CharacterGroup 루트의 DragGhost(창 위에 그려짐).
+	property Entity dragGhost = "92aadc64-fc9f-4e2a-aed5-03544c46216f"
+
+	property SpriteGUIRendererComponent dragGhostIcon = "92aadc64-fc9f-4e2a-aed5-03544c46216f"
 
 	@HideFromInspector
-	property number lastQuickAt = 0
+	property string dragItemId = ""
+
+	@HideFromInspector
+	property string dragIid = ""
 
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
@@ -181,20 +186,59 @@ script InventoryUIController extends Logic
 
 		self:RefreshSlots()
 		self:ShowDetail(nil, "")
-		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		if isvalid(self.dragGhost) then self.dragGhost.Enable = false end
 		log("[InvUI] InventoryUIController ready (client)")
 	end
 
+	-- ── 퀵슬롯 드래그&드롭 (WO-020 S2) ─────────────────────────
+	-- 셀(ItemTemplate 복제본 · UITouchReceiveComponent 보유)의 BeginDrag/Drag/EndDrag 를 받아
+	-- 소모품이면 고스트 아이콘을 포인터에 붙여 끌고, 놓은 곳이 퀵슬롯이면 서버에 등록을 요청한다.
+	-- 어느 슬롯인지는 QuickSlotController.SlotAtScreen 이 판정한다. 등록 원장은 서버(InventoryService.quick).
+
 	@ExecSpace("ClientOnly")
-	method void OnKeyDown(KeyDownEvent event)
-		if event.key ~= KeyboardKey.Alpha1 then return end
-		-- 월드맵의 파병 수량 입력칸(TextGUIRendererInputComponent)에 숫자를 넣는 동안은 물약 요청을 막는다.
-		if _WorldMapController ~= nil and _WorldMapController.isOpen then return end
-		local now = _UtilLogic.ElapsedSeconds
-		if now - self.lastQuickAt < 0.2 then return end
-		self.lastQuickAt = now
-		_InventoryService:RequestQuickPotion()
-		log("[InvUI] quick potion requested (key 1)")
+	method void OnCellDragBegin(string iid, Vector2 touchPoint)
+		local it = nil
+		for _, v in ipairs(self.items) do
+			if v.iid == iid then it = v; break end
+		end
+		if it == nil then return end
+		local def = _ItemCatalog:Get(it.itemId)
+		if def == nil or def.type ~= "CONSUME" then return end   -- 소모품만 퀵슬롯에 간다
+		self.dragItemId = it.itemId
+		self.dragIid = iid
+		if isvalid(self.dragGhostIcon) then self.dragGhostIcon.ImageRUID = def.icon or "" end
+		self:MoveGhost(touchPoint)
+		if isvalid(self.dragGhost) then self.dragGhost.Enable = true end
+		self:HideTooltip()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCellDrag(Vector2 touchPoint)
+		if self.dragItemId == "" then return end
+		self:MoveGhost(touchPoint)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCellDragEnd(Vector2 touchPoint)
+		if self.dragItemId == "" then return end
+		local itemId = self.dragItemId
+		self.dragItemId = ""
+		self.dragIid = ""
+		if isvalid(self.dragGhost) then self.dragGhost.Enable = false end
+		local slot = (_QuickSlotController ~= nil) and _QuickSlotController:SlotAtScreen(touchPoint) or 0
+		if slot > 0 then
+			_InventoryService:RequestSetQuickSlot(slot, itemId)
+			log("[InvUI] quick slot register requested: slot=" .. tostring(slot) .. " " .. itemId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveGhost(Vector2 touchPoint)
+		if not isvalid(self.dragGhost) then return end
+		local tf = self.dragGhost.UITransformComponent
+		if tf ~= nil then
+			tf.anchoredPosition = _UILogic:ScreenToUIPosition(touchPoint)
+		end
 	end
 
 	-- ── 서버 → 클라 ────────────────────────────────────────────
@@ -573,6 +617,10 @@ script InventoryUIController extends Logic
 			click = cell:ConnectEvent(ButtonClickEvent, function() self:OnCellClick(iid) end),
 			enter = cell:ConnectEvent(UITouchEnterEvent, function() self:ShowTooltip(iid) end),
 			exit = cell:ConnectEvent(UITouchExitEvent, function() self:HideTooltip() end),
+			-- 퀵슬롯 등록 드래그 (WO-020 S2)
+			dragBegin = cell:ConnectEvent(UITouchBeginDragEvent, function(ev) self:OnCellDragBegin(iid, ev.TouchPoint) end),
+			drag = cell:ConnectEvent(UITouchDragEvent, function(ev) self:OnCellDrag(ev.TouchPoint) end),
+			dragEnd = cell:ConnectEvent(UITouchEndDragEvent, function(ev) self:OnCellDragEnd(ev.TouchPoint) end),
 		}
 	end
 
@@ -586,6 +634,9 @@ script InventoryUIController extends Logic
 			cell:DisconnectEvent(ButtonClickEvent, old.click)
 			cell:DisconnectEvent(UITouchEnterEvent, old.enter)
 			cell:DisconnectEvent(UITouchExitEvent, old.exit)
+			if old.dragBegin ~= nil then cell:DisconnectEvent(UITouchBeginDragEvent, old.dragBegin) end
+			if old.drag ~= nil then cell:DisconnectEvent(UITouchDragEvent, old.drag) end
+			if old.dragEnd ~= nil then cell:DisconnectEvent(UITouchEndDragEvent, old.dragEnd) end
 			self.cellHandlers[key] = nil
 		end
 	end
@@ -626,10 +677,6 @@ script InventoryUIController extends Logic
 			if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
 		end
 		self.handlers = {}
-		if self.hKey ~= nil then
-			_InputService:DisconnectEvent(KeyDownEvent, self.hKey)
-		end
-		self.hKey = nil
 	end
 
 end
