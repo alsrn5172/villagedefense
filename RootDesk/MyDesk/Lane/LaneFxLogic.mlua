@@ -1,0 +1,53 @@
+@Logic
+script LaneFxLogic extends Logic
+
+	-- 시설 연출 보조 (WO-025 · 2026-09-15). 애니메이션 클립을 **특정 프레임부터** 한 번만 보여 줘야 할 때 쓴다
+	-- (사용자: 엘리니아 Lv3 적중 = 엘리멘탈 블래스트 effect0 의 뒷 프레임 13개만). _EffectService:PlayEffect 는 첫 프레임부터 전부 재생하므로
+	-- laneshot 모델을 스폰해 SpriteRendererComponent.StartFrameIndex 로 시작 프레임을 잡고, 끝 프레임 이벤트(또는 안전 타이머)에서 지운다.
+
+	-- 클립이 끝 이벤트를 안 보낼 때의 안전 수명(초).
+	property number MaxLifeSec = 3.0
+
+	@HideFromInspector
+	property integer seq = 0
+
+	@ExecSpace("ServerOnly")
+	method void PlayClip(Entity map, string ruid, Vector3 pos, number scale, integer startFrame, string sortingLayer)
+		-- startFrame ≤ 0 이면 보통 이펙트(PlayEffect). 아니면 엔티티 스폰 + StartFrameIndex.
+		if ruid == nil or ruid == "" then return end
+		if startFrame == nil or startFrame <= 0 then
+			_EffectService:PlayEffect(ruid, map, pos, 0, Vector3(scale, scale, 1))
+			return
+		end
+		if not isvalid(map) then return end
+		self.seq = self.seq + 1
+		local ent = _SpawnService:SpawnByModelId("laneshot", "ClipFx_" .. tostring(self.seq), pos, map)
+		if not isvalid(ent) then
+			log_warning("[LaneFx] clip spawn failed ruid=" .. ruid)
+			return
+		end
+		local sr = ent.SpriteRendererComponent
+		if isvalid(sr) then
+			sr.SpriteRUID = ruid
+			sr.StartFrameIndex = startFrame
+			sr.PlayRate = 1
+			if sortingLayer ~= nil and sortingLayer ~= "" then sr.SortingLayer = sortingLayer end
+			sr.OrderInLayer = 6
+		end
+		ent.TransformComponent.Scale = Vector3(scale, scale, 1)
+		log(string.format("[LaneFx] clip %s from frame %d @(%.2f,%.2f) scale=%.2f", string.sub(ruid, 1, 8), startFrame, pos.x, pos.y, scale))
+		-- 끝 프레임에 닿으면 지운다(루프로 다시 돌기 전에). 이벤트가 안 오면 MaxLifeSec 뒤 안전 삭제.
+		local done = false
+		ent:ConnectEvent(SpriteAnimPlayerEndFrameEvent, function()
+			if done then return end
+			done = true
+			if isvalid(ent) then ent:Destroy() end
+		end)
+		_TimerService:SetTimerOnce(function()
+			if done then return end
+			done = true
+			if isvalid(ent) then ent:Destroy() end
+		end, self.MaxLifeSec)
+	end
+
+end

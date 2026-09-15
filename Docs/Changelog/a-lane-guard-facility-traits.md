@@ -276,6 +276,22 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 - `FacilityAttackFx`: 노틸러스 `LaunchOffsetY` 빈칸(새 아트 머리 위 = 기본값) · 엘리니아 `CastOffsetY 0`(시설 가운데) · 헤네시스 억제기 `LaunchOffsetY 1.0`(석궁 높이 근처).
 - 🔴 실측이 아니라 계산값 — 투명 여백·그림자만큼 떠 보이면 `GroundOffset` 칸으로 조정(커닝·페리온 포탑처럼 일부러 잠기게 두는 것도 사용자 선택).
 
+### 엘리니아 Lv3 이펙트 결정 (2026-09-15 · 사용자)
+- **시전(마법진) = 엘리멘탈 블래스트 `effect`**(`ef24cda6` · 198×193 · 10프레임 · 1.4배), **적중 = `effect0`**(`0e625b50` · 851×602 · 39프레임)의 **뒷 13프레임(26~38)만** · 0.5배. 나머지 레벨은 그대로.
+- 프레임 일부만 보여 주는 길이 `_EffectService:PlayEffect` 엔 없어서 새 `Lane/LaneFxLogic.mlua`(`@Logic`) `PlayClip(map, ruid, pos, scale, startFrame, layer)`: `laneshot` 모델을 스폰해 `SpriteRendererComponent.StartFrameIndex` 로 시작 프레임을 잡고 `SpriteAnimPlayerEndFrameEvent`(안전 타이머 3초)에서 지운다. 새 열 `HitStartFrame`(`SplitHits` 뒤 · 0 = 전체 재생) → `LaneAttackFx.HitStartFrame` → `PlayHit`. 지금은 `CAST_HIT` 적중에만 쓰인다.
+
+### 🔴 새 아트 뒤 발견 — 공격 상자·사거리를 바닥 기준으로 (2026-09-15)
+- 첫 Play 에서 **엘리니아 포탑 0발 · 헤네시스 억제기 0발**(다른 포탑은 정상). 원인: 공격 상자 세로 중심이 `트랜스폼 + 0.5`, 사거리 원점이 트랜스폼이라 키 큰 새 아트(엘리니아 포탑 GroundOffset 1.77)에선 상자 바닥이 통로 위로 올라가고(달팽이 히트박스를 못 덮음) 세로 거리가 수평 사거리를 깎았다. 달팽이가 포탑을 245번 때리는 동안 포탑은 한 발도 못 쐈다.
+- → `FactionAttack.AttackBoxOffsetY`(기본 0.5 · 시설은 `2.0 − GroundOffset` = 상자가 바닥~바닥+4) · `TurretAI.RangeOffsetY`(시설은 `−GroundOffset` = 바닥에서 잰다). `ApplyCombat` 이 넣는다. [[vd-facility-transform-is-above-ground]] 규칙의 마지막 구멍.
+- 헤네시스 억제기 0발은 별개: 테스트맵에선 포탑이 앞에서 달팽이를 다 잡아 억제기까지 오지 않는다 → 리모콘으로 포탑을 파괴하니 `volley n=3~4 targets=2~3` · `land 3/3`.
+
+### 검증 (2026-09-15 · 개인 월드 Play 3회)
+- 새 아트: `FacilitySprite loaded: 15 rows` · 7개 시설 RUID 가 새 값(`b3d441e1`·`ab1b1a77`·`c581bd55`·`0784f6d9`·`6de3ebd1`·`2cb00b54`·`0b55fd5e`) · scale 0.25 · 위치가 새 GroundOffset 대로.
+- 헤네시스 억제기: `combat … attacks=true dmg=60 maxTargets=3 fx=SHOT` · 포탑 파괴 뒤 화살 volley 6회.
+- 엘리니아 Lv3(리모콘 V3→S3→LVUP×2): `combat ELLINIA:TOWER lv=3 fx=CAST_HIT` · `volley targets=5` → `land hits=5/5` → `[LaneFx] clip 0e625b50 from frame 26 @(표적) scale=0.50` ×15 · Error 0.
+- 바닥 기준 상자: `boxOffY=0.23 box=(8,4) rangeOffY=-1.77`(엘리니아 Lv3) · 엘리니아 7 volley(전엔 0).
+- **눈 확인(사용자)**: 새 그림 7장이 바닥에 서는지(뜨면 `GroundOffset` ↓) · 억제기 석궁 출발 높이(`LaunchOffsetY 1.0`) · 엘리니아 Lv3 마법진(effect 1.4배)과 블래스트(effect0 0.5배 · 26프레임부터) · 노틸러스 포탄 출발(머리 위).
+
 ### Codex 리뷰 반영 (2026-09-14 · 사용자 "codex 열심히 시켜" · 읽기 전용 · 새 세션 2회 대조)
 1차 지적 3건 전부 수정:
 1. `HitTarget` 이 분할 배율을 사망 검사 **앞에** 놓아 죽은 표적에서 되돌리지 않았다 → 다음 즉시 공격이 배율을 물려받을 수 있었다. 사망 검사 뒤로 옮기고 모든 경로에서 0 으로 복구.
