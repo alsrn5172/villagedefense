@@ -7,17 +7,161 @@ script FactionAttack extends AttackComponent
 
 	property number AttackReach = 0.5
 
+	-- 공격 상자 세로 중심 = 트랜스폼 y + 이 값. 미니언·수비대 = 0.5(몸통). 🔴 시설은 트랜스폼이 바닥보다 GroundOffset(1.1~1.8) 위라
+	-- LaneFacilityService.ApplyCombat 이 "바닥 + 상자 절반"이 되게 넣는다 — 새 아트로 시설이 높아지자 상자 바닥이 통로 위로 올라가 달팽이를 못 덮었다(2026-09-15).
+	property number AttackBoxOffsetY = 0.5
+
+	-- 대플레이어 계수 (WO-016 · 추가기획2 "수비대 몬스터와 포탑은 플레이어 상대로는 (계수-기본10)배").
+	-- 🔴 기본값은 반드시 1.0 — 이 컴포넌트는 포탑·수비대·미니언이 공유한다. 10 을 여기 박으면 미니언까지 10배가 된다.
+	--    10.0 으로 올리는 곳은 DefenderService.SpawnOne(수비대) · LaneFacilityService.ApplyCombat(시설) 두 군데뿐이다.
+	property number PlayerDamageMul = 1.0
+
+	-- 한 번의 공격이 때릴 수 있는 최대 대상 수 (WO-021). 0 = 무제한(현행 · 포탑 광역). 넘치면 **가까운 순**으로 고른다.
+	-- 🔴 기본값 0 을 바꾸지 마라 — 포탑 광역이 조용히 좁아진다. 헤네시스 억제기 = 3 · 커닝 포탑 = 1.
+	property integer MaxTargets = 0
+
+	-- 단일 대상(MaxTargets=1) 모드의 공격 상자 가로. 상자를 표적 위치에 좁게 놓아 "단일 원거리"로 보이게 한다. 세로는 AttackBoxSize.y 그대로(포탑 4.0 유지).
+	property number SingleTargetBoxWidth = 1.2
+
 	@HideFromInspector
 	property any Shape = nil
 
 	@HideFromInspector
 	property any SwingHits = nil
 
+	-- MaxTargets > 0 일 때 이번 스윙에서 허용된 대상 Id 집합 (DoAttack 이 가까운 순으로 고른다).
+	@HideFromInspector
+	property any AllowedHits = nil
+
+	-- 마지막 DoAttack/HitTarget 에서 실제로 맞은 엔티티 목록 (로그·디버그용). 엔진 Attack 이 돌려준 HitComponent 의 Entity.
+	@HideFromInspector
+	property any LastHits = nil
+
+	-- 반사 공격(DoReflect) 전용: 이번 반사의 유일한 대상 Id 와 고정 피해량. attackInfo == "reflect" 일 때만 쓴다.
+	@HideFromInspector
+	property string ReflectTargetId = ""
+
+	@HideFromInspector
+	property integer ReflectDamage = 0
+
+	-- HitTarget 전용: 분할 타격의 k 번째/n (노틸러스 3분할 = 1/3 · 2/3 · 3/3). 0 = 온전한 한 방. Attack() 이 동기라 호출 뒤 0 으로 되돌린다.
+	-- k 번째 몫 = floor(피해·k/n) − floor(피해·(k−1)/n) 이라 n 발 합이 정확히 원 피해다(Codex 리뷰 2026-09-14 · 65/3 를 21×3=63 으로 잃던 것).
+	@HideFromInspector
+	property integer HitPart = 0
+
+	@HideFromInspector
+	property integer HitParts = 0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 공격 도형과 중복타 방지 테이블을 준비한다.
 		self.Shape = BoxShape(Vector2.zero, self.AttackBoxSize, 0)
 		self.SwingHits = {}
+		self.AllowedHits = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method table HitRect(Entity cand)
+		-- 엔티티 피격 상자(월드): 중심 cx·cy, 반폭 hw·반높이 hh = HitComponent.BoxSize/ColliderOffset × |Scale|.
+		-- 상자가 없거나 0 이면 0.8×1.2 기본(미니언 히트박스와 같은 크기 · 발 +0.6 중심).
+		local p = cand.TransformComponent.WorldPosition
+		local r = { cx = p.x, cy = p.y + 0.6, hw = 0.4, hh = 0.6 }
+		local hit = cand.HitComponent
+		if isvalid(hit) then
+			local sc = cand.TransformComponent.Scale
+			local sx = math.abs(sc.x)
+			local sy = math.abs(sc.y)
+			if sx == 0 then sx = 1 end
+			if sy == 0 then sy = 1 end
+			local bw = hit.BoxSize.x * sx
+			local bh = hit.BoxSize.y * sy
+			if bw > 0 and bh > 0 then
+				r.hw = bw * 0.5
+				r.hh = bh * 0.5
+				r.cx = p.x + hit.ColliderOffset.x * sx
+				r.cy = p.y + hit.ColliderOffset.y * sy
+			end
+		end
+		return r
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsDeadTarget(Entity e)
+		-- 죽은 표적인가: 몬스터 Monster.IsDead · 플레이어 PlayerComponent:IsDead() (사망·리스폰 중인 플레이어를 계속 겨누던 것 · Codex 리뷰 2026-09-14). 없으면 false.
+		if not isvalid(e) then return true end
+		---@type Monster
+		local mon = e.Monster
+		if isvalid(mon) and mon.IsDead then return true end
+		local pc = e.PlayerComponent
+		if isvalid(pc) and pc:IsDead() then return true end
+		return false
+	end
+
+	method boolean FacilityMayHit(Entity defender)
+		-- 시설(포탑·억제기·넥서스)의 표적 규칙: **플레이어(PlayerComponent)와 미니언(script.MinionUnit)만** 때린다 (사용자 2026-09-14 "야생 몹은 안 때린다").
+		-- 야생 몹·다른 시설·수비대는 전부 제외. 시설이 아닌 공격자(수비대·미니언)는 이 규칙과 무관하게 true.
+		-- ⚠ @ExecSpace 없음 — IsAttackTarget(부모 ExecSpace=All)에서 부른다.
+		if not isvalid(self.Entity.LaneFacility) then return true end
+		if not isvalid(defender) then return false end
+		return isvalid(defender.PlayerComponent) or isvalid(defender.MinionUnit)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table CollectNearestEnemies(Vector2 center, Vector2 size, integer limit)
+		-- 공격 상자(center·size) 안의 적을 가까운 순으로 최대 limit 개 고른다 (MaxTargets 사전 선별 · SelectTargets).
+		-- 후보 = 맵의 script.Faction 보유 엔티티 + 이 맵의 플레이어 (TurretAI.FindNearestEnemy 와 같은 집합).
+		local picked = {}
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then return picked end
+		local halfW = size.x * 0.5
+		local halfH = size.y * 0.5
+		-- 🔴 같은 엔티티를 두 번 넣지 않는다(플레이어는 script.Faction 도 갖고 유저 목록에도 있다). 지연 피해(HitTarget)는 표적당 1회라 중복이 곧 2배 피해다.
+		local candidates = {}
+		local seen = {}
+		local function addCand(e)
+			if isvalid(e) and not seen[e.Id] then
+				seen[e.Id] = true
+				table.insert(candidates, e)
+			end
+		end
+		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
+		if factions ~= nil then
+			for _, comp in ipairs(factions) do
+				if isvalid(comp) then addCand(comp.Entity) end
+			end
+		end
+		local mapComp = map.MapComponent
+		if isvalid(mapComp) then
+			local users = _UserService:GetUsersByMapComponent(mapComp)
+			if users ~= nil then
+				for _, user in ipairs(users) do
+					if isvalid(user) and not (_SpectateService ~= nil and _SpectateService:IsSpectatorEntity(user)) then
+						addCand(user)
+					end
+				end
+			end
+		end
+		-- 🔴 야생 몹은 후보가 아니다 — 시설이 때리는 건 **플레이어와 미니언뿐**(사용자 2026-09-14). FacilityMayHit 이 거른다.
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local inBox = {}
+		for _, cand in ipairs(candidates) do
+			if cand ~= self.Entity and isvalid(cand.TransformComponent) and _FactionLogic:IsEnemy(self.Entity, cand) and self:FacilityMayHit(cand) then
+				if not self:IsDeadTarget(cand) then
+					local p = cand.TransformComponent.WorldPosition
+					-- 후보의 **피격 상자**(HitRect · Scale 반영)와 공격 상자의 겹침으로 판정한다 — 엔진의 히트 판정과 같은 기준.
+					-- 🔴 트랜스폼 점으로 재면 시설이 발판보다 GroundOffset 만큼 떠 있어 통로 위 적이 세로로 빠진다(2026-09-13 실측 · 커닝 포탑이 한 번도 안 쐈다).
+					local r = self:HitRect(cand)
+					if math.abs(r.cx - center.x) <= halfW + r.hw and math.abs(r.cy - center.y) <= halfH + r.hh then
+						local dx = p.x - myPos.x
+						local dy = p.y - myPos.y
+						table.insert(inBox, { ent = cand, d = dx * dx + dy * dy })
+					end
+				end
+			end
+		end
+		table.sort(inBox, function(a, b) return a.d < b.d end)
+		for i = 1, math.min(limit, #inBox) do table.insert(picked, inBox[i].ent) end
+		return picked
 	end
 
 	@ExecSpace("ServerOnly")
@@ -27,22 +171,121 @@ script FactionAttack extends AttackComponent
 		if not isvalid(transform) or self.Shape == nil then
 			return
 		end
-		
+
 		-- 몬스터 스프라이트는 기본적으로 왼쪽을 보므로, Scale.x 가 음수일 때 오른쪽을 향한다.
 		local dir = -1
 		if transform.Scale.x < 0 then
 			dir = 1
 		end
-		
+
 		local pos = transform.WorldPosition
-		self.Shape.Position = Vector2(pos.x + self.AttackReach * dir, pos.y + 0.5)
-		self.Shape.Size = self.AttackBoxSize
+		local center = Vector2(pos.x + self.AttackReach * dir, pos.y + self.AttackBoxOffsetY)
+		local size = self.AttackBoxSize
+
+		-- 대상 수 제한 (WO-021): 상자 안 적을 가까운 순으로 MaxTargets 개만 허용. 0 이면 현행 그대로(제한 없음).
+		self.AllowedHits = nil
+		if self.MaxTargets > 0 then
+			local picked = self:CollectNearestEnemies(center, size, self.MaxTargets)
+			if #picked == 0 then return end
+			self.AllowedHits = {}
+			for _, e in ipairs(picked) do self.AllowedHits[e.Id] = true end
+			-- 단일 대상이면 상자를 표적 위치에 좁게 놓는다(커닝 포탑 "원거리 단일"). 세로는 그대로 — 포탑 세로 4.0 을 줄이면 통로 미니언을 놓친다(2026-09-07 실측).
+			if self.MaxTargets == 1 then
+				local tp = picked[1].TransformComponent.WorldPosition
+				center = Vector2(tp.x, tp.y + 0.5)
+				size = Vector2(self.SingleTargetBoxWidth, self.AttackBoxSize.y)
+			end
+			log("[FactionAttack] " .. self.Entity.Name .. " limited targets=" .. tostring(#picked) .. "/" .. tostring(self.MaxTargets))
+		end
+
+		self.Shape.Position = center
+		self.Shape.Size = size
 		self.Shape.Angle = 0
-		
-		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다.
+
+		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다. 맞은 엔티티는 LastHits 에 모아 둔다(로그용).
 		self.SwingHits = {}
-		self:Attack(self.Shape, "faction", CollisionGroups.Monster)
-		self:Attack(self.Shape, "faction", CollisionGroups.Player)
+		local hits = {}
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Monster), hits)
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
+		self.LastHits = hits
+		self.AllowedHits = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AppendHits(any res, any hits)
+		-- 엔진 Attack() 반환(HitComponent 목록 · nil 일 수 있다)을 hits 에 엔티티로 보탠다. 그룹별로 따로 부른다 — {r1, r2} 로 묶으면 r1 이 nil 일 때 r2 가 구멍에 가려진다(리뷰 2026-09-14).
+		if res == nil or hits == nil then return end
+		for _, hc in ipairs(res) do
+			if isvalid(hc) and isvalid(hc.Entity) then table.insert(hits, hc.Entity) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SelectTargets()
+		-- 지연 피해(발사체·시전 · LaneAttackFx.Fire) 용: DoAttack 과 **같은 상자**로 피해 없이 표적만 고른다.
+		-- 가까운 순 MaxTargets 개, 0 이면 상자 안 전부(상한 64). 피해는 연출이 도착할 때 HitTarget 으로 하나씩.
+		local transform = self.Entity.TransformComponent
+		if not isvalid(transform) then return {} end
+		local dir = -1
+		if transform.Scale.x < 0 then dir = 1 end
+		local pos = transform.WorldPosition
+		local center = Vector2(pos.x + self.AttackReach * dir, pos.y + self.AttackBoxOffsetY)
+		local limit = self.MaxTargets
+		if limit <= 0 then limit = 64 end
+		return self:CollectNearestEnemies(center, self.AttackBoxSize, limit)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HitTarget(Entity target, integer part, integer parts)
+		-- 지연 피해: 발사체 도착 / 시전 완료 시점에 target **하나에게만** 일반 피해(CalcDamage)를 준다 (사용자 2026-09-14 "유도탄은 맞아야 피격").
+		-- part/parts = 분할 타격의 k 번째/n (노틸러스 3발 · SplitHits). parts ≤ 1 이면 온전한 한 방. 상자는 표적의 피격 상자(HitRect)를 덮게 놓고 AllowedHits 로 그 표적만 허용. 죽었거나 사라졌으면 false.
+		if self.Shape == nil or not isvalid(target) or not isvalid(target.TransformComponent) then return false end
+		if self:IsDeadTarget(target) then return false end
+		-- 🔴 분할 배율은 사망 검사 **뒤에** 놓고 모든 경로에서 0 으로 되돌린다(죽은 표적에서 되돌리지 않으면 다음 즉시 공격이 물려받는다 · Codex 리뷰 2026-09-14).
+		if parts ~= nil and parts > 1 and part ~= nil and part >= 1 then
+			self.HitPart = part
+			self.HitParts = parts
+		else
+			self.HitPart = 0
+			self.HitParts = 0
+		end
+		local r = self:HitRect(target)
+		self.Shape.Position = Vector2(r.cx, r.cy)
+		self.Shape.Size = Vector2(math.max(1.6, r.hw * 2 + 0.2), math.max(2.4, r.hh * 2 + 0.2))
+		self.Shape.Angle = 0
+		self.SwingHits = {}
+		local allowed = {}
+		allowed[target.Id] = true
+		self.AllowedHits = allowed
+		local hits = {}
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Monster), hits)
+		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
+		self.LastHits = hits
+		self.AllowedHits = nil
+		self.HitPart = 0
+		self.HitParts = 0
+		return #hits > 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoReflect(Entity target, integer amount)
+		-- 반사 피해 (WO-021 · 페리온 억제기): target **하나에게만** amount 를 고정 피해로 준다.
+		-- 엔진 Attack 파이프라인을 태워 플레이어 사망·미니언 Dead 처리를 엔진/Monster 에 맡긴다 (HP 직접 대입은 사망 경로를 건너뛴다).
+		-- 🔴 재귀 방지: 대상이 target 하나로 고정되고(IsAttackTarget), 시설끼리는 서로 공격 대상이 아니라 반사가 반사를 부르지 않는다.
+		if not isvalid(target) or amount <= 0 or self.Shape == nil or not isvalid(target.TransformComponent) then return end
+		local tp = target.TransformComponent.WorldPosition
+		self.ReflectTargetId = target.Id
+		self.ReflectDamage = amount
+		-- 대상 몸통을 덮는 상자 (몬스터 발 기준 히트박스 · 플레이어 몸통 둘 다 커버).
+		self.Shape.Position = Vector2(tp.x, tp.y + 0.6)
+		self.Shape.Size = Vector2(1.6, 2.4)
+		self.Shape.Angle = 0
+		self.SwingHits = {}
+		self.AllowedHits = nil
+		self:Attack(self.Shape, "reflect", CollisionGroups.Monster)
+		self:Attack(self.Shape, "reflect", CollisionGroups.Player)
+		self.ReflectTargetId = ""
+		self.ReflectDamage = 0
 	end
 
 	method boolean IsAttackTarget(Entity defender, string attackInfo)
@@ -51,42 +294,71 @@ script FactionAttack extends AttackComponent
 		if not isvalid(defender) then
 			return false
 		end
-		
+
 		if defender == self.Entity then
 			return false
 		end
-		
+
+		-- 시설은 플레이어·미니언만 친다 (사용자 2026-09-14 · 야생 몹 제외). 시설끼리도 여기서 걸러진다(테스트맵처럼 줄이 겹치면 윗줄 억제기가 아랫줄 시설을 쏘던 것 · WO-025).
+		-- 즉시 판정(DoAttack · 억제기)과 지연 판정(HitTarget) 둘 다 이 문을 지난다.
+		if not self:FacilityMayHit(defender) then
+			return false
+		end
+
+		-- 반사(DoReflect)는 지정한 대상 하나만. 상자에 같이 걸린 다른 적은 맞지 않는다.
+		if attackInfo == "reflect" and defender.Id ~= self.ReflectTargetId then
+			return false
+		end
+
+		-- 대상 수 제한(MaxTargets): DoAttack 이 가까운 순으로 고른 집합 밖은 거른다.
+		if self.AllowedHits ~= nil and self.AllowedHits[defender.Id] ~= true then
+			return false
+		end
+
 		-- 그룹별 2회 호출로 같은 대상이 중복 판정되는 것을 막는다.
 		local key = defender.Id
 		if self.SwingHits ~= nil and self.SwingHits[key] == true then
 			return false
 		end
-		
+
 		if _FactionLogic:GetRelation(self.Entity, defender) ~= "ENEMY" then
 			return false
 		end
-		
+
 		if self.SwingHits ~= nil then
 			self.SwingHits[key] = true
 		end
-		
-		log("[FactionAttack] " .. self.Entity.Name .. " -> ENEMY " .. defender.Name)
-		
+
+		log("[FactionAttack] " .. self.Entity.Name .. " -> ENEMY " .. defender.Name .. (attackInfo == "reflect" and " (reflect)" or ""))
+
 		return __base:IsAttackTarget(defender, attackInfo)
 	end
 
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
-		-- 최종 데미지 = BaseDamage * 공격력 버프 배율.
+		-- 최종 데미지 = BaseDamage * 공격력 버프 배율 (* 대플레이어 계수). 반사는 고정 피해 그대로.
 		-- ⚠ 반환 타입은 부모와 동일한 integer 여야 한다 (number/int 로 쓰면 시그니처 불일치).
+		if attackInfo == "reflect" then
+			return self.ReflectDamage
+		end
 		local mul = 1.0
-		
+
 		---@type Buff
 		local buff = self.Entity.Buff
 		if isvalid(buff) then
 			mul = buff.AtkMul
 		end
-		
-		return math.floor(self.BaseDamage * mul)
+
+		-- 대플레이어 계수 (WO-016): 맞는 쪽이 플레이어면 PlayerDamageMul 을 곱한다. 기본 1.0 이라 미니언·야생 몹 공격은 그대로다.
+		if isvalid(defender) and isvalid(defender.PlayerComponent) then
+			mul = mul * self.PlayerDamageMul
+		end
+
+		local full = math.floor(self.BaseDamage * mul)
+		-- 분할 타격(HitTarget part/parts · 노틸러스 3발): k 번째 몫 = floor(full·k/n) − floor(full·(k−1)/n) → n 발 합 = full. 즉시 판정(DoAttack)에선 parts=0.
+		if self.HitParts > 1 and self.HitPart >= 1 then
+			return math.floor(full * self.HitPart / self.HitParts) - math.floor(full * (self.HitPart - 1) / self.HitParts)
+		end
+		return full
 	end
 
 end

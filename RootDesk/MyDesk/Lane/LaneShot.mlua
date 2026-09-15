@@ -1,0 +1,147 @@
+@Component
+script LaneShot extends Component
+
+	-- 시설 발사체 (WO-025 · 2026-09-14). LaneAttackFx 가 laneshot 모델을 스폰한 뒤 붙이고 Launch() 를 부른다.
+	-- 출발점 → 표적(몸통 중심)을 **포물선으로 추적(유도)**. 도착하면 hit 이펙트를 그 자리에 띄우고 소멸.
+	-- 표적이 먼저 죽으면 마지막 조준점까지 간 뒤 StickSec > 0 이면 발 높이에 박혀 있다가 소멸(커닝 수리검), 0 이면 그 자리에서 hit 이펙트.
+	-- 🔴 연출 전용 — 피해는 LaneAttackFx.Land 가 FlightSec 뒤(= 이 발사체의 도착 시각)에 FactionAttack.HitTarget 으로 준다. 여기서 피해를 주지 않는다.
+	-- 이동은 서버가 매 프레임 WorldPosition 을 쓴다(Body 없음 → 직접 대입 OK). 끊겨 보이면 클라 시뮬레이션으로 옮긴다(v2).
+
+	@HideFromInspector
+	property any TargetEntity = nil
+
+	@HideFromInspector
+	property Vector3 StartPos = Vector3(0, 0, 0)
+
+	@HideFromInspector
+	property Vector3 LastAim = Vector3(0, 0, 0)
+
+	property string HitRuid = ""
+
+	property number HitScale = 1.0
+
+	-- 도착 hit 이펙트 위치 보정(유닛 · FacilityAttackFx.HitOffsetX/Y).
+	property number HitOffsetX = 0
+
+	property number HitOffsetY = 0
+
+	-- 도착 hit 이펙트 좌우 반전(FacilityAttackFx.HitFlipX).
+	property boolean HitFlipX = false
+
+	-- 비행 시간(초). 거리와 무관하게 고정 → 멀수록 빠르다.
+	property number FlightSec = 0.45
+
+	-- 낙하 곡률 (사용자 2026-09-14 "위로 솟지 말고 가로로 평행하게 발사해서 떨어지는 포물선"): 0 = 직선(페리온 창), >0 = 수평 발사 뒤 u^(1+값) 으로 표적 높이까지 떨어진다(클수록 끝에서 급강하). LaneAttackFx 가 ±25% 흩뿌린다.
+	property number ArcHeight = 1.5
+
+	-- 표적을 잃었을 때 땅에 박혀 있는 시간(초). 0 = 박히지 않고 그 자리에서 터짐.
+	property number StickSec = 0
+
+	-- ball 그림이 원래 향하는 각도: 180 = 왼쪽(메이플 스킬 관례) · 0 = 오른쪽 · 90 = 위 · 270 = 아래. 진행 방향 회전의 기준.
+	property number FaceDeg = 180
+
+	@HideFromInspector
+	property number t = 0
+
+	@HideFromInspector
+	property boolean launched = false
+
+	@HideFromInspector
+	property boolean stuck = false
+
+	@HideFromInspector
+	property number stickLeft = 0
+
+	@ExecSpace("ServerOnly")
+	method void Launch()
+		-- 현재 위치를 출발점으로 잡고 비행 시작. 표적이 이미 없으면 그냥 사라진다.
+		self.StartPos = self.Entity.TransformComponent.WorldPosition
+		if not self:TargetAlive() then
+			self.Entity:Destroy()
+			return
+		end
+		local p = self.TargetEntity.TransformComponent.WorldPosition
+		self.LastAim = Vector3(p.x, p.y + 0.5, 0)
+		self.t = 0
+		self.launched = true
+		-- 출발은 항상 수평(위로 솟지 않는다).
+		self:Face(self.LastAim.x - self.StartPos.x, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean TargetAlive()
+		-- 표적이 아직 유효하고 살아 있는가.
+		local tgt = self.TargetEntity
+		if not isvalid(tgt) or not isvalid(tgt.TransformComponent) then return false end
+		---@type Monster
+		local mon = tgt.Monster
+		if isvalid(mon) and mon.IsDead then return false end
+		-- 죽은 플레이어도 표적 상실 (Codex 리뷰 2026-09-14).
+		local pc = tgt.PlayerComponent
+		if isvalid(pc) and pc:IsDead() then return false end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Face(number dx, number dy)
+		-- 진행 방향으로 그림을 돌린다. 좌/우 그림(FaceDeg 180/0)은 FlipX 로 뒤집은 뒤 각도만 줘서 위아래가 안 뒤집히게, 위/아래 그림(90/270)은 회전만.
+		if dx == 0 and dy == 0 then return end
+		local deg = math.deg(math.atan(dy, dx))
+		local tf = self.Entity.TransformComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if self.FaceDeg == 180 or self.FaceDeg == 0 then
+			local facesRight = (self.FaceDeg == 0)
+			if dx >= 0 then
+				if isvalid(sr) then sr.FlipX = not facesRight end
+				tf.ZRotation = deg
+			else
+				if isvalid(sr) then sr.FlipX = facesRight end
+				tf.ZRotation = deg - 180
+			end
+		else
+			if isvalid(sr) then sr.FlipX = false end
+			tf.ZRotation = deg - self.FaceDeg
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 진행. u = 0~1 · x 는 직선 보간, y 는 수평 발사 뒤 낙하: start + (aim − start)·u^(1+ArcHeight) (ArcHeight 0 = 직선). 표적이 살아 있으면 조준점을 매 프레임 갱신(유도).
+		if not self.launched then return end
+		if self.stuck then
+			self.stickLeft = self.stickLeft - delta
+			if self.stickLeft <= 0 then self.Entity:Destroy() end
+			return
+		end
+		local alive = self:TargetAlive()
+		if alive then
+			local p = self.TargetEntity.TransformComponent.WorldPosition
+			self.LastAim = Vector3(p.x, p.y + 0.5, 0)
+		end
+		self.t = self.t + delta / math.max(0.05, self.FlightSec)
+		local u = math.min(1, self.t)
+		local x = self.StartPos.x + (self.LastAim.x - self.StartPos.x) * u
+		local k = 1
+		if self.ArcHeight > 0 then k = 1 + self.ArcHeight end
+		local y = self.StartPos.y + (self.LastAim.y - self.StartPos.y) * (u ^ k)
+		local tf = self.Entity.TransformComponent
+		local prev = tf.WorldPosition
+		tf.WorldPosition = Vector3(x, y, 0)
+		self:Face(x - prev.x, y - prev.y)
+		if u < 1 then return end
+		if alive or self.StickSec <= 0 then
+			if self.HitRuid ~= "" then
+				local sx = self.HitScale
+				if self.HitFlipX then sx = -self.HitScale end
+				_EffectService:PlayEffect(self.HitRuid, self.Entity, Vector3(x + self.HitOffsetX, y + self.HitOffsetY, 0), 0, Vector3(sx, self.HitScale, 1))
+			end
+			self.Entity:Destroy()
+		else
+			-- 표적을 잃음 → 표적이 서 있던 발 높이(조준점 - 0.5)에 박힌다.
+			tf.WorldPosition = Vector3(x, self.LastAim.y - 0.5, 0)
+			self.stuck = true
+			self.stickLeft = self.StickSec
+		end
+	end
+
+end
