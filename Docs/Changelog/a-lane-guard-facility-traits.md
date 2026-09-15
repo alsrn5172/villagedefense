@@ -307,7 +307,7 @@ VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note
 ### 발사 출발점 x 보정 `LaunchOffsetX` (2026-09-15 · 사용자 "헤네시스 포탑·억제기 발사 위치를 조정하고 싶다" → "추가해줘")
 - `FacilityAttackFx.csv` 에 `LaunchOffsetX` 열 추가(`LaunchOffsetY` 앞 · 유닛 · + 오른쪽 · 빈칸 = 0). **월드 기준**이라 시설 그림 `FlipX` 와 무관(마을마다 그림 방향이 고정) — 원하는 부호를 그대로 적는다. 지금은 전 행 빈칸(동작 변화 없음) · 헤네시스 포탑·억제기 6행은 사용자가 채운다.
 - 흐름: `LaneStateService.LoadFxDef`(`launchX`) → `LaneFacilityService.ApplyAttackFx`(`fx.LaunchOffsetX`) → `LaneAttackFx.Fire` 출발점 `origin.x + LaunchOffsetX`. 계약서 A-2-18 · `check-integrity` 정본 헤더 갱신.
-- 같이 커밋: 사용자가 미리 고쳐 둔 값 — 헤네시스 포탑·억제기 6행 `LaunchOffsetY −1`(시설 가운데보다 1 아래) · 엘리니아 Lv3 `CastOffsetX/Y 0.9/0.95`.
+- 같이 커밋: 사용자가 미리 고쳐 둔 값 — 헤네시스 포탑 3행 `LaunchOffsetY −1` · 억제기 3행 `−0.5`(시설 가운데보다 아래 · 커밋 직전 사용자 조정값 그대로) · 엘리니아 Lv3 `CastOffsetX/Y 0.9/0.95`.
 - **눈 확인(사용자)**: 헤네시스 화살 출발점(x = `LaunchOffsetX` · y = `LaunchOffsetY`). 값 바꾸면 Stop → refresh → Play.
 
 ### 검증 (2026-09-15 · 개인 월드 Play 3회)
