@@ -99,10 +99,20 @@ script SpectateService extends Logic
 		if isvalid(ent.PlayerControllerComponent) then ent.PlayerControllerComponent.Enable = false end
 		if isvalid(ent.HitComponent) then ent.HitComponent.Enable = false end
 		if isvalid(ent.RigidbodyComponent) then ent.RigidbodyComponent.Gravity = 0 end
+		-- 🔴 진영을 Neutral 로 덮기 전에 원래 상태를 적어 둔다 (2026-09-16 · WO-026). LeaveSpectate 가 이걸로 되돌린다.
+		--    DefaultPlayer 에는 script.Faction 이 없어서 여기서 **새로 붙는다**(factionAdded) → 나갈 때 떼야
+		--    FactionLogic.GetTeam 이 2순위(PlayerTeamOf = 자기 마을 진영 번호)로 돌아간다.
 		local faction = ent.Faction
-		if not isvalid(faction) then faction = ent:AddComponent("script.Faction") end
+		local factionAdded = false
+		local prevTeam = ""
+		if isvalid(faction) then
+			prevTeam = faction.Team
+		else
+			faction = ent:AddComponent("script.Faction")
+			factionAdded = isvalid(faction)
+		end
 		if isvalid(faction) then faction.Team = "Neutral" end
-		self.spectators[userId] = { mode = "free", target = "", rig = nil, vel = Vector2(0, 0), velUntil = 0, pendingKind = "free", pendingAt = _UtilLogic.ServerElapsedSeconds }
+		self.spectators[userId] = { mode = "free", target = "", rig = nil, vel = Vector2(0, 0), velUntil = 0, pendingKind = "free", pendingAt = _UtilLogic.ServerElapsedSeconds, factionAdded = factionAdded, prevTeam = prevTeam }
 		self:SetSpectating(true, userId)
 		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(true, userId) end
 		self:PushTargets()
@@ -121,17 +131,36 @@ script SpectateService extends Logic
 		self.spectators[userId] = nil
 
 		local ent = _UserService:GetUserEntityByUserId(userId)
+		local factionNote = "none"
 		if isvalid(ent) then
 			ent:SetVisible(true)
 			if isvalid(ent.PlayerControllerComponent) then ent.PlayerControllerComponent.Enable = true end
 			if isvalid(ent.HitComponent) then ent.HitComponent.Enable = true end
 			if isvalid(ent.RigidbodyComponent) then ent.RigidbodyComponent.Gravity = 1 end
+			-- 🔴 진영 복구 (2026-09-16 · WO-026). 예전엔 이게 빠져 있었다 → FactionLogic.GetTeam 은 Faction 컴포넌트를
+			--    1순위로 믿기 때문에, 관전을 한 번 다녀온 플레이어는 세션 끝까지 Neutral 이었다
+			--    (다음 매치에서 시설·미니언·몹이 그 플레이어를 무시하고, 그 플레이어도 아무도 못 때린다).
+			--    Enter 가 새로 붙였으면 떼고(= 마을 진영 번호로 자동 복귀), 원래 있던 컴포넌트면 이전 팀으로 되돌린다.
+			--    팀 번호를 써 넣지 않는 이유: 다음 매치에서 다른 마을을 잡아도 옛 번호가 1순위로 남는다.
+			if spec.factionAdded then
+				if ent:RemoveComponent("script.Faction") then
+					factionNote = "removed"
+				else
+					-- 못 뗐으면 팀이라도 지금 마을 진영 번호로 돌린다 (GetTeam 2순위와 같은 값).
+					if isvalid(ent.Faction) and _FactionLogic ~= nil then ent.Faction.Team = _FactionLogic:PlayerTeamOf(userId) end
+					factionNote = "remove-failed"
+					log_warning("[Spectate] leave: Faction 제거 실패 → 팀만 복구 " .. userId)
+				end
+			elseif isvalid(ent.Faction) and (spec.prevTeam or "") ~= "" then
+				ent.Faction.Team = spec.prevTeam
+				factionNote = "restored:" .. spec.prevTeam
+			end
 		end
 
 		self:SetSpectating(false, userId)
 		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(false, userId) end
 		self:PushTargets()
-		log("[Spectate] leave " .. userId)
+		log("[Spectate] leave " .. userId .. " faction=" .. factionNote)
 	end
 
 	@ExecSpace("ServerOnly")
