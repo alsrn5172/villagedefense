@@ -27,6 +27,33 @@
 - 새 `property` · 새 메서드 없음 (관전 표는 런타임 테이블).
 - 안 건드림: `FactionLogic` · `Faction` · `LaneStateService` · `MatchSessionLogic` · `BalrogRoomService`.
 
-### 검증
+### 검증 (2026-09-17 · 개인 월드 · 워크트리 Reimport All · Play 1회)
 
-(대기 — 개인 월드 · `Test_Lane_Fx`)
+server_main 에서 타이머로 **진입 → 퇴장을 2회** 돌리고, client 에서 로컬 플레이어의 Faction 컴포넌트를 0.1초마다 봤다.
+관계 기준은 팀 `22`(다른 마을 시설 대역) 엔티티다 — `Test_Lane_Fx` 에서 실제 시설을 못 찾아, 빈 엔티티에 Faction 22 를 붙인 프로브로 판정했다.
+
+| 시점 | GetTeam | Faction 컴포넌트 | GetRelation(22, 플레이어) | 관전자 |
+|---|---|---|---|---|
+| 진입 전 | `1` | 없음 | ENEMY | false |
+| 관전 중 (1회차) | `Neutral` | 있음 | NEUTRAL | true |
+| 퇴장 후 (1회차) | **`1`** | **없음** | **ENEMY** | false |
+| 관전 중 (2회차) | `Neutral` | 있음 | NEUTRAL | true |
+| 퇴장 후 (2회차) | **`1`** | **없음** | **ENEMY** | false |
+
+- 퇴장 로그 `[Spectate] leave <uid> faction=removed` 2회.
+- 클라: `comp team=Neutral` → `nocomp` → `comp team=Neutral` → `nocomp` — 서버에서 뗀 컴포넌트가 클라에서도 사라진다.
+- 런타임 로그 1473줄 중 Error 0 · Warning 8 (Spectate/Faction 관련 0). 빌드 로그 147건 중 Warning 1 (SpectateService 관련 0 · 콘솔은 과거 항목도 보관).
+- Reimport All 뒤 `SpectateService.codeblock` 변경 없음 (새 property·메서드 없음).
+- ⚠️ 포탑 조건(`not IsSpectatorEntity and IsEnemy and FacilityMayHit`)은 실제 시설로 돌리지 못했다. 관전자·적대 두 항은 위 표로 확인됐고, `FacilityMayHit` 는 `PlayerComponent` 유무만 봐서 이번 변경과 무관하다.
+
+### Codex 리뷰 (2026-09-17 · 새 세션 2회 · 같은 프롬프트 · 결과 일치)
+
+| 질문 | 결과 |
+|---|---|
+| 퇴장 경로 3곳(`LeaveToLobby` · `OnUserLeave` · `ClearStragglers`) · 반복 진입/퇴장 | OK |
+| 플레이어에게 `script.Faction` 이 **있다고 가정**하는 코드 (후보 목록 · `.Faction.Team` 직접 접근) | OK — 없음 |
+| 플레이어 Faction 을 붙이거나 바꾸는 다른 경로 | OK — 없음 |
+| 새 코드 자체 | **지적 1건** — 원래 있던 컴포넌트의 팀이 `""` 이면 복원하지 않고 Neutral 로 남았다 |
+
+- 지적 반영: 복원 조건을 `prevTeam ~= ""` → `prevTeam ~= nil` 로 바꿔 빈 팀도 그대로 되돌린다 (한 줄).
+  플레이어에게는 원래 Faction 이 없고 붙이는 곳도 `Enter` 하나뿐이라 **지금 게임에서는 타지 않는 경로**다 → Play 재검증은 하지 않았다.
