@@ -201,11 +201,13 @@ script SkillCaster extends Logic
             return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)" })
         end
         -- MP 예측 게이트. 매직 가드(SK_M22) 활성 중엔 소모 ×1.5 (SkillBuffs 미러 · 서버 GetMpCostMul 과 같은 규칙).
-        -- 🔴 내림 위치를 서버 RequestCast 와 맞춘다. 예전엔 클라만 내림 없이 비교해서(예: 필요치 7.5 vs 서버 7)
-        --    같은 MP 로 클라는 막고 서버는 통과시키는 구간이 있었다 — 비용이 정수인 동안은 드러나지 않지만
-        --    배율이 붙어 소수가 나오는 순간 보인다. 두 식은 **항상** 같아야 한다.
-        local mpCost = math.floor(skill.mpCost)
-        if _SkillBuffs ~= nil then mpCost = math.floor(skill.mpCost * _SkillBuffs:LocalMpCostMul()) end
+        -- 🔴 식은 서버 RequestCast 와 **글자 그대로 같아야 한다**(재시전 배율 먼저 · 매직 가드 나중 · 내림 한 번).
+        --    갈라지면 클라가 통과시킨 시전을 서버가 "not enough MP" 로 튕기거나 그 반대가 된다.
+        --    내림 위치도 맞췄다 — 예전엔 클라만 내림 없이 비교해서(예: 7.5 vs 7) 서버보다 미세하게 엄했다.
+        local mpBase = skill.mpCost
+        if isRecast then mpBase = mpBase * skill.recastMpCostMul end
+        local mpCost = math.floor(mpBase)
+        if _SkillBuffs ~= nil then mpCost = math.floor(mpBase * _SkillBuffs:LocalMpCostMul()) end
         if _PlayerSkillState:LocalMp() < mpCost then
             return self:FinishCast(skillId, { ok = false, reason = "not enough MP (need " .. tostring(mpCost) .. ")" })
         end
@@ -398,9 +400,15 @@ script SkillCaster extends Logic
             local e = _SummonManager:GetEcon(uid)
             if e ~= nil then mp = e.mp or 0 end
         end
+        -- 🔴 비용 계산 순서: MpCost → (재시전이면) ×RecastMpCostMul → ×매직 가드 배율 → 내림 한 번.
+        --    재시전 배율을 **매직 가드보다 먼저** 곱한다. 곱셈은 교환법칙이 성립하고 내림이 끝에 한 번뿐이라
+        --    지금 값으로는 두 순서의 결과가 같지만, 중간에 내림이 끼는 순간 갈라진다 — 그때 어느 쪽이
+        --    맞는지 다투지 않도록 순서를 여기서 못 박는다. 아래 클라 예측(Cast)과 **같은 식**이어야 한다.
         -- 매직 가드(SK_M22) 활성 중엔 소모 ×1.5 (SkillBuffs.GetMpCostMul · 추가기획1 "스킬 사용 시 소모 MP 가 50% 증가").
-        local mpCost = math.floor(skill.mpCost)
-        if _SkillBuffs ~= nil then mpCost = math.floor(skill.mpCost * _SkillBuffs:GetMpCostMul(uid)) end
+        local mpBase = skill.mpCost
+        if isRecast then mpBase = mpBase * skill.recastMpCostMul end
+        local mpCost = math.floor(mpBase)
+        if _SkillBuffs ~= nil then mpCost = math.floor(mpBase * _SkillBuffs:GetMpCostMul(uid)) end
         if mp < mpCost then
             self:CastResult(skillId, false, "not enough MP (need " .. tostring(mpCost) .. ")", 0, castId, uid)
             return
