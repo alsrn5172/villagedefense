@@ -18,7 +18,7 @@ script SkillExecutors extends Logic
     --   PROJECTILE projectileDelayFromDuration(스나이핑 SK_A21)은 CSV Duration 만큼 선딜 뒤 발사 · projectilePreferBoss 는 보스 우선 조준 ·
     --              HitCount>1(더블 샷 SK_A11 · 럭키 세븐 SK_T11)은 볼리(SkillAttack.SpawnProjectile) · 스프라이트(ball)·hit 사운드는 effectOverrides/extraSounds.
     --   BLINK      닷지(SK_A22): 이동은 SkillMovement.TryDodge(스폰 로케이션) · 도착 확인 뒤 GUARANTEED_CRIT 버프(BuffTag 가 있는 BLINK 행).
-    --   BUFF_SELF  recastAttack(슈퍼 트랜스폼 SK_P21): 그 버프가 켜져 있는 동안의 재시전은 버프 갱신이 아니라 주먹 공격(ExecuteTransformPunch).
+    --   BUFF_SELF  recastAttack(에너지 차지 SK_P21): 그 버프가 켜져 있는 동안의 재시전은 버프 갱신이 아니라 주먹 공격(ExecuteTransformPunch).
     --              에너지 쉴드(SK_P22 · Duration 0)는 SkillBuffs 가 "깨질 때까지" 로 넣는다.
     --   ORIGIN     originModes: line(폭풍의 화살 SK_A31 · 앞쪽 직선 상자 관통) · meso(메소 익스플로전 SK_T31 · 반경 안 메소 동전 개수 × 50%) ·
     --              barrage(함포 사격 SK_P31 · HitCount 를 파로 나눈 연속 폭격). PreCheck(메소 동전 0 개 = 거절)는 SkillCaster 가 MP 앞에서 부른다.
@@ -129,8 +129,14 @@ script SkillExecutors extends Logic
     -- PROJECTILE 중 보스 우선 조준 (skillId -> true). 스나이핑 SK_A21.
     property table projectilePreferBoss = {}
 
-    -- BUFF_SELF 중 "그 버프가 켜져 있는 동안의 재시전 = 공격" 인 스킬 (skillId -> true). 슈퍼 트랜스폼 SK_P21.
+    -- BUFF_SELF 중 "그 버프가 켜져 있는 동안의 재시전 = 공격" 인 스킬 (skillId -> true). 에너지 차지 SK_P21.
     property table recastAttack = {}
+
+    -- 차지형 스킬 (skillId -> true). BuildHandlerTable 에서 채운다.
+    property table chargeSkills = {}
+
+    -- 레벨 구간 → 외형 티어 (BuildHandlerTable 에서 채운다). 구간을 옮기려면 그 표 한 줄만 고치면 된다.
+    property table chargeTiers = {}
 
     -- 함포 사격(barrage): HitCount 를 이만큼의 파로 나눈다 · 파 간격(초 · 몬스터 무적 0.4s 보다 길게) · 파마다 떨어지는 폭탄 연출 개수 · 폭탄 흩뿌림(반지름 비율).
     property integer BarrageWaves = 6
@@ -201,25 +207,6 @@ script SkillExecutors extends Logic
 
     property table shadowFacingTimers = {}
 
-    -- 서버: userId → 루프 자세 덮어쓰기(슈퍼 트랜스폼 달리기 · runPose): { startFrame, endFrame, offsetY, zRot } — 살피기 타이머가 넣고 PlayBuffLoop 가 읽는다. nil = 기본 자세.
-    property table loopPose = {}
-
-    -- 서버: userId → 달리기 감지 상태 { lastX, moving, phase / idx }.
-    property table runPoseState = {}
-
-    -- 서버: userId → 변신 form(sprite 엔티티) 살피기 타이머 id(EnsureFormPoll · 방향·걷기).
-    property table formPollTimers = {}
-
-    -- 변신 외형 sprite 세트(effectOverrides[skill].formSets 의 키): "custom" = B 가 만든 걷기 3장(계정 리소스) · "official" = 스크류 펀치 공식 프레임(반드시 불러와짐 · 걷기는 두 자세 교대).
-    -- 2026-09-14 "W 를 누르면 캐릭터가 사라진다" 는 계정 리소스 문제였고 그룹 리소스로 해결(custom 도 보인다 · MCP 검증). 같은 날 사용자 요청 "W 는 공식 애니메이션을 써라" → 기본 **official**
-    -- (스크류 펀치 effect 의 공식 프레임 1·2 교대). B 제작 걷기 3장을 쓰려면 "custom".
-    property string TransformFormSet = "official"
-
-    -- 변신 form 을 플레이어에 붙이는 방식(2026-09-14 제보 "변신 뒤 E 방울이 캐릭터보다 조금 늦게 따라온다"): "child" = 플레이어 **자식 엔티티**(클라 로컬 변환이라 지연 0 · 방울과 같은 기준) ·
-    -- "follow" = 맵 아래 + SkillProjectile.FollowTarget(서버가 매 프레임 옮김 · 왕복 지연만큼 늦게 따라와 방울과 어긋난다). ⑫ 때 "안 보인다" 는 계정 RUID 문제였지 자식 스폰 문제가 아니었으므로 child 로.
-    -- child 로 form 이 안 보이면 "follow" 로 한 칸.
-    property string TransformFormAttach = "child"
-
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
     property number BackflipDriftX = 0.35
@@ -246,9 +233,6 @@ script SkillExecutors extends Logic
 
     -- 클라: userId → 진행 중인 백덤블링 { t = Transform, pos = 원래 Position, rot = 원래 ZRotation, timer = 타이머 id, elapsed }. 연타면 이전 것을 원위치로 되돌리고 새로 돈다.
     property table backflipClientState = {}
-
-    -- 서버: userId → 컷신 뒤 슈퍼 트랜스폼 황금 불꽃 루프 복귀 타이머 id(HideTransformLoopFor).
-    property table transformRestoreTimers = {}
 
     -- Phase 7c: 실행기는 서버(SkillCaster.RequestCast)에서만 호출된다. 이펙트·사운드·타이머·스폰 전부 서버에서
     -- 재생/생성한다 (Boss/BossSkillRunner 와 같은 패턴). 클라 인스턴스의 테이블은 비어 있어도 된다.
@@ -363,7 +347,19 @@ script SkillExecutors extends Logic
             SK_A21 = true,
         }
         self.recastAttack = {
-            SK_P21 = true,        -- 슈퍼 트랜스폼: 변신 중 재시전 = 주먹
+            SK_P21 = true,        -- 에너지 차지: 차지 중 재입력 = 10연타 주먹
+        }
+        -- 차지형 스킬(1단 = 상태 진입 · 2단 = 상태 중 재입력 공격). 여기 있으면 ExecuteBuff 가 차지 경로로 간다.
+        self.chargeSkills = {
+            SK_P21 = true,
+        }
+        -- 🔴 **레벨 구간 → 외형 티어. 이 표 한 곳이 구간을 정한다** (2026-09-16 요청: 구간 이동은 한 줄 수정).
+        -- 위에서부터 보고 level <= maxLevel 인 첫 칸을 쓴다. 마지막 칸이 상한을 덮는다.
+        -- 티어 키는 effectOverrides[skill].tiers 의 키와 같아야 한다.
+        self.chargeTiers = {
+            { maxLevel = 2, key = "ENERGY" },
+            { maxLevel = 4, key = "SUPER" },
+            { maxLevel = 999, key = "ULTRA" },
         }
     end
 
@@ -520,56 +516,32 @@ script SkillExecutors extends Logic
                 --   2026-09-14 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서": driftX 0.35 = 회전 동안 소유 클라가 플레이어를 뒤로 0.35 유닛 옮긴다(착지 자리가 뒤). 속도는 그대로.
                 backflip = { delay = 0.08, seconds = 0.4, height = 0.45, centerY = 0.35, hitDelay = 0.2, spinFraction = 0.4, driftX = 0.35 },
             },
-            SK_P21 = {   -- 슈퍼 트랜스폼 — 변신: skill/40005.img/skill/400051004 라이트닝 폼 effect(194×223) + special(209×168) 루프 · 주먹: skill/40000.img/skill/400004139 스크류 펀치 effect(235×120) + hit(129×115)
-                -- 원작 슈퍼 트랜스포메이션(512.img/5121003)·트랜스포메이션(511.img/5111005)은 색인에 없다. 변신 외형은 SkillBuffs.SetAvatarTint(푸른 틴트) + 이 루프.
-                cast = { ruid = "69f4c5050b7945b5b42b987001134d76", noFlip = true },
-                -- 변신 외형(2026-09-13 사용자 요청 "원작 슈퍼 트랜스포메이션(황금 형태)처럼" → 제보 "캐릭터 자체가 빛나야지 머리를 덮는 이펙트는 안 된다" → "불꽃 이펙트는 빼고 캐릭터만 빛나게"):
-                --   원작 Morph 스프라이트(변신한 몸)는 MSW 라이브러리에 없다(검색 0). 루프 이펙트 없이 **아바타 틴트만** 쓴다 — SkillBuffs.SetAvatarTint 가 기본 금색(1.0/0.9/0.4)을 걸고,
-                --   tintPulse 가 a ↔ b 를 seconds 마다 왕복(StartTintPulse · SetColor 는 전 클라). b 는 1 을 넘는 값 — 엔진이 안 자르면 원래보다 밝은 금백색으로 빛나고(글로우), 자르면 (1,1,0.7) 연노랑 ↔ 금색 왕복.
-                --   분신 방식(쉐도우 파트너 팩 special/* 실루엣에 불꽃)은 실루엣이 검은 스프라이트라 금색이 안 되고(이펙트 Color 는 곱셈) "검게 타는 그림자" 가 되어 쓰지 않았다.
-                --   예전: 황금 불꽃 루프 bebd39c5…(카이저 61141006 mob/1/loop · 뒤 층 + 반투명 앞 겹) · 그전 라이트닝 폼 special 8fb4311e…(주황 고리).
-                -- tintPulse(황금 틴트 왕복)는 2026-09-13 "원래 캐릭터를 불꽃 캐릭터로 교체(원래 캐릭터는 안 보이게)" 요청으로 뺐다 — 아바타가 알파 0 이라 틴트가 보이지 않는다. 되돌리려면:
-                --   tintPulse = { a = { 1.0, 0.9, 0.4 }, b = { 1.8, 1.6, 0.7 }, seconds = 0.35 },
-                -- 2026-09-13 제보 "재시전 때 뜨는 불꽃 모양 캐릭터를 변신 기본 외형으로 · 재시전엔 앞쪽 공격 이펙트": 스크류 펀치 effect(4f97bf6a… · 10프레임)의 0~2프레임이 바로 그 **불타는 황금 캐릭터**
-                --   (88~92×112~120 · pivot (32,6)/(25,10)/(13,11) = 발 높이 · 거의 가운데 · 원작 슈퍼 트랜스포메이션 형태)이고 3~6프레임이 나선 펀치 궤적(384~424×128~140 · pivot x 78~95 = 앞쪽 끝 · 캐릭터 그림이 anchor 뒤 ≈3.1 유닛 —
-                --   원작은 앞으로 돌진한 끝 지점에 anchor 를 두므로 궤적이 출발점까지 뒤로 이어진다) · 7~9 는 흩어짐.
-                --   loop = 0~2프레임을 캐릭터에 붙여 반복(StartFrameIndex/EndFrameIndex · 그림이 왼쪽을 보므로 facing 에 따라 뒤집고 followFacing 으로 돌아설 때 다시 건다 · 아바타 위에 그린다 = 변신 외형).
-                --   avatarAlpha(2026-09-13 "원래 캐릭터를 불꽃 캐릭터로 교체" → 같은 날 타협 "원래 아바타는 희미하게 보이게"): 루프가 떠 있는 동안 AvatarRendererComponent.SetAlpha(avatarAlpha) — 전 클라 ·
-                --   RemoveBuffLoop(버프 종료·컷신 숨김)가 1 로 되돌린다. 0 이면 완전히 숨김(hideAvatar = true 와 같음). 희미한 아바타 덕에 주먹·백덤블링·걷기 모션이 불꽃 아래로 비친다.
-                --   원작 슈퍼 트랜스포메이션 대조(2026-09-13 "원작을 참고해 부자연스러운 부분 고쳐라"): ① 0프레임은 페이드인(희미)이라 0~2 반복이면 매 주기 어두워졌다 → **1~2 프레임만** 반복(원작 형태는 꺼지지 않는 불꽃) ·
-                --   ② 1~2프레임 pivot (25,10)/(13,11) 이 그림 왼쪽에 있어 불꽃 캐릭터의 가운데가 anchor 보다 21~29px **뒤**, 발이 10px **아래** 였다 → offsetX 0.25(바라보는 쪽 앞) · offsetY 0.1 로 아바타 위에 겹친다 ·
-                --   ③ 크기(≈1.15 유닛 · 아바타 0.7)는 원작처럼 커진 형태 그대로 · 방향은 followFacing · 속도/점프 +30% · 30초/쿨 60 은 표 그대로. 팩에 걷기/공격 프레임이 없어 이동 중엔 미끄러진다(한계).
-                --   2026-09-14 제보 "깜빡이면 안 된다(다시) · 원래 캐릭터는 지워라 · 좌우로 움직일 땐 다리가 걷는 것처럼": 이펙트(EffectService)는 자세·방향을 바꿀 때마다 지우고 다시 걸어야 해서 그 순간이 깜빡였다
-                --   (1↔2프레임 교대 = pivot 차이 12px 튐 · 달리기 되걸기 = 재생성). → **form**: 이펙트 대신 플레이어 **자식 sprite 엔티티**(model://skillprojectile · VisualOnly · Speed 0)를 변신 동안 하나만 두고
-                --   방향(SkillProjectile.SetDirection = Scale.x 부호)·자세(SpriteRUID 교체)·위치(Position)를 **속성만** 바꾼다 — 재생성이 없어 깜빡일 수 없다(SpawnBuffForm · EnsureFormPoll).
-                --   스프라이트 = 스크류 펀치 effect 1프레임(f30bf46b… 92×116)을 바탕으로 B 가 만든 3장(계정 리소스 · pivot 아래 가운데 · 걷기 = 다리 좌우 가위질 6px + 몸 2px 들썩): stand / walk_a / walk_b.
-                --   walk 순서 stand → a → stand → b(0.1s 마다 = 2.5걸음/s) · 멈추면 stand · 아바타는 완전히 숨김(avatarAlpha 0 · "원래 캐릭터를 지워라").
-                --   2026-09-14 제보 "W 를 누르면 캐릭터가 사라진다"(아바타는 숨겨졌는데 form 이 안 보임): 오프라인에서 못 가르는 원인 둘 — ① 플레이어 자식으로 스폰한 엔티티가 그려지지 않음 ② 계정 리소스 RUID 를 그룹 월드가 못 불러옴.
-                --   ① 은 없앴다: form 을 맵 아래에 스폰하고 SkillProjectile.FollowTarget 으로 매 프레임 플레이어를 따라간다(투사체와 같은 경로 · 그려지는 것이 확인된 방식). ② 는 TransformFormSet 으로 가른다:
-                --   "custom" = B 가 만든 걷기 3장(계정 리소스) · "official" = 스크류 펀치 effect 의 공식 프레임 sprite 1·2(반드시 불러와진다 · pivot 이 달라 ox/oy 로 보정 · 걷기는 두 자세 교대라 미묘).
-                --   sprite 항목 = { ruid, ox, oy } (ox = 바라보는 쪽 앞 보정 · oy = 발 높이 보정). 계정 리소스: pivot_x 0.5 / pivot_y 0.0 / Bilinear / Clamp · 이름 vd_pirate_transform_flame_* (stand b03dd531… · walk_a be02babc… · walk_b f5e29b96…).
-                --   2026-09-14 Play 로그 `[CLIENT] RUID(b03dd531…) is unavailable now.` = 계정 리소스는 이 그룹 월드에서 못 불러온다(A 의 a-npc-village-ui 조각과 같은 문제 · A 는 그룹 리소스 스토리지 groupCode mIYbC 로 해결).
-                --   → 같은 3장을 **그룹 리소스**(asset_create_group_resource_storage_item · mIYbC · 같은 pivot/필터)로 재업로드: stand 07864866… · walk_a 8fe698e1… · walk_b f4f9f956…. 계정 RUID(b03dd531/be02babc/f5e29b96)는 폐기.
-                --   2026-09-14 제보 "변신 중 캐릭터가 조금 투명하다": 공식 프레임 자체가 반투명(최대 알파 187/255 = 73% · 원작에선 캐릭터 위에 겹쳐 그리는 오버레이라서). → 같은 공식 1프레임의 알파를
-                --   ×1.364(255/187) 올린 사본을 그룹 리소스로 등록해 몸은 불투명·글로우는 그대로 연하게: stand_opaque 375952ad… · walk_a_opaque 1214d084… · walk_b_opaque a225555c…(gen_walk2.ps1 -AlphaBoost).
-                --   official 세트의 서 있기도 이 불투명 사본(그림은 공식 프레임 그대로 · pivot 아래 가운데라 ox/oy 0). 반투명 원본 RUID(07864866/8fe698e1/f4f9f956)는 예비.
-                formSets = {
-                    custom = { stand = { ruid = "375952add3fb402aa0328a27e2d44bf8", ox = 0, oy = 0 },
-                        walk = { { ruid = "1214d0843ed84c1ca7dd74e0f0e22eee", ox = 0, oy = 0 }, { ruid = "375952add3fb402aa0328a27e2d44bf8", ox = 0, oy = 0 },
-                                 { ruid = "a225555cf8c348bf8c8b10653c280697", ox = 0, oy = 0 }, { ruid = "375952add3fb402aa0328a27e2d44bf8", ox = 0, oy = 0 } },
-                        walkTick = 0.1, minStep = 0.02, offsetX = 0, offsetY = 0, scale = 1, avatarAlpha = 0 },
-                    -- 공식 프레임(2026-09-14 사용자 요청 "W 는 공식 애니메이션을 써라" → 기본 세트 = official): f30bf46b… 92×116 pivot (25,10) → 그림 가운데가 pivot 보다 22.5px 뒤(왼쪽 보는 그림 기준 오른쪽) · 발이 pivot 아래 5px /
-                    --   9bc8d968… 84×120 pivot (13,11) → 뒤 28.5px · 아래 6px. ox 는 ApplyFormSprite 가 facing 을 곱한다: 왼쪽(−1) → −0.225(왼쪽으로 당김) · 오른쪽(+1 · 뒤집힘) → +0.225 → 두 프레임 모두 그림 가운데 = 플레이어.
-                    --   2026-09-14 제보 "그냥 움직일 때 깜빡이면 안 된다": 두 공식 자세(1↔2프레임 · 팔·크기가 다름)를 0.1s 마다 교대하니 깜빡임으로 보였다 → official 은 **walk 없음**(움직여도 1프레임 한 장 고정 · 미끄러짐).
-                    --   다리가 걷는 모습이 필요하면 TransformFormSet = "custom"(B 제작 3장 · 같은 실루엣의 다리만 움직여 깜빡임이 아니라 걸음으로 읽힌다).
-                    --   서 있기 = 공식 1프레임의 불투명 사본(375952ad… · 그룹 리소스 · pivot 아래 가운데 → ox/oy 0). 팩 원본 sprite(f30bf46b… · ox 0.225 oy 0.05)는 73% 반투명이라 예비.
-                    official = { stand = { ruid = "375952add3fb402aa0328a27e2d44bf8", ox = 0, oy = 0 },
-                        walkTick = 0.1, minStep = 0.02, offsetX = 0, offsetY = 0, scale = 1, avatarAlpha = 0 },
+            SK_P21 = {   -- 에너지 차지(2026-09-16 · 슈퍼 트랜스폼 교체) — 레벨 구간마다 다른 팩을 쓴다. 구간 표는 chargeTiers 한 곳(BuildHandlerTable).
+                --   tiers[*].cast   차지 진입 때 시전자에게 1회 (팩의 effect/0)
+                --   tiers[*].loop   차지가 도는 동안 시전자에 부착 반복 (팩의 affected) — 지속시간이 끝나면 StopBuffLoop 가 지운다
+                --   tiers[*].special 예비(현재 미사용 · 팩에 함께 들어 있는 보조 클립)
+                -- 공격(2단 주먹)은 레벨과 무관하게 한 벌이다 — 피스트 인레이지 effect(356×200 · 10프레임) + hit/0(177×178 · 10프레임).
+                -- ⚠ 같은 팩의 effect0(66d87241c10743baab0f673ad4347454)은 **쓰지 않는다** — 우리 플레이어와 다른 변신 몸을 그린다.
+                tiers = {
+                    ENERGY = {   -- 에너지 차지 (lv1~2)
+                        cast = { ruid = "e6ca64c338b7450a9bfc6fa9b4ac9ad0", noFlip = true },
+                        loop = { ruid = "8639ccb0eb3242f686e1029418fd39d0", noFlip = true },
+                        special = "1dcea3e2e89248d7a8d25580c42230a3",
+                    },
+                    SUPER = {    -- 슈퍼 차지 (lv3~4)
+                        cast = { ruid = "016f0b3a34974f268cb9eaac61d142e5", noFlip = true },
+                        loop = { ruid = "16d8cedbc4af4f23a7ef35fc104f1746", noFlip = true },
+                        special = "131741196aa2474cbaf5bb2257250542",
+                    },
+                    ULTRA = {    -- 울트라 차지 (lv5)
+                        cast = { ruid = "2f9d1267ccd446adb0abd4f1ac040e77", noFlip = true },
+                        loop = { ruid = "18cdaebc99aa443b8020a85b32e7a239", noFlip = true },
+                        special = "3591203cf0fb4cbbb8e5701d0d33755e",
+                    },
                 },
-                --   punchCast = 3~6프레임(궤적만)을 앞으로 2.5 유닛 옮겨 재생 → 캐릭터 그림 부분이 시전자 위에 오고 궤적이 앞쪽 0~3.1 유닛(Range 3)으로 뻗는다(scale 0.8 · 306~329px × 0.8 ≈ 2.45~2.63). 예전엔 offset 0 이라
-                --   궤적이 캐릭터 뒤로 뻗고 불꽃 캐릭터가 3 유닛 뒤에 떴다.
-                punchCast = { ruid = "4f97bf6aecbc4687aa83e60e763aaf89", startFrame = 3, endFrame = 6, offsetX = 2.5, scale = 0.8 },
-                punchImpact = { ruid = "108745e2c8bb476a9855f716fd9adadd" },
+                -- 2단 주먹: 시전자에게 공격 이펙트 1회 + 맞은 대상마다 hit/0(SkillAttack.PendingImpactRuid).
+                punchCast = { ruid = "7995fc62d0944c5cab5a51180c3131c4" },
+                punchImpact = { ruid = "37463e8458fd46e9ad6898547f851136" },
             },
             SK_P22 = {   -- 에너지 쉴드 — 원작에 없는 스킬(해적에 보호막 스킬 없음). 2026-09-13 제보 "격자무늬(키네시스 싸이킥 실드) 말고 다른 것" → 제로 이뮨 배리어 skill/10112.img/skill/101120109(원작 보호막 방울 · 캐릭터를 감싸는 반투명 구):
                 --   cast = effect_ple/pre(방울이 생김 · 121×116 · 8프레임) · loop = effect_ple/loop(109×99 · 8프레임) · loopEnd = effect_ple/end(방울이 터짐 · 보호막 소진 때 StopBuffLoop 가 한 번) · 소리 Pre(castSounds)/End(extraSounds.finish).
@@ -614,7 +586,7 @@ script SkillExecutors extends Logic
             SK_T22 = "6c7c28167b9049419435cc53001cef0c",   -- 쉐도우 파트너 Use
             SK_T31 = "0fb09c17cade4f41895807a3154c6813",   -- 일도양단 (오디오 검색 1순위 · 2026-09-13 컷신 추가와 함께 · 예전 값 acb0f702… = 메소 익스플로젼 Hit)
             SK_P11 = "85398b7f1a5340469034ff1f67e6b412",   -- 써머솔트 킥 강화 400004134 Use (2026-09-13 · 예전 값 6010e41f… = 스트라이커 15001002 Use)
-            SK_P21 = "6642a39d3fae404cb334e24a93df6b58",   -- 라이트닝 폼 Use (변신)
+            SK_P21 = "6829607402014177967d41324a0b78ea",   -- 에너지 차지 진입(1단). 세 티어가 같이 쓴다 — ENERGY/ULTRA 팩엔 자체 오디오가 없다
             SK_P22 = "5d388814166742adabb883cb8ff1b96b",   -- 이뮨 배리어 101120109 Pre (2026-09-13 · 예전 값 668564fe… = 미하일 51111004 Use)
             SK_P31 = "38dd6c9b0c694158b8c1227bf16d6c0e",   -- 드레드노트 (오디오 검색 1순위)
         }
@@ -623,7 +595,7 @@ script SkillExecutors extends Logic
             SK_A21 = { hit = "81a8c21eaf31429aa21ccaa63afc1b35" },     -- 스나이핑 3221007 Hit (2026-09-13)
             SK_T11 = { hit = "48c2f4049db54b3b88b9144320d3d41a" },     -- 럭키 세븐 Hit
             SK_P11 = { hit = "1b54e03352ae4430ae39be54d2ee88f4" },     -- 써머솔트 킥 강화 400004134 Hit (2026-09-13 · 예전 값 8e7b0c6f… = 스트라이커 Hit)
-            SK_P21 = { punch = "80ad9290460845f18e49478784bcc1b1" },   -- 스크류 펀치 Use (변신 중 주먹)
+            SK_P21 = { punch = "1b6eedf4e6d14684abd96a444dfa59a7", hit = "6e58d1e3abc44a1ba059842159b7c035" },   -- 2단 주먹 시전 / 명중 (피스트 인레이지 · 티어 공용)
             SK_P22 = { finish = "26311ed71f6b47ec9e45f614aeaf1eeb" },  -- 이뮨 배리어 End (보호막이 터질 때 · StopBuffLoop 의 loopEnd 와 같이)
             SK_P31 = { wave = "8fd7da623fe54f359638e4004216440a" },    -- 배틀쉽 봄버 Attack1 (파마다)
         }
@@ -638,7 +610,7 @@ script SkillExecutors extends Logic
             log_warning("SkillExecutors: no executor registered for behavior='" .. behavior .. "' (skill=" .. skillId .. ")")
             return
         end
-        -- 모션 순서 id 는 실행기보다 **먼저** 정한다: 슈퍼 트랜스폼(SK_P21) 재시전(변신 중 주먹)은 변신 순서(_2 alert/_END stand)가 아니라 `SK_P21_RECAST`(순서 없음) —
+        -- 모션 순서 id 는 실행기보다 **먼저** 정한다: 에너지 차지(SK_P21) 재시전(변신 중 주먹)은 변신 순서(_2 alert/_END stand)가 아니라 `SK_P21_RECAST`(순서 없음) —
         -- ExecuteBuff 가 버프를 켠 뒤에 판정하면 첫 변신 시전도 재시전으로 보인다(b/skill-pirate-motion · 2026-09-13).
         local seqId = skillId
         if self:IsRecastCast(skillId, skillData, casterEntity) then seqId = skillId .. "_RECAST" end
@@ -648,7 +620,7 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method boolean IsRecastCast(string skillId, table skillData, Entity casterEntity)
-        -- 재시전 판정(슈퍼 트랜스폼 SK_P21 · recastAttack): 그 BuffTag 가 이미 켜져 있으면 이번 시전은 버프 갱신이 아니라 주먹 공격. ExecuteBuff(실행 분기)·Execute(모션 순서 id)가 같이 쓴다.
+        -- 재시전 판정(에너지 차지 SK_P21 · recastAttack): 그 BuffTag 가 이미 켜져 있으면 이번 시전은 버프 갱신이 아니라 주먹 공격. ExecuteBuff(실행 분기)·Execute(모션 순서 id)가 같이 쓴다.
         -- SkillCaster 의 isRecast(SkillBuffs.IsRecastActive · 쿨다운 게이트)와 같은 조건이다.
         if not self.recastAttack[skillId] or _SkillBuffs == nil or skillData == nil then return false end
         if skillData.buffTag == nil or skillData.buffTag == "" then return false end
@@ -928,8 +900,6 @@ script SkillExecutors extends Logic
                     -- 2026-09-14 제보 "W 뒤 E 를 누르면 캐릭터가 사라진다": 예전 기준 "scale + noFlip" 에 에너지 쉴드 방울 cast(scale 0.85 · noFlip)가 걸려 변신 form 을 5.5초 숨겼다 → 명시 필드로.
                     if stage == "cast" and spec.cutsceneSeconds ~= nil and isvalid(casterEntity.PlayerComponent) then
                         self:HideShadowFor(casterEntity.PlayerComponent.UserId, spec.cutsceneSeconds or self.CutsceneShadowHideSeconds)
-                        -- 슈퍼 트랜스폼 황금 불꽃 루프도 같은 이유로 컷신 동안 내린다(b/skill-pirate-motion · 함포 사격 R 을 변신 중에 쓸 때).
-                        self:HideTransformLoopFor(casterEntity.PlayerComponent.UserId, spec.cutsceneSeconds or self.CutsceneShadowHideSeconds)
                     end
                 else
                     local s = spec.scale or 1
@@ -968,11 +938,6 @@ script SkillExecutors extends Logic
             log("SkillExecutors: buff loop effect " .. skillId .. " skipped — shadow hidden by cutscene (" .. userId .. ")")
             return
         end
-        -- form(슈퍼 트랜스폼 · sprite 엔티티): 이펙트 루프 대신 SpawnBuffForm. 아래 loop 가 없으면 여기서 끝.
-        if entry.form ~= nil or entry.formSets ~= nil then
-            self:SpawnBuffForm(skillId, buffTag, casterEntity, duration)
-            if entry.loop == nil then return end
-        end
         -- 재시전이면 이전 것을 지운다(끝 연출 없음 · RemoveBuffLoop · 숨긴 아바타는 그대로 둔다 — 바로 다시 숨기므로 깜빡임 없음).
         self:RemoveBuffLoop(userId, buffTag, true)
         local perUser = self.buffLoopEffects[userId]
@@ -980,8 +945,6 @@ script SkillExecutors extends Logic
             perUser = {}
             self.buffLoopEffects[userId] = perUser
         end
-        -- tintPulse(슈퍼 트랜스폼 · "캐릭터 자체가 빛나게" · b/skill-pirate-motion): 루프 이펙트 없이 아바타 틴트를 두 색 사이에서 왕복. 루프가 없는 스킬도 여기까지는 온다.
-        if entry.tintPulse ~= nil then self:StartTintPulse(userId, buffTag, casterEntity, entry.tintPulse, duration, perUser) end
         if entry.loop == nil or entry.loop.ruid == nil then return end
         local spec = entry.loop
         local s = spec.scale or 1
@@ -990,18 +953,11 @@ script SkillExecutors extends Logic
         opt["FlipX"] = (facing > 0) and not spec.noFlip
         -- behindPlayer(분신 · facing 살피기까지) / sortBehind(슈퍼 트랜스폼 불꽃 · 층만 뒤로 · 좌우 대칭이라 살피기 없음): 플레이어 렌더 층 뒤에 그린다.
         if spec.behindPlayer or spec.sortBehind then self:ApplyShadowSorting(opt, casterEntity) end
-        -- startFrame/endFrame: 클립의 일부 프레임만 반복(슈퍼 트랜스폼 = 스크류 펀치 effect 의 불꽃 캐릭터). loopPose[userId](달리기 자세 · runPose)가 있으면 프레임·높이·기울기를 그것으로.
-        local pose = self.loopPose[userId]
+        -- startFrame/endFrame: 클립의 일부 프레임만 반복(쓰는 곳이 있으면).
         local startFrame = spec.startFrame
         local endFrame = spec.endFrame
         local offY = spec.offsetY or 0
         local zRot = 0
-        if pose ~= nil then
-            if pose.startFrame ~= nil then startFrame = pose.startFrame end
-            if pose.endFrame ~= nil then endFrame = pose.endFrame end
-            if pose.offsetY ~= nil then offY = pose.offsetY end
-            if pose.zRot ~= nil then zRot = pose.zRot * (facing > 0 and -1 or 1) end   -- 앞으로 기울기: 오른쪽을 볼 땐 시계(−) · 왼쪽은 반시계(+)
-        end
         if startFrame ~= nil then opt["StartFrameIndex"] = startFrame end
         if endFrame ~= nil then opt["EndFrameIndex"] = endFrame end
         local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, offY, 0), zRot, Vector3(s, s, 1), true, opt)
@@ -1078,22 +1034,6 @@ script SkillExecutors extends Logic
         local perUser = self.buffLoopEffects[userId]
         if perUser == nil then return false end
         local had = false
-        -- 버프 종료·컷신 숨김(keepAvatarHidden 아님)이면 달리기 자세 상태도 지운다(되걸 때 기본 자세부터).
-        if not keepAvatarHidden then
-            self.loopPose[userId] = nil
-            self.runPoseState[userId] = nil
-        end
-        -- form(자식 sprite 엔티티): 지우고 살피기 타이머도 끝낸다.
-        local form = perUser[buffTag .. "#form"]
-        if form ~= nil then
-            if isvalid(form) then form:Destroy() end
-            perUser[buffTag .. "#form"] = nil
-            perUser[buffTag .. "#formFacing"] = nil
-            local pid = self.formPollTimers[userId]
-            if pid ~= nil then _TimerService:ClearTimer(pid) end
-            self.formPollTimers[userId] = nil
-            had = true
-        end
         if perUser[buffTag .. "#hidden"] then
             had = true
             if not keepAvatarHidden then
@@ -1123,190 +1063,6 @@ script SkillExecutors extends Logic
         perUser[buffTag] = nil
         log("SkillExecutors: buff loop effect stopped " .. buffTag .. " serial=" .. tostring(serial) .. " (" .. userId .. ")")
         return true
-    end
-
-    method any GetFormSpec(string skillId)
-        -- 변신 외형 spec: effectOverrides[skill].formSets[TransformFormSet](없으면 첫 키) 또는 예전 form. 없으면 nil.
-        local entry = self.effectOverrides[skillId]
-        if entry == nil then return nil end
-        if entry.formSets ~= nil then
-            local s = entry.formSets[self.TransformFormSet]
-            if s == nil then
-                for _, v in pairs(entry.formSets) do s = v break end
-            end
-            return s
-        end
-        return entry.form
-    end
-
-    method any FormSprite(any item)
-        -- sprite 항목 정규화: 문자열이면 { ruid, ox 0, oy 0 }, 표면 그대로.
-        if item == nil then return nil end
-        if type(item) == "string" then return { ruid = item, ox = 0, oy = 0 } end
-        return item
-    end
-
-    @ExecSpace("ServerOnly")
-    method void ApplyFormSprite(Entity fx, table spec, table item, number facing)
-        -- form 에 sprite 한 장을 적용: SpriteRUID(다르면) + 따라가기 오프셋(FollowOffsetX = (offsetX + ox) × facing · FollowOffsetY = offsetY + oy). 전부 속성 변경.
-        if not isvalid(fx) or item == nil then return end
-        local sprite = fx.SpriteRendererComponent
-        if isvalid(sprite) and item.ruid ~= nil and item.ruid ~= "" and sprite.SpriteRUID ~= item.ruid then sprite.SpriteRUID = item.ruid end
-        local ox = ((spec.offsetX or 0) + (item.ox or 0)) * facing
-        local oy = (spec.offsetY or 0) + (item.oy or 0)
-        local mover = fx:GetComponent("script.SkillProjectile")
-        if isvalid(mover) and mover.FollowTarget ~= nil then
-            -- follow 방식: 서버 OnUpdate 가 대상 + 오프셋으로 옮긴다.
-            mover.FollowOffsetX = ox
-            mover.FollowOffsetY = oy
-        elseif isvalid(fx.TransformComponent) then
-            -- child 방식: 플레이어 자식이라 로컬 Position 이 곧 오프셋.
-            fx.TransformComponent.Position = Vector3(ox, oy, 0)
-        end
-    end
-
-    @ExecSpace("ServerOnly")
-    method void SpawnBuffForm(string skillId, string buffTag, Entity casterEntity, number duration)
-        -- 변신 외형(슈퍼 트랜스폼 · b/skill-pirate-motion · 2026-09-14 "깜빡이면 안 된다 · 원래 캐릭터는 지워라 · 걷는 다리"): GetFormSpec 의 sprite 를 **맵 아래**에 하나 스폰해(model://skillprojectile =
-        -- SpriteRenderer + script.SkillProjectile · VisualOnly · Speed 0 · MaxLifetime = 안전망) SkillProjectile.FollowTarget 으로 매 프레임 플레이어를 따라가게 한다(투사체와 같은 경로 · "W 를 누르면 사라진다" 제보 뒤
-        -- 플레이어 자식 스폰에서 바꿈). 방향은 SetDirection(Scale.x 부호 · 팩 그림은 왼쪽을 본다), 자세는 SpriteRUID 교체(stand ↔ walk[]), 위치는 Follow 오프셋 — 전부 동기화 속성이라 재생성이 없고
-        -- 깜빡이지 않는다. 아바타는 avatarAlpha(0 = 완전히 숨김)로. 버프 종료·재시전은 RemoveBuffLoop 가 지운다.
-        local spec = self:GetFormSpec(skillId)
-        if spec == nil then return end
-        local stand = self:FormSprite(spec.stand)
-        if stand == nil or stand.ruid == nil or stand.ruid == "" then return end
-        if not isvalid(casterEntity.PlayerComponent) or not isvalid(casterEntity.TransformComponent) then return end
-        local map = casterEntity.CurrentMap
-        if not isvalid(map) then return end
-        local userId = casterEntity.PlayerComponent.UserId
-        self:RemoveBuffLoop(userId, buffTag, true)
-        local perUser = self.buffLoopEffects[userId]
-        if perUser == nil then
-            perUser = {}
-            self.buffLoopEffects[userId] = perUser
-        end
-        local facing = self:GetFacingX(casterEntity)
-        self.spriteFlashCount = self.spriteFlashCount + 1
-        local name = "SkillForm_" .. userId .. "_" .. buffTag .. "_" .. tostring(self.spriteFlashCount)
-        local pos = casterEntity.TransformComponent.WorldPosition
-        -- 붙이는 방식(TransformFormAttach): child = 플레이어 자식(지연 0) · follow = 맵 아래 + FollowTarget(서버 왕복 지연).
-        local asChild = (self.TransformFormAttach == "child")
-        local parent = map
-        if asChild then parent = casterEntity end
-        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", name, Vector3(pos.x, pos.y, pos.z), parent)
-        if not isvalid(fx) then
-            log_warning("SkillExecutors: buff form spawn failed " .. skillId .. " (" .. userId .. ")")
-            return
-        end
-        local mover = fx:GetComponent("script.SkillProjectile")
-        if isvalid(mover) then
-            mover.VisualOnly = true
-            mover.Speed = 0
-            mover.MaxLifetime = duration + 2
-            mover.SkillId = skillId
-            if not asChild then mover.FollowTarget = casterEntity end
-        end
-        local s = spec.scale or 1
-        if s <= 0 then s = 1 end
-        fx.TransformComponent.Scale = Vector3(s, s, 1)
-        if isvalid(mover) then mover:SetDirection(facing) end
-        self:ApplyFormSprite(fx, spec, stand, facing)
-        perUser[buffTag .. "#form"] = fx
-        perUser[buffTag .. "#formFacing"] = facing
-        local dimAlpha = spec.avatarAlpha
-        if dimAlpha ~= nil and isvalid(casterEntity.AvatarRendererComponent) then
-            if not perUser[buffTag .. "#hidden"] then
-                casterEntity.AvatarRendererComponent:SetAlpha(dimAlpha)
-            end
-            perUser[buffTag .. "#hidden"] = true
-        end
-        self.runPoseState[userId] = nil
-        self:EnsureFormPoll(userId, skillId, buffTag)
-        log("SkillExecutors: buff form " .. skillId .. " " .. buffTag .. " set=" .. tostring(self.TransformFormSet) .. " ruid=" .. tostring(stand.ruid) .. " facing=" .. tostring(facing) .. " avatarAlpha=" .. tostring(dimAlpha) .. " attach=" .. tostring(self.TransformFormAttach) .. " for " .. tostring(duration) .. "s (" .. userId .. ")")
-    end
-
-    @ExecSpace("ServerOnly")
-    method void EnsureFormPoll(string uid, string skillId, string buffTag)
-        -- form 살피기(walkTick 마다 · 기본 0.1s): ① facing 이 바뀌면 SetDirection + offsetX 부호 ② x 가 minStep 이상 움직였으면 walk[] 를 한 장씩 돌리고(다리가 걷는다) 멈추면 stand.
-        -- 전부 속성 변경(재생성 없음). 버프가 끝나거나 form 이 사라지면 타이머가 스스로 멈춘다. 컷신 숨김(HideTransformLoopFor · Visible false) 중에도 자세는 계속 맞춘다(보이지 않을 뿐).
-        if self.formPollTimers[uid] ~= nil then return end
-        local spec = self:GetFormSpec(skillId)
-        if spec == nil then return end
-        local interval = spec.walkTick or self.ShadowFacingPollSeconds
-        if interval <= 0 then interval = 0.1 end
-        self.formPollTimers[uid] = _TimerService:SetTimerRepeat(function()
-            local buff = nil
-            if _SkillBuffs ~= nil then buff = _SkillBuffs:GetBuff(uid, buffTag) end
-            local perUser = self.buffLoopEffects[uid]
-            local fx = nil
-            if perUser ~= nil then fx = perUser[buffTag .. "#form"] end
-            if buff == nil or fx == nil or not isvalid(fx) then
-                local id = self.formPollTimers[uid]
-                if id ~= nil then _TimerService:ClearTimer(id) end
-                self.formPollTimers[uid] = nil
-                self.runPoseState[uid] = nil
-                return
-            end
-            local player = _UserService:GetUserEntityByUserId(uid)
-            if not isvalid(player) or not isvalid(player.TransformComponent) or not isvalid(fx.TransformComponent) then return end
-            local facing = self:GetFacingX(player)
-            local turned = (facing ~= perUser[buffTag .. "#formFacing"])
-            if turned then
-                perUser[buffTag .. "#formFacing"] = facing
-                local mover = fx:GetComponent("script.SkillProjectile")
-                if isvalid(mover) then mover:SetDirection(facing) end
-            end
-            local x = player.TransformComponent.WorldPosition.x
-            local st = self.runPoseState[uid]
-            if st == nil then
-                st = { lastX = x, moving = false, idx = 0 }
-                self.runPoseState[uid] = st
-            end
-            local moving = math.abs(x - st.lastX) > (spec.minStep or 0.02)
-            st.lastX = x
-            local item = nil
-            if moving and spec.walk ~= nil and #spec.walk > 0 then
-                st.idx = (st.idx % #spec.walk) + 1
-                st.moving = true
-                item = self:FormSprite(spec.walk[st.idx])
-            elseif st.moving then
-                st.moving = false
-                st.idx = 0
-                item = self:FormSprite(spec.stand)
-            elseif turned then
-                -- 돌아섰을 때 서 있는 자세의 오프셋 부호를 새 방향으로.
-                item = self:FormSprite(spec.stand)
-            end
-            if item ~= nil then self:ApplyFormSprite(fx, spec, item, facing) end
-        end, interval)
-    end
-
-    @ExecSpace("ServerOnly")
-    method void StartTintPulse(string userId, string buffTag, Entity casterEntity, table spec, number duration, table perUser)
-        -- 슈퍼 트랜스폼 "캐릭터 자체가 빛나게"(2026-09-13 사용자 요청 · 불꽃 이펙트 제거 · b/skill-pirate-motion): 아바타 틴트를 spec.a ↔ spec.b 사이에서 spec.seconds 마다 왕복
-        -- (AvatarRendererComponent.SetColor · Client 메서드라 서버에서 부르면 전 클라 · SkillBuffs.SetAvatarAlpha 와 같은 경로). 기본 틴트는 SkillBuffs.SetAvatarTint 가 버프 시작·종료에 건다(종료 = 흰색).
-        -- perUser[태그 .. "#pulse"] 에 타이머를 두고 RemoveBuffLoop 가 지운다 · duration 뒤 스스로 멈춘다.
-        if not isvalid(casterEntity) or not isvalid(casterEntity.AvatarRendererComponent) then return end
-        local a = spec.a or { 1, 1, 1 }
-        local b = spec.b or a
-        local period = spec.seconds or 0.35
-        if period <= 0 then period = 0.35 end
-        local phase = false
-        local id = _TimerService:SetTimerRepeat(function()
-            if not isvalid(casterEntity) or not isvalid(casterEntity.AvatarRendererComponent) then return end
-            phase = not phase
-            local c = a
-            if phase then c = b end
-            casterEntity.AvatarRendererComponent:SetColor(c[1], c[2], c[3], 1)
-        end, period)
-        perUser[buffTag .. "#pulse"] = id
-        _TimerService:SetTimerOnce(function()
-            if perUser[buffTag .. "#pulse"] == id then
-                _TimerService:ClearTimer(id)
-                perUser[buffTag .. "#pulse"] = nil
-            end
-        end, duration)
-        log("SkillExecutors: tint pulse " .. buffTag .. " every " .. tostring(period) .. "s for " .. tostring(duration) .. "s (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -1355,8 +1111,6 @@ script SkillExecutors extends Logic
                 if id ~= nil then _TimerService:ClearTimer(id) end
                 self.shadowFacingTimers[uid] = nil
                 self.shadowFacing[uid] = nil
-                self.loopPose[uid] = nil
-                self.runPoseState[uid] = nil
                 return
             end
             if self:IsShadowHidden(uid) then return end
@@ -1366,35 +1120,7 @@ script SkillExecutors extends Logic
             if not isvalid(player) or not isvalid(player.TransformComponent) then return end
             local facing = self:GetFacingX(player)
             local turned = (facing ~= self.shadowFacing[uid])
-            -- 달리기 자세(runPose · 슈퍼 트랜스폼 · 2026-09-14 "달릴 땐 불꽃 캐릭터도 달리는 것처럼"): 살피기 간격 동안 x 가 minStep 이상 움직였으면 달리는 중 → 틱마다 phase 를 바꿔
-            -- 1~2프레임 교대 + bobY 위아래 + leanDeg 앞 기울기로 되건다(PlayBuffLoop 가 loopPose 를 읽는다). 멈추면 기본 자세(한 장)로 한 번 되건다. 컷신 숨김 중(루프 없음)은 위에서 이미 나갔다.
-            local poseChanged = false
-            local entry = self.effectOverrides[skillId]
-            local runSpec = nil
-            if entry ~= nil and entry.loop ~= nil then runSpec = entry.loop.runPose end
-            if runSpec ~= nil then
-                local x = player.TransformComponent.WorldPosition.x
-                local st = self.runPoseState[uid]
-                if st == nil then
-                    st = { lastX = x, moving = false, phase = false }
-                    self.runPoseState[uid] = st
-                end
-                local moving = math.abs(x - st.lastX) > (runSpec.minStep or 0.02)
-                st.lastX = x
-                if moving then
-                    st.phase = not st.phase
-                    st.moving = true
-                    local bob = 0
-                    if st.phase then bob = runSpec.bobY or 0 end
-                    self.loopPose[uid] = { startFrame = runSpec.startFrame, endFrame = runSpec.endFrame, offsetY = (entry.loop.offsetY or 0) + bob, zRot = runSpec.leanDeg or 0 }
-                    poseChanged = true
-                elseif st.moving then
-                    st.moving = false
-                    self.loopPose[uid] = nil
-                    poseChanged = true
-                end
-            end
-            if not turned and not poseChanged then return end
+            if not turned then return end
             local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
             if remain <= 0 then return end
             if turned then
@@ -1458,45 +1184,6 @@ script SkillExecutors extends Logic
         self.shadowHiddenUntil[uid] = _UtilLogic.ServerElapsedSeconds + seconds
         self:ScheduleShadowRestore(uid, seconds)
         log("SkillExecutors: shadow hidden for cutscene " .. tostring(seconds) .. "s (" .. uid .. ")")
-    end
-
-    @ExecSpace("ServerOnly")
-    method void HideTransformLoopFor(string uid, number seconds)
-        -- 화면 컷신 동안 슈퍼 트랜스폼(SK_P21 · SUPER_TRANSFORM) 황금 불꽃 루프를 내리고, 끝나면 남은 버프 시간만큼 다시 건다(b/skill-pirate-motion · 분신 HideShadowFor 와 같은 이유:
-        -- 부착 루프는 컷신 위에 그려진다). 버프가 없으면 아무것도 안 한다. 아바타 황금 틴트는 그대로(컷신이 덮는다). 가장 최근 예약만 남긴다.
-        if _SkillBuffs == nil or uid == nil or uid == "" or seconds == nil or seconds <= 0 then return end
-        local tag = _SkillBuffs.TagSuperTransform
-        if _SkillBuffs:GetBuff(uid, tag) == nil then return end
-        -- form(자식 sprite 엔티티)이면 지우지 않고 Visible 만 끈다(재생성 없음) · 예전 이펙트 루프면 내렸다가 컷신 뒤 PlayBuffLoop 로 되건다.
-        local perUser = self.buffLoopEffects[uid]
-        local form = nil
-        if perUser ~= nil then form = perUser[tag .. "#form"] end
-        if form ~= nil and isvalid(form) then
-            form:SetVisible(false, false, true)
-        else
-            -- 컷신이 아바타를 덮으므로 아바타를 다시 보여도 무방 — 컷신 뒤 PlayBuffLoop 복귀가 다시 숨긴다.
-            self:RemoveBuffLoop(uid, tag, false)
-        end
-        local prev = self.transformRestoreTimers[uid]
-        if prev ~= nil then _TimerService:ClearTimer(prev) end
-        self.transformRestoreTimers[uid] = _TimerService:SetTimerOnce(function()
-            self.transformRestoreTimers[uid] = nil
-            local player = _UserService:GetUserEntityByUserId(uid)
-            if not isvalid(player) or _SkillBuffs == nil then return end
-            local buff = _SkillBuffs:GetBuff(uid, tag)
-            if buff == nil then return end
-            local pu = self.buffLoopEffects[uid]
-            local f = nil
-            if pu ~= nil then f = pu[tag .. "#form"] end
-            if f ~= nil and isvalid(f) then
-                f:SetVisible(true, false, true)
-                return
-            end
-            local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
-            if remain <= 0 then return end
-            self:PlayBuffLoop("SK_P21", tag, player, remain)
-        end, seconds)
-        log("SkillExecutors: transform loop hidden for cutscene " .. tostring(seconds) .. "s (" .. uid .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -1734,16 +1421,21 @@ script SkillExecutors extends Logic
         -- BUFF_SELF / BUFF_ALLY. 시각·사운드 뒤 버프 원장에 BuffTag 를 켠다(SkillBuffs.ApplyBuff · Duration = DurationAt).
         -- 매직 가드(SK_M22 · MAGIC_GUARD): 효과는 SkillBuffs 가 조회 시점에 푼다 — 피격 흡수(AbsorbDamage · A 의 PlayerHit 연결 대기),
         -- 공격 시 현재 MP % 추가 피해(SkillDatabase.DamageAt), 스킬 MP 소모 ×1.5(SkillCaster). BUFF_ALLY 의 대상 확장은 후속.
-        -- 슈퍼 트랜스폼(SK_P21 · recastAttack): 변신(SUPER_TRANSFORM)이 켜져 있는 동안의 재시전은 버프 갱신이 아니라 주먹 공격(ExecuteTransformPunch).
+        -- 에너지 차지(SK_P21 · recastAttack): 차지(ENERGY_CHARGE)가 켜져 있는 동안의 재시전은 버프 갱신이 아니라 주먹 공격(ExecuteTransformPunch).
         local uid = ""
         if isvalid(casterEntity.PlayerComponent) then uid = casterEntity.PlayerComponent.UserId end
         if self:IsRecastCast(skillId, skillData, casterEntity) then
-            self:ExecuteTransformPunch(skillId, skillData, casterEntity, level)
+            self:ExecuteChargePunch(skillId, skillData, casterEntity, level)
             return
         end
 
         local pos = casterEntity.TransformComponent.WorldPosition
-        self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
+        -- 차지형(에너지 차지)은 연출이 레벨 구간마다 다르다 → 티어 표를 거쳐 재생한다. 나머지는 예전 그대로.
+        if self.chargeSkills[skillId] then
+            self:PlayChargeEnter(skillId, casterEntity, level)
+        else
+            self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Buff)
+        end
         self:PlayCastSound(skillId, casterEntity)
 
         if skillData.buffTag == nil or skillData.buffTag == "" then
@@ -1762,20 +1454,98 @@ script SkillExecutors extends Logic
         _SkillBuffs:ApplyBuff(uid, skillId, skillData.buffTag, level, duration)
         -- Duration 0(에너지 쉴드 = 깨질 때까지)은 SkillBuffs 가 NoExpireSeconds 로 넣는다 — 루프도 같은 길이(조기 종료는 StopBuffLoop).
         if duration <= 0 then duration = _SkillBuffs.NoExpireSeconds end
-        self:PlayBuffLoop(skillId, skillData.buffTag, casterEntity, duration)
+        if self.chargeSkills[skillId] then
+            self:PlayChargeLoop(skillId, skillData.buffTag, casterEntity, level, duration)
+        else
+            self:PlayBuffLoop(skillId, skillData.buffTag, casterEntity, duration)
+        end
+    end
+
+    method any ChargeTierSpec(string skillId, number level)
+        -- 레벨 → 그 구간의 티어 자산 묶음. 구간 자체는 chargeTiers 한 곳에서만 정의된다(BuildHandlerTable).
+        local entry = self.effectOverrides[skillId]
+        if entry == nil or entry.tiers == nil then return nil end
+        for _, row in ipairs(self.chargeTiers) do
+            if level <= row.maxLevel then return entry.tiers[row.key] end
+        end
+        return nil
+    end
+
+    method string ChargeTierKey(string skillId, number level)
+        -- 로그용 티어 이름. 구간 판정은 ChargeTierSpec 과 같은 표를 본다.
+        for _, row in ipairs(self.chargeTiers) do
+            if level <= row.maxLevel then return row.key end
+        end
+        return "?"
     end
 
     @ExecSpace("ServerOnly")
-    method void ExecuteTransformPunch(string skillId, table skillData, Entity casterEntity, number level)
-        -- 슈퍼 트랜스폼(SK_P21) 변신 중 재시전: "전방의 다수 적에게 주먹 공격" — 앞쪽 Range(3) × MeleeArcHeight 상자 안 전부에 BaseEffect 300~500%(HitCount 회).
-        -- 쿨다운·버프는 건드리지 않는다(SkillCaster 가 재시전 게이트로 넘겼다). 연출 = punchCast(시전자 부착 · 스크류 펀치) · punchImpact(맞은 대상마다) · punch 사운드.
+    method void PlayChargeEnter(string skillId, Entity casterEntity, number level)
+        -- 1단: 그 레벨 티어의 진입 이펙트를 시전자에게 **1회**. 피해는 없다.
+        local tier = self:ChargeTierSpec(skillId, level)
+        if tier == nil or tier.cast == nil or tier.cast.ruid == nil then
+            log_warning("SkillExecutors: no charge tier cast spec for " .. skillId .. " lv" .. tostring(level))
+            return
+        end
+        local spec = tier.cast
+        local s = spec.scale or 1
+        local facing = self:GetFacingX(casterEntity)
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0),
+            0, Vector3(s, s, 1), false, opt)
+        log("SkillExecutors: CHARGE enter " .. skillId .. " tier=" .. self:ChargeTierKey(skillId, level) .. " lv" .. tostring(level))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayChargeLoop(string skillId, string buffTag, Entity casterEntity, number level, number duration)
+        -- 차지가 도는 동안 티어의 affected 클립을 시전자에 붙여 반복한다. 기록은 PlayBuffLoop 과 **같은 자리**
+        -- (buffLoopEffects[userId][buffTag])라서 종료 정리는 StopBuffLoop/RemoveBuffLoop 가 그대로 처리한다.
+        if not isvalid(casterEntity.PlayerComponent) then return end
+        local userId = casterEntity.PlayerComponent.UserId
+        local tier = self:ChargeTierSpec(skillId, level)
+        if tier == nil or tier.loop == nil or tier.loop.ruid == nil then
+            log_warning("SkillExecutors: no charge tier loop spec for " .. skillId .. " lv" .. tostring(level))
+            return
+        end
+        -- 재입력으로 갱신되는 경우 이전 루프를 먼저 지운다(끝 연출 없음).
+        self:RemoveBuffLoop(userId, buffTag, true)
+        local perUser = self.buffLoopEffects[userId]
+        if perUser == nil then
+            perUser = {}
+            self.buffLoopEffects[userId] = perUser
+        end
+        local spec = tier.loop
+        local s = spec.scale or 1
+        local facing = self:GetFacingX(casterEntity)
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity,
+            Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
+        perUser[buffTag] = serial
+        _TimerService:SetTimerOnce(function()
+            if perUser[buffTag] == serial then
+                _EffectService:RemoveEffect(serial)
+                perUser[buffTag] = nil
+            end
+        end, duration)
+        log("SkillExecutors: CHARGE loop " .. skillId .. " tier=" .. self:ChargeTierKey(skillId, level)
+            .. " serial=" .. tostring(serial) .. " for " .. tostring(duration) .. "s (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteChargePunch(string skillId, table skillData, Entity casterEntity, number level)
+        -- 2단: 차지가 도는 동안의 재입력. 앞쪽 Range × MeleeArcHeight 상자 안 **적 전부**에게 HitCount(10)연타.
+        -- 상태·쿨다운은 건드리지 않는다 — 상태는 소모되지 않고(지속시간 내내 반복), 쿨다운은 상태가 끝날 때
+        -- SkillBuffs.EndChargeState 가 건다. 같은 키 연타는 SkillCaster 의 시전 락(공격 클립 길이)이 삼킨다.
+        -- 연출은 레벨과 무관하게 한 벌: punchCast(시전자 부착) · punchImpact(맞은 대상마다 · SkillAttack.OnAttack).
         local pos = casterEntity.TransformComponent.WorldPosition
         self:PlayStageEffect(skillId, "punchCast", casterEntity, pos, nil)
         self:PlaySoundRuid(self:GetExtraSound(skillId, "punch"), casterEntity, pos)
 
         local skillAttack = casterEntity:GetComponent("script.SkillAttack")
         if not isvalid(skillAttack) then
-            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping punch for " .. skillId)
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping charge punch for " .. skillId)
             return
         end
         local dirX = self:GetFacingX(casterEntity)
@@ -1784,12 +1554,14 @@ script SkillExecutors extends Logic
         local hitCount = skillData.hitCount
         if hitCount <= 0 then hitCount = 1 end
         skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "punchImpact")
+        skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
         skillAttack:DealSkillDamage(skillId, level, {
             posX = pos.x + dirX * range / 2, posY = pos.y + self.MeleeArcHeight / 2,
             sizeX = range, sizeY = self.MeleeArcHeight,
             hitCount = hitCount,
         })
-        log("SkillExecutors: TRANSFORM PUNCH " .. skillId .. " range=" .. tostring(range) .. " dir=" .. tostring(dirX) .. " lv=" .. tostring(level))
+        log("SkillExecutors: CHARGE PUNCH " .. skillId .. " range=" .. tostring(range) .. " dir=" .. tostring(dirX)
+            .. " hits=" .. tostring(hitCount) .. " lv=" .. tostring(level))
     end
 
     @ExecSpace("ServerOnly")
