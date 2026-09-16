@@ -133,7 +133,8 @@ const CANONICAL = {
   SkillInfo:
     "SkillId,Tab,SlotOrder,SkillName,IconRUID,Description,MaxLevel,SpCost,EffectPerLevel,Cooldown," +
     "ReqJob,ReqTier,ReqLevel,Behavior,MpCost,BaseEffect,Range,Speed,Duration,HitCount,UseLimit," +
-    "EffectUnit,MaxStack,SecondaryEffect,SecondaryPerLevel,DurationPerLevel,CooldownPerLevel,BuffTag,SpawnOffsetY,#Note",
+    "EffectUnit,MaxStack,SecondaryEffect,SecondaryPerLevel,TertiaryEffect,TertiaryPerLevel," +
+    "DurationPerLevel,CooldownPerLevel,BuffTag,SpawnOffsetY,#Note",
   JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
   JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
 };
