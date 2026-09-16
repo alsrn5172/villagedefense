@@ -21,6 +21,10 @@ script TurretAI extends Component
 	-- true 면 표적을 따라 몸을 돌리지 않는다 (레인 포탑 · 사용자 2026-09-09). 공격 상자가 좌우 대칭이라 사거리는 그대로다.
 	property boolean FixedFacing = false
 
+	-- 사거리 원점 y 보정. 시설은 트랜스폼이 바닥보다 GroundOffset 위라 −GroundOffset(= 바닥)으로 잰다 — 안 그러면 세로 거리가 사거리를 잡아먹어
+	-- 키 큰 새 아트(엘리니아 포탑 1.77)가 바로 앞 달팽이도 못 겨눴다(2026-09-15). LaneFacilityService.ApplyCombat 이 넣는다.
+	property number RangeOffsetY = 0
+
 	@HideFromInspector
 	property string CurrentState = "IDLE"
 
@@ -80,13 +84,16 @@ script TurretAI extends Component
 
 	@ExecSpace("ServerOnly")
 	method boolean IsDeadEntity(Entity target)
-		-- 죽은 대상인지 확인한다. Monster 가 없는 대상(플레이어 등)은 살아있는 것으로 본다.
+		-- 죽은 대상인지 확인한다: 몬스터 Monster.IsDead · 플레이어 PlayerComponent:IsDead() (사망·리스폰 중 계속 겨누던 것 · Codex 리뷰 2026-09-14).
 		---@type Monster
 		local monster = target.Monster
 		if isvalid(monster) then
 			return monster.IsDead
 		end
-		
+		local pc = target.PlayerComponent
+		if isvalid(pc) then
+			return pc:IsDead()
+		end
 		return false
 	end
 
@@ -104,7 +111,8 @@ script TurretAI extends Component
 			return nil
 		end
 		local myPos = myTransform.WorldPosition
-		
+		local originY = myPos.y + self.RangeOffsetY
+
 		local candidates = {}
 		
 		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
@@ -132,15 +140,18 @@ script TurretAI extends Component
 		local best = nil
 		local bestDist = self.AttackRange * self.AttackRange
 		local bestIsMinion = false
+		-- 시설은 플레이어·미니언만 겨눈다 (사용자 2026-09-14 · 야생 몹 제외 · 시설끼리 제외). 규칙은 FactionAttack.FacilityMayHit 한 곳.
+		---@type FactionAttack
+		local atk = self.Entity.FactionAttack
 
 		for _, cand in ipairs(candidates) do
-			if cand ~= self.Entity and _FactionLogic:IsEnemy(self.Entity, cand) then
+			if cand ~= self.Entity and _FactionLogic:IsEnemy(self.Entity, cand) and (not isvalid(atk) or atk:FacilityMayHit(cand)) then
 				if not self:IsDeadEntity(cand) then
 					local t = cand.TransformComponent
 					if isvalid(t) then
 						local p = t.WorldPosition
 						local dx = p.x - myPos.x
-						local dy = p.y - myPos.y
+						local dy = p.y - originY
 						local d = dx * dx + dy * dy
 						local isMinion = self.PreferMinions and isvalid(cand.MinionUnit)
 						-- 미니언 우선: 미니언이 하나라도 사거리 안이면 야생 몹은 후보에서 밀린다.
@@ -226,7 +237,16 @@ script TurretAI extends Component
 			---@type FactionAttack
 			local attack = self.Entity.FactionAttack
 			if isvalid(attack) then
-				attack:DoAttack()
+				-- 시설 공격 연출 (WO-025): 연출(발사체·시전)이 있으면 **피해도 연출이 도착하는 순간**에 들어간다 —
+				--   Fire 가 표적을 고르고(피해 없음) 발사체/마법진을 띄운 뒤 FlightSec 뒤에 HitTarget (사용자 2026-09-14 "몬스터가 먼저 피격당하고 이펙트가 나중").
+				--   연출이 없으면(억제기 · 옛 포탑 모델) 지금까지처럼 즉시 상자 판정.
+				---@type LaneAttackFx
+				local fx = self.Entity.LaneAttackFx
+				if isvalid(fx) and fx:IsDelayed() then
+					fx:Fire(attack)
+				else
+					attack:DoAttack()
+				end
 			end
 		end
 	end

@@ -113,6 +113,15 @@ script StatService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void ResetMatchState(string userId)
+		-- 매치 시작 초기화 (WO-019). 스탯 원장을 버리고 1레벨 기본값으로 다시 만든 뒤 재계산한다.
+		if userId == nil or userId == "" or self.users == nil then return end
+		self.users[userId] = nil
+		self:EnsureUser(userId)
+		self:Recalculate(userId, "MATCH_RESET")
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SetLevel(string userId, integer level)
 		-- 레벨 원장(SummonManager)이 바뀌었을 때 호출. 임시 총공격력이 레벨을 따른다.
 		local u = self:EnsureUser(userId)
@@ -173,6 +182,7 @@ script StatService extends Logic
 	@ExecSpace("Server")
 	method void RequestAllocateAp(string statId, integer amount)
 		-- 캐릭터 창 "+" 버튼: STR/DEX/INT/LUK 에 amount 만큼. AP 가 모자라면 아무것도 안 한다.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local key = string.lower(statId or "")
 		if key ~= "str" and key ~= "dex" and key ~= "int" and key ~= "luk" then return end
 		local n = math.floor(amount or 0)
@@ -185,6 +195,7 @@ script StatService extends Logic
 	@ExecSpace("Server")
 	method void RequestAutoAllocateAp()
 		-- 캐릭터 창 "자동 분배": 남은 AP 전부를 직업 비율(JobInfo.ApRatio* · 없으면 NOVICE 6:4)로. 나머지는 주스탯.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local u = self:EnsureUser(uid)
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(uid) or nil
@@ -263,7 +274,8 @@ script StatService extends Logic
 		if not isvalid(player) then
 			return
 		end
-		local speedMul = (u.final.speed or 100) / 100
+		-- 시설 오라 이속 배수(WO-021 · SetAuraSpeedMul)는 스탯 SPEED 와 곱한다. 없으면 1.0.
+		local speedMul = ((u.final.speed or 100) / 100) * (u.auraSpeedMul or 1.0)
 		local jumpMul = math.sqrt(math.max(0, (u.final.jump or 100) / 100))
 		local walk = -1
 		local jf = -1
@@ -292,6 +304,19 @@ script StatService extends Logic
 				u.hpBonusApplied = bonus
 			end
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetAuraSpeedMul(string userId, number mul)
+		-- 시설 오라의 이속 배수 (WO-021 · 커닝 억제기 등). FactionAuraController 가 값이 바뀔 때만 부른다. 1.0 = 효과 없음.
+		-- 스탯 원장은 안 건드리고 ApplyToEntity 만 다시 돌려 WalkSpeed 에 곱한다(클라 RPC 포함).
+		local u = self:EnsureUser(userId)
+		if u == nil then return end
+		if mul <= 0 then mul = 1.0 end
+		if (u.auraSpeedMul or 1.0) == mul then return end
+		u.auraSpeedMul = mul
+		log("[Stat] aura speed mul=" .. tostring(mul) .. " (" .. userId .. ")")
+		self:ApplyToEntity(userId, u)
 	end
 
 	@ExecSpace("Client")

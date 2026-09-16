@@ -1,0 +1,251 @@
+@Logic
+script QuickSlotController extends Logic
+
+	-- 퀵슬롯 HUD(QuickSlotGroup · 화면 왼쪽 아래 슬롯 2칸) 클라이언트 컨트롤러 — WO-020 S2 (2026-09-16).
+	-- 원장은 서버(InventoryService.quick). 여기서는 서버가 SetQuickSlots 로 밀어주는 문자열만 그리고,
+	-- 키(1·2)·슬롯 클릭을 서버 RequestQuickSlot 로 넘길 뿐 보유 수량·쿨타임을 판정하지 않는다.
+	-- 등록(드래그&드롭)은 InventoryUIController 가 드래그 끝에 SlotAtScreen 으로 슬롯을 묻고 서버에 요청한다.
+	-- UUID 는 UIBuilder write({bind}) 가 주입한다. 손으로 고치지 않는다.
+
+	property Entity bar = "8eedbabb-98c5-42bf-a2f5-50943c1852d8"
+
+	property ButtonComponent slot1Btn = "fd8b3f9d-dc38-477b-89b3-83c5f1a62c5c"
+
+	property ButtonComponent slot2Btn = "77ff1c45-d581-42bf-a6a2-94252218d069"
+
+	property UITransformComponent slot1Tf = "fd8b3f9d-dc38-477b-89b3-83c5f1a62c5c"
+
+	property UITransformComponent slot2Tf = "77ff1c45-d581-42bf-a6a2-94252218d069"
+
+	property SpriteGUIRendererComponent icon1 = "90b71baa-8280-4b09-aa6e-beb336245549"
+
+	property SpriteGUIRendererComponent icon2 = "0691f752-29d5-4654-9472-f595e97b6fa1"
+
+	property TextGUIRendererComponent count1 = "79acec41-efaa-41cd-92d5-0f8fdc2f62d4"
+
+	property TextGUIRendererComponent count2 = "e8a189ab-ef2c-4b58-b2ff-82af7a1e8f25"
+
+	property SpriteGUIRendererComponent cool1 = "7cd191c4-0e65-4f51-9464-d9dd1fd31a9c"
+
+	property SpriteGUIRendererComponent cool2 = "eb310b54-903e-4c71-bba3-0f2f0946c416"
+
+	property TextGUIRendererComponent coolText1 = "03081b6b-81d0-4446-bcde-24ecba1d7dd6"
+
+	property TextGUIRendererComponent coolText2 = "535f274b-15f7-40a3-b544-4ab421735edd"
+
+	-- 쿨 오버레이(사용자 지시 2026-09-16): 사용 직후 아래→위로 차오르고(RiseSeconds), 그 뒤 남은 비율에 따라
+	-- 위→아래로 줄어든다. 비율은 10·25·40·55·70·85·100% 7단계로 끊어서 보여준다(StepLevel).
+	property number RiseSeconds = 0.35
+
+	-- 키 연타 RPC 스팸 차단 간격(판정이 아니다 — 원장은 서버).
+	property number RepeatGuardSec = 0.2
+
+	@HideFromInspector
+	property any slots = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property any hKey = nil
+
+	@HideFromInspector
+	property number lastUseAt = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		self.slots = {}
+		self.handlers = {}
+		local function bind(btn, slot)
+			if isvalid(btn) then
+				table.insert(self.handlers, { btn = btn, h = btn.Entity:ConnectEvent(ButtonClickEvent, function() self:Use(slot) end) })
+			end
+		end
+		bind(self.slot1Btn, 1)
+		bind(self.slot2Btn, 2)
+		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		self:Render(1)
+		self:Render(2)
+		log("[QuickSlot] QuickSlotController ready (client)")
+	end
+
+	-- ── 서버 → 클라 ────────────────────────────────────────────
+
+	@ExecSpace("Client")
+	method void SetQuickSlots(string csv)
+		-- "slot|itemId|count|remainSec|totalSec;..." (InventoryService.SerializeQuick). 빈 슬롯은 itemId "".
+		local now = _UtilLogic.ElapsedSeconds
+		local next = {}
+		if csv ~= nil and csv ~= "" then
+			for rec in string.gmatch(csv, "[^;]+") do
+				local f = self:Split(rec, "|")
+				local slot = math.floor(tonumber(f[1]) or 0)
+				if slot >= 1 then
+					local itemId = f[2] or ""
+					local remain = tonumber(f[4]) or 0
+					local total = tonumber(f[5]) or 0
+					local prev = self.slots[slot]
+					local s = { itemId = itemId, count = math.floor(tonumber(f[3]) or 0), total = total,
+						readyAt = now + remain, riseStart = 0, riseUntil = 0 }
+					-- 쿨이 "새로 시작"했을 때만 차오르는 연출. 쿨 도중 수량 갱신 푸시는 연출을 다시 돌리지 않는다.
+					local wasCooling = (prev ~= nil and prev.itemId == itemId and prev.readyAt > now)
+					if remain > 0 and not wasCooling then
+						s.riseStart = now
+						s.riseUntil = now + self.RiseSeconds
+					elseif prev ~= nil and wasCooling then
+						s.riseStart = prev.riseStart
+						s.riseUntil = prev.riseUntil
+					end
+					next[slot] = s
+				end
+			end
+		end
+		self.slots = next
+		self:Render(1)
+		self:Render(2)
+	end
+
+	@ExecSpace("ClientOnly")
+	method any Split(string s, string sep)
+		-- 빈 칸을 보존하는 단순 분리 ("a||c" → {"a","","c"}).
+		local out = {}
+		local start = 1
+		while true do
+			local i, _ = string.find(s, sep, start, true)
+			if i == nil then
+				table.insert(out, string.sub(s, start))
+				break
+			end
+			table.insert(out, string.sub(s, start, i - 1))
+			start = i + 1
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Render(integer slot)
+		-- 아이콘 · 수량. 등록됐는데 수량 0 이면 아이콘을 흐리게 둔다(등록은 유지).
+		local s = (self.slots ~= nil) and self.slots[slot] or nil
+		local icon = (slot == 1) and self.icon1 or self.icon2
+		local count = (slot == 1) and self.count1 or self.count2
+		local has = (s ~= nil and s.itemId ~= "")
+		local def = has and _ItemCatalog:Get(s.itemId) or nil
+		if isvalid(icon) then
+			local ruid = (def ~= nil) and (def.icon or "") or ""
+			icon.ImageRUID = ruid
+			icon.Entity.Enable = (ruid ~= "")
+			if has and (s.count or 0) <= 0 then
+				icon.Color = Color(1, 1, 1, 0.35)
+			else
+				icon.Color = Color(1, 1, 1, 1)
+			end
+		end
+		if isvalid(count) then
+			count.Text = has and tostring(s.count or 0) or ""
+		end
+	end
+
+	-- ── 쿨 오버레이 ────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		if self.slots == nil then return end
+		local now = _UtilLogic.ElapsedSeconds
+		self:UpdateCool(1, now)
+		self:UpdateCool(2, now)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateCool(integer slot, number now)
+		local overlay = (slot == 1) and self.cool1 or self.cool2
+		local text = (slot == 1) and self.coolText1 or self.coolText2
+		if not isvalid(overlay) or not isvalid(text) then return end
+		local s = self.slots[slot]
+		local remain = (s ~= nil) and (s.readyAt - now) or 0
+		local level = 0
+		if s ~= nil and remain > 0 and s.total > 0 then
+			if now < s.riseUntil then
+				-- 사용 직후: 아래에서 위로 7단계 차오름
+				level = self:StepLevel((now - s.riseStart) / self.RiseSeconds)
+			else
+				-- 그 뒤: 남은 비율만큼 위에서 아래로 7단계 줄어듦 (FillOrigin=Bottom 이라 위쪽부터 사라진다)
+				level = self:StepLevel(remain / s.total)
+			end
+		end
+		overlay.FillAmount = level
+		overlay.Entity.Enable = (level > 0)
+		text.Text = (remain > 0) and tostring(math.ceil(remain)) or ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method number StepLevel(number ratio)
+		-- 7단계 계단: 0 < r ≤ 0.10 → 10% … 0.85 < r → 100%. 0 이하는 0(오버레이 숨김).
+		if ratio <= 0 then return 0 end
+		if ratio <= 0.10 then return 0.10 end
+		if ratio <= 0.25 then return 0.25 end
+		if ratio <= 0.40 then return 0.40 end
+		if ratio <= 0.55 then return 0.55 end
+		if ratio <= 0.70 then return 0.70 end
+		if ratio <= 0.85 then return 0.85 end
+		return 1.0
+	end
+
+	-- ── 입력: 키 1·2 / 슬롯 클릭 ───────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		local slot = 0
+		if event.key == KeyboardKey.Alpha1 then
+			slot = 1
+		elseif event.key == KeyboardKey.Alpha2 then
+			slot = 2
+		end
+		if slot == 0 then return end
+		-- 텍스트 입력 가드: 이 프로젝트에서 입력칸(파병 수량 · TextGUIRendererInputComponent)을 가진 UI 는 월드맵 창뿐이다.
+		if _WorldMapController ~= nil and _WorldMapController.isOpen then return end
+		self:Use(slot)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Use(integer slot)
+		-- 판정 없음(수량·쿨은 서버 원장). 붙잡고 있을 때의 RPC 스팸만 막는다.
+		local now = _UtilLogic.ElapsedSeconds
+		if now - self.lastUseAt < self.RepeatGuardSec then return end
+		self.lastUseAt = now
+		_InventoryService:RequestQuickSlot(slot)
+		log("[QuickSlot] use requested slot=" .. tostring(slot))
+	end
+
+	-- ── 드롭 판정 (InventoryUIController 가 드래그 끝에 부른다) ──
+
+	@ExecSpace("ClientOnly")
+	method integer SlotAtScreen(Vector2 screenPos)
+		-- 화면 좌표가 어느 슬롯 위인지 (1·2, 아니면 0). 슬롯 피벗이 (0.5,0.5) 라 로컬 좌표 |x|,|y| ≤ 절반이면 안쪽.
+		for slot = 1, 2 do
+			local tf = (slot == 1) and self.slot1Tf or self.slot2Tf
+			if isvalid(tf) then
+				local p = _UILogic:ScreenToLocalUIPosition(screenPos, tf)
+				local size = tf.RectSize
+				if math.abs(p.x) <= size.x * 0.5 and math.abs(p.y) <= size.y * 0.5 then
+					return slot
+				end
+			end
+		end
+		return 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		if self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+		self.handlers = {}
+		if self.hKey ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.hKey)
+		end
+		self.hKey = nil
+	end
+
+end

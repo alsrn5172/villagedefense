@@ -1,10 +1,24 @@
 @Logic
 script LobbyUIController extends Logic
 
-	-- 매치 로비 창(LobbyGroup.ui) 클라 컨트롤러 — WO-011 ⑧ S1 뼈대 (계획서 §4-5). 로비 안내 NPC(COMMON_MATCH_GUIDE) 가 연다.
-	-- 로직(방장·난이도·준비·큐)은 WP1 `Match/MatchLobbyGateway` 소유. 여기서는 표시 + 요청 전달만 하고,
-	-- 게이트웨이가 아직 없으면 로그만 남긴다. 값은 서버가 SetLobbyCsv 문자열로만 준다 (낙관적 UI 없음).
+	-- 매치 브라우저 로비 클라 컨트롤러 (LobbyGroup) — WO-023.
+	-- 로직(매치·주인·잠금·강퇴)은 전부 `Match/MatchLobbyGateway` 소유다. 여기서는 **표시 + 요청 전달**만 한다.
+	-- 🔴 값은 서버가 CSV 문자열로만 준다 (낙관적 UI 없음). 내가 버튼을 눌러도 화면은 서버 응답으로만 바뀐다.
+	--
+	-- **화면이 두 개다** (사용자 확정 2026-09-10):
+	--   browse — 승강장. `Bg` + `Window` 전체화면 모달. 좌: 매치 목록 / 우: ★ + 내 발록의 심장
+	--   room   — 배 위. **`RoomHud` 좌상단 작은 패널만.** 참가자 + [시작하기] + [나가기]
+	--
+	-- 🔴 **방 화면은 절대 전체화면 모달이면 안 된다.** 배에 타 있는 동안 자유롭게 돌아다녀야 하는데
+	--    1920×1080 짜리 `Bg` 를 켜면 배가 통째로 가려져서 "시작 5초 전에야 배로 이동하는 것처럼" 보인다.
+	--    (실제로 그 증상이 났다. 이동은 매치를 만든 즉시 되고 있었고 화면만 덮여 있었다.)
+	--
+	-- 🔴 **★ 과 매치 선택은 상호 배타다.** 매치를 고르면 그 난이도가 자동으로 표시되고,
+	--    ★ 을 누르면 고른 매치가 풀린다.
+	--
 	-- UUID 는 UIBuilder write({bind}) 가 주입한다.
+
+	-- ── browse (전체화면 모달) ───────────────────────────────────────
 
 	property Entity bg = "7e5e3948-cc9e-48b9-8892-edb28dfb3f0d"
 
@@ -34,45 +48,176 @@ script LobbyUIController extends Logic
 
 	property ButtonComponent btnPrimary = "1a7a7a9b-b485-4c04-9e31-826bfd264b0b"
 
+	property Entity matchesRoot = "3d4657c9-54ca-473b-9fdc-a824157fea1d"
+
+	property TextGUIRendererComponent matchTitle = "c02a76d1-2554-4f98-b1cb-ab78b013edd7"
+
+	property TextGUIRendererComponent matchEmpty = "ba1845d5-5ced-4260-bd26-24771b4f821c"
+
+	property TextGUIRendererComponent heartLabel = "cc78a91e-631b-4d37-8807-4e59c093aea9"
+
+	-- ── room (좌상단 패널) ──────────────────────────────────────────
+
+	property Entity roomHud = "404c9a39-45dc-4030-8cfe-b9ee2c9889d9"
+
+	property TextGUIRendererComponent roomTitle = "0461d285-f288-4b13-8bbf-6be512794332"
+
+	property TextGUIRendererComponent roomSub = "0ca26e44-aa8e-44fa-83ae-283d5515ac6c"
+
+	property ButtonComponent btnStart = "b9bc742c-f10c-4e74-809a-6697f5850666"
+
+	property ButtonComponent btnLeave = "80d66418-40bc-46cd-b327-3ef5f2bf787c"
+
+	-- 목록 행 수. LobbyGroup 의 MatchRow_0.. 및 MatchLobbyGateway.BrowseRows 와 같아야 한다.
+	property integer BrowseRows = 6
+
+	-- 창이 열린 직후 이 시간 동안은 버튼 입력을 무시한다.
+	property number InputGuardSeconds = 0.35
+
+	-- ── 상태 ────────────────────────────────────────────────────────
+
 	@HideFromInspector
 	property boolean isOpen = false
+
+	-- "browse" 또는 "room".
+	@HideFromInspector
+	property string mode = "browse"
 
 	@HideFromInspector
 	property boolean isHost = false
 
 	@HideFromInspector
-	property boolean isReady = false
+	property boolean isLocked = false
+
+	-- ★ 로 직접 고른 난이도. 0 = 아직 안 골랐다.
+	@HideFromInspector
+	property integer pickedDiff = 0
+
+	-- 목록에서 고른 매치. "" = 안 골랐다.
+	@HideFromInspector
+	property string selectedMatchId = ""
+
+	-- 고른 매치의 난이도. 서버가 준 값을 그대로 들고 있는다.
+	@HideFromInspector
+	property integer selectedDiff = 0
+
+	-- 행 index(0-base) → matchId / 난이도 / 라벨 / 강퇴 토큰.
+	@HideFromInspector
+	property any listIds = nil
 
 	@HideFromInspector
-	property integer difficulty = 1
+	property any listDiffs = nil
+
+	@HideFromInspector
+	property any listLabels = nil
+
+	@HideFromInspector
+	property any rowTokens = nil
+
+	@HideFromInspector
+	property boolean rowsBound = false
 
 	@HideFromInspector
 	property any handlers = nil
+
+	-- 🔴 창이 열린 시각. NPC 를 누른 그 클릭이 **창이 열리자마자 그 자리의 버튼으로 새어 들어간다**.
+	--    실제로 "NPC 만 눌렀는데 배에 타 있는" 증상이 났다.
+	@HideFromInspector
+	property number openedAt = 0
 
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 버튼 연결 · 닫힌 상태로 시작.
 		self.handlers = {}
-		local function bind(btn, fn)
-			if isvalid(btn) then
-				table.insert(self.handlers, { btn = btn, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
-			end
-		end
-		bind(self.btnClose, function() self:OnClickClose() end)
-		bind(self.btnPrimary, function() self:OnClickReady() end)
-		bind(self.star1, function() self:OnClickStar(1) end)
-		bind(self.star2, function() self:OnClickStar(2) end)
-		bind(self.star3, function() self:OnClickStar(3) end)
-		bind(self.star4, function() self:OnClickStar(4) end)
-		bind(self.star5, function() self:OnClickStar(5) end)
+		self.listIds = {}
+		self.listDiffs = {}
+		self.listLabels = {}
+		self.rowTokens = {}
+
+		self:BindButton(self.btnClose, function() self:OnClickClose() end)
+		self:BindButton(self.btnPrimary, function() self:OnClickPrimary() end)
+		self:BindButton(self.star1, function() self:OnClickStar(1) end)
+		self:BindButton(self.star2, function() self:OnClickStar(2) end)
+		self:BindButton(self.star3, function() self:OnClickStar(3) end)
+		self:BindButton(self.star4, function() self:OnClickStar(4) end)
+		self:BindButton(self.star5, function() self:OnClickStar(5) end)
+		self:BindButton(self.btnStart, function() self:OnClickStart() end)
+		self:BindButton(self.btnLeave, function() self:OnClickLeave() end)
+
+		self:EnsureRowBindings()
 		self:SetOpen(false)
 		log("[Lobby] LobbyUIController ready (client)")
 	end
 
 	@ExecSpace("ClientOnly")
-	method void Open()
-		-- 로비 창 열기 (NPC 라우터 또는 게이트웨이가 부른다).
-		self:SetOpen(true)
+	method void BindButton(ButtonComponent btn, any fn)
+		-- ButtonComponent 프로퍼티에 클릭을 건다.
+		if not isvalid(btn) then return end
+		table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BindEntity(Entity e, any fn)
+		-- 런타임에 이름으로 찾은 엔티티(목록 행·강퇴 버튼)에 클릭을 건다.
+		if not isvalid(e) then return end
+		table.insert(self.handlers, { e = e, h = e:ConnectEvent(ButtonClickEvent, fn) })
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EnsureRowBindings()
+		-- 목록 행·강퇴 버튼은 UIBuilder 가 만든 자식이라 프로퍼티로 안 묶여 있다 → 이름으로 찾아 건다.
+		-- 🔴 한 번만 건다. 두 번 걸면 클릭이 두 번 먹는다 — rowsBound 로 막고, 못 찾았으면 CSV 수신 때 다시 시도한다.
+		if self.rowsBound then return end
+		local n = 0
+		if isvalid(self.matchesRoot) then
+			for i = 0, self.BrowseRows - 1 do
+				local row = self.matchesRoot:GetChildByName("MatchRow_" .. tostring(i))
+				local idx = i
+				if isvalid(row) then
+					self:BindEntity(row, function() self:OnClickMatchRow(idx) end)
+					n = n + 1
+				end
+			end
+		end
+		if isvalid(self.roomHud) then
+			for i = 0, 4 do
+				local row = self.roomHud:GetChildByName("RoomRow_" .. tostring(i))
+				local idx = i
+				if isvalid(row) then
+					local kick = row:GetChildByName("BtnKick")
+					if isvalid(kick) then
+						self:BindEntity(kick, function() self:OnClickKick(idx) end)
+						n = n + 1
+					end
+				end
+			end
+		end
+		if n > 0 then
+			self.rowsBound = true
+			log("[Lobby] 행 바인딩 " .. tostring(n) .. "개 (매치 " .. tostring(self.BrowseRows) .. " + 강퇴 5 기대)")
+		else
+			log_warning("[Lobby] 행 바인딩 0개 — CSV 수신 때 다시 시도한다")
+		end
+	end
+
+	-- ── 열고 닫기 ───────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void ApplyVisibility()
+		-- 🔴 모드에 따라 **완전히 다른 화면**을 켠다.
+		--    browse = 전체화면 모달(승강장에서 목록을 고른다) / room = 좌상단 패널(배 안을 돌아다닌다)
+		local browse = self.isOpen and (self.mode == "browse")
+		local room = self.isOpen and (self.mode == "room")
+		if isvalid(self.bg) then self.bg.Enable = browse end
+		if isvalid(self.window) then self.window.Enable = browse end
+		if isvalid(self.roomHud) then self.roomHud.Enable = room end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		self.isOpen = open
+		self:ApplyVisibility()
+		log("[Lobby] open=" .. tostring(open) .. " mode=" .. self.mode)
 	end
 
 	@ExecSpace("ClientOnly")
@@ -81,99 +226,408 @@ script LobbyUIController extends Logic
 		self:SetOpen(false)
 	end
 
-	@ExecSpace("ClientOnly")
-	method void SetOpen(boolean open)
-		-- 불투명 배경 + 창 (모달이 아니라 전체 화면).
-		self.isOpen = open
-		if isvalid(self.bg) then self.bg.Enable = open end
-		if isvalid(self.window) then self.window.Enable = open end
-		log("[Lobby] open=" .. tostring(open))
+	@ExecSpace("Client")
+	method void ShowLobby(boolean open)
+		-- 서버 → 소유 클라. 🔴 SetOpen 은 ClientOnly 라 서버가 직접 못 부른다. 이게 서버용 진입점이다.
+		if open then
+			self.openedAt = _UtilLogic.ElapsedSeconds
+		else
+			-- 닫힐 때 선택을 비운다. 다음에 열었을 때 지난 판의 선택이 남아 있으면 안 된다.
+			self.selectedMatchId = ""
+			self.selectedDiff = 0
+			self.pickedDiff = 0
+			self.mode = "browse"
+		end
+		self:SetOpen(open)
 	end
 
+	@ExecSpace("ClientOnly")
+	method boolean InputBlocked()
+		-- 창이 열린 직후의 입력을 막는다. NPC 를 누른 그 클릭이 새로 뜬 창의 버튼으로 새어 들어가는 걸 차단한다.
+		return (_UtilLogic.ElapsedSeconds - self.openedAt) < self.InputGuardSeconds
+	end
+
+	-- ── 서버 → 클라: 브라우저 ───────────────────────────────────────
+
 	@ExecSpace("Client")
-	method void SetLobbyCsv(string csv)
-		-- 서버 → 소유 클라. "ready=2/4;diff=3;host=1;warn=발록의 심장이 부족한 참가자가 있습니다;desc=★3 · 심장 2 · Lv10;p0=이름|2|1;p1=..."
-		-- p{i} = 이름|발록의 심장|준비(1/0). 행은 최대 5, 없는 행은 끈다.
+	method void SetBrowseCsv(string csv)
+		-- "heart=5;busy=0;more=0;m0=m1|3|주인이름|2|5;m1=..."
+		--   m{i} = matchId|난이도|주인이름|현재인원|정원
 		local kv = {}
 		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
-		self.isHost = (kv.host == "1")
-		self.difficulty = tonumber(kv.diff) or 1
-		self.isReady = (kv.me == "1")
 
-		if isvalid(self.costLabel) then self.costLabel.Text = "준비 " .. tostring(kv.ready or "0 / 0") end
-		if isvalid(self.diffDesc) then self.diffDesc.Text = kv.desc or "" end
+		self:EnsureRowBindings()
+		self.mode = "browse"
+		self.isHost = false
+		self.isLocked = false
+		self.listIds = {}
+		self.listDiffs = {}
+		self.listLabels = {}
+		self:ApplyVisibility()
+
+		if isvalid(self.matchesRoot) then self.matchesRoot.Enable = true end
+		if isvalid(self.playersRoot) then self.playersRoot.Enable = false end
+		if isvalid(self.titleText) then self.titleText.Text = "빅토리아행 매치" end
+		if isvalid(self.heartLabel) then self.heartLabel.Text = "내 발록의 심장 × " .. tostring(kv.heart or "0") end
+
+		-- 행 채우기. 없는 행은 끈다.
+		local shown = 0
+		for i = 0, self.BrowseRows - 1 do
+			local row = nil
+			if isvalid(self.matchesRoot) then row = self.matchesRoot:GetChildByName("MatchRow_" .. tostring(i)) end
+			local v = kv["m" .. tostring(i)]
+			local has = (v ~= nil and v ~= "")
+			if has then
+				local f = self:Split(v, "|")
+				local d = tonumber(f[2]) or 1
+				local label = self:Stars(d) .. "  " .. tostring(f[3] or "") ..
+					"   " .. tostring(f[4] or "0") .. " / " .. tostring(f[5] or "5")
+				self.listIds[i] = f[1] or ""
+				self.listDiffs[i] = d
+				self.listLabels[i] = label
+				shown = shown + 1
+				if isvalid(row) and row.TextGUIRendererComponent ~= nil then row.TextGUIRendererComponent.Text = label end
+			else
+				self.listIds[i] = ""
+				self.listDiffs[i] = 0
+				self.listLabels[i] = ""
+			end
+			if isvalid(row) then row.Enable = has end
+		end
+
+		-- 🔴 규칙 4: 잠긴 매치는 목록에서 빠진다 → 내가 골라 뒀던 게 사라졌으면 **선택을 버린다**.
+		if self.selectedMatchId ~= "" and not self:InList(self.selectedMatchId) then
+			log("[Lobby] 선택한 매치가 사라져 해제 (" .. self.selectedMatchId .. ")")
+			self.selectedMatchId = ""
+			self.selectedDiff = 0
+		end
+
+		local more = tonumber(kv.more) or 0
+		if isvalid(self.matchTitle) then
+			if more > 0 then
+				self.matchTitle.Text = "대기 중인 매치 (외 " .. tostring(more) .. "개)"
+			else
+				self.matchTitle.Text = "대기 중인 매치"
+			end
+		end
+		if isvalid(self.matchEmpty) then self.matchEmpty.Entity.Enable = (shown == 0) end
+
+		-- 진행 중인 매치가 있으면 알린다 (지금은 월드에 하나만 돈다).
 		if isvalid(self.gateWarn) then
-			self.gateWarn.Text = kv.warn or ""
-			self.gateWarn.Entity.Enable = (kv.warn ~= nil and kv.warn ~= "")
-		end
-		if isvalid(self.btnPrimary) then
-			self.btnPrimary.Entity.TextGUIRendererComponent.Text = self.isReady and "준비 취소" or "준비"
+			local busy = (kv.busy == "1")
+			self.gateWarn.Text = busy and "이미 진행 중인 매치가 있어 지금은 출발할 수 없습니다" or ""
+			self.gateWarn.Entity.Enable = busy
 		end
 
-		-- 별: 방장만 누를 수 있고, 선택된 별은 라벨에 ★, 나머지 ☆
-		local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
-		for i = 1, 5 do
-			local s = stars[i]
-			if isvalid(s) then
-				s.Enable = self.isHost
-				local t = s.Entity.TextGUIRendererComponent
-				if t ~= nil then t.Text = (i <= self.difficulty) and "★" or "☆" end
+		self:PaintBrowse()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintBrowse()
+		-- 브라우저 모드의 ★ · 안내문 · 버튼을 현재 선택 상태대로 다시 칠한다.
+		local diff = self.pickedDiff
+		local selName = ""
+		if self.selectedMatchId ~= "" then
+			for i = 0, self.BrowseRows - 1 do
+				if self.listIds[i] == self.selectedMatchId then selName = self.listLabels[i] or "" end
+			end
+			diff = self.selectedDiff
+		end
+
+		self:PaintStars(diff, true)
+		self:PaintRowHighlight()
+
+		if isvalid(self.diffDesc) then
+			if self.selectedMatchId ~= "" then
+				self.diffDesc.Text = "선택한 매치에 참여합니다\n" .. selName
+			elseif diff >= 1 then
+				local solo = math.max(0, diff - 1)
+				self.diffDesc.Text = "★" .. tostring(diff) .. " 매치를 새로 만듭니다\n" ..
+					"발록의 심장 " .. tostring(diff) .. "개 (혼자면 " .. tostring(solo) .. "개)"
+			else
+				self.diffDesc.Text = "매치를 고르거나 ★ 로 난이도를 정하세요"
+			end
+		end
+		if isvalid(self.costLabel) then
+			self.costLabel.Text = (self.selectedMatchId ~= "") and "참여할 매치를 선택했습니다" or ""
+		end
+
+		if isvalid(self.btnPrimary) then
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if self.selectedMatchId ~= "" then
+				self.btnPrimary.Enable = true
+				if t ~= nil then t.Text = "참여하기" end
+			elseif diff >= 1 then
+				self.btnPrimary.Enable = true
+				if t ~= nil then t.Text = "매치 만들기" end
+			else
+				self.btnPrimary.Enable = false
+				if t ~= nil then t.Text = "매치 선택" end
+			end
+		end
+	end
+
+	-- ── 서버 → 클라: 방 (좌상단 패널) ───────────────────────────────
+
+	@ExecSpace("Client")
+	method void SetRoomCsv(string csv)
+		-- "mid=m1;diff=3;host=1;heart=5;lock=1;remain=3;warn=..;desc=..;p0=이름|심장|주인|나|토큰"
+		-- 🔴 여기서 전체화면 모달을 켜면 안 된다. 배 위에서는 좌상단 패널만 뜬다.
+		local kv = {}
+		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
+
+		self:EnsureRowBindings()
+		self.mode = "room"
+		self.isHost = (kv.host == "1")
+		self.isLocked = (kv.lock == "1")
+		self.selectedMatchId = ""
+		self.rowTokens = {}
+		local diff = tonumber(kv.diff) or 1
+		self.pickedDiff = diff
+		self.isOpen = true
+		self:ApplyVisibility()
+
+		local total = 0
+		for i = 0, 4 do
+			local v = kv["p" .. tostring(i)]
+			if v ~= nil and v ~= "" then total = total + 1 end
+		end
+
+		if isvalid(self.roomTitle) then
+			self.roomTitle.Text = self:Stars(diff) .. "   " .. tostring(total) .. " / 5"
+		end
+		if isvalid(self.roomSub) then
+			if self.isLocked then
+				self.roomSub.Text = "출발까지 " .. tostring(kv.remain or "0") .. "초"
+			elseif kv.warn ~= nil and kv.warn ~= "" then
+				self.roomSub.Text = kv.warn
+			elseif self.isHost then
+				self.roomSub.Text = "준비되면 시작하기를 누르세요"
+			else
+				self.roomSub.Text = "주인이 시작하기를 누르면 출발합니다"
 			end
 		end
 
 		-- 참가자 행
-		if isvalid(self.playersRoot) then
+		if isvalid(self.roomHud) then
 			for i = 0, 4 do
-				local row = self.playersRoot:GetChildByName("PlayerRow_" .. tostring(i))
+				local row = self.roomHud:GetChildByName("RoomRow_" .. tostring(i))
 				if isvalid(row) then
 					local v = kv["p" .. tostring(i)]
-					row.Enable = (v ~= nil and v ~= "")
-					if v ~= nil and v ~= "" then
+					local has = (v ~= nil and v ~= "")
+					row.Enable = has
+					self.rowTokens[i] = ""
+					if has then
 						local f = self:Split(v, "|")
+						local rowIsHost = (f[3] == "1")
+						local rowIsMe = (f[4] == "1")
+						self.rowTokens[i] = f[5] or ""
+
 						local name = row:GetChildByName("Name")
-						local heart = row:GetChildByName("HeartCount")
-						local ready = row:GetChildByName("ReadyMark")
-						if isvalid(name) and name.TextGUIRendererComponent ~= nil then name.TextGUIRendererComponent.Text = f[1] or "" end
-						if isvalid(heart) and heart.TextGUIRendererComponent ~= nil then heart.TextGUIRendererComponent.Text = "발록의 심장 ×" .. tostring(f[2] or "0") end
-						if isvalid(ready) then ready.Enable = (f[3] == "1") end
+						if isvalid(name) and name.TextGUIRendererComponent ~= nil then
+							local mark = ""
+							if rowIsHost then mark = "  (주인)" elseif rowIsMe then mark = "  (나)" end
+							name.TextGUIRendererComponent.Text = tostring(f[1] or "") .. mark ..
+								"   ♥" .. tostring(f[2] or "0")
+						end
+						-- 강퇴는 주인만, 자기 자신은 제외, 잠긴 뒤에는 금지.
+						local kick = row:GetChildByName("BtnKick")
+						if isvalid(kick) then kick.Enable = (self.isHost and not rowIsMe and not self.isLocked) end
 					end
 				end
 			end
 		end
-		log("[Lobby] csv applied host=" .. tostring(self.isHost) .. " diff=" .. tostring(self.difficulty))
+
+		-- 시작하기는 주인만. 잠긴 뒤에는 아무도 못 누른다.
+		if isvalid(self.btnStart) then
+			local t = self.btnStart.Entity.TextGUIRendererComponent
+			self.btnStart.Enable = (self.isHost and not self.isLocked)
+			if t ~= nil then
+				if not self.isHost then
+					t.Text = "주인 대기 중"
+				elseif self.isLocked then
+					t.Text = "출발 준비 중"
+				else
+					t.Text = "시작하기"
+				end
+			end
+		end
+		if isvalid(self.btnLeave) then self.btnLeave.Enable = not self.isLocked end
+
+		log("[Lobby] room csv mid=" .. tostring(kv.mid) .. " host=" .. tostring(self.isHost) ..
+			" lock=" .. tostring(self.isLocked) .. " n=" .. tostring(total))
+	end
+
+	-- ── 그리기 도우미 ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method string Stars(integer level)
+		-- ★☆ 다섯 칸.
+		local s = ""
+		for i = 1, 5 do
+			if i <= level then s = s .. "★" else s = s .. "☆" end
+		end
+		return s
 	end
 
 	@ExecSpace("ClientOnly")
-	method void OnClickStar(integer level)
-		-- 난이도 선택 (방장만). 게이트웨이가 있으면 요청, 없으면 로그.
-		if not self.isHost then return end
-		if _MatchLobbyGateway ~= nil then
-			_MatchLobbyGateway:SelectDifficulty(level)
-		else
-			log("[Lobby] SelectDifficulty(" .. tostring(level) .. ") — MatchLobbyGateway 없음 (WP1)")
+	method void PaintStars(integer level, boolean clickable)
+		-- 브라우저의 ★ 다섯 개.
+		local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
+		for i = 1, 5 do
+			local s = stars[i]
+			if isvalid(s) then
+				s.Enable = clickable
+				local t = s.Entity.TextGUIRendererComponent
+				if t ~= nil then
+					if i <= level then t.Text = "★" else t.Text = "☆" end
+				end
+			end
 		end
 	end
 
 	@ExecSpace("ClientOnly")
-	method void OnClickReady()
-		-- 준비 ↔ 준비 취소. 결과는 SetLobbyCsv 로만 반영.
-		if _MatchLobbyGateway ~= nil then
-			if self.isReady then _MatchLobbyGateway:CancelReady() else _MatchLobbyGateway:ConfirmReady() end
-		else
-			log("[Lobby] " .. (self.isReady and "CancelReady" or "ConfirmReady") .. " — MatchLobbyGateway 없음 (WP1)")
+	method void PaintRowHighlight()
+		-- 고른 행만 밝게. 색이 안 먹어도 기능엔 지장 없다.
+		if not isvalid(self.matchesRoot) then return end
+		for i = 0, self.BrowseRows - 1 do
+			local row = self.matchesRoot:GetChildByName("MatchRow_" .. tostring(i))
+			if isvalid(row) then
+				local sp = row.SpriteGUIRendererComponent
+				if sp ~= nil then
+					if self.listIds[i] ~= "" and self.listIds[i] == self.selectedMatchId then
+						sp.Color = Color(0.30, 0.42, 0.68, 0.98)
+					else
+						sp.Color = Color(0.16, 0.18, 0.24, 0.92)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean InList(string matchId)
+		-- 지금 목록에 이 매치가 있나.
+		if self.listIds == nil then return false end
+		for i = 0, self.BrowseRows - 1 do
+			if self.listIds[i] == matchId then return true end
+		end
+		return false
+	end
+
+	-- ── NPC 라우터 ──────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- LobbyGroup 앞으로 온 Pending 요청을 소비한다 (CommonNpcUIController 와 같은 패턴).
+		-- 🔴 "매칭할래?" 확인 팝업은 없앴다 (사용자 확정) — 바로 서버에 브라우저를 요청한다.
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "LobbyGroup" then
+			r:ClearPendingRequest()
+			if _MatchLobbyGateway ~= nil then
+				_MatchLobbyGateway:RequestOpenLobby()
+			else
+				log("[Lobby] RequestOpenLobby — MatchLobbyGateway 없음")
+			end
+		end
+	end
+
+	-- ── 클릭: 브라우저 ──────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnClickStar(integer level)
+		-- 🔴 ★ 을 누르면 **고른 매치가 풀리고** 새로 만드는 쪽으로 전환된다 (사용자 규칙).
+		if self:InputBlocked() then return end
+		if self.mode ~= "browse" then return end
+		self.pickedDiff = level
+		self.selectedMatchId = ""
+		self.selectedDiff = 0
+		log("[Lobby] ★" .. tostring(level) .. " 선택 — 매치 선택 해제")
+		self:PaintBrowse()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickMatchRow(integer index)
+		-- 목록에서 매치를 고른다. 그 매치의 난이도가 ★ 에 자동 반영된다.
+		if self:InputBlocked() then return end
+		if self.mode ~= "browse" then return end
+		local id = self.listIds[index]
+		if id == nil or id == "" then return end
+		self.selectedMatchId = id
+		-- 난이도는 서버가 준 값을 그대로 쓴다 (라벨에서 다시 파싱하지 않는다).
+		local d = self.listDiffs[index] or 0
+		self.selectedDiff = d
+		self.pickedDiff = d
+		log("[Lobby] 매치 선택 " .. id .. " ★" .. tostring(d))
+		self:PaintBrowse()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickPrimary()
+		-- 브라우저 전용: 참여하기 / 매치 만들기.
+		if self:InputBlocked() then return end
+		if self.mode ~= "browse" then return end
+		if _MatchLobbyGateway == nil then
+			log("[Lobby] primary — MatchLobbyGateway 없음")
+			return
+		end
+		if self.selectedMatchId ~= "" then
+			log("[Lobby] 참여하기 " .. self.selectedMatchId)
+			_MatchLobbyGateway:RequestJoinMatch(self.selectedMatchId)
+			return
+		end
+		if self.pickedDiff >= 1 then
+			log("[Lobby] 매치 만들기 ★" .. tostring(self.pickedDiff))
+			_MatchLobbyGateway:RequestCreateMatch(self.pickedDiff)
 		end
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnClickClose()
-		-- 닫기 = 큐 취소 (확인 팝업은 WP1 에서 PopupGroup 재사용).
-		if _MatchLobbyGateway ~= nil then
-			_MatchLobbyGateway:CancelQueue()
-		else
-			log("[Lobby] CancelQueue — MatchLobbyGateway 없음 (WP1)")
-		end
+		-- 브라우저의 X. 매치에 들어간 상태가 아니므로 창만 닫는다.
+		if self:InputBlocked() then return end
+		if _MatchLobbyGateway ~= nil then _MatchLobbyGateway:RequestCloseLobby() end
 		self:Close()
 	end
+
+	-- ── 클릭: 방 ────────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnClickStart()
+		-- 주인만. 누르면 매치가 잠기고 5초 뒤 출발한다.
+		if self:InputBlocked() then return end
+		if self.mode ~= "room" or not self.isHost or self.isLocked then return end
+		if _MatchLobbyGateway ~= nil then
+			log("[Lobby] 시작하기")
+			_MatchLobbyGateway:RequestStartMatch()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickLeave()
+		-- 매치에서 나간다. 내가 주인이면 서버가 해산시킨다.
+		if self:InputBlocked() then return end
+		if self.mode ~= "room" then return end
+		if _MatchLobbyGateway ~= nil then
+			log("[Lobby] 나가기")
+			_MatchLobbyGateway:RequestLeaveMatch()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickKick(integer index)
+		-- 주인이 그 행의 참가자를 내보낸다.
+		if self:InputBlocked() then return end
+		if self.mode ~= "room" or not self.isHost then return end
+		local token = self.rowTokens[index]
+		if token == nil or token == "" then return end
+		if _MatchLobbyGateway ~= nil then
+			log("[Lobby] 강퇴 요청 token=" .. token)
+			_MatchLobbyGateway:RequestKickMember(token)
+		end
+	end
+
+	-- ── 잡동사니 ────────────────────────────────────────────────────
 
 	@ExecSpace("ClientOnly")
 	method any Split(string s, string sep)
@@ -195,9 +649,12 @@ script LobbyUIController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnEndPlay()
 		-- 핸들러 해제.
+		if self.handlers == nil then return end
 		for _, h in ipairs(self.handlers) do
-			if isvalid(h.btn) then h.btn.Entity:DisconnectEvent(ButtonClickEvent, h.h) end
+			if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
 		end
+		self.handlers = {}
+		self.rowsBound = false
 	end
 
 end

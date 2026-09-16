@@ -12,11 +12,113 @@ script SkillWindowLogic extends Logic
     property TextGUIRendererComponent descText = "f9c386bb-de47-407c-903e-ea48626aa2fd"
     property TextGUIRendererComponent spValueText = "be7a723c-013b-4424-98f6-824d67df8024"
 
+    -- DescText 의 부모 패널. 예전에는 창 아래쪽에 붙박이로 있던 "설명 칸"이었고, 지금은 SetupTooltip 이
+    -- 런타임에 Window 의 **마지막 자식**으로 옮겨 커서를 따라다니는 툴팁으로 쓴다 — 원작 메이플처럼
+    -- 클릭이 아니라 hover 로 뜬다(사용자 요청 2026-09-14). .ui 파일은 건드리지 않는다(협업-규칙 §10-3).
+    property Entity descPanel = "0c466289-c778-4829-8ea4-816b24de67e9"
+
+    -- 실제로 쓰는 패널 엔티티. 위 property 는 UIBuilder 가 써 준 바인딩이 아니라 손으로 적은 UUID 라
+    -- 런타임에 안 붙을 수 있다(2026-09-14 2차까지 툴팁이 아무 반응 없던 유력한 원인) → 안 붙으면
+    -- 이미 동작이 확인된 descText 바인딩에서 부모로 거슬러 올라가 찾는다. 이후 코드는 전부 이것만 쓴다.
+    @HideFromInspector
+    property any tipPanel = nil
+
+    -- 툴팁 치수(UI 좌표). 폭은 고정, 높이는 글 길이에 맞춰 GetPreferredHeight 로 잰다.
+    property number TooltipWidth = 440
+
+    property number TooltipPadding = 14
+
+    property number TooltipMinHeight = 90
+
+    property number TooltipMaxHeight = 560
+
+    -- 배우기 실패 사유 등 짧은 알림이 떠 있는 시간(초). 설명 칸이 없어져 대신 쓰는 자리다.
+    property number MessageSeconds = 2.5
+
+    -- 툴팁 렌더러의 OrderInLayer. 스킬 창(기본 0)보다 확실히 위. 다른 UI 가 더 높은 값을 쓰면 여기만 올리면 된다.
+    property integer TooltipSortOrder = 5000
+
+    -- 커서 기준 툴팁 좌상단 오프셋. 항상 같은 거리에 뜬다(사용자 요청 2026-09-15: 위치가 들쭉날쭉해서
+    -- 읽기 불편하다) — 화면 끝에서 뒤집지 않고, 정말 화면을 벗어날 때만 살짝 밀어 넣는다.
+    property number TooltipCursorOffsetX = 18
+
+    property number TooltipCursorOffsetY = -18
+
+    -- 툴팁 안 스킬 아이콘 한 변(참고 이미지의 왼쪽 아이콘 칸).
+    property number TooltipIconSize = 68
+
+    -- 협업-규칙 §7-4 가 지정한 공용 흰색 9-slice. 구분선을 이걸 눕혀서 그린다(새 스프라이트 없음).
+    property string SharedWhiteNineSliceRUID = "f5e5fbd6dd224f2d8a5af320436b95f0"
+
     -- runtime state (client-only, not persisted)
     property integer currentTab = 0
-    property string selectedSkillId = ""
     property table rowEntities = {}
     property table rowHandlers = {}
+
+    -- SetupTooltip 이 성공했을 때만 true. false 면 툴팁 관련 호출은 전부 조용히 로그로 빠진다.
+    @HideFromInspector
+    property boolean tooltipReady = false
+
+    -- 지금 커서가 올라가 있는 행의 skill_id. 행을 옮길 때 늦게 오는 Exit 가 새 툴팁을 지우지 않도록 쓴다.
+    @HideFromInspector
+    property string hoveredSkillId = ""
+
+    -- 지금 커서가 올라가 있는 행 엔티티. 커서를 못 읽을 때 폴백 자리 계산에 쓴다(PlaceTooltip).
+    @HideFromInspector
+    property any hoveredRow = nil
+
+    -- 툴팁 안쪽 노드(BuildTooltipLayout 이 런타임에 복제해서 만든다).
+    @HideFromInspector
+    property any tipTitleEntity = nil
+
+    @HideFromInspector
+    property any tipIconEntity = nil
+
+    @HideFromInspector
+    property any tipRule1 = nil
+
+    @HideFromInspector
+    property any tipRule2 = nil
+
+    @HideFromInspector
+    property any tipBottomText = nil
+
+    @HideFromInspector
+    property any messageTimerId = nil
+
+    -- ButtonState.Hover 가 한 번이라도 온 적이 있는지. 안 오는 환경이면 OnUpdate 의 커서 폴백이 돈다.
+    @HideFromInspector
+    property boolean hoverEventSeen = false
+
+    -- 폴백이 실제로 쓰였다는 로그를 한 번만 남기기 위한 플래그.
+    @HideFromInspector
+    property boolean pollLogged = false
+
+    @HideFromInspector
+    property number pollAccum = 0
+
+    -- 커서가 UI 밖에 연속으로 머문 시간(초). OnUpdate 의 툴팁 내리기 디바운스에 쓴다.
+    @HideFromInspector
+    property number offUiSeconds = 0
+
+    -- UITouchReceiveComponent 를 런타임에 붙일 수 있는 환경인지 한 번만 재고 기억한다(EnsureTouchReceiver).
+    @HideFromInspector
+    property boolean touchReceiverTried = false
+
+    @HideFromInspector
+    property boolean touchReceiverSupported = false
+
+    -- 목록 영역을 벗어날 때 툴팁을 내리는 안전망(행 Exit 가 빠지는 경우 대비). OnEndPlay 에서 끊는다.
+    property any listExitHandler = nil
+
+    -- 툴팁 문구표: BuffTag → 주/부 효과 한 줄. "{v}" 자리에 그 레벨의 값이 들어간다.
+    -- 이건 표시 문구일 뿐이고 수치는 전부 SkillInfo.csv 에서 온다 — 새 열도 새 표도 아니다(스키마 변경 없음).
+    -- BuildEffectLabels 가 OnBeginPlay 에서 채운다(property 기본값에 내용 있는 테이블을 두지 않는 이 파일의 방식).
+    @HideFromInspector
+    property table MainEffectLabels = {}
+
+    @HideFromInspector
+    property table SecondaryEffectLabels = {}
 
     property any btnCloseHandler = nil
     property any tabBtn0Handler = nil
@@ -39,6 +141,7 @@ script SkillWindowLogic extends Logic
         -- SkillDatabase's own OnBeginPlay having already run). Then hides the window and the row
         -- template, wires close/tab buttons, and shows tab 0.
         _SkillDatabase:EnsureLoaded()
+        self:BuildEffectLabels()
         self.rootGroup.Enable = false
         self.rowTemplate:SetEnable(false)
 
@@ -70,12 +173,260 @@ script SkillWindowLogic extends Logic
         -- reflected the moment it becomes visible again (see Toggle), not just from here.
         self.skillStateChangedHandler = _PlayerSkillState:ConnectEvent(SkillStateChangedEvent, self.OnSkillStateChanged)
 
+        -- 붙박이 설명 칸 → 커서 툴팁. ShowTab 보다 먼저 해야 첫 탭이 이미 넓어진 목록으로 그려진다.
+        self:SetupTooltip()
         self:ShowTab(0)
         log("SkillWindowLogic: OnBeginPlay complete")
     end
 
+    @ExecSpace("ClientOnly")
+    method void BuildEffectLabels()
+        -- 추가기획1 표의 "효과" 열을 그대로 읽히게 하는 문구. 태그가 없는 공격 스킬(파워 스트라이크·에너지볼트·
+        -- 더블 샷·럭키 세븐·섬머솔트 킥·스나이핑·대마법·폭풍의 화살·메소 익스플로전·함포 사격)은
+        -- FormatEffect 가 EffectUnit 기본 문구("데미지 N%")로 떨어진다.
+        self.MainEffectLabels = {
+            REFLECT_HP_PCT = "반사 데미지 = 최대 HP의 {v}%",            -- 아이언 바디 SK_W12
+            HYPER_BODY = "최대 HP +{v}%",                                -- 하이퍼 바디 SK_W21
+            INVULNERABLE = "{v}초간 HP 최대치 고정 · 경직/넉백 없음",     -- 불굴의 진 SK_W31
+            COST_REDUCE_UPGRADE = "장비 강화 비용 -{v}%",                -- 연성 SK_M12
+            MAGIC_GUARD = "받는 피해의 {v}%를 MP가 대신 받음",            -- 매직 가드 SK_M22
+            DROP_RATE_DREAM_SHARD = "특수 재화 드랍율 +{v}% · 보스 리젠 표시", -- 포커스 SK_A12
+            GUARANTEED_CRIT = "{v}초간 확정 크리티컬",                    -- 닷지 SK_A22
+            STACK_GAIN = "1타마다 메소 {v}개 즉시 드랍",                  -- 픽파켓 SK_T12
+            DARK_SIGHT = "{v}초간 은신 · 공격 1회 무조건 회피",           -- 다크 사이트 SK_T21
+            SHADOW_PARTNER = "분신 소환 · 스킬 피해 +{v}%",               -- 쉐도우 파트너 SK_T22
+            COST_REDUCE_RECRUIT = "모집·훈련 재화 -{v}%",                 -- 선원 관리 SK_P12
+            SUPER_TRANSFORM = "변신 중 재시전 = 주먹 {v}%",               -- 슈퍼 트랜스폼 SK_P21
+            ENERGY_SHIELD = "보호막 = 최대 HP의 {v}%",                    -- 에너지 쉴드 SK_P22
+        }
+        self.SecondaryEffectLabels = {
+            HYPER_BODY = "피해 감소 {v}%",
+            MAGIC_GUARD = "공격 시 현재 MP의 {v}% 추가 마법 피해",
+            SUPER_TRANSFORM = "이동속도·점프력 +{v}%",
+        }
+    end
+
+    @ExecSpace("ClientOnly")
+    method void SetupTooltip()
+        -- 사용자 요청(2026-09-14): "클릭하면 나오는 설명 칸을 없애고, 원작 메이플처럼 스킬에 커서를 올리면 설명이 뜨게".
+        -- .ui 를 고치지 않고(협업-규칙 §10-3 · UIBuilder 밖에서 손대지 않는다) 런타임에 세 가지만 바꾼다:
+        --   ① DescPanel 을 Window 안에서 **마지막 자식**으로 옮긴다(MakeLastChild) → TabRow·ListArea·Footer
+        --      보다 나중에 그려져 그 위에 뜬다. 앵커를 (0.5,0.5) 로 두면 anchoredPosition 이 곧 "창 중앙
+        --      기준 좌표" 가 되고, ScreenToLocalUIPosition(부모) 이 주는 커서 좌표와 같은 공간이 된다.
+        --      (UIGroup 루트로 빼는 방법은 창을 못 이겼다 — 2026-09-15 실측 주석은 MakeLastChild 참고.)
+        --   ② 피벗을 좌상단으로 → 커서 오른쪽 아래로 펼쳐진다.
+        --   ③ 설명 칸이 비운 만큼 창 높이를 줄인다(stage 4) → 목록 아래에 빈 회색 칸이 남지 않는다.
+        local text = self.descText
+        if text == nil or not isvalid(text.Entity) then
+            log_warning("SkillWindowLogic: DescText binding missing - hover tooltip disabled")
+            return
+        end
+
+        -- descPanel property(손으로 적은 UUID)가 안 붙었으면 DescText 의 부모로 찾는다.
+        local panel = self.descPanel
+        if not isvalid(panel) then
+            panel = text.Entity.Parent
+            log_warning("SkillWindowLogic: descPanel property did not bind - falling back to DescText.Parent")
+        end
+        if not isvalid(panel) then
+            log_warning("SkillWindowLogic: DescPanel not found - hover tooltip disabled")
+            return
+        end
+        self.tipPanel = panel
+        local panelTransform = panel.UITransformComponent
+        if panelTransform == nil then
+            log_warning("SkillWindowLogic: DescPanel transform missing - hover tooltip disabled")
+            return
+        end
+        log("SkillWindowLogic: tooltip panel = " .. tostring(panel.Name))
+
+        -- 먼저 "쓸 수 있다" 로 표시하고 배치를 바꾼다. 아래 한 줄이 엔진에서 막히더라도 툴팁 자체는
+        -- (원래 자리에라도) 뜨게 하려는 것 — 2026-09-14 1차 시도에서 아무것도 안 뜬 뒤로, 어디까지
+        -- 진행됐는지 로그로 바로 알 수 있게 단계마다 한 줄씩 남긴다.
+        self.tooltipReady = true
+        text.HorizontalAlignment = TextHorizontalAlignmentOption.Left
+        text.VerticalAlignment = TextVerticalAlignmentOption.Top
+        text.FontSize = 20
+        text.FontColor = Color(0.93, 0.93, 0.90, 1)
+        text.Text = ""
+        -- 원작 메이플 툴팁처럼 어두운 상자 + 밝은 글씨(참고 이미지). 스프라이트는 원래 것 그대로 쓰고
+        -- 색만 바꾼다 — 새 스프라이트를 만들지 않는다(협업-규칙 §7-4 스킨 규칙).
+        local panelSprite = panel.SpriteGUIRendererComponent
+        if panelSprite ~= nil then panelSprite.Color = Color(0.055, 0.063, 0.110, 0.96) end
+
+        -- 그리기 순서: UIGroup 루트의 마지막 자식으로 옮기는 것(stage 3)만으로는 창 뒤에 깔렸다
+        -- (2026-09-14 3차 Play: "설명이 탭 뒤에 나온다"). 계층 순서가 아니라 렌더러의 정렬값이 이기는
+        -- 구조라, 패널·글자에 OverrideSorting + 높은 OrderInLayer 를 직접 준다.
+        self:SetSortOrder(panelSprite, self.TooltipSortOrder)
+        self:SetSortOrder(text, self.TooltipSortOrder + 1)
+        -- DescText 엔티티에 깔려 있는 투명 스프라이트도 같이 올린다(글자보다 뒤여야 한다).
+        self:SetSortOrder(text.Entity.SpriteGUIRendererComponent, self.TooltipSortOrder)
+
+        panel.Enable = false
+        log("SkillWindowLogic: tooltip stage 1 - text/panel styled")
+
+        -- 그리기 순서는 "같은 부모 안에서 나중 형제가 위" 로만 잡는다.
+        --   · OrderInLayer 단독은 효과가 없다 — Unity 계열에서 이 값이 먹으려면 OverrideSorting 이
+        --     켜져 있어야 하는데, 이 런타임은 그 대입을 막는다("no such field" · 직전 커밋 참고).
+        --   · UIGroup 루트의 마지막 자식으로 옮기는 것도 창을 못 이겼다(2026-09-15 제보: 창 뒤에 깔림).
+        --     루트 바로 밑 형제는 Window 서브트리보다 위로 오지 않는다.
+        -- → 그래서 Window '안'의 마지막 자식으로 둔다. TabRow·ListArea·Footer 보다 뒤 = 그 위에 그려진다.
+        --   Window 에는 Mask 가 없으므로 창 밖으로 삐져나와도 잘리지 않는다(ListArea 에만 Mask 가 있다).
+        --   ⚠ "마지막" 을 인덱스로 계산해서 넣지 않는다 — 규약이 확실하지 않아 한 칸 어긋난다(MakeLastChild).
+        -- 앵커/피벗은 반드시 이 "다음"에 준다 — AttachTo 는 화면 위치를 유지하려고 앵커와
+        -- anchoredPosition 을 새 부모 기준으로 다시 계산하므로, 먼저 줘 봐야 덮어써진다.
+        local windowEntity = self:WindowEntity()
+        if isvalid(windowEntity) then
+            -- DescPanel 은 원래부터 Window 의 자식(Footer 앞)이고, MCP 실측상 Detach+AttachTo 로는
+            -- 자리가 안 바뀐다 — 실제로 끝으로 보내는 것은 MakeLastChild 다.
+            self:MakeLastChild(panel, windowEntity, panelTransform)
+        else
+            log_warning("SkillWindowLogic: Window entity not found - tooltip stays where it is")
+        end
+
+        -- 앵커를 루트 정중앙에 고정하고 피벗을 좌상단으로 → anchoredPosition 이 곧 "화면 중앙 기준
+        -- 툴팁 좌상단 좌표" 가 되고, ScreenToLocalUIPosition(루트) 이 주는 커서 좌표와 같은 공간이 된다.
+        panelTransform.AnchorsMin = Vector2(0.5, 0.5)
+        panelTransform.AnchorsMax = Vector2(0.5, 0.5)
+        panelTransform.Pivot = Vector2(0, 1)
+        panelTransform.RectSize = Vector2(self.TooltipWidth, self.TooltipMinHeight)
+        panelTransform.anchoredPosition = Vector2(0, 0)
+
+        -- 툴팁 안쪽 글: 좌상단 정렬로 여러 줄을 위에서부터 채운다(붙박이 칸일 때는 가운데 정렬이었다).
+        local textTransform = text.Entity.UITransformComponent
+        textTransform.AnchorsMin = Vector2(0, 1)
+        textTransform.AnchorsMax = Vector2(0, 1)
+        textTransform.Pivot = Vector2(0, 1)
+        textTransform.anchoredPosition = Vector2(self.TooltipPadding, -self.TooltipPadding)
+        textTransform.RectSize = Vector2(self.TooltipWidth - self.TooltipPadding * 2, self.TooltipMinHeight - self.TooltipPadding * 2)
+        log("SkillWindowLogic: tooltip stage 3 - transforms set after reparent")
+
+        -- 참고 이미지 배치(제목·구분선·아이콘·아래 블록)를 위한 안쪽 노드. 실제 좌표·크기는 매번
+        -- ShowPanelWithParts 가 글 길이에 맞춰 다시 잡는다. 복제가 막혀도 위 단계는 이미 끝나 있다.
+        self:BuildTooltipLayout(panel)
+
+        -- 설명 칸이 있던 자리를 아예 없앤다(사용자 요청 2026-09-14 2차: "설명 나오던 공간도 지워줘").
+        -- 목록은 원래 높이(480) 그대로 두고 창 자체를 줄인다 → 목록 아래에 빈 회색 칸이 남지 않는다.
+        --   목록 아래 끝 = 222(위 여백) + 480 = 702 · 푸터(SKILL POINT) = 아래에서 84 · 사이 여백 16
+        --   → 창 높이 802. 창은 중앙 피벗이라 줄이면 위아래가 같이 당겨지고, 목록(위 고정)·푸터(아래 고정)는
+        --     각자 기준을 유지한다.
+        local listEntity = self.listLayout.Entity
+        if isvalid(listEntity) then
+            local windowEntity = listEntity.Parent
+            if isvalid(windowEntity) and windowEntity.UITransformComponent ~= nil then
+                local windowTransform = windowEntity.UITransformComponent
+                local listBottom = 222 + 480
+                windowTransform.RectSize = Vector2(windowTransform.RectSize.x, listBottom + 16 + 84)
+                log("SkillWindowLogic: tooltip stage 4 - window shrunk to " .. tostring(windowTransform.RectSize.y) .. " (desc slot removed)")
+            end
+        end
+
+        -- 행을 하나씩 옮겨 다닐 때는 다음 행의 Hover 가 툴팁을 갈아 끼우지만, 목록 밖으로 한 번에
+        -- 빠져나가는 경우를 위해 목록 자체의 Exit 도 안전망으로 둔다(붙으면 좋고, 아니면 OnUpdate 가 받는다).
+        -- AddComponent 가 막히는 환경일 수 있으니 반드시 마지막에 — 여기서 멈춰도 위는 다 끝나 있다.
+        if isvalid(listEntity) then
+            self:EnsureTouchReceiver(listEntity)
+            if listEntity.UITouchReceiveComponent ~= nil then
+                self.listExitHandler = listEntity:ConnectEvent(UITouchExitEvent, function() self:OnListHoverExit() end)
+                log("SkillWindowLogic: tooltip list-exit safety net wired")
+            end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void SetSortOrder(any renderer, number order)
+        -- GUI 렌더러 하나의 그리기 순서를 올린다. 컴포넌트가 없으면 조용히 넘어간다.
+        --
+        -- ⚠ OverrideSorting 은 절대 대입하지 않는다. .d.mlua 스텁에는 property 로 있지만 런타임에는
+        --   "cannot set OverrideSorting, no such field" 예외가 나고, 그 예외가 SetupTooltip →
+        --   OnBeginPlay 를 통째로 중단시킨다(2026-09-14 MCP 로 직접 확인). 그 여파로 ShowTab 이
+        --   아예 안 돌아 목록이 비고, 창 축소도 툴팁도 전부 실행되지 않았다 — 3~7차 증상의 진짜 원인.
+        --   앞으로 그리기 순서는 OrderInLayer + 계층 순서(AttachTo + SetSiblingIndex)로만 다룬다.
+        if renderer == nil then return end
+        renderer.OrderInLayer = order
+    end
+
+    @ExecSpace("ClientOnly")
+    method void MakeLastChild(any child, any parent, any childTransform)
+        -- 엔티티 하나를 형제 중 맨 마지막으로 보낸다. 그리기 순서를 계층으로만 다뤄야 하므로
+        -- (SetSortOrder 주석: OverrideSorting 대입 불가 → OrderInLayer 는 무의미) 툴팁이 창 위에 뜨는
+        -- 유일한 수단이다.
+        --
+        -- ⚠ 인덱스를 계산해서 넣지 않는다. 2026-09-15 제보("설명 칸이 SKILL POINT 칸 밑에 깔린다")의
+        --   원인이 정확히 그 계산이었다. 직전 커밋은 SetSiblingIndex(자식수 - 1) 로 0-based 를 가정했다.
+        --   MCP 실측(2026-09-15, Play 중 클라 스크립트):
+        --     · Window 의 자식은 6개 — TitleText BtnClose TabRow ListArea DescPanel Footer.
+        --     · 그 상태에서 GetSiblingIndex(DescPanel) = 5 → **1-based**. 즉 "자식수 - 1" = 5 는
+        --       끝에서 두 번째, 바로 Footer(SKILL POINT) 아래다. 툴팁이 푸터에 가려진 그 자리다.
+        --     · SetSiblingIndex(9999) 를 주면 6 으로 잘리고 순서가 ... Footer DescPanel 로 바뀐다 →
+        --       툴팁이 푸터 위에 그려지는 것을 스크린샷으로 확인했다.
+        --     · Detach()+AttachTo() 는 끝으로 보내지 않는다 — 순서가 그대로였다. 그래서 이 메서드가 필요하다.
+        --   게다가 뒤따르던 검사가 `읽은 인덱스 < 자식수 - 1` 이라 방금 넣은 값과 같아 절대 참이 되지
+        --   않았고, 로그에는 last=true 로 찍혀 성공한 것처럼 보였다.
+        -- → 인덱스 규약을 아예 타지 않는다. "부모의 마지막 자식이 나인가" 를 엔티티로 직접 확인하고,
+        --   아니면 ① 큰 값으로 밀기(0/1-based 어느 쪽이든 끝으로 잘린다) ② 떼었다 다시 붙이기 순으로 고친다.
+        if not isvalid(parent) or not isvalid(child) then return end
+
+        -- 실제 순서를 이름으로 남긴다. 이게 맞는데도 여전히 Footer 가 위라면 원인은 계층이 아니라
+        -- .ui 에 저장된 OverrideSorting 이고, 그때는 UIBuilder 로 가야 한다 — 로그로 바로 갈린다.
+        local order = ""
+        for _, entity in ipairs(parent.Children) do order = order .. entity.Name .. " " end
+        log("SkillWindowLogic: tooltip stage 2 - " .. tostring(parent.Name) .. " children = " .. order)
+
+        if self:IsLastChild(parent, child) then
+            log("SkillWindowLogic: tooltip stage 2 - already last child (AttachTo appended)")
+            return
+        end
+        if childTransform ~= nil then
+            _UILogic:SetSiblingIndex(childTransform, 9999)
+            if self:IsLastChild(parent, child) then
+                log("SkillWindowLogic: tooltip stage 2 - moved last via SetSiblingIndex(9999)")
+                return
+            end
+        end
+        child:Detach()
+        child:AttachTo(parent)
+        log_warning("SkillWindowLogic: tooltip stage 2 - re-attached as fallback; last=" .. tostring(self:IsLastChild(parent, child)))
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean IsLastChild(any parent, any child)
+        -- 인덱스 규약(0-based/1-based)을 타지 않는 확인: 자식 목록의 마지막 원소가 그 엔티티인지 본다.
+        -- 비교는 Id 로 한다 — 엔티티 핸들은 접근할 때마다 다른 래퍼일 수 있어 == 를 믿지 않는다.
+        local last = nil
+        for _, entity in ipairs(parent.Children) do last = entity end
+        if not isvalid(last) then return false end
+        return last.Id == child.Id
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EnsureTouchReceiver(Entity entity)
+        -- UITouchEnterEvent / UITouchExitEvent 는 UITouchReceiveComponent 가 내는 것이라, 그 컴포넌트가
+        -- 없는 엔티티(행 복제본 · ListArea)에는 런타임에 붙여 본다. 이게 막히는 환경이라는 것이
+        -- 2026-09-14 1차 Play 에서 드러났으므로(툴팁 자체가 안 떴다) 이제 여기는 "되면 보너스" 다 —
+        -- 주 hover 경로는 ButtonStateChangeEvent 이고, 실패해도 툴팁은 뜬다.
+        --
+        -- 한 번 실패하면 행마다 다시 시도하며 로그를 더럽히므로, 시도 여부를 먼저 기록하고 부른다
+        -- (AddComponent 가 예외로 빠져나가도 플래그는 이미 세워져 있다).
+        if self.touchReceiverTried then
+            if not self.touchReceiverSupported then return end
+        end
+        if entity.UITouchReceiveComponent ~= nil then
+            self.touchReceiverTried = true
+            self.touchReceiverSupported = true
+            return
+        end
+        self.touchReceiverTried = true
+        entity:AddComponent("UITouchReceiveComponent")
+        self.touchReceiverSupported = entity.UITouchReceiveComponent ~= nil
+        log("SkillWindowLogic: UITouchReceiveComponent AddComponent supported=" .. tostring(self.touchReceiverSupported))
+    end
+
     -- ⚠ DEV: F10 직업 선택 순환 인덱스 (OnDevChooseJob). 전직 UI 가 생기면 함께 제거.
     property integer devJobIndex = 0
+
+    -- ⚠ DEV 원버튼(스킬 창 목록 끝 "DEV 세팅" 행 · PlayerSkillState.DevTestMode 가 true 일 때만 생김): 목표 레벨.
+    property integer DevTargetLevel = 30
 
     @ExecSpace("ClientOnly")
     method void OnKeyDown(KeyDownEvent event)
@@ -84,6 +435,14 @@ script SkillWindowLogic extends Logic
             self:Toggle()
         elseif event.key == KeyboardKey.F10 then
             self:OnDevChooseJob()
+        elseif event.key == KeyboardKey.F9 then
+            -- ⚠ DEV: 현재 직업 전 스킬 MaxLevel (PlayerSkillState.DevTestMode 가 true 일 때만 서버가 받아준다)
+            _PlayerSkillState:RequestDevLearnAll()
+            log("SkillWindowLogic: [DEV] RequestDevLearnAll()")
+        elseif event.key == KeyboardKey.F8 then
+            -- ⚠ DEV: MP·최대 MP 를 PlayerSkillState.DevTestMp(기본 5,000,000)로
+            _PlayerSkillState:RequestDevSetMp()
+            log("SkillWindowLogic: [DEV] RequestDevSetMp()")
         end
     end
 
@@ -96,6 +455,10 @@ script SkillWindowLogic extends Logic
         self.rootGroup.Enable = not self.rootGroup.Enable
         if self.rootGroup.Enable then
             self:RefreshFromState()
+        else
+            -- 창을 닫을 때 툴팁도 같이 내린다(툴팁은 이제 창 밖 = UIGroup 루트 자식이라 따라 꺼지지 않는다).
+            self.hoveredSkillId = ""
+            self:HideTooltip()
         end
         log("SkillWindowLogic: Toggle -> Enable=" .. tostring(self.rootGroup.Enable))
     end
@@ -111,11 +474,11 @@ script SkillWindowLogic extends Logic
             self:RefreshFromState()
             local reason = _PlayerSkillState.lastLearnReason
             if reason ~= nil and reason ~= "" then
-                self.descText.Text = reason
-            elseif self.selectedSkillId ~= "" then
-                -- 성공(또는 단순 갱신): 선택된 스킬 설명으로 되돌린다 (OnPlusClicked 가 "..." 을 띄워 둔 경우).
-                local skill = _SkillDatabase:GetSkill(self.selectedSkillId)
-                if skill ~= nil then self.descText.Text = skill.description end
+                -- 실패: 설명 칸이 없어졌으니 마지막 커서 자리에 잠깐 띄운다(누른 "+" 바로 옆).
+                self:ShowFloatingMessage(reason)
+            elseif self.hoveredSkillId ~= "" then
+                -- 성공(또는 단순 갱신): 커서가 아직 올라가 있는 행의 툴팁을 새 레벨·새 수치로 다시 그린다.
+                self:ShowTooltip(self.hoveredSkillId)
             end
         end
     end
@@ -140,15 +503,32 @@ script SkillWindowLogic extends Logic
         for _, entity in ipairs(self.rowEntities) do
             if isvalid(entity) then
                 local skillId = string.sub(entity.Name, 5) -- strip the "Row_" prefix (see CreateRow)
-                local levelText = entity:GetChildByName("LevelText")
-                levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skillId))
+                -- DEV 행("Row_DEV_SETUP")·안내 행("Row_NOTICE")은 스킬이 아니라 조회가 nil 이다 - 이름 접두사를
+                -- 하나씩 나열하는 대신 "SkillInfo 에 있는 행만" 으로 거른다(행 종류가 늘어도 여기는 안 바뀐다).
+                local skill = _SkillDatabase:GetSkill(skillId)
+                if skill ~= nil then
+                    local levelText = entity:GetChildByName("LevelText")
+                    levelText.TextGUIRendererComponent.Text = self:RowLevelText(skillId, skill)
+                end
             end
         end
     end
 
     @ExecSpace("ClientOnly")
+    method string RowLevelText(string skillId, table skill)
+        -- 목록 행의 레벨 칸. 패시브는 "Lv.3  패시브" 처럼 태그가 붙어, 키가 없는 이유가 바로 보인다.
+        local text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skillId))
+        if skill ~= nil and skill.behavior == "PASSIVE" then
+            text = text .. "  <color=#7FD87F>패시브</color>"
+        end
+        return text
+    end
+
+    @ExecSpace("ClientOnly")
     method void OnCloseClicked()
         -- Closes the skill window.
+        self.hoveredSkillId = ""
+        self:HideTooltip()
         self.rootGroup.Enable = false
     end
 
@@ -172,10 +552,11 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void ShowTab(integer tab)
-        -- Rebuilds the row list for the given tab (ordered by slot_order) and clears the description panel.
+        -- Rebuilds the row list for the given tab (ordered by slot_order). 탭을 갈아 끼우면 지금 떠 있는
+        -- 툴팁이 가리키던 행은 사라지므로 같이 내린다.
         self.currentTab = tab
-        self.selectedSkillId = ""
-        self.descText.Text = ""
+        self.hoveredSkillId = ""
+        self:HideTooltip()
         self:ClearRows()
 
         self:SetTabHighlight(self.tabBtn0, tab == 0)
@@ -203,12 +584,16 @@ script SkillWindowLogic extends Logic
         for _, skill in ipairs(filtered) do
             self:CreateRow(skill, playerJobLine, playerTier, playerLevel)
         end
+        -- ⚠ DEV 원버튼 행 (리모컨 DevStatRemote 는 A 의 UI·스크립트라 못 건드림 → B 의 스킬 창에). 머지 전 DevTestMode=false 면 안 생긴다.
+        if _PlayerSkillState.DevTestMode then
+            self:CreateDevRow()
+        end
 
         -- BEGINNER (tier 0) matches no job_line, so every tab is empty by design - show why,
-        -- instead of a silent blank panel. Reuses the existing description panel; adds no new
-        -- UI element (no .ui file touched).
+        -- instead of a silent blank list. 예전에는 아래 설명 칸에 적었지만 그 칸이 툴팁으로 바뀌었으니
+        -- (커서를 올릴 행 자체가 없어 툴팁으로는 못 보여 준다) 목록 안에 안내 행 하나로 넣는다.
         if #filtered == 0 and playerJobLine == "NOVICE" then
-            self.descText.Text = "Choose a job to see your skills."
+            self:CreateNoticeRow("직업을 선택하면 스킬이 표시됩니다.")
         end
 
         if self.listLayout ~= nil then
@@ -253,6 +638,10 @@ script SkillWindowLogic extends Logic
             btn.Entity.SpriteGUIRendererComponent.Color = btn.Colors.PressedColor
         elseif event.state == ButtonState.Released or event.state == ButtonState.Clicked then
             self:SetTabHighlight(btn, tabIndex == self.currentTab)
+        elseif event.state == ButtonState.Hover then
+            -- 목록에서 탭 줄로 커서가 올라오면 툴팁을 내린다. OnUpdate 의 IsPointerOverUI 안전망은
+            -- 창 안에서의 이동은 못 잡으므로(둘 다 UI 위) 여기서 받는다.
+            self:OnListHoverExit()
         end
     end
 
@@ -271,7 +660,7 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void CreateRow(table skill, string playerJobLine, number playerTier, number playerLevel)
-        -- Clones RowTemplate, fills icon/name/level, and wires row-select + level-up clicks.
+        -- Clones RowTemplate, fills icon/name/level, and wires hover-tooltip + level-up clicks.
         local row = self.rowTemplate:Clone("Row_" .. skill.id)
         row:SetEnable(true)
         table.insert(self.rowEntities, row)
@@ -281,8 +670,9 @@ script SkillWindowLogic extends Logic
 
         -- Learned level now lives in PlayerSkillState; 0 (its default for an unlearned skill)
         -- renders as "Lv.0" - same visual as before, just reflecting the new floor value.
+        -- 패시브는 뒤에 태그가 붙는다(RowLevelText) - 각 직업의 B 슬롯 패시브가 목록에서 바로 구분된다.
         local levelText = row:GetChildByName("LevelText")
-        levelText.TextGUIRendererComponent.Text = "Lv." .. tostring(_PlayerSkillState:LocalSkillLevel(skill.id))
+        levelText.TextGUIRendererComponent.Text = self:RowLevelText(skill.id, skill)
 
         -- Locked/greyed DRAW state only - never gates learning/casting. CanLearn is called
         -- here read-only for its ok result (job/tier/level reachability); it is not
@@ -290,7 +680,8 @@ script SkillWindowLogic extends Logic
         -- (GetSkillsByJobLineAndTier already returned it) but renders dimmed, so a tier-1 mage
         -- can still see Great Magic without being able to use it yet - pressing + still goes
         -- through PlayerSkillState.LearnSkill -> CanLearn exactly as before and reports the
-        -- real reason in the description panel on failure.
+        -- real reason as a floating message on failure (ShowFloatingMessage). 툴팁에도 같은 사유가
+        -- 한 줄로 들어간다(BuildTooltipParts) - 커서만 올려도 왜 잠겼는지 보인다.
         local requirements = _SkillDatabase:CanLearn(skill.id, playerJobLine, playerTier, playerLevel)
         local locked = not requirements.ok
         if locked then
@@ -309,8 +700,17 @@ script SkillWindowLogic extends Logic
         end
 
         local capturedId = skill.id
-        local rowHandler = row:ConnectEvent(ButtonClickEvent, function() self:OnRowClicked(capturedId) end)
-        table.insert(self.rowHandlers, { entity = row, conn = rowHandler, eventType = ButtonClickEvent })
+
+        -- 원작 메이플처럼 행 위에 커서를 올리면 설명 툴팁(클릭이 아니라 hover). 예전의 행 클릭 →
+        -- 아래 설명 칸 경로는 없앴다(사용자 요청 2026-09-14). 레벨 올리기는 그대로 "+" 버튼이다.
+        --
+        -- 주 경로는 ButtonStateChangeEvent 다. 이 파일이 이미 복제 행/복제 "+" 에서 이 이벤트를 받아
+        -- 누름 색을 칠하고 있으므로(ApplyButtonPressVisual) 복제본에서 뜨는 것이 확인된 유일한 hover 신호다.
+        -- (2026-09-14 1차 시도: UITouchEnterEvent 로만 걸었더니 툴팁이 아예 안 떴다 — 복제 행에는
+        --  UITouchReceiveComponent 가 없고 런타임 AddComponent 도 먹지 않은 것으로 본다. 아래쪽에서
+        --  UITouch 쪽도 "붙으면 좋고" 로 같이 걸되, 실패해도 여기까지는 이미 배선이 끝나 있게 순서를 뒤에 둔다.)
+        local hoverHandler = row:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
+        table.insert(self.rowHandlers, { entity = row, conn = hoverHandler, eventType = ButtonStateChangeEvent })
 
         local plusEntity = row:GetChildByName("BtnPlus")
         local plusHandler = plusEntity:ConnectEvent(ButtonClickEvent, function() self:OnPlusClicked(capturedId) end)
@@ -322,24 +722,655 @@ script SkillWindowLogic extends Logic
         local plusRestColor = plusEntity.SpriteGUIRendererComponent.Color
         local plusStateHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyButtonPressVisual(plusButton, plusRestColor, event) end)
         table.insert(self.rowHandlers, { entity = plusEntity, conn = plusStateHandler, eventType = ButtonStateChangeEvent })
+
+        -- "+" 위에 있을 때도 그 행의 툴팁을 유지한다(행에서 "+" 로 넘어가면 행의 Normal 이 먼저 올 수 있다).
+        local plusHoverHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
+        table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHoverHandler, eventType = ButtonStateChangeEvent })
+
+        -- 보조 경로: UITouchEnter/Exit 가 실제로 오면 더 정확하다(좌표가 이벤트에 실려 온다).
+        -- 반드시 맨 마지막에 — AddComponent 가 실패해 여기서 멈춰도 위 배선은 이미 다 끝나 있다.
+        self:WireTouchHover(row, capturedId)
     end
 
     @ExecSpace("ClientOnly")
-    method void OnRowClicked(string skillId)
-        -- Selects the row and writes its description into the description panel.
-        self.selectedSkillId = skillId
-        local skill = _SkillDatabase:GetSkill(skillId)
-        if skill ~= nil then
-            self.descText.Text = skill.description
+    method void WireTouchHover(Entity row, string skillId)
+        -- UITouchReceiveComponent 가 붙는 환경이면 Enter/Exit 도 같이 쓴다. 안 붙으면 조용히 넘어간다
+        -- (ButtonStateChangeEvent 주 경로만으로도 툴팁은 뜬다).
+        self:EnsureTouchReceiver(row)
+        if row.UITouchReceiveComponent == nil then return end
+        local enterHandler = row:ConnectEvent(UITouchEnterEvent, function(event) self:OnRowHoverEnter(skillId, row) end)
+        table.insert(self.rowHandlers, { entity = row, conn = enterHandler, eventType = UITouchEnterEvent })
+        local exitHandler = row:ConnectEvent(UITouchExitEvent, function() self:OnRowHoverExit(skillId) end)
+        table.insert(self.rowHandlers, { entity = row, conn = exitHandler, eventType = UITouchExitEvent })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnRowButtonState(string skillId, Entity row, ButtonStateChangeEvent event)
+        -- Hover = 커서가 행에 올라옴 → 그 행 옆에 툴팁(자리는 PlaceTooltip 이 행 트랜스폼으로 잡는다).
+        -- Normal(= hover 해제)은 이 엔진에서 빠지는 경우가 있어(ApplyButtonPressVisual 주석) 내리는 것을
+        -- 여기에만 맡기지 않는다 — 다음 행의 Hover · 목록 Exit · OnUpdate 의 IsPointerOverUI 가 같이 받는다.
+        if event.state == ButtonState.Hover then
+            self.hoverEventSeen = true
+            log("SkillWindowLogic: hover(ButtonState) " .. skillId)
+            self.hoveredSkillId = skillId
+            self.hoveredRow = row
+            self:ShowTooltip(skillId)
+        elseif event.state == ButtonState.Normal then
+            self:OnRowHoverExit(skillId)
         end
+    end
+
+    @ExecSpace("ClientOnly")
+    method any TooltipParentTransform()
+        -- 툴팁이 실제로 매달려 있는 부모의 UITransform. AttachTo 성공이면 UIGroup 루트, 실패면 Window.
+        if not isvalid(self.tipPanel) then return nil end
+        local parent = self.tipPanel.Parent
+        if not isvalid(parent) then return nil end
+        return parent.UITransformComponent
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindRowUnderCursor()
+        -- hover 이벤트가 아예 안 오는 환경을 위한 폴백: 커서가 어느 행 사각형 안에 있는지 직접 잰다.
+        -- 행 복제본의 anchoredPosition 은 못 믿지만(엔진 내부 배치) ScreenToLocalUIPosition 은 실제
+        -- 변환 행렬을 쓰므로 별개 경로다. RowTemplate 피벗이 (0.5, 1) 좌상단 기준이라 행 안이면
+        -- x ∈ [-w/2, w/2] · y ∈ [-h, 0].
+        local cursor = _InputService:GetCursorPosition()
+        for _, entity in ipairs(self.rowEntities) do
+            if isvalid(entity) then
+                local rowTransform = entity.UITransformComponent
+                if rowTransform ~= nil then
+                    local point = _UILogic:ScreenToLocalUIPosition(cursor, rowTransform)
+                    if point ~= nil then
+                        local halfW = rowTransform.RectSize.x / 2
+                        local rowH = rowTransform.RectSize.y
+                        if point.x >= -halfW and point.x <= halfW and point.y <= 0 and point.y >= -rowH then
+                            return entity
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PollCursorHover()
+        -- ButtonState.Hover 가 한 번도 안 온 환경에서만 도는 폴백. 커서 아래 행을 찾아 툴팁을 맞춘다.
+        local row = self:FindRowUnderCursor()
+        if row == nil then
+            if self.hoveredSkillId ~= "" then
+                self.hoveredSkillId = ""
+                self:HideTooltip()
+            end
+            return
+        end
+        local skillId = string.sub(row.Name, 5) -- "Row_" 접두사 제거 (CreateRow)
+        if _SkillDatabase:GetSkill(skillId) == nil then return end -- DEV/안내 행
+        if skillId == self.hoveredSkillId then return end -- 같은 행이면 다시 그리지 않는다
+        if not self.pollLogged then
+            self.pollLogged = true
+            log("SkillWindowLogic: hover(poll fallback) " .. skillId .. " - ButtonState.Hover never fired")
+        end
+        self.hoveredSkillId = skillId
+        self.hoveredRow = row
+        self:ShowTooltip(skillId)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- ① hover 이벤트가 안 오는 환경이면 커서 폴백으로 직접 찾는다(창이 열려 있을 때만).
+        -- ② 툴팁이 떠 있는데 커서가 UI 밖(= 게임 화면)으로 나가면 내린다 — Normal/Exit 가 빠져도 안 남는다.
+        if not self.tooltipReady then return end
+
+        -- 폴백은 매 프레임까지 필요 없다(커서 이동 감지에 0.08초면 충분하고, 혹시 이 경로가 엔진에서
+        -- 막혀 오류를 뱉더라도 로그가 60fps 로 쏟아지지 않는다).
+        if not self.hoverEventSeen and isvalid(self.rootGroup) and self.rootGroup.Enable then
+            self.pollAccum = self.pollAccum + delta
+            if self.pollAccum >= 0.08 then
+                self.pollAccum = 0
+                self:PollCursorHover()
+            end
+        end
+
+        if not isvalid(self.tipPanel) or not self.tipPanel.Enable then return end
+        -- 커서가 UI 밖으로 나가면 내린다. 단 한 프레임이라도 false 면 바로 지우던 것을 0.25초 연속으로
+        -- 바꿨다 — 한 프레임짜리 오판에 툴팁이 깜빡 사라지는 쪽이, 조금 늦게 사라지는 쪽보다 나쁘다.
+        -- (행의 Exit 는 UITouchExitEvent 가 제대로 받는다. MCP 실측 AddComponent supported=true)
+        if _InputService:IsPointerOverUI() then
+            self.offUiSeconds = 0
+            return
+        end
+        self.offUiSeconds = self.offUiSeconds + delta
+        if self.offUiSeconds >= 0.25 then
+            self.hoveredSkillId = ""
+            self:HideTooltip()
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void CreateDevRow()
+        -- ⚠ DEV 원버튼 행: RowTemplate 을 복제해 목록 끝에 붙인다. "+" 또는 행 클릭 → OnDevSetupClicked (Lv30 · 전 스킬 MaxLevel · MP/최대 MP = DevTestMp).
+        -- 리모컨(DevStatRemote · A 소유)에 버튼을 못 넣어 여기에 둔다. .ui 편집 없이 런타임 복제만(CreateRow 와 같은 경로).
+        local row = self.rowTemplate:Clone("Row_DEV_SETUP")
+        row:SetEnable(true)
+        table.insert(self.rowEntities, row)
+
+        local nameText = row:GetChildByName("NameText")
+        nameText.TextGUIRendererComponent.Text = "⚠ DEV 세팅: Lv" .. tostring(self.DevTargetLevel) .. " · 전 스킬 MAX · MP " .. tostring(_PlayerSkillState.DevTestMp)
+        nameText.TextGUIRendererComponent.FontColor = Color(1, 0.6, 0.2, 1)
+        local levelText = row:GetChildByName("LevelText")
+        levelText.TextGUIRendererComponent.Text = "+ 클릭"
+        local iconEntity = row:GetChildByName("Icon")
+        if isvalid(iconEntity) then iconEntity:SetEnable(false) end
+
+        local rowHandler = row:ConnectEvent(ButtonClickEvent, function() self:OnDevSetupClicked() end)
+        table.insert(self.rowHandlers, { entity = row, conn = rowHandler, eventType = ButtonClickEvent })
+        local plusEntity = row:GetChildByName("BtnPlus")
+        local plusHandler = plusEntity:ConnectEvent(ButtonClickEvent, function() self:OnDevSetupClicked() end)
+        table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHandler, eventType = ButtonClickEvent })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void CreateNoticeRow(string message)
+        -- 스킬이 아닌 안내 문구 한 줄을 목록에 넣는다(아이콘·"+"·툴팁 없음). CreateDevRow 와 같은 런타임 복제 경로.
+        local row = self.rowTemplate:Clone("Row_NOTICE")
+        row:SetEnable(true)
+        table.insert(self.rowEntities, row)
+
+        local nameText = row:GetChildByName("NameText")
+        nameText.TextGUIRendererComponent.Text = message
+        nameText.TextGUIRendererComponent.FontColor = Color(0.75, 0.75, 0.75, 1)
+        local levelText = row:GetChildByName("LevelText")
+        levelText.TextGUIRendererComponent.Text = ""
+        local iconEntity = row:GetChildByName("Icon")
+        if isvalid(iconEntity) then iconEntity:SetEnable(false) end
+        local plusEntity = row:GetChildByName("BtnPlus")
+        if isvalid(plusEntity) then plusEntity:SetEnable(false) end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnDevSetupClicked()
+        -- ⚠ DEV 원버튼: ① A 리모컨 RPC(DevStatRemote.RequestLevel · senderUserId 기반이라 클라에서 보내야 한다)로 목표 레벨까지
+        --              ② PlayerSkillState.RequestDevSetup → 서버가 0.5s 뒤 차수·전 스킬 MaxLevel·MP/최대 MP 세팅.
+        local need = self.DevTargetLevel - math.floor(_PlayerSkillState:LocalLevel())
+        if need > 0 then
+            if _DevStatRemote ~= nil then
+                _DevStatRemote:RequestLevel(need)
+            else
+                log_warning("SkillWindowLogic: [DEV] _DevStatRemote not found — level not raised")
+            end
+        end
+        _PlayerSkillState:RequestDevSetup()
+        self:ShowFloatingMessage("DEV 세팅 요청: Lv" .. tostring(self.DevTargetLevel) .. " · 전 스킬 MAX · MP " .. tostring(_PlayerSkillState.DevTestMp) .. " (0.5초 뒤 반영)")
+        log("SkillWindowLogic: [DEV] setup clicked need=" .. tostring(need) .. " levels")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnRowHoverEnter(string skillId, Entity row)
+        -- 행에 커서가 들어옴 → 그 스킬 툴팁. 자리는 PlaceTooltip 이 이 행의 트랜스폼으로 잡는다
+        -- (화면 좌표 변환은 쓰지 않는다 — 2026-09-14 4~6차에서 계속 어긋났다).
+        self.hoverEventSeen = true
+        log("SkillWindowLogic: hover(UITouchEnter) " .. skillId)
+        self.hoveredSkillId = skillId
+        self.hoveredRow = row
+        self:ShowTooltip(skillId)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnRowHoverExit(string skillId)
+        -- 이미 다른 행으로 넘어간 뒤 늦게 도착한 Exit 는 새 툴팁을 지우면 안 된다.
+        if self.hoveredSkillId ~= skillId then return end
+        self.hoveredSkillId = ""
+        self:HideTooltip()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnListHoverExit()
+        -- 목록 영역 밖으로 나감 → 무조건 내린다(행 Exit 가 빠진 경우의 안전망).
+        self.hoveredSkillId = ""
+        self:HideTooltip()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ShowTooltip(string skillId)
+        -- 툴팁 한 장을 채운다. 수치는 전부 SkillDatabase(= SkillInfo.csv 한 곳)에서 읽고 여기서 다시
+        -- 계산하지 않는다 — 표 값이 바뀌면 CSV 만 고치면 된다.
+        if not self.tooltipReady then return end
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then return end
+        local level = _PlayerSkillState:LocalSkillLevel(skillId)
+        local playerTier = _PlayerSkillState:LocalTier()
+        local playerLevel = _PlayerSkillState:LocalLevel()
+        self:ShowPanelWithParts(self:BuildTooltipParts(skill, level, playerTier, playerLevel))
+    end
+
+    @ExecSpace("ClientOnly")
+    method table BuildTooltipParts(table skill, number level, number playerTier, number playerLevel)
+        -- 원작 스킬 툴팁(참고 이미지)의 네 덩이로 나눠 담는다:
+        --   title  = 가운데 정렬 스킬 이름
+        --   top    = 아이콘 오른쪽 블록 — [마스터 레벨 : N] · 종류/단축키 · 설명 · 필요 조건
+        --   bottom = 아래 블록 — [현재레벨 N] · 효과 수치 · 소모/쿨타임 · 다음 레벨
+        --   icon   = 스킬 아이콘 RUID
+        -- 수치는 전부 SkillDatabase(= SkillInfo.csv) 에서 온다.
+        local isPassive = skill.behavior == "PASSIVE"
+        local shownLevel = level
+        if shownLevel < 1 then shownLevel = 1 end
+
+        local top = {}
+        table.insert(top, "<color=#C8B88A>[마스터 레벨 : " .. self:Num(skill.maxLevel) .. "]</color>")
+        local kind = "액티브"
+        if isPassive then kind = "패시브 · 항상 적용" end
+        if not isPassive then
+            local keyName = ""
+            if _SkillHotbar ~= nil then keyName = _SkillHotbar:GetKeyNameForSkill(skill.id) end
+            if keyName ~= "" then kind = kind .. " · [" .. keyName .. "]" end
+        end
+        table.insert(top, "<color=#8FA2C4>" .. kind .. "</color>")
+        table.insert(top, skill.description)
+        local lockReason = self:LockReasonText(skill, playerTier, playerLevel)
+        if lockReason ~= "" then
+            table.insert(top, "<color=#FF6B6B>필요 : " .. lockReason .. "</color>")
+        else
+            table.insert(top, "<color=#8FA2C4>필요 : " .. self:Num(skill.requiredTier) .. "차 · " .. self:Num(skill.requiredLevel) .. "레벨</color>")
+        end
+
+        local bottom = {}
+        if level >= 1 then
+            table.insert(bottom, "<color=#C8B88A>[현재레벨 " .. self:Num(level) .. "]</color>")
+        else
+            table.insert(bottom, "<color=#C8B88A>[아직 배우지 않음 · Lv.1 기준]</color>")
+        end
+        local effect = self:FormatEffect(skill, shownLevel)
+        if effect ~= "" then table.insert(bottom, effect) end
+        local cost = self:FormatCost(skill, shownLevel)
+        if cost ~= "" then table.insert(bottom, cost) end
+        if level >= 1 and level < skill.maxLevel then
+            local nextEffect = self:FormatEffect(skill, level + 1)
+            if nextEffect ~= "" then
+                table.insert(bottom, "<color=#7FD87F>다음 레벨 → " .. nextEffect .. "</color>")
+            end
+        end
+
+        return { title = skill.name, top = table.concat(top, "\n"), bottom = table.concat(bottom, "\n"), icon = skill.icon }
+    end
+
+    @ExecSpace("ClientOnly")
+    method void HideTooltip()
+        if self.tooltipReady and isvalid(self.tipPanel) then self.tipPanel.Enable = false end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ShowPanelWithParts(table parts)
+        -- 참고 이미지 배치대로 쌓는다(위에서 아래로):
+        --   제목(가운데) → 가로줄 → [아이콘 | 설명 블록] → 가로줄 → 현재레벨 블록
+        -- 각 블록 높이는 GetPreferredHeight 로 재고, 그 합이 패널 높이가 된다.
+        if not self.tooltipReady or not isvalid(self.tipPanel) then return end
+
+        local pad = self.TooltipPadding
+        local width = self.TooltipWidth
+        local innerWidth = width - pad * 2
+        local iconSize = self.TooltipIconSize
+        local bodyX = pad + iconSize + 12
+        local bodyWidth = width - bodyX - pad
+
+        -- 글을 먼저 넣고 켠다 — 아래 계산 중 한 줄이 막혀도 툴팁은 이미 화면에 있다.
+        if isvalid(self.tipTitleEntity) then self.tipTitleEntity.TextGUIRendererComponent.Text = parts.title end
+        self.descText.Text = parts.top
+        if self.tipBottomText ~= nil then self.tipBottomText.Text = parts.bottom end
+        self.tipPanel.Enable = true
+
+        -- 비는 칸은 접는다 — 알림(ShowFloatingMessage)처럼 제목·아이콘·아래 블록이 없는 경우가 있다.
+        local hasTitle = parts.title ~= nil and parts.title ~= ""
+        local hasIcon = parts.icon ~= nil and parts.icon ~= ""
+        local hasBottom = self.tipBottomText ~= nil and parts.bottom ~= nil and parts.bottom ~= ""
+
+        -- 아이콘이 없으면 설명 블록이 패널 폭 전체를 쓴다.
+        local textX = bodyX
+        local textWidth = bodyWidth
+        if not hasIcon then
+            textX = pad
+            textWidth = innerWidth
+        end
+
+        local topHeight = self.descText:GetPreferredHeight(parts.top, textWidth)
+        if hasIcon and topHeight < iconSize then topHeight = iconSize end
+        local bottomHeight = 0
+        if hasBottom then
+            bottomHeight = self.tipBottomText:GetPreferredHeight(parts.bottom, innerWidth)
+        end
+
+        -- y 는 패널 위쪽에서 아래로(피벗 좌상단이라 음수).
+        local titleY = -pad
+        local titleHeight = 0
+        local bodyY = titleY
+        local rule1Y = 0
+        if hasTitle then
+            titleHeight = 32
+            rule1Y = titleY - titleHeight - 6
+            bodyY = rule1Y - 10
+        end
+        local rule2Y = bodyY - topHeight - 10
+        local bottomY = rule2Y - 10
+        local bodyBottom = bodyY - topHeight
+        if hasBottom then bodyBottom = bottomY - bottomHeight end
+        local height = -(bodyBottom - pad)
+        if height > self.TooltipMaxHeight then height = self.TooltipMaxHeight end
+
+        local panelTransform = self.tipPanel.UITransformComponent
+        panelTransform.RectSize = Vector2(width, height)
+
+        self:ShowTipNode(self.tipTitleEntity, hasTitle)
+        self:ShowTipNode(self.tipRule1, hasTitle)
+        self:ShowTipNode(self.tipIconEntity, hasIcon)
+        self:ShowTipNode(self.tipRule2, hasBottom)
+        if self.tipBottomText ~= nil then self:ShowTipNode(self.tipBottomText.Entity, hasBottom) end
+
+        if hasTitle then
+            self:PlaceTipNode(self.tipTitleEntity, 0, titleY, width, titleHeight)
+            self:PlaceTipNode(self.tipRule1, pad, rule1Y, innerWidth, 2)
+        end
+        if hasIcon then
+            self:PlaceTipNode(self.tipIconEntity, pad, bodyY, iconSize, iconSize)
+            self.tipIconEntity.SpriteGUIRendererComponent.ImageRUID = DataRef(parts.icon)
+            self.tipIconEntity.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1)
+        end
+        self:PlaceTipNode(self.descText.Entity, textX, bodyY, textWidth, topHeight)
+        if hasBottom then
+            self:PlaceTipNode(self.tipRule2, pad, rule2Y, innerWidth, 2)
+            self:PlaceTipNode(self.tipBottomText.Entity, pad, bottomY, innerWidth, bottomHeight)
+        end
+
+        self:PlaceTooltip(panelTransform, height)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ShowTipNode(any entity, boolean visible)
+        -- 툴팁 안쪽 노드 하나를 켜고 끈다(비는 칸 접기).
+        if not isvalid(entity) then return end
+        entity:SetEnable(visible)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlaceTipNode(any entity, number x, number y, number w, number h)
+        -- 툴팁 내부 노드 하나를 패널 좌상단 기준으로 놓는다.
+        if not isvalid(entity) then return end
+        local t = entity.UITransformComponent
+        if t == nil then return end
+        t.AnchorsMin = Vector2(0, 1)
+        t.AnchorsMax = Vector2(0, 1)
+        t.Pivot = Vector2(0, 1)
+        t.anchoredPosition = Vector2(x, y)
+        t.RectSize = Vector2(w, h)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BuildTooltipLayout(any panel)
+        -- 참고 이미지 배치를 위해 툴팁 안쪽 노드를 런타임에 만든다(.ui 는 건드리지 않는다 · 협업-규칙 §10-3).
+        -- 전부 RowTemplate 의 자식을 복제해서 쓴다 — CreateRow 가 이미 쓰는 검증된 경로다.
+        local template = self.rowTemplate
+        if not isvalid(template) then return end
+
+        -- 제목(가운데 정렬)
+        local titleSrc = template:GetChildByName("NameText")
+        if isvalid(titleSrc) then
+            local title = titleSrc:Clone("TipTitle")
+            title:AttachTo(panel)
+            title:SetEnable(true)
+            local titleText = title.TextGUIRendererComponent
+            titleText.HorizontalAlignment = TextHorizontalAlignmentOption.Center
+            titleText.VerticalAlignment = TextVerticalAlignmentOption.Middle
+            titleText.FontSize = 24
+            titleText.FontColor = Color(1, 1, 1, 1)
+            titleText.Text = ""
+            self.tipTitleEntity = title
+        end
+
+        -- 가로줄 2개 — 협업-규칙 §7-4 가 지정한 공용 흰색 9-slice 를 얇게 늘려 쓴다(새 스프라이트 없음).
+        self.tipRule1 = self:CreateTipRule(template, panel, "TipRule1")
+        self.tipRule2 = self:CreateTipRule(template, panel, "TipRule2")
+
+        -- 스킬 아이콘
+        local iconSrc = template:GetChildByName("Icon")
+        if isvalid(iconSrc) then
+            local icon = iconSrc:Clone("TipIcon")
+            icon:AttachTo(panel)
+            icon:SetEnable(true)
+            self.tipIconEntity = icon
+        end
+
+        -- 아래 블록(현재레벨 · 효과 수치) — 위 설명과 같은 글꼴 설정을 그대로 물려받게 DescText 를 복제한다.
+        local bottom = self.descText.Entity:Clone("TipBottom")
+        bottom:AttachTo(panel)
+        bottom:SetEnable(true)
+        local bottomText = bottom.TextGUIRendererComponent
+        bottomText.HorizontalAlignment = TextHorizontalAlignmentOption.Left
+        bottomText.VerticalAlignment = TextVerticalAlignmentOption.Top
+        bottomText.Text = ""
+        self.tipBottomText = bottomText
+
+        log("SkillWindowLogic: tooltip layout built (title/rules/icon/bottom)")
+    end
+
+    @ExecSpace("ClientOnly")
+    method any CreateTipRule(any template, any panel, string name)
+        -- 얇은 가로 구분선 하나. Icon 스프라이트를 복제해 공용 9-slice 로 갈아 끼우고 회색으로 눕힌다.
+        local iconSrc = template:GetChildByName("Icon")
+        if not isvalid(iconSrc) then return nil end
+        local rule = iconSrc:Clone(name)
+        rule:AttachTo(panel)
+        rule:SetEnable(true)
+        local sprite = rule.SpriteGUIRendererComponent
+        if sprite ~= nil then
+            sprite.ImageRUID = DataRef(self.SharedWhiteNineSliceRUID)
+            sprite.Color = Color(0.38, 0.42, 0.52, 1)
+        end
+        return rule
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlaceTooltip(any panelTransform, number height)
+        -- 사용자 요청(2026-09-15): 원작 메이플처럼 **커서 바로 아래**에 띄운다.
+        --
+        -- 좌표 변환을 다시 쓴다. 2026-09-14 에 네 번 어긋났던 것은 변환이 아니라 OverrideSorting 예외가
+        -- SetupTooltip 을 중단시켜 AttachTo·앵커가 아예 적용되지 않은 상태에서 계산했기 때문이다
+        -- (MCP 실측으로 확인). 지금은 부모 = UIGroup 루트 · 앵커 (0.5,0.5) · 피벗 좌상단이 실제로
+        -- 걸려 있으므로 anchoredPosition 과 ScreenToLocalUIPosition(부모) 이 같은 공간이다.
+        --
+        -- 변환이 막히면 예전 방식(행 옆)으로 떨어진다 — 자리가 조금 달라질 뿐 안 뜨지는 않는다.
+        local halfWidth = 960
+        local halfHeight = 540
+        local rootTransform = self.rootGroup.UITransformComponent
+        if rootTransform ~= nil and rootTransform.RectSize.x > 400 then
+            halfWidth = rootTransform.RectSize.x / 2
+            halfHeight = rootTransform.RectSize.y / 2
+        end
+
+        local parentTransform = self:TooltipParentTransform()
+        local px = nil
+        local py = nil
+
+        local cursor = _InputService:GetCursorPosition()
+        if cursor ~= nil then
+            local uiPoint = nil
+            if parentTransform ~= nil then
+                uiPoint = _UILogic:ScreenToLocalUIPosition(cursor, parentTransform)
+            end
+            if uiPoint == nil then
+                uiPoint = _UILogic:ScreenToUIPosition(cursor)
+            end
+            if uiPoint ~= nil then
+                px = uiPoint.x + self.TooltipCursorOffsetX
+                py = uiPoint.y + self.TooltipCursorOffsetY
+            end
+        end
+
+        if px == nil then
+            -- 폴백: 커서를 못 구하면 창 오른쪽 바깥 · 호버한 행과 같은 높이(2026-09-14 방식).
+            local windowHalfWidth = 320
+            local windowTransform = self:WindowTransform()
+            if windowTransform ~= nil and windowTransform.RectSize.x > 100 then
+                windowHalfWidth = windowTransform.RectSize.x / 2
+            end
+            local rowY = halfHeight - 240
+            if isvalid(self.hoveredRow) and parentTransform ~= nil then
+                local rowTransform = self.hoveredRow.UITransformComponent
+                if rowTransform ~= nil then
+                    local localPoint = parentTransform:ToLocalPoint(rowTransform.WorldPosition)
+                    if localPoint ~= nil then rowY = localPoint.y end
+                end
+            end
+            px = windowHalfWidth + 12
+            py = rowY
+            log("SkillWindowLogic: tooltip place FALLBACK (cursor unavailable) rowY=" .. tostring(math.floor(rowY)))
+        end
+
+        -- 커서와의 거리는 항상 같게 둔다(사용자 요청 2026-09-15). 예전에는 화면 끝에서 반대쪽으로
+        -- 뒤집었는데, 툴팁 높이가 스킬마다 달라서 어떤 스킬은 뒤집히고 어떤 스킬은 안 뒤집혀
+        -- 뜨는 자리가 들쭉날쭉했다. 이제 뒤집지 않고, 화면을 실제로 벗어날 때만 안쪽으로 민다.
+        if px + self.TooltipWidth > halfWidth - 4 then px = halfWidth - 4 - self.TooltipWidth end
+        if px < -halfWidth + 4 then px = -halfWidth + 4 end
+        if py > halfHeight - 4 then py = halfHeight - 4 end
+        if py - height < -halfHeight + 4 then py = -halfHeight + 4 + height end
+
+        panelTransform.anchoredPosition = Vector2(px, py)
+        log("SkillWindowLogic: tooltip place -> (" .. tostring(math.floor(px)) .. "," .. tostring(math.floor(py)) .. ") h=" .. tostring(math.floor(height)) .. " bounds=" .. tostring(math.floor(halfWidth * 2)) .. "x" .. tostring(math.floor(halfHeight * 2)))
+    end
+
+    @ExecSpace("ClientOnly")
+    method any WindowEntity()
+        -- 스킬 창 본체(ListArea 의 부모) 엔티티.
+        local listEntity = self.listLayout.Entity
+        if not isvalid(listEntity) then return nil end
+        return listEntity.Parent
+    end
+
+    @ExecSpace("ClientOnly")
+    method any WindowTransform()
+        -- 스킬 창 본체의 UITransform.
+        local windowEntity = self:WindowEntity()
+        if not isvalid(windowEntity) then return nil end
+        return windowEntity.UITransformComponent
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ShowFloatingMessage(string message)
+        -- 붙박이 설명 칸이 없어졌으니(요청: 클릭 설명 제거) 배우기 실패 사유·DEV 안내는 마지막 커서 자리에
+        -- 잠깐 띄웠다 내린다. 그 사이 다른 행에 커서가 올라가면 그쪽 툴팁이 이기고, 타이머는 덮어쓰지 않는다.
+        if not self.tooltipReady then
+            log("SkillWindowLogic: " .. message)
+            return
+        end
+        self.hoveredSkillId = ""
+        -- 알림은 제목·아이콘 없이 위 블록만 쓴다(같은 배치 경로를 타되 비는 칸은 자동으로 접힌다).
+        self:ShowPanelWithParts({ title = "", top = "<color=#FF6B6B>" .. message .. "</color>", bottom = "", icon = "" })
+        if self.messageTimerId ~= nil then _TimerService:ClearTimer(self.messageTimerId) end
+        self.messageTimerId = _TimerService:SetTimerOnce(function()
+            self.messageTimerId = nil
+            if self.hoveredSkillId == "" then self:HideTooltip() end
+        end, self.MessageSeconds)
+    end
+
+    @ExecSpace("ClientOnly")
+    method string LockReasonText(table skill, number playerTier, number playerLevel)
+        -- 아직 못 배우는 이유를 툴팁용 한국어 한 줄로. 판정 자체는 SkillDatabase.CheckRequirements 가
+        -- 하는 것과 같은 세 조건이지만, 그쪽 reason 문자열은 서버 LearnResult 와 로그가 쓰는 영어 값이라
+        -- 표시용으로 바꿔 쓰지 않고 여기서 따로 문구를 만든다. 조건이 바뀌면 두 곳을 같이 고쳐야 한다.
+        if playerTier < skill.requiredTier then
+            return self:Num(skill.requiredTier) .. "차 전직 필요"
+        end
+        if playerLevel < skill.requiredLevel then
+            return self:Num(skill.requiredLevel) .. "레벨 필요 (현재 " .. self:Num(playerLevel) .. ")"
+        end
+        return ""
+    end
+
+    @ExecSpace("ClientOnly")
+    method string FormatEffect(table skill, number level)
+        -- 주 효과 한 줄. 문구는 BuffTag 로 고르고(표의 "효과" 열을 그대로 읽히게), 태그가 없는 공격 스킬은
+        -- EffectUnit 으로 떨어진다. 값 자체는 전부 SkillDatabase.RatioAt/SecondaryAt/DurationAt 에서 온다.
+        local ratio = _SkillDatabase:RatioAt(skill.id, level)
+        local parts = {}
+
+        local labeled = self:LabelFor(self.MainEffectLabels, skill.buffTag, ratio)
+        if labeled ~= "" then
+            table.insert(parts, labeled)
+        elseif skill.behavior == "TAUNT" then
+            -- 도발(SK_W22)은 BuffTag 가 없고 BaseEffect 가 "반경" 이라 단위 기본 문구로는 숫자만 남는다.
+            table.insert(parts, "주변 몬스터를 모음 · 반경 " .. self:Num(ratio))
+        elseif skill.effectUnit == "ATK_PCT" then
+            if skill.hitCount > 1 then
+                table.insert(parts, "데미지 " .. self:Num(ratio) .. "% x " .. self:Num(skill.hitCount) .. "타")
+            else
+                table.insert(parts, "데미지 " .. self:Num(ratio) .. "%")
+            end
+        elseif skill.effectUnit == "HP_PCT" then
+            table.insert(parts, "최대 HP의 " .. self:Num(ratio) .. "%")
+        elseif skill.effectUnit == "STACK_PCT" then
+            table.insert(parts, self:Num(ratio) .. "% x 주변 개수")
+        elseif skill.effectUnit == "SEC" then
+            table.insert(parts, self:Num(ratio) .. "초")
+        elseif skill.effectUnit == "RATIO" then
+            table.insert(parts, self:Num(ratio) .. "%")
+        elseif ratio ~= 0 then
+            table.insert(parts, self:Num(ratio))
+        end
+
+        local secondary = _SkillDatabase:SecondaryAt(skill.id, level)
+        if secondary ~= 0 then
+            local secondaryLabel = self:LabelFor(self.SecondaryEffectLabels, skill.buffTag, secondary)
+            if secondaryLabel == "" then secondaryLabel = "부가 효과 " .. self:Num(secondary) .. "%" end
+            table.insert(parts, secondaryLabel)
+        end
+
+        -- EffectUnit 이 SEC 인 스킬은 BaseEffect 자체가 지속시간이라 "지속 N초" 를 또 붙이면 중복이다.
+        if skill.effectUnit ~= "SEC" then
+            local duration = _SkillDatabase:DurationAt(skill.id, level)
+            if duration > 0 then table.insert(parts, "지속 " .. self:Num(duration) .. "초") end
+        end
+
+        return table.concat(parts, " · ")
+    end
+
+    @ExecSpace("ClientOnly")
+    method string FormatCost(table skill, number level)
+        -- 소모·쿨타임 한 줄.
+        local parts = {}
+        if skill.mpCost > 0 then table.insert(parts, "MP " .. self:Num(skill.mpCost)) end
+        local cooldown = _SkillDatabase:CooldownAt(skill.id, level)
+        if cooldown > 0 then table.insert(parts, "쿨타임 " .. self:Num(cooldown) .. "초") end
+        if skill.spCost > 0 then table.insert(parts, "SP " .. self:Num(skill.spCost)) end
+        if skill.useLimit > 0 then table.insert(parts, "판당 " .. self:Num(skill.useLimit) .. "회") end
+        return table.concat(parts, " · ")
+    end
+
+    @ExecSpace("ClientOnly")
+    method string LabelFor(table labels, string buffTag, number value)
+        -- labels[buffTag] 의 "{v}" 자리에 값을 넣는다. 없으면 "" (호출부가 단위 기본 문구로 떨어진다).
+        if buffTag == nil or buffTag == "" then return "" end
+        local pattern = labels[buffTag]
+        if pattern == nil then return "" end
+        -- gsub 은 (문자열, 치환 횟수) 두 값을 돌려준다. 선언 반환형이 하나뿐인 user-script 메서드에서
+        -- 그대로 return 하면 안 되므로(SkillDatabase.CanLearn 주석의 LEA-3015 와 같은 제약) 한 번 받아 둔다.
+        -- 받는 변수도 둘로 — 하나만 두면 빌드가 LWA-1111 UnbalancedAssignment 를 띄운다.
+        local replaced, replacedCount = string.gsub(pattern, "{v}", self:Num(value))
+        return replaced
+    end
+
+    @ExecSpace("ClientOnly")
+    method string Num(number value)
+        -- 툴팁용 숫자: 소수점 둘째 자리까지 반올림하고, 정수면 ".0" 을 떼어 낸다(37.5 는 그대로, 300.0 은 300).
+        local rounded = math.floor(value * 100 + 0.5) / 100
+        if rounded == math.floor(rounded) then return tostring(math.floor(rounded)) end
+        return tostring(rounded)
     end
 
     @ExecSpace("ClientOnly")
     method void OnPlusClicked(string skillId)
         -- 배우기는 서버 판정(Phase 7b): RequestLearn 만 보내고 결과는 기다리지 않는다.
         -- 성공 → 서버가 SyncState → "skill" 이벤트 → RefreshFromState 가 레벨·SP 를 다시 그린다.
-        -- 실패 → LearnResult 가 lastLearnReason 을 채우고 "skill" 이벤트 → OnSkillStateChanged 가 사유를 보여 준다.
-        self.descText.Text = "..."
+        -- 실패 → LearnResult 가 lastLearnReason 을 채우고 "skill" 이벤트 → OnSkillStateChanged 가 사유를 띄운다.
+        -- 예전에는 여기서 설명 칸에 "..." 을 써 두었지만, 그 칸은 이제 툴팁 본문이라 지우면 방금 띄운 툴팁이 날아간다.
         _PlayerSkillState:RequestLearn(skillId)
         log("SkillWindowLogic: RequestLearn(" .. skillId .. ")")
     end
@@ -348,7 +1379,8 @@ script SkillWindowLogic extends Logic
     method void OnDevChooseJob()
         -- ⚠ DEV 임시 (전직 UI 가 생기기 전까지): F10 으로 직업 라인을 순서대로 요청한다. 서버가 레벨(JobTier.ReqLevel)로 거절할 수 있다.
         -- 협업-규칙 §10-1: 머지 전 제거 대상인지 PR 에서 표시한다. 닉네임 게이트는 아니다.
-        -- 첫 순서 = MAGICIAN: SkillHotbar 기본 슬롯이 SK_M* 라 Play 검증이 바로 된다. 전직은 초보자에서 1회만 허용된다.
+        -- 첫 순서 = MAGICIAN: SkillHotbar 기본 슬롯이 SK_M* 라 Play 검증이 바로 된다.
+        -- 실제 규칙은 초보자에서 1회지만, PlayerSkillState.DevAllowJobSwitch(⚠ DEV · 기본 false · 테스트 때만 true) 가 켜져 있는 동안은 누를 때마다 다음 직업으로 바뀐다.
         local order = { "MAGICIAN", "WARRIOR", "ARCHER", "THIEF", "PIRATE" }
         self.devJobIndex = self.devJobIndex + 1
         if self.devJobIndex > #order then self.devJobIndex = 1 end
@@ -361,6 +1393,15 @@ script SkillWindowLogic extends Logic
     method void OnEndPlay()
         -- Cleans up row clones and disconnects the persistent button handlers.
         self:ClearRows()
+        if self.messageTimerId ~= nil then
+            _TimerService:ClearTimer(self.messageTimerId)
+            self.messageTimerId = nil
+        end
+        if self.listExitHandler ~= nil then
+            local listEntity = self.listLayout.Entity
+            if isvalid(listEntity) then listEntity:DisconnectEvent(UITouchExitEvent, self.listExitHandler) end
+            self.listExitHandler = nil
+        end
         if self.btnCloseHandler ~= nil then self.btnClose.Entity:DisconnectEvent(ButtonClickEvent, self.btnCloseHandler) end
         if self.tabBtn0Handler ~= nil then self.tabBtn0.Entity:DisconnectEvent(ButtonClickEvent, self.tabBtn0Handler) end
         if self.tabBtn1Handler ~= nil then self.tabBtn1.Entity:DisconnectEvent(ButtonClickEvent, self.tabBtn1Handler) end
