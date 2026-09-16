@@ -113,6 +113,14 @@ script SkillBuffs extends Logic
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
 
+    -- [서버] StatService BUFF 레이어 기여분: userId -> buffTag -> { <소문자 스탯키> = 수치 }.
+    -- ⚠ StatService.SetLayerCsv 는 레이어를 **통째로 교체**한다("str=1;attack=5" · 빈 문자열 = 전부 0). 그래서 스탯을 건드리는 버프가 둘 이상이면
+    --   나중에 쓴 쪽이 앞 것을 조용히 지운다 — 하이퍼 바디가 "maxhp=N" 을 쓰고 만료 때 "" 로 비우는 동안 다른 버프의 speed/jump 까지 같이 날아간다.
+    --   (지금은 한 플레이어가 전사 버프와 해적 버프를 같이 들 수 없어 드러나지 않았을 뿐, 두 번째 스탯 버프가 생기는 순간 터진다.)
+    -- → BUFF 레이어에 쓰는 곳을 PushStatLayer **한 곳**으로 모으고, 각 버프는 자기 태그 칸에만 기여한다. 같은 키에 둘이 기여하면 합산한다
+    --   (StatService 가 레이어끼리 더하는 것과 같은 규칙). 계약상 BUFF 레이어는 B 몫이라 A 쪽과 경합하지 않는다.
+    property table statContrib = {}
+
     -- [서버] userId -> 에너지 쉴드 남은 보호막(정수). 버프가 없으면 무시된다(GetShield 가 0).
     property table shields = {}
 
@@ -503,6 +511,69 @@ script SkillBuffs extends Logic
         log("[Buff] avatar tint=" .. tostring(on) .. " (" .. userId .. ")")
     end
 
+    -- ───────────────────────── 서버: StatService BUFF 레이어 단일 기록자 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void SetStatContribution(string userId, string buffTag, string statKey, number value)
+        -- 한 버프가 한 스탯 키에 기여하는 값을 정한다. 0 이면 그 키를 뺀다(합산 결과가 같다). statKey 는 StatService 의 소문자 키(maxhp · speed · jump …).
+        if userId == nil or userId == "" or buffTag == nil or buffTag == "" then return end
+        local perUser = self.statContrib[userId]
+        if perUser == nil then
+            perUser = {}
+            self.statContrib[userId] = perUser
+        end
+        local entry = perUser[buffTag]
+        if entry == nil then
+            entry = {}
+            perUser[buffTag] = entry
+        end
+        local key = string.lower(statKey)
+        if value == nil or value == 0 then
+            entry[key] = nil
+        else
+            entry[key] = value
+        end
+        self:PushStatLayer(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ClearStatContribution(string userId, string buffTag)
+        -- 그 버프의 기여분만 뺀다(만료·조기 종료·매치 초기화). 다른 버프의 기여분은 남는다 — 예전 SetLayerCsv("") 가 같이 지우던 부분.
+        local perUser = self.statContrib[userId]
+        if perUser == nil or perUser[buffTag] == nil then return end
+        perUser[buffTag] = nil
+        self:PushStatLayer(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PushStatLayer(string userId)
+        -- 모든 태그의 기여분을 키별로 합산해 BUFF 레이어를 한 번에 교체한다. **SetLayerCsv 를 부르는 유일한 곳** (statContrib 주석 참조).
+        -- 키를 정렬해 결정론적 문자열을 만든다(StatService.TableToCsv 와 같은 이유 — 로그를 눈으로 비교할 수 있다).
+        -- 기여가 하나도 없으면 "" 를 보낸다 = 레이어 전부 0, 예전 ClearHyperBodyHp 가 보내던 것과 같은 값이다.
+        if _StatService == nil then return end
+        local totals = {}
+        local perUser = self.statContrib[userId]
+        if perUser ~= nil then
+            for _, entry in pairs(perUser) do
+                for key, value in pairs(entry) do
+                    totals[key] = (totals[key] or 0) + value
+                end
+            end
+        end
+        local keys = {}
+        for key, value in pairs(totals) do
+            if value ~= 0 then table.insert(keys, key) end
+        end
+        table.sort(keys)
+        local parts = {}
+        for _, key in ipairs(keys) do
+            table.insert(parts, key .. "=" .. tostring(totals[key]))
+        end
+        local csv = table.concat(parts, ";")
+        _StatService:SetLayerCsv(userId, "BUFF", csv)
+        log("[Buff] stat layer BUFF <- '" .. csv .. "' (" .. userId .. ")")
+    end
+
     @ExecSpace("ServerOnly")
     method void ApplyHyperBodyHp(string userId, number ratio)
         -- 하이퍼 바디 최대 HP +ratio%. "기준" = 버프 없는 최대 HP(현재 MaxHp − 이미 넣은 보너스) 라 재시전해도 두 번 곱해지지 않는다.
@@ -517,7 +588,7 @@ script SkillBuffs extends Logic
         if bonus < 0 then bonus = 0 end
         self.hyperBodyBonus[userId] = bonus
         if _StatService ~= nil then
-            _StatService:SetLayerCsv(userId, "BUFF", "maxhp=" .. tostring(bonus))
+            self:SetStatContribution(userId, self.TagHyperBody, "maxhp", bonus)
         else
             pc.MaxHp = pc.MaxHp - prev + bonus
             log_warning("[Buff] HYPER_BODY StatService 없음 — MaxHp 직접 쓰기 (" .. userId .. ")")
@@ -539,7 +610,7 @@ script SkillBuffs extends Logic
         if prev <= 0 then return end
         self.hyperBodyBonus[userId] = 0
         if _StatService ~= nil then
-            _StatService:SetLayerCsv(userId, "BUFF", "")
+            self:ClearStatContribution(userId, self.TagHyperBody)
         else
             local player = _UserService:GetUserEntityByUserId(userId)
             if isvalid(player) and isvalid(player.PlayerComponent) then
@@ -588,6 +659,11 @@ script SkillBuffs extends Logic
         self.buffs[userId] = {}
         self.castInvulnUntil[userId] = nil
         self:ClearHyperBodyHp(userId)
+        -- 태그별 종료 처리가 놓친 스탯 기여분까지 확실히 비운다(BUFF 레이어 = 전부 0). ClearHyperBodyHp 뒤에 둔다 — 그쪽이 MaxHp 되돌리기를 먼저 해야 한다.
+        if self.statContrib[userId] ~= nil then
+            self.statContrib[userId] = nil
+            self:PushStatLayer(userId)
+        end
         self:PushBuffs(userId)
     end
 
