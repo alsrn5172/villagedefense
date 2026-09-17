@@ -138,6 +138,15 @@ script SkillExecutors extends Logic
     -- 레벨 구간 → 외형 티어 (BuildHandlerTable 에서 채운다). 구간을 옮기려면 그 표 한 줄만 고치면 된다.
     property table chargeTiers = {}
 
+    -- 🔴🔴 [임시 측정 · 머지 전 되돌릴 것 · #64] 점프 순간 플레이어의 렌더 층에서 **무엇이** 바뀌는지 잰다.
+    --   OrderInLayer 만 바뀌면 불꽃의 OrderInLayer 를 2 → 0/−1 로 내리는 한 줄로 끝난다(다시 걸 필요 없음 = 깜빡임 없음).
+    --   SortingLayer 가 바뀌면 층이 먼저 비교되므로 순서로는 이길 수 없고 다시 거는 방법밖에 없다.
+    property table layerProbeAttached = {}
+
+    property table layerProbeLast = {}
+
+    property boolean layerProbeClientAttached = false
+
     -- 함포 사격(barrage): HitCount 를 이만큼의 파로 나눈다 · 파 간격(초 · 몬스터 무적 0.4s 보다 길게) · 파마다 떨어지는 폭탄 연출 개수 · 폭탄 흩뿌림(반지름 비율).
     property integer BarrageWaves = 6
 
@@ -1168,6 +1177,67 @@ script SkillExecutors extends Logic
         end, self.ShadowFacingPollSeconds)
     end
 
+    -- 🔴🔴 [임시 측정 · 머지 전 되돌릴 것 · #64] ─────────────────────────────────────────────
+    -- 점프 순간 플레이어의 SortingLayer / OrderInLayer 중 **무엇이** 바뀌는지 로그로 잰다.
+    -- 양쪽 다 구독해 어느 쪽에서 이벤트가 오는지도 같이 가른다(에미터는 렌더러에 있고 렌더는 클라 몫이라
+    -- 서버에서 안 올 수 있다 — 그러면 이벤트 기반 설계는 클라→서버 왕복이 필요하다는 뜻이다).
+    -- 측정만 하고 아무 동작도 바꾸지 않는다.
+    @ExecSpace("ServerOnly")
+    method void AttachLayerProbe(string userId)
+        if self.layerProbeAttached[userId] then return end
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(player) then return end
+        self.layerProbeAttached[userId] = true
+        local av = player.AvatarRendererComponent
+        local layer0 = "?"
+        local order0 = -999
+        if isvalid(av) then
+            layer0 = tostring(av.SortingLayer)
+            order0 = av.OrderInLayer
+        end
+        self.layerProbeLast[userId] = { layer = layer0, order = order0 }
+        log("[FLAMEPROBE server] attach start layer='" .. layer0 .. "' order=" .. tostring(order0) .. " (" .. userId .. ")")
+        player:ConnectEvent(SortingLayerChangedEvent, function(event)
+            local prev = self.layerProbeLast[userId]
+            local was = "?"
+            if prev ~= nil then was = tostring(prev.layer) end
+            log("[FLAMEPROBE server] *** SortingLayer CHANGED '" .. was .. "' -> '" .. tostring(event.SortingLayer) .. "' (" .. userId .. ")")
+            if prev ~= nil then prev.layer = tostring(event.SortingLayer) end
+        end)
+        player:ConnectEvent(OrderInLayerChangedEvent, function(event)
+            local prev = self.layerProbeLast[userId]
+            local was = -999
+            if prev ~= nil then was = prev.order end
+            log("[FLAMEPROBE server] *** OrderInLayer CHANGED " .. tostring(was) .. " -> " .. tostring(event.OrderInLayer) .. " (" .. userId .. ")")
+            if prev ~= nil then prev.order = event.OrderInLayer end
+        end)
+        self:AttachLayerProbeClient(userId)
+    end
+
+    @ExecSpace("Client")
+    method void AttachLayerProbeClient()
+        -- [임시 측정 · 머지 전 되돌릴 것 · #64] 서버가 한 번 불러 소유 클라에서도 같은 두 이벤트를 구독한다.
+        if self.layerProbeClientAttached then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        self.layerProbeClientAttached = true
+        local av = player.AvatarRendererComponent
+        local layer0 = "?"
+        local order0 = -999
+        if isvalid(av) then
+            layer0 = tostring(av.SortingLayer)
+            order0 = av.OrderInLayer
+        end
+        log("[FLAMEPROBE client] attach start layer='" .. layer0 .. "' order=" .. tostring(order0))
+        player:ConnectEvent(SortingLayerChangedEvent, function(event)
+            log("[FLAMEPROBE client] *** SortingLayer CHANGED -> '" .. tostring(event.SortingLayer) .. "'")
+        end)
+        player:ConnectEvent(OrderInLayerChangedEvent, function(event)
+            log("[FLAMEPROBE client] *** OrderInLayer CHANGED -> " .. tostring(event.OrderInLayer))
+        end)
+    end
+    -- 🔴🔴 [임시 측정 끝] ──────────────────────────────────────────────────────────────
+
     @ExecSpace("ServerOnly")
     method void ApplyShadowSorting(table opt, Entity player)
         -- 분신을 플레이어 뒤에 그리는 렌더 층(b/skill-thief-motion): 플레이어 렌더 층은 밟은 발판의 SortingLayer 를 따라가므로(A · NpcSpawner/PortalNetwork) 그 층 + ShadowOrderInLayer(2 < 플레이어 4).
@@ -1601,6 +1671,13 @@ script SkillExecutors extends Logic
             end, duration)
             log("SkillExecutors: CHARGE flame loop " .. skillId .. " serial=" .. tostring(flameSerial)
                 .. " scale=" .. tostring(fs) .. " offsetY=" .. tostring(flame.offsetY or 0) .. " (" .. userId .. ")")
+            -- 🔴 [임시 측정 · 머지 전 되돌릴 것 · #64] 불꽃이 **실제로** 정렬 키를 받았는지. nil 이면 정렬이 안 붙은 것이고,
+            --    그 경우 "점프 순간 플레이어 쪽이 바뀐다" 는 추론의 전제부터 깨진다.
+            log("[FLAMEPROBE spawn] sortBehind=" .. tostring(flame.sortBehind)
+                .. " fopt.SortingLayer='" .. tostring(fopt["SortingLayer"]) .. "'"
+                .. " fopt.OrderInLayer=" .. tostring(fopt["OrderInLayer"])
+                .. " (nil = 정렬 안 붙음) (" .. userId .. ")")
+            self:AttachLayerProbe(userId)
         end
         log("SkillExecutors: CHARGE loop " .. skillId .. " tier=" .. self:ChargeTierKey(skillId, level)
             .. " serial=" .. tostring(serial) .. " for " .. tostring(duration) .. "s (" .. userId .. ")")
