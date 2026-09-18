@@ -67,6 +67,13 @@ script SkillDatabase extends Logic
                 requiredLevel = self:ParseNumber(skillId, "required_level", ds:GetCell(i, "ReqLevel")),
                 behavior = ds:GetCell(i, "Behavior") or "",
                 mpCost = self:ParseNumber(skillId, "mp_cost", ds:GetCell(i, "MpCost")),
+                -- 재시전 MP 배율(2026-09-17 · SkillInfo 열 추가): 재시전이 있는 스킬만 읽는다 —
+                -- 재시전 1회 비용 = MpCost × RecastMpCostMul. 에너지 차지(SK_P21)는 0.25 = 20 → 5.
+                -- 🔴 기본값이 0 이 아니라 **1**(= 초기 시전과 같은 비용)인 것이 이 열의 핵심이다. 0.78s 락에서
+                -- 30초 창이면 주먹이 ~38회라 비용은 돌릴 손잡이지 상수가 아니고, 그래서 빈 칸을 0 으로 읽어
+                -- **조용히 무료**가 되는 쪽이 제일 위험하다. ParseNumber 는 빈 칸을 0 으로 읽으므로 쓰지 않고,
+                -- 빈 칸이 fallback 이 되는 ParseNumberOr 로 읽는다. 0 은 "무료"라는 의도적 값으로 남겨 둔다.
+                recastMpCostMul = self:ParseNumberOr(skillId, "recast_mp_cost_mul", ds:GetCell(i, "RecastMpCostMul"), 1),
                 -- base_effect is now a MULTIPLIER (percentage/ratio), not an absolute value -
                 -- its unit is effectUnit. See RatioAt/DamageAt/StackDamageAt.
                 baseEffect = self:ParseNumber(skillId, "base_effect", ds:GetCell(i, "BaseEffect")),
@@ -84,6 +91,10 @@ script SkillDatabase extends Logic
                 maxStack = self:ParseNumber(skillId, "max_stack", ds:GetCell(i, "MaxStack")),
                 secondaryEffect = self:ParseNumber(skillId, "secondary_effect", ds:GetCell(i, "SecondaryEffect")),
                 secondaryPerLevel = self:ParseNumber(skillId, "secondary_per_level", ds:GetCell(i, "SecondaryPerLevel")),
+                -- 제3 효과(2026-09-17 · SkillInfo 열 추가): 부효과와 **독립**이며 한쪽에서 다른 쪽을 유도하지 않는다.
+                -- 한 스킬이 레벨마다 서로 다른 값 2개를 가져야 할 때 — 에너지 차지(SK_P21)는 부효과 = 이동속도 · 제3 효과 = 점프력.
+                tertiaryEffect = self:ParseNumber(skillId, "tertiary_effect", ds:GetCell(i, "TertiaryEffect")),
+                tertiaryPerLevel = self:ParseNumber(skillId, "tertiary_per_level", ds:GetCell(i, "TertiaryPerLevel")),
                 durationPerLevel = self:ParseNumber(skillId, "duration_per_level", ds:GetCell(i, "DurationPerLevel")),
                 cooldownPerLevel = self:ParseNumber(skillId, "cooldown_per_level", ds:GetCell(i, "CooldownPerLevel")),
                 buffTag = ds:GetCell(i, "BuffTag") or "",
@@ -137,6 +148,23 @@ script SkillDatabase extends Logic
         if parsed == nil then
             log_warning("SkillDatabase: skill_id=" .. tostring(skillId) .. " column=" .. columnName .. " value='" .. rawValue .. "' is unparseable, defaulting to 0")
             return 0
+        end
+        return parsed
+    end
+
+    method number ParseNumberOr(string skillId, string columnName, string rawValue, number fallback)
+        -- ParseNumber 와 같지만 빈 칸·해석 실패가 0 이 아니라 fallback 이다.
+        -- **배율 열 전용** — 배율에서 0 은 "없음"이 아니라 "0 배(= 무료)"라는 뜻이라, 빈 칸을 0 으로 읽으면
+        -- 열을 안 채운 스킬이 조용히 무료가 된다. 빈 칸은 "안 적었다"이므로 안전한 쪽(fallback)으로 보낸다.
+        -- 다른 열은 0 이 올바른 기본값이므로 ParseNumber 를 그대로 쓴다 — 이 메서드로 바꾸지 말 것.
+        if rawValue == nil or rawValue == "" then
+            log_warning("SkillDatabase: skill_id=" .. tostring(skillId) .. " column=" .. columnName .. " is missing, defaulting to " .. tostring(fallback))
+            return fallback
+        end
+        local parsed = tonumber(rawValue)
+        if parsed == nil then
+            log_warning("SkillDatabase: skill_id=" .. tostring(skillId) .. " column=" .. columnName .. " value='" .. rawValue .. "' is unparseable, defaulting to " .. tostring(fallback))
+            return fallback
         end
         return parsed
     end
@@ -223,6 +251,18 @@ script SkillDatabase extends Logic
             return 0
         end
         return skill.secondaryEffect + (level - 1) * skill.secondaryPerLevel
+    end
+
+    method number TertiaryAt(string skillId, number level)
+        -- tertiary_effect + (level-1) * tertiary_per_level. SecondaryAt 과 **같은 꼴**이다 —
+        -- 한 표 안에 레벨 규칙이 둘 생기지 않게(BaseEffect/EffectPerLevel · RatioAt 도 같은 꼴).
+        -- 그래서 CSV 에 적힌 수치가 곧 레벨 1 값이다. 자기 행만 읽는다. 모르는 skillId 는 0.
+        local skill = self.skillsById[skillId]
+        if skill == nil then
+            log_warning("SkillDatabase: TertiaryAt called with unknown skill_id=" .. tostring(skillId))
+            return 0
+        end
+        return skill.tertiaryEffect + (level - 1) * skill.tertiaryPerLevel
     end
 
     method number DurationAt(string skillId, number level)
