@@ -24,6 +24,21 @@
 - 해적 2차 C 슬롯 **슈퍼 트랜스폼 → 에너지 차지** 교체. `SkillId`(`SK_P21`) · `Tab` · `SlotOrder` 유지 → 핫바(W)·스킬 창 슬롯·전직 조건·`WeaponMotion` `MOTION_SK_P21_*` 행 전부 그대로.
 - `StatService` BUFF 레이어를 **단일 기록자**로 정리 — `SetLayerCsv` 가 레이어를 통째로 교체해서 스탯 버프가 둘 이상이면 서로를 조용히 지웠다. 태그별 기여분을 모아 `SkillBuffs.PushStatLayer` 한 곳에서만 쓴다.
 - 에너지 쉴드(`SK_P22`)의 `whileTransformed` 크기 보정 제거 — 몸을 바꾸는 변신이 없어지면서 보정 대상 자체가 사라졌다. 함께 쓰이던 `AdjustSpecForForm` · `IsFormActive` · `ReplayShieldLoop` 도 삭제.
+- 클라 MP 예측 게이트의 **내림 위치를 서버와 맞춤**(`d99e24b`) — 클라 `Cast` 는 내림 없이 비교하고 서버 `RequestCast` 는 `math.floor` 한 값으로 비교·차감해서, 필요 MP 가 소수가 되는 구간에 클라와 서버 판정이 갈릴 수 있었다(비용이 정수인 동안은 드러나지 않는다). 클라에도 `math.floor` 를 넣어 같은 꼴로 만들었다 — `RecastMpCostMul`(배율 → 소수 비용)이 이 구간을 실제로 밟는다.
+
+### 연출
+
+피해 · 판정 · 상태 기계에는 손대지 않는다. 값은 Play 로 눌러 보며 정했고 커밋마다 단독으로 되돌릴 수 있다.
+
+- 2단 주먹 이펙트를 바라보는 쪽 앞으로 `offsetX 1.0`(`e734b3c`) — `PlayStageEffect` 가 `offsetX × facing` 으로 두므로 좌우가 알아서 뒤집힌다. 피해 상자는 그대로(앞쪽 Range 3 · `ExecuteMeleeArc` 와 같은 식).
+- 차지 오라(`affected` 루프) 세 티어 `scale 1.15`(`61771fc`) → Play 확인 뒤 **1.08** 로 내림(`a9ac92f`). 진입 이펙트(`cast`) 세 티어는 `scale 1.15`(`bba7df7`) 그대로 — 두 값이 일부러 갈린다(근거는 주석).
+- **불꽃 기둥 `effect/2`** 를 세 티어 두 번째 루프로(`db4e1fc`) — 팩 GIF 로 확인한 원작의 주 시각(`effect/0` 이 자라서 도달하는 끊김 없는 루프). 하위 키 `태그 .. "#flame"` 에 따로 담아 `RemoveBuffLoop` 이 같이 지운다(버프 만료 · 재시전 · 매치 초기화 전부).
+- 불꽃을 캐릭터 **뒤 층**으로(`533eae1`) — `loopFlame.sortBehind` → `ApplyShadowSorting`(밟은 발판의 `SortingLayer` + `OrderInLayer 2` · 분신과 같은 길). ⚠ 공중 시전은 착지할 때까지 앞 층이다(발 아래 3유닛 안에 발판이 없으면 정렬 옵션이 안 들어간다).
+
+### 알려진 문제 (이 PR 로 고치지 않는다)
+
+- **불꽃 겹의 정렬 층이 시전한 발판의 층에 고정된다 → #64.** 시전 뒤 층이 다른 발판으로 옮기면 불꽃이 캐릭터 앞으로 올라온다(그 층에서 시전하면 재현되지 않는다). 연출만이고 피해 · 판정 · 상태에는 영향이 없다. 원인은 측정으로 확정했다(임시 probe `4ca925b` → `b0e418d` 로 되돌림 · 트리가 측정 직전 `4ebbabb` 와 동일): 바뀌는 것은 `SortingLayer` 뿐이고, `EffectService` 는 재생 중 옵션을 못 바꾸며, 층 변화가 잦아(움직이기만 해도 1초 안에 `MapLayer5 → 3 → 5 → 6 → 5`) 다시 걸기로는 풀 수 없다 → 자식 sprite 엔티티로 바꾸는 별도 PR.
+- `PlayChargeLoop` 의 오라(loop) 경로는 `spec.sortBehind` 를 읽지 않는다 — 적어도 무효고 오류도 안 난다(범용 경로 `PlayBuffLoop` 은 지킨다). 주석으로만 표시했고(`4ebbabb`) #64 에서 같이 정리한다.
 
 ## 검증
 
