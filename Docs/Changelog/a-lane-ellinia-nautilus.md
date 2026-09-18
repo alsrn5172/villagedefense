@@ -5,16 +5,27 @@
 점유 마을 5곳 중 엘리니아·노틸러스는 `LaneConfig` 행이 없어 미니언·파병이 돌지 않았다. 커닝·페리온과 같은 방식으로 통로를 깔고 표를 채웠다.
 배치는 실측 → 사용자 확인 → 적용 순서로 했다 (지시서 `WO-027`).
 
-### 레인 (`LaneConfig.csv` +6행 · 6맵 전부 오른쪽 → 왼쪽)
+### 레인 (`LaneConfig.csv` +6행 · 두 마을 모두 **왼쪽 → 오른쪽** · 최종값)
 
-| 마을 | 맵 | 역할 | 통로 x | PathY | 시설 x | 비고 |
-|---|---|---|---|---|---|---|
-| ELLINIA | Ellinia_Hunt_TreeTrunkNest2 | LANE2 | −5.5 ~ 6.4 | −8.0 | 포탑 −3.6 | 세로 나무맵 · 구덩이(−6.31) 아래 · 사다리 −1.3 / 2.2 |
-| ELLINIA | Ellinia_Hunt_GreenTreeTrunk | LANE1 | −17.3 ~ −1.6 | −20.7 | 억제기 −12.0 | 사다리 −9.5(4칸) / −4.5 |
-| ELLINIA | Ellinia_Village_MinimiMain | VILLAGE | −4.0 ~ 3.2 | 6.8 | 넥서스 −3.4 | **새 발판 없음** — 마을 높이 가운데 가지 다리(5.6~6.8) 그대로 (사용자) |
-| NAUTILUS | Nautilus_Hunt_WayToBeach | LANE2 | −19.4 ~ 0.5 | −3.5 | 포탑 −12.5 | 사다리 −15.0 / −6.5(3칸) |
-| NAUTILUS | Nautilus_Hunt_PigPasture | LANE1 | −15.8 ~ 5.3 | −3.5 | 억제기 −9.0 | x 0.84 벽 조각이 −3.3 까지 내려와 −3.5 로 |
-| NAUTILUS | Nautilus_Village_MinimiMain | VILLAGE | 19.3 ~ 50.0 | −3.05 | 넥서스 20.8 | **새 발판 없음** — 물가 바닥 · 넥서스 = 노틸러스호 쪽 왼쪽 끝 (사용자) |
+| 마을 | 맵 | 역할 | 통로 x | PathY | 출발 → 끝 | 시설 x | 비고 |
+|---|---|---|---|---|---|---|---|
+| ELLINIA | Ellinia_Hunt_TreeTrunkNest2 | LANE2 | −5.5 ~ 6.4 | −8.0 | −4.5 → 6.0 | 포탑 4.5 | 세로 나무맵 · 구덩이(−6.31) 아래 · 사다리 −1.3 / 2.2 |
+| ELLINIA | Ellinia_Hunt_GreenTreeTrunk | LANE1 | −17.3 ~ −1.6 | −20.7 | −16.7 → −2.0 | 억제기 −6.9 | 사다리 −9.5(4칸) / −4.5 |
+| ELLINIA | Ellinia_Village_MinimiMain | VILLAGE | −4.0 ~ 3.2 | 6.8 | −3.4 → 3.0 | 넥서스 2.6 | **새 발판 없음** — 마을 높이 가운데 가지 다리(5.6~6.8) 그대로 (사용자) |
+| NAUTILUS | Nautilus_Hunt_WayToBeach | LANE2 | −19.4 ~ 0.5 | −3.5 | −18.4 → 0.1 | 포탑 −6.4 | 사다리 −12.4 / −3.9(3칸) |
+| NAUTILUS | Nautilus_Hunt_PigPasture | LANE1 | −15.8 ~ 5.3 | −3.5 | −15.2 → 4.9 | 억제기 −1.5 | x 0.84 벽 조각이 −3.3 까지 내려와 −3.5 로 · 사다리 −8.5 / 2.5 |
+| NAUTILUS | Nautilus_Village_MinimiMain | VILLAGE | 12.1 ~ 50.0 | −3.05 | 12.7 → 21.8 | 넥서스 20.8 | **새 발판 없음** — 물가 바닥(사용자가 왼쪽 11.76 까지 늘림) · 넥서스 = 노틸러스호 쪽 (사용자) |
+
+### ↔ 좌→우 전환 (사용자 2026-09-18: "왼쪽이 여섯갈래길 → 사냥터2 → 사냥터1 → 마을")
+
+처음엔 6맵 모두 우→좌로 깔았다(코드가 LANE1·VILLAGE 를 오른쪽 끝에서만 스폰). 사용자가 노틸러스 방향이 반대라고 지적 — 9/15 테스트맵 결정(`TestLaneLeftToRight = ELLINIA,PERION,NAUTILUS`)대로 엘리니아까지 좌→우로 바꿨다.
+
+- **코드**: `LaneFacilityService.LaneStartX(row)` · `LaneDir(row)` 신설 — `SpawnX` 가 있으면 역할과 무관하게 그 x, 빈칸이면 `PathMaxX − 0.6`. 방향 = 끝이 출발 x 보다 오른쪽이면 +1. `MinionFlowService.SpawnMinion` 과 `DefenderService` 가 같이 쓴다. 수비대 대기 위치(시설 뒤 = 마을 쪽)와 목줄(마을 쪽 2.5 · 적 쪽 사거리 80%)이 방향에 따라 좌우로 뒤집힌다(전엔 −x 고정). 기존 9행(헤네시스·커닝·페리온)은 동작 그대로.
+- **계약**: `LaneConfig.SpawnX/SpawnY` 를 LANE2 전용 → 모든 역할로(A-2-2 · 헤더 변경 없음 · #40 comment 5727412808 공지).
+- **포탈 맞바꿈**(원래 포탈 = 플레이어용): WayToBeach 여섯갈래길 ↔ PigPasture · PigPasture WayToBeach ↔ 마을(통로 포탈도) · GreenTreeTrunk Nest2 ↔ 마을(통로 포탈도) · 엘리니아 마을 GreenTreeTrunk ↔ GiantTree. Nest2 는 원래 왼쪽 = 여섯갈래길이라 그대로. `PortalRoutes` 는 이름 기준이라 변경 없음.
+- 통로 포탈은 그 맵의 이전 맵 쪽 끝(엘리니아 마을 −3.6 · WayToBeach 오른쪽 끝 −0.3). 시설은 통로 가운데 기준 대칭 이동, 노틸러스 사냥터 사다리는 시설과 겹치지 않게 옮김(PigPasture 2.5 는 x 0.84 벽 조각을 피해서).
+- **노틸러스 마을은 사용자가 Maker 에서 직접 고쳤다**: 물가를 왼쪽 11.76 까지 늘리고 돼지목장 포탈 (14.06, 0.63) · 통로 포탈 (13.28, −2.94) · 해변 포탈 (48.37, −0.44) · 밧줄 추가. 입구가 함선 왼쪽이라 넥서스는 함선 쪽 20.8 에 두고 미니언이 12.7 에서 들어와 오른쪽으로 간다.
+- 맵 수정은 **위치 숫자만 원본 텍스트에서 바꿨다**(Maker 형식 CRLF·`1.0` 표기 보존 · 결과 JSON = 빌더 결과 대조) → 맵당 6~12줄.
 
 - 통로 한 세트는 커닝 `KerningCity_Hunt_ConstructionSite` 엔티티를 그대로 복제했다: `LaneGround_i`(간격 4.32 · MapLayer7/2 · 첫 장에 `CustomFootholdComponent`) · 사다리 3엔티티 × 2 · 통로 포탈 `P_Lane_To_*`(하늘색 · `MODRespawnArea`).
 - 사다리 높이 공식(커닝 두 세트 실측): 몸 한 칸 0.48 · `BoxSize.y = 0.48n` · `BoxOffset.y = 0.24(n−1)` · 윗줄 = 몸 + 0.48n − 0.11 · 밑줄 = 몸 − 0.284. 윗줄을 위 바닥 +0~0.05 에 맞춰 칸수를 정했다(2·3·4칸).
@@ -67,3 +78,4 @@
   - 이동(2차): 6구간 전부 `dir=-1` · 사냥터 미니언 y 가 통로 높이(−8.00 · −20.70 · −3.50)에 그대로, x 감소 · 포탑에 맞아 HP 300 → 180/240 · 강제 `Advance` 로 LANE2 → LANE1 → VILLAGE 스폰 위치(PathMaxX−0.6)·HP 비율 유지 · 엘리니아 마을 다리 위 넥서스 앞(−2.84, 6.45) 도착 · 노틸러스 마을 49.4 → 37.1 진행
   - 에러 4건 = `LEA-3032` 인자 `T_ELL`/`T_NAU` — `LaneStateService.PushOwner` 가 **가짜 유저**에게 보내려다 난 것(테스트 전용). 경고는 기존 종류뿐(`LWA-3048` 미니언 공격 컴포넌트 2개 · `LWA-3047` · 보스 6130101)
 - 눈 확인(사용자 몫): 통로·사다리 높이, 엘리니아 다리 위 넥서스, 노틸러스 물가 동선, 새 리본돼지 해변 포탈 왕복, 물버섯 색.
+- ↔ 좌→우 전환 뒤 재검증: _Reimport All 대기_
