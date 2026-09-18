@@ -49,7 +49,21 @@
 - 전체 검토에서 받은 지적 중 **진짜는 방향 버그 1건**(2회 중 1회만 잡음). 나머지는 확인 후 기각: 엘리니아 다리 "수평 발판 없음"(완만한 경사 · 걸을 수 있음) · GreenTreeTrunk 사다리 위 "경사뿐"(실제 dy 0.03) · `MinionComposition` "main 은 BOM+CRLF"(main 도 LF · BOM 없음).
 - Codex 가 지운 메서드 사이 빈 줄 3곳 복원 · `string.gsub` 2값 대입 LSP 경고 → `string.match` 로.
 
+### 🐞 통로 발판은 Maker 가 구워야 한다 (Play 1차에서 발견)
+
+- 1차 Play 에서 사냥터 4맵 미니언이 통로를 뚫고 떨어졌다(15초에 y −150). 런타임 발판 수 = 파일의 `FootholdsByLayer` 수 그대로(Nest2 245 · 통로 0), `LaneGround_0` 의 `CustomFootholdComponent` 는 켜져 있는데 레이캐스트가 빗나갔다.
+- 커닝·페리온 통로는 `FootholdsByLayer` 에 **소유자(`OwnerId`) = `LaneGround_0`** 인 선분이 구워져 있다. 이 데이터는 Maker 에디터가 그 맵을 열었을 때 `CustomFootholdComponent` 로 만들어 저장한다 — **Reimport All 만으로는 안 굽는다**.
+- `maker_move_map` → `maker_save` 로 4맵을 저장해 선분 1개씩 구웠다. 나머지 차이는 Maker 직렬화 정규화뿐(기본값 필드 · float32 · 노틸러스 2맵 CRLF)이고 엔티티 변화 0.
+- ⚠ 같은 저장이 **UI 18개의 `GroupOrder` 순위를 다시 매겨 썼다**(main 에 새로 들어온 UI 그룹 때문으로 보임) → 이 PR 과 무관한 부산물이라 되돌렸다.
+
 ### 검증
 
 - `check-integrity` 전부 통과(경고 4건 · 기존). mLua 진단 이슈 0.
-- 런타임(Reimport All → Play): _진행 중_
+- 빌드(개인 월드 · 워크트리 · Reimport All): **Error 0 · Warning 1** — `Summon/SummonManager.ParseStatCsv` 의 기존 경고(LWA-1111 · 이 브랜치가 안 건드린 파일). 이번 변경이 늘린 경고 0.
+- 런타임(Play 2회 · 서버 `execute_script` · 점유는 `ClaimLevel=1` + 가짜 유저 `T_ELL`/`T_NAU`):
+  - 시작: `LaneConfig loaded: 15 rows` · `MinionComposition loaded: 8 rows (village-specific 4)` · `spawned ELLINIA:CORE at Ellinia_Village_MinimiMain (-3.4,6.7)` · `spawned NAUTILUS:CORE at Nautilus_Village_MinimiMain (20.8,-3.05)`
+  - 점유: `claimed ELLINIA/NAUTILUS` → `TOWER` (−3.6,−8.0)·(−12.5,−3.5) · `SUPPRESSOR` (−12.0,−20.7)·(−9.0,−3.5) 스폰
+  - 선택: `wave phase=PHASE1 spawned=2 picks=ELLINIA:2230101 NAUTILUS:12230101` · 노틸러스 PHASE3 도 물버섯 · 물버섯 `Color 0.45/0.75/1.00`
+  - 이동(2차): 6구간 전부 `dir=-1` · 사냥터 미니언 y 가 통로 높이(−8.00 · −20.70 · −3.50)에 그대로, x 감소 · 포탑에 맞아 HP 300 → 180/240 · 강제 `Advance` 로 LANE2 → LANE1 → VILLAGE 스폰 위치(PathMaxX−0.6)·HP 비율 유지 · 엘리니아 마을 다리 위 넥서스 앞(−2.84, 6.45) 도착 · 노틸러스 마을 49.4 → 37.1 진행
+  - 에러 4건 = `LEA-3032` 인자 `T_ELL`/`T_NAU` — `LaneStateService.PushOwner` 가 **가짜 유저**에게 보내려다 난 것(테스트 전용). 경고는 기존 종류뿐(`LWA-3048` 미니언 공격 컴포넌트 2개 · `LWA-3047` · 보스 6130101)
+- 눈 확인(사용자 몫): 통로·사다리 높이, 엘리니아 다리 위 넥서스, 노틸러스 물가 동선, 새 리본돼지 해변 포탈 왕복, 물버섯 색.
