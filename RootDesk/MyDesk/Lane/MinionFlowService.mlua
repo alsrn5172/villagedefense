@@ -127,6 +127,9 @@ script MinionFlowService extends Logic
 		if modelId == nil or modelId == "" then modelId = "monster" .. tostring(spec.monsterId) end
 		local x = row.spawnX
 		if role ~= "LANE2" or x == nil or x == 0 then x = row.pathMaxX - 0.6 end
+		-- 진행 방향은 **실제 출발 x** 기준(2026-09-18 · PR #43 검토): LANE1·VILLAGE 는 SpawnX 가 빈칸(0)이라
+		-- row.spawnX 로 재면 좌표가 양수인 맵(페리온 마을 끝 3.4 · 노틸러스 마을 끝 19.8)에서 방향이 뒤집혀 즉시 끝 판정이 났다.
+		local dir = (row.endX >= x) and 1 or -1
 		self.spawnSeq = self.spawnSeq + 1
 		-- 접두 "Minion_<마을>_" 는 절대 바꾸지 않는다 — DespawnVillage(탈락 정리)가 이 접두로 찾는다. 파병은 뒤에 "D" 만 끼운다.
 		local name = "Minion_" .. villageId .. "_" .. tostring(spec.namePart or "") .. tostring(self.spawnSeq)
@@ -191,8 +194,8 @@ script MinionFlowService extends Logic
 		---@type FactionAI
 		local ai = ent:AddComponent("script.FactionAI")
 		if isvalid(ai) then
-			-- 진행 방향은 레인 행이 정한다: 끝(endX)이 출발(spawnX)보다 오른쪽이면 좌→우(엘리니아·페리온·노틸러스), 아니면 우→좌 (2026-09-15 · 전엔 −1 고정).
-			ai.AdvanceDir = (row.endX >= row.spawnX) and 1 or -1
+			-- 진행 방향은 레인 행이 정한다: 끝(endX)이 실제 출발 x 보다 오른쪽이면 좌→우, 아니면 우→좌 (2026-09-15 · 2026-09-18 출발 x 기준으로 정정).
+			ai.AdvanceDir = dir
 			-- 🔴 AddComponent 순간 OnBeginPlay 가 먼저 돌아 ResolvedDir 이 팀 기본값(−1)으로 굳는다 → 여기서 직접 덮는다(2026-09-15 · 좌→우 줄이 안 움직이던 원인).
 			ai.ResolvedDir = ai.AdvanceDir
 			ai.AttackRange = self.AttackRange
@@ -226,7 +229,7 @@ script MinionFlowService extends Logic
 			mu.VillageId = villageId
 			mu.LaneRole = role
 			mu.EndX = row.endX
-			mu.EndDir = (row.endX >= row.spawnX) and 1 or -1
+			mu.EndDir = dir
 			mu.CoinDropChance = spec.coinChance or 0
 			mu.MonsterId = spec.monsterId
 			mu.BaseHp = spec.baseHp
@@ -239,7 +242,7 @@ script MinionFlowService extends Logic
 			mu.FixedHp = math.floor(spec.fixedHp or 0)
 			mu.FixedAttack = math.floor(spec.fixedAttack or 0)
 		end
-		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?"))
+		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?") .. " dir=" .. tostring(dir) .. " endX=" .. tostring(row.endX))
 		return ent
 	end
 
@@ -316,8 +319,10 @@ script MinionFlowService extends Logic
 			elseif curRow ~= nil and nxtRow.mapName == curRow.mapName then
 				mu.LaneRole = nextRole
 				mu.EndX = nxtRow.endX
-				mu.EndDir = (nxtRow.endX >= nxtRow.spawnX) and 1 or -1
-				log("[MinionFlow] " .. minion.Name .. " same-map role " .. nextRole .. " endX=" .. tostring(nxtRow.endX))
+				-- 같은 맵에서 계속 걷는다 → 방향은 지금 위치 기준 (다음 행 SpawnX 는 빈칸 = 0 이라 쓰면 안 된다 · 2026-09-18).
+				local cx = isvalid(minion.TransformComponent) and minion.TransformComponent.WorldPosition.x or nxtRow.pathMaxX
+				mu.EndDir = (nxtRow.endX >= cx) and 1 or -1
+				log("[MinionFlow] " .. minion.Name .. " same-map role " .. nextRole .. " endX=" .. tostring(nxtRow.endX) .. " dir=" .. tostring(mu.EndDir))
 				mu.advancing = false
 				return
 			else break end
