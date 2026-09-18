@@ -26,7 +26,7 @@ script MinionFlowService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void LoadComposition()
-		-- MinionComposition.csv → comps[phase] = { {monsterId, weight, level, baseHp, baseAttack}, ... }
+		-- MinionComposition.csv → comps[phase] = { {monsterId, weight, level, baseHp, baseAttack, villageId}, ... }
 		self.comps = {}
 		local t = _DataService:GetTable("MinionComposition")
 		if t == nil then
@@ -34,36 +34,54 @@ script MinionFlowService extends Logic
 			return
 		end
 		local n = 0
+		local m = 0
 		for i = 1, t:GetRowCount() do
 			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
 			local phase = t:GetCell(i, "Phase") or ""
 			local mid = math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0)
+			local villageId = string.match(tostring(t:GetCell(i, "VillageId") or ""), "^%s*(.-)%s*$") or ""
 			if enabled and phase ~= "" and mid > 0 then
 				if self.comps[phase] == nil then self.comps[phase] = {} end
 				table.insert(self.comps[phase], {
 					monsterId = mid, weight = tonumber(t:GetCell(i, "Weight")) or 1, level = math.floor(tonumber(t:GetCell(i, "Level")) or 1),
 					baseHp = math.floor(tonumber(t:GetCell(i, "BaseHp")) or 300), baseAttack = math.floor(tonumber(t:GetCell(i, "BaseAttack")) or 15),
+					villageId = villageId,
 				})
 				n = n + 1
+				if villageId ~= "" then m = m + 1 end
 			end
 		end
-		log("[MinionFlow] MinionComposition loaded: " .. tostring(n) .. " rows")
+		log("[MinionFlow] MinionComposition loaded: " .. tostring(n) .. " rows (village-specific " .. tostring(m) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
-	method any PickMonster(string phaseName)
-		-- 가중치 추첨.
+	method any PickMonster(string phaseName, string villageId)
+		-- 마을 전용 행이 있으면 그 행만, 없으면 공통 행에서 가중치 추첨한다.
 		local list = (self.comps ~= nil) and self.comps[phaseName] or nil
 		if list == nil or #list == 0 then return nil end
-		local total = 0
-		for _, c in ipairs(list) do total = total + math.max(0, c.weight) end
-		if total <= 0 then return list[1] end
-		local r = _UtilLogic:RandomDouble() * total
+		local candidates = {}
+		local hasVillageSpecific = false
 		for _, c in ipairs(list) do
+			if c.villageId == villageId then
+				hasVillageSpecific = true
+				table.insert(candidates, c)
+			end
+		end
+		if not hasVillageSpecific then
+			for _, c in ipairs(list) do
+				if c.villageId == "" then table.insert(candidates, c) end
+			end
+		end
+		if #candidates == 0 then return nil end
+		local total = 0
+		for _, c in ipairs(candidates) do total = total + math.max(0, c.weight) end
+		if total <= 0 then return candidates[1] end
+		local r = _UtilLogic:RandomDouble() * total
+		for _, c in ipairs(candidates) do
 			r = r - math.max(0, c.weight)
 			if r <= 0 then return c end
 		end
-		return list[#list]
+		return candidates[#candidates]
 	end
 
 	@ExecSpace("ServerOnly")
@@ -79,10 +97,12 @@ script MinionFlowService extends Logic
 		-- 주인 있는 마을마다 사냥터2 통로 시작점에 1마리.
 		if _LaneFacilityService == nil or _VillageOwnership == nil or _LaneFacilityService.laneRows == nil then return end
 		local count = 0
+		local picks = {}
 		for vid, rows in pairs(_LaneFacilityService.laneRows) do
 			if rows.LANE2 ~= nil and _VillageOwnership:OwnerOf(vid) ~= "" then
-				local comp = self:PickMonster(phaseName)
+				local comp = self:PickMonster(phaseName, vid)
 				if comp ~= nil then
+					table.insert(picks, vid .. ":" .. tostring(comp.monsterId))
 					local spec = { monsterId = comp.monsterId, baseHp = comp.baseHp, baseAttack = comp.baseAttack, hpMul = hpMul, atkMul = atkMul, expBase = expBase, mesoBase = mesoBase, coinChance = coinChance, hpRatio = 1.0 }
 					if isvalid(self:SpawnMinion(vid, "LANE2", spec)) then count = count + 1 end
 				else
@@ -90,7 +110,7 @@ script MinionFlowService extends Logic
 				end
 			end
 		end
-		log("[MinionFlow] wave phase=" .. phaseName .. " spawned=" .. tostring(count))
+		log("[MinionFlow] wave phase=" .. phaseName .. " spawned=" .. tostring(count) .. " picks=" .. table.concat(picks, " "))
 	end
 
 	@ExecSpace("ServerOnly")
