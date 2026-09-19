@@ -1087,12 +1087,17 @@ script SkillExecutors extends Logic
             perUser[buffTag .. "#front"] = nil
             had = true
         end
-        -- 에너지 차지 불꽃 기둥(PlayChargeLoop 의 두 번째 겹 · 태그 .. "#flame"). 이것을 안 지우면 차지가 끝나도
-        -- isLoop 이펙트가 캐릭터에 계속 붙어 있는다 — 모든 조기 종료 경로가 이 함수로 모이므로 여기서 한 번만 지운다.
-        local flameSerial = perUser[buffTag .. "#flame"]
-        if flameSerial ~= nil then
-            _EffectService:RemoveEffect(flameSerial)
+        -- 에너지 차지 불꽃 기둥(PlayChargeLoop 의 두 번째 겹 · 태그 .. "#flame" = SpawnChargeFlame 의 { fx, ent, h }). 이것을 안 지우면
+        -- 차지가 끝나도 자식 sprite 가 캐릭터에 붙어 있고 층 구독도 남는다 — 모든 종료 경로가 이 함수로 모이므로 여기서 한 번만 지운다.
+        -- 엔티티가 MaxLifetime 안전망으로 먼저 사라졌어도(isvalid false) 구독은 여기서 푼다.
+        local flame = perUser[buffTag .. "#flame"]
+        if flame ~= nil then
+            local unhooked = false
+            if flame.h ~= nil and isvalid(flame.ent) then unhooked = flame.ent:DisconnectEvent(SortingLayerChangedEvent, flame.h) end
+            local alive = isvalid(flame.fx)
+            if alive then flame.fx:Destroy() end
             perUser[buffTag .. "#flame"] = nil
+            log("SkillExecutors: CHARGE flame removed " .. buffTag .. " destroyed=" .. tostring(alive) .. " unhooked=" .. tostring(unhooked) .. " (" .. userId .. ")")
             had = true
         end
         local serial = perUser[buffTag]
@@ -1558,7 +1563,7 @@ script SkillExecutors extends Logic
         local facing = self:GetFacingX(casterEntity)
         -- 🔴 이 겹(affected 오라)은 **정렬을 하지 않는다** — 옵션에 FlipX 만 넣고 SortingLayer/OrderInLayer 는 안 넣어
         --    기본 이펙트 층, 즉 플레이어 **앞**에 그려진다. 희미한 입자 겹이라 앞이 맞다고 보고 그렇게 뒀다.
-        -- ⚠ 그리고 이 경로는 `spec.sortBehind` / `spec.behindPlayer` 를 **읽지 않는다.** 아래 flame 쪽만 읽는다(`:1582`).
+        -- ⚠ 그리고 이 경로는 `spec.sortBehind` / `spec.behindPlayer` 를 **읽지 않는다.** 아래 flame 쪽만 읽는다(`SpawnChargeFlame`).
         --    즉 tier.loop spec 에 sortBehind = true 를 적어도 **아무 일도 일어나지 않고 오류도 안 난다.**
         --    범용 경로인 PlayBuffLoop 는 같은 플래그를 지킨다(`if spec.behindPlayer or spec.sortBehind then ...` · `:982`) —
         --    PlayChargeLoop 를 PlayBuffLoop 확장이 아니라 별 함수로 쓴 탓에 생긴 비대칭이다. 이 겹을 뒤로 보내려면
@@ -1576,34 +1581,80 @@ script SkillExecutors extends Logic
         end, duration)
         -- 두 번째 루프 겹(loopFlame = 팩의 effect/2 · 제자리에서 깜빡이는 불꽃 기둥). affected 는 흩날리는 입자라
         -- 그것만으로는 원작과 달라 보인다(2026-09-18 사용자가 GIF 프레임을 직접 열어 확인) — 불꽃이 주 시각이다.
-        -- 🔴 같은 키에 덮어쓰면 앞 serial 이 RemoveEffect 에 도달하지 못해 isLoop 이펙트가 영구히 남는다.
+        -- 이펙트가 아니라 플레이어 자식 sprite 엔티티로 건다(SpawnChargeFlame · #64 — 정렬 층이 플레이어를 따라가야 한다).
+        -- 🔴 같은 키에 덮어쓰면 앞 엔티티와 층 구독이 정리에 도달하지 못한다.
         --    그래서 **하위 키**(태그 .. "#flame")에 따로 담는다 — 예전 loopFront 가 쓰던 것과 같은 방식이고
         --    RemoveBuffLoop 이 그 키를 지운다(버프 만료·재시전·매치 초기화가 전부 거기로 모인다).
+        --    지속 시간 타이머는 따로 두지 않는다: 만료는 SkillBuffs.ExpireBuff → OnBuffEnded → StopBuffLoop → RemoveBuffLoop 로 오고,
+        --    그 길이 빠지면 MaxLifetime(duration + 2)이 엔티티를 지운다.
         local flame = tier.loopFlame
         if flame ~= nil and flame.ruid ~= nil then
-            local fs = flame.scale or 1
-            local fopt = {}
-            fopt["FlipX"] = (facing > 0) and not flame.noFlip
-            -- sortBehind(2026-09-18 제보 "불꽃이 캐릭터를 가린다 · 원작은 캐릭터가 보이고 불꽃이 둘레와 뒤에 있다"):
-            --   이펙트에 정렬 옵션을 안 주면 기본 이펙트 층 = **플레이어 앞**이라 몸을 덮는다. ApplyShadowSorting 이
-            --   밟은 발판의 SortingLayer + OrderInLayer 2 를 넣어 플레이어(4) 뒤로 보낸다(분신 sortBehind 와 같은 길).
-            --   ⚠ 발 아래 3유닛 안에 발판이 없으면(공중 시전) SortingLayerBelow 가 "" 를 돌려주고 옵션이 안 들어가
-            --      착지할 때까지는 예전처럼 앞에 그려진다 — 이 기구의 한계이고 분신도 같다.
-            if flame.sortBehind then self:ApplyShadowSorting(fopt, casterEntity) end
-            local flameSerial = _EffectService:PlayEffectAttached(flame.ruid, casterEntity,
-                Vector3((flame.offsetX or 0) * facing, flame.offsetY or 0, 0), 0, Vector3(fs, fs, 1), true, fopt)
-            perUser[buffTag .. "#flame"] = flameSerial
-            _TimerService:SetTimerOnce(function()
-                if perUser[buffTag .. "#flame"] == flameSerial then
-                    _EffectService:RemoveEffect(flameSerial)
-                    perUser[buffTag .. "#flame"] = nil
-                end
-            end, duration)
-            log("SkillExecutors: CHARGE flame loop " .. skillId .. " serial=" .. tostring(flameSerial)
-                .. " scale=" .. tostring(fs) .. " offsetY=" .. tostring(flame.offsetY or 0) .. " (" .. userId .. ")")
+            perUser[buffTag .. "#flame"] = self:SpawnChargeFlame(skillId, casterEntity, flame, duration)
         end
         log("SkillExecutors: CHARGE loop " .. skillId .. " tier=" .. self:ChargeTierKey(skillId, level)
             .. " serial=" .. tostring(serial) .. " for " .. tostring(duration) .. "s (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method any SpawnChargeFlame(string skillId, Entity casterEntity, table flame, number duration)
+        -- 차지 불꽃 기둥을 플레이어 **자식 sprite 엔티티**로 건다(#64). 이펙트 겹(PlayEffectAttached)은 정렬 층이 스폰 순간 한 번 정해지고
+        -- 재생 중에 바꾸는 API 가 없어서, 층이 다른 발판으로 옮기면 불꽃만 옛 층에 남아 캐릭터 앞으로 올라왔다.
+        -- model://skillprojectile(SpriteRenderer + script.SkillProjectile · Models/Skills)을 VisualOnly · Speed 0 으로 스폰하고
+        -- SpriteRUID 에 불꽃 클립을 넣는다(엔진이 스스로 루프 · LaneFxLogic.PlayClip 과 같은 길). SortingLayer 는 @Sync 속성이라 언제든 대입된다 —
+        -- sortBehind 면 스폰 때 아바타의 층 + ShadowOrderInLayer(2 · 같은 층의 플레이어 서버 3 / 클라 4 보다 뒤)로 두고,
+        -- 플레이어의 SortingLayerChangedEvent(서버에서도 온다 · #64 측정 3)가 올 때마다 같은 층으로 옮긴다. 다시 걸지 않으므로 되감기가 없다.
+        -- 돌려주는 기록 { fx, ent, h }(구독한 엔티티 · 핸들) 는 PlayChargeLoop 이 태그 .. "#flame" 에 담고, 정리(Destroy + 구독 해제)는 RemoveBuffLoop 한 곳이다.
+        -- 누락 대비: MaxLifetime = duration + 2 가 지나면 SkillProjectile 이 스스로 Destroy 한다(이펙트 루프에는 없던 안전망).
+        if not isvalid(casterEntity.PlayerComponent) or not isvalid(casterEntity.TransformComponent) then return nil end
+        local userId = casterEntity.PlayerComponent.UserId
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self.spriteFlashCount = self.spriteFlashCount + 1
+        local name = "SkillFlame_" .. userId .. "_" .. skillId .. "_" .. tostring(self.spriteFlashCount)
+        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", name, Vector3(pos.x, pos.y, pos.z), casterEntity)
+        if not isvalid(fx) then
+            log_warning("SkillExecutors: charge flame spawn failed " .. skillId .. " (" .. userId .. ")")
+            return nil
+        end
+        local sr = fx.SpriteRendererComponent
+        if not isvalid(sr) then
+            fx:Destroy()
+            log_warning("SkillExecutors: charge flame has no SpriteRendererComponent " .. skillId .. " (" .. userId .. ")")
+            return nil
+        end
+        local mover = fx:GetComponent("script.SkillProjectile")
+        if isvalid(mover) then
+            mover.VisualOnly = true
+            mover.Speed = 0
+            mover.MaxLifetime = duration + 2
+            mover.SkillId = skillId
+        end
+        sr.SpriteRUID = flame.ruid
+        local s = flame.scale or 1
+        if s <= 0 then s = 1 end
+        fx.TransformComponent.Scale = Vector3(s, s, 1)
+        -- 방향: 팩 그림은 왼쪽을 보고 SetDirection(+1) 이 Scale.x 를 뒤집는다(ApplyFacing) → 이펙트 때의 FlipX = (facing > 0) and not noFlip 과 같게.
+        local facing = self:GetFacingX(casterEntity)
+        local dir = facing
+        if flame.noFlip then dir = -1 end
+        if isvalid(mover) then mover:SetDirection(dir) end
+        -- 자식이라 로컬 Position 이 곧 부착 오프셋(PlayEffectAttached 의 localPosition 과 같은 값).
+        fx.TransformComponent.Position = Vector3((flame.offsetX or 0) * facing, flame.offsetY or 0, 0)
+        local h = nil
+        if flame.sortBehind then
+            local avatar = casterEntity.AvatarRendererComponent
+            if isvalid(avatar) and avatar.SortingLayer ~= nil and avatar.SortingLayer ~= "" then sr.SortingLayer = avatar.SortingLayer end
+            sr.OrderInLayer = self.ShadowOrderInLayer
+            h = casterEntity:ConnectEvent(SortingLayerChangedEvent, function(event)
+                local layer = event.SortingLayer
+                if not isvalid(sr) or layer == nil or layer == "" or sr.SortingLayer == layer then return end
+                log("SkillExecutors: CHARGE flame layer '" .. tostring(sr.SortingLayer) .. "' -> '" .. layer .. "' (" .. userId .. ")")
+                sr.SortingLayer = layer
+            end)
+        end
+        log("SkillExecutors: CHARGE flame sprite " .. skillId .. " ruid=" .. flame.ruid .. " scale=" .. tostring(s)
+            .. " layer=" .. tostring(sr.SortingLayer) .. "/" .. tostring(sr.OrderInLayer) .. " follow=" .. tostring(h ~= nil)
+            .. " life=" .. tostring(duration + 2) .. "s (" .. userId .. ")")
+        return { fx = fx, ent = casterEntity, h = h }
     end
 
     @ExecSpace("ServerOnly")
