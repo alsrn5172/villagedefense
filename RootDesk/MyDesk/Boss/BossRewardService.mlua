@@ -1,0 +1,93 @@
+@Logic
+script BossRewardService extends Logic
+	-- 지역 보스 처치 보상 (BossReward.csv · 계약 A-2-10 · WO-027 §9-0 11 · a/plan-0914 B6).
+	--   · BossSpawner 가 보스 사망을 잡으면 누적 피해 원장(플레이어만)을 들고 OnBossKilled 를 부른다.
+	--   · 최다 피해자(동률 = 먼저 때린 사람)에게: 낙인의 영혼석(SoulstoneStar{★} · 비면 DifficultyRule.BOSS_SOULSTONE)
+	--     + TopDamageItemId ×1 + TopDamageMeso. 선취(FirstClaimItemId/Meso · FirstClaimOnce=true 면 매치당 1회 · 마노 = HP+200 갑옷 + 500메소).
+	--   · 매치가 진행 중일 때만 준다(밖에서 잡은 보스는 로그만). 발록은 BossReward 행이 없어 여기서 아무것도 안 준다.
+
+	property string SoulstoneItemId = "BRAND_SOULSTONE"
+
+	-- claimed[bossId] = true (이번 매치 선취 완료)
+	@HideFromInspector
+	property any claimed = nil
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch()
+		-- 매치 시작마다 선취 기록을 비운다 (MatchSessionLogic.StartMatch).
+		self.claimed = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TopDamager(any dmg, any order)
+		-- 원장에서 최다 피해자. 동률이면 먼저 때린 사람. 없으면 "".
+		if dmg == nil then return "" end
+		local best = ""
+		local bestD = -1
+		local bestO = 0
+		for uid, d in pairs(dmg) do
+			local o = (order ~= nil and order[uid]) or 0
+			if d > bestD or (d == bestD and o < bestO) then
+				best = uid
+				bestD = d
+				bestO = o
+			end
+		end
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossKilled(string bossId, string mapName, any dmg, any order)
+		-- 보스 1마리 사망 → 최다 피해자에게 보상.
+		local top = self:TopDamager(dmg, order)
+		local d = 0
+		if _DifficultyService ~= nil then d = _DifficultyService:Current() end
+		if d < 1 then
+			log("[BossReward] boss=" .. bossId .. " map=" .. mapName .. " 매치 밖 — 보상 없음 (top=" .. top .. ")")
+			return
+		end
+		local row = nil
+		if _BossCatalog ~= nil then row = _BossCatalog:GetReward(bossId) end
+		if row == nil then
+			log("[BossReward] boss=" .. bossId .. " BossReward 행 없음 — 보상 없음 (top=" .. top .. ")")
+			return
+		end
+		if top == "" or _MatchSessionLogic == nil or not _MatchSessionLogic:IsParticipant(top) then
+			log("[BossReward] boss=" .. bossId .. " 최다 피해자 없음/참가자 아님 (top=" .. top .. ")")
+			return
+		end
+		-- 영혼석: 보스 행의 ★ 열이 있으면 그 값, 비면 DifficultyRule.BOSS_SOULSTONE.
+		local stones = -1
+		if row.soulstone ~= nil and row.soulstone[d] ~= nil then stones = math.floor(row.soulstone[d]) end
+		if stones < 0 then stones = math.floor(_DifficultyService:GetNum("BOSS_SOULSTONE")) end
+		local given = 0
+		if stones > 0 and _InventoryService ~= nil then given = _InventoryService:GiveItem(top, self.SoulstoneItemId, stones) end
+		local itemGiven = 0
+		if row.topDamageItemId ~= "" and _InventoryService ~= nil then itemGiven = _InventoryService:GiveItem(top, row.topDamageItemId, 1) end
+		local player = _UserService:GetUserEntityByUserId(top)
+		if row.topDamageMeso > 0 and isvalid(player) and _SummonManager ~= nil then _SummonManager:GrantMeso(player, row.topDamageMeso) end
+		-- 선취 (매치당 1회)
+		local first = false
+		if self.claimed == nil then self.claimed = {} end
+		if (row.firstClaimItemId ~= "" or row.firstClaimMeso > 0) and not (row.firstClaimOnce and self.claimed[bossId]) then
+			self.claimed[bossId] = true
+			first = true
+			if row.firstClaimItemId ~= "" and _InventoryService ~= nil then _InventoryService:GiveItem(top, row.firstClaimItemId, 1) end
+			if row.firstClaimMeso > 0 and isvalid(player) and _SummonManager ~= nil then _SummonManager:GrantMeso(player, row.firstClaimMeso) end
+		end
+		local info = (_BossCatalog ~= nil) and _BossCatalog:GetInfo(bossId) or nil
+		local name = (info ~= nil and info.name ~= nil) and tostring(info.name) or bossId
+		local msg = name .. " 처치 보상"
+		if given > 0 then msg = msg .. ": 낙인의 영혼석 " .. tostring(given) .. "개" end
+		if itemGiven > 0 then msg = msg .. " · " .. row.topDamageItemId end
+		if row.topDamageMeso > 0 then msg = msg .. " · " .. tostring(row.topDamageMeso) .. "메소" end
+		if first then
+			if row.firstClaimItemId ~= "" then msg = msg .. " · 선취 " .. row.firstClaimItemId end
+			if row.firstClaimMeso > 0 then msg = msg .. " · 선취 " .. tostring(row.firstClaimMeso) .. "메소" end
+		end
+		if _UIToast ~= nil then _UIToast:ShowMessage(msg, top) end
+		log("[BossReward] boss=" .. bossId .. " map=" .. mapName .. " top=" .. top .. " dmg=" .. tostring(dmg[top] or 0)
+			.. " star=" .. tostring(d) .. " soulstone=" .. tostring(given) .. "/" .. tostring(stones) .. " item=" .. row.topDamageItemId
+			.. " meso=" .. tostring(row.topDamageMeso) .. " first=" .. tostring(first))
+	end
+end

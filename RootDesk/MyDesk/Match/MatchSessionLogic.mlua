@@ -152,6 +152,7 @@ script MatchSessionLogic extends Logic
 		--    Running 이 먼저 켜지면 그 사이 프레임에 BalrogRoomService.OnUpdate 가 **이전 판 원장**으로 돌아
 		--    이전 판에 죽은 발록을 새 판 승리로 읽을 수 있다 (Codex 09-13 A·B). 배정·발록 리셋은 아래 BeginMatch.
 		if _BalrogRoomService ~= nil then _BalrogRoomService:ClearLedger() end
+		if _BossRewardService ~= nil then _BossRewardService:ResetForMatch() end
 
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
@@ -325,9 +326,18 @@ script MatchSessionLogic extends Logic
 		-- 웨이브 1회 투입 (B3): MinionFlowService 큐에 넣고, 접수된 파병 대기열을 같이 푼다 (WO-014 · GDD §4.3 · 미니언이 먼저 나가고 바로 뒤에 붙는다).
 		-- 매치 첫 웨이브(7:30 · P1-0)면 참가자 전원에게 "미니언이 생성되었습니다" 토스트 (사용자 2026-09-19).
 		self.waveIndex = self.waveIndex + 1
+		-- 난이도 (B6 · DifficultyService 단일 적용점): ★1 은 3P 강화 없음(MINION_P3_BOOST 0 → 2P 마지막 행 값) · 좀비 마릿수 × ZOMBIE_MUL(★1 0 · ★5 2).
+		local hp, attack, exp, meso, monsterId, zombies = row.hp, row.attack, row.exp, row.meso, row.monsterId, row.zombieCount
+		if _DifficultyService ~= nil then
+			if row.phase == "PHASE3" and _DifficultyService:GetMul("MINION_P3_BOOST") < 0.5 then
+				local base = self:LastRowOfPhase("PHASE2")
+				if base ~= nil then hp, attack, exp, meso, monsterId = base.hp, base.attack, base.exp, base.meso, base.monsterId end
+			end
+			zombies = math.floor(zombies * _DifficultyService:GetMul("ZOMBIE_MUL") + 0.5)
+		end
 		local villages = 0
 		if _MinionFlowService ~= nil then
-			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, row.monsterId, row.hp, row.attack, row.exp, row.meso, row.zombieCount, self.zombieTemplate)
+			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, monsterId, hp, attack, exp, meso, zombies, self.zombieTemplate)
 		end
 		-- 파병은 이 웨이브의 일반 미니언(count 마리)이 다 나간 직후에 푼다 — 큐에 같이 넣어 순서를 지킨다(Codex 리뷰 2026-09-23). 큐가 없으면 즉시.
 		if _MinionFlowService ~= nil then
@@ -338,7 +348,17 @@ script MatchSessionLogic extends Logic
 		if self.waveIndex == 1 and _UIToast ~= nil then
 			for _, uid in ipairs(self.participants or {}) do _UIToast:ShowMessage("미니언이 생성되었습니다", uid) end
 		end
-		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
+		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " hp=" .. tostring(hp) .. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies) .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any LastRowOfPhase(string phaseName)
+		-- 그 페이즈의 마지막(시각 순) 웨이브 행. 없으면 nil. (★1 3P 대체값 · B6)
+		local last = nil
+		for _, w in ipairs(self.waves or {}) do
+			if w.phase == phaseName then last = w end
+		end
+		return last
 	end
 
 	@ExecSpace("ServerOnly")

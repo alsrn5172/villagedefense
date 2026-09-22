@@ -18,6 +18,27 @@ script PortalNetwork extends Logic
 	-- 이 페이즈 이름들일 때만 입장 허용 (0페이즈 · 전직 유예). 그 외 전부 차단.
 	property string LithOpenPhases = "PHASE0-1,PHASE0-2"
 
+	-- 🔴 지역 보스 입장권 (9/14 기획 · WO-027 §9-0 3차 · B6): 지역 보스 맵(VillageConfig.BossMapName · 무료 마을 제외)으로 **들어가는** 노선은
+	--    발록 방처럼 바인딩하지 않고 ↑키 → 서버 RequestEnterBoss. 그 맵 지역의 재화 BossEntryCost 개를 낸다.
+	--    확인 = 첫 ↑ 는 안내(대기) · BossEntryConfirmSeconds 안에 같은 맵으로 다시 ↑ 면 차감 후 이동 (확인 팝업 대신 2단계 ↑ · UI 일괄 때 팝업으로 교체 가능).
+	property integer BossEntryCost = 25
+
+	property number BossEntryConfirmSeconds = 8
+
+	-- 입장권을 안 받는 마을 (마노 무료)
+	property string BossEntryFreeVillages = "LITH"
+
+	-- toMap → villageId (VillageConfig 에서 · 서버·클라 각자 캐시)
+	@HideFromInspector
+	property any bossEntryMaps = nil
+
+	-- userId → { map, at } (서버 · 확인 대기)
+	@HideFromInspector
+	property any bossConfirm = nil
+
+	@HideFromInspector
+	property number serverClock = 0
+
 	@HideFromInspector
 	property number RetryInterval = 0.25
 
@@ -142,6 +163,12 @@ script PortalNetwork extends Logic
 				self:RequestEnterLith(closestToMap, closestToPortal)
 				return
 			end
+			-- 🔴 지역 보스 입장(B6)도 서버가 입장권을 판정한다 (지역 재화 25 · 2단계 확인 · 마노는 무료라 여기 안 걸린다).
+			if self:IsBossEntry(closestToMap) then
+				log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> 지역 보스 (서버 입장권 판정)")
+				self:RequestEnterBoss(closestToMap, closestToPortal)
+				return
+			end
 			log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> " .. closestToMap .. "/" .. closestToPortal)
 			player.PlayerComponent:MoveToEntityByPath("/maps/" .. closestToMap .. "/" .. closestToPortal)
 		end
@@ -182,6 +209,87 @@ script PortalNetwork extends Logic
 			return
 		end
 		log("[PortalNetwork] lith entry ok -> " .. toMap .. "/" .. toPortal .. " (" .. uid .. ")")
+		player.PlayerComponent:MoveToEntityByPath("/maps/" .. toMap .. "/" .. toPortal)
+	end
+
+	method boolean IsBossEntry(string toMap)
+		-- 지역 보스 맵(입장권 대상)인가 = VillageConfig.BossMapName 중 무료 마을(BossEntryFreeVillages) 제외. 서버·클라 모두 표를 읽어 캐시.
+		if self.bossEntryMaps == nil then
+			self.bossEntryMaps = {}
+			local t = _DataService:GetTable("VillageConfig")
+			if t ~= nil then
+				local free = "," .. self.BossEntryFreeVillages .. ","
+				for i = 1, t:GetRowCount() do
+					local vid = tostring(t:GetCell(i, "VillageId") or "")
+					local bossMap = tostring(t:GetCell(i, "BossMapName") or "")
+					if vid ~= "" and bossMap ~= "" and string.find(free, "," .. vid .. ",", 1, true) == nil then
+						self.bossEntryMaps[bossMap] = vid
+					end
+				end
+			end
+		end
+		return self.bossEntryMaps[tostring(toMap or "")] ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HasRoute(string fromMap, string toMap)
+		-- PortalRoutes 에 fromMap → toMap 활성 행이 있나 (서버 검증용).
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then return false end
+		for i = 1, t:GetRowCount() do
+			if self:ParseEnabled(t:GetCell(i, "Enabled")) and (t:GetCell(i, "FromMap") or "") == fromMap and (t:GetCell(i, "ToMap") or "") == toMap then
+				return true
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("Server")
+	method void RequestEnterBoss(string toMap, string toPortal)
+		-- 지역 보스 입장 요청 (B6): 그 맵 지역의 재화 BossEntryCost 개 · 첫 ↑ = 안내(확인 대기) · 확인 시간 안의 두 번째 ↑ = 차감 + 이동.
+		local uid = senderUserId
+		local player = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		local fromMap = isvalid(player.CurrentMap) and player.CurrentMap.Name or ""
+		if not self:IsBossEntry(toMap) or not self:HasRoute(fromMap, toMap) then
+			log_warning("[PortalNetwork] RequestEnterBoss rejected: not a boss entry " .. fromMap .. " -> " .. tostring(toMap) .. " (" .. uid .. ")")
+			return
+		end
+		local item = ""
+		if _DropTableLogic ~= nil then item = _DropTableLogic:RegionItemOfMap(toMap) end
+		local cost = self.BossEntryCost
+		if item == "" then cost = 0 end
+		local itemName = item
+		if item ~= "" and _ItemCatalog ~= nil then
+			local def = _ItemCatalog:Get(item)
+			if def ~= nil and def.name ~= nil then itemName = tostring(def.name) end
+		end
+		if cost > 0 then
+			local have = 0
+			if _InventoryService ~= nil then have = _InventoryService:CountItem(uid, item) end
+			if have < cost then
+				log("[PortalNetwork] boss entry denied map=" .. toMap .. " need=" .. tostring(cost) .. " have=" .. tostring(have) .. " item=" .. item .. " (" .. uid .. ")")
+				if _UIToast ~= nil then _UIToast:ShowMessage("입장권 부족: " .. itemName .. " " .. tostring(have) .. "/" .. tostring(cost), uid) end
+				return
+			end
+			-- 확인 단계: 같은 맵으로 BossEntryConfirmSeconds 안에 두 번째 ↑ 가 와야 차감한다.
+			if self.bossConfirm == nil then self.bossConfirm = {} end
+			local pending = self.bossConfirm[uid]
+			if pending == nil or pending.map ~= toMap or (self.serverClock - pending.at) > self.BossEntryConfirmSeconds then
+				self.bossConfirm[uid] = { map = toMap, at = self.serverClock }
+				log("[PortalNetwork] boss entry confirm? map=" .. toMap .. " cost=" .. tostring(cost) .. " item=" .. item .. " have=" .. tostring(have) .. " (" .. uid .. ")")
+				if _UIToast ~= nil then _UIToast:ShowMessage(itemName .. " " .. tostring(cost) .. "개를 내고 입장합니다. " .. tostring(math.floor(self.BossEntryConfirmSeconds)) .. "초 안에 다시 ↑ 를 누르면 확인", uid) end
+				return
+			end
+			self.bossConfirm[uid] = nil
+			if _InventoryService == nil or not _InventoryService:RemoveItem(uid, item, cost) then
+				log_warning("[PortalNetwork] boss entry: RemoveItem failed item=" .. item .. " n=" .. tostring(cost) .. " (" .. uid .. ")")
+				return
+			end
+			log("[Sink] BOSS_ENTRY user=" .. uid .. " item=" .. item .. " n=" .. tostring(cost) .. " map=" .. toMap)
+			if _UIToast ~= nil then _UIToast:ShowMessage(itemName .. " " .. tostring(cost) .. "개를 냈습니다", uid) end
+		end
+		log("[PortalNetwork] boss entry ok -> " .. toMap .. "/" .. toPortal .. " cost=" .. tostring(cost) .. " item=" .. item .. " (" .. uid .. ")")
 		player.PlayerComponent:MoveToEntityByPath("/maps/" .. toMap .. "/" .. toPortal)
 	end
 
@@ -258,7 +366,7 @@ script PortalNetwork extends Logic
 					self:RecordInvalid(row, "required column is empty")
 				elseif seenKeys[key] then
 					self:RecordInvalid(row, "duplicate source portal")
-				elseif toMap == self.GatedToMap or self:IsLithEntry(fromMap, toMap) then
+				elseif toMap == self.GatedToMap or self:IsLithEntry(fromMap, toMap) or self:IsBossEntry(toMap) then
 					-- 🔴 발록 방 입구 · 리스항구 입장(밖→안 · B1) — routes 에 안 넣는다. 넣고 BindRow 에서 건너뛰면 AttemptBindings 가
 					--    완료로 안 세서 RetryTimeout 뒤 "해석 실패" 경고로 잘못 남긴다.
 					--    클라 ↑키(TryMoveByUpArrow)는 표를 직접 읽으므로 이 행을 여전히 찾는다.
@@ -324,6 +432,7 @@ script PortalNetwork extends Logic
 	method void OnUpdate(number delta)
 		-- 서버는 노선 바인딩 재시도, 클라는 포탈 렌더 층 보정. @Logic 이라 OnMapEnter 가 안 와서 양쪽 다 폴링이다.
 		if self:IsServer() then
+			self.serverClock = self.serverClock + delta
 			self:UpdateServerBinding(delta)
 		else
 			self:UpdateClientPortalLayer(delta)

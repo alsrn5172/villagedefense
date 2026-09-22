@@ -94,7 +94,7 @@ const CANONICAL = {
     "CrouchBand,FireEffectRUID,FireEffectScale,FireEffectFloors,FireEffectTiles",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
-    "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
+    "FirstClaimMeso,FirstClaimOnce,Enabled,SoulstoneStar1,SoulstoneStar3,SoulstoneStar5,#Note",
 
   // 엘리트 — 구조만. 로스터는 미정(로드맵 미정 #4)
   EliteMonsterInfo:
