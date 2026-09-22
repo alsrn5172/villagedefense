@@ -47,6 +47,10 @@ script MinionUnit extends Component
 	@HideFromInspector
 	property boolean advancing = false
 
+	-- 전진(ADVANCE) 중 제자리에 멈춰 있던 시간 — 체인 끝에 막혔는지 판정 (KeepMoving)
+	@HideFromInspector
+	property number stuckTime = 0
+
 	@ExecSpace("ServerOnly")
 	@EventSender("Self")
 	handler HandleHitEvent(HitEvent event)
@@ -68,6 +72,7 @@ script MinionUnit extends Component
 			end
 			return
 		end
+		self:KeepMoving(delta)
 		if self.advancing then return end
 		local t = self.Entity.TransformComponent
 		if not isvalid(t) then return end
@@ -77,6 +82,49 @@ script MinionUnit extends Component
 			if _MinionFlowService ~= nil then
 				_MinionFlowService:Advance(self.Entity)
 			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void KeepMoving(number delta)
+		-- 통로를 따라 계속 걷게 하는 보정 (2026-09-22 Maker 실측 · 엘리니아 마을).
+		-- ① 몬스터 Rigidbody 는 IsolatedMove 라 체인 끝에서 떨어지지 않고 멈춘다. 전진(ADVANCE) 중 0.4초 넘게 제자리면
+		--    FootholdSwitch.TryDropOff 로 끝 너머로 내려준다 (이음매·가파른 내리막은 Monster.OnUpdate 의 R1·R1b 가 먼저 처리).
+		-- ② FactionAI 의 전진은 통로 방향으로만 걷는다. 마을 통로에서 2.5 넘게 내려왔으면(넥서스가 통로 선 위에 없는 마을 —
+		--    엘리니아: 다리 → 2층 넥서스) 넥서스(VILLAGE 행 TowerSlotX) 쪽으로 방향을 돌린다.
+		--    기준 2.5 = FactionAI.MaxTargetDy. 1 로 두면 엘리니아 다리가 가운데서 1.16 처져 다리 위에서 왔다갔다했다 (실측).
+		---@type FactionAI
+		local ai = self.Entity:GetComponent("script.FactionAI")
+		if ai == nil or ai.CurrentAIState ~= "ADVANCE" then
+			self.stuckTime = 0
+			return
+		end
+		local pos = self.Entity.TransformComponent.WorldPosition
+		if self.LaneRole == "VILLAGE" and _LaneFacilityService ~= nil then
+			local row = _LaneFacilityService:LaneRow(self.VillageId, "VILLAGE")
+			if row ~= nil and pos.y < row.pathY - 2.5 and math.abs(row.slotX - pos.x) > 0.3 then
+				local want = 1
+				if row.slotX < pos.x then want = -1 end
+				if ai.ResolvedDir ~= want then
+					ai.ResolvedDir = want
+					ai.AdvanceDir = want
+					log(string.format("[MinionFlow] %s left the village path (y %.2f < %.2f) -> head to nexus x=%.2f dir=%d", self.Entity.Name, pos.y, row.pathY, row.slotX, want))
+				end
+			end
+		end
+		-- 구간 끝(EndX)에 이미 닿은 미니언은 내려주지 않는다 — 넥서스가 부서진 뒤 계속 걷다 맵 끝에서 허공으로 떨어지지 않게.
+		local rb = self.Entity.RigidbodyComponent
+		if not self.advancing and isvalid(rb) and rb:IsOnGround() and math.abs(rb.RealMoveVelocity.x) < 0.001 then
+			self.stuckTime = self.stuckTime + delta
+			if self.stuckTime >= 0.4 then
+				self.stuckTime = 0
+				local lane = (_LaneFacilityService ~= nil) and _LaneFacilityService:LaneRow(self.VillageId, self.LaneRole) or nil
+				if lane ~= nil and _FootholdSwitch ~= nil then
+					_FootholdSwitch:TryDropOff(self.Entity, ai.ResolvedDir, lane.pathMinX, lane.pathMaxX)
+				end
+			end
+		else
+			self.stuckTime = 0
 		end
 	end
 

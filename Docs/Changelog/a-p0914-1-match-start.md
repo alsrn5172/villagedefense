@@ -18,6 +18,7 @@
 
 - 새 NPC 두 개의 위치(리스항구 기존 NPC 9010022 의 양옆 8.30 / 13.30)와 그림(기존 모델 복제)은 **눈으로 확인 뒤 조정** 대상. 그림은 사용자가 일괄 제공할 때 교체.
 - `MonsterInfo.Attack`·Exp·메소 실값은 B2(평타 실측 뒤). 여기서는 건드리지 않았다.
+- **(2차 · 2026-09-23 보강)** `map/LithHarbor_Village_MinimiMain.map` 에 `NpcSpawner` 엔티티 추가(`MapBuilder.empty` · 헤네시스와 같은 형태). 이 맵에만 스포너가 없어 `MapNpcs_Village` 새 행 2개(와 기존 `MapNpcs` 9010022 행)가 스폰되지 않았다. Maker 검증: `[NpcSpawner] ready map=LithHarbor_Village_MinimiMain spawned=3/3`.
 
 ## 검증
 

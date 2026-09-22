@@ -1,0 +1,54 @@
+@Logic
+script PlayerFrontLayer extends Logic
+
+	-- 플레이어는 항상 맨 앞에 그린다 (사용자 지시 2026-09-07 "무조건 플레이어가 맨 앞" · 2026-09-22 재지시 "플레이어가 항상 맨앞으로 나오는 layer 설정이어야 된다").
+	-- 엔진 기본(Rigidbody.LayerSettingType = All)은 플레이어가 밟은 발판의 SortingLayer 를 따라간다. 그래서
+	--   · 더 높은 층 발판 위에 선 시설·NPC 는 플레이어 앞에 그려졌고 (엘리니아 마을 2층 넥서스 ↔ 3층에 선 플레이어)
+	--   · 같은 층이어도 시설은 OrderInLayer 150 이라 플레이어(4) 앞이었다.
+	-- → 모든 플레이어를 발판과 무관하게 Default 층(MapLayer0~7 보다 위 · PortalNetwork·NpcSpawner 실측) · OrderInLayer 4 로 고정한다.
+	--   예외는 포탈 하나 — Default/5 로 플레이어 앞 (PortalNetwork · 사용자 지시 2026-09-07).
+	-- SortingLayer · LayerSettingType 은 @Sync 라 서버에서 쓰고, OrderInLayer 는 동기화되지 않아 각 클라이언트에서 쓴다.
+
+	property string PlayerSortingLayer = "Default"
+	property integer PlayerOrderInLayer = 4
+	property number CheckInterval = 0.5
+
+	@HideFromInspector
+	property number checkLeft = 0
+
+	@HideFromInspector
+	property boolean logged = false
+
+	method void OnUpdate(number delta)
+		-- CheckInterval 마다 모든 플레이어의 층을 다시 맞춘다 (새로 들어온 플레이어 · 맵 이동 뒤에도 유지).
+		self.checkLeft = self.checkLeft - delta
+		if self.checkLeft > 0 then return end
+		self.checkLeft = self.CheckInterval
+		local server = self:IsServer()
+		for _, user in ipairs(_UserService.UserEntities.Values) do
+			self:Apply(user, server)
+		end
+	end
+
+	method void Apply(Entity user, boolean server)
+		-- 한 플레이어의 층을 맞춘다. 달라졌을 때만 쓴다 (동기화 낭비 방지).
+		if not isvalid(user) then return end
+		local avatar = user.AvatarRendererComponent
+		if not isvalid(avatar) then return end
+		if server then
+			local rb = user.RigidbodyComponent
+			if isvalid(rb) and rb.LayerSettingType ~= AutomaticLayerOption.None then
+				rb.LayerSettingType = AutomaticLayerOption.None
+			end
+			if avatar.SortingLayer ~= self.PlayerSortingLayer then
+				avatar.SortingLayer = self.PlayerSortingLayer
+			end
+		elseif avatar.OrderInLayer ~= self.PlayerOrderInLayer then
+			avatar.OrderInLayer = self.PlayerOrderInLayer
+		end
+		if not self.logged then
+			self.logged = true
+			log(string.format("[PlayerFrontLayer] %s %s -> %s/%d", server and "server" or "client", user.Name, avatar.SortingLayer, avatar.OrderInLayer))
+		end
+	end
+end
