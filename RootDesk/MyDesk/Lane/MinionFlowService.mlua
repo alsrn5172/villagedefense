@@ -26,7 +26,7 @@ script MinionFlowService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void LoadComposition()
-		-- MinionComposition.csv → comps[phase] = { {monsterId, weight, level, baseHp, baseAttack}, ... }
+		-- MinionComposition.csv → comps[phase] = { {monsterId, weight, level, baseHp, baseAttack, villageId}, ... }
 		self.comps = {}
 		local t = _DataService:GetTable("MinionComposition")
 		if t == nil then
@@ -34,36 +34,54 @@ script MinionFlowService extends Logic
 			return
 		end
 		local n = 0
+		local m = 0
 		for i = 1, t:GetRowCount() do
 			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
 			local phase = t:GetCell(i, "Phase") or ""
 			local mid = math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0)
+			local villageId = string.match(tostring(t:GetCell(i, "VillageId") or ""), "^%s*(.-)%s*$") or ""
 			if enabled and phase ~= "" and mid > 0 then
 				if self.comps[phase] == nil then self.comps[phase] = {} end
 				table.insert(self.comps[phase], {
 					monsterId = mid, weight = tonumber(t:GetCell(i, "Weight")) or 1, level = math.floor(tonumber(t:GetCell(i, "Level")) or 1),
 					baseHp = math.floor(tonumber(t:GetCell(i, "BaseHp")) or 300), baseAttack = math.floor(tonumber(t:GetCell(i, "BaseAttack")) or 15),
+					villageId = villageId,
 				})
 				n = n + 1
+				if villageId ~= "" then m = m + 1 end
 			end
 		end
-		log("[MinionFlow] MinionComposition loaded: " .. tostring(n) .. " rows")
+		log("[MinionFlow] MinionComposition loaded: " .. tostring(n) .. " rows (village-specific " .. tostring(m) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
-	method any PickMonster(string phaseName)
-		-- 가중치 추첨.
+	method any PickMonster(string phaseName, string villageId)
+		-- 마을 전용 행이 있으면 그 행만, 없으면 공통 행에서 가중치 추첨한다.
 		local list = (self.comps ~= nil) and self.comps[phaseName] or nil
 		if list == nil or #list == 0 then return nil end
-		local total = 0
-		for _, c in ipairs(list) do total = total + math.max(0, c.weight) end
-		if total <= 0 then return list[1] end
-		local r = _UtilLogic:RandomDouble() * total
+		local candidates = {}
+		local hasVillageSpecific = false
 		for _, c in ipairs(list) do
+			if c.villageId == villageId then
+				hasVillageSpecific = true
+				table.insert(candidates, c)
+			end
+		end
+		if not hasVillageSpecific then
+			for _, c in ipairs(list) do
+				if c.villageId == "" then table.insert(candidates, c) end
+			end
+		end
+		if #candidates == 0 then return nil end
+		local total = 0
+		for _, c in ipairs(candidates) do total = total + math.max(0, c.weight) end
+		if total <= 0 then return candidates[1] end
+		local r = _UtilLogic:RandomDouble() * total
+		for _, c in ipairs(candidates) do
 			r = r - math.max(0, c.weight)
 			if r <= 0 then return c end
 		end
-		return list[#list]
+		return candidates[#candidates]
 	end
 
 	@ExecSpace("ServerOnly")
@@ -79,10 +97,12 @@ script MinionFlowService extends Logic
 		-- 주인 있는 마을마다 사냥터2 통로 시작점에 1마리.
 		if _LaneFacilityService == nil or _VillageOwnership == nil or _LaneFacilityService.laneRows == nil then return end
 		local count = 0
+		local picks = {}
 		for vid, rows in pairs(_LaneFacilityService.laneRows) do
 			if rows.LANE2 ~= nil and _VillageOwnership:OwnerOf(vid) ~= "" then
-				local comp = self:PickMonster(phaseName)
+				local comp = self:PickMonster(phaseName, vid)
 				if comp ~= nil then
+					table.insert(picks, vid .. ":" .. tostring(comp.monsterId))
 					local spec = { monsterId = comp.monsterId, baseHp = comp.baseHp, baseAttack = comp.baseAttack, hpMul = hpMul, atkMul = atkMul, expBase = expBase, mesoBase = mesoBase, coinChance = coinChance, hpRatio = 1.0 }
 					if isvalid(self:SpawnMinion(vid, "LANE2", spec)) then count = count + 1 end
 				else
@@ -90,7 +110,7 @@ script MinionFlowService extends Logic
 				end
 			end
 		end
-		log("[MinionFlow] wave phase=" .. phaseName .. " spawned=" .. tostring(count))
+		log("[MinionFlow] wave phase=" .. phaseName .. " spawned=" .. tostring(count) .. " picks=" .. table.concat(picks, " "))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -105,8 +125,11 @@ script MinionFlowService extends Logic
 		end
 		local modelId = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetModelId(spec.monsterId) or ""
 		if modelId == nil or modelId == "" then modelId = "monster" .. tostring(spec.monsterId) end
-		local x = row.spawnX
-		if role ~= "LANE2" or x == nil or x == 0 then x = row.pathMaxX - 0.6 end
+		-- 출발 x · 방향은 LaneFacilityService 한 곳에서 정한다 (수비대와 같은 규칙 · 2026-09-18).
+		-- SpawnX 가 있으면 역할과 무관하게 그 값(좌→우 구간은 LANE1·VILLAGE 에도 넣는다), 빈칸이면 오른쪽 끝 PathMaxX − 0.6.
+		-- 방향은 실제 출발 x 기준 — 빈 SpawnX(0)로 재던 때는 좌표가 양수인 맵(페리온 마을)에서 뒤집혀 즉시 끝 판정이 났다.
+		local x = _LaneFacilityService:LaneStartX(row)
+		local dir = _LaneFacilityService:LaneDir(row)
 		self.spawnSeq = self.spawnSeq + 1
 		-- 접두 "Minion_<마을>_" 는 절대 바꾸지 않는다 — DespawnVillage(탈락 정리)가 이 접두로 찾는다. 파병은 뒤에 "D" 만 끼운다.
 		local name = "Minion_" .. villageId .. "_" .. tostring(spec.namePart or "") .. tostring(self.spawnSeq)
@@ -171,8 +194,8 @@ script MinionFlowService extends Logic
 		---@type FactionAI
 		local ai = ent:AddComponent("script.FactionAI")
 		if isvalid(ai) then
-			-- 진행 방향은 레인 행이 정한다: 끝(endX)이 출발(spawnX)보다 오른쪽이면 좌→우(엘리니아·페리온·노틸러스), 아니면 우→좌 (2026-09-15 · 전엔 −1 고정).
-			ai.AdvanceDir = (row.endX >= row.spawnX) and 1 or -1
+			-- 진행 방향은 레인 행이 정한다: 끝(endX)이 실제 출발 x 보다 오른쪽이면 좌→우, 아니면 우→좌 (2026-09-15 · 2026-09-18 출발 x 기준으로 정정).
+			ai.AdvanceDir = dir
 			-- 🔴 AddComponent 순간 OnBeginPlay 가 먼저 돌아 ResolvedDir 이 팀 기본값(−1)으로 굳는다 → 여기서 직접 덮는다(2026-09-15 · 좌→우 줄이 안 움직이던 원인).
 			ai.ResolvedDir = ai.AdvanceDir
 			ai.AttackRange = self.AttackRange
@@ -206,7 +229,7 @@ script MinionFlowService extends Logic
 			mu.VillageId = villageId
 			mu.LaneRole = role
 			mu.EndX = row.endX
-			mu.EndDir = (row.endX >= row.spawnX) and 1 or -1
+			mu.EndDir = dir
 			mu.CoinDropChance = spec.coinChance or 0
 			mu.MonsterId = spec.monsterId
 			mu.BaseHp = spec.baseHp
@@ -219,7 +242,7 @@ script MinionFlowService extends Logic
 			mu.FixedHp = math.floor(spec.fixedHp or 0)
 			mu.FixedAttack = math.floor(spec.fixedAttack or 0)
 		end
-		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?"))
+		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?") .. " dir=" .. tostring(dir) .. " endX=" .. tostring(row.endX))
 		return ent
 	end
 
@@ -296,8 +319,10 @@ script MinionFlowService extends Logic
 			elseif curRow ~= nil and nxtRow.mapName == curRow.mapName then
 				mu.LaneRole = nextRole
 				mu.EndX = nxtRow.endX
-				mu.EndDir = (nxtRow.endX >= nxtRow.spawnX) and 1 or -1
-				log("[MinionFlow] " .. minion.Name .. " same-map role " .. nextRole .. " endX=" .. tostring(nxtRow.endX))
+				-- 같은 맵에서 계속 걷는다 → 방향은 지금 위치 기준 (다음 행 SpawnX 는 빈칸 = 0 이라 쓰면 안 된다 · 2026-09-18).
+				local cx = isvalid(minion.TransformComponent) and minion.TransformComponent.WorldPosition.x or nxtRow.pathMaxX
+				mu.EndDir = (nxtRow.endX >= cx) and 1 or -1
+				log("[MinionFlow] " .. minion.Name .. " same-map role " .. nextRole .. " endX=" .. tostring(nxtRow.endX) .. " dir=" .. tostring(mu.EndDir))
 				mu.advancing = false
 				return
 			else break end
