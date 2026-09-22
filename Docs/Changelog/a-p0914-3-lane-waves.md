@@ -27,3 +27,5 @@
 - `SuppressorBoom`: 폭발 처치는 `MinionUnit.lastAttacker`·`FarmReward.LastAttacker` 를 지워 **보상 없음**을 실제로 보장(안 지우면 직전 공격자에게 경험치·메소가 갔다).
 - `MinionWave.csv` TEST `StartSeconds` 반올림(half-up): P1-1 83 · P2-3 173 · P3-3 203.
 - `FactionAttack.DoAttack/HitOne/IsAttackTarget`: 첫 판정이 넥서스 파괴 → 탈락 정리까지 **동기로** 이어져 공격자 자신이 사라지는 경우 가드(실측 LEA-3023/2011 · 기존 결함 · 미니언이 넥서스에 더 잘 닿게 되어 드러남).
+- (Codex 2차 리뷰) `Expire()` 가 스폰·파병 큐를 비운다(만료 직전 큐잉된 웨이브가 종료 뒤 나오지 않게) · 표 끝 반복 타이머는 잰 프레임에 줄이지 않는다 · 폭발음은 `PlayBoomSoundLocal`(Client RPC · Monster.PlaySoundLocal 방식)로.
+- 🔴 알림: `LaneConfig` 에 ELLINIA·NAUTILUS 레인 행이 없어 S2 특성은 실전 매치에서 아직 시설 자체가 안 생긴다(테스트맵에서만) — 레인 지형은 사용자가 직접 까는 항목.
