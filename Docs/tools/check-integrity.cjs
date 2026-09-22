@@ -128,6 +128,16 @@ const CANONICAL = {
   DispatchRule: "Phase,MesoCost,VillageCap,CancelDeadlineSeconds,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,Hidden,#Note",
   MatchConfig: "Key,Profile,MatchDurationSeconds,Enabled,#Note",
+  DifficultyConfig: "Difficulty,HeartCost,SoloDiscount,RankerChallenge,Enabled,#Note",
+
+  // 9/14 기획 반영 — 계약서 §1 등록서(2026-09-22 · a/plan-0914 B0). 파일은 각 묶음 구현 PR 에서 생성.
+  // 기존 표 열 추가(MonsterInfo.Attack · ConsumeInfo Pct · BossReward Soulstone* · Elite*)는 §0-1 9 대로 그 구현 PR 에서 CANONICAL 을 같이 고친다.
+  MinionWave: "Profile,WaveKey,Phase,StartSeconds,Count,SpawnGapSeconds,MonsterId,Hp,Attack,Exp,Meso,ZombieCount,Enabled,#Note",
+  DifficultyRule: "Difficulty,Key,Value,Enabled,#Note",
+  DropTable: "SourceKind,SourceId,ItemId,Chance,CountMin,CountMax,Enabled,#Note",
+  MonsterRecruit: "MonsterId,Tier,MaterialItemId,MaterialCount,BundleSize,GuardHp,GuardAttack,Enabled,#Note",
+  RankReward: "Rank,Difficulty,Hearts,AccountExp,Condition,Enabled,#Note",
+  GuideStep: "StepKey,Kind,Text,MarkerMap,Once,Enabled,#Note",
 
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
   SkillInfo:
@@ -240,6 +250,14 @@ const PK = {
   MinionComposition: ["Phase", "MonsterId"],
   DispatchRule: ["Phase"],
   MatchConfig: ["Key", "Profile"],
+  DifficultyConfig: ["Difficulty"],
+  // 9/14 기획 반영 (2026-09-22 · a/plan-0914) — 파일이 아직 없으면 건너뛴다
+  MinionWave: ["Profile", "WaveKey"],
+  DifficultyRule: ["Difficulty", "Key"],
+  DropTable: ["SourceKind", "SourceId", "ItemId"],
+  MonsterRecruit: ["MonsterId"],
+  RankReward: ["Rank", "Difficulty"],
+  GuideStep: ["StepKey"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
@@ -388,7 +406,7 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
     ["BossInfo", "ModelId", "BossInfo", "BossId",
       ["RootDesk/MyDesk/Boss/BossSpawner.mlua", "RootDesk/MyDesk/Catalog/BossCatalog.mlua"]],
     ["EliteMonsterInfo", "ModelId", "EliteSpawnTable", "EliteId",
-      ["RootDesk/MyDesk/Spawn/EliteSpawner.mlua", "RootDesk/MyDesk/Catalog/EliteCatalog.mlua"]],
+      ["RootDesk/MyDesk/Spawn/EliteSpawner.mlua", "RootDesk/MyDesk/Monster/EliteSpawner.mlua", "RootDesk/MyDesk/Catalog/EliteCatalog.mlua"]],
   ]) {
     const t = readCsv(name);
     if (!t) continue;
