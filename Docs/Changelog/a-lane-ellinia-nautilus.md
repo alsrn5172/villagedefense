@@ -114,6 +114,13 @@
   - 미니언 내려주기에 레인 범위 제한 없음 → 떨어질 자리가 그 행의 `PathMinX~PathMaxX` 안일 때만(사냥터 통로 양 끝으로는 절대 안 떨어짐).
   - 막힌 끝에서 매 프레임 레이캐스트 → 몬스터는 제자리에서 실패하면 0.25초 뒤에 다시 본다.
 
+### 🔴 렌더 층 — 플레이어가 항상 맨 앞 (사용자 재지시 2026-09-22 "뭔 넥서스가 더 앞에있노")
+
+- 원인: 플레이어는 밟은 발판 층 + `OrderInLayer 4`, 시설은 슬롯 발판 층 + **150** 이었다. 엘리니아 마을 발판은 전부 `MapLayer0` 이라 넥서스(`MapLayer0/150`)가 같은 층에서 플레이어 앞에 그려졌다. 층이 다른 발판끼리면 순서값과 무관하게 더 높은 층이 앞이라 기존 "같은 층 + 3" 방식으로는 원래 막을 수 없었다.
+- 새 `Map/PlayerFrontLayer.mlua`(@Logic): 모든 플레이어를 발판과 무관하게 **`Default/4`** 로 고정 — `Rigidbody.LayerSettingType = None` · `AvatarRendererComponent.SortingLayer = "Default"`(서버 · @Sync) · `OrderInLayer = 4`(클라이언트 · 동기화 안 됨). `Default` 는 MapLayer0~7 보다 위(PortalNetwork·NpcSpawner 실측)라 시설·NPC·몬스터·맵 오브젝트가 전부 뒤로 간다. **예외는 포탈**(`Default/5` · 사용자 지시 2026-09-07).
+- 실측: 3층·4층 다리·2층·5층 어디에 서도 `Default/4 · layerSetting=None` 유지 · 넥서스 `MapLayer0/150`.
+- 이 규칙을 허브 `CLAUDE.md` §1-1 7번과 AI 메모리에 기록했다.
+
 ### 검증 (2026-09-22 · 워크트리 개인 월드 · Play 5회 · 서버/클라이언트 `execute_script` + 키 입력)
 
 - 빌드: Error 0 · Warning 1(기존 `SummonManager.ParseStatCsv`) — 매 refresh 동일. mLua 진단 이슈 0.
