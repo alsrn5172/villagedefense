@@ -8,7 +8,9 @@ script MatchSessionLogic extends Logic
 	--    승강장에서 매칭하는 동안 시계가 이미 돌고, TEST 프로필(225초)은 **로비에서 만료될 수도 있다.**
 	--    이제 매치는 `StartMatch(userIds, difficulty)` 를 불러야 시작한다. 부르는 쪽은 MatchLobbyGateway 다.
 	--    로비 없이 테스트하려면 `AutoStartOnPlay` 를 켠다.
-	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/16분30초/24분30초) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- B3(2026-09-23 · a/plan-0914): 웨이브는 MinionWave 표(StartSeconds = 매치 경과 시각 · 마을당 Count 마리 · SpawnGapSeconds 간격)로 투입한다.
+	--   MinionPhaseConfig 는 페이즈 시각·이름만 쓴다(간격·배율 열은 0/미사용). 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
 	--
 	-- 페이즈 5단 (추가기획2): PHASE0-1 개척 · PHASE0-2 전직 유예 30초 · PHASE1 성장 · PHASE2 견제 · PHASE3 최종(시설 풀데미지 개방).
 	-- 🔴 구독자는 인덱스가 아니라 **이름**(CurrentPhaseName)으로 판정한다 — 행이 늘면 인덱스가 밀린다(LaneFacility 저항 게이트가 실제로 밀렸다).
@@ -75,10 +77,27 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property integer waveIndex = 0
 
+	-- 웨이브 표 (B3 · MinionWave): waves = StartSeconds 순 행 · nextWave = 다음에 투입할 인덱스 · 표가 끝나면 waveRepeatGap 마다 마지막 행 반복
+	@HideFromInspector
+	property any waves = nil
+
+	@HideFromInspector
+	property integer nextWave = 1
+
+	@HideFromInspector
+	property number waveRepeatTimer = 0
+
+	@HideFromInspector
+	property number waveRepeatGap = 0
+
+	@HideFromInspector
+	property any zombieTemplate = nil
+
 	method void OnBeginPlay()
 		-- 서버: 표만 로드하고 **시계는 돌리지 않는다.** 시작은 StartMatch 가 한다 (WO-019).
 		if not self:IsServer() then return end
 		self:LoadPhases()
+		self:LoadWaves()
 		self:LoadMatchConfig()
 		self.participants = {}
 		self.finalRows = {}
@@ -137,6 +156,8 @@ script MatchSessionLogic extends Logic
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
 		self.waveIndex = 0
+		self.nextWave = 1
+		self.waveRepeatTimer = 0
 		self.spawnTimer = 0
 		self.clockTimer = 0
 		self.Expired = false
@@ -261,13 +282,70 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void LoadWaves()
+		-- MinionWave 에서 Profile 행을 StartSeconds 순으로 (B3 · 계약 A-2-6a). StartSeconds < 0 인 P3-ZOMBIE 행은 좀비 개체 스탯 템플릿(스케줄 없음).
+		-- 표가 끝난 뒤의 반복 간격 = 마지막 두 행의 시각 차(3P 매분 · TEST 7.5초).
+		self.waves = {}
+		self.zombieTemplate = nil
+		self.waveRepeatGap = 0
+		local t = _DataService:GetTable("MinionWave")
+		if t == nil then
+			log_warning("[Match] MinionWave dataset not found — 웨이브 없음")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local profile = tostring(t:GetCell(i, "Profile") or "")
+			if enabled and profile == self.Profile then
+				local row = {
+					key = tostring(t:GetCell(i, "WaveKey") or ""), phase = tostring(t:GetCell(i, "Phase") or ""),
+					start = tonumber(t:GetCell(i, "StartSeconds")) or -1,
+					count = math.floor(tonumber(t:GetCell(i, "Count")) or 0), gap = tonumber(t:GetCell(i, "SpawnGapSeconds")) or 1,
+					monsterId = math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0),
+					hp = math.floor(tonumber(t:GetCell(i, "Hp")) or 1), attack = math.floor(tonumber(t:GetCell(i, "Attack")) or 1),
+					exp = math.floor(tonumber(t:GetCell(i, "Exp")) or 0), meso = math.floor(tonumber(t:GetCell(i, "Meso")) or 0),
+					zombieCount = math.floor(tonumber(t:GetCell(i, "ZombieCount")) or 0),
+				}
+				if row.start < 0 then
+					if row.key == "P3-ZOMBIE" then self.zombieTemplate = row end
+				elseif row.count > 0 and row.monsterId > 0 then
+					table.insert(self.waves, row)
+				end
+			end
+		end
+		table.sort(self.waves, function(x, y) return x.start < y.start end)
+		local n = #self.waves
+		if n >= 2 then self.waveRepeatGap = math.max(1, self.waves[n].start - self.waves[n - 1].start) end
+		log("[Match] MinionWave loaded: " .. tostring(n) .. " waves (profile=" .. self.Profile .. ") repeatGap=" .. tostring(self.waveRepeatGap) .. "s zombieTemplate=" .. tostring(self.zombieTemplate ~= nil))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireWave(any row, boolean isRepeat)
+		-- 웨이브 1회 투입 (B3): MinionFlowService 큐에 넣고, 접수된 파병 대기열을 같이 푼다 (WO-014 · GDD §4.3 · 미니언이 먼저 나가고 바로 뒤에 붙는다).
+		-- 매치 첫 웨이브(7:30 · P1-0)면 참가자 전원에게 "미니언이 생성되었습니다" 토스트 (사용자 2026-09-19).
+		self.waveIndex = self.waveIndex + 1
+		local villages = 0
+		if _MinionFlowService ~= nil then
+			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, row.monsterId, row.hp, row.attack, row.exp, row.meso, row.zombieCount, self.zombieTemplate)
+		end
+		if _DispatchService ~= nil then _DispatchService:Release(row.phase, 1.0, 1.0) end
+		if self.waveIndex == 1 and _UIToast ~= nil then
+			for _, uid in ipairs(self.participants or {}) do _UIToast:ShowMessage("미니언이 생성되었습니다", uid) end
+		end
+		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SetProfile(string profile)
 		-- TEST/LIVE 전환: 시계를 0 부터 다시.
 		self.Profile = profile
 		self:LoadPhases()
+		self:LoadWaves()
 		self:LoadMatchConfig()
 		self.Elapsed = 0
 		self.waveIndex = 0
+		self.nextWave = 1
+		self.waveRepeatTimer = 0
 		self.Expired = false
 		self.Running = true
 		self:SetPhase(1)
@@ -359,17 +437,18 @@ script MatchSessionLogic extends Logic
 		end
 		if idx ~= self.CurrentPhase then self:SetPhase(idx) end
 		local row = self.phases[self.CurrentPhase]
-		if row.interval > 0 then
-			self.spawnTimer = self.spawnTimer - delta
-			if self.spawnTimer <= 0 then
-				self.spawnTimer = row.interval
-				self.waveIndex = self.waveIndex + 1
-				if _MinionFlowService ~= nil then
-					_MinionFlowService:SpawnWave(self.CurrentPhase, row.name, row.hpMul, row.atkMul, row.expBase, row.mesoBase, row.coinChance)
-				end
-				-- 접수된 파병은 이 웨이브에 합류한다 (WO-014 · GDD §4.3). 미니언이 먼저 나가고 바로 뒤에 붙는다.
-				if _DispatchService ~= nil then
-					_DispatchService:Release(row.name, row.hpMul, row.atkMul)
+		-- 웨이브 (B3 · MinionWave 표): 시작 시각을 지난 행을 차례로 투입. 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
+		if self.waves ~= nil and #self.waves > 0 then
+			while self.nextWave <= #self.waves and self.Elapsed >= self.waves[self.nextWave].start do
+				self:FireWave(self.waves[self.nextWave], false)
+				self.nextWave = self.nextWave + 1
+				if self.nextWave > #self.waves then self.waveRepeatTimer = self.waveRepeatGap end
+			end
+			if self.nextWave > #self.waves and self.waveRepeatGap > 0 then
+				self.waveRepeatTimer = self.waveRepeatTimer - delta
+				if self.waveRepeatTimer <= 0 then
+					self.waveRepeatTimer = self.waveRepeatGap
+					self:FireWave(self.waves[#self.waves], true)
 				end
 			end
 		end
@@ -377,7 +456,10 @@ script MatchSessionLogic extends Logic
 		if self.clockTimer <= 0 then
 			self.clockTimer = 1.0
 			local nextIn = -1
-			if row.interval > 0 then nextIn = math.ceil(self.spawnTimer) end
+			if self.waves ~= nil and #self.waves > 0 then
+				if self.nextWave <= #self.waves then nextIn = math.ceil(self.waves[self.nextWave].start - self.Elapsed)
+				elseif self.waveRepeatGap > 0 then nextIn = math.ceil(self.waveRepeatTimer) end
+			end
 			local nextPhaseIn = -1
 			local nxt = self.phases[self.CurrentPhase + 1]
 			if nxt ~= nil then nextPhaseIn = math.ceil(nxt.start - self.Elapsed) end
