@@ -15,3 +15,9 @@
 
 - `node Docs/tools/check-integrity.cjs` 통과 여부는 PR 본문.
 - 런타임(Test_Lane_Fx · 개인 월드): `[Facility] combat NAUTILUS:TOWER … maxTargets=1 splash=1.5` · 달팽이 웨이브에 `[Splash] … primary= splash=<n>` · 억제기 HP 를 깎은 뒤 `[Regen] NAUTILUS SUPPRESSOR +50 -> …`(Lv1 25/초 × 2초) · `[Aura] … atk=1.10` · `CalcPlayerDamage` 가 `Buff.AtkMul` 을 곱하는지 스크립트로 대조.
+
+## 재검증 수정 (2026-09-23 · Maker 회귀)
+
+- `LaneStateService.HealFacility`: 회복 틱마다 `Changed`(→ `ApplyCombat` + combat 로그)를 돌리던 것을 `LaneFacilityService.ApplyVisual`(색·HP바만)로 — 12초에 combat 로그 31줄 스팸 제거.
+- `FactionAuraController.RegenSelf`: 회복 대상 "본인" = 이 컨트롤러의 엔티티만(같은 맵의 다른 오라 시설까지 받던 것 수정 · 실전은 마을당 맵이 달라 테스트맵에서만 보임).
+- B3 재검증 수정(큐 리셋·파병 순서·폭발 보상 제거·TEST 반올림·공격 가드)도 이 브랜치 커밋에 같이 실림 — 내용은 `a-p0914-3-lane-waves.md` 끝.

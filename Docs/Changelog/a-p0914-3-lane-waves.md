@@ -19,3 +19,11 @@
 
 - `node Docs/tools/check-integrity.cjs` 통과 여부는 PR 본문.
 - 런타임(개인 월드 · TEST · StartMatch 뒤): `[Match] MinionWave loaded: 11 waves (profile=TEST)` · 56초 `[Match] wave #1 P1-0` + 토스트 · `[Minion] wave=P1-0 village=<vid> spawned=8/8` · 웨이브 뒤 `FacilityState(vid,"TOWER").hp` · 억제기 파괴 `[Suppressor] boom … hit=<n> killed=<n>`.
+
+## 재검증 수정 (2026-09-23 · Codex 2회 리뷰 + Maker 회귀 · 커밋은 B3b 브랜치 PR #72 에 실림)
+
+- `MinionFlowService.OnUpdate`: 큐에 넣은 뒤 **탈락한 마을**(주인 없음)의 스폰은 건너뛴다. `ResetQueue()` 신설 — `StartMatch`/`SetProfile` 이 이전 판 대기 스폰을 버린다.
+- 파병(`DispatchService.Release`)은 즉시가 아니라 **그 웨이브 일반 미니언 count×gap 뒤** 큐 항목(`QueueDispatch`)으로 — "미니언 먼저, 파병은 바로 뒤" 순서 유지.
+- `SuppressorBoom`: 폭발 처치는 `MinionUnit.lastAttacker`·`FarmReward.LastAttacker` 를 지워 **보상 없음**을 실제로 보장(안 지우면 직전 공격자에게 경험치·메소가 갔다).
+- `MinionWave.csv` TEST `StartSeconds` 반올림(half-up): P1-1 83 · P2-3 173 · P3-3 203.
+- `FactionAttack.DoAttack/HitOne/IsAttackTarget`: 첫 판정이 넥서스 파괴 → 탈락 정리까지 **동기로** 이어져 공격자 자신이 사라지는 경우 가드(실측 LEA-3023/2011 · 기존 결함 · 미니언이 넥서스에 더 잘 닿게 되어 드러남).
