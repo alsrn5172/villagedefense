@@ -19,6 +19,10 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property any trainDef = nil
 
+	-- 수비대 모집 표 (B5 · MonsterRecruit): recruitDef[monsterId] = { tier, materialItemId, materialCount, bundleSize, guardHp, guardAttack }
+	@HideFromInspector
+	property any recruitDef = nil
+
 	-- 마을 × 시설 그림 (FacilitySprite.csv · 계약서 A-2-4b). spriteDef[villageId][stage] = { world, icon, flipY, ground, bar }
 	@HideFromInspector
 	property any spriteDef = nil
@@ -79,6 +83,7 @@ script LaneStateService extends Logic
 		}
 		self:LoadTowerDef()
 		self:LoadTrainDef()
+		self:LoadRecruitDef()
 		self:LoadSpriteDef()
 		self:LoadTraitDef()
 		self:LoadFxDef()
@@ -448,6 +453,39 @@ script LaneStateService extends Logic
 		local d = self.towerDef[stage]
 		if d == nil then return 1 end
 		return d.maxHp[math.min(lv, #d.maxHp)] or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadRecruitDef()
+		-- MonsterRecruit.csv (B5 · 계약 A-2-20): 모집 가능한 몹 · 재료 · 묶음 · 개체 기본 스탯(티어 고정). 없으면 빈 표(모집 불가) + 경고.
+		self.recruitDef = {}
+		local t = _DataService:GetTable("MonsterRecruit")
+		if t == nil then
+			log_warning("[Lane] MonsterRecruit dataset not found — 수비대 모집 불가")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local mid = math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0)
+			if enabled and mid > 0 then
+				self.recruitDef[mid] = {
+					monsterId = mid, tier = math.floor(tonumber(t:GetCell(i, "Tier")) or 1),
+					materialItemId = tostring(t:GetCell(i, "MaterialItemId") or ""), materialCount = math.max(1, math.floor(tonumber(t:GetCell(i, "MaterialCount")) or 8)),
+					bundleSize = math.max(1, math.floor(tonumber(t:GetCell(i, "BundleSize")) or 5)),
+					guardHp = math.max(1, math.floor(tonumber(t:GetCell(i, "GuardHp")) or 1)), guardAttack = math.max(1, math.floor(tonumber(t:GetCell(i, "GuardAttack")) or 1)),
+				}
+				n = n + 1
+			end
+		end
+		log("[Lane] MonsterRecruit loaded: " .. tostring(n) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any RecruitRow(integer monsterId)
+		-- 모집 표 행. 없으면 nil (모집 불가 · DefenderService 는 옛 식으로 폴백).
+		if self.recruitDef == nil then return nil end
+		return self.recruitDef[monsterId]
 	end
 
 	@ExecSpace("ServerOnly")
@@ -855,24 +893,25 @@ script LaneStateService extends Logic
 			local slots = {}
 			for _, d in ipairs(v.defenders) do table.insert(slots, d.key .. ":" .. tostring(d.qty)) end
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap), table.concat(slots, ",") })
-			-- 모집 목록 = 도감에서 해금(Lv1+)한 몬스터만. U|id|name|level|cost|monLv|mul|icon · 비용은 MAT 행(지역재화 8 · 지금은 다이아몬드).
+			-- 모집 목록 (B5) = MonsterRecruit 행 중 도감 해금(Lv1+)한 몹. U|id|name|level|cost|monLv|mul|icon|matItemId|matName|matHave|bundle
 			local mi = _DataService:GetTable("MonsterInfo")
-			local mat = self:MaterialOf(v.id)
-			if mi ~= nil then
-				local list = {}
-				for i = 1, mi:GetRowCount() do
-					local id = math.floor(tonumber(mi:GetCell(i, "Id")) or 0)
-					if id > 0 and self:MonLevel(v, id) >= 1 then
-						table.insert(list, { id = id, name = mi:GetCell(i, "Name") or tostring(id), level = tonumber(mi:GetCell(i, "Level")) or 1, icon = tostring(mi:GetCell(i, "IconRUID") or "") })
+			local list = {}
+			if self.recruitDef ~= nil then
+				for mid, rr in pairs(self.recruitDef) do
+					if self:MonLevel(v, mid) >= 1 then
+						local matDef = (_ItemCatalog ~= nil) and _ItemCatalog:Get(rr.materialItemId) or nil
+						local icon = (_MonsterCatalog ~= nil) and tostring(_MonsterCatalog:GetIconRuid(mid) or "") or ""
+						table.insert(list, { id = mid, name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(mid) or tostring(mid), level = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetLevel(mid) or 1, tier = rr.tier,
+							cost = rr.materialCount, matId = rr.materialItemId, matName = (matDef ~= nil and matDef.name) or rr.materialItemId,
+							have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, rr.materialItemId) or 0, bundle = rr.bundleSize, icon = icon })
 					end
 				end
-				table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
-				for _, r in ipairs(list) do
-					add({ "U", tostring(r.id), r.name, tostring(r.level), tostring(mat.count), tostring(self:MonLevel(v, r.id)), string.format("%.1f", self:MonMul(v, r.id)), r.icon })
-				end
 			end
-			local matHave = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, mat.itemId) or 0
-			add({ "MAT", mat.itemId, mat.name, tostring(matHave), tostring(mat.count) })
+			table.sort(list, function(a, b) if a.tier ~= b.tier then return a.tier < b.tier end return a.id < b.id end)
+			for _, r in ipairs(list) do
+				add({ "U", tostring(r.id), r.name, tostring(r.level), tostring(r.cost), tostring(self:MonLevel(v, r.id)), string.format("%.1f", self:MonMul(v, r.id)), r.icon, r.matId, r.matName, tostring(r.have), tostring(r.bundle) })
+			end
+			add({ "MAT", "", "몬스터별 재료", "0", "8" })
 		elseif kind == "train" then
 			-- 몬스터 조련사 = 해금한 몬스터 목록 + 강화. TR|id|name|lv|mul|nextCost|nextMul|max|icon · HAVE|꿈의 조각 (사용자 2026-09-07: 도감 관리인은 해금만)
 			local mi = _DataService:GetTable("MonsterInfo")
@@ -1042,7 +1081,7 @@ script LaneStateService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestRecruit(string unitKey)
-		-- 모집: 도감에서 해금(Lv1+)한 몬스터만 · 묶음(8마리)당 지역재화 8개(지금은 다이아몬드) → 최전방 시설 앞에 즉시 스폰. 10묶음 상한.
+		-- 모집 (B5): MonsterRecruit 행이 있는 몹만 · 도감 해금(Lv1+) 게이트 유지 · 그 몹의 재료(MaterialItemId × MaterialCount) → 묶음(BundleSize)을 최전방 시설 앞에 즉시 스폰. 10묶음 상한.
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
@@ -1052,7 +1091,10 @@ script LaneStateService extends Logic
 		if monsterId <= 0 or self:MonLevel(v, monsterId) < 1 then self:Toast(uid, "도감에서 먼저 해금하세요") self:Push(uid, "recruit") return end
 		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
 		if name == nil or name == "" then name = tostring(monsterId) end
-		local mat = self:MaterialOf(v.id)
+		local rr = self:RecruitRow(monsterId)
+		if rr == nil then self:Toast(uid, name .. "은(는) 모집 대상이 아닙니다") self:Push(uid, "recruit") return end
+		local matDef = (_ItemCatalog ~= nil) and _ItemCatalog:Get(rr.materialItemId) or nil
+		local mat = { itemId = rr.materialItemId, name = (matDef ~= nil and matDef.name) or rr.materialItemId, count = rr.materialCount }
 		if _InventoryService == nil or _InventoryService:CountItem(uid, mat.itemId) < mat.count then
 			self:Toast(uid, mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다")
 			self:Push(uid, "recruit")
@@ -1061,7 +1103,8 @@ script LaneStateService extends Logic
 		_InventoryService:RemoveItem(uid, mat.itemId, mat.count)
 		_InventoryService:PushInventory(uid)
 		local mul = self:MonMul(v, monsterId)
-		local spawned = (_DefenderService ~= nil) and _DefenderService:SpawnBundle(v.id, monsterId, mul, 8, self:FrontStage(v)) or 0
+		local spawned = (_DefenderService ~= nil) and _DefenderService:SpawnBundle(v.id, monsterId, mul, rr.bundleSize, self:FrontStage(v)) or 0
+		log("[Recruit] " .. v.id .. " mob=" .. tostring(monsterId) .. " bundle=" .. tostring(rr.bundleSize) .. " spawned=" .. tostring(spawned) .. " hp=" .. tostring(math.floor(rr.guardHp * mul)) .. " atk=" .. tostring(math.floor(rr.guardAttack * mul)) .. " mat=" .. mat.itemId .. "-" .. tostring(mat.count) .. " (" .. uid .. ")")
 		table.insert(v.defenders, { key = tostring(monsterId), name = name, qty = spawned, lv = self:MonLevel(v, monsterId) })
 		log("[Lane] " .. v.id .. " recruit " .. tostring(monsterId) .. " " .. mat.itemId .. "-" .. tostring(mat.count) .. " spawned=" .. tostring(spawned) .. " bundles=" .. tostring(#v.defenders) .. " (" .. uid .. ")")
 		self:Toast(uid, name .. " 1묶음(" .. tostring(spawned) .. "마리) 모집 — 최전방 " .. self.towerDef[self:FrontStage(v)].name .. " 앞에 집결")
