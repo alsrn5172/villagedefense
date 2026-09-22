@@ -121,6 +121,12 @@
 - 실측: 3층·4층 다리·2층·5층 어디에 서도 `Default/4 · layerSetting=None` 유지 · 넥서스 `MapLayer0/150`.
 - 이 규칙을 허브 `CLAUDE.md` §1-1 7번과 AI 메모리에 기록했다.
 
+### 엘리니아 마을 — 사용자 Maker 수정 (2026-09-22)
+
+- 2층 넥서스 근처 발판 `foothold-1640_4` 의 첫 점(−0.62, 0.1)을 지웠다 → 구운 발판 181 → 180 (x −1.18 ~ −0.71 조각 제거). 사용자: "그래야 안 떨어지더라".
+- 카메라 경계 설정: `UseCustomBound` · 좌하 (−5.13, −2) ~ 우상 (4.1, 15.69).
+- `NpcSpawner` 차이는 Maker 직렬화 기본값(Rotation · initialized)뿐.
+
 ### 검증 (2026-09-22 · 워크트리 개인 월드 · Play 5회 · 서버/클라이언트 `execute_script` + 키 입력)
 
 - 빌드: Error 0 · Warning 1(기존 `SummonManager.ParseStatCsv`) — 매 refresh 동일. mLua 진단 이슈 0.
