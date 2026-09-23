@@ -7,25 +7,27 @@ script DamageFormula extends Logic
 	--   DamageMin = DamageMax × 숙련도(0.15~0.9)
 	--   Raw       = [Min, Max] 균등 랜덤   ← "범위 랜덤 공격력"
 	--   방어 감산  = Raw × (1 − Def ÷ (Def + DefenseK)),  최소 1
+	--   B4(2026-09-23): 명중 = 레벨 차 직접식(HitCheck) · 치명 상한 100% · 플레이어가 받는 피해는 ApplyPlayerDefense 한 곳(몹·보스·투사체·시설·수비대)
 	-- ⚠ 난이도(DifficultyConfig) 배수는 여기서 곱하지 않는다 — 서버 단일 적용점(Economy/CostResolver, WP0)에서만.
 
 	-- 방어력 감산 상수. 방어 100 이면 50% 감산.
 	property number DefenseK = 100
 
-	-- 명중 판정 임시식 상수 (m1-balance-01 에서 실값): 필요 명중 = HitBase + HitPerLevel × 대상레벨 + 대상회피
-	-- HitBase 30 은 Lv1 (명중 26) 이 Lv1 몹도 절반 빗나가게 해서 0 으로. 같은 레벨대는 100%, 20레벨 위 몹부터 빗나가기 시작.
-	property number HitBase = 0
+	-- 명중 (B4 · 사용자 2026-09-19): 레벨 차 직접식. 몹이 나보다 높은 레벨 1당 −HitPenaltyPerLevel, 같은 레벨 이하 100%.
+	-- 명중 스탯이 레벨 차를 상쇄한다(AccuracyPerLevel 당 1레벨). 바닥 HitFloor. 회피(targetAvoid)는 후순위 — 지금은 안 쓴다.
+	property number HitPenaltyPerLevel = 0.10
 
-	property number HitPerLevel = 2
+	property number AccuracyPerLevel = 15
 
-	property number HitFloor = 0.2
+	property number HitFloor = 0.10
 
 	-- 크리티컬 확률 = CritBase + LUK × CritPerLuk, 상한 CritCap
 	property number CritBase = 0.05
 
-	property number CritPerLuk = 0.001
+	-- B4: 만렙 도적 올-LUK 보석 LUK 358 에서 95%p → (1 − 0.05) ÷ 358. 상한 100%.
+	property number CritPerLuk = 0.00265
 
-	property number CritCap = 0.5
+	property number CritCap = 1.0
 
 	method number StatValue(integer primary, integer secondary)
 		-- 메이플 원본 스탯값: 주스탯×4 + 부스탯.
@@ -51,16 +53,14 @@ script DamageFormula extends Logic
 		return minDmg + math.floor(_UtilLogic:RandomDouble() * (maxDmg - minDmg + 1))
 	end
 
-	method boolean HitCheck(number accuracy, integer targetLevel, number targetAvoid)
-		-- 명중 판정 (임시식). 명중률이 필요치 이상이면 100%, 모자라면 비율만큼 (바닥 HitFloor).
-		local need = self.HitBase + self.HitPerLevel * targetLevel + targetAvoid
-		if need <= 0 then
+	method boolean HitCheck(number accuracy, integer attackerLevel, integer targetLevel, number targetAvoid)
+		-- 명중 판정 (B4 · 레벨 차 직접식): gap = 대상 레벨 − 내 레벨 − floor(명중 ÷ AccuracyPerLevel). gap ≤ 0 이면 100%,
+		-- 아니면 1 − HitPenaltyPerLevel × gap (바닥 HitFloor). targetAvoid 는 후순위라 받기만 하고 안 쓴다.
+		local gap = targetLevel - attackerLevel - math.floor(accuracy / math.max(1, self.AccuracyPerLevel))
+		if gap <= 0 then
 			return true
 		end
-		local rate = accuracy / need
-		if rate >= 1 then
-			return true
-		end
+		local rate = 1 - self.HitPenaltyPerLevel * gap
 		if rate < self.HitFloor then rate = self.HitFloor end
 		return _UtilLogic:RandomDouble() < rate
 	end
@@ -74,6 +74,17 @@ script DamageFormula extends Logic
 		local final = math.floor(raw * (1 - defense / (defense + self.DefenseK)))
 		if final < 1 then final = 1 end
 		return final
+	end
+
+	method integer ApplyPlayerDefense(Entity defender, integer raw)
+		-- 플레이어가 받는 피해 공용 헬퍼 (B4 · WO-027 §9-0): raw × 100/(100+방어) · 최소 1. 플레이어가 아니면 raw 그대로.
+		-- 방어 = StatService 최종치(장비+강화+STR×0.2). 호출: 일반몹 접촉(MonsterAttack) · 보스 스킬/투사체 · 시설/수비대(FactionAttack · ×PlayerDamageMul 뒤).
+		-- PlayerHit(B) 은 손대지 않는다. 클라에서 불리면 StatService 원장이 없어 방어 0 = 감산 없음(표시용).
+		if raw < 1 then raw = 1 end
+		if not isvalid(defender) or not isvalid(defender.PlayerComponent) then return raw end
+		local def = 0
+		if _StatService ~= nil then def = _StatService:GetDefense(defender.PlayerComponent.UserId) end
+		return self:ApplyDefense(raw, def)
 	end
 
 	method number CritRate(integer luk)
