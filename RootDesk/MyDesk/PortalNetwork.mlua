@@ -10,6 +10,14 @@ script PortalNetwork extends Logic
 	--    나오는 방향(방 → 마을)은 막을 이유가 없어 평소대로 바인딩한다.
 	property string GatedToMap = "Sleepywood_Boss_JrBalrog"
 
+	-- 🔴 리스항구 입장 차단 (9/14 기획 · 사용자 2026-09-18 "4:30 부터" · a/plan-0914 B1).
+	--    밖(여섯갈래길)에서 리스항구 계열 맵으로 **들어오는** 노선은 발록 방처럼 바인딩하지 않고 ↑키 → 서버 판정으로만 옮긴다.
+	--    1페이즈(`PHASE1`) 이후 = 매치 경과 270초부터 거절. 리스항구 안에서 밖으로 **나가는** 노선은 평소대로(나갈 수만 있음).
+	property string LithMapPrefix = "LithHarbor"
+
+	-- 이 페이즈 이름들일 때만 입장 허용 (0페이즈 · 전직 유예). 그 외 전부 차단.
+	property string LithOpenPhases = "PHASE0-1,PHASE0-2"
+
 	@HideFromInspector
 	property number RetryInterval = 0.25
 
@@ -128,9 +136,53 @@ script PortalNetwork extends Logic
 				if _BalrogRoomService ~= nil then _BalrogRoomService:RequestEnter() end
 				return
 			end
+			-- 🔴 리스항구 입장(밖 → 안)도 서버가 페이즈를 보고 판정한다 (B1).
+			if self:IsLithEntry(mapName, closestToMap) then
+				log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> 리스항구 (서버 페이즈 판정)")
+				self:RequestEnterLith(closestToMap, closestToPortal)
+				return
+			end
 			log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> " .. closestToMap .. "/" .. closestToPortal)
 			player.PlayerComponent:MoveToEntityByPath("/maps/" .. closestToMap .. "/" .. closestToPortal)
 		end
+	end
+
+	method boolean IsLithEntry(string fromMap, string toMap)
+		-- 밖에서 리스항구 계열 맵으로 들어오는 노선인가 (서버·클라 공용 · 표 적재와 ↑키가 같은 규칙을 쓴다).
+		local p = self.LithMapPrefix
+		if p == "" then return false end
+		return string.find(toMap or "", p) == 1 and string.find(fromMap or "", p) ~= 1
+	end
+
+	method boolean IsLithOpen()
+		-- 현재 페이즈 이름이 LithOpenPhases 목록에 있으면 입장 허용. 매치 시계가 없으면(개발 월드) 허용.
+		if _MatchSessionLogic == nil then return true end
+		local cur = _MatchSessionLogic.CurrentPhaseName or ""
+		for name in string.gmatch(self.LithOpenPhases, "[^,]+") do
+			if name == cur then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("Server")
+	method void RequestEnterLith(string toMap, string toPortal)
+		-- 리스항구 입장 요청. 1페이즈(4:30) 이후면 거절 + 토스트. 허용이면 서버가 옮긴다.
+		local uid = senderUserId
+		local player = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		local fromMap = isvalid(player.CurrentMap) and player.CurrentMap.Name or ""
+		if not self:IsLithEntry(fromMap, toMap) then
+			log_warning("[PortalNetwork] RequestEnterLith rejected: not a lith entry " .. fromMap .. " -> " .. tostring(toMap) .. " (" .. uid .. ")")
+			return
+		end
+		if not self:IsLithOpen() then
+			local phase = (_MatchSessionLogic ~= nil) and (_MatchSessionLogic.CurrentPhaseName or "") or ""
+			log("[PortalNetwork] lith entry denied phase=" .. phase .. " (" .. uid .. ")")
+			if _UIToast ~= nil then _UIToast:ShowMessage("리스항구는 1페이즈부터 들어갈 수 없습니다", uid) end
+			return
+		end
+		log("[PortalNetwork] lith entry ok -> " .. toMap .. "/" .. toPortal .. " (" .. uid .. ")")
+		player.PlayerComponent:MoveToEntityByPath("/maps/" .. toMap .. "/" .. toPortal)
 	end
 
 	@EventSender("Service", "InputService")
@@ -206,13 +258,13 @@ script PortalNetwork extends Logic
 					self:RecordInvalid(row, "required column is empty")
 				elseif seenKeys[key] then
 					self:RecordInvalid(row, "duplicate source portal")
-				elseif toMap == self.GatedToMap then
-					-- 🔴 발록 방 입구 — routes 에 안 넣는다. 넣고 BindRow 에서 건너뛰면 AttemptBindings 가
+				elseif toMap == self.GatedToMap or self:IsLithEntry(fromMap, toMap) then
+					-- 🔴 발록 방 입구 · 리스항구 입장(밖→안 · B1) — routes 에 안 넣는다. 넣고 BindRow 에서 건너뛰면 AttemptBindings 가
 					--    완료로 안 세서 RetryTimeout 뒤 "해석 실패" 경고로 잘못 남긴다.
 					--    클라 ↑키(TryMoveByUpArrow)는 표를 직접 읽으므로 이 행을 여전히 찾는다.
 					seenKeys[key] = true
 					self.gatedCount = self.gatedCount + 1
-					log("[PortalNetwork] gated " .. row.routeId .. " " .. fromMap .. "/" .. fromPortal .. " -> " .. toMap .. " (서버 배정)")
+					log("[PortalNetwork] gated " .. row.routeId .. " " .. fromMap .. "/" .. fromPortal .. " -> " .. toMap .. " (서버 판정)")
 				else
 					seenKeys[key] = true
 					table.insert(self.routes, row)

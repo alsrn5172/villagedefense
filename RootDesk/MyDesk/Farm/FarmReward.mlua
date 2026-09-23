@@ -1,14 +1,13 @@
 @Component
 script FarmReward extends Component
 
-	-- 몬스터 처치 보상 — WO-014 ② 로 소유권 규칙이 바뀌었다 (추가기획2 · 2026-09-08).
+	-- 몬스터 처치 보상 — 소유권 규칙 이력:
+	--   WO-014 ②(2026-09-08): 누적 피해 최다 플레이어. 동률이면 먼저 때린 쪽.
+	--   🔴 9/14 기획(a/plan-0914 B1 · 2026-09-22 사용자 결정): **막타(마지막으로 때린 플레이어)** 로 되돌린다.
+	--      경험치와 동전(주인 표시 Farm/DropOwner)을 막타가 전부 가진다. 스틸 플레이가 살아난다.
+	--      **막타가 플레이어가 아니면(수비대·미니언·포탑이 잡음) 경험치도 동전도 없다** — 방치 파밍 차단은 유지.
 	--
-	-- 🔴 이전: "막타 친 사람"(LastAttacker)에게 경험치, 동전은 아무나 주움.
-	-- 🔴 지금: **누적 피해가 가장 큰 플레이어**가 경험치와 동전을 전부 가진다. 동률이면 **먼저 때린 쪽**.
-	--          동전에는 Farm/DropOwner 를 붙여 주인만 보고 주인만 줍는다.
-	--          **플레이어 피해가 하나도 없으면(수비대·미니언·포탑이 잡음) 경험치도 동전도 없다** — 방치 파밍 차단.
-	--
-	-- LastAttacker 는 로그·디버그용으로만 남긴다.
+	-- 누적 피해 원장(dmg/order · TopDamager)은 로그·통계용으로만 남긴다. 보스 보상(BossReward · 최다 피해 독식)은 별개 경로.
 
 	property integer MonsterId = 0
 
@@ -125,11 +124,24 @@ script FarmReward extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method string LastHitter()
+		-- 막타 친 **플레이어**의 userId. 마지막 공격자가 플레이어가 아니면(수비대·미니언·포탑) "".
+		local a = self.LastAttacker
+		if not isvalid(a) or not isvalid(a.PlayerComponent) then
+			return ""
+		end
+		local uid = a.PlayerComponent.UserId
+		if uid == nil then return "" end
+		return uid
+	end
+
+	@ExecSpace("ServerOnly")
 	method void GiveRewards()
-		-- 누적 피해 최다 플레이어에게 경험치 + 동전. 플레이어 피해가 하나도 없으면 **둘 다 없다** (사용자 확정 · 방치 파밍 차단).
-		local ownerId = self:TopDamager()
+		-- 막타 친 플레이어에게 경험치 + 동전 (2026-09-22 · 9/14 기획 · 사용자 결정 "막타로 되돌린다").
+		-- 막타가 플레이어가 아니면 **둘 다 없다** (방치 파밍 차단 유지).
+		local ownerId = self:LastHitter()
 		if ownerId == "" then
-			log("[FarmReward] " .. self.Entity.Name .. " killed with no player damage — 보상 없음")
+			log("[FarmReward] " .. self.Entity.Name .. " killed by non-player — 보상 없음")
 			return
 		end
 
@@ -137,7 +149,7 @@ script FarmReward extends Component
 		if isvalid(owner) and isvalid(owner.PlayerComponent) and _SummonManager ~= nil then
 			_SummonManager:GrantKillReward(owner, self:EffectiveExp())
 		end
-		log("[FarmReward] " .. self.Entity.Name .. " top=" .. ownerId .. " dmg=" .. tostring(self.dmg[ownerId] or 0))
+		log("[FarmReward] " .. self.Entity.Name .. " lasthit=" .. ownerId .. " top=" .. self:TopDamager() .. " dmg=" .. tostring(self.dmg[ownerId] or 0))
 
 		self:DropCoins(ownerId)
 	end
@@ -185,8 +197,8 @@ script FarmReward extends Component
 	@ExecSpace("ServerOnly")
 	@EventSender("Self")
 	handler HandleHitEvent(HitEvent event)
-		-- 플레이어별 누적 피해를 쌓는다. HP 는 Monster 가 깎으므로 여기서 건드리지 않는다.
-		-- 플레이어가 아닌 공격자(수비대·미니언·포탑)는 기록하지 않는다 → 그들만 때려 죽이면 TopDamager 가 "" 라 보상이 없다.
+		-- 마지막 공격자(막타 판정 · LastAttacker)를 기록하고 플레이어별 누적 피해를 쌓는다. HP 는 Monster 가 깎으므로 여기서 건드리지 않는다.
+		-- 플레이어가 아닌 공격자(수비대·미니언·포탑)도 LastAttacker 에는 남는다 → 그들이 막타면 LastHitter 가 "" 라 보상이 없다.
 		local attacker = event.AttackerEntity
 		if not isvalid(attacker) then
 			return

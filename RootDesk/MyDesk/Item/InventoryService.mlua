@@ -47,16 +47,15 @@ script InventoryService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void GrantMatchKit(string userId)
-		-- 매치 시작 킷. 장비 7부위(SHIELD_WOODEN 은 SUBWEAPON 슬롯) + 보석·재료 + 물약 5개씩. 로비/원장 생성 시에는 주지 않는다.
+		-- 매치 시작 킷 (9/14 기획 · 사용자 2026-09-18 · a/plan-0914 B1): 몽둥이 · 두건 · 상의 · 하의 · 장화 + 빨강/파랑 물약 5개씩.
+		-- 방패·장갑·다이아·헤네시스 포자(테스트용 재료)는 더 주지 않는다. 시작 메소 100 은 SummonManager.StartMeso. 로비/원장 생성 시에는 주지 않는다.
 		if not self.GrantKitOnMatchStart then return end
-		for _, id in ipairs({ "WEAPON_WOODEN_SWORD", "SHIELD_WOODEN", "HAT_WHITE_BANDANA", "TOP_WHITE_UNDERSHIRT", "BOTTOM_BLUE_JEAN_SHORTS", "SHOES_RED_RUBBER_BOOTS", "GLOVES_LEATHER" }) do
+		for _, id in ipairs({ "WEAPON_CLUB", "HAT_WHITE_BANDANA", "TOP_WHITE_UNDERSHIRT", "BOTTOM_BLUE_JEAN_SHORTS", "SHOES_RED_RUBBER_BOOTS" }) do
 			self:GiveItem(userId, id, 1)
 		end
-		self:GiveItem(userId, "GEM_DIAMOND", 5)
-		self:GiveItem(userId, "REGION_HENESYS_SPORE", 12)
 		self:GiveItem(userId, "POTION_RED", 5)
 		self:GiveItem(userId, "POTION_BLUE", 5)
-		log("[Item] match kit given (" .. userId .. ")")
+		log("[Item] match kit given: club+4armor, potions 5/5 (" .. userId .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -204,12 +203,22 @@ script InventoryService extends Logic
 	end
 
 	-- ── 소모품 쿨타임 (WO-014 · 추가기획2) ──────────────────────────
-	-- 원장은 서버 메모리다. ready[userId][itemId] = 이 시각(ServerElapsedSeconds)이 지나야 다시 쓸 수 있다.
-	-- 지금 CONSUME 은 POTION_RED 하나라 사실상 물약 공용 쿨이지만, 아이템별로 두면 종류가 늘어도 그대로 돈다.
-	-- 종류가 늘어 "여러 물약이 쿨을 공유"해야 하면 ConsumeInfo 에 CooldownGroup 열을 뒤에 추가한다.
+	-- 원장은 서버 메모리다. ready[userId][key] = 이 시각(ServerElapsedSeconds)이 지나야 다시 쓸 수 있다.
+	-- 🔴 2026-09-22(a/plan-0914 B1 · 물약 5단계): HP 를 회복하는 소모품(HealHp 또는 HealHpPct > 0)은 **한 쿨 묶음("HP")** 을 쓴다 —
+	--    빨강·주황·흰·엘릭서·파워 엘릭서를 번갈아 먹어 쿨을 우회하지 못한다. MP 만 회복하는 파란 포션은 아이템별(별도 쿨).
+	--    ConsumeInfo 에 CooldownGroup 열은 아직 안 만든다(HP 회복 유무로 묶음이 정해진다 · 계약서 A-2-8c).
 
 	@HideFromInspector
 	property any ready = nil
+
+	@ExecSpace("ServerOnly")
+	method string CooldownKey(any c)
+		-- 쿨타임 원장 키. HP 회복이 있으면 공용 "HP", 아니면 아이템 ID.
+		if c ~= nil and ((c.healHp or 0) > 0 or (c.healHpPct or 0) > 0) then
+			return "HP"
+		end
+		return (c ~= nil) and (c.itemId or "") or ""
+	end
 
 	@ExecSpace("ServerOnly")
 	method integer LevelOf(string userId)
@@ -271,9 +280,10 @@ script InventoryService extends Logic
 		local pc = isvalid(player) and player.PlayerComponent or nil
 		if not isvalid(pc) then return end
 
-		-- 쿨타임 (WO-014 · 추가기획2). 🔴 쿨 중이면 **아이템을 소모하지 않고** 거절한다.
+		-- 쿨타임 (WO-014 · 추가기획2). 🔴 쿨 중이면 **아이템을 소모하지 않고** 거절한다. 키는 CooldownKey(HP 회복 = 공용 "HP").
 		local now = _UtilLogic.ServerElapsedSeconds
-		local readyAt = self:ReadyAt(userId, it.itemId)
+		local cdKey = self:CooldownKey(c)
+		local readyAt = self:ReadyAt(userId, cdKey)
 		if readyAt > now then
 			if _UIToast ~= nil then
 				_UIToast:ShowMessage(def.name .. " 쿨타임 " .. string.format("%.1f", readyAt - now) .. "초", userId)
@@ -282,29 +292,34 @@ script InventoryService extends Logic
 		end
 		local cd = self:CooldownOf(userId, c)
 		if cd > 0 then
-			self:SetReadyAt(userId, it.itemId, now + cd)
-			log("[Item] potion cooldown lv=" .. tostring(self:LevelOf(userId)) .. " cd=" .. string.format("%.2f", cd) .. "s (" .. userId .. ")")
+			self:SetReadyAt(userId, cdKey, now + cd)
+			log("[Item] potion cooldown key=" .. cdKey .. " lv=" .. tostring(self:LevelOf(userId)) .. " cd=" .. string.format("%.2f", cd) .. "s (" .. userId .. ")")
 		end
 
+		-- 회복량 = 고정(HealHp) + 최대치 비율(HealHpPct · 엘릭서류 · 2026-09-22 물약 5단계). MP 도 같은 꼴.
 		local before = pc.Hp
-		if c.healHp > 0 then
-			pc.Hp = math.min(pc.Hp + c.healHp, pc.MaxHp)
+		local hpGain = (c.healHp or 0) + math.floor(pc.MaxHp * (c.healHpPct or 0))
+		if hpGain > 0 then
+			pc.Hp = math.min(pc.Hp + hpGain, pc.MaxHp)
 		end
 		-- HealMp: MP 원장은 SummonManager.econ — GrantMp 가 maxMp 상한과 HUD 갱신까지 한다 (2026-09-16 파란 포션과 함께 연결).
 		local mpBefore, mpAfter = 0, 0
-		if c.healMp > 0 and _SummonManager ~= nil then
-			local e = _SummonManager:GetEcon(userId)
-			mpBefore = (e ~= nil) and math.floor(e.mp or 0) or 0
-			_SummonManager:GrantMp(userId, c.healMp)
-			e = _SummonManager:GetEcon(userId)
-			mpAfter = (e ~= nil) and math.floor(e.mp or 0) or 0
+		local e0 = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		local mpGain = (c.healMp or 0) + math.floor(((e0 ~= nil) and (e0.maxMp or 0) or 0) * (c.healMpPct or 0))
+		if mpGain > 0 and _SummonManager ~= nil then
+			mpBefore = (e0 ~= nil) and math.floor(e0.mp or 0) or 0
+			_SummonManager:GrantMp(userId, mpGain)
+			local e1 = _SummonManager:GetEcon(userId)
+			mpAfter = (e1 ~= nil) and math.floor(e1.mp or 0) or 0
 		end
 		self:RemoveItem(userId, it.itemId, 1)
 		self:PushInventory(userId)
 		log("[Item] use " .. it.itemId .. " hp " .. tostring(before) .. "→" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp " .. tostring(mpBefore) .. "→" .. tostring(mpAfter) .. " (" .. userId .. ")")
 		if _UIToast ~= nil then
-			local gain = (c.healMp > 0) and ("MP +" .. tostring(mpAfter - mpBefore)) or ("HP +" .. tostring(pc.Hp - before))
-			_UIToast:ShowMessage(def.name .. " 사용 (" .. gain .. ")", userId)
+			local parts = {}
+			if pc.Hp - before > 0 then table.insert(parts, "HP +" .. tostring(pc.Hp - before)) end
+			if mpAfter - mpBefore > 0 then table.insert(parts, "MP +" .. tostring(mpAfter - mpBefore)) end
+			_UIToast:ShowMessage(def.name .. " 사용 (" .. table.concat(parts, " · ") .. ")", userId)
 		end
 	end
 
