@@ -164,6 +164,7 @@ script MatchSessionLogic extends Logic
 		if _BossRewardService ~= nil then _BossRewardService:ResetForMatch() end
 		if _EliteSpawner ~= nil then _EliteSpawner:ResetForMatch() end
 		if _RankRewardService ~= nil then _RankRewardService:ResetForMatch() end
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:ResetForMatch(self.participants) end
 		self.lastRewards = nil
 
 		self.Elapsed = 0
@@ -530,6 +531,7 @@ script MatchSessionLogic extends Logic
 		-- 🔴 발록 방 도전을 **지금** 닫는다 (모든 방 무적 · 감시 중지). BalrogRoomService.OnUpdate 가 다음 프레임에
 		--    알아채길 기다리면 결과 화면이 뜬 뒤 한 프레임 동안 발록이 맞는다 (Codex 09-13 A·B).
 		if _BalrogRoomService ~= nil and _BalrogRoomService.active then _BalrogRoomService:OnMatchOver() end
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:OnMatchOver() end
 		log("[Match] EXPIRED at " .. string.format("%.1f", self.Elapsed) .. "s (duration=" .. tostring(self.MatchDuration) .. "s profile=" .. self.Profile .. " waves=" .. tostring(self.waveIndex) .. ")")
 		local ev = MatchPhaseChangedEvent()
 		ev.MatchId = ""
@@ -541,8 +543,9 @@ script MatchSessionLogic extends Logic
 		-- 계정 데이터 확정 (WO-018). 만료 시점에 생존자 전원의 계정 값을 한 번 굳힌다.
 		-- 🔴 저장 창구는 _PlayerDBManager 하나뿐이다. 여기서 _DataStorageService 를 직접 부르지 않는다.
 		-- 바뀐 게 없는 유저는 매니저가 걸러서 요청 자체를 보내지 않는다(Credit 0).
-		if _PlayerDBManager ~= nil then _PlayerDBManager:FlushAll() end
+		-- 🔴 순위 보상(B8 · ShowResult → RankRewardService.Settle)이 계정 원장을 더럽히므로 **결과 정산 뒤에** 굳힌다 (Codex 리뷰 2026-09-23).
 		self:ShowResult(reason)
+		if _PlayerDBManager ~= nil then _PlayerDBManager:FlushAll() end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -655,7 +658,8 @@ script MatchSessionLogic extends Logic
 		-- 순위 1순위 "발록 누적 피해" 는 BalrogRoomService.DamageOf 가 준다 (WO-017).
 		--    1인 1방이라 자기 방 발록의 MaxHp - 현재 HP 가 곧 그 사람 피해다. 승자는 MaxHp 라 맨 위다.
 		-- ⚠️ 순위별 보상 지급은 아직 없다 — WO-022 S2.
-		if _MatchResultUIController == nil or self.participants == nil then return end
+		-- 🔴 결과 UI 가 없어도 정산은 한다 (Codex 리뷰 2026-09-23) — 화면 전송만 컨트롤러가 있을 때.
+		if self.participants == nil then return end
 		local n = #self.participants
 		if n == 0 then return end
 
@@ -686,7 +690,9 @@ script MatchSessionLogic extends Logic
 		end
 
 		-- 순위: ① 발록 피해 ② 넥서스 잔여 HP ③ 최종 레벨 (결과 화면의 열 순서와 같다)
+		-- 🔴 탈락자는 뒤로 (표시 순위와 보상 순위(최하위)를 맞춘다 · Codex 리뷰 2026-09-23).
 		table.sort(rows, function(a, b)
+			if (a.elim == true) ~= (b.elim == true) then return not a.elim end
 			if a.damage ~= b.damage then return a.damage > b.damage end
 			if a.coreHp ~= b.coreHp then return a.coreHp > b.coreHp end
 			return a.level > b.level
@@ -696,6 +702,10 @@ script MatchSessionLogic extends Logic
 		self.lastRewards = nil
 		if _RankRewardService ~= nil then self.lastRewards = _RankRewardService:Settle(rows, self.Difficulty, self.leftUsers) end
 
+		if _MatchResultUIController == nil then
+			log_warning("[Match] MatchResultUIController 없음 — 결과 화면 생략 (정산은 끝남)")
+			return
+		end
 		for i = 1, n do
 			local uid = self.participants[i]
 			_MatchResultUIController:SetResultCsv(self:BuildResultCsv(rows, uid, reason), uid)
@@ -717,7 +727,9 @@ script MatchSessionLogic extends Logic
 			if rw.left then
 				rewardText = "중도 이탈 — 보상 없음"
 			else
-				rewardText = tostring(rw.rank) .. "위 보상: 발록의 심장 +" .. tostring(rw.hearts) .. " (보유 " .. tostring(rw.heartTotal) .. ") · 계정 경험치 +" .. tostring(rw.exp)
+				local head = tostring(rw.rank) .. "위 보상"
+				if rw.elim then head = "탈락 — 최하위(" .. tostring(rw.rank) .. "위) 보상" end
+				rewardText = head .. ": 발록의 심장 +" .. tostring(rw.hearts) .. " (보유 " .. tostring(rw.heartTotal) .. ") · 계정 경험치 +" .. tostring(rw.exp)
 					.. " (Lv" .. tostring(rw.lvBefore) .. ((rw.lvAfter > rw.lvBefore) and (" → Lv" .. tostring(rw.lvAfter)) or "") .. ")"
 			end
 		end
