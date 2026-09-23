@@ -158,6 +158,7 @@ script MatchSessionLogic extends Logic
 		self.waveIndex = 0
 		self.nextWave = 1
 		self.waveRepeatTimer = 0
+		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		self.spawnTimer = 0
 		self.clockTimer = 0
 		self.Expired = false
@@ -328,7 +329,12 @@ script MatchSessionLogic extends Logic
 		if _MinionFlowService ~= nil then
 			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, row.monsterId, row.hp, row.attack, row.exp, row.meso, row.zombieCount, self.zombieTemplate)
 		end
-		if _DispatchService ~= nil then _DispatchService:Release(row.phase, 1.0, 1.0) end
+		-- 파병은 이 웨이브의 일반 미니언(count 마리)이 다 나간 직후에 푼다 — 큐에 같이 넣어 순서를 지킨다(Codex 리뷰 2026-09-23). 큐가 없으면 즉시.
+		if _MinionFlowService ~= nil then
+			_MinionFlowService:QueueDispatch(row.phase, row.count * row.gap)
+		elseif _DispatchService ~= nil then
+			_DispatchService:Release(row.phase, 1.0, 1.0)
+		end
 		if self.waveIndex == 1 and _UIToast ~= nil then
 			for _, uid in ipairs(self.participants or {}) do _UIToast:ShowMessage("미니언이 생성되었습니다", uid) end
 		end
@@ -346,6 +352,7 @@ script MatchSessionLogic extends Logic
 		self.waveIndex = 0
 		self.nextWave = 1
 		self.waveRepeatTimer = 0
+		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		self.Expired = false
 		self.Running = true
 		self:SetPhase(1)
@@ -439,12 +446,16 @@ script MatchSessionLogic extends Logic
 		local row = self.phases[self.CurrentPhase]
 		-- 웨이브 (B3 · MinionWave 표): 시작 시각을 지난 행을 차례로 투입. 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
 		if self.waves ~= nil and #self.waves > 0 then
+			local armed = false
 			while self.nextWave <= #self.waves and self.Elapsed >= self.waves[self.nextWave].start do
 				self:FireWave(self.waves[self.nextWave], false)
 				self.nextWave = self.nextWave + 1
-				if self.nextWave > #self.waves then self.waveRepeatTimer = self.waveRepeatGap end
+				if self.nextWave > #self.waves then
+					self.waveRepeatTimer = self.waveRepeatGap
+					armed = true   -- 방금 잰 타이머는 다음 프레임부터 줄인다(Codex 리뷰 2026-09-23 · 한 프레임 이른 반복 방지)
+				end
 			end
-			if self.nextWave > #self.waves and self.waveRepeatGap > 0 then
+			if not armed and self.nextWave > #self.waves and self.waveRepeatGap > 0 then
 				self.waveRepeatTimer = self.waveRepeatTimer - delta
 				if self.waveRepeatTimer <= 0 then
 					self.waveRepeatTimer = self.waveRepeatGap
@@ -474,6 +485,8 @@ script MatchSessionLogic extends Logic
 		-- 매치 종료. 1회만. reason = "시간 종료" · "전원 탈락" 등.
 		-- 시계·웨이브를 멈추고 전 클라에 알린 뒤 **결과 화면**을 띄운다.
 		if self.Expired then return end
+		-- 대기 중인 스폰·파병 큐를 버린다 — 만료 직전에 큐잉된 웨이브가 종료 화면 뒤에 나오지 않게(Codex 리뷰 2026-09-23).
+		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		-- 🔴 승리가 아닌 종료(시간 종료 · 전원 탈락) 직전에 발록 사망을 한 번 더 본다 (WO-017 · Codex A·B).
 		--    BalrogRoomService 는 매 프레임 보지만 Logic 끼리 OnUpdate 순서는 정해져 있지 않다 —
 		--    같은 프레임에 만료가 먼저 돌면 방금 죽은 발록이 승리로 안 잡힌다.

@@ -126,20 +126,29 @@ script MinionFlowService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
-		-- 스폰 큐: 때가 된 항목을 순서대로 스폰한다 (마을당 Count 마리 · SpawnGapSeconds 간격). 마을 단위로 다 나가면 한 줄 로그.
+		-- 스폰 큐: 때가 된 항목을 순서대로 처리한다 — 미니언 스폰(마을당 Count 마리 · SpawnGapSeconds 간격) 또는 파병 풀기(dispatchPhase). 마을 단위로 다 나가면 한 줄 로그.
 		if self.queue == nil or #self.queue == 0 then return end
 		self.clock = self.clock + delta
 		local keep = {}
 		for _, q in ipairs(self.queue) do
 			if q.due <= self.clock then
-				local ent = self:SpawnMinion(q.villageId, "LANE2", q.spec)
-				local c = self.waveCount[q.tag]
-				if c ~= nil then
-					if isvalid(ent) then c.spawned = c.spawned + 1 end
-					c.left = c.left - 1
-					if c.left <= 0 then
-						log("[Minion] wave=" .. q.key .. " village=" .. q.villageId .. " spawned=" .. tostring(c.spawned) .. "/" .. tostring(c.total) .. " zombies=" .. tostring(c.zombies))
-						self.waveCount[q.tag] = nil
+				if q.dispatchPhase ~= nil then
+					-- 파병: 이 웨이브의 일반 미니언이 다 나간 직후에 푼다(순서 보장 · Codex 리뷰 2026-09-23).
+					if _DispatchService ~= nil then _DispatchService:Release(q.dispatchPhase, 1.0, 1.0) end
+				else
+					-- 큐에 넣은 뒤 마을이 탈락(주인 없음)했으면 스폰하지 않는다 (Eliminate → DespawnVillage 뒤 늦게 나오는 미니언 방지).
+					local ent = nil
+					if _VillageOwnership == nil or _VillageOwnership:OwnerOf(q.villageId) ~= "" then
+						ent = self:SpawnMinion(q.villageId, "LANE2", q.spec)
+					end
+					local c = self.waveCount[q.tag]
+					if c ~= nil then
+						if isvalid(ent) then c.spawned = c.spawned + 1 end
+						c.left = c.left - 1
+						if c.left <= 0 then
+							log("[Minion] wave=" .. q.key .. " village=" .. q.villageId .. " spawned=" .. tostring(c.spawned) .. "/" .. tostring(c.total) .. " zombies=" .. tostring(c.zombies))
+							self.waveCount[q.tag] = nil
+						end
 					end
 				end
 			else
@@ -147,6 +156,21 @@ script MinionFlowService extends Logic
 			end
 		end
 		self.queue = keep
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetQueue()
+		-- 매치 시작·프로필 전환 때 이전 판의 대기 스폰·파병을 버린다 (Codex 리뷰 2026-09-23).
+		self.queue = {}
+		self.waveCount = {}
+		self.clock = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void QueueDispatch(string phaseName, number delay)
+		-- 파병 풀기를 delay 초 뒤 큐에 넣는다 (FireWave: 일반 미니언 count×gap 뒤).
+		if self.queue == nil then self.queue = {} end
+		table.insert(self.queue, { due = self.clock + math.max(0, delay), dispatchPhase = phaseName })
 	end
 
 	@ExecSpace("ServerOnly")

@@ -609,7 +609,7 @@ script LaneStateService extends Logic
 	method void SuppressorBoom(string villageId)
 		-- 억제기 파괴 폭발 (B3 · WO-027 §7 · 사용자 2026-09-22): 파괴 순간 억제기 바닥 기준 반경 SuppressorBoomRadius 안의 **미니언(MinionUnit)에게만**
 		-- SuppressorBoomDamage 고정 피해. 시설·수비대·플레이어는 안 맞는다. 폭발로 죽은 미니언은 처치 보상 없음(lastAttacker 없음).
-		-- 연출: ICBM special 클립을 억제기 층에 · Hit 사운드는 그 맵 안 유저에게(_SoundService 는 Client 라 유저별 targetUserId).
+		-- 연출: ICBM special 클립을 억제기 층에 · Hit 사운드는 그 맵 안 유저에게 Client RPC(PlayBoomSoundLocal · 유저별 targetUserId).
 		if _LaneFacilityService == nil or _LaneFacilityService.entities == nil then return end
 		local ent = _LaneFacilityService.entities[villageId .. ":SUPPRESSOR"]
 		if not isvalid(ent) then
@@ -639,6 +639,9 @@ script LaneStateService extends Logic
 						mon.Hp = mon.Hp - self.SuppressorBoomDamage
 						if mon.Hp <= 0 then
 							killed = killed + 1
+							-- 폭발 처치는 보상 없음: 마지막 공격자 기록을 지운다(안 지우면 직전에 때린 플레이어에게 경험치·메소가 간다 · Codex 리뷰 2026-09-23).
+							child.MinionUnit.lastAttacker = nil
+							if child.FarmReward ~= nil then child.FarmReward.LastAttacker = nil end
 							mon:PlaySoundToMap(mon.DieSoundRUID, mon.SoundVolume)
 							mon:Dead()
 						end
@@ -655,12 +658,57 @@ script LaneStateService extends Logic
 			if users ~= nil then
 				for _, u in ipairs(users) do
 					if isvalid(u) and isvalid(u.PlayerComponent) then
-						_SoundService:PlaySound(self.SuppressorBoomSoundRuid, self.SuppressorBoomVolume, u.PlayerComponent.UserId)
+						self:PlayBoomSoundLocal(self.SuppressorBoomSoundRuid, self.SuppressorBoomVolume, cx, cy, 0, u.PlayerComponent.UserId)
 					end
 				end
 			end
 		end
 		log("[Suppressor] boom " .. villageId .. " hit=" .. tostring(hit) .. " killed=" .. tostring(killed) .. " r=" .. tostring(self.SuppressorBoomRadius) .. " dmg=" .. tostring(self.SuppressorBoomDamage) .. " at (" .. string.format("%.2f", cx) .. "," .. string.format("%.2f", cy) .. ")")
+	end
+
+	@ExecSpace("Client")
+	method void PlayBoomSoundLocal(string ruid, number volume, number x, number y, number z)
+		-- 폭발음을 그 유저 클라에서 위치 기준으로 재생 (Monster.PlaySoundLocal 과 같은 방식 · _SoundService 는 Client 라 유저별 RPC). 인자는 전부 원시 타입.
+		local listener = _UserService.LocalPlayer
+		if not isvalid(listener) then
+			_SoundService:PlaySound(ruid, volume)
+			return
+		end
+		_SoundService:PlaySoundAtPos(ruid, Vector3(x, y, z), listener, volume)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer HealFacility(string villageId, string stage, number amount)
+		-- 시설 회복 (B3b · 노틸러스 억제기 AURA_REGEN "본인 포함"): 원장 HP 를 amount 만큼 올린다(소수는 이월 · 정수만 반영). 죽은 시설·만피는 0.
+		-- 회복 로그는 2초에 한 번 누적치로. 돌려주는 값 = 실제 오른 HP.
+		local v = self:EnsureVillage(villageId)
+		if v == nil then return 0 end
+		local t = v.towers[stage]
+		if t == nil or not t.alive or amount <= 0 then return 0 end
+		local max = self:MaxHp(stage, t.lv)
+		if t.hp >= max then
+			t.regenCarry = 0
+			return 0
+		end
+		t.regenCarry = (t.regenCarry or 0) + amount
+		local whole = math.floor(t.regenCarry)
+		if whole < 1 then return 0 end
+		t.regenCarry = t.regenCarry - whole
+		local before = t.hp
+		t.hp = math.min(max, t.hp + whole)
+		local healed = t.hp - before
+		if healed > 0 then
+			t.regenAcc = (t.regenAcc or 0) + healed
+			local now = _UtilLogic.ElapsedSeconds
+			if now >= (t.regenLogAt or 0) then
+				log("[Regen] " .. villageId .. " " .. stage .. " +" .. tostring(t.regenAcc) .. " -> " .. tostring(t.hp) .. "/" .. tostring(max))
+				t.regenLogAt = now + 2.0
+				t.regenAcc = 0
+			end
+			-- 색·HP바만 갱신한다 — Changed 는 ApplyCombat 까지 다시 돌려 회복 틱(4Hz)마다 combat 로그가 쌓였다(2026-09-23 실측 31줄/12초).
+			if _LaneFacilityService ~= nil then _LaneFacilityService:ApplyVisual(villageId, stage) end
+		end
+		return healed
 	end
 
 	@ExecSpace("ServerOnly")
