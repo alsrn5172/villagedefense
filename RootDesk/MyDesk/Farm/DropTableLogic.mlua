@@ -1,0 +1,185 @@
+@Logic
+script DropTableLogic extends Logic
+
+	-- 일반몹 처치 재료 드롭 (계약서 A-2-19 `DropTable` · 9/14 기획 · a/plan-0914 B2 · 2026-09-22).
+	--
+	-- 규칙: 막타 친 플레이어(FarmReward.LastHitter)에게 **인벤토리로 직접** 넣는다 — 바닥 드롭 없음(동전만 바닥). 토스트 1줄.
+	--   · GROUND 행: SourceId = 사냥터 번호 1/2/3 (VillageConfig 의 Lane1/Lane2/Rear 맵). 그 사냥터의 모든 일반몹 공통.
+	--   · MONSTER 행: SourceId = 도감 ID (개별 예외). ELITE 행은 EliteSpawner(B7)가 부른다.
+	--   · ItemId 토큰: `GEM_RANDOM` = 12종 보석 중 무작위 1종 · `REGION_LOCAL` = 그 맵 지역의 지역 재화(ItemCatalog.ShopKeyOfMap → REGION_*).
+	--   · 리스항구(ShopKey NOVICE)는 GROUND 행이 없으므로 메소만 떨어진다(기획).
+	--   · ★5 타 지역 재화 ×2(`REGION_DROP_MUL`)는 B6 의 DifficultyService 가 생기면 CountMin/Max 에 곱한다 — 아래 RegionMul 훅.
+
+	@HideFromInspector
+	property string TableName = "DropTable"
+
+	@HideFromInspector
+	property string VillageTableName = "VillageConfig"
+
+	-- 지역 ShopKey → 지역 재화 ItemId (계약서 A-2-8c · CraftRecipe 와 같은 짝).
+	@HideFromInspector
+	property string RegionItems = "REGION_HENESYS=REGION_HENESYS_SPORE,REGION_KERNING=REGION_KERNING_THIEF_COIN,REGION_ELLINIA=REGION_ELLINIA_SPIRIT_DUST,REGION_NAUTILUS=REGION_NAUTILUS_PIRATE_COIN,REGION_PERION=REGION_PERION_WARRIOR_TOKEN"
+
+	@HideFromInspector
+	property string GemItems = "GEM_DIAMOND,GEM_SAPPHIRE,GEM_AMETHYST,GEM_AQUAMARINE,GEM_GARNET,GEM_OPAL,GEM_TOPAZ,GEM_EMERALD,GEM_STR_CRYSTAL,GEM_DEX_CRYSTAL,GEM_LUK_CRYSTAL,GEM_INT_CRYSTAL"
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	-- rows[kind][sourceId] = { {itemId, chance, min, max}, ... }
+	@HideFromInspector
+	property any rows = nil
+
+	-- tierByMap[mapName] = 1/2/3 (VillageConfig Lane1/Lane2/Rear)
+	@HideFromInspector
+	property any tierByMap = nil
+
+	@HideFromInspector
+	property any regionItem = nil
+
+	@HideFromInspector
+	property any gems = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 표를 미리 적재해 첫 처치 때 지연이 없게 한다.
+		self:EnsureLoaded()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureLoaded()
+		-- DropTable · VillageConfig 적재 (1-based 행). 없으면 빈 표로 두고 경고.
+		if self.loaded then return end
+		self.loaded = true
+		self.rows = {}
+		self.tierByMap = {}
+		self.regionItem = {}
+		self.gems = {}
+		for pair in string.gmatch(self.RegionItems, "[^,]+") do
+			local eq, eqEnd = string.find(pair, "=", 1, true)
+			if eq ~= nil then
+				self.regionItem[string.sub(pair, 1, eq - 1)] = string.sub(pair, eq + 1)
+			end
+		end
+		for g in string.gmatch(self.GemItems, "[^,]+") do table.insert(self.gems, g) end
+
+		local n = 0
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Drop] dataset not found: " .. self.TableName .. " — 재료 드롭 없음")
+		else
+			for i = 1, t:GetRowCount() do
+				local en = string.lower(tostring(t:GetCell(i, "Enabled") or "true"))
+				local kind = string.upper(t:GetCell(i, "SourceKind") or "")
+				local src = t:GetCell(i, "SourceId") or ""
+				local itemId = t:GetCell(i, "ItemId") or ""
+				if kind ~= "" and src ~= "" and itemId ~= "" and en ~= "false" then
+					local byKind = self.rows[kind]
+					if byKind == nil then byKind = {}; self.rows[kind] = byKind end
+					local list = byKind[src]
+					if list == nil then list = {}; byKind[src] = list end
+					table.insert(list, {
+						itemId = itemId,
+						chance = tonumber(t:GetCell(i, "Chance")) or 0,
+						min = math.max(0, math.floor(tonumber(t:GetCell(i, "CountMin")) or 1)),
+						max = math.max(0, math.floor(tonumber(t:GetCell(i, "CountMax")) or 1)),
+					})
+					n = n + 1
+				end
+			end
+		end
+
+		local v = _DataService:GetTable(self.VillageTableName)
+		local m = 0
+		if v ~= nil then
+			for i = 1, v:GetRowCount() do
+				local lane1 = v:GetCell(i, "Lane1MapName") or ""
+				local lane2 = v:GetCell(i, "Lane2MapName") or ""
+				local rear = v:GetCell(i, "RearMapName") or ""
+				if lane1 ~= "" then self.tierByMap[lane1] = 1; m = m + 1 end
+				if lane2 ~= "" then self.tierByMap[lane2] = 2; m = m + 1 end
+				if rear ~= "" then self.tierByMap[rear] = 3; m = m + 1 end
+			end
+		else
+			log_warning("[Drop] dataset not found: " .. self.VillageTableName)
+		end
+		log("[Drop] loaded rows=" .. tostring(n) .. " tierMaps=" .. tostring(m))
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TierOfMap(string mapName)
+		-- 사냥터 번호. 사냥터가 아니면 0 (마을·보스·리스항구 → GROUND 드롭 없음).
+		self:EnsureLoaded()
+		return self.tierByMap[mapName or ""] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method number RegionMul(string mapName, string userId)
+		-- ★5 "다른 지역 재화 ×2" 훅. DifficultyService(B6) 가 생기기 전엔 1.
+		return 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ResolveItem(string itemId, string mapName)
+		-- 토큰 → 실제 ItemId. 못 풀면 "".
+		if itemId == "GEM_RANDOM" then
+			if #self.gems == 0 then return "" end
+			return self.gems[_UtilLogic:RandomIntegerRange(1, #self.gems)]
+		end
+		if itemId == "REGION_LOCAL" then
+			local key = _ItemCatalog:ShopKeyOfMap(mapName)
+			return self.regionItem[key] or ""
+		end
+		return itemId
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer RollRows(any list, string userId, string mapName, any granted)
+		-- 행마다 독립 확률로 굴려 지급. granted[itemId] += count. 지급 건수 반환.
+		if list == nil then return 0 end
+		local hits = 0
+		for _, r in ipairs(list) do
+			if r.chance >= 1 or _UtilLogic:RandomDouble() < r.chance then
+				local cnt = r.min
+				if r.max > r.min then cnt = _UtilLogic:RandomIntegerRange(r.min, r.max) end
+				local item = self:ResolveItem(r.itemId, mapName)
+				if string.find(r.itemId, "REGION_") == 1 then
+					cnt = math.floor(cnt * self:RegionMul(mapName, userId) + 0.5)
+				end
+				if item ~= "" and cnt > 0 then
+					local given = _InventoryService:GiveItem(userId, item, cnt)
+					if given > 0 then
+						granted[item] = (granted[item] or 0) + given
+						hits = hits + 1
+					end
+				end
+			end
+		end
+		return hits
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GrantKillDrops(string userId, string mapName, integer monsterId)
+		-- 일반몹 처치 드롭 본체. FarmReward.GiveRewards 가 막타 확정 뒤 부른다.
+		self:EnsureLoaded()
+		if userId == nil or userId == "" then return end
+		local granted = {}
+		local hits = 0
+		local tier = self:TierOfMap(mapName)
+		if tier > 0 and self.rows["GROUND"] ~= nil then
+			hits = hits + self:RollRows(self.rows["GROUND"][tostring(tier)], userId, mapName, granted)
+		end
+		if self.rows["MONSTER"] ~= nil then
+			hits = hits + self:RollRows(self.rows["MONSTER"][tostring(monsterId)], userId, mapName, granted)
+		end
+		if hits == 0 then return end
+		local parts = {}
+		for item, cnt in pairs(granted) do
+			local def = _ItemCatalog:Get(item)
+			table.insert(parts, ((def ~= nil) and def.name or item) .. " x" .. tostring(cnt))
+		end
+		local msg = table.concat(parts, " · ")
+		log("[Drop] " .. mapName .. " tier=" .. tostring(tier) .. " mob=" .. tostring(monsterId) .. " -> " .. msg .. " (" .. userId .. ")")
+		if _UIToast ~= nil then _UIToast:ShowMessage("획득: " .. msg, userId) end
+	end
+end

@@ -19,6 +19,9 @@ script FarmReward extends Component
 
 	property string CoinModelId = "mesocoin"
 
+	-- 한 처치에 떨구는 동전 엔티티 최대 개수. 메소 총액(CoinMin~CoinMax)을 이 개수에 나눠 담는다 (B2).
+	property integer MaxCoinEntities = 3
+
 	@HideFromInspector
 	property any LastAttacker = nil
 
@@ -152,6 +155,12 @@ script FarmReward extends Component
 		log("[FarmReward] " .. self.Entity.Name .. " lasthit=" .. ownerId .. " top=" .. self:TopDamager() .. " dmg=" .. tostring(self.dmg[ownerId] or 0))
 
 		self:DropCoins(ownerId)
+
+		-- 재료 드롭(보석 · 지역 재화 · 몬스터별 재화 — DropTable · B2). 미니언(MonsterId 0)은 재료가 없다(기획).
+		if self.MonsterId > 0 and _DropTableLogic ~= nil then
+			local map = self.Entity.CurrentMap
+			_DropTableLogic:GrantKillDrops(ownerId, isvalid(map) and map.Name or "", self.MonsterId)
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -166,11 +175,17 @@ script FarmReward extends Component
 		local base = transform.WorldPosition
 		local coinMin = self:EffectiveCoinMin()
 		local coinMax = self:EffectiveCoinMax()
-		local count = coinMin
+		-- CoinMin~CoinMax 는 **메소 총액**이다 (2026-09-22 B2 · 몹 메소 60/180/450 로 커지면서 "동전 = 1메소" 를 버림).
+		-- 총액을 최대 MaxCoinEntities 개의 동전에 나눠 담는다(MesoCoin.Value). 총액 0 이면 아무것도 안 떨군다.
+		local total = coinMin
 		if coinMax > coinMin then
-			count = _UtilLogic:RandomIntegerRange(coinMin, coinMax)
+			total = _UtilLogic:RandomIntegerRange(coinMin, coinMax)
 		end
-		
+		if total <= 0 then return end
+		local count = math.min(self.MaxCoinEntities, total)
+		local each = math.floor(total / count)
+		local rest = total - each * count
+
 		for i = 1, count do
 			-- 약간 좌우로 흩뿌려 스폰한다(동전 스크립트가 팝 + 낙하 처리).
 			local ox = (_UtilLogic:RandomDouble() - 0.5) * 0.6
@@ -179,6 +194,11 @@ script FarmReward extends Component
 			if coin == nil then
 				log_error("[FarmReward] 동전 스폰 실패 — modelId=" .. self.CoinModelId)
 			else
+				---@type MesoCoin
+				local mc = coin:GetComponent("script.MesoCoin")
+				if isvalid(mc) then
+					mc.Value = each + ((i == 1) and rest or 0)
+				end
 				-- 주인 표시. 없으면 아무도 못 줍는다(DropOwner.IsPickableBy) — 여기 오는 시점엔 ownerId 가 항상 채워져 있다.
 				coin:AddComponent("script.DropOwner")
 				---@type DropOwner
@@ -191,7 +211,7 @@ script FarmReward extends Component
 			end
 		end
 
-		log("[FarmReward] " .. self.Entity.Name .. " dropped " .. tostring(count) .. " coins for " .. ownerId)
+		log("[FarmReward] " .. self.Entity.Name .. " dropped " .. tostring(total) .. " meso in " .. tostring(count) .. " coins for " .. ownerId)
 	end
 
 	@ExecSpace("ServerOnly")
