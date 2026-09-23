@@ -1,0 +1,89 @@
+@Logic
+script AccountLevelService extends Logic
+	-- 계정 레벨 (9/14 기획 · WO-027 §8 · 계약 A-2-21 · a/plan-0914 B8).
+	--   · 경험치는 AccountData.exp 에 **누적**(레벨업해도 0 부터 다시 시작하지 않음) · 레벨 = 누적값에서 도출(LevelForExp).
+	--   · 다음 레벨 필요 경험치 = BaseNeed + NeedPerLevel × (Lv − 1)  (Lv1→2 = 80 · Lv2→3 = 100 · …).
+	--   · 레벨업 보상 = 발록의 심장 (Lv2~4 1 · Lv5~12 2 · Lv13+ 3 · 오른 레벨마다) → AccountData.AddBalrogHeart.
+	--   · 해금(★3 Lv5 · ★5 Lv13)은 DifficultyRule.UNLOCK_ACCOUNT_LV + DifficultyService.IsUnlocked 가 AccountData.GetLevel 로 본다.
+	--   · 출처: 매치 순위(RankRewardService · RankReward.AccountExp — 표가 이미 ★별 값이라 ACCOUNT_EXP_MUL 을 다시 곱하지 않는다).
+
+	property integer BaseNeed = 80
+
+	property integer NeedPerLevel = 20
+
+	property integer MaxLevel = 50
+
+	property integer HeartsLv2to4 = 1
+
+	property integer HeartsLv5to12 = 2
+
+	property integer HeartsLv13Plus = 3
+
+	@ExecSpace("ServerOnly")
+	method integer NeedExp(integer level)
+		-- Lv level → level+1 에 필요한 경험치.
+		local lv = math.max(1, level)
+		return self.BaseNeed + self.NeedPerLevel * (lv - 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CumulativeExp(integer level)
+		-- Lv1 에서 Lv level 에 도달하는 데 필요한 누적 경험치.
+		local total = 0
+		for lv = 1, math.max(1, level) - 1 do total = total + self:NeedExp(lv) end
+		return total
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer LevelForExp(integer totalExp)
+		-- 누적 경험치 → 레벨 (MaxLevel 상한).
+		local lv = 1
+		local acc = 0
+		while lv < self.MaxLevel do
+			local need = self:NeedExp(lv)
+			if totalExp < acc + need then break end
+			acc = acc + need
+			lv = lv + 1
+		end
+		return lv
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer HeartsForLevel(integer level)
+		-- 그 레벨에 **도달**했을 때 주는 발록의 심장.
+		if level >= 13 then return self.HeartsLv13Plus end
+		if level >= 5 then return self.HeartsLv5to12 end
+		if level >= 2 then return self.HeartsLv2to4 end
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AddExp(string userId, integer amount, string sourceType)
+		-- 계정 경험치 지급 → 레벨 재계산 → 오른 레벨마다 심장 + 토스트. 새 레벨을 돌려준다.
+		if _AccountData == nil or userId == nil or userId == "" then return 1 end
+		local before = _AccountData:GetLevel(userId)
+		if amount > 0 then _AccountData:AddExp(userId, amount) end
+		local total = _AccountData:GetExp(userId)
+		local after = math.max(before, self:LevelForExp(total))
+		local hearts = 0
+		if after > before then
+			for lv = before + 1, after do hearts = hearts + self:HeartsForLevel(lv) end
+			_AccountData:SetLevel(userId, after)
+			if hearts > 0 then _AccountData:AddBalrogHeart(userId, hearts) end
+			if _UIToast ~= nil then _UIToast:ShowMessage("계정 Lv" .. tostring(after) .. " 달성! 발록의 심장 +" .. tostring(hearts), userId) end
+		end
+		log("[Account] exp +" .. tostring(amount) .. " (" .. tostring(sourceType) .. ") total=" .. tostring(total) .. " lv=" .. tostring(before) .. "->" .. tostring(after)
+			.. " hearts+" .. tostring(hearts) .. " next=" .. tostring(self:NeedExp(after)) .. " (" .. userId .. ")")
+		return after
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Progress(string userId)
+		-- 로비 표시용 "lv|현재 레벨 안 경험치|다음 레벨 필요치".
+		if _AccountData == nil then return "1|0|" .. tostring(self:NeedExp(1)) end
+		local lv = _AccountData:GetLevel(userId)
+		local total = _AccountData:GetExp(userId)
+		local into = math.max(0, total - self:CumulativeExp(lv))
+		return tostring(lv) .. "|" .. tostring(into) .. "|" .. tostring(self:NeedExp(lv))
+	end
+end
