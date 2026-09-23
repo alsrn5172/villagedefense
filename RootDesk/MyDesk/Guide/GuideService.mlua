@@ -1,0 +1,573 @@
+@Logic
+script GuideService extends Logic
+	-- ★1 안내 네비게이션 (9/14 기획 · WO-028 · 계약 A-2-22 · a/plan-0914 B10).
+	--   · 게이트: 매치 진행 중 + Difficulty == 1 + AccountProfile.account_guideOff == false (스탯창/목표 바 토글 · RequestToggle).
+	--   · 상태는 서버 메모리(유저별 현재 단계 · 1회 토스트 · 체크리스트 · 저장 안 함). 1초마다 참가자 상황을 읽어(레벨·직업·마을·시설·재화·페이즈·웨이브) 단계를 고른다.
+	--   · 문구는 GuideStep.csv(StepKey · Kind GOAL/TOAST/CHECK · Text `{n}/{max}` · MarkerMap 자리표시자 @OWN_* / @EMPTY_VILLAGES) → 클라 문자열 RPC(any 금지).
+	--   · UI = GuideUIController(목표 바 + 체크리스트) · 토스트 = UIToast · 마커 = WorldMapController.ShowGoalMarkers.
+	--   · 훅(다른 시스템이 부른다): OnEliteSpawned · OnEliteKilled · OnFacilityDestroyed · OnBossKilled · OnBalrogEntered · OnBalrogKilled · OnEnhanced.
+
+	property string TableName = "GuideStep"
+
+	property number PollInterval = 1.0
+
+	-- 웨이브 예고(초 전) · 웨이브 단계 유지(시작 뒤 초). TEST 프로필은 ÷8.
+	property number WaveWarnSeconds = 30
+
+	property number WaveHoldSeconds = 60
+
+	-- 2P 시작 뒤 G10 을 보여 주는 시간(초)
+	property number Phase2GoalSeconds = 120
+
+	property integer SoulstoneGoal = 5
+
+	property integer RegionEntryCost = 25
+
+	property integer RecruitMaterialNeed = 8
+
+	property string SoulstoneItemId = "BRAND_SOULSTONE"
+
+	property string DreamItemId = "DREAM_PIECE"
+
+	-- steps[key] = { kind, text, marker, once }
+	@HideFromInspector
+	property any steps = nil
+
+	@HideFromInspector
+	property any checkKeys = nil
+
+	-- st[uid] = { goal, goalText, marker, toasted, checks, waveToasted, shown, shownChip }
+	@HideFromInspector
+	property any st = nil
+
+	@HideFromInspector
+	property any participants = nil
+
+	@HideFromInspector
+	property number pollTimer = 0
+
+	-- ItemInfo 에서 뽑은 ID 목록: gems · regions · mats
+	@HideFromInspector
+	property any itemIds = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 표를 읽는다.
+		self:EnsureLoaded()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureLoaded()
+		-- GuideStep + ItemInfo(보석/지역 재화/몬스터 재료 ID) 적재 (1-based · 행 수 로그).
+		if self.loaded then return end
+		self.loaded = true
+		self.steps = {}
+		self.checkKeys = {}
+		local t = _DataService:GetTable(self.TableName)
+		local n = 0
+		if t == nil then
+			log_warning("[Guide] dataset not found: " .. self.TableName)
+		else
+			for i = 1, t:GetRowCount() do
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				local key = tostring(t:GetCell(i, "StepKey") or "")
+				if enabled and key ~= "" then
+					local kind = tostring(t:GetCell(i, "Kind") or "")
+					self.steps[key] = {
+						kind = kind,
+						text = tostring(t:GetCell(i, "Text") or ""),
+						marker = tostring(t:GetCell(i, "MarkerMap") or ""),
+						once = string.lower(tostring(t:GetCell(i, "Once") or "")) == "true",
+					}
+					if kind == "CHECK" then table.insert(self.checkKeys, key) end
+					n = n + 1
+				end
+			end
+		end
+		self.itemIds = { gems = {}, regions = {}, mats = {} }
+		local items = _DataService:GetTable("ItemInfo")
+		if items ~= nil then
+			for i = 1, items:GetRowCount() do
+				local id = tostring(items:GetCell(i, "ItemId") or "")   -- ItemInfo 키 열은 ItemId (Codex 리뷰 2026-09-23)
+				if string.find(id, "GEM_", 1, true) == 1 then table.insert(self.itemIds.gems, id)
+				elseif string.find(id, "REGION_", 1, true) == 1 then table.insert(self.itemIds.regions, id)
+				elseif string.find(id, "MAT_", 1, true) == 1 then table.insert(self.itemIds.mats, id) end
+			end
+		end
+		log("[Guide] steps loaded: " .. tostring(n) .. " rows · checks=" .. tostring(#self.checkKeys) .. " gems=" .. tostring(#self.itemIds.gems) .. " regions=" .. tostring(#self.itemIds.regions) .. " mats=" .. tostring(#self.itemIds.mats))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch(any userIds)
+		-- 매치 시작 (MatchSessionLogic.StartMatch): 참가자 · 상태 초기화.
+		self:EnsureLoaded()
+		self.participants = {}
+		self.st = {}
+		for _, uid in ipairs(userIds or {}) do
+			table.insert(self.participants, uid)
+			self.st[uid] = { goal = "", goalText = "", marker = "", toasted = {}, checks = {}, waveToasted = {}, shown = false, shownChip = false }
+		end
+		self.pollTimer = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMatchOver()
+		-- 매치 종료: 안내 UI·마커를 내리고 감시 중지.
+		for _, uid in ipairs(self.participants or {}) do
+			if _GuideUIController ~= nil then _GuideUIController:SetVisible(false, false, uid) end
+			if _WorldMapController ~= nil then _WorldMapController:ClearGoalMarkers(uid) end
+		end
+		self.participants = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveParticipant(string userId)
+		-- 중도 이탈(포기·접속 끊김 · MatchSessionLogic.MarkLeft): 감시에서 빼고 UI·마커를 내린다 (Codex 리뷰 2026-09-23).
+		if self.participants == nil then return end
+		for i = #self.participants, 1, -1 do
+			if self.participants[i] == userId then table.remove(self.participants, i) end
+		end
+		if self.st ~= nil then self.st[userId] = nil end
+		if _GuideUIController ~= nil then _GuideUIController:SetVisible(false, false, userId) end
+		if _WorldMapController ~= nil then _WorldMapController:ClearGoalMarkers(userId) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsStarOne()
+		-- ★1 매치가 진행 중인가.
+		return _MatchSessionLogic ~= nil and _MatchSessionLogic.Running and _MatchSessionLogic.Difficulty == 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsOff(string userId)
+		-- 계정 토글로 껐나.
+		return _AccountData ~= nil and _AccountData:IsGuideOff(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsActive(string userId)
+		-- 이 유저에게 안내를 보여 주나.
+		return self:IsStarOne() and not self:IsOff(userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestToggle()
+		-- 클라(목표 바 "안내 끄기" / "안내 켜기" 칩): 계정 토글 뒤집기 → 저장 · 즉시 반영.
+		local uid = senderUserId
+		if uid == nil or uid == "" or _AccountData == nil then return end
+		local off = not _AccountData:IsGuideOff(uid)
+		_AccountData:SetGuideOff(uid, off)
+		log("[Guide] toggle user=" .. uid .. " off=" .. tostring(off))
+		if _UIToast ~= nil then _UIToast:ShowMessage(off and "안내를 껐습니다 (계정에 저장)" or "안내를 켰습니다", uid) end
+		local s = (self.st ~= nil) and self.st[uid] or nil
+		if s ~= nil then
+			s.goalText = ""
+			s.marker = ""
+			s.shown = false
+			s.shownChip = false
+		end
+		self.pollTimer = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 1초마다 참가자 평가.
+		if self.participants == nil then return end
+		self.pollTimer = self.pollTimer - delta
+		if self.pollTimer > 0 then return end
+		self.pollTimer = self.PollInterval
+		if not self:IsStarOne() then
+			for _, uid in ipairs(self.participants) do self:HideFor(uid, false) end
+			return
+		end
+		for _, uid in ipairs(self.participants) do
+			if self:IsOff(uid) then
+				self:HideFor(uid, true)
+			else
+				self:Evaluate(uid)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void HideFor(string userId, boolean chip)
+		-- 안내를 내린다 (chip = ★1 인데 꺼둔 상태 → "안내 켜기" 칩만).
+		local s = self.st[userId]
+		if s == nil then return end
+		if s.shown or s.shownChip ~= chip then
+			s.shown = false
+			s.shownChip = chip
+			s.goalText = ""
+			s.marker = ""
+			if _GuideUIController ~= nil then _GuideUIController:SetVisible(false, chip, userId) end
+			if _WorldMapController ~= nil then _WorldMapController:ClearGoalMarkers(userId) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CountItem(string userId, string itemId)
+		-- 인벤 수량 (없으면 0).
+		if _InventoryService == nil or itemId == "" then return 0 end
+		return _InventoryService:CountItem(userId, itemId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer MaxCountOf(string userId, any ids)
+		-- 목록 중 최대 보유 수량.
+		local best = 0
+		for _, id in ipairs(ids or {}) do
+			local c = self:CountItem(userId, id)
+			if c > best then best = c end
+		end
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method any VillageRowOf(string villageId)
+		-- VillageConfig 행 { map, lane1, lane2, rear, boss }. 없으면 nil.
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil then return nil end
+		for i = 1, t:GetRowCount() do
+			if tostring(t:GetCell(i, "VillageId") or "") == villageId then
+				return { map = tostring(t:GetCell(i, "VillageMapName") or ""), lane1 = tostring(t:GetCell(i, "Lane1MapName") or ""),
+					lane2 = tostring(t:GetCell(i, "Lane2MapName") or ""), rear = tostring(t:GetCell(i, "RearMapName") or ""), boss = tostring(t:GetCell(i, "BossMapName") or "") }
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method string EmptyVillageMaps()
+		-- 주인 없는 마을(LITH 제외)의 마을 맵 목록 (쉼표).
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil or _VillageOwnership == nil then return "" end
+		local out = {}
+		for i = 1, t:GetRowCount() do
+			local vid = tostring(t:GetCell(i, "VillageId") or "")
+			local map = tostring(t:GetCell(i, "VillageMapName") or "")
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if enabled and vid ~= "" and vid ~= "LITH" and map ~= "" and _VillageOwnership:OwnerOf(vid) == "" then table.insert(out, map) end
+		end
+		return table.concat(out, ",")
+	end
+
+	@ExecSpace("ServerOnly")
+	method number PhaseStart(string phaseName)
+		-- 페이즈 시작 시각 (없으면 -1).
+		if _MatchSessionLogic == nil or _MatchSessionLogic.phases == nil then return -1 end
+		for _, p in ipairs(_MatchSessionLogic.phases) do
+			if p.name == phaseName then return p.start end
+		end
+		return -1
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Snapshot(string userId)
+		-- 이 유저의 지금 상황 한 벌 (평가 입력).
+		local s = {}
+		local m = _MatchSessionLogic
+		s.elapsed = m.Elapsed
+		s.phase = tostring(m.CurrentPhaseName or "")
+		s.scale = (m.Profile == "TEST") and (1 / 8) or 1
+		s.level = 1
+		s.meso = 0
+		s.coin = 0
+		if _SummonManager ~= nil then
+			local e = _SummonManager:EnsureUser(userId)
+			if e ~= nil then
+				s.level = e.level or 1
+				s.coin = e.coin or 0
+			end
+		end
+		s.job = "NOVICE"
+		if _StatService ~= nil then s.job = _StatService:JobOf(userId) end
+		s.village = ""
+		if _LaneStateService ~= nil then s.village = _LaneStateService:VillageOfUser(userId) end
+		s.defenders = 0
+		s.towerLv = 0
+		s.towerAlive = true
+		if s.village ~= "" and _LaneStateService ~= nil then
+			local v = _LaneStateService:StateOfUser(userId)
+			if v ~= nil then
+				s.defenders = (v.defenders ~= nil) and #v.defenders or 0
+				local tw = (v.towers ~= nil) and v.towers["TOWER"] or nil
+				if tw ~= nil then
+					s.towerLv = tw.lv or 0
+					s.towerAlive = tw.alive ~= false
+				end
+			end
+		end
+		s.rows = self:VillageRowOf(s.village)
+		s.gems = self:MaxCountOf(userId, self.itemIds.gems)
+		s.region = self:MaxCountOf(userId, self.itemIds.regions)
+		s.mat = self:MaxCountOf(userId, self.itemIds.mats)
+		s.dream = self:CountItem(userId, self.DreamItemId)
+		s.stones = self:CountItem(userId, self.SoulstoneItemId)
+		-- 웨이브 창: 시작 30초 전 ~ 시작 뒤 60초 (TEST ÷8). 표가 끝난 뒤(3P 매분)는 반복 타이머로.
+		s.waveActive = false
+		s.waveNo = 0
+		s.waveStartsIn = -1
+		s.firstWaveDone = false
+		local waves = m.waves
+		if waves ~= nil and #waves > 0 then
+			local warn = self.WaveWarnSeconds * s.scale
+			local hold = self.WaveHoldSeconds * s.scale
+			for i, w in ipairs(waves) do
+				if s.elapsed >= w.start - warn and s.elapsed <= w.start + hold then
+					s.waveActive = true
+					s.waveNo = i
+					s.waveStartsIn = w.start - s.elapsed
+				end
+			end
+			if not s.waveActive and m.nextWave > #waves and m.waveRepeatGap > 0 then
+				local remain = m.waveRepeatTimer or 0
+				local since = m.waveRepeatGap - remain
+				if remain <= warn or since <= hold then
+					s.waveActive = true
+					s.waveNo = m.waveIndex + ((remain <= warn) and 1 or 0)
+					s.waveStartsIn = remain
+				end
+			end
+			s.firstWaveDone = s.elapsed > waves[1].start + hold
+			s.firstWaveStart = waves[1].start
+		end
+		s.lithClose = self:PhaseStart("PHASE1")
+		s.phase2Start = self:PhaseStart("PHASE2")
+		return s
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PickGoal(any s)
+		-- 단계 선택 (WO-028 §1 · 한 번에 하나 · G7 은 끼어듦).
+		if s.village ~= "" and s.waveActive then
+			if s.phase == "PHASE3" then return "G7B" end
+			return "G7"
+		end
+		if s.level >= 30 then
+			if s.stones >= self.SoulstoneGoal then return "G14" end
+			return "G13"
+		end
+		if s.phase == "PHASE3" then return "G12" end
+		if s.phase == "PHASE2" and s.towerLv < 2 and s.phase2Start >= 0 and (s.elapsed - s.phase2Start) <= self.Phase2GoalSeconds * s.scale then return "G10" end
+		if s.village == "" then
+			if s.job ~= "NOVICE" then return "G5" end
+			if s.level >= 10 then return "G4" end
+			if s.level >= 7 then return "G3" end
+			if s.level >= 4 then return "G2" end
+			return "G1"
+		end
+		if s.level >= 24 then return "G11" end
+		if s.level >= 17 then return "G9" end
+		if s.firstWaveDone and s.defenders == 0 then return "G8" end
+		return "G6"
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GoalText(string key, any s)
+		-- 문구에 진행률을 채운다.
+		local step = self.steps[key]
+		if step == nil then return key end
+		local n, max = 0, 0
+		if key == "G1" then n, max = s.level, 4
+		elseif key == "G2" then n, max = s.level, 7
+		elseif key == "G3" then n, max = s.level, 10
+		elseif key == "G6" or key == "G9" then n, max = s.level, (key == "G6") and 17 or 24
+		elseif key == "G11" or key == "G12" then n, max = s.level, 30
+		elseif key == "G8" then n, max = s.mat, self.RecruitMaterialNeed
+		elseif key == "G13" then n, max = s.stones, self.SoulstoneGoal end
+		local text = step.text
+		if key == "G4" then
+			local extra = ""
+			if s.lithClose >= 0 and s.elapsed >= s.lithClose - 30 * s.scale then
+				local left = math.max(0, math.floor(s.lithClose - s.elapsed))
+				extra = "(" .. tostring(left) .. "초 안에! 그 뒤엔 리스항구에 못 들어갑니다)"
+			end
+			local t1, _c1 = string.gsub(text, "{n}", extra)
+			text = t1
+		else
+			local t1, _c1 = string.gsub(text, "{n}", tostring(n))
+			local t2, _c2 = string.gsub(t1, "{max}", tostring(max))
+			text = t2
+		end
+		return text
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MarkerFor(string key, any s)
+		-- MarkerMap 자리표시자 치환 (쉼표 목록).
+		local step = self.steps[key]
+		if step == nil then return "" end
+		local mk = step.marker
+		if mk == "" then return "" end
+		if mk == "@EMPTY_VILLAGES" then return self:EmptyVillageMaps() end
+		local r = s.rows
+		if string.find(mk, "@OWN_", 1, true) == 1 then
+			if r == nil then return "" end
+			if mk == "@OWN_VILLAGE" then return r.map end
+			if mk == "@OWN_LANE1" then return r.lane1 end
+			if mk == "@OWN_LANE2" then return r.lane2 end
+			if mk == "@OWN_REAR" then return r.rear end
+			if mk == "@OWN_BOSS" then return r.boss end
+			return ""
+		end
+		return mk
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Toast(string userId, string key)
+		-- 토스트 1건 (Once 면 매치당 1회).
+		local step = self.steps[key]
+		if step == nil or step.text == "" then return end
+		local s = self.st[userId]
+		if s == nil then return end
+		if step.once and s.toasted[key] then return end
+		s.toasted[key] = true
+		if _UIToast ~= nil then _UIToast:ShowMessage(step.text, userId) end
+		log("[Guide] toast " .. key .. " -> " .. userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Check(string userId, string key)
+		-- 체크리스트 완료 표시 (1회).
+		local s = self.st[userId]
+		if s == nil or s.checks[key] then return end
+		s.checks[key] = true
+		s.checksDirty = true
+		log("[Guide] check " .. key .. " -> " .. userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ChecklistCsv(string userId)
+		-- "C1|레벨 10|1;C2|전직|0;…"
+		local s = self.st[userId]
+		local parts = {}
+		for _, key in ipairs(self.checkKeys) do
+			local step = self.steps[key]
+			local done = (s ~= nil and s.checks[key]) and "1" or "0"
+			table.insert(parts, key .. "|" .. tostring(step and step.text or key) .. "|" .. done)
+		end
+		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Evaluate(string userId)
+		-- 상황 → 목표 바 · 토스트 · 체크리스트 · 마커. 바뀐 것만 보낸다.
+		local s = self.st[userId]
+		if s == nil or _MatchSessionLogic == nil then return end
+		local snap = self:Snapshot(userId)
+		-- 목표
+		local key = self:PickGoal(snap)
+		local text = self:GoalText(key, snap)
+		local marker = self:MarkerFor(key, snap)
+		if not s.shown then
+			s.shown = true
+			s.shownChip = false
+			s.goalText = ""
+			s.marker = ""
+			s.checksDirty = true
+			if _GuideUIController ~= nil then _GuideUIController:SetVisible(true, false, userId) end
+		end
+		if key ~= s.goal then log("[Guide] goal " .. tostring(s.goal) .. " -> " .. key .. " (" .. userId .. ")") end
+		s.goal = key
+		if text ~= s.goalText then
+			s.goalText = text
+			if _GuideUIController ~= nil then _GuideUIController:SetGoal(text, userId) end
+		end
+		if marker ~= s.marker then
+			s.marker = marker
+			if _WorldMapController ~= nil then _WorldMapController:ShowGoalMarkers(marker, userId) end
+		end
+		-- 토스트 (첫 획득 · 시점)
+		if snap.gems > 0 then self:Toast(userId, "T1") end
+		if snap.region > 0 then self:Toast(userId, "T2") end
+		if snap.mat > 0 then self:Toast(userId, "T3") end
+		if snap.coin > 0 then self:Toast(userId, "T4") end
+		if snap.dream > 0 then self:Toast(userId, "T5") end
+		if snap.stones > 0 then self:Toast(userId, "T6") end
+		if snap.level >= 7 and (snap.phase == "PHASE0-1" or snap.phase == "PHASE0-2") then self:Toast(userId, "T8") end
+		if snap.lithClose >= 0 and snap.elapsed >= snap.lithClose - 30 * snap.scale and snap.elapsed < snap.lithClose then self:Toast(userId, "T9") end
+		if snap.waveActive and snap.waveStartsIn > 0 and snap.waveStartsIn <= self.WaveWarnSeconds * snap.scale and snap.village ~= "" then
+			if not s.waveToasted[snap.waveNo] then
+				s.waveToasted[snap.waveNo] = true
+				self:Toast(userId, "T10")
+			end
+		end
+		if snap.waveActive and snap.waveNo == 1 and snap.waveStartsIn <= 0 and snap.village ~= "" then self:Toast(userId, "T11") end
+		if snap.region >= self.RegionEntryCost then self:Toast(userId, "T14") end
+		if snap.level >= 30 then self:Toast(userId, "T15") end
+		-- 체크리스트 (상황으로 아는 것들 · 나머지는 훅)
+		if snap.level >= 10 then self:Check(userId, "C1") end
+		if snap.job ~= "NOVICE" then self:Check(userId, "C2") end
+		if snap.village ~= "" then self:Check(userId, "C3") end
+		if snap.village ~= "" and snap.firstWaveDone and snap.towerAlive then self:Check(userId, "C4") end
+		if snap.defenders > 0 then self:Check(userId, "C5") end
+		if snap.towerLv >= 2 then self:Check(userId, "C6") end
+		if snap.level >= 17 then self:Check(userId, "C8") end
+		if snap.level >= 30 then self:Check(userId, "C11") end
+		if s.checksDirty then
+			s.checksDirty = false
+			if _GuideUIController ~= nil then _GuideUIController:SetChecklist(self:ChecklistCsv(userId), userId) end
+		end
+	end
+
+	-- ── 훅 (다른 시스템이 부른다 · 안내가 꺼져 있으면 무시) ──
+
+	@ExecSpace("ServerOnly")
+	method void OnEliteSpawned(string mapName)
+		-- 엘리트 등장 → 그 맵에 있는 참가자에게 T7 (매번).
+		if self.participants == nil or not self:IsStarOne() then return end
+		for _, uid in ipairs(self.participants) do
+			if not self:IsOff(uid) then
+				local player = _UserService:GetUserEntityByUserId(uid)
+				if isvalid(player) and isvalid(player.CurrentMap) and player.CurrentMap.Name == mapName then self:Toast(uid, "T7") end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEliteKilled(string userId)
+		-- 엘리트 처치(막타) → C9.
+		if self.st == nil or self.st[userId] == nil then return end
+		self:Check(userId, "C9")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnFacilityDestroyed(string villageId, string stage)
+		-- 내 포탑/억제기 파괴 → 주인에게 T12/T13 (매번).
+		if self.participants == nil or not self:IsStarOne() or _VillageOwnership == nil then return end
+		local owner = _VillageOwnership:OwnerOf(villageId)
+		if owner == "" or self.st == nil or self.st[owner] == nil or self:IsOff(owner) then return end
+		if stage == "TOWER" then self:Toast(owner, "T12") elseif stage == "SUPPRESSOR" then self:Toast(owner, "T13") end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossKilled(string userId)
+		-- 마을 보스 처치(최다 피해자) → C10.
+		if self.st == nil or self.st[userId] == nil then return end
+		self:Check(userId, "C10")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBalrogEntered(string userId)
+		-- 발록 도전 → C12.
+		if self.st == nil or self.st[userId] == nil then return end
+		self:Check(userId, "C12")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBalrogKilled(string userId)
+		-- 발록 처치 → C13.
+		if self.st == nil or self.st[userId] == nil then return end
+		self:Check(userId, "C13")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEnhanced(string userId)
+		-- 장비 강화 성공 → C7.
+		if self.st == nil or self.st[userId] == nil then return end
+		self:Check(userId, "C7")
+	end
+end
