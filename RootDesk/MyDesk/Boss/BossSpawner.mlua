@@ -4,7 +4,7 @@ script BossSpawner extends Component
 	-- 보스 전용 스포너. 일반 MonsterSpawner 와 나눈 이유:
 	--   * 범위 랜덤이 없다 — 보스는 정해진 자리에 정확히 1마리
 	--   * BossInfo 가 스폰 좌표를 직접 갖는다 (스포너 엔티티 Transform 이 아니라)
-	--   * MaxHp/AttackPower/Defense/KnockbackResist 를 스폰 직후 주입한다
+	--   * MaxHp/AttackPower/Defense/KnockbackResist 를 스폰 직후 주입한다 (B6: ★ 배율은 ApplyDifficulty)
 	--   * 좌표가 비면 스폰을 건너뛴다 (피아누스처럼 이미 배치된 보스)
 
 	property string BossId = ""
@@ -44,6 +44,34 @@ script BossSpawner extends Component
 
 	@HideFromInspector
 	property boolean stopped = false
+
+	-- 난이도 적용 상태 (B6 · DifficultyService): 마지막으로 적용한 ★ (0 = 매치 없음 · -1 = 미적용). 바뀌면 OnUpdate 가 HP·공격을 다시 넣는다.
+	@HideFromInspector
+	property integer appliedDiff = -1
+
+	@HideFromInspector
+	property integer appliedMaxHp = 0
+
+	-- 누적 피해 원장 (B6 · 플레이어만 · FarmReward 와 같은 규칙): dmg[userId] = 합계 · order[userId] = 처음 때린 순서. 사망 때 BossRewardService 로.
+	@HideFromInspector
+	property any dmg = nil
+
+	@HideFromInspector
+	property any order = nil
+
+	@HideFromInspector
+	property integer orderSeq = 0
+
+	@HideFromInspector
+	property any hitHandler = nil
+
+	-- 매치 epoch (Codex 리뷰 2026-09-23): MatchSessionLogic.MatchSerial 이 바뀌면 이전 판 원장을 버리고 살아 있는 보스를 풀 HP 로.
+	@HideFromInspector
+	property integer seenSerial = -1
+
+	-- 원장이 쌓일 때의 매치 ★ (종료 직전 처치 → Running=false 뒤에도 보상 판정에 쓴다 · Codex 리뷰 2026-09-23)
+	@HideFromInspector
+	property integer ledgerDiff = 0
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -190,6 +218,13 @@ script BossSpawner extends Component
 		self.deadSeen = false
 		self.respawnAt = -1
 
+		-- 난이도 배율 + 누적 피해 원장 (B6).
+		self.appliedDiff = -1
+		self.appliedMaxHp = 0
+		self:ApplyDifficulty()
+		self:ResetLedger()
+		self.hitHandler = unit:ConnectEvent(HitEvent, function(event) self:OnBossHit(event) end)
+
 		if self.LogSpawn then
 			log("[BossSpawner] spawn boss=" .. row.id .. " (" .. row.name .. ")"
 				.. " map=" .. row.mapName
@@ -197,6 +232,74 @@ script BossSpawner extends Component
 				.. " hp=" .. tostring(row.maxHp))
 		end
 		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyDifficulty()
+		-- 난이도 배율 (B6 · DifficultyService 단일 적용점): MaxHp × (BALROG_|BOSS_)HP_MUL · AttackPower × ATK_MUL.
+		-- ★ 가 바뀌었을 때만(스폰 직후 · 매치 시작/종료) 다시 넣는다. 살아 있는 보스는 HP 비율을 유지한다.
+		if _DifficultyService == nil or self.bossRow == nil or not isvalid(self.bossEntity) then return end
+		local d = _DifficultyService:Current()
+		if d == self.appliedDiff then return end
+		local row = self.bossRow
+		local hpMul = _DifficultyService:BossHpMulFor(row.mapName)
+		local atkMul = _DifficultyService:BossAtkMulFor(row.mapName)
+		local maxHp = math.max(1, math.floor(row.maxHp * hpMul + 0.5))
+		local atk = math.max(1, math.floor(row.attackPower * atkMul + 0.5))
+		local monster = self.bossEntity.Monster
+		if isvalid(monster) then
+			local ratio = 1
+			if self.appliedMaxHp > 0 and monster.MaxHp > 0 then ratio = math.max(0, math.min(1, monster.Hp / monster.MaxHp)) end
+			monster.MaxHp = maxHp
+			if not monster.IsDead then monster.Hp = math.max(1, math.floor(maxHp * ratio + 0.5)) end
+		end
+		local runner = self.bossEntity.BossSkillRunner
+		if isvalid(runner) then runner.AttackPower = atk end
+		self.appliedDiff = d
+		self.appliedMaxHp = maxHp
+		log("[Boss] diff=" .. tostring(d) .. " boss=" .. tostring(row.id) .. " map=" .. tostring(row.mapName) .. " maxHp=" .. tostring(maxHp)
+			.. " (x" .. tostring(hpMul) .. ") atk=" .. tostring(atk) .. " (x" .. tostring(atkMul) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetLedger()
+		-- 누적 피해 원장을 비운다.
+		self.dmg = {}
+		self.order = {}
+		self.orderSeq = 0
+		self.ledgerDiff = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DisconnectHit()
+		-- 보스 엔티티의 HitEvent 구독 해제 (재스폰·리셋·종료 전에 · 핸들러 누적 방지).
+		if self.hitHandler ~= nil and isvalid(self.bossEntity) then
+			self.bossEntity:DisconnectEvent(HitEvent, self.hitHandler)
+		end
+		self.hitHandler = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossHit(HitEvent event)
+		-- 누적 피해 원장 (플레이어 공격자만). 보상은 사망 때 BossRewardService 가 최다 피해자에게.
+		if event == nil then return end
+		local attacker = event.AttackerEntity
+		if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then return end
+		local uid = attacker.PlayerComponent.UserId
+		if uid == nil or uid == "" then return end
+		if self.dmg == nil then self:ResetLedger() end
+		if _DifficultyService ~= nil then
+			local cd = _DifficultyService:Current()
+			if cd > 0 then self.ledgerDiff = cd end
+		end
+		local d = event.TotalDamage or 0
+		if d < 0 then d = 0 end
+		if self.dmg[uid] == nil then
+			self.orderSeq = self.orderSeq + 1
+			self.order[uid] = self.orderSeq
+			self.dmg[uid] = 0
+		end
+		self.dmg[uid] = self.dmg[uid] + d
 	end
 
 	@ExecSpace("ServerOnly")
@@ -208,6 +311,7 @@ script BossSpawner extends Component
 		if self.stopped or self.bossRow == nil then
 			return false
 		end
+		self:DisconnectHit()
 		if isvalid(self.bossEntity) then
 			self.bossEntity:Destroy()
 		end
@@ -230,6 +334,18 @@ script BossSpawner extends Component
 			return
 		end
 		self.updateAccumulator = 0
+		self:ApplyDifficulty()
+		-- 매치 epoch: 새 매치가 시작되면 이전 판 피해 원장을 버리고 살아 있는 보스를 풀 HP 로 되돌린다 (Codex 리뷰 2026-09-23).
+		local serial = 0
+		if _MatchSessionLogic ~= nil then serial = _MatchSessionLogic.MatchSerial end
+		if serial ~= self.seenSerial then
+			self.seenSerial = serial
+			self:ResetLedger()
+			if isvalid(self.bossEntity) then
+				local m = self.bossEntity.Monster
+				if isvalid(m) and not m.IsDead and m.MaxHp > 0 then m.Hp = m.MaxHp end
+			end
+		end
 
 		local entityValid = isvalid(self.bossEntity)
 		local dead = false
@@ -240,6 +356,11 @@ script BossSpawner extends Component
 
 		if (dead or not entityValid) and not self.deadSeen then
 			self.deadSeen = true
+			-- 지역 보스 보상 (B6): 누적 피해 원장을 들고 BossRewardService 에 넘긴다. 사망이 아니라 엔티티 소멸이면 보상 없음.
+			if dead and _BossRewardService ~= nil then
+				_BossRewardService:OnBossKilled(tostring(self.bossRow.id), tostring(self.bossRow.mapName), self.dmg, self.order, self.ledgerDiff)
+			end
+			self:ResetLedger()
 			if self.bossRow.respawnSeconds > 0 then
 				self.respawnAt = self.elapsed + self.bossRow.respawnSeconds
 			else
@@ -248,6 +369,7 @@ script BossSpawner extends Component
 		end
 
 		if self.deadSeen and self.respawnAt >= 0 and self.elapsed >= self.respawnAt then
+			self:DisconnectHit()
 			if isvalid(self.bossEntity) then
 				self.bossEntity:Destroy()
 			end
@@ -259,6 +381,7 @@ script BossSpawner extends Component
 	@ExecSpace("ServerOnly")
 	method void OnEndPlay()
 		-- 맵을 나가면 만든 것을 치우고 초기화 상태로 되돌린다.
+		self:DisconnectHit()
 		if isvalid(self.bossEntity) then
 			self.bossEntity:Destroy()
 		end
@@ -270,6 +393,11 @@ script BossSpawner extends Component
 		self.respawnAt = -1
 		self.elapsed = 0
 		self.updateAccumulator = 0
+		self.appliedDiff = -1
+		self.appliedMaxHp = 0
+		self.dmg = nil
+		self.order = nil
+		self.hitHandler = nil
 	end
 
 end

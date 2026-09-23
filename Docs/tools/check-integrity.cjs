@@ -64,7 +64,7 @@ function mapNames() {
 // C1. CSV 헤더가 계약서 정본과 글자 단위로 같은가
 // ─────────────────────────────────────────────────────────
 const CANONICAL = {
-  MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID",
+  MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID,Attack",
   MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,LevelOverride,#Note",
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
@@ -94,14 +94,14 @@ const CANONICAL = {
     "CrouchBand,FireEffectRUID,FireEffectScale,FireEffectFloors,FireEffectTiles",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
-    "FirstClaimMeso,FirstClaimOnce,Enabled,#Note",
+    "FirstClaimMeso,FirstClaimOnce,Enabled,SoulstoneStar1,SoulstoneStar3,SoulstoneStar5,#Note",
 
   // 엘리트 — 구조만. 로스터는 미정(로드맵 미정 #4)
   EliteMonsterInfo:
     "EliteId,Name,BaseMonsterId,Level,MaxHp,ModelId,MoveType,AiType," +
     "AttackPower,Defense,KnockbackResist,MoveSpeed," +
-    "MaterialId,MaterialMin,MaterialMax,Exp,Meso,Enabled,#Note",
-  EliteSpawnTable: "MapName,BaseMonsterId,EliteId,Chance,Enabled,#Note",
+    "MaterialId,MaterialMin,MaterialMax,Exp,Meso,Enabled,ScaleMul,CoinDrop,DreamDrop,SoulstoneDrop,Tier,#Note",
+  EliteSpawnTable: "MapName,BaseMonsterId,EliteId,Chance,Enabled,KillsPerElite,#Note",
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
@@ -111,7 +111,7 @@ const CANONICAL = {
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
-  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,CooldownStartSeconds,CooldownEndSeconds,CooldownEndLevel,#Note",
+  ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,CooldownStartSeconds,CooldownEndSeconds,CooldownEndLevel,HealHpPct,HealMpPct,#Note",
   RepairConfig: "ReqLevel,MesoPerDurability,Enabled,#Note",
   GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
   GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",
@@ -128,6 +128,16 @@ const CANONICAL = {
   DispatchRule: "Phase,MesoCost,VillageCap,CancelDeadlineSeconds,Enabled,#Note",
   FunctionalNpcCatalog: "CatalogNpcId,RoleKey,DisplayName,UiGroupName,UiRoute,ActionRoute,OwnershipMode,SectorId,SlotOrder,Enabled,Hidden,#Note",
   MatchConfig: "Key,Profile,MatchDurationSeconds,Enabled,#Note",
+  DifficultyConfig: "Difficulty,HeartCost,SoloDiscount,RankerChallenge,Enabled,#Note",
+
+  // 9/14 기획 반영 — 계약서 §1 등록서(2026-09-22 · a/plan-0914 B0). 파일은 각 묶음 구현 PR 에서 생성.
+  // 기존 표 열 추가(MonsterInfo.Attack · ConsumeInfo Pct · BossReward Soulstone* · Elite*)는 §0-1 9 대로 그 구현 PR 에서 CANONICAL 을 같이 고친다.
+  MinionWave: "Profile,WaveKey,Phase,StartSeconds,Count,SpawnGapSeconds,MonsterId,Hp,Attack,Exp,Meso,ZombieCount,Enabled,#Note",
+  DifficultyRule: "Difficulty,Key,Value,Enabled,#Note",
+  DropTable: "SourceKind,SourceId,ItemId,Chance,CountMin,CountMax,Enabled,#Note",
+  MonsterRecruit: "MonsterId,Tier,MaterialItemId,MaterialCount,BundleSize,GuardHp,GuardAttack,Enabled,#Note",
+  RankReward: "Rank,Difficulty,Hearts,AccountExp,Condition,Enabled,#Note",
+  GuideStep: "StepKey,Kind,Text,MarkerMap,Once,Enabled,#Note",
 
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
   SkillInfo:
@@ -240,6 +250,14 @@ const PK = {
   MinionComposition: ["Phase", "MonsterId", "VillageId"],
   DispatchRule: ["Phase"],
   MatchConfig: ["Key", "Profile"],
+  DifficultyConfig: ["Difficulty"],
+  // 9/14 기획 반영 (2026-09-22 · a/plan-0914) — 파일이 아직 없으면 건너뛴다
+  MinionWave: ["Profile", "WaveKey"],
+  DifficultyRule: ["Difficulty", "Key"],
+  DropTable: ["SourceKind", "SourceId", "ItemId"],
+  MonsterRecruit: ["MonsterId"],
+  RankReward: ["Rank", "Difficulty"],
+  GuideStep: ["StepKey"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
@@ -388,7 +406,7 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
     ["BossInfo", "ModelId", "BossInfo", "BossId",
       ["RootDesk/MyDesk/Boss/BossSpawner.mlua", "RootDesk/MyDesk/Catalog/BossCatalog.mlua"]],
     ["EliteMonsterInfo", "ModelId", "EliteSpawnTable", "EliteId",
-      ["RootDesk/MyDesk/Spawn/EliteSpawner.mlua", "RootDesk/MyDesk/Catalog/EliteCatalog.mlua"]],
+      ["RootDesk/MyDesk/Spawn/EliteSpawner.mlua", "RootDesk/MyDesk/Monster/EliteSpawner.mlua", "RootDesk/MyDesk/Catalog/EliteCatalog.mlua"]],
   ]) {
     const t = readCsv(name);
     if (!t) continue;

@@ -34,6 +34,8 @@ script AccountData extends Logic
 				freeHeart = 0,           -- ★1 전용 무료 스택 (WO-022)
 				freeAtMs = 0,            -- 현재 1시간 사이클 시작 절대 ms. 0 = 정지
 				unlocks = "",
+				exp = 0,                 -- 계정 경험치 누적 (B8)
+				guideOff = false,        -- ★1 안내 끄기 (B10)
 				isSaveDB = false,      -- 더티 플래그. 바뀐 게 있을 때만 저장한다 (Credit 절약)
 				saveGeneration = 0,    -- 모든 setter 가 +1. 저장 왕복 중 setter 를 감지하는 장치
 				loaded = false,        -- 🔴 저장소에서 채워지기 전에는 값이 "기본값"일 뿐 진짜가 아니다
@@ -91,6 +93,18 @@ script AccountData extends Logic
 		u.freeHeart = profile.account_freeHeartStack
 		u.freeAtMs = profile.account_freeHeartAtMs
 		u.unlocks = profile.account_unlocks
+		u.exp = profile.account_exp
+		u.guideOff = profile.account_guideOff
+		-- v3 미만(경험치 없이 레벨만 있던 계정) 이관: 누적 경험치를 그 레벨의 시작값으로 맞춘다 (Codex 리뷰 2026-09-23). 안 맞추면 다음 레벨까지 두 배로 걸린다.
+		if _AccountLevelService ~= nil then
+			local base = _AccountLevelService:CumulativeExp(u.level)
+			if u.exp < base then
+				log("[AcctData] migrate exp " .. userId .. " lv=" .. tostring(u.level) .. " exp " .. tostring(u.exp) .. " -> " .. tostring(base))
+				u.exp = base
+				u.isSaveDB = true
+				u.saveGeneration = u.saveGeneration + 1
+			end
+		end
 		u.loaded = true
 		log("[AcctData] loaded " .. userId .. " lv=" .. tostring(u.level) .. " heart=" .. tostring(u.balrogHeart) ..
 			" free=" .. tostring(u.freeHeart) .. " freeAt=" .. tostring(u.freeAtMs))
@@ -120,6 +134,8 @@ script AccountData extends Logic
 		profile.account_freeHeartStack = u.freeHeart
 		profile.account_freeHeartAtMs = u.freeAtMs
 		profile.account_unlocks = u.unlocks
+		profile.account_exp = u.exp or 0
+		profile.account_guideOff = u.guideOff == true
 
 		local t = {}
 		profile:Serialize(t)
@@ -272,6 +288,39 @@ script AccountData extends Logic
 		u.balrogHeart = v
 		self:Touch(u)
 		log("[AcctData] heart " .. userId .. " " .. tostring(amount) .. " -> " .. tostring(v))
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetExp(string userId)
+		-- 계정 경험치 누적값 (B8).
+		local u = self:EnsureUser(userId)
+		return u ~= nil and (u.exp or 0) or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddExp(string userId, integer amount)
+		-- 계정 경험치 누적 (B8). 음수 없음. 레벨 갱신은 AccountLevelService 가 SetLevel 로.
+		local u = self:EnsureUser(userId)
+		if not self:CanWrite(userId, u) or amount <= 0 then return end
+		u.exp = (u.exp or 0) + amount
+		self:Touch(u)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsGuideOff(string userId)
+		-- ★1 안내를 껐나 (B10).
+		local u = self:EnsureUser(userId)
+		return u ~= nil and u.guideOff == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetGuideOff(string userId, boolean off)
+		-- ★1 안내 끄기/켜기 (B10).
+		local u = self:EnsureUser(userId)
+		if not self:CanWrite(userId, u) then return end
+		if (u.guideOff == true) == off then return end
+		u.guideOff = off
+		self:Touch(u)
 	end
 
 	@ExecSpace("ServerOnly")

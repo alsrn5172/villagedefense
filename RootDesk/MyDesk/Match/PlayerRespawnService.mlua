@@ -1,0 +1,242 @@
+@Logic
+script PlayerRespawnService extends Logic
+	-- 플레이어 사망·리스폰 (9/14 기획 · WO-027 §9-0 3차 ④ · WO-028 T17 · a/plan-0914 B9).
+	--   · 감지 = 매치 참가자의 PlayerComponent:IsDead() 폴링(PollInterval) — 엔진 사망(= A 쪽 피해 적용점 뒤 HP≤0) 그대로. PlayerHit(B) 손대지 않음.
+	--   · 1P 이전(FreePhases: PHASE0-1·0-2·PHASE1) 사망 = 리스항구 리스폰 · 페널티 0.
+	--   · 2P 이후 사망 = 내 마을 리스폰 + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
+	--     선택 창 = RespawnDuration(ChoiceSeconds) 동안. 고르면 즉시 부활(ProcessRevive) · 안 고르면 엔진 자동 부활 뒤 기본(경험치) 적용. 메소가 모자라면 경험치만.
+	--   · 발록 방 사망은 기존(BalrogRoomService) · 매치 밖 사망은 손대지 않는다. 사망 횟수는 서버 메모리(저장 안 함).
+
+	property integer MesoPenalty = 5000
+
+	property number ExpPenaltyRatio = 0.5
+
+	-- 사망 뒤 선택할 수 있는 시간 = PlayerComponent.RespawnDuration (매치 참가자에게만 · 종료 때 기본값으로)
+	property number ChoiceSeconds = 15
+
+	property number DefaultRespawnSeconds = 5
+
+	property string FreePhases = "PHASE0-1,PHASE0-2,PHASE1"
+
+	property string BalrogMapPrefix = "Sleepywood_Boss_JrBalrog"
+
+	property number PollInterval = 0.25
+
+	@HideFromInspector
+	property any participants = nil
+
+	-- wasDead[uid] = 직전 폴링의 사망 여부
+	@HideFromInspector
+	property any wasDead = nil
+
+	-- pending[uid] = { penalty, choice, phase, map, expCut } (사망 ~ 부활 사이)
+	@HideFromInspector
+	property any pending = nil
+
+	@HideFromInspector
+	property any deaths = nil
+
+	@HideFromInspector
+	property number pollTimer = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 상태 초기화.
+		self.wasDead = {}
+		self.pending = {}
+		self.deaths = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch(any userIds)
+		-- 매치 시작 (MatchSessionLogic.StartMatch): 참가자 목록 · 상태 초기화 · 선택 시간만큼 부활 대기 시간을 늘린다.
+		self.participants = {}
+		self.wasDead = {}
+		self.pending = {}
+		self.deaths = {}
+		for _, uid in ipairs(userIds or {}) do
+			table.insert(self.participants, uid)
+			local player = _UserService:GetUserEntityByUserId(uid)
+			if isvalid(player) and isvalid(player.PlayerComponent) then
+				player.PlayerComponent.RespawnDuration = self.ChoiceSeconds
+				self.wasDead[uid] = player.PlayerComponent:IsDead()
+			end
+		end
+		log("[Death] ready participants=" .. tostring(#self.participants) .. " choice=" .. tostring(self.ChoiceSeconds) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMatchOver()
+		-- 매치 종료 (MatchSessionLogic.Expire): 부활 대기 시간을 기본값으로 · 감시 중지.
+		for _, uid in ipairs(self.participants or {}) do
+			local player = _UserService:GetUserEntityByUserId(uid)
+			if isvalid(player) and isvalid(player.PlayerComponent) then player.PlayerComponent.RespawnDuration = self.DefaultRespawnSeconds end
+			-- 열린 부활 팝업은 닫는다 (결과 화면 위에 남지 않게 · Codex 리뷰 2026-09-23).
+			if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(uid) end
+		end
+		self.participants = nil
+		self.pending = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveParticipant(string userId)
+		-- 중도 이탈(포기·접속 끊김 · MatchSessionLogic.MarkLeft): 감시에서 빼고 팝업·대기 상태를 정리 · 부활 대기 시간 복구.
+		if self.participants == nil then return end
+		for i = #self.participants, 1, -1 do
+			if self.participants[i] == userId then table.remove(self.participants, i) end
+		end
+		if self.pending ~= nil then self.pending[userId] = nil end
+		if self.wasDead ~= nil then self.wasDead[userId] = nil end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) and isvalid(player.PlayerComponent) then player.PlayerComponent.RespawnDuration = self.DefaultRespawnSeconds end
+		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsFreePhase()
+		-- 지금 페이즈가 페널티 없는 구간(1P 이전)인가.
+		local phase = ""
+		if _MatchSessionLogic ~= nil then phase = tostring(_MatchSessionLogic.CurrentPhaseName or "") end
+		return string.find("," .. self.FreePhases .. ",", "," .. phase .. ",", 1, true) ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 참가자 사망/부활 엣지 감지.
+		if self.participants == nil then return end
+		self.pollTimer = self.pollTimer - delta
+		if self.pollTimer > 0 then return end
+		self.pollTimer = self.PollInterval
+		for _, uid in ipairs(self.participants) do
+			local player = _UserService:GetUserEntityByUserId(uid)
+			if isvalid(player) and isvalid(player.PlayerComponent) then
+				local dead = player.PlayerComponent:IsDead()
+				local was = (self.wasDead[uid] == true)
+				if dead and not was then
+					self:OnDeath(uid, player)
+				elseif was and not dead then
+					self:OnRevive(uid, player)
+				end
+				self.wasDead[uid] = dead
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer ExpCutOf(string userId)
+		-- 지금 죽으면 깎일 경험치 (팝업 표시용 · 실제 차감은 SummonManager.DeductExpInLevel).
+		if _SummonManager == nil then return 0 end
+		local e = _SummonManager:EnsureUser(userId)
+		if e == nil then return 0 end
+		local p = _SummonManager:ExpProgress(e.exp)
+		return math.min(math.max(0, math.floor(p.within)), math.floor(p.need * self.ExpPenaltyRatio))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnDeath(string userId, Entity player)
+		-- 사망 1건: 발록 방·매치 밖은 손대지 않음. 1P 이전 = 무료 안내 · 2P 이후 = 팝업.
+		local mapName = ""
+		if isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
+		if string.find(mapName, self.BalrogMapPrefix, 1, true) == 1 then
+			log("[Death] user=" .. userId .. " map=" .. mapName .. " 발록 방 — BalrogRoomService 몫")
+			return
+		end
+		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then return end
+		self.deaths[userId] = (self.deaths[userId] or 0) + 1
+		local phase = tostring(_MatchSessionLogic.CurrentPhaseName or "")
+		if self:IsFreePhase() then
+			self.pending[userId] = { penalty = false, choice = "", phase = phase, map = mapName, expCut = 0 }
+			if _UIToast ~= nil then _UIToast:ShowMessage("쓰러졌습니다. 리스항구에서 다시 시작합니다 (페널티 없음)", userId) end
+			log("[Death] user=" .. userId .. " phase=" .. phase .. " map=" .. mapName .. " free (deaths=" .. tostring(self.deaths[userId]) .. ")")
+			return
+		end
+		local cut = self:ExpCutOf(userId)
+		local meso = 0
+		if _SummonManager ~= nil then
+			local e = _SummonManager:EnsureUser(userId)
+			if e ~= nil then meso = e.meso or 0 end
+		end
+		local canMeso = meso >= self.MesoPenalty
+		self.pending[userId] = { penalty = true, choice = "", phase = phase, map = mapName, expCut = cut }
+		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Show(self.MesoPenalty, cut, canMeso, userId) end
+		log("[Death] user=" .. userId .. " phase=" .. phase .. " map=" .. mapName .. " choice? meso=" .. tostring(meso) .. " expCut=" .. tostring(cut) .. " (deaths=" .. tostring(self.deaths[userId]) .. ")")
+	end
+
+	@ExecSpace("Server")
+	method void Choose(string kind)
+		-- 클라 팝업 선택 ("MESO" / "EXP"). 고르면 바로 부활시킨다 — 부활 처리(OnRevive)가 페널티·이동을 한다.
+		local userId = senderUserId
+		if userId == nil or userId == "" or self.pending == nil then return end
+		local p = self.pending[userId]
+		if p == nil or not p.penalty then return end
+		if kind ~= "MESO" and kind ~= "EXP" then return end
+		p.choice = kind
+		log("[Death] user=" .. userId .. " chose " .. kind)
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent:IsDead() then
+			player.PlayerComponent:ProcessRevive(userId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any VillageRowOf(string villageId)
+		-- VillageConfig 행 { map, lane1 }. 없으면 nil.
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil then return nil end
+		for i = 1, t:GetRowCount() do
+			if tostring(t:GetCell(i, "VillageId") or "") == villageId then
+				return { map = tostring(t:GetCell(i, "VillageMapName") or ""), lane1 = tostring(t:GetCell(i, "Lane1MapName") or "") }
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnRevive(string userId, Entity player)
+		-- 부활 1건: 페널티 적용 → 리스폰 위치로 이동 → 팝업 닫기.
+		if self.pending == nil then return end
+		local p = self.pending[userId]
+		if p == nil then return end
+		self.pending[userId] = nil
+		local applied = "none"
+		local amount = 0
+		if p.penalty then
+			local kind = p.choice
+			if kind == "" then kind = "EXP" end
+			if kind == "MESO" then
+				if _SummonManager ~= nil and _SummonManager:SpendMeso(userId, self.MesoPenalty) then
+					applied = "MESO"
+					amount = self.MesoPenalty
+				else
+					kind = "EXP"
+				end
+			end
+			if kind == "EXP" then
+				applied = "EXP"
+				if _SummonManager ~= nil then amount = _SummonManager:DeductExpInLevel(userId, self.ExpPenaltyRatio) end
+			end
+		end
+		local target = ""
+		local pc = player.PlayerComponent
+		if p.penalty then
+			local vid = ""
+			if _LaneStateService ~= nil then vid = _LaneStateService:VillageOfUser(userId) end
+			local row = nil
+			if vid ~= "" then row = self:VillageRowOf(vid) end
+			if row ~= nil and row.map ~= "" and row.lane1 ~= "" then
+				target = "/maps/" .. row.map .. "/P_To_" .. row.lane1
+				pc:MoveToEntityByPath(target)
+			end
+		end
+		if target == "" and _MatchLobbyGateway ~= nil then
+			target = _MatchLobbyGateway.MatchStartMapId
+			_MatchLobbyGateway:MoveTo(userId, _MatchLobbyGateway.MatchStartMapId, _MatchLobbyGateway.MatchStartSpawn)
+		end
+		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
+		if p.penalty and _UIToast ~= nil then
+			if applied == "MESO" then _UIToast:ShowMessage("내 마을에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
+			else _UIToast:ShowMessage("내 마을에서 부활 — 경험치 " .. tostring(amount) .. " 차감 (레벨 유지)", userId) end
+		end
+		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0))
+	end
+end

@@ -1,0 +1,182 @@
+@Logic
+script EliteSpawner extends Logic
+	-- 엘리트 = 자이언트 스포너 (9/14 기획 · WO-027 §9-0 21 · 계약 A-2-15 · a/plan-0914 B7).
+	--   · 맵별 누적 처치 카운터: 일반 몹(엘리트 제외 · 미니언 제외)이 죽을 때마다 +1 — 누가 잡았든(FarmReward.GiveRewards 가 부른다).
+	--     KillsPerElite(EliteSpawnTable · 매치 중엔 DifficultyRule.ELITE_PER_KILLS 가 우선 · 둘 다 없으면 25)마다 ELITE_COUNT(★5 = 2 · 매치 밖 1)마리.
+	--   · 개체 = 죽은 몹의 자이언트 행 `E<BaseMonsterId>`(EliteMonsterInfo · HP×25 · 공격×4 · Exp/메소×10 · ScaleMul 1.6/1.8/2.0). 규칙 행에 BaseMonsterId 가 있으면 그 몹.
+	--   · 죽은 자리에 스폰 · 리스항구(ExcludeMapPrefix) 제외 · 매치 시작마다 카운터 리셋(MatchSessionLogic.StartMatch).
+	--   · 확정 드랍(막타 귀속 · FarmReward → GrantEliteDrops): 빅토리아 주화 CoinDrop · 꿈의 조각 DreamDrop · 낙인의 영혼석 SoulstoneDrop.
+
+	property string ExcludeMapPrefix = "LithHarbor"
+
+	property integer DefaultKillsPerElite = 25
+
+	property string DreamItemId = "DREAM_PIECE"
+
+	property string SoulstoneItemId = "BRAND_SOULSTONE"
+
+	-- 여러 마리(★5)면 죽은 자리에서 이만큼씩 옆으로.
+	property number SpawnOffsetX = 1.0
+
+	property boolean LogSpawn = true
+
+	-- kills[mapName] = 누적 처치 수 (매치 단위)
+	@HideFromInspector
+	property any kills = nil
+
+	@HideFromInspector
+	property integer seq = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 카운터 초기화.
+		self.kills = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch()
+		-- 매치 시작마다 맵별 카운터를 비운다.
+		self.kills = {}
+		log("[Elite] counters reset")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsEliteMap(string mapName)
+		-- 엘리트가 나오는 맵인가 = 스폰표에 행이 있고 리스항구가 아니다.
+		if mapName == "" or _EliteCatalog == nil then return false end
+		if string.find(mapName, self.ExcludeMapPrefix, 1, true) == 1 then return false end
+		return _EliteCatalog:RuleFor(mapName) ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer KillsPerEliteFor(string mapName)
+		-- 몇 마리째마다: 매치 중이면 DifficultyRule.ELITE_PER_KILLS · 아니면 스폰표 KillsPerElite · 둘 다 없으면 기본 25.
+		if _DifficultyService ~= nil then
+			local d = math.floor(_DifficultyService:GetNum("ELITE_PER_KILLS"))
+			if d > 0 then return d end
+		end
+		local rule = (_EliteCatalog ~= nil) and _EliteCatalog:RuleFor(mapName) or nil
+		if rule ~= nil and (rule.killsPerElite or 0) > 0 then return math.floor(rule.killsPerElite) end
+		return self.DefaultKillsPerElite
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer KillsOf(string mapName)
+		-- 그 맵의 누적 처치 수.
+		if self.kills == nil then self.kills = {} end
+		return self.kills[mapName] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMonsterKilled(string mapName, integer monsterId, Vector3 pos, Entity map)
+		-- 일반 몹 사망 1건 (FarmReward). 카운터 +1 → KillsPerElite 배수면 자이언트 스폰.
+		if not self:IsEliteMap(mapName) then return end
+		if self.kills == nil then self.kills = {} end
+		local n = (self.kills[mapName] or 0) + 1
+		self.kills[mapName] = n
+		local per = self:KillsPerEliteFor(mapName)
+		if per <= 0 or n % per ~= 0 then return end
+		local count = 1
+		if _DifficultyService ~= nil then
+			local c = math.floor(_DifficultyService:GetNum("ELITE_COUNT"))
+			if c > 0 then count = c end
+		end
+		local rule = _EliteCatalog:RuleFor(mapName)
+		local baseId = monsterId
+		if rule ~= nil and rule.baseMonsterId ~= "" then baseId = math.floor(tonumber(rule.baseMonsterId) or monsterId) end
+		local info = _EliteCatalog:EliteOfBase(baseId)
+		if info == nil and rule ~= nil and rule.eliteId ~= "" then info = _EliteCatalog:GetInfo(rule.eliteId) end
+		if info == nil then
+			log_warning("[Elite] kills=" .. tostring(n) .. " map=" .. mapName .. " base=" .. tostring(baseId) .. " — EliteMonsterInfo 행 없음")
+			return
+		end
+		log("[Elite] kills=" .. tostring(n) .. " spawn map=" .. mapName .. " elite=" .. tostring(info.id) .. " count=" .. tostring(count) .. " per=" .. tostring(per))
+		if _GuideService ~= nil then _GuideService:OnEliteSpawned(mapName) end
+		for i = 1, count do
+			local dx = 0
+			if i > 1 then
+				dx = self.SpawnOffsetX * math.floor(i / 2)
+				if i % 2 == 1 then dx = -dx end
+			end
+			self:SpawnElite(info, mapName, Vector3(pos.x + dx, pos.y, pos.z), map)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnElite(any info, string mapName, Vector3 pos, Entity map)
+		-- 자이언트 1마리: 베이스 모델 스폰 → HP·크기·속도 주입 → FarmReward(EliteId) 부착. 실패면 nil.
+		if not isvalid(map) then return nil end
+		self.seq = self.seq + 1
+		local name = "Elite_" .. tostring(info.id) .. "_" .. tostring(self.seq)
+		local unit = _SpawnService:SpawnByModelId(info.modelId, name, pos, map)
+		if not isvalid(unit) then
+			log_error("[Elite] spawn failed model=" .. tostring(info.modelId) .. " elite=" .. tostring(info.id))
+			return nil
+		end
+		local baseId = math.floor(tonumber(info.baseMonsterId) or 0)
+		local maxHp = math.max(1, math.floor(info.maxHp))
+		local monster = unit.Monster
+		if isvalid(monster) then
+			monster.MaxHp = maxHp
+			monster.Hp = maxHp
+			monster.RespawnOn = false
+		end
+		-- 크기: 베이스 몹 스프라이트 그대로 ScaleMul 배 (x 부호 = 바라보는 방향 유지).
+		local tr = unit.TransformComponent
+		local mul = info.scaleMul or 1
+		if isvalid(tr) and mul > 0 then
+			-- 모델 원래 배율에 곱한다 (부호 = 바라보는 방향 유지 · Codex 리뷰 2026-09-23).
+			tr.Scale = Vector3(tr.Scale.x * mul, tr.Scale.y * mul, tr.Scale.z)
+		end
+		-- 점프·이동 속도는 MonsterSpawner 와 같은 규칙(베이스 몹 도감 · 행의 MoveSpeed 양수면 그 값).
+		if _MonsterCatalog ~= nil then
+			local jf = _MonsterCatalog:GetJumpForce(baseId)
+			if jf > 0 then
+				local chase = unit.StateChaseMonster
+				if isvalid(chase) then
+					chase.JumpForce = jf
+					chase:EnableJump()
+				end
+			end
+			local ms = info.moveSpeed or -1
+			if ms <= 0 then ms = _MonsterCatalog:GetMoveSpeed(baseId) end
+			if ms > 0 then
+				local mv = unit.MovementComponent
+				if isvalid(mv) then mv.InputSpeed = ms end
+			end
+		end
+		local reward = unit.FarmReward
+		if not isvalid(reward) then reward = unit:AddComponent("script.FarmReward") end
+		if isvalid(reward) then
+			reward.MonsterId = baseId
+			reward.EliteId = tostring(info.id)
+		else
+			log_warning("[Elite] FarmReward attach failed: " .. name)
+		end
+		if self.LogSpawn then
+			log("[Elite] spawned " .. name .. " map=" .. mapName .. " base=" .. tostring(baseId) .. " hp=" .. tostring(maxHp) .. " atk=" .. tostring(info.attackPower)
+				.. " scale=" .. tostring(mul) .. " exp=" .. tostring(info.exp) .. " meso=" .. tostring(info.meso) .. " x=" .. string.format("%.2f", pos.x) .. " y=" .. string.format("%.2f", pos.y))
+		end
+		return unit
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GrantEliteDrops(string ownerId, string eliteId)
+		-- 확정 드랍 (막타 귀속): 빅토리아 주화 · 꿈의 조각 · 낙인의 영혼석. 전부 인벤/지갑 직접 지급 + 토스트 1줄.
+		if ownerId == "" or _EliteCatalog == nil then return end
+		local info = _EliteCatalog:GetInfo(eliteId)
+		if info == nil then return end
+		local coin = info.coinDrop or 0
+		local dream = 0
+		local stone = 0
+		if coin > 0 and _SummonManager ~= nil then _SummonManager:GrantCoin(ownerId, coin) end
+		if _InventoryService ~= nil then
+			if (info.dreamDrop or 0) > 0 then dream = _InventoryService:GiveItem(ownerId, self.DreamItemId, info.dreamDrop) end
+			if (info.soulstoneDrop or 0) > 0 then stone = _InventoryService:GiveItem(ownerId, self.SoulstoneItemId, info.soulstoneDrop) end
+		end
+		local msg = "엘리트 처치: 빅토리아 주화 " .. tostring(coin) .. " · 꿈의 조각 " .. tostring(dream) .. " · 낙인의 영혼석 " .. tostring(stone)
+		if _UIToast ~= nil then _UIToast:ShowMessage(msg, ownerId) end
+		if _GuideService ~= nil then _GuideService:OnEliteKilled(ownerId) end
+		log("[Elite] drops owner=" .. ownerId .. " elite=" .. tostring(info.id) .. " coin=" .. tostring(coin) .. " dream=" .. tostring(dream) .. " soulstone=" .. tostring(stone))
+	end
+end

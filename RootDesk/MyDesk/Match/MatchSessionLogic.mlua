@@ -8,7 +8,9 @@ script MatchSessionLogic extends Logic
 	--    승강장에서 매칭하는 동안 시계가 이미 돌고, TEST 프로필(225초)은 **로비에서 만료될 수도 있다.**
 	--    이제 매치는 `StartMatch(userIds, difficulty)` 를 불러야 시작한다. 부르는 쪽은 MatchLobbyGateway 다.
 	--    로비 없이 테스트하려면 `AutoStartOnPlay` 를 켠다.
-	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/12분/20분) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/16분30초/24분30초) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- B3(2026-09-23 · a/plan-0914): 웨이브는 MinionWave 표(StartSeconds = 매치 경과 시각 · 마을당 Count 마리 · SpawnGapSeconds 간격)로 투입한다.
+	--   MinionPhaseConfig 는 페이즈 시각·이름만 쓴다(간격·배율 열은 0/미사용). 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
 	--
 	-- 페이즈 5단 (추가기획2): PHASE0-1 개척 · PHASE0-2 전직 유예 30초 · PHASE1 성장 · PHASE2 견제 · PHASE3 최종(시설 풀데미지 개방).
 	-- 🔴 구독자는 인덱스가 아니라 **이름**(CurrentPhaseName)으로 판정한다 — 행이 늘면 인덱스가 밀린다(LaneFacility 저항 게이트가 실제로 밀렸다).
@@ -36,9 +38,33 @@ script MatchSessionLogic extends Logic
 	-- 🔴 기본값 false. StartMatch 를 불러야 켜진다 (WO-019 — 예전엔 true 였다).
 	property boolean Running = false
 
+	-- 매치 epoch (Codex 리뷰 2026-09-23): StartMatch 마다 +1. BossSpawner 가 이전 판 피해 원장을 버리는 기준.
+	@HideFromInspector
+	property integer MatchSerial = 0
+
 	-- 개발용. true 면 로비 없이 Play 만 눌러도 즉시 매치가 시작한다.
 	-- 🔴 릴리스 전에 false 인지 확인한다. 켜두면 로비를 거치지 않고 매치가 돌아 로비 검증이 무의미해진다.
 	property boolean AutoStartOnPlay = false
+
+	-- 인스턴스 룸 인계 (WO-024 · B11): 룸 안에서 OnBeginPlay 가 공유 메모리(<RoomKey>)를 읽어 참가자가 다 들어오면 StartMatch. 입장 대기 상한(초).
+	property number RoomStartTimeoutSeconds = 30
+
+	@HideFromInspector
+	property any pendingStart = nil
+
+	@HideFromInspector
+	property number pendingWait = 0
+
+	-- 인계 읽기 재시도 (Codex 리뷰 2026-09-23 · 2회 교차): 룸 생성 직후엔 로비가 아직 공유 메모리를 안 썼을 수 있다 → 1초마다 다시 읽고 상한을 넘기면 포기.
+	-- 🔴 인계는 룸마다 **한 번**만 쓴다 — 시작하거나 포기하면 false 로 내린다 (안 내리면 매치가 끝나 Running=false 가 된 뒤 다시 읽으려 든다 · 2026-09-23 Maker 실측).
+	@HideFromInspector
+	property boolean handoffActive = false
+
+	@HideFromInspector
+	property number handoffWait = 0
+
+	@HideFromInspector
+	property number handoffRetry = 0
 
 	-- 로비에서 고른 난이도 ★1~5. 시작할 때 받아 둔다 (WO-022 의 DifficultyConfig 가 이 값을 쓴다).
 	property integer Difficulty = 1
@@ -53,6 +79,10 @@ script MatchSessionLogic extends Logic
 	--    "마지막 모습"이 남는다 (M-1 · 사용자 확정 2026-09-10).
 	@HideFromInspector
 	property any finalRows = nil
+
+	-- 순위 보상 정산 결과 (B8): lastRewards[uid] = { rank, hearts, exp, lvBefore, lvAfter, heartTotal, left }
+	@HideFromInspector
+	property any lastRewards = nil
 
 	-- 🔴 매치를 **떠난** 참가자 (포기 · 접속 끊김). 탈락 판정과 별개로 들고 있는다 —
 	--    마을을 아직 안 잡은 사람은 넥서스가 없어서 Eliminate 를 태울 수 없는데,
@@ -75,10 +105,27 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property integer waveIndex = 0
 
+	-- 웨이브 표 (B3 · MinionWave): waves = StartSeconds 순 행 · nextWave = 다음에 투입할 인덱스 · 표가 끝나면 waveRepeatGap 마다 마지막 행 반복
+	@HideFromInspector
+	property any waves = nil
+
+	@HideFromInspector
+	property integer nextWave = 1
+
+	@HideFromInspector
+	property number waveRepeatTimer = 0
+
+	@HideFromInspector
+	property number waveRepeatGap = 0
+
+	@HideFromInspector
+	property any zombieTemplate = nil
+
 	method void OnBeginPlay()
 		-- 서버: 표만 로드하고 **시계는 돌리지 않는다.** 시작은 StartMatch 가 한다 (WO-019).
 		if not self:IsServer() then return end
 		self:LoadPhases()
+		self:LoadWaves()
 		self:LoadMatchConfig()
 		self.participants = {}
 		self.finalRows = {}
@@ -91,7 +138,14 @@ script MatchSessionLogic extends Logic
 		self.Expired = false
 		self.Running = false
 		log("[Match] MatchSessionLogic ready — 대기 중 (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s autoStart=" .. tostring(self.AutoStartOnPlay) .. ")")
-		if self.AutoStartOnPlay then
+		-- 인스턴스 룸이면 인계 레코드를 읽는다 (WO-024 · B11). 정적 룸은 로비 전용 — 매치가 돌지 않는다.
+		-- 못 읽었으면 TickPendingStart 가 1초마다 다시 읽는다 (룸 Logic 이 로비의 공유 메모리 쓰기보다 먼저 뜰 수 있다).
+		self.handoffActive = (_RoomService ~= nil and _RoomService:IsInstanceRoom())
+		self.handoffWait = 0
+		self.handoffRetry = 1.0
+		if self.handoffActive then self:ReadHandoff() end
+		-- 🔴 AutoStartOnPlay 는 정적 룸(개발용)에서만 — 인스턴스 룸에서 켜지면 빈 참가자로 시작해 정상 인계가 Running 에 막힌다 (Codex 리뷰 2026-09-23).
+		if self.AutoStartOnPlay and not self.handoffActive then
 			-- 로비 없이 테스트하는 경로. 지금 접속해 있는 전원을 참가자로 잡는다.
 			local ids = {}
 			for _, user in ipairs(_UserService.UserEntities.Values) do
@@ -100,6 +154,91 @@ script MatchSessionLogic extends Logic
 			log("[Match] AutoStartOnPlay — 로비 생략, 즉시 시작 (" .. tostring(#ids) .. "명)")
 			self:StartMatch(ids, 1)
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ReadHandoff()
+		-- 공유 메모리 <RoomKey> 의 difficulty · participants 를 읽어 입장 대기 상태로 둔다 (MatchLobbyGateway.StartMatch 가 쓴다). 아직 안 쓰였으면 false — TickPendingStart 가 다시 부른다.
+		local key = tostring(_RoomService.RoomKey or "")
+		local code, mem = _RoomService:GetSharedMemory(key)
+		if mem == nil then return false end
+		local r = mem:BatchGetVariableAndWait({ "difficulty", "participants" })
+		local d = 0
+		local csv = ""
+		if r ~= nil then
+			-- 🔴 Code 는 enum 이라 `== 0` 은 **항상 거짓**이다 — SharedMemoryResultCode.OK 와 비교한다 (2026-09-23 Maker 실측: 이 비교 하나로 인계가 늘 비어 보였다).
+			--    결과는 Dictionary 라 pairs 로 돈다 (키 인덱싱은 실측 안 됨).
+			for name, v in pairs(r) do
+				if v ~= nil and v.Code == SharedMemoryResultCode.OK and v.Info ~= nil then
+					if name == "difficulty" then d = math.floor(tonumber(v.Info.Value or "0") or 0)
+					elseif name == "participants" then csv = tostring(v.Info.Value or "") end
+				end
+			end
+		end
+		local ids = {}
+		for uid in string.gmatch(csv, "[^,]+") do table.insert(ids, uid) end
+		if d < 1 or #ids == 0 then return false end
+		self.pendingStart = { participants = ids, difficulty = d }
+		self.pendingWait = 0
+		log("[Match] handoff room=" .. key .. " diff=" .. tostring(d) .. " players=" .. tostring(#ids) .. " — 입장 대기")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeleteHandoff()
+		-- 인계 레코드(공유 메모리 <RoomKey>)를 지운다 — 시작·포기 어느 끝에서든 한 번 (Codex 리뷰: 안 지우면 누적된다).
+		if _RoomService == nil then return end
+		_RoomService:DeleteSharedMemoryAsync(tostring(_RoomService.RoomKey or ""), function(code) end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickPendingStart(number delta)
+		-- 인스턴스 룸 전용. ① 인계를 아직 못 읽었으면 1초마다 다시 읽는다(상한 RoomStartTimeoutSeconds → 포기).
+		-- ② 읽은 뒤: 참가자 전원이 룸에 들어오고 계정 로드가 끝나면 StartMatch. 첫 참가자 도착 뒤 상한을 넘기면 들어온 사람만으로 시작(아무도 안 오면 빈 룸은 스스로 사라진다).
+		--    🔴 늦게 들어온 사람은 참가자가 아니다(정책 · WO-024). 심장은 이미 빠져 있다 — 로그로 남긴다.
+		if not self.handoffActive or self.Running then return end
+		if self.pendingStart == nil then
+			self.handoffWait = self.handoffWait + delta
+			-- 상한을 **읽기 전에** 본다 — 상한을 넘긴 뒤 늦게 읽혀도 받지 않는다 (Codex 리뷰 2026-09-23).
+			if self.handoffWait >= self.RoomStartTimeoutSeconds then
+				self.handoffActive = false
+				log_error("[Match] handoff 없음 — " .. tostring(self.RoomStartTimeoutSeconds) .. "초 안에 인계 레코드를 못 읽음 room=" .. tostring(_RoomService.RoomKey))
+				self:DeleteHandoff()
+				return
+			end
+			self.handoffRetry = self.handoffRetry - delta
+			if self.handoffRetry > 0 then return end
+			self.handoffRetry = 1.0
+			self:ReadHandoff()
+			return
+		end
+		local p = self.pendingStart
+		local present = {}
+		for _, uid in ipairs(p.participants) do
+			local e = _UserService:GetUserEntityByUserId(uid)
+			-- _AccountData 가 없으면 "로드됨" 이 아니라 "아직" 이다 (Codex 리뷰) — 상한까지 기다린다.
+			if isvalid(e) and _AccountData ~= nil and _AccountData:IsLoaded(uid) then table.insert(present, uid) end
+		end
+		-- 입장 대기 상한은 **첫 참가자가 들어온 뒤부터** 센다 (Codex 리뷰 2026-09-23): 로비의 저장 대기가 길어도 룸이 먼저 포기하지 않게.
+		-- 아무도 안 오면 여기서 기다리기만 한다 — 룸은 첫 유저가 안 오면(RoomFirstUserWaitSeconds) 스스로 사라진다.
+		if #present == 0 then return end
+		self.pendingWait = self.pendingWait + delta
+		if #present < #p.participants and self.pendingWait < self.RoomStartTimeoutSeconds then return end
+		-- 여기서부터는 인계를 다 쓴 것이다 — 다시 읽지 않는다.
+		self.pendingStart = nil
+		self.handoffActive = false
+		self:DeleteHandoff()
+		if #present < #p.participants then
+			local missing = {}
+			for _, uid in ipairs(p.participants) do
+				local found = false
+				for _, pid in ipairs(present) do if pid == uid then found = true end end
+				if not found then table.insert(missing, uid) end
+			end
+			log_warning("[Match] handoff 부분 시작 — 미도착 " .. table.concat(missing, ",") .. " (심장은 이미 소모됨)")
+		end
+		log("[Match] handoff start present=" .. tostring(#present) .. "/" .. tostring(#p.participants) .. " wait=" .. string.format("%.1f", self.pendingWait) .. "s")
+		self:StartMatch(present, p.difficulty)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -119,6 +258,7 @@ script MatchSessionLogic extends Logic
 		self.finalRows = {}
 		self.leftUsers = {}
 		self.Difficulty = math.max(1, math.min(5, difficulty))
+		self.MatchSerial = self.MatchSerial + 1
 
 		-- 🔴 시계를 켜기 **전에** 이전 판 원장을 비운다. @Logic 은 매치가 끝나도 살아남아
 		--    자동으로 비워지지 않는다 — 안 비우면 두 번째 판을 이전 판 재화·장비·시설을 들고 시작한다.
@@ -133,10 +273,19 @@ script MatchSessionLogic extends Logic
 		--    Running 이 먼저 켜지면 그 사이 프레임에 BalrogRoomService.OnUpdate 가 **이전 판 원장**으로 돌아
 		--    이전 판에 죽은 발록을 새 판 승리로 읽을 수 있다 (Codex 09-13 A·B). 배정·발록 리셋은 아래 BeginMatch.
 		if _BalrogRoomService ~= nil then _BalrogRoomService:ClearLedger() end
+		if _BossRewardService ~= nil then _BossRewardService:ResetForMatch() end
+		if _EliteSpawner ~= nil then _EliteSpawner:ResetForMatch() end
+		if _RankRewardService ~= nil then _RankRewardService:ResetForMatch() end
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:ResetForMatch(self.participants) end
+		if _GuideService ~= nil then _GuideService:ResetForMatch(self.participants) end
+		self.lastRewards = nil
 
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
 		self.waveIndex = 0
+		self.nextWave = 1
+		self.waveRepeatTimer = 0
+		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		self.spawnTimer = 0
 		self.clockTimer = 0
 		self.Expired = false
@@ -261,13 +410,95 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void LoadWaves()
+		-- MinionWave 에서 Profile 행을 StartSeconds 순으로 (B3 · 계약 A-2-6a). StartSeconds < 0 인 P3-ZOMBIE 행은 좀비 개체 스탯 템플릿(스케줄 없음).
+		-- 표가 끝난 뒤의 반복 간격 = 마지막 두 행의 시각 차(3P 매분 · TEST 7.5초).
+		self.waves = {}
+		self.zombieTemplate = nil
+		self.waveRepeatGap = 0
+		local t = _DataService:GetTable("MinionWave")
+		if t == nil then
+			log_warning("[Match] MinionWave dataset not found — 웨이브 없음")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local profile = tostring(t:GetCell(i, "Profile") or "")
+			if enabled and profile == self.Profile then
+				local row = {
+					key = tostring(t:GetCell(i, "WaveKey") or ""), phase = tostring(t:GetCell(i, "Phase") or ""),
+					start = tonumber(t:GetCell(i, "StartSeconds")) or -1,
+					count = math.floor(tonumber(t:GetCell(i, "Count")) or 0), gap = tonumber(t:GetCell(i, "SpawnGapSeconds")) or 1,
+					monsterId = math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0),
+					hp = math.floor(tonumber(t:GetCell(i, "Hp")) or 1), attack = math.floor(tonumber(t:GetCell(i, "Attack")) or 1),
+					exp = math.floor(tonumber(t:GetCell(i, "Exp")) or 0), meso = math.floor(tonumber(t:GetCell(i, "Meso")) or 0),
+					zombieCount = math.floor(tonumber(t:GetCell(i, "ZombieCount")) or 0),
+				}
+				if row.start < 0 then
+					if row.key == "P3-ZOMBIE" then self.zombieTemplate = row end
+				elseif row.count > 0 and row.monsterId > 0 then
+					table.insert(self.waves, row)
+				end
+			end
+		end
+		table.sort(self.waves, function(x, y) return x.start < y.start end)
+		local n = #self.waves
+		if n >= 2 then self.waveRepeatGap = math.max(1, self.waves[n].start - self.waves[n - 1].start) end
+		log("[Match] MinionWave loaded: " .. tostring(n) .. " waves (profile=" .. self.Profile .. ") repeatGap=" .. tostring(self.waveRepeatGap) .. "s zombieTemplate=" .. tostring(self.zombieTemplate ~= nil))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FireWave(any row, boolean isRepeat)
+		-- 웨이브 1회 투입 (B3): MinionFlowService 큐에 넣고, 접수된 파병 대기열을 같이 푼다 (WO-014 · GDD §4.3 · 미니언이 먼저 나가고 바로 뒤에 붙는다).
+		-- 매치 첫 웨이브(7:30 · P1-0)면 참가자 전원에게 "미니언이 생성되었습니다" 토스트 (사용자 2026-09-19).
+		self.waveIndex = self.waveIndex + 1
+		-- 난이도 (B6 · DifficultyService 단일 적용점): ★1 은 3P 강화 없음(MINION_P3_BOOST 0 → 2P 마지막 행 값) · 좀비 마릿수 × ZOMBIE_MUL(★1 0 · ★5 2).
+		local hp, attack, exp, meso, monsterId, zombies = row.hp, row.attack, row.exp, row.meso, row.monsterId, row.zombieCount
+		if _DifficultyService ~= nil then
+			if row.phase == "PHASE3" and _DifficultyService:GetMul("MINION_P3_BOOST") < 0.5 then
+				local base = self:LastRowOfPhase("PHASE2")
+				if base ~= nil then hp, attack, exp, meso, monsterId = base.hp, base.attack, base.exp, base.meso, base.monsterId end
+			end
+			zombies = math.floor(zombies * _DifficultyService:GetMul("ZOMBIE_MUL") + 0.5)
+		end
+		local villages = 0
+		if _MinionFlowService ~= nil then
+			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, monsterId, hp, attack, exp, meso, zombies, self.zombieTemplate)
+		end
+		-- 파병은 이 웨이브의 일반 미니언(count 마리)이 다 나간 직후에 푼다 — 큐에 같이 넣어 순서를 지킨다(Codex 리뷰 2026-09-23). 큐가 없으면 즉시.
+		if _MinionFlowService ~= nil then
+			_MinionFlowService:QueueDispatch(row.phase, row.count * row.gap)
+		elseif _DispatchService ~= nil then
+			_DispatchService:Release(row.phase, 1.0, 1.0)
+		end
+		if self.waveIndex == 1 and _UIToast ~= nil then
+			for _, uid in ipairs(self.participants or {}) do _UIToast:ShowMessage("미니언이 생성되었습니다", uid) end
+		end
+		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " hp=" .. tostring(hp) .. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies) .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any LastRowOfPhase(string phaseName)
+		-- 그 페이즈의 마지막(시각 순) 웨이브 행. 없으면 nil. (★1 3P 대체값 · B6)
+		local last = nil
+		for _, w in ipairs(self.waves or {}) do
+			if w.phase == phaseName then last = w end
+		end
+		return last
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SetProfile(string profile)
 		-- TEST/LIVE 전환: 시계를 0 부터 다시.
 		self.Profile = profile
 		self:LoadPhases()
+		self:LoadWaves()
 		self:LoadMatchConfig()
 		self.Elapsed = 0
 		self.waveIndex = 0
+		self.nextWave = 1
+		self.waveRepeatTimer = 0
+		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		self.Expired = false
 		self.Running = true
 		self:SetPhase(1)
@@ -346,6 +577,7 @@ script MatchSessionLogic extends Logic
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- 시계: 페이즈 전환 · 투입 · HUD. 만료되면 Running 이 꺼져 여기서 바로 빠진다.
+		if self.handoffActive then self:TickPendingStart(delta) end
 		if not self.Running or self.phases == nil or #self.phases == 0 then return end
 		self.Elapsed = self.Elapsed + delta
 		self.PhaseElapsed = self.PhaseElapsed + delta
@@ -359,17 +591,22 @@ script MatchSessionLogic extends Logic
 		end
 		if idx ~= self.CurrentPhase then self:SetPhase(idx) end
 		local row = self.phases[self.CurrentPhase]
-		if row.interval > 0 then
-			self.spawnTimer = self.spawnTimer - delta
-			if self.spawnTimer <= 0 then
-				self.spawnTimer = row.interval
-				self.waveIndex = self.waveIndex + 1
-				if _MinionFlowService ~= nil then
-					_MinionFlowService:SpawnWave(self.CurrentPhase, row.name, row.hpMul, row.atkMul, row.expBase, row.mesoBase, row.coinChance)
+		-- 웨이브 (B3 · MinionWave 표): 시작 시각을 지난 행을 차례로 투입. 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
+		if self.waves ~= nil and #self.waves > 0 then
+			local armed = false
+			while self.nextWave <= #self.waves and self.Elapsed >= self.waves[self.nextWave].start do
+				self:FireWave(self.waves[self.nextWave], false)
+				self.nextWave = self.nextWave + 1
+				if self.nextWave > #self.waves then
+					self.waveRepeatTimer = self.waveRepeatGap
+					armed = true   -- 방금 잰 타이머는 다음 프레임부터 줄인다(Codex 리뷰 2026-09-23 · 한 프레임 이른 반복 방지)
 				end
-				-- 접수된 파병은 이 웨이브에 합류한다 (WO-014 · GDD §4.3). 미니언이 먼저 나가고 바로 뒤에 붙는다.
-				if _DispatchService ~= nil then
-					_DispatchService:Release(row.name, row.hpMul, row.atkMul)
+			end
+			if not armed and self.nextWave > #self.waves and self.waveRepeatGap > 0 then
+				self.waveRepeatTimer = self.waveRepeatTimer - delta
+				if self.waveRepeatTimer <= 0 then
+					self.waveRepeatTimer = self.waveRepeatGap
+					self:FireWave(self.waves[#self.waves], true)
 				end
 			end
 		end
@@ -377,7 +614,10 @@ script MatchSessionLogic extends Logic
 		if self.clockTimer <= 0 then
 			self.clockTimer = 1.0
 			local nextIn = -1
-			if row.interval > 0 then nextIn = math.ceil(self.spawnTimer) end
+			if self.waves ~= nil and #self.waves > 0 then
+				if self.nextWave <= #self.waves then nextIn = math.ceil(self.waves[self.nextWave].start - self.Elapsed)
+				elseif self.waveRepeatGap > 0 then nextIn = math.ceil(self.waveRepeatTimer) end
+			end
 			local nextPhaseIn = -1
 			local nxt = self.phases[self.CurrentPhase + 1]
 			if nxt ~= nil then nextPhaseIn = math.ceil(nxt.start - self.Elapsed) end
@@ -392,6 +632,8 @@ script MatchSessionLogic extends Logic
 		-- 매치 종료. 1회만. reason = "시간 종료" · "전원 탈락" 등.
 		-- 시계·웨이브를 멈추고 전 클라에 알린 뒤 **결과 화면**을 띄운다.
 		if self.Expired then return end
+		-- 대기 중인 스폰·파병 큐를 버린다 — 만료 직전에 큐잉된 웨이브가 종료 화면 뒤에 나오지 않게(Codex 리뷰 2026-09-23).
+		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		-- 🔴 승리가 아닌 종료(시간 종료 · 전원 탈락) 직전에 발록 사망을 한 번 더 본다 (WO-017 · Codex A·B).
 		--    BalrogRoomService 는 매 프레임 보지만 Logic 끼리 OnUpdate 순서는 정해져 있지 않다 —
 		--    같은 프레임에 만료가 먼저 돌면 방금 죽은 발록이 승리로 안 잡힌다.
@@ -403,6 +645,8 @@ script MatchSessionLogic extends Logic
 		-- 🔴 발록 방 도전을 **지금** 닫는다 (모든 방 무적 · 감시 중지). BalrogRoomService.OnUpdate 가 다음 프레임에
 		--    알아채길 기다리면 결과 화면이 뜬 뒤 한 프레임 동안 발록이 맞는다 (Codex 09-13 A·B).
 		if _BalrogRoomService ~= nil and _BalrogRoomService.active then _BalrogRoomService:OnMatchOver() end
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:OnMatchOver() end
+		if _GuideService ~= nil then _GuideService:OnMatchOver() end
 		log("[Match] EXPIRED at " .. string.format("%.1f", self.Elapsed) .. "s (duration=" .. tostring(self.MatchDuration) .. "s profile=" .. self.Profile .. " waves=" .. tostring(self.waveIndex) .. ")")
 		local ev = MatchPhaseChangedEvent()
 		ev.MatchId = ""
@@ -414,8 +658,9 @@ script MatchSessionLogic extends Logic
 		-- 계정 데이터 확정 (WO-018). 만료 시점에 생존자 전원의 계정 값을 한 번 굳힌다.
 		-- 🔴 저장 창구는 _PlayerDBManager 하나뿐이다. 여기서 _DataStorageService 를 직접 부르지 않는다.
 		-- 바뀐 게 없는 유저는 매니저가 걸러서 요청 자체를 보내지 않는다(Credit 0).
-		if _PlayerDBManager ~= nil then _PlayerDBManager:FlushAll() end
+		-- 🔴 순위 보상(B8 · ShowResult → RankRewardService.Settle)이 계정 원장을 더럽히므로 **결과 정산 뒤에** 굳힌다 (Codex 리뷰 2026-09-23).
 		self:ShowResult(reason)
+		if _PlayerDBManager ~= nil then _PlayerDBManager:FlushAll() end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -503,6 +748,9 @@ script MatchSessionLogic extends Logic
 		if self.leftUsers == nil then self.leftUsers = {} end
 		self.leftUsers[userId] = true
 		self:SnapshotRow(userId, true)
+		-- 이탈자는 부활·안내 감시에서도 뺀다 (Codex 리뷰 2026-09-23).
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:RemoveParticipant(userId) end
+		if _GuideService ~= nil then _GuideService:RemoveParticipant(userId) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -528,7 +776,8 @@ script MatchSessionLogic extends Logic
 		-- 순위 1순위 "발록 누적 피해" 는 BalrogRoomService.DamageOf 가 준다 (WO-017).
 		--    1인 1방이라 자기 방 발록의 MaxHp - 현재 HP 가 곧 그 사람 피해다. 승자는 MaxHp 라 맨 위다.
 		-- ⚠️ 순위별 보상 지급은 아직 없다 — WO-022 S2.
-		if _MatchResultUIController == nil or self.participants == nil then return end
+		-- 🔴 결과 UI 가 없어도 정산은 한다 (Codex 리뷰 2026-09-23) — 화면 전송만 컨트롤러가 있을 때.
+		if self.participants == nil then return end
 		local n = #self.participants
 		if n == 0 then return end
 
@@ -559,12 +808,22 @@ script MatchSessionLogic extends Logic
 		end
 
 		-- 순위: ① 발록 피해 ② 넥서스 잔여 HP ③ 최종 레벨 (결과 화면의 열 순서와 같다)
+		-- 🔴 탈락자는 뒤로 (표시 순위와 보상 순위(최하위)를 맞춘다 · Codex 리뷰 2026-09-23).
 		table.sort(rows, function(a, b)
+			if (a.elim == true) ~= (b.elim == true) then return not a.elim end
 			if a.damage ~= b.damage then return a.damage > b.damage end
 			if a.coreHp ~= b.coreHp then return a.coreHp > b.coreHp end
 			return a.level > b.level
 		end)
 
+		-- 순위 보상 (B8 · RankReward): 정렬 순서가 순위. 심장·계정 경험치를 지급한 뒤 결과 화면 reward= 에 싣는다.
+		self.lastRewards = nil
+		if _RankRewardService ~= nil then self.lastRewards = _RankRewardService:Settle(rows, self.Difficulty, self.leftUsers) end
+
+		if _MatchResultUIController == nil then
+			log_warning("[Match] MatchResultUIController 없음 — 결과 화면 생략 (정산은 끝남)")
+			return
+		end
 		for i = 1, n do
 			local uid = self.participants[i]
 			_MatchResultUIController:SetResultCsv(self:BuildResultCsv(rows, uid, reason), uid)
@@ -579,7 +838,20 @@ script MatchSessionLogic extends Logic
 		local parts = {}
 		table.insert(parts, "title=매치 결과")
 		table.insert(parts, "reason=" .. self:SafeText(reason or ""))
-		table.insert(parts, "reward=발록의 심장 보상은 준비 중입니다")
+		-- 순위 보상 문구 (B8).
+		local rw = (self.lastRewards ~= nil) and self.lastRewards[forUserId] or nil
+		local rewardText = "보상 없음"
+		if rw ~= nil then
+			if rw.left then
+				rewardText = "중도 이탈 — 보상 없음"
+			else
+				local head = tostring(rw.rank) .. "위 보상"
+				if rw.elim then head = "탈락 — 최하위(" .. tostring(rw.rank) .. "위) 보상" end
+				rewardText = head .. ": 발록의 심장 +" .. tostring(rw.hearts) .. " (보유 " .. tostring(rw.heartTotal) .. ") · 계정 경험치 +" .. tostring(rw.exp)
+					.. " (Lv" .. tostring(rw.lvBefore) .. ((rw.lvAfter > rw.lvBefore) and (" → Lv" .. tostring(rw.lvAfter)) or "") .. ")"
+			end
+		end
+		table.insert(parts, "reward=" .. self:SafeText(rewardText))
 		local me = -1
 		for i = 1, #rows do
 			if rows[i].uid == forUserId then me = i - 1 end

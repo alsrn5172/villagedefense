@@ -1,0 +1,126 @@
+@Logic
+script RankRewardService extends Logic
+	-- 매치 순위 보상 (RankReward.csv · 계약 A-2-21 · WO-027 §8 · 9/14 표 · a/plan-0914 B8).
+	--   · MatchSessionLogic.ShowResult 가 정렬한 순서가 순위. Rank 1~5(5 = 5위 이하) × ★ 행으로 발록의 심장 + 계정 경험치.
+	--   · 탈락자(넥서스 파괴) = 최하위(Rank 5) 행 · 중도 이탈자 = 0 · 4·5위 Condition BALROG_HP_HALF = 발록 누적 피해 ≥ MaxHp/2.
+	--   · 매치당 1회(settled · ResetForMatch) · 심장 = AccountData.AddBalrogHeart · 경험치 = AccountLevelService.AddExp(레벨업 심장 포함).
+	--   · RewardGrantedEvent 는 코드에 없어 직접 지급 + `[Rank]` 로그.
+
+	property string TableName = "RankReward"
+
+	-- table_[d][rank] = { hearts, exp, condition }
+	@HideFromInspector
+	property any table_ = nil
+
+	@HideFromInspector
+	property any settled = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 표를 읽는다.
+		self:EnsureLoaded()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureLoaded()
+		-- RankReward 적재 (1-based · 행 수 로그).
+		if self.loaded then return end
+		self.loaded = true
+		self.table_ = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Rank] dataset not found: " .. self.TableName .. " — 순위 보상 없음")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local rank = math.floor(tonumber(tostring(t:GetCell(i, "Rank") or "")) or 0)
+			local d = math.floor(tonumber(tostring(t:GetCell(i, "Difficulty") or "")) or 0)
+			if enabled and rank >= 1 and rank <= 5 and d >= 1 and d <= 5 then
+				if self.table_[d] == nil then self.table_[d] = {} end
+				self.table_[d][rank] = {
+					hearts = math.max(0, math.floor(tonumber(tostring(t:GetCell(i, "Hearts") or "")) or 0)),
+					exp = math.max(0, math.floor(tonumber(tostring(t:GetCell(i, "AccountExp") or "")) or 0)),
+					condition = tostring(t:GetCell(i, "Condition") or ""),
+				}
+				n = n + 1
+			end
+		end
+		log("[Rank] RankReward loaded: " .. tostring(n) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch()
+		-- 매치 시작마다 정산 기록을 비운다 (MatchSessionLogic.StartMatch).
+		self.settled = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method any RowFor(integer d, integer rank)
+		-- ★ d · 순위 rank(1~5) 행. 없으면 nil.
+		self:EnsureLoaded()
+		local byRank = (self.table_ ~= nil) and self.table_[d] or nil
+		if byRank == nil then return nil end
+		return byRank[math.max(1, math.min(5, rank))]
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ConditionMet(string condition, any row)
+		-- BALROG_HP_HALF: 매치 종료 시 자기 방 발록 HP 가 절반 이하(= 누적 피해 ≥ MaxHp/2).
+		if condition == nil or condition == "" then return true end
+		if condition == "BALROG_HP_HALF" then
+			local maxHp = 0
+			if _BalrogRoomService ~= nil then maxHp = _BalrogRoomService:BossMaxHp() end
+			if maxHp <= 0 then return false end
+			return (row.damage or 0) * 2 >= maxHp
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Settle(any rows, integer difficulty, any leftUsers)
+		-- 정렬된 결과 행(1위부터)에 보상을 지급하고 result[uid] = { rank, hearts, exp, lvBefore, lvAfter, heartTotal, left } 를 돌려준다.
+		local result = {}
+		if rows == nil then return result end
+		if self.settled == nil then self.settled = {} end
+		local d = math.max(1, math.min(5, math.floor(difficulty)))
+		for i = 1, #rows do
+			local row = rows[i]
+			local uid = row.uid
+			if uid ~= nil and uid ~= "" then
+				local rank = math.min(5, i)
+				if row.elim then rank = 5 end
+				local left = (leftUsers ~= nil and leftUsers[uid] == true)
+				if left then
+					result[uid] = { rank = rank, hearts = 0, exp = 0, lvBefore = 0, lvAfter = 0, heartTotal = 0, left = true }
+					log("[Rank] user=" .. uid .. " rank=" .. tostring(rank) .. " diff=" .. tostring(d) .. " 중도 이탈 — 보상 0")
+				elseif self.settled[uid] then
+					log("[Rank] user=" .. uid .. " 이미 정산됨 — 건너뜀")
+				else
+					self.settled[uid] = true
+					local rr = self:RowFor(d, rank)
+					local hearts = 0
+					local exp = 0
+					if rr ~= nil then
+						exp = rr.exp
+						if self:ConditionMet(rr.condition, row) then hearts = rr.hearts end
+					end
+					local lvBefore = (_AccountData ~= nil) and _AccountData:GetLevel(uid) or 1
+					if hearts > 0 and _AccountData ~= nil then _AccountData:AddBalrogHeart(uid, hearts) end
+					local lvAfter = lvBefore
+					if _AccountLevelService ~= nil then lvAfter = _AccountLevelService:AddExp(uid, exp, "MATCH_RANK") end
+					local total = (_AccountData ~= nil) and _AccountData:GetBalrogHeart(uid) or 0
+					result[uid] = { rank = rank, hearts = hearts, exp = exp, lvBefore = lvBefore, lvAfter = lvAfter, heartTotal = total, left = false, elim = (row.elim == true) }
+					log("[Rank] user=" .. uid .. " rank=" .. tostring(rank) .. (row.elim and "(탈락)" or "") .. " diff=" .. tostring(d)
+						.. " hearts=" .. tostring(hearts) .. " accExp=" .. tostring(exp) .. " lv=" .. tostring(lvBefore) .. "->" .. tostring(lvAfter)
+						.. " heartTotal=" .. tostring(total) .. " dmg=" .. tostring(row.damage or 0))
+				end
+			end
+		end
+		return result
+	end
+end

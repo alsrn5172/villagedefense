@@ -23,6 +23,16 @@ script FactionAttack extends AttackComponent
 	-- 단일 대상(MaxTargets=1) 모드의 공격 상자 가로. 상자를 표적 위치에 좁게 놓아 "단일 원거리"로 보이게 한다. 세로는 AttackBoxSize.y 그대로(포탑 4.0 유지).
 	property number SingleTargetBoxWidth = 1.2
 
+	-- 스플래시 (B3b · 노틸러스 포탑 TOWER_SPLASH): 0 = 없음. >0 이면 표적 1(주 표적) ×SplashPrimaryMul + 주 표적 반경 안의 다른 적 ×SplashMul (원 판정).
+	property number SplashRadius = 0
+
+	property number SplashPrimaryMul = 2.0
+
+	property number SplashMul = 1.0
+
+	@HideFromInspector
+	property number SplashMulCurrent = 1.0
+
 	@HideFromInspector
 	property any Shape = nil
 
@@ -184,11 +194,13 @@ script FactionAttack extends AttackComponent
 
 		-- 대상 수 제한 (WO-021): 상자 안 적을 가까운 순으로 MaxTargets 개만 허용. 0 이면 현행 그대로(제한 없음).
 		self.AllowedHits = nil
+		local primary = nil
 		if self.MaxTargets > 0 then
 			local picked = self:CollectNearestEnemies(center, size, self.MaxTargets)
 			if #picked == 0 then return end
 			self.AllowedHits = {}
 			for _, e in ipairs(picked) do self.AllowedHits[e.Id] = true end
+			primary = picked[1]
 			-- 단일 대상이면 상자를 표적 위치에 좁게 놓는다(커닝 포탑 "원거리 단일"). 세로는 그대로 — 포탑 세로 4.0 을 줄이면 통로 미니언을 놓친다(2026-09-07 실측).
 			if self.MaxTargets == 1 then
 				local tp = picked[1].TransformComponent.WorldPosition
@@ -203,12 +215,19 @@ script FactionAttack extends AttackComponent
 		self.Shape.Angle = 0
 
 		-- 이번 스윙 기록을 비운 뒤 몬스터/플레이어 두 그룹에 각각 판정을 낸다. 맞은 엔티티는 LastHits 에 모아 둔다(로그용).
+		-- 스플래시 (B3b): 주 표적 ×SplashPrimaryMul 로 때린 뒤 반경 안의 다른 적 ×SplashMul.
+		local splash = self.SplashRadius > 0 and isvalid(primary)
+		if splash then self.SplashMulCurrent = self.SplashPrimaryMul end
 		self.SwingHits = {}
 		local hits = {}
 		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Monster), hits)
+		-- 첫 판정이 넥서스 파괴 → 탈락(DespawnVillage)까지 **동기로** 이어져 이 엔티티가 그 안에서 사라질 수 있다(2026-09-23 실측 LEA-3023/2011). 사라졌으면 여기서 끝.
+		if not isvalid(self.Entity) then return end
 		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
 		self.LastHits = hits
 		self.AllowedHits = nil
+		self.SplashMulCurrent = 1.0
+		if splash then self:SplashAround(primary) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -249,6 +268,20 @@ script FactionAttack extends AttackComponent
 			self.HitPart = 0
 			self.HitParts = 0
 		end
+		-- 스플래시 (B3b · 노틸러스 포탑): 주 표적 ×SplashPrimaryMul, 이어서 주 표적 반경 안의 다른 적 ×SplashMul. 분할(part/parts)이 켜져 있으면 마지막 발에서만 스플래시.
+		local splash = self.SplashRadius > 0
+		if splash then self.SplashMulCurrent = self.SplashPrimaryMul end
+		local ok = self:HitOne(target)
+		self.SplashMulCurrent = 1.0
+		self.HitPart = 0
+		self.HitParts = 0
+		if splash and ok and (parts == nil or parts <= 1 or part == parts) then self:SplashAround(target) end
+		return ok
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HitOne(Entity target)
+		-- 표적 하나에게 지금 배율(HitPart/HitParts · SplashMulCurrent)로 한 번 판정. 상자는 표적의 피격 상자(HitRect)를 덮게 놓고 AllowedHits 로 그 표적만 허용.
 		local r = self:HitRect(target)
 		self.Shape.Position = Vector2(r.cx, r.cy)
 		self.Shape.Size = Vector2(math.max(1.6, r.hw * 2 + 0.2), math.max(2.4, r.hh * 2 + 0.2))
@@ -259,12 +292,38 @@ script FactionAttack extends AttackComponent
 		self.AllowedHits = allowed
 		local hits = {}
 		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Monster), hits)
+		-- 첫 판정이 넥서스 파괴 → 탈락(DespawnVillage)까지 **동기로** 이어져 이 엔티티가 그 안에서 사라질 수 있다(2026-09-23 실측 LEA-3023/2011). 사라졌으면 여기서 끝.
+		if not isvalid(self.Entity) then return end
 		self:AppendHits(self:Attack(self.Shape, "faction", CollisionGroups.Player), hits)
 		self.LastHits = hits
 		self.AllowedHits = nil
+		return #hits > 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer SplashAround(Entity primary)
+		-- 스플래시 2단 판정 (B3b): 주 표적 위치를 중심으로 반경 SplashRadius(원) 안의 **다른** 적에게 ×SplashMul 로 한 번씩 (HitOne 재사용 · 분할 없음). 돌려주는 값 = 맞은 수.
+		if self.SplashRadius <= 0 or not isvalid(primary) or not isvalid(primary.TransformComponent) then return 0 end
+		local c = primary.TransformComponent.WorldPosition
+		local rad = self.SplashRadius
+		local cands = self:CollectNearestEnemies(Vector2(c.x, c.y), Vector2(rad * 2, rad * 2), 64)
+		local n = 0
 		self.HitPart = 0
 		self.HitParts = 0
-		return #hits > 0
+		self.SplashMulCurrent = self.SplashMul
+		for _, e in ipairs(cands) do
+			if e ~= primary and isvalid(e.TransformComponent) then
+				local p = e.TransformComponent.WorldPosition
+				local dx = p.x - c.x
+				local dy = p.y - c.y
+				if dx * dx + dy * dy <= rad * rad then
+					if self:HitOne(e) then n = n + 1 end
+				end
+			end
+		end
+		self.SplashMulCurrent = 1.0
+		log("[Splash] " .. self.Entity.Name .. " primary=" .. primary.Name .. " splash=" .. tostring(n) .. "/" .. tostring(#cands) .. " r=" .. tostring(rad))
+		return n
 	end
 
 	@ExecSpace("ServerOnly")
@@ -292,6 +351,11 @@ script FactionAttack extends AttackComponent
 		-- 진영 필터: 적군만 공격 대상으로 인정한다. 아군/중립/자기자신은 여기서 전부 걸러진다.
 		-- ⚠ @ExecSpace 금지 (부모에 없음 → LEA-3014 SignatureMismatch)
 		if not isvalid(defender) then
+			return false
+		end
+
+		-- 공격자 자신이 판정 도중 파괴됐으면(넥서스 파괴 → 탈락 정리) 거짓. 안 걸러주면 엔진이 Boolean 아님(LEA-3023)으로 본다.
+		if not isvalid(self.Entity) then
 			return false
 		end
 
@@ -338,7 +402,10 @@ script FactionAttack extends AttackComponent
 		-- 최종 데미지 = BaseDamage * 공격력 버프 배율 (* 대플레이어 계수). 반사는 고정 피해 그대로.
 		-- ⚠ 반환 타입은 부모와 동일한 integer 여야 한다 (number/int 로 쓰면 시그니처 불일치).
 		if attackInfo == "reflect" then
-			return self.ReflectDamage
+			-- 반사 고정 피해도 플레이어 방어 감산은 받는다 (B4 · Codex 리뷰 2026-09-23).
+			local r = math.max(1, math.floor(self.ReflectDamage))
+			if _DamageFormula ~= nil then r = _DamageFormula:ApplyPlayerDefense(defender, r) end
+			return r
 		end
 		local mul = 1.0
 
@@ -353,7 +420,12 @@ script FactionAttack extends AttackComponent
 			mul = mul * self.PlayerDamageMul
 		end
 
-		local full = math.floor(self.BaseDamage * mul)
+		-- 스플래시 배율 (B3b): 주 표적 ×SplashPrimaryMul · 반경 안 ×SplashMul · 평소 1.0.
+		local full = math.floor(self.BaseDamage * mul * self.SplashMulCurrent)
+		-- 받는 쪽이 플레이어면 방어 감산 (B4 · ×PlayerDamageMul 먼저 → ×100/(100+방어) · 공용 헬퍼).
+		if isvalid(defender) and isvalid(defender.PlayerComponent) and _DamageFormula ~= nil then
+			full = _DamageFormula:ApplyPlayerDefense(defender, full)
+		end
 		-- 분할 타격(HitTarget part/parts · 노틸러스 3발): k 번째 몫 = floor(full·k/n) − floor(full·(k−1)/n) → n 발 합 = full. 즉시 판정(DoAttack)에선 parts=0.
 		if self.HitParts > 1 and self.HitPart >= 1 then
 			return math.floor(full * self.HitPart / self.HitParts) - math.floor(full * (self.HitPart - 1) / self.HitParts)

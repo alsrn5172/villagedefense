@@ -101,6 +101,27 @@ script LobbyUIController extends Logic
 	@HideFromInspector
 	property integer selectedDiff = 0
 
+	-- 난이도 설명 (B6 · 서버가 실어 보냄 · 낙관적 UI 금지): diffInfo[d] = { title, intro, neg, pos, reward, hard, tip, cost, solo, unlock, locked, rec }. 없는 ★(2·4)는 숨긴다.
+	@HideFromInspector
+	property any diffInfo = nil
+
+	@HideFromInspector
+	property integer accountLevel = 1
+
+	-- 선택창 (B6 · WO-027 §9-0): 라디오 3줄(Select/Row_1·3·5) + 엠블럼 자리(Select/Emblem). 탭(★ 버튼)과 연동 — 둘 다 OnClickStar.
+	property Entity selectPanel = "a960cc58-eff8-41db-847c-9a66cb982a97"
+
+	property ButtonComponent radio1 = "62232178-56f2-44f1-8296-6cdb1ae6f2f4"
+
+	property ButtonComponent radio3 = "21179203-1585-483d-b028-1afd38e92812"
+
+	property ButtonComponent radio5 = "b2c36538-e8d8-437d-943e-0a97f87d7c11"
+
+	property SpriteGUIRendererComponent emblem = "eb534b3c-e6b1-4815-8f00-682479ed4720"
+
+	-- 엠블럼 RUID "1=ruid,3=ruid,5=ruid" — 사용자가 만든 엠블럼 3장을 업로드한 뒤 채운다. 비면 슬롯에 ★ 글자.
+	property string EmblemRuids = ""
+
 	-- 행 index(0-base) → matchId / 난이도 / 라벨 / 강퇴 토큰.
 	@HideFromInspector
 	property any listIds = nil
@@ -141,6 +162,9 @@ script LobbyUIController extends Logic
 		self:BindButton(self.star3, function() self:OnClickStar(3) end)
 		self:BindButton(self.star4, function() self:OnClickStar(4) end)
 		self:BindButton(self.star5, function() self:OnClickStar(5) end)
+		self:BindButton(self.radio1, function() self:OnClickStar(1) end)
+		self:BindButton(self.radio3, function() self:OnClickStar(3) end)
+		self:BindButton(self.radio5, function() self:OnClickStar(5) end)
 		self:BindButton(self.btnStart, function() self:OnClickStart() end)
 		self:BindButton(self.btnLeave, function() self:OnClickLeave() end)
 
@@ -255,6 +279,26 @@ script LobbyUIController extends Logic
 		--   m{i} = matchId|난이도|주인이름|현재인원|정원
 		local kv = {}
 		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
+		-- 난이도 설명 (B6): alv=계정Lv · d{★}=TITLE|INTRO|NEG|POS|REWARD|HARD|TIP|심장|솔로|해금Lv|잠김|추천. 실리지 않은 ★ 는 닫힌 것.
+		self.diffInfo = {}
+		self.accountLevel = tonumber(kv.alv) or 1
+		for d = 1, 5 do
+			local dv = kv["d" .. tostring(d)]
+			if dv ~= nil and dv ~= "" then
+				local f = self:Split(dv, "|")
+				self.diffInfo[d] = { title = f[1] or "", intro = f[2] or "", neg = f[3] or "", pos = f[4] or "", reward = f[5] or "",
+					hard = f[6] or "", tip = f[7] or "", cost = tonumber(f[8]) or d, solo = tonumber(f[9]) or math.max(0, d - 1),
+					unlock = tonumber(f[10]) or 1, locked = (f[11] == "1"), rec = (f[12] == "1") }
+			end
+		end
+		if kv.alv ~= nil then
+			-- 닫힌 ★(★2·★4)은 버튼째 숨긴다. 골라 둔 ★ 가 닫혔으면 해제.
+			local stars = { self.star1, self.star2, self.star3, self.star4, self.star5 }
+			for d = 1, 5 do
+				if isvalid(stars[d]) then stars[d].Entity.Enable = (self.diffInfo[d] ~= nil) end
+			end
+			if self.pickedDiff >= 1 and self.diffInfo[self.pickedDiff] == nil then self.pickedDiff = 0 end
+		end
 
 		self:EnsureRowBindings()
 		self.mode = "browse"
@@ -268,7 +312,19 @@ script LobbyUIController extends Logic
 		if isvalid(self.matchesRoot) then self.matchesRoot.Enable = true end
 		if isvalid(self.playersRoot) then self.playersRoot.Enable = false end
 		if isvalid(self.titleText) then self.titleText.Text = "빅토리아행 매치" end
-		if isvalid(self.heartLabel) then self.heartLabel.Text = "내 발록의 심장 × " .. tostring(kv.heart or "0") end
+		if isvalid(self.heartLabel) then
+			local label = "내 발록의 심장 × " .. tostring(kv.heart or "0")
+			-- 계정 레벨·경험치 (B8): aprog=lv|현재|필요
+			if kv.aprog ~= nil and kv.aprog ~= "" then
+				local f = self:Split(kv.aprog, "|")
+				if (tonumber(f[3]) or 0) <= 0 then
+					label = label .. "   계정 Lv" .. tostring(f[1] or "1") .. " (MAX)"
+				else
+					label = label .. "   계정 Lv" .. tostring(f[1] or "1") .. " (" .. tostring(f[2] or "0") .. "/" .. tostring(f[3] or "?") .. ")"
+				end
+			end
+			self.heartLabel.Text = label
+		end
 
 		-- 행 채우기. 없는 행은 끈다.
 		local shown = 0
@@ -318,6 +374,8 @@ script LobbyUIController extends Logic
 			self.gateWarn.Text = busy and "이미 진행 중인 매치가 있어 지금은 출발할 수 없습니다" or ""
 			self.gateWarn.Entity.Enable = busy
 		end
+		-- 선택창(라디오·엠블럼)은 경고문 자리와 겹치므로 진행 중일 땐 감춘다 (B6).
+		if isvalid(self.selectPanel) then self.selectPanel.Enable = (kv.busy ~= "1") end
 
 		self:PaintBrowse()
 	end
@@ -336,10 +394,16 @@ script LobbyUIController extends Logic
 
 		self:PaintStars(diff, true)
 		self:PaintRowHighlight()
+		self:PaintSelect(diff)
 
+		local info = nil
+		if self.diffInfo ~= nil and diff >= 1 then info = self.diffInfo[diff] end
+		local locked = (info ~= nil and info.locked)
 		if isvalid(self.diffDesc) then
 			if self.selectedMatchId ~= "" then
-				self.diffDesc.Text = "선택한 매치에 참여합니다\n" .. selName
+				self.diffDesc.Text = "선택한 매치에 참여합니다\n" .. selName .. self:DescribeLines(info, false)
+			elseif info ~= nil then
+				self.diffDesc.Text = "★" .. tostring(diff) .. " " .. info.title .. (info.rec and "  (추천)" or "") .. "\n" .. self:DescribeLines(info, true)
 			elseif diff >= 1 then
 				local solo = math.max(0, diff - 1)
 				self.diffDesc.Text = "★" .. tostring(diff) .. " 매치를 새로 만듭니다\n" ..
@@ -349,17 +413,29 @@ script LobbyUIController extends Logic
 			end
 		end
 		if isvalid(self.costLabel) then
-			self.costLabel.Text = (self.selectedMatchId ~= "") and "참여할 매치를 선택했습니다" or ""
+			if self.selectedMatchId ~= "" then
+				if locked then
+					self.costLabel.Text = "계정 Lv" .. tostring(info.unlock) .. " 부터 참여할 수 있습니다 (현재 Lv" .. tostring(self.accountLevel) .. ")"
+				else
+					self.costLabel.Text = "참여할 매치를 선택했습니다"
+				end
+			elseif info ~= nil then
+				local cost = "발록의 심장 " .. tostring(info.cost) .. "개 (혼자면 " .. tostring(info.solo) .. "개)"
+				if locked then cost = cost .. "\n계정 Lv" .. tostring(info.unlock) .. " 부터 열립니다 (현재 Lv" .. tostring(self.accountLevel) .. ")" end
+				self.costLabel.Text = cost
+			else
+				self.costLabel.Text = ""
+			end
 		end
 
 		if isvalid(self.btnPrimary) then
 			local t = self.btnPrimary.Entity.TextGUIRendererComponent
 			if self.selectedMatchId ~= "" then
-				self.btnPrimary.Enable = true
-				if t ~= nil then t.Text = "참여하기" end
+				self.btnPrimary.Enable = not locked
+				if t ~= nil then t.Text = locked and "잠김" or "참여하기" end
 			elseif diff >= 1 then
-				self.btnPrimary.Enable = true
-				if t ~= nil then t.Text = "매치 만들기" end
+				self.btnPrimary.Enable = not locked
+				if t ~= nil then t.Text = locked and "잠김" or "매치 만들기" end
 			else
 				self.btnPrimary.Enable = false
 				if t ~= nil then t.Text = "매치 선택" end
@@ -535,10 +611,62 @@ script LobbyUIController extends Logic
 	-- ── 클릭: 브라우저 ──────────────────────────────────────────────
 
 	@ExecSpace("ClientOnly")
+	method string EmblemRuidOf(integer d)
+		-- EmblemRuids "1=ruid,3=ruid,5=ruid" 에서 그 ★ 의 RUID. 없으면 "".
+		for pair in string.gmatch(self.EmblemRuids or "", "[^,]+") do
+			local eq, _ = string.find(pair, "=", 1, true)
+			if eq ~= nil and tonumber(string.sub(pair, 1, eq - 1)) == d then return string.sub(pair, eq + 1) end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintSelect(integer diff)
+		-- 선택창 (B6): 라디오 3줄(◆ = 고른 ★ · 제목 · 잠금/추천 · 심장 비용 배지) + 엠블럼 자리. 서버가 실어 보낸 diffInfo 만 그린다.
+		if not isvalid(self.selectPanel) then return end
+		local radios = { [1] = self.radio1, [3] = self.radio3, [5] = self.radio5 }
+		for d, btn in pairs(radios) do
+			if isvalid(btn) then
+				local info = (self.diffInfo ~= nil) and self.diffInfo[d] or nil
+				btn.Entity.Enable = (info ~= nil)
+				if info ~= nil then
+					local mark = (d == diff) and "◆ " or "◇ "
+					local tail = ""
+					if info.locked then tail = "  (Lv" .. tostring(info.unlock) .. " 잠김)" elseif info.rec then tail = "  (추천)" end
+					local t = btn.Entity.TextGUIRendererComponent
+					if t ~= nil then t.Text = mark .. self:Stars(d) .. "  " .. info.title .. tail end
+					local cost = btn.Entity:GetChildByName("Cost")
+					if isvalid(cost) and cost.TextGUIRendererComponent ~= nil then cost.TextGUIRendererComponent.Text = "심장 " .. tostring(info.cost) end
+				end
+			end
+		end
+		if isvalid(self.emblem) then
+			local ruid = self:EmblemRuidOf(diff)
+			local t = self.emblem.Entity.TextGUIRendererComponent
+			if ruid ~= "" then
+				self.emblem.ImageRUID = ruid
+				if t ~= nil then t.Text = "" end
+			elseif t ~= nil then
+				t.Text = (diff >= 1) and ("★" .. tostring(diff)) or "?"
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string DescribeLines(any info, boolean full)
+		-- 난이도 설명 줄 (B6 · 서버 문구): 소개 / − 부정 / + 긍정 / 보상 / 난이도 / 권장. full=false 면 난이도 요약 한 줄만.
+		if info == nil then return "" end
+		if not full then return "\n난이도: " .. info.hard end
+		return info.intro .. "\n- " .. info.neg .. "\n+ " .. info.pos .. "\n보상: " .. info.reward .. "\n난이도: " .. info.hard .. "\n" .. info.tip
+	end
+
+	@ExecSpace("ClientOnly")
 	method void OnClickStar(integer level)
 		-- 🔴 ★ 을 누르면 **고른 매치가 풀리고** 새로 만드는 쪽으로 전환된다 (사용자 규칙).
 		if self:InputBlocked() then return end
 		if self.mode ~= "browse" then return end
+		-- 닫힌 ★(서버가 실어 보내지 않은 ★2·★4)은 무시 (B6).
+		if self.diffInfo ~= nil and self.diffInfo[level] == nil then return end
 		self.pickedDiff = level
 		self.selectedMatchId = ""
 		self.selectedDiff = 0
