@@ -35,6 +35,11 @@ script BalrogHeartService extends Logic
 	@HideFromInspector
 	property any table_ = nil
 
+	-- 마지막 Charge 에서 실제로 뭔가 빠진 사람 수. Charge 가 false 인데 이 값이 0 보다 크면 **부분 차감**이다
+	-- (로비가 읽고 재시도 대신 해산한다 — 재시도하면 낸 사람이 두 번 낸다 · Codex 리뷰 2026-09-23).
+	@HideFromInspector
+	property integer lastPaidCount = 0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self.table_ = {}
@@ -239,6 +244,7 @@ script BalrogHeartService extends Logic
 	method boolean Charge(any userIds, integer difficulty)
 		-- 🔴 **전원 검증을 먼저 끝낸 뒤에 한 명씩 뺀다.** 검증과 차감을 섞으면
 		--    앞사람만 빠지고 매치는 출발하지 않는 "돈만 날린" 상태가 생긴다.
+		self.lastPaidCount = 0
 		if userIds == nil then return false end
 		local n = #userIds
 		if n == 0 then return false end
@@ -264,16 +270,18 @@ script BalrogHeartService extends Logic
 		for i = 1, n do
 			local uid = userIds[i]
 			local left = cost
+			local used = 0
 			local heartBefore = _AccountData:GetBalrogHeart(uid)
 			if useFree then
 				-- 무료 스택부터 쓴다. 남으면 심장으로 채운다.
-				local used = _AccountData:SpendFreeHeart(uid, left, self:NowMs())
+				used = _AccountData:SpendFreeHeart(uid, left, self:NowMs())
 				left = left - used
 			end
 			if left > 0 then _AccountData:AddBalrogHeart(uid, -left) end
 			-- 🔴 **정말로 빠졌는지 되읽어 확인한다.** 원장 setter 는 로드 전이면 CanWrite 에서
 			--    조용히 버린다(void 반환). 확인하지 않으면 "아무도 안 냈는데 출발" 을 못 잡는다.
 			local drained = heartBefore - _AccountData:GetBalrogHeart(uid)
+			if used > 0 or drained > 0 then self.lastPaidCount = self.lastPaidCount + 1 end
 			if drained ~= left then
 				ok = false
 				log_error("[Heart] 🔴 차감 유실 " .. uid .. " 기대 -" .. tostring(left) ..

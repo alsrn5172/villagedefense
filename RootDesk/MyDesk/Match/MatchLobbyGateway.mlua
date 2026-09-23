@@ -54,6 +54,20 @@ script MatchLobbyGateway extends Logic
 	-- 주인이 [시작하기] 를 누른 뒤 출발까지. 이 사이에 인원이 바뀌면 다시 센다.
 	property number CountdownSeconds = 5.0
 
+	-- 인스턴스 룸 (WO-024 · B11): 매치마다 룸 하나. 룸에 넣을 맵 = PortalRoutes 의 모든 맵(로비 2개 제외). 첫 유저가 이 초 안에 안 들어오면 룸이 사라진다.
+	property number RoomFirstUserWaitSeconds = 60
+
+	-- 룸 키 세대 (같은 matchId 가 재사용돼도 키가 겹치지 않게)
+	@HideFromInspector
+	property integer roomSeq = 0
+
+	@HideFromInspector
+	property any matchMaps = nil
+
+	-- userId → true. **룸으로 옮기는 중**인 참가자. 이동이 이 룸의 UserLeaveEvent 를 일으키므로 OnUserLeave 가 접속 끊김으로 오해하지 않게 (Codex 리뷰 2026-09-23 · 2회 교차 · Maker 실측).
+	@HideFromInspector
+	property any transferring = nil
+
 	-- 브라우저에 한 번에 보여 주는 매치 수. LobbyGroup.ui 의 MatchRow_0..5 와 같아야 한다.
 	property integer BrowseRows = 6
 
@@ -92,11 +106,39 @@ script MatchLobbyGateway extends Logic
 		self.matches = {}
 		self.matchOf = {}
 		self.browsing = {}
+		self.transferring = {}
 		self.matchSeq = 0
+		self:LoadMatchMaps()
 		-- 🔴 접속이 끊긴 사람을 매치에서 빼지 않으면 유령이 남아 정원을 먹고, 주인이면 영영 시작되지 않는다.
 		self.leaveHandler = _UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
 		log("[Lobby] gateway ready · station=" .. self.StationMapId .. " ship=" .. self.ShipMapId ..
-			" start=" .. self.MatchStartMapId .. " min=" .. tostring(self.MinPlayers) .. " max=" .. tostring(self.MaxPlayers))
+			" start=" .. self.MatchStartMapId .. " min=" .. tostring(self.MinPlayers) .. " max=" .. tostring(self.MaxPlayers)
+			.. " roomMaps=" .. tostring(#self.matchMaps) .. " instanceRoom=" .. tostring(_RoomService ~= nil and _RoomService:IsInstanceRoom()))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadMatchMaps()
+		-- 룸에 넣을 매치 맵 목록 = PortalRoutes 의 FromMap/ToMap 전부(로비 2개 제외 · 중복 제거 · WO-024). 표가 없으면 빈 목록 → 출발 거절.
+		self.matchMaps = {}
+		local seen = {}
+		local t = _DataService:GetTable("PortalRoutes")
+		if t == nil then return end
+		for i = 1, t:GetRowCount() do
+			for _, col in ipairs({ "FromMap", "ToMap" }) do
+				local name = tostring(t:GetCell(i, col) or "")
+				if name ~= "" and name ~= self.StationMapId and name ~= self.ShipMapId and not seen[name] then
+					seen[name] = true
+					table.insert(self.matchMaps, name)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RoomKeyFor(string matchId)
+		-- 룸 키 "match_<matchId>_<세대>".
+		self.roomSeq = self.roomSeq + 1
+		return "match_" .. matchId .. "_" .. tostring(self.roomSeq)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -117,9 +159,18 @@ script MatchLobbyGateway extends Logic
 		-- 접속 끊김. 창구를 하나로 두려고 여기서만 정리한다.
 		local userId = event.UserId
 		if userId == nil or userId == "" then return end
+		-- 룸으로 옮기는 중인 참가자의 UserLeave 는 접속 끊김이 아니다 (WO-024 · B11). 원장은 StartMatch 가 이동 전에 이미 지웠다.
+		if self.transferring ~= nil and self.transferring[userId] then return end
 		self.browsing[userId] = nil
 		local m = self:MatchOfUser(userId)
 		if m == nil then return end
+		-- 출발 처리 중(룸 생성·저장 대기)이면 원장을 건드리지 않고 기록만 한다 — StartMatch 가 다음 확인 지점에서 뺀다 (Codex 리뷰 2026-09-23).
+		if m.starting then
+			if m.leftDuringStart == nil then m.leftDuringStart = {} end
+			m.leftDuringStart[userId] = true
+			log("[Lobby] disconnect during start " .. m.id .. " " .. userId)
+			return
+		end
 		if m.host == userId then
 			self:DisbandMatch(m.id, "주인의 접속이 끊겨 매치가 해산됐습니다")
 		else
@@ -393,7 +444,8 @@ script MatchLobbyGateway extends Logic
 			return
 		end
 		-- 🔴 규칙 5: 잠긴 매치는 **거절**한다. 목록에서도 이미 빠져 있어야 한다.
-		if m.locked then
+		-- 심장을 이미 낸 매치(출발이 중단돼 다시 열린 매치)도 거절한다 — 들어오면 차감 없이 탄다 (Codex 리뷰 2026-09-23).
+		if m.locked or m.charged then
 			self:Toast(userId, "이미 출발 준비에 들어간 매치입니다")
 			self:PushBrowseTo(userId)
 			return
@@ -430,7 +482,7 @@ script MatchLobbyGateway extends Logic
 		-- 주인이 참가자를 강퇴한다 (규칙 7).
 		local userId = senderUserId
 		local m = self:MatchOfUser(userId)
-		if m == nil or m.host ~= userId then return end
+		if m == nil or m.host ~= userId or m.starting then return end   -- 출발 처리 중엔 명단을 못 바꾼다
 		local target = self:UserOfToken(m, token)
 		if target == "" or target == userId then return end
 
@@ -457,11 +509,7 @@ script MatchLobbyGateway extends Logic
 			self:Toast(userId, "인원이 부족합니다")
 			return
 		end
-		-- ⚠️ 월드에 "돌고 있는" 매치는 아직 하나뿐이다. 대기는 여러 개여도 출발은 하나.
-		if _MatchSessionLogic ~= nil and _MatchSessionLogic.Running then
-			self:Toast(userId, "이미 진행 중인 매치가 있습니다. 끝날 때까지 기다려 주세요")
-			return
-		end
+		-- 동시 매치 (WO-024 · B11): 매치마다 인스턴스 룸이라 진행 중 매치가 있어도 출발한다 (정적 룸에서는 매치가 돌지 않는다).
 		-- 🔴 서비스가 없으면 **거절한다.** `~= nil` 로 감싸 두면 서비스가 안 떴을 때
 		--    검증도 차감도 건너뛴 채 공짜로 출발한다 (Codex A·B 공통 지적).
 		--    영구 재화는 "못 빼면 안 보낸다" 가 기본값이어야 한다.
@@ -474,11 +522,14 @@ script MatchLobbyGateway extends Logic
 		-- 🔴 **심장이 모자라면 출발 자체를 막는다** (사용자 확정 G-2).
 		--    참가자 중 **한 명이라도** 못 내면 못 간다. 누가 몇 개 부족한지 주인에게 알린다.
 		--    ⚠️ 여기서 통과했어도 5초 카운트 사이에 값이 바뀔 수 있어 StartMatch 가 한 번 더 본다.
-		local miss = _BalrogHeartService:MissingReport(m.members, m.difficulty)
-		if miss ~= "" then
-			self:Toast(userId, miss)
-			log("[Lobby] START 거절 " .. m.id .. " — " .. miss)
-			return
+		--    이미 차감된 매치(출발이 저장 실패 등으로 중단됐던 경우)는 다시 검사하지 않는다 — 두 번 낼 필요가 없다.
+		if not m.charged then
+			local miss = _BalrogHeartService:MissingReport(m.members, m.difficulty)
+			if miss ~= "" then
+				self:Toast(userId, miss)
+				log("[Lobby] START 거절 " .. m.id .. " — " .. miss)
+				return
+			end
 		end
 		self:LockMatch(m)
 		self:StartCountdown(m.id)
@@ -491,6 +542,11 @@ script MatchLobbyGateway extends Logic
 		-- 매치에서 뺀다. 주인이면 해산으로 넘어간다.
 		local m = self:MatchOfUser(userId)
 		if m == nil then return end
+		-- 출발 처리 중엔 나갈 수 없다 — 차감·이동 명단이 이미 잡혔다 (Codex 리뷰 2026-09-23). 몇 초 안에 끝난다.
+		if m.starting then
+			self:Toast(userId, "출발하는 중입니다 — 잠시만 기다려 주세요")
+			return
+		end
 		if m.host == userId then
 			-- 🔴 규칙 6: 주인이 나가면 **해산**이다. 승계하지 않는다.
 			self:DisbandMatch(m.id, "매치 주인이 나가 해산됐습니다")
@@ -509,6 +565,12 @@ script MatchLobbyGateway extends Logic
 		-- 🔴 목적지는 **승강장**이다. 배는 매칭 대기실이라 매치에 없는 사람이 있으면 안 된다.
 		--    맵·좌표의 진상이 여기 있으므로 호출부가 하드코딩하지 않게 이 창구를 둔다.
 		if userId == nil or userId == "" then return end
+		-- 인스턴스 룸(매치) 안에서 불렸으면 RoomService 로 정적 룸(승강장)에 보낸다 — 포탈·MoveToMapPosition 은 룸을 못 넘는다 (WO-024 · B11).
+		if _RoomService ~= nil and _RoomService:IsInstanceRoom() then
+			local ok = _RoomService:MoveUserToStaticRoom(userId, self.StationMapId)
+			log("[Lobby] return to station from room " .. tostring(_RoomService.RoomKey) .. " " .. userId .. " ok=" .. tostring(ok))
+			return
+		end
 		if self:MatchOfUser(userId) ~= nil then self:LeaveMatch(userId, false) end
 		self.browsing[userId] = nil
 		self:OpenFor(userId, false)
@@ -585,85 +647,225 @@ script MatchLobbyGateway extends Logic
 	method void StartMatch(string matchId)
 		-- 🔴 데려가는 건 "이 매치에 있는 사람"뿐이다. 배 전체도, 월드 전체도 아니다.
 		local m = self:GetMatch(matchId)
-		if m == nil or #m.members == 0 then return end
+		if m == nil or #m.members == 0 or m.starting then return end
+		-- 🔴 출발 처리 중 표식 (Codex 리뷰 2026-09-23): 아래 공유 메모리 쓰기·동기 저장은 **실행을 멈추는** 호출이라 그 사이에
+		--    접속 끊김이 끼어들 수 있다. 표식이 서 있는 동안 원장은 여기만 고친다 — OnUserLeave 는 기록만 하고,
+		--    나가기·강퇴는 거절한다. 멈췄던 호출 뒤마다 PruneStarting 으로 명단을 다시 맞춘다.
+		m.starting = true
+		m.leftDuringStart = {}
 
-		-- 🔴 카운트다운 5초 사이에 **다른 매치가 먼저 출발했을 수 있다.** 두 매치가 동시에
-		--    RequestStartMatch 를 통과하면 둘 다 잠기고 둘 다 5초를 센다. 여기서 다시 확인하지 않으면
-		--    나중 것은 시계가 안 도는 채로 리스항구에 덩그러니 남는다.
-		if _MatchSessionLogic ~= nil and _MatchSessionLogic.Running then
-			m.locked = false   -- 목록에 다시 올려 준다
-			for i = 1, #m.members do
-				self:Toast(m.members[i], "다른 매치가 먼저 출발했습니다. 잠시 뒤 다시 시작해 주세요")
-			end
-			log_warning("[Lobby] START " .. matchId .. " 취소 — 이미 진행 중인 매치가 있다")
-			self:PushRoom(m)
-			self:PushBrowse()
+		-- 동시 매치 (WO-024 · B11): 매치마다 인스턴스 룸을 하나 만든다. 🔴 차감 **전에** 룸부터 — 룸을 못 만들면 심장을 빼지 않는다.
+		if _RoomService == nil or self.matchMaps == nil or #self.matchMaps == 0 then
+			self:AbortStart(m, "", "매치 룸을 만들 수 없어 출발하지 못했습니다", "RoomService/매치 맵 목록 없음", true)
+			return
+		end
+		local roomKey = self:RoomKeyFor(matchId)
+		local room = _RoomService:CreateInstanceRoom(roomKey, self.matchMaps, self.RoomFirstUserWaitSeconds)
+		if room == nil or not room:IsValid() then
+			self:AbortStart(m, "", "매치 룸 생성에 실패했습니다. 잠시 뒤 다시 시작해 주세요", "CreateInstanceRoom 실패 key=" .. roomKey, true)
+			return
+		end
+		log("[Lobby] room created key=" .. roomKey .. " maps=" .. tostring(#self.matchMaps))
+
+		-- 참가자를 먼저 복사한다. 아래에서 매치를 지우기 때문이다.
+		local players = self:CopyMembers(m)
+		local difficulty = m.difficulty
+
+		-- 인계 레코드 (공유 메모리 <roomKey> · difficulty/participants/host)를 **차감 전에** 쓴다 (Codex 리뷰 2026-09-23):
+		--    못 쓰면 심장을 빼지 않고 여기서 멈춘다 — 룸은 첫 유저가 안 들어오면 스스로 사라진다. 키별 Code 를 전부 확인한다.
+		local code, mem = _RoomService:GetSharedMemory(roomKey)
+		local wrote = false
+		if mem ~= nil then
+			local res = mem:BatchSetVariableAndWait({ difficulty = tostring(difficulty), participants = table.concat(players, ","), host = tostring(m.host) })
+			wrote = self:AllOk(res, { "difficulty", "participants", "host" })
+		end
+		if not wrote then
+			self:AbortStart(m, roomKey, "매치 인계 기록에 실패했습니다. 잠시 뒤 다시 시작해 주세요", "인계 기록 실패 (GetSharedMemory code=" .. tostring(code) .. ")", true)
+			return
+		end
+		-- 멈췄던 사이 나간 사람을 뺀다 — 아직 안 냈다. 주인이 나갔으면 규칙 6(해산)대로 AbortStart 가 해산한다.
+		local written = #players
+		players = self:PruneStarting(m, players)
+		if #players == 0 or self:IndexIn(m, m.host) == 0 then
+			self:AbortStart(m, roomKey, "", "출발 준비 중 주인 또는 전원 이탈", false)
 			return
 		end
 
 		-- 🔴 **여기가 소모 시점이다** (사용자 확정 G-3): 5초 카운트가 끝나 실제로 넘어가는 순간.
 		--    환불은 없다 — 포기하든 탈락하든 안 돌려준다.
 		--    ⚠️ **이동 전에** 뺀다. 옮긴 뒤에 실패하면 되돌릴 데가 없다.
-		--    ⚠️ m.charged 는 지금은 안전망일 뿐이다 — 아래에서 매치 항목 자체를 지우므로
-		--       같은 매치로 두 번 들어올 길이 없다. 그래도 남긴다: 재화는 영구라 나중에
-		--       재시도 경로가 생겼을 때 이 플래그가 없으면 두 번 빠진다.
-		-- 🔴 **빼기 전에 받을 곳이 있는지 먼저 본다** (Codex A·B 공통 지적).
-		--    아래에서 매치를 지우고 사람들을 옮기는데, 그 뒤 _MatchSessionLogic 이 없으면
-		--    시계도 안 돌고 매치도 없는 채 심장만 사라진다. 환불 수단이 없으니 여기서 막는다.
-		if _BalrogHeartService == nil or _MatchSessionLogic == nil then
-			m.locked = false   -- 목록에 다시 올려 준다
-			for i = 1, #m.members do
-				self:Toast(m.members[i], "매치 시스템이 준비되지 않아 출발하지 못했습니다")
-			end
-			log_error("[Lobby] START " .. matchId .. " 취소 — 필수 로직 없음 (Heart=" ..
-				tostring(_BalrogHeartService ~= nil) .. " Session=" .. tostring(_MatchSessionLogic ~= nil) .. ")")
-			self:PushRoom(m)
-			self:PushBrowse()
+		--    ⚠️ m.charged: 아래 저장 실패로 출발이 중단되면 매치가 남는다 → 재시도 때 이 플래그가 두 번 빼는 걸 막는다.
+		--       대신 차감된 매치에는 새 사람이 못 들어온다 (RequestJoinMatch · 목록에서도 숨김) — 안 막으면 공짜로 탄다.
+		-- 🔴 **빼기 전에 받을 곳이 있는지 먼저 본다** (Codex A·B 공통 지적). 저장 창구가 없으면 차감을 굳힐 수 없다.
+		if _BalrogHeartService == nil or _MatchSessionLogic == nil or _PlayerDBManager == nil then
+			self:AbortStart(m, roomKey, "매치 시스템이 준비되지 않아 출발하지 못했습니다", "필수 로직 없음 (Heart=" ..
+				tostring(_BalrogHeartService ~= nil) .. " Session=" .. tostring(_MatchSessionLogic ~= nil) ..
+				" PlayerDB=" .. tostring(_PlayerDBManager ~= nil) .. ")", true)
 			return
 		end
-
 		if not m.charged then
-			if not _BalrogHeartService:Charge(m.members, m.difficulty) then
-				m.locked = false   -- 목록에 다시 올려 준다
-				local miss = _BalrogHeartService:MissingReport(m.members, m.difficulty)
-				for i = 1, #m.members do
-					self:Toast(m.members[i], (miss ~= "") and miss or "출발하지 못했습니다. 잠시 뒤 다시 시도해 주세요")
+			if not _BalrogHeartService:Charge(players, difficulty) then
+				-- 일부만 빠진 채 실패했으면(원장 쓰기 거부 · 드묾) 다시 시작하게 두면 낸 사람이 두 번 낸다 → 해산한다 (Codex 리뷰 · 환불 없음 · 운영 확인).
+				if _BalrogHeartService.lastPaidCount > 0 then
+					log_error("[Lobby] START " .. matchId .. " 🔴 부분 차감 " .. tostring(_BalrogHeartService.lastPaidCount) .. "/" .. tostring(#players) .. " — 매치 해산 (운영 확인 필요) room=" .. roomKey)
+					m.starting = false
+					_RoomService:DeleteSharedMemoryAsync(roomKey, function(c) end)
+					self:DisbandMatch(matchId, "심장 차감 중 오류가 나 매치가 해산됐습니다 — 운영자에게 알려 주세요")
+					return
 				end
-				log_warning("[Lobby] START " .. matchId .. " 취소 — 차감 실패")
-				self:PushRoom(m)
-				self:PushBrowse()
+				local miss = _BalrogHeartService:MissingReport(players, difficulty)
+				self:AbortStart(m, roomKey, (miss ~= "") and miss or "출발하지 못했습니다. 잠시 뒤 다시 시도해 주세요", "차감 실패", false)
 				return
 			end
 			m.charged = true
 		end
-
-		-- 참가자를 먼저 복사한다. 아래에서 매치를 지우기 때문이다.
-		local players = {}
-		for i = 1, #m.members do table.insert(players, m.members[i]) end
-		local difficulty = m.difficulty
 		log("[Lobby] START " .. matchId .. " ★" .. tostring(difficulty) .. " players=" .. tostring(#players))
 
-		self.matches[matchId] = nil
+		-- 🔴 이동 전에 참가자 전원의 계정을 **동기 저장**한다 (WO-024 심장 부활 경로 차단): 새 룸의 로드가 차감 전 값을 읽지 않게.
+		--    저장이 안 됐으면 옮기지 않는다 — 옮기면 새 룸이 차감 전 값을 읽어 심장이 되살아난다 (Codex 리뷰). 차감은 m.charged 로 남아 재시도 때 안 빠진다.
+		--    출발 중에 나간 사람은 건너뛴다 — 떠나는 순간 PlayerDBManager 가 이미 이탈 저장(동기)을 했다.
 		for i = 1, #players do
 			local uid = players[i]
-			self.matchOf[uid] = nil
-			self.browsing[uid] = nil
-			self:MoveTo(uid, self.MatchStartMapId, self.MatchStartSpawn)
-			self:OpenFor(uid, false)
-			self:PlayArriveSound(uid)
+			if self:StillHere(m, uid) then
+				local saved = _PlayerDBManager:FlushUserAndWait(uid)
+				if not saved and self:StillHere(m, uid) then
+					self:AbortStart(m, roomKey, "계정 저장에 실패해 출발하지 못했습니다. 잠시 뒤 다시 시작해 주세요", "동기 저장 실패 user=" .. uid .. " (심장은 차감된 채 매치 유지)", true)
+					return
+				end
+			end
+		end
+		-- 🔴 차감 **뒤에** 주인이 끊겼으면 해산하지 않고 남은 사람만 데려간다 (의도 · Codex 3차 지적 검토):
+		--    이미 심장을 낸 사람들을 해산시키면 환불 없이 판만 잃는다. 주인은 룸 안에서 아무 권한이 없다(인계의 host 는 기록용).
+		players = self:PruneStarting(m, players)
+		if #players < written and #players > 0 then
+			-- 인계 명단을 줄인다 — 안 줄이면 룸이 떠난 사람을 상한(30초)까지 기다린다. 실패해도 진행한다(상한 뒤 들어온 사람만으로 시작).
+			local res2 = mem:BatchSetVariableAndWait({ participants = table.concat(players, ",") })
+			if not self:AllOk(res2, { "participants" }) then
+				log_warning("[Lobby] START " .. matchId .. " 인계 명단 갱신 실패 — 룸이 상한까지 기다린다")
+			end
+			players = self:PruneStarting(m, players)
+		end
+		if #players == 0 then
+			self:AbortStart(m, roomKey, "", "출발 중 전원 이탈 (차감 뒤)", false)
+			return
+		end
+
+		for i = 1, #players do
+			self.transferring[players[i]] = true
+			self:OpenFor(players[i], false)
+			self:PlayArriveSound(players[i])
+		end
+		-- 🔴 원장은 이동 **전에** 지운다: 이동이 이 룸의 UserLeaveEvent 를 일으키고(Maker 실측 2026-09-23), OnUserLeave 는 transferring 표식으로 걸러진다.
+		m.starting = false
+		self.matches[matchId] = nil
+		for i = 1, #players do
+			self.matchOf[players[i]] = nil
+			self.browsing[players[i]] = nil
+		end
+		local moved = _RoomService:MoveUsersToInstanceRoom(roomKey, players, self.MatchStartMapId)
+		log("[Lobby] START " .. matchId .. " -> room " .. roomKey .. " moved=" .. tostring(moved) .. "/" .. tostring(#players))
+		for i = 1, #players do self.transferring[players[i]] = nil end
+		-- 부분 이동 (Codex 리뷰 2026-09-23 · 2회 교차): 일괄 API 는 누가 실패했는지 안 알려 준다 → **1초 뒤에도 이 룸에 남아 있는 사람**이 실패자다.
+		--    바로 세지 않는 이유: 옮겨진 사람의 엔티티가 같은 프레임에는 아직 남아 있을 수 있다.
+		if moved < #players then
+			-- 아무도 못 갔으면 룸이 인계를 읽을 일이 없다 → 여기서 지운다 (룸은 첫 유저가 안 오면 스스로 사라진다).
+			if moved <= 0 then _RoomService:DeleteSharedMemoryAsync(roomKey, function(c) end) end
+			_TimerService:SetTimerOnce(function() self:RecoverUnmoved(matchId, roomKey, players, moved) end, 1.0)
 		end
 		self:PushBrowse()
-
-		-- 🔴 매치 시계를 여기서 켠다. 예전엔 월드가 뜨면 자동으로 돌았는데(Running 기본 true),
-		--    그러면 로비에서 매칭하는 동안 시계가 흘러 TEST 프로필(225초)은 만료까지 갈 수 있었다.
-		--    이제 MatchSessionLogic.Running 기본값이 false 이고 이 호출이 유일한 시작 진입점이다.
-		-- nil 여부는 차감 **전에** 이미 확인했다(위). 여기서 없을 수는 없지만 방어로 남긴다.
-		if _MatchSessionLogic ~= nil then
-			_MatchSessionLogic:StartMatch(players, difficulty)
-		end
-
-		-- 심장 차감은 위에서 이미 끝났다 (이동 전 · WO-022 S1).
+		-- 매치 시계는 룸 안의 MatchSessionLogic 이 인계를 읽고 켠다 (WO-024 · B11). 정적 룸의 시계는 돌지 않는다.
 		-- 🔴 순위별 **지급**은 아직 없다 — 순위 1순위인 발록 누적 피해를 재는 코드가 없다(WO-017).
+	end
+
+	@ExecSpace("ServerOnly")
+	method any CopyMembers(any m)
+		-- 멤버 목록 복사본 (원본은 출발 중에 PruneStarting 이 줄인다).
+		local out = {}
+		for i = 1, #m.members do table.insert(out, m.members[i]) end
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean StillHere(any m, string userId)
+		-- 출발 처리 중에도 이 룸(정적)에 남아 있는가 — 접속 끊김 기록이 없고 엔티티가 살아 있어야 한다.
+		if m.leftDuringStart ~= nil and m.leftDuringStart[userId] then return false end
+		return isvalid(_UserService:GetUserEntityByUserId(userId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PruneStarting(any m, any players)
+		-- 출발 처리 중 나간(접속 끊김) 사람을 명단과 매치에서 뺀다. 남은 명단을 돌려준다.
+		local kept = {}
+		for i = 1, #players do
+			local uid = players[i]
+			if self:StillHere(m, uid) then
+				table.insert(kept, uid)
+			elseif self:RemoveMember(m, uid) then
+				self.browsing[uid] = nil
+				local note = ""
+				if m.charged then note = " (심장 소모됨 · 환불 없음)" end
+				log("[Lobby] START " .. tostring(m.id) .. " 출발 중 이탈 " .. uid .. note)
+			end
+		end
+		return kept
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecoverUnmoved(string matchId, string roomKey, any players, integer moved)
+		-- 룸으로 못 간 사람 정리 (Codex 리뷰 2026-09-23). 아직 이 룸(정적)에 있으면 이동 실패자다 → 승강장으로 되돌리고 알린다.
+		-- 🔴 심장 환불 경로는 없다 (환불 없음 · 사용자 확정 G-3) — 운영 처리용으로 error 로그를 남긴다.
+		--    접속이 끊겨 못 간 사람은 여기서 안 보인다 = 매치 중 접속 끊김과 같은 취급 (복귀 없음 · 2026-09-10).
+		--    룸 안 매치는 도착한 사람만으로 시작한다 (MatchSessionLogic.TickPendingStart 상한).
+		local stayed = {}
+		for i = 1, #players do
+			if isvalid(_UserService:GetUserEntityByUserId(players[i])) then table.insert(stayed, players[i]) end
+		end
+		log_error("[Lobby] START " .. matchId .. " 부분 이동 moved=" .. tostring(moved) .. "/" .. tostring(#players) ..
+			" room=" .. roomKey .. " 남은 사람=" .. table.concat(stayed, ","))
+		for _, uid in ipairs(stayed) do
+			self:Toast(uid, "매치 룸으로 이동하지 못했습니다 — 운영자에게 알려 주세요 (심장은 이미 소모됨)")
+			self:MoveTo(uid, self.StationMapId, self.StationSpawn)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AllOk(any res, any names)
+		-- BatchSet/Get 결과의 키별 Code 가 전부 OK 인가. 🔴 Code 는 enum 이라 `== 0` 은 항상 거짓 — SharedMemoryResultCode.OK 와 비교한다 (2026-09-23 Maker 실측). 결과는 Dictionary 라 pairs 로 돈다.
+		if res == nil then return false end
+		local ok = {}
+		for name, v in pairs(res) do
+			if v ~= nil and v.Code == SharedMemoryResultCode.OK then ok[tostring(name)] = true end
+		end
+		for _, name in ipairs(names) do
+			if not ok[name] then return false end
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AbortStart(any m, string roomKey, string toastText, string why, boolean isError)
+		-- 출발 중단 공통 경로: 출발 표식·잠금 해제 → 출발 중 나간 사람 정리 → 인계 삭제 → (주인이 나갔으면 해산 · 규칙 6) → 안내 · 목록 갱신.
+		-- 만든 룸은 첫 유저가 안 들어오면 스스로 사라진다. m.charged 는 그대로 둔다 (재시도 때 두 번 안 뺀다).
+		m.starting = false
+		m.locked = false
+		local kept = self:PruneStarting(m, self:CopyMembers(m))
+		local msg = "[Lobby] START " .. tostring(m.id) .. " 취소 — " .. why .. " room=" .. roomKey
+		if isError then log_error(msg) else log_warning(msg) end
+		if roomKey ~= "" and _RoomService ~= nil then _RoomService:DeleteSharedMemoryAsync(roomKey, function(code) end) end
+		if #kept == 0 then
+			self.matches[m.id] = nil
+			self:PushBrowse()
+			return
+		end
+		if self:IndexIn(m, m.host) == 0 then
+			self:DisbandMatch(m.id, "매치 주인이 나가 해산됐습니다")
+			return
+		end
+		if toastText ~= "" then
+			for i = 1, #kept do self:Toast(kept[i], toastText) end
+		end
+		self:PushRoom(m)
+		self:PushBrowse()
 	end
 
 	-- ── 클라 통보 ───────────────────────────────────────────────────
@@ -692,8 +894,7 @@ script MatchLobbyGateway extends Logic
 		--   🔴 **잠긴 매치는 넣지 않는다** (규칙 4).
 		local parts = {}
 		table.insert(parts, "heart=" .. tostring(self:HeartOf(forUserId)))
-		local busy = "0"
-		if _MatchSessionLogic ~= nil and _MatchSessionLogic.Running then busy = "1" end
+		local busy = "0"   -- 동시 매치(B11): 정적 룸에서는 매치가 돌지 않으므로 항상 0 (필드는 파서 호환용으로 유지)
 		table.insert(parts, "busy=" .. busy)
 		-- 난이도 설명 (B6 · 서버 문구): alv=계정Lv · d{★}=TITLE|INTRO|NEG|POS|REWARD|HARD|TIP|심장|솔로|해금Lv|잠김|추천 — 열린 ★ 만 실린다(★2·★4 없음 → 컨트롤러가 숨긴다).
 		if _DifficultyService ~= nil then
@@ -712,7 +913,7 @@ script MatchLobbyGateway extends Logic
 		--    7개 이상일 때는 잘려 나가는 매치가 매번 달라진다. 만들어진 순서(id 의 숫자)로 정렬한다.
 		local open = {}
 		for id, m in pairs(self.matches) do
-			if not m.locked and #m.members > 0 then table.insert(open, m) end
+			if not m.locked and not m.charged and #m.members > 0 then table.insert(open, m) end   -- 심장을 낸 매치는 새 참가를 안 받는다
 		end
 		table.sort(open, function(a, b)
 			return (tonumber(string.sub(a.id, 2)) or 0) < (tonumber(string.sub(b.id, 2)) or 0)
