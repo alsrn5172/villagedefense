@@ -38,6 +38,10 @@ script MatchSessionLogic extends Logic
 	-- 🔴 기본값 false. StartMatch 를 불러야 켜진다 (WO-019 — 예전엔 true 였다).
 	property boolean Running = false
 
+	-- 매치 epoch (Codex 리뷰 2026-09-23): StartMatch 마다 +1. BossSpawner 가 이전 판 피해 원장을 버리는 기준.
+	@HideFromInspector
+	property integer MatchSerial = 0
+
 	-- 개발용. true 면 로비 없이 Play 만 눌러도 즉시 매치가 시작한다.
 	-- 🔴 릴리스 전에 false 인지 확인한다. 켜두면 로비를 거치지 않고 매치가 돌아 로비 검증이 무의미해진다.
 	property boolean AutoStartOnPlay = false
@@ -55,6 +59,10 @@ script MatchSessionLogic extends Logic
 	--    "마지막 모습"이 남는다 (M-1 · 사용자 확정 2026-09-10).
 	@HideFromInspector
 	property any finalRows = nil
+
+	-- 순위 보상 정산 결과 (B8): lastRewards[uid] = { rank, hearts, exp, lvBefore, lvAfter, heartTotal, left }
+	@HideFromInspector
+	property any lastRewards = nil
 
 	-- 🔴 매치를 **떠난** 참가자 (포기 · 접속 끊김). 탈락 판정과 별개로 들고 있는다 —
 	--    마을을 아직 안 잡은 사람은 넥서스가 없어서 Eliminate 를 태울 수 없는데,
@@ -138,6 +146,7 @@ script MatchSessionLogic extends Logic
 		self.finalRows = {}
 		self.leftUsers = {}
 		self.Difficulty = math.max(1, math.min(5, difficulty))
+		self.MatchSerial = self.MatchSerial + 1
 
 		-- 🔴 시계를 켜기 **전에** 이전 판 원장을 비운다. @Logic 은 매치가 끝나도 살아남아
 		--    자동으로 비워지지 않는다 — 안 비우면 두 번째 판을 이전 판 재화·장비·시설을 들고 시작한다.
@@ -154,6 +163,8 @@ script MatchSessionLogic extends Logic
 		if _BalrogRoomService ~= nil then _BalrogRoomService:ClearLedger() end
 		if _BossRewardService ~= nil then _BossRewardService:ResetForMatch() end
 		if _EliteSpawner ~= nil then _EliteSpawner:ResetForMatch() end
+		if _RankRewardService ~= nil then _RankRewardService:ResetForMatch() end
+		self.lastRewards = nil
 
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
@@ -681,6 +692,10 @@ script MatchSessionLogic extends Logic
 			return a.level > b.level
 		end)
 
+		-- 순위 보상 (B8 · RankReward): 정렬 순서가 순위. 심장·계정 경험치를 지급한 뒤 결과 화면 reward= 에 싣는다.
+		self.lastRewards = nil
+		if _RankRewardService ~= nil then self.lastRewards = _RankRewardService:Settle(rows, self.Difficulty, self.leftUsers) end
+
 		for i = 1, n do
 			local uid = self.participants[i]
 			_MatchResultUIController:SetResultCsv(self:BuildResultCsv(rows, uid, reason), uid)
@@ -695,7 +710,18 @@ script MatchSessionLogic extends Logic
 		local parts = {}
 		table.insert(parts, "title=매치 결과")
 		table.insert(parts, "reason=" .. self:SafeText(reason or ""))
-		table.insert(parts, "reward=발록의 심장 보상은 준비 중입니다")
+		-- 순위 보상 문구 (B8).
+		local rw = (self.lastRewards ~= nil) and self.lastRewards[forUserId] or nil
+		local rewardText = "보상 없음"
+		if rw ~= nil then
+			if rw.left then
+				rewardText = "중도 이탈 — 보상 없음"
+			else
+				rewardText = tostring(rw.rank) .. "위 보상: 발록의 심장 +" .. tostring(rw.hearts) .. " (보유 " .. tostring(rw.heartTotal) .. ") · 계정 경험치 +" .. tostring(rw.exp)
+					.. " (Lv" .. tostring(rw.lvBefore) .. ((rw.lvAfter > rw.lvBefore) and (" → Lv" .. tostring(rw.lvAfter)) or "") .. ")"
+			end
+		end
+		table.insert(parts, "reward=" .. self:SafeText(rewardText))
 		local me = -1
 		for i = 1, #rows do
 			if rows[i].uid == forUserId then me = i - 1 end
