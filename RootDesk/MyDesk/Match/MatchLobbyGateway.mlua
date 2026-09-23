@@ -361,6 +361,14 @@ script MatchLobbyGateway extends Logic
 		if self:MatchOfUser(userId) ~= nil then return end   -- 이미 어딘가에 있다
 		if self:InRunningMatch(userId) then return end
 		local d = math.max(1, math.min(5, difficulty))
+		-- ★1/3/5 만 (B6): 닫힌 ★(DifficultyConfig.Enabled) 와 계정 레벨 미달(DifficultyRule.UNLOCK_ACCOUNT_LV)은 서버가 거절한다.
+		local reason = self:RefuseReason(d, userId)
+		if reason ~= "" then
+			log("[Lobby] create refused user=" .. userId .. " diff=" .. tostring(d) .. " reason=" .. reason)
+			self:Toast(userId, self:RefuseText(d, reason))
+			self:PushBrowseTo(userId)
+			return
+		end
 
 		local m = self:CreateMatch(d, userId)
 		self:AddMember(m, userId)
@@ -392,6 +400,14 @@ script MatchLobbyGateway extends Logic
 		end
 		if #m.members >= self.MaxPlayers then
 			self:Toast(userId, "정원이 찼습니다 (" .. tostring(self.MaxPlayers) .. "명)")
+			self:PushBrowseTo(userId)
+			return
+		end
+		-- 참가도 같은 규칙 (B6): 닫힌 ★ · 해금 레벨 미달이면 거절.
+		local reason = self:RefuseReason(m.difficulty, userId)
+		if reason ~= "" then
+			log("[Lobby] join refused user=" .. userId .. " match=" .. m.id .. " diff=" .. tostring(m.difficulty) .. " reason=" .. reason)
+			self:Toast(userId, self:RefuseText(m.difficulty, reason))
 			self:PushBrowseTo(userId)
 			return
 		end
@@ -679,6 +695,17 @@ script MatchLobbyGateway extends Logic
 		local busy = "0"
 		if _MatchSessionLogic ~= nil and _MatchSessionLogic.Running then busy = "1" end
 		table.insert(parts, "busy=" .. busy)
+		-- 난이도 설명 (B6 · 서버 문구): alv=계정Lv · d{★}=TITLE|INTRO|NEG|POS|REWARD|HARD|TIP|심장|솔로|해금Lv|잠김|추천 — 열린 ★ 만 실린다(★2·★4 없음 → 컨트롤러가 숨긴다).
+		if _DifficultyService ~= nil then
+			local alv = 1
+			if _AccountData ~= nil then alv = _AccountData:GetLevel(forUserId) end
+			table.insert(parts, "alv=" .. tostring(alv))
+			for d = 1, 5 do
+				if _DifficultyService:IsEnabled(d) then
+					table.insert(parts, "d" .. tostring(d) .. "=" .. _DifficultyService:Describe(d, forUserId))
+				end
+			end
+		end
 
 		-- 🔴 pairs() 의 순회 순서는 **정해져 있지 않다.** 그대로 쓰면 푸시할 때마다 행 순서가 뒤바뀌고,
 		--    7개 이상일 때는 잘려 나가는 매치가 매번 달라진다. 만들어진 순서(id 의 숫자)로 정렬한다.
@@ -762,6 +789,24 @@ script MatchLobbyGateway extends Logic
 		-- Client RPC 진입점(ShowLobby)을 거친다.
 		if _LobbyUIController == nil then return end
 		_LobbyUIController:ShowLobby(open, userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RefuseReason(integer d, string userId)
+		-- 매치 생성·참가 거절 사유 (B6): "" = 허용 · "disabled" = 닫힌 ★ · "locked" = 계정 레벨 미달.
+		if _DifficultyService == nil then return "" end
+		if not _DifficultyService:IsEnabled(d) then return "disabled" end
+		if not _DifficultyService:IsUnlocked(d, userId) then return "locked" end
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RefuseText(integer d, string reason)
+		-- 거절 토스트 문구.
+		if reason == "locked" and _DifficultyService ~= nil then
+			return "★" .. tostring(d) .. " 은 계정 Lv" .. tostring(_DifficultyService:UnlockLevelFor(d)) .. " 부터 열립니다"
+		end
+		return "★" .. tostring(d) .. " 은 열려 있지 않은 난이도입니다"
 	end
 
 	@ExecSpace("ServerOnly")

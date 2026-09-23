@@ -63,6 +63,10 @@ script BalrogRoomService extends Logic
 	@HideFromInspector
 	property any rooms = nil       -- 방 번호 → 맵 이름
 
+	-- 이번 매치의 발록 최대 HP (B6 · ★ 배율 적용값 · BeginMatch 에서 굳힘 · 결과 화면 DamageOf 도 이 값)
+	@HideFromInspector
+	property integer cachedMaxHp = 0
+
 	@HideFromInspector
 	property any assign = nil      -- userId → 방 번호 (매치 시작 때 1회 · 끝까지 유지)
 
@@ -153,6 +157,9 @@ script BalrogRoomService extends Logic
 		-- 매치 시작. MatchSessionLogic.StartMatch 가 이전 판 원장을 비우고 시계를 켠(Running = true) 뒤에 부른다.
 		-- 🔴 Running 보다 먼저 부르면 OnUpdate 가 "감시 중 + Running 꺼짐" 을 매치 종료로 읽어 곧바로 감시를 끈다.
 		-- ① 방에 남은 사람을 승강장으로  ② 참가 순서대로 한 번 고정 배정  ③ 6방 발록을 새로 깐다.
+		-- 이번 매치의 발록 최대 HP 를 ★ 배율로 굳힌다 (B6). Running 이 켜진 뒤라 Current() 가 이번 ★ 를 준다.
+		self.cachedMaxHp = 0
+		self.cachedMaxHp = self:BossMaxHp()
 		self:ClearLedger()
 		self:ClearStragglers()
 		local n = (userIds ~= nil) and #userIds or 0
@@ -240,6 +247,11 @@ script BalrogRoomService extends Logic
 		-- 이번 매치 ★에 해당하는 영혼석 개수. 표가 이상하면 ★ 그대로.
 		local d = 1
 		if _MatchSessionLogic ~= nil then d = math.max(1, math.min(5, _MatchSessionLogic.Difficulty)) end
+		-- B6: DifficultyRule.BALROG_TICKET (★1/3/5 = 5/30/200). 표에 없으면 TicketCosts 속성 폴백.
+		if _DifficultyService ~= nil then
+			local t = math.floor(_DifficultyService:GetNumFor(d, "BALROG_TICKET"))
+			if t > 0 then return t end
+		end
 		local i = 0
 		for v in string.gmatch(self.TicketCosts, "[^,]+") do
 			i = i + 1
@@ -250,11 +262,14 @@ script BalrogRoomService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer BossMaxHp()
-		-- 도감의 발록 최대 HP. 6방 모두 같다(BossId 하나를 공유한다).
+		-- 도감의 발록 최대 HP × ★ 배율(B6 · BALROG_HP_MUL). 6방 모두 같다(BossId 하나를 공유한다). 매치 중 굳힌 값이 있으면 그 값.
+		if self.cachedMaxHp > 0 then return self.cachedMaxHp end
 		if _BossCatalog == nil then return 0 end
 		local info = _BossCatalog:GetInfo(self.BossId)
 		if info == nil then return 0 end
-		return math.floor(info.maxHp)
+		local hp = math.floor(info.maxHp)
+		if _DifficultyService ~= nil then hp = math.max(1, math.floor(info.maxHp * _DifficultyService:GetMul("BALROG_HP_MUL") + 0.5)) end
+		return hp
 	end
 
 	@ExecSpace("ServerOnly")
@@ -388,6 +403,7 @@ script BalrogRoomService extends Logic
 			return
 		end
 		local need = self:TicketCost()
+		log("[Balrog] ticket=" .. tostring(need) .. " diff=" .. tostring((_MatchSessionLogic ~= nil) and _MatchSessionLogic.Difficulty or 0) .. " user=" .. userId)
 		if need > 0 then
 			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, self.TicketItemId) or 0
 			if have < need then

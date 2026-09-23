@@ -1,0 +1,208 @@
+@Logic
+script DifficultyService extends Logic
+	-- 난이도 단일 적용점 (9/14 기획 · WO-027 §9-0 · 계약 A-2-7a · a/plan-0914 B6).
+	--   · DifficultyRule 표(Difficulty+Key → Value)를 읽어 배율·수치·문구를 준다. 소비처는 각자 곱하지 않고 여기서 받은 값만 쓴다.
+	--   · Current() = 진행 중인 매치의 ★ (MatchSessionLogic.Difficulty). 매치가 없으면 0 → 배율 전부 1 · 수치 0 · 문구 "".
+	--   · ★2·★4 는 DifficultyConfig.Enabled=false (BalrogHeartService 가 읽음) → IsEnabled(d) 가 생성·참가 거절의 근거.
+	--   · 선택창 문구(TITLE·INTRO·NEG·POS·REWARD·HARD·TIP)는 서버가 Describe(d, userId) 로 실어 보낸다 (낙관적 UI 금지).
+	--   소비처: MatchSessionLogic.FireWave(MINION_P3_BOOST · ZOMBIE_MUL) · BossSpawner(BALROG_/BOSS_ HP·ATK) · FarmReward(MATCH_EXP_MUL)
+	--          · DropTableLogic(REGION_DROP_MUL) · BalrogRoomService(BALROG_TICKET · BALROG_HP_MUL) · BossRewardService(BOSS_SOULSTONE)
+	--          · MatchLobbyGateway(IsEnabled · UNLOCK_ACCOUNT_LV · Describe) · B7 엘리트(ELITE_*) · B8 계정(ACCOUNT_EXP_MUL).
+
+	property string TableName = "DifficultyRule"
+
+	-- 발록 방 맵 접두 — BALROG_* 와 BOSS_* 를 가르는 기준 (BalrogRoomService.RoomMaps 와 같은 맵들).
+	property string BalrogMapPrefix = "Sleepywood_Boss_JrBalrog"
+
+	-- rules[d][key] = 값 문자열
+	@HideFromInspector
+	property any rules = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 표를 읽는다.
+		self:EnsureLoaded()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureLoaded()
+		-- DifficultyRule 적재 (1-based 행 · 행 수 로그).
+		if self.loaded then return end
+		self.loaded = true
+		self.rules = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Difficulty] dataset not found: " .. self.TableName .. " — 배율 전부 1")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local d = math.floor(tonumber(tostring(t:GetCell(i, "Difficulty") or "")) or 0)
+			local key = tostring(t:GetCell(i, "Key") or "")
+			if enabled and d >= 1 and d <= 5 and key ~= "" then
+				if self.rules[d] == nil then self.rules[d] = {} end
+				self.rules[d][key] = tostring(t:GetCell(i, "Value") or "")
+				n = n + 1
+			end
+		end
+		local ds = {}
+		for d = 1, 5 do
+			if self.rules[d] ~= nil then table.insert(ds, tostring(d)) end
+		end
+		log("[Difficulty] rules loaded: " .. tostring(n) .. " rows · stars=" .. table.concat(ds, ","))
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer Current()
+		-- 진행 중인 매치의 ★. 없으면 0.
+		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then return 0 end
+		return math.max(1, math.min(5, math.floor(_MatchSessionLogic.Difficulty)))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HasRules(integer d)
+		-- 그 ★ 의 규칙 행이 하나라도 있나.
+		self:EnsureLoaded()
+		return self.rules ~= nil and self.rules[d] ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RawFor(integer d, string key)
+		-- 표의 문자열 값. 없으면 "".
+		self:EnsureLoaded()
+		local r = (self.rules ~= nil) and self.rules[d] or nil
+		if r == nil then return "" end
+		return r[key] or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GetMulFor(integer d, string key)
+		-- 배율. 매치 없음(d=0)·행 없음 = 1.
+		if d < 1 then return 1 end
+		local v = tonumber(self:RawFor(d, key))
+		if v == nil then return 1 end
+		return v
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GetMul(string key)
+		-- 진행 중인 매치 ★ 의 배율.
+		return self:GetMulFor(self:Current(), key)
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GetNumFor(integer d, string key)
+		-- 수치. 없으면 0.
+		if d < 1 then return 0 end
+		return tonumber(self:RawFor(d, key)) or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GetNum(string key)
+		-- 진행 중인 매치 ★ 의 수치.
+		return self:GetNumFor(self:Current(), key)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetTextFor(integer d, string key)
+		-- 문구. 없으면 "".
+		if d < 1 then return "" end
+		return self:RawFor(d, key)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetText(string key)
+		-- 진행 중인 매치 ★ 의 문구.
+		return self:GetTextFor(self:Current(), key)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsEnabled(integer d)
+		-- 이 ★ 로 매치를 만들거나 참가할 수 있나 = DifficultyConfig.Enabled(BalrogHeartService) + DifficultyRule 행 존재.
+		if d < 1 or d > 5 then return false end
+		if _BalrogHeartService ~= nil and not _BalrogHeartService:IsEnabled(d) then return false end
+		return self:HasRules(d)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer UnlockLevelFor(integer d)
+		-- 해금 계정 레벨 (UNLOCK_ACCOUNT_LV · 없으면 1).
+		local v = math.floor(self:GetNumFor(d, "UNLOCK_ACCOUNT_LV"))
+		if v < 1 then v = 1 end
+		return v
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsUnlocked(integer d, string userId)
+		-- 계정 레벨이 해금 레벨 이상인가. AccountData 가 없으면 열림.
+		local lv = 1
+		if _AccountData ~= nil then lv = _AccountData:GetLevel(userId) end
+		return lv >= self:UnlockLevelFor(d)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer Recommended(string userId)
+		-- 추천 ★ = 열려 있고 해금된 것 중 가장 높은 ★ (★5 랭커 도전은 추천하지 않는다).
+		local best = 1
+		for d = 1, 4 do
+			if self:IsEnabled(d) and self:IsUnlocked(d, userId) then best = d end
+		end
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Clean(string s)
+		-- 브라우저 CSV 에 실을 수 없는 글자(; = |)를 공백으로.
+		local out, _ = string.gsub(tostring(s or ""), "[;=|]", " ")
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Describe(integer d, string userId)
+		-- 선택창 문구 한 줄: TITLE|INTRO|NEG|POS|REWARD|HARD|TIP|심장비용|솔로비용|해금Lv|잠김(1/0)|추천(1/0)
+		local cost = d
+		local solo = math.max(0, d - 1)
+		if _BalrogHeartService ~= nil then
+			cost = _BalrogHeartService:CostOf(d, 2)
+			solo = _BalrogHeartService:CostOf(d, 1)
+		end
+		local locked = "0"
+		if not self:IsUnlocked(d, userId) then locked = "1" end
+		local rec = "0"
+		if self:Recommended(userId) == d then rec = "1" end
+		local parts = {}
+		for _, k in ipairs({ "TITLE", "INTRO", "NEG", "POS", "REWARD", "HARD", "TIP" }) do
+			table.insert(parts, self:Clean(self:GetTextFor(d, k)))
+		end
+		table.insert(parts, tostring(cost))
+		table.insert(parts, tostring(solo))
+		table.insert(parts, tostring(self:UnlockLevelFor(d)))
+		table.insert(parts, locked)
+		table.insert(parts, rec)
+		return table.concat(parts, "|")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsBalrogMap(string mapName)
+		-- 발록 방 맵인가 (접두 비교).
+		return string.find(tostring(mapName or ""), self.BalrogMapPrefix, 1, true) == 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method number BossHpMulFor(string mapName)
+		-- 보스 HP 배율: 발록 방이면 BALROG_HP_MUL · 그 외 BOSS_HP_MUL.
+		if self:IsBalrogMap(mapName) then return self:GetMul("BALROG_HP_MUL") end
+		return self:GetMul("BOSS_HP_MUL")
+	end
+
+	@ExecSpace("ServerOnly")
+	method number BossAtkMulFor(string mapName)
+		-- 보스 공격력 배율: 발록 방이면 BALROG_ATK_MUL · 그 외 BOSS_ATK_MUL.
+		if self:IsBalrogMap(mapName) then return self:GetMul("BALROG_ATK_MUL") end
+		return self:GetMul("BOSS_ATK_MUL")
+	end
+end
