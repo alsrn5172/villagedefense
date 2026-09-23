@@ -100,8 +100,8 @@ const CANONICAL = {
   EliteMonsterInfo:
     "EliteId,Name,BaseMonsterId,Level,MaxHp,ModelId,MoveType,AiType," +
     "AttackPower,Defense,KnockbackResist,MoveSpeed," +
-    "MaterialId,MaterialMin,MaterialMax,Exp,Meso,Enabled,#Note",
-  EliteSpawnTable: "MapName,BaseMonsterId,EliteId,Chance,Enabled,#Note",
+    "MaterialId,MaterialMin,MaterialMax,Exp,Meso,Enabled,ScaleMul,CoinDrop,DreamDrop,SoulstoneDrop,Tier,#Note",
+  EliteSpawnTable: "MapName,BaseMonsterId,EliteId,Chance,Enabled,KillsPerElite,#Note",
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
