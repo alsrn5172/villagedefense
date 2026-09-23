@@ -232,16 +232,32 @@ script PortalNetwork extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean HasRoute(string fromMap, string toMap)
-		-- PortalRoutes 에 fromMap → toMap 활성 행이 있나 (서버 검증용).
+	method any RouteFor(string fromMap, string toMap)
+		-- PortalRoutes 의 fromMap → toMap 활성 행 { fromPortal, toPortal }. 없으면 nil. 목적 포탈은 클라 값이 아니라 이 행에서 정한다 (Codex 리뷰 2026-09-23).
 		local t = _DataService:GetTable(self.TableName)
-		if t == nil then return false end
+		if t == nil then return nil end
 		for i = 1, t:GetRowCount() do
 			if self:ParseEnabled(t:GetCell(i, "Enabled")) and (t:GetCell(i, "FromMap") or "") == fromMap and (t:GetCell(i, "ToMap") or "") == toMap then
-				return true
+				local fp = t:GetCell(i, "FromPortal") or ""
+				local tp = t:GetCell(i, "ToPortal") or ""
+				if fp ~= "" and tp ~= "" then return { fromPortal = fp, toPortal = tp } end
 			end
 		end
-		return false
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean NearPortal(Entity player, string mapName, string portalName)
+		-- 서버 검증: 플레이어가 출발 포탈 상자(여유 1.0) 안에 있나 (클라 TryMoveByUpArrow 와 같은 기준 · 서버는 여유를 더 준다).
+		local source = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. portalName)
+		if not isvalid(source) or not isvalid(source.PortalComponent) or not isvalid(source.TransformComponent) then return false end
+		if not isvalid(player.TransformComponent) then return false end
+		local portal = source.PortalComponent
+		local pp = source.TransformComponent.WorldPosition
+		local me = player.TransformComponent.WorldPosition
+		local dx = me.x - (pp.x + portal.BoxOffset.x)
+		local dy = me.y - (pp.y + portal.BoxOffset.y)
+		return math.abs(dx) <= portal.BoxSize.x * 0.5 + 1.0 and math.abs(dy) <= portal.BoxSize.y * 0.5 + 1.5
 	end
 
 	@ExecSpace("Server")
@@ -251,14 +267,27 @@ script PortalNetwork extends Logic
 		local player = _UserService:GetUserEntityByUserId(uid)
 		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
 		local fromMap = isvalid(player.CurrentMap) and player.CurrentMap.Name or ""
-		if not self:IsBossEntry(toMap) or not self:HasRoute(fromMap, toMap) then
+		local route = nil
+		if self:IsBossEntry(toMap) then route = self:RouteFor(fromMap, toMap) end
+		if route == nil then
 			log_warning("[PortalNetwork] RequestEnterBoss rejected: not a boss entry " .. fromMap .. " -> " .. tostring(toMap) .. " (" .. uid .. ")")
+			return
+		end
+		-- 🔴 목적 포탈은 서버 route 행 값. 출발 포탈 근처가 아니면 거절 (Codex 리뷰 2026-09-23).
+		toPortal = route.toPortal
+		if not self:NearPortal(player, fromMap, route.fromPortal) then
+			log("[PortalNetwork] boss entry denied: not near portal " .. fromMap .. "/" .. route.fromPortal .. " (" .. uid .. ")")
 			return
 		end
 		local item = ""
 		if _DropTableLogic ~= nil then item = _DropTableLogic:RegionItemOfMap(toMap) end
 		local cost = self.BossEntryCost
-		if item == "" then cost = 0 end
+		if item == "" then
+			-- 🔴 fail-closed: 지역 재화를 못 구하면 무료로 열지 않는다 (Codex 리뷰 2026-09-23).
+			log_warning("[PortalNetwork] boss entry denied: region item unknown map=" .. toMap .. " (" .. uid .. ")")
+			if _UIToast ~= nil then _UIToast:ShowMessage("입장권 정보를 찾지 못했습니다. 잠시 뒤 다시 시도하세요", uid) end
+			return
+		end
 		local itemName = item
 		if item ~= "" and _ItemCatalog ~= nil then
 			local def = _ItemCatalog:Get(item)
