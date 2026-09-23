@@ -14,6 +14,7 @@
 | 포탈망 | 룸에 없는 맵 노선은 `absentMap` 으로 조용히 건너뜀 | `PortalNetwork.mlua` |
 | 넥서스 | 정적 룸(로비)에서는 `SpawnAllNexus` 를 건너뜀 (마을 맵이 룸에만 있다) | `Lane/LaneFacilityService.mlua` |
 | 맵 | 로비 2개 제외 41개 `IsInstanceMap=true` **+ 파일 헤더 `"Usage": 1`** (둘 다 있어야 룸에 들어간다 — 헤더가 0 이면 `CreateInstanceRoom` 이 `LEA-3002` 로 실패 · 실측) | `map/*` |
+| 계약서 | §0-3 이름 규약에 **인스턴스 룸 키** `match_{MatchId}_{세대}` + "매치 맵 = 인스턴스 맵" · A-4 에 **`MatchRoomHandoff`**(공유 메모리 인계 레코드) · 9/14 등록서 1·8번에 B11 추가 · 변경 이력 (#40 comment 5794545040 공지 뒤 단독) | `Docs/스키마-계약.md` |
 
 ## 검증
 
