@@ -29,7 +29,20 @@ script LaneStateService extends Logic
 	-- ── 침범 안정장치 (WO-016 · 추가기획2) — 잠정값은 전부 property (미정-값.md E-1·E-2). 값이 정해지면 여기만 바꾼다. ──
 	-- 수비대·포탑(공격하는 억제기 포함)이 **플레이어**를 때릴 때 곱하는 계수. 원문 "(계수-기본10)배" → 기본 10.0 (E-1 잠정).
 	-- 읽는 곳 = DefenderService.SpawnOne · LaneFacilityService.ApplyCombat 두 군데뿐. 미니언에는 안 붙는다(FactionAttack 기본 1.0).
-	property number PlayerDamageMul = 10.0
+	property number PlayerDamageMul = 12.0
+
+	-- 억제기 파괴 폭발 (B3 · 사용자 2026-09-22 · 전 마을 공통): 파괴 순간 반경 안의 **미니언에게만** 고정 피해. 연출 = ICBM special 클립(×0.8) + Hit 사운드.
+	property number SuppressorBoomDamage = 10000
+
+	property number SuppressorBoomRadius = 3.0
+
+	property string SuppressorBoomRuid = "807816a6794a4241b09572b384f475c0"
+
+	property number SuppressorBoomScale = 0.8
+
+	property string SuppressorBoomSoundRuid = "5e8b2bcc46c848a7b50a48710988d700"
+
+	property number SuppressorBoomVolume = 1.0
 
 	-- 억제기·넥서스 피격 알림의 도배 방지 간격(초). 마을×단계별로 마지막 알림 시각을 들고 판정한다 (E-2 잠정).
 	property number HitAlertInterval = 5.0
@@ -581,6 +594,8 @@ script LaneStateService extends Logic
 			log("[Lane] " .. villageId .. " " .. stage .. " DESTROYED by " .. tostring(attackerName))
 			-- 파괴 알림은 세 단계 전부 (WO-016 — 넥서스도 · 예전엔 stage ~= "CORE" 조건으로 빠져 있었다). 넥서스는 곧이어 Eliminate 의 탈락 토스트가 덮는다.
 			self:FacilityAlert(villageId, self.towerDef[stage].name .. " 파괴!")
+			-- 억제기 폭발 (B3): 파괴 알림 직후 · 넥서스 탈락 판정보다 먼저.
+			if stage == "SUPPRESSOR" then self:SuppressorBoom(villageId) end
 		elseif stage ~= "TOWER" then
 			-- 피격 알림 정책 (WO-016): 포탑 = 파괴만 · 억제기·넥서스 = 공격받기만 해도. 남은 HP 비율 포함 · 도배 방지 간격.
 			self:HitAlert(v, stage, t)
@@ -588,6 +603,64 @@ script LaneStateService extends Logic
 		if destroyed and stage == "CORE" then self:Eliminate(villageId) end
 		self:Changed(villageId, stage)
 		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SuppressorBoom(string villageId)
+		-- 억제기 파괴 폭발 (B3 · WO-027 §7 · 사용자 2026-09-22): 파괴 순간 억제기 바닥 기준 반경 SuppressorBoomRadius 안의 **미니언(MinionUnit)에게만**
+		-- SuppressorBoomDamage 고정 피해. 시설·수비대·플레이어는 안 맞는다. 폭발로 죽은 미니언은 처치 보상 없음(lastAttacker 없음).
+		-- 연출: ICBM special 클립을 억제기 층에 · Hit 사운드는 그 맵 안 유저에게(_SoundService 는 Client 라 유저별 targetUserId).
+		if _LaneFacilityService == nil or _LaneFacilityService.entities == nil then return end
+		local ent = _LaneFacilityService.entities[villageId .. ":SUPPRESSOR"]
+		if not isvalid(ent) then
+			log_warning("[Suppressor] boom skipped — entity missing " .. villageId)
+			return
+		end
+		local map = ent.CurrentMap
+		local tr = ent.TransformComponent
+		if not isvalid(map) or not isvalid(tr) then return end
+		local p = tr.WorldPosition
+		local cx = p.x
+		local cy = p.y - _LaneFacilityService:GroundOffset(villageId, "SUPPRESSOR")
+		local r2 = self.SuppressorBoomRadius * self.SuppressorBoomRadius
+		local hit = 0
+		local killed = 0
+		for _, child in pairs(map.Children) do
+			if isvalid(child) and child.MinionUnit ~= nil then
+				---@type Monster
+				local mon = child.Monster
+				local ct = child.TransformComponent
+				if isvalid(mon) and not mon.IsDead and isvalid(ct) then
+					local q = ct.WorldPosition
+					local dx = q.x - cx
+					local dy = q.y - cy
+					if dx * dx + dy * dy <= r2 then
+						hit = hit + 1
+						mon.Hp = mon.Hp - self.SuppressorBoomDamage
+						if mon.Hp <= 0 then
+							killed = killed + 1
+							mon:PlaySoundToMap(mon.DieSoundRUID, mon.SoundVolume)
+							mon:Dead()
+						end
+					end
+				end
+			end
+		end
+		if _LaneFxLogic ~= nil and self.SuppressorBoomRuid ~= "" then
+			local fsr = ent.SpriteRendererComponent
+			_LaneFxLogic:PlayClip(map, self.SuppressorBoomRuid, Vector3(cx, cy, 0), self.SuppressorBoomScale, 0, isvalid(fsr) and fsr.SortingLayer or "", false)
+		end
+		if self.SuppressorBoomSoundRuid ~= "" then
+			local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+			if users ~= nil then
+				for _, u in ipairs(users) do
+					if isvalid(u) and isvalid(u.PlayerComponent) then
+						_SoundService:PlaySound(self.SuppressorBoomSoundRuid, self.SuppressorBoomVolume, u.PlayerComponent.UserId)
+					end
+				end
+			end
+		end
+		log("[Suppressor] boom " .. villageId .. " hit=" .. tostring(hit) .. " killed=" .. tostring(killed) .. " r=" .. tostring(self.SuppressorBoomRadius) .. " dmg=" .. tostring(self.SuppressorBoomDamage) .. " at (" .. string.format("%.2f", cx) .. "," .. string.format("%.2f", cy) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
