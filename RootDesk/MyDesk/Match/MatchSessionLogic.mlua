@@ -55,6 +55,17 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property number pendingWait = 0
 
+	-- 인계 읽기 재시도 (Codex 리뷰 2026-09-23 · 2회 교차): 룸 생성 직후엔 로비가 아직 공유 메모리를 안 썼을 수 있다 → 1초마다 다시 읽고 상한을 넘기면 포기.
+	-- 🔴 인계는 룸마다 **한 번**만 쓴다 — 시작하거나 포기하면 false 로 내린다 (안 내리면 매치가 끝나 Running=false 가 된 뒤 다시 읽으려 든다 · 2026-09-23 Maker 실측).
+	@HideFromInspector
+	property boolean handoffActive = false
+
+	@HideFromInspector
+	property number handoffWait = 0
+
+	@HideFromInspector
+	property number handoffRetry = 0
+
 	-- 로비에서 고른 난이도 ★1~5. 시작할 때 받아 둔다 (WO-022 의 DifficultyConfig 가 이 값을 쓴다).
 	property integer Difficulty = 1
 
@@ -128,8 +139,13 @@ script MatchSessionLogic extends Logic
 		self.Running = false
 		log("[Match] MatchSessionLogic ready — 대기 중 (profile=" .. self.Profile .. " phases=" .. tostring(#self.phases) .. " duration=" .. tostring(self.MatchDuration) .. "s autoStart=" .. tostring(self.AutoStartOnPlay) .. ")")
 		-- 인스턴스 룸이면 인계 레코드를 읽는다 (WO-024 · B11). 정적 룸은 로비 전용 — 매치가 돌지 않는다.
-		if _RoomService ~= nil and _RoomService:IsInstanceRoom() then self:ReadHandoff() end
-		if self.AutoStartOnPlay then
+		-- 못 읽었으면 TickPendingStart 가 1초마다 다시 읽는다 (룸 Logic 이 로비의 공유 메모리 쓰기보다 먼저 뜰 수 있다).
+		self.handoffActive = (_RoomService ~= nil and _RoomService:IsInstanceRoom())
+		self.handoffWait = 0
+		self.handoffRetry = 1.0
+		if self.handoffActive then self:ReadHandoff() end
+		-- 🔴 AutoStartOnPlay 는 정적 룸(개발용)에서만 — 인스턴스 룸에서 켜지면 빈 참가자로 시작해 정상 인계가 Running 에 막힌다 (Codex 리뷰 2026-09-23).
+		if self.AutoStartOnPlay and not self.handoffActive then
 			-- 로비 없이 테스트하는 경로. 지금 접속해 있는 전원을 참가자로 잡는다.
 			local ids = {}
 			for _, user in ipairs(_UserService.UserEntities.Values) do
@@ -141,54 +157,88 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void ReadHandoff()
-		-- 공유 메모리 <RoomKey> 의 difficulty · participants 를 읽어 입장 대기 상태로 둔다 (MatchLobbyGateway.StartMatch 가 쓴다).
+	method boolean ReadHandoff()
+		-- 공유 메모리 <RoomKey> 의 difficulty · participants 를 읽어 입장 대기 상태로 둔다 (MatchLobbyGateway.StartMatch 가 쓴다). 아직 안 쓰였으면 false — TickPendingStart 가 다시 부른다.
 		local key = tostring(_RoomService.RoomKey or "")
 		local code, mem = _RoomService:GetSharedMemory(key)
-		if mem == nil then
-			log_error("[Match] handoff 없음 room=" .. key .. " code=" .. tostring(code))
-			return
-		end
+		if mem == nil then return false end
 		local r = mem:BatchGetVariableAndWait({ "difficulty", "participants" })
 		local d = 0
 		local csv = ""
 		if r ~= nil then
-			local rd = r["difficulty"]
-			local rp = r["participants"]
-			if rd ~= nil and rd.Code == 0 and rd.Info ~= nil then d = math.floor(tonumber(rd.Info.Value or "0") or 0) end
-			if rp ~= nil and rp.Code == 0 and rp.Info ~= nil then csv = tostring(rp.Info.Value or "") end
+			-- 🔴 Code 는 enum 이라 `== 0` 은 **항상 거짓**이다 — SharedMemoryResultCode.OK 와 비교한다 (2026-09-23 Maker 실측: 이 비교 하나로 인계가 늘 비어 보였다).
+			--    결과는 Dictionary 라 pairs 로 돈다 (키 인덱싱은 실측 안 됨).
+			for name, v in pairs(r) do
+				if v ~= nil and v.Code == SharedMemoryResultCode.OK and v.Info ~= nil then
+					if name == "difficulty" then d = math.floor(tonumber(v.Info.Value or "0") or 0)
+					elseif name == "participants" then csv = tostring(v.Info.Value or "") end
+				end
+			end
 		end
 		local ids = {}
 		for uid in string.gmatch(csv, "[^,]+") do table.insert(ids, uid) end
-		if d < 1 or #ids == 0 then
-			log_error("[Match] handoff 불완전 room=" .. key .. " diff=" .. tostring(d) .. " players=" .. tostring(#ids))
-			return
-		end
+		if d < 1 or #ids == 0 then return false end
 		self.pendingStart = { participants = ids, difficulty = d }
 		self.pendingWait = 0
 		log("[Match] handoff room=" .. key .. " diff=" .. tostring(d) .. " players=" .. tostring(#ids) .. " — 입장 대기")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeleteHandoff()
+		-- 인계 레코드(공유 메모리 <RoomKey>)를 지운다 — 시작·포기 어느 끝에서든 한 번 (Codex 리뷰: 안 지우면 누적된다).
+		if _RoomService == nil then return end
+		_RoomService:DeleteSharedMemoryAsync(tostring(_RoomService.RoomKey or ""), function(code) end)
 	end
 
 	@ExecSpace("ServerOnly")
 	method void TickPendingStart(number delta)
-		-- 참가자 전원이 룸에 들어오고 계정 로드가 끝나면 StartMatch. 상한을 넘기면 들어온 사람만으로 시작(아무도 없으면 포기 → 빈 룸은 사라진다).
+		-- 인스턴스 룸 전용. ① 인계를 아직 못 읽었으면 1초마다 다시 읽는다(상한 RoomStartTimeoutSeconds → 포기).
+		-- ② 읽은 뒤: 참가자 전원이 룸에 들어오고 계정 로드가 끝나면 StartMatch. 첫 참가자 도착 뒤 상한을 넘기면 들어온 사람만으로 시작(아무도 안 오면 빈 룸은 스스로 사라진다).
+		--    🔴 늦게 들어온 사람은 참가자가 아니다(정책 · WO-024). 심장은 이미 빠져 있다 — 로그로 남긴다.
+		if not self.handoffActive or self.Running then return end
+		if self.pendingStart == nil then
+			self.handoffWait = self.handoffWait + delta
+			-- 상한을 **읽기 전에** 본다 — 상한을 넘긴 뒤 늦게 읽혀도 받지 않는다 (Codex 리뷰 2026-09-23).
+			if self.handoffWait >= self.RoomStartTimeoutSeconds then
+				self.handoffActive = false
+				log_error("[Match] handoff 없음 — " .. tostring(self.RoomStartTimeoutSeconds) .. "초 안에 인계 레코드를 못 읽음 room=" .. tostring(_RoomService.RoomKey))
+				self:DeleteHandoff()
+				return
+			end
+			self.handoffRetry = self.handoffRetry - delta
+			if self.handoffRetry > 0 then return end
+			self.handoffRetry = 1.0
+			self:ReadHandoff()
+			return
+		end
 		local p = self.pendingStart
-		if p == nil or self.Running then return end
-		self.pendingWait = self.pendingWait + delta
 		local present = {}
 		for _, uid in ipairs(p.participants) do
 			local e = _UserService:GetUserEntityByUserId(uid)
-			if isvalid(e) and (_AccountData == nil or _AccountData:IsLoaded(uid)) then table.insert(present, uid) end
+			-- _AccountData 가 없으면 "로드됨" 이 아니라 "아직" 이다 (Codex 리뷰) — 상한까지 기다린다.
+			if isvalid(e) and _AccountData ~= nil and _AccountData:IsLoaded(uid) then table.insert(present, uid) end
 		end
+		-- 입장 대기 상한은 **첫 참가자가 들어온 뒤부터** 센다 (Codex 리뷰 2026-09-23): 로비의 저장 대기가 길어도 룸이 먼저 포기하지 않게.
+		-- 아무도 안 오면 여기서 기다리기만 한다 — 룸은 첫 유저가 안 오면(RoomFirstUserWaitSeconds) 스스로 사라진다.
+		if #present == 0 then return end
+		self.pendingWait = self.pendingWait + delta
 		if #present < #p.participants and self.pendingWait < self.RoomStartTimeoutSeconds then return end
+		-- 여기서부터는 인계를 다 쓴 것이다 — 다시 읽지 않는다.
 		self.pendingStart = nil
-		if #present == 0 then
-			log_warning("[Match] handoff 시작 포기 — " .. tostring(self.RoomStartTimeoutSeconds) .. "초 안에 아무도 안 들어옴")
-			return
+		self.handoffActive = false
+		self:DeleteHandoff()
+		if #present < #p.participants then
+			local missing = {}
+			for _, uid in ipairs(p.participants) do
+				local found = false
+				for _, pid in ipairs(present) do if pid == uid then found = true end end
+				if not found then table.insert(missing, uid) end
+			end
+			log_warning("[Match] handoff 부분 시작 — 미도착 " .. table.concat(missing, ",") .. " (심장은 이미 소모됨)")
 		end
 		log("[Match] handoff start present=" .. tostring(#present) .. "/" .. tostring(#p.participants) .. " wait=" .. string.format("%.1f", self.pendingWait) .. "s")
 		self:StartMatch(present, p.difficulty)
-		if _RoomService ~= nil then _RoomService:DeleteSharedMemoryAsync(tostring(_RoomService.RoomKey or ""), function(code) end) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -527,7 +577,7 @@ script MatchSessionLogic extends Logic
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- 시계: 페이즈 전환 · 투입 · HUD. 만료되면 Running 이 꺼져 여기서 바로 빠진다.
-		if self.pendingStart ~= nil then self:TickPendingStart(delta) end
+		if self.handoffActive then self:TickPendingStart(delta) end
 		if not self.Running or self.phases == nil or #self.phases == 0 then return end
 		self.Elapsed = self.Elapsed + delta
 		self.PhaseElapsed = self.PhaseElapsed + delta
