@@ -173,7 +173,7 @@ SkillAttack: dealt SK_W11 to T_ps_1 lv=5 amount=113 display=1   ← 2타 (나머
 
 ### Play 검증 (3차)
 
-(재입장 · Reimport All 뒤 추가) — Ctrl 기본 공격이 무기 세트에서 무작위로 고르는지(증거) · swingO1/swingT1 클립 길이 실측 → `hitAt` · 시전 락 교체 · skill-maker 하네스(P · H/D) · Lv1 = 112 · Lv5 = 225 (한 대상 · 다른 몬스터 0) · 시체는 안 맞음 · 빌드 경고 N → N
+→ **6차 절(2026-09-25)에 결과.** Ctrl 기본 공격은 무작위가 아니다(swingO1 고정) · 휘두르기 6종 실측 → HitTime 0.45 · LockTime 0.80 · Lv1 112 / Lv5 225(한 대상 · 다른 몬스터 0) · 시체 안 맞음 · 보상 1회 · 빌드 경고 1 → 1. **PASS**
 
 ## 2026-09-25 (4차) — PR 합치기: #90 · #91 · #92 · #93 → 이 PR · `SkillMotionSet` 구현 (파워 스트라이크 RANDOM)
 
@@ -232,7 +232,7 @@ PR #91. skill-maker 점검(2026-09-24)에서 발견: 스킬 타격 경로(`Skill
 
 #### Play 검증
 
-(재입장 · Reimport All 뒤 추가) — 수비대 옆에서 스킬 → 수비대 피해 0 · 몬스터는 그대로 피해 · 빌드 경고 N → N
+→ **6차 절(2026-09-25)에 결과.** 우리 편(진영 21) · 중립 스네일이 가장 가까워도 후보에서 빠지고 피해 0 · 적 몬스터는 그대로 피해. **PASS**
 
 ### 4차 · 맨손 거절 (원래 #92) — 2026-09-24 — 맨손이면 공격 스킬 거절 + 토스트
 
@@ -265,7 +265,7 @@ PR #92. **출처: #40 5813570100 (A 결정 · 사용자 확정 2026-09-24)** —
 
 #### Play 검증
 
-(재입장 · Reimport All 뒤 추가) — 맨손: 파워 스트라이크 · 에너지볼트 거절 + 토스트 · MP/쿨다운 그대로 · 하이퍼 바디 · 텔레포트는 시전됨 / 무기 장착: 전부 정상 · 빌드 경고 N → N
+→ **6차 절(2026-09-25)에 결과.** 맨손: 파워 스트라이크 · 에너지볼트 · 에너지 차지 재시전(주먹) 거절 + 토스트 · MP/쿨다운 그대로 · 하이퍼 바디 · 도발 · 텔레포트 · 에너지 차지(변신) 시전됨. **PASS**
 
 ### 4차 · 분신 렌더 순서 (원래 #93) — 2026-09-24 — 분신 · 에너지 차지 불꽃 렌더 층 = Default / 플레이어 순서값 − 1
 
@@ -289,7 +289,7 @@ PR #93. **출처: #40 5813565483 (A 답 · 사용자 확정 2026-09-24).** 플�
 
 #### Play 검증
 
-(재입장 · Reimport All 뒤 추가) — 쉐도우 파트너 분신 · 에너지 차지 불꽃이 플레이어 바로 뒤 · 시설 · NPC 앞 · 공중 시전도 뒤 · 로그 `layer=Default/3` · 빌드 경고 N → N
+→ **6차 절(2026-09-25)에 결과.** 분신 `layer=Default/3` · 플레이어 `Default/4` → 분신 · 에너지 차지 불꽃이 플레이어 바로 뒤 · 맵 난간 앞 · 공중 시전도 뒤. `PlayEffectAttached` 옵션이 클라 렌더에 반영된다(⚠ 우려 해소). **PASS** — #64 의 재현 조건(시전 뒤 다른 발판 층으로 이동)은 따로 돌리지 않았다.
 
 ## 2026-09-25 (5차) — 몬스터 피격 연출 3건 (A 파일 · #40 5813661726 2~4번 · A 리뷰 승인 대상)
 
@@ -306,3 +306,58 @@ A 결정(사용자 확정 2026-09-24): 2~4번은 **B 가 SK_W11 PR 에 넣고 A 
 - 스킬 쪽 시체 제외(`SkillAttack.IsDeadOrDying` · 3차)와 짝이다 — 스킬은 두 겹으로 막히고, 기본 공격은 이 `HitComponent` 끄기로 막힌다(기본 공격 쪽 `IsDead` 제외는 PlayerAttack PR · 규칙 PR #88 머지 뒤).
 - skill-maker 규칙("죽이는 타격도 공격자를 본다")은 A 결정 범위(살아 있는 피격 · `ReactToHit`)를 넘어 넣지 않았다 — 필요하면 A 에게 따로 묻는다.
 - 계약서 스킬 등록서 8번에 이 두 A 파일을 적어야 하지만 같은 줄(`:274`)을 #86 이 고치고 있어 **#86 머지 뒤** 넣는다(PR 본문에 등록 항목으로 적었다).
+
+## 2026-09-25 (6차) — Play 검증 1차 전체 + 휘두르기 클립 실측 → `HitTime` 0.45 · `LockTime` 0.80
+
+(Maker MCP · `Orbis_Lobby_VictoriaStation` · 이 브랜치 `ddbca97` · 재입장 + Reimport All 뒤)
+
+**빌드 경고: 1 before → 1 after** (기존 `LWA-1111` · 에러 0 · Info 190 → 190). 런타임 에러 0 · 경고는 기존 것뿐(`[BossCatalog]` 6130101 · `LWA-3048` PlayerAttack/SkillAttack 중복 · `LWA-3047` OrderInLayer).
+
+조건: 서버 스크립트로 Lv30 · 전사 3차 · `SK_W11` Lv1 · 무기 `WEAPON_WARRIOR_T30`(SWORD_1H) / `WEAPON_WARRIOR_2H_T30`(SWORD_2H) · 스네일(HP 100000) 스폰. `DamageAt(SK_W11,1)=112` · `DamageAt(5)=225`(이 브랜치는 `JobTier` 공격력 75).
+
+### 휘두르기 6종 클립 실측
+
+body 엔티티의 `SpriteAnimPlayerChangeFrameEvent` / `SpriteAnimPlayerEndEvent` 를 걸고 `ActionStateChangedEvent`(PlayRate 1 · Onetime)로 재생해 보낸 순간부터 잰 시각(초):
+
+| 클립 | 1프레임 | 2프레임(접촉) | 끝 |
+|---|---|---|---|
+| swingO1 | 0.313 | 0.467 | 0.816 |
+| swingO2 | 0.313 | 0.453 | 0.815 |
+| swingO3 | 0.311 | 0.451 | 0.811 |
+| swingT1 | 0.311 | 0.450 | 0.813 |
+| swingT2 | 0.312 | 0.452 | 0.818 |
+| swingT3 | 0.309 | 0.462 | 0.809 |
+
+- 6종 모두 **3프레임 · 0.30 / 0.15 / 0.35s**(이벤트는 한 프레임 ≈16ms 늦게 온다).
+- **접촉 = 2프레임 시작.** swingT1 을 0.05배속으로 틀어 스크린샷: 0프레임 = 뒤로 젖힘 · 1프레임 = 머리 위 · 2프레임 = 앞으로 내려친 자세. 6종 전부 2프레임만 고정 재생해 봐도 칼이 앞으로 뻗은 자세다.
+- → `SkillMotionSet.csv` SK_W11 6행 **`HitTime` 0.45(그대로) · `LockTime` 0.60 → 0.80(클립 끝)** · `#Note` 를 실측으로. 코드 폴백도 같은 값(사용자 지시 2026-09-25 · 둘이 갈라지지 않게): `SkillCaster.castLockOverrides.SK_W11` 0.6 → **0.8** · `SkillExecutors.effectOverrides.SK_W11.hitAt` 0.45(주석만). 시전 락이 0.2s 늘어 칼이 끝까지 휘둘러진 뒤 움직일 수 있다.
+
+### Ctrl 기본 공격은 무작위가 아니다 (증거)
+
+Ctrl 6번(한손검) · body 로 들어온 액션: `alert`(×1.33 Loop · 엔진 ATTACK 매핑) → **`swingO1` Onetime**(`PlayerMotion.PlayAttack` · `WeaponMotion` 고정 행) → `alert`(×1.0 Loop · **+0.55s**) → `stand1`(+0.86s). **6/6 swingO1.** 그리고 +0.55s 의 `alert` 가 swingO1 을 **접촉 프레임(0.45~0.80) 안에서 끊는다.** 기본 공격 쪽(PlayerAttack PR · 규칙 PR #88 머지 뒤)에서 SkillMotionSet RANDOM 으로 바꾸고 이 끊김을 없앤다 — 이 PR 범위 밖.
+
+### 결과
+
+| 항목 | 결과 | 근거 |
+|---|---|---|
+| Lv1 = 112 · 한 대상 | **PASS** | `POWER STRIKE locked target=T_ps_a amount=112 … motion=swingO3 hit@0.45` → a 100000 → 99888 · b 0 |
+| Lv5 = 225 · 한 대상 | **PASS** | `locked target=T_ps_b amount=225` → b 99775 · a 0. 이어서 14회 시전 전부 한 대상 225(a −1125 = 5×225 · b −900 = 4×225) |
+| RANDOM · 반복 없음 | **PASS** | 한손검 10회 O3 O1 O3 O1 O3 O2 O3 O2 O3 O2 · 두손검 6회 T1 T2 T1 T2 T3 T1 — 연속 반복 0. 서버 `[Skill] motion pick` 과 클라 body 재생 16/16 일치 |
+| 진영 필터 | **PASS** | 우리 편(진영 21 · `rel=ALLY` · 0.45 로 가장 가까움) · 중립(`rel=NEUTRAL` · 0.60) → `FindSkillTarget candidates` 에서 빠짐 · 2회 시전 뒤 둘 다 100000 |
+| 시체 — 휘두르는 중 사망 | **PASS** | `locked target=T_ps_c` → +0.19s 다른 경로로 사망(`HitComponent.Enable=false`) → `SK_W11 locked target T_ps_c is dead/dying — hit skipped` · `contact … hit=false` · HP 0 그대로 |
+| 보상 1회 | **PASS** | `T_ps_e`(FarmReward · HP 200) 를 파워 스트라이크 225 로 처치 → `[FarmReward] T_ps_e lasthit=… exp=5` **1줄** · exp +5 · 동전 3. 시체에 Ctrl 2번(+0.9s · +2.9s) → 피해 · 보상 없음 |
+| 맨손 거절 | **PASS** | `[Skill] unarmed — SK_W11 refused` · `reason='no weapon equipped'` · MP 500000 · 쿨다운 0 그대로 · 토스트 "무기를 장착해야 공격할 수 있습니다"(스크린샷). 마법사 `SK_M11` 거절 · 해적 `SK_P21` 재시전(주먹) 거절 |
+| 맨손 — 버프 · 이동 · 도발 | **PASS** | `SK_W21` 하이퍼 바디 · `SK_W22` 도발 · `SK_M13` 텔레포트(2.5 이동) · `SK_P21` 에너지 차지(공중 시전 포함) 시전됨 |
+| 분신 · 불꽃 렌더 층 | **PASS** | `shadow mimic … layer=Default/3` · 플레이어 `Default/4` → 분신이 플레이어 뒤 · 난간 앞(스크린샷). 에너지 차지 불꽃 루프 — 땅 · 공중(`grounded=false`) 둘 다 플레이어 뒤. 시전 순간 번개 이펙트(1회)는 앞 — 기존 동작 · 범위 밖 |
+| 몬스터 돌아보기 | **PASS** | 스네일을 반대로 돌려 두고(`flip=true` · 공격자 쪽 = false) 때림 → HIT 중 `flip=false`(공격자 쪽) |
+| 보스 제외 | **PASS** | 마노(`BossSkillRunner` 있음)를 반대로 돌려 두고 때림 → `flip` 그대로 |
+| 피격 뒤 계속 추격 | **PASS** | HIT +0.05 → IDLE +0.48 → CHASE +0.50(`armed=true`) → CHASE 진입 0.12s 뒤 이동 시작(피격 뒤 0.62s). 예전엔 1.3~3.3s 서 있었다 |
+
+### 확인 못 한 것
+
+- 에너지 차지 재시전 거절의 **토스트** 는 스크린샷 타이밍이 빗나갔다(서버 로그 `unarmed — SK_P21 refused` 는 있음 · 파워 스트라이크와 같은 코드 줄).
+- 스크립트 스폰 스네일엔 `FarmReward` 가 없다(`MonsterSpawner` 가 붙인다) — 보상 테스트용 한 마리에만 같은 방식으로 붙였다.
+
+### 2차 Play (재입장 + Reimport All 뒤 추가)
+
+새 값 확인 — 접촉 0.45s · 약 0.80s 에 행동 가능 · 휘두르기가 끊기지 않음 · 빌드 경고 N → N
