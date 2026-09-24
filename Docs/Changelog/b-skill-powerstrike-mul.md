@@ -290,3 +290,19 @@ PR #93. **출처: #40 5813565483 (A 답 · 사용자 확정 2026-09-24).** 플�
 #### Play 검증
 
 (재입장 · Reimport All 뒤 추가) — 쉐도우 파트너 분신 · 에너지 차지 불꽃이 플레이어 바로 뒤 · 시설 · NPC 앞 · 공중 시전도 뒤 · 로그 `layer=Default/3` · 빌드 경고 N → N
+
+## 2026-09-25 (5차) — 몬스터 피격 연출 3건 (A 파일 · #40 5813661726 2~4번 · A 리뷰 승인 대상)
+
+A 결정(사용자 확정 2026-09-24): 2~4번은 **B 가 SK_W11 PR 에 넣고 A 가 리뷰로 승인한다.** `Monster.mlua` · `StateTypeChase.mlua` 는 A 파일(`MyDesk/` 루트 · 협업-규칙 §3-3 남의 폴더 파일). 1번(시전 순간 고정 → 접촉 순간 1회)은 3차 그대로가 정식안, 5번(미니언 · 수비대 경직 없음 · 보스는 지금대로)은 변경 없음.
+
+| # | 위치 (A 파일) | 변경 |
+|---|---|---|
+| 2 돌아보기 | `Monster.mlua:470` `FaceAttacker` (신규) · `:505-508` `ReactToHit` | 살아서 맞을 때마다(치명타 포함) 공격자 쪽으로 `SpriteRendererComponent.FlipX` = (왼쪽을 향하나) ~= `SpriteFacesLeftByDefault` — 걷는 AI 와 같은 식(`StateTypeChase:94` · `StateTypeWander:43`). **보스 제외**(BossSkillRunner 가 방향을 잡는다). 켜진 `StateChaseMonster` / `StateMoveMonster` 가 없는 몹(레인 미니언 · 수비대 = FactionAI 가 Scale.x 로 방향)도 건드리지 않는다 |
+| 3 멈춤 제거 | `Monster.mlua:84` `lastHitAt` · `:87` `HitResumeWindowSeconds` 1.2 · `:494` `RecentlyHit` · `:503` 기록 / `StateTypeChase.mlua:14-28` `OnEnter` | 피격 뒤 복귀는 HIT → (0.5s) IDLE → CHASE 다(StateSetChaseMonsterAI). `OnEnter` 가 **방금 맞은 몹(1.2초 창)** 이면 1~3초 "서 있기" 를 다시 뽑지 않고 곧바로 걷는다 — 남은 걷기 구간은 두고(다 썼으면 새 걷기 구간만) `jumpArmed = true` · `jumpTimeLeft = 0`. 그 밖의 CHASE 진입은 예전 그대로 |
+| 4 사망 즉시 피격 끄기 | `Monster.mlua:315-321` `Dead()` · `:349-355` `Respawn()` | `Dead()` 에서 바로 `HitComponent.Enable = false`(예전엔 숨김 타이머까지 켜져 있어 시체가 또 맞았다) · `Respawn()` 에서 다시 켠다(안 켜면 부활한 몹은 영영 안 맞는다) |
+
+**보상 두 번 지급 점검 (A 요청):** `Farm/FarmReward.mlua:45-66` 이 `Monster.IsDead` 의 **상승엣지에서 1회만** 지급한다(`Rewarded` 플래그 · 부활하면 리셋) — 코드상 두 번 지급은 없다. 대신 예전엔 사망 뒤 · 지급 전(다음 `OnUpdate`) 사이에 시체를 친 공격이 `HandleHitEvent`(`:245`)로 `LastAttacker` · 피해 원장을 바꿀 수 있었다 → 사망 즉시 피격을 끄면 이 틈도 닫힌다. Play 에서 "스킬로 죽인 몹을 다시 쳐도 안 맞고 보상은 한 번" 으로 확인한다.
+
+- 스킬 쪽 시체 제외(`SkillAttack.IsDeadOrDying` · 3차)와 짝이다 — 스킬은 두 겹으로 막히고, 기본 공격은 이 `HitComponent` 끄기로 막힌다(기본 공격 쪽 `IsDead` 제외는 PlayerAttack PR · 규칙 PR #88 머지 뒤).
+- skill-maker 규칙("죽이는 타격도 공격자를 본다")은 A 결정 범위(살아 있는 피격 · `ReactToHit`)를 넘어 넣지 않았다 — 필요하면 A 에게 따로 묻는다.
+- 계약서 스킬 등록서 8번에 이 두 A 파일을 적어야 하지만 같은 줄(`:274`)을 #86 이 고치고 있어 **#86 머지 뒤** 넣는다(PR 본문에 등록 항목으로 적었다).
