@@ -34,4 +34,33 @@ PR #87. 사용자(박승현) 요청 2026-09-24: 5직업 스킬을 레벨·전직
 
 ### Play 검증
 
-(Maker 재입장 · Reimport All 뒤 추가)
+(2026-09-24 · Maker MCP · `Orbis_Lobby_VictoriaStation` · 이 브랜치 `e6d3c44` · Reimport All → `refresh` → `logs(build)` → `play`)
+
+**빌드 경고: 1 before → 1 after** (기존 `LWA-1111` · 에러 0 · Info 182 → 182).
+
+**이벤트 감시:** 서버 콘솔에서 `_PlayerSkillState:ConnectEvent(JobChangedEvent, …)` 로 발행 횟수를 세는 테스트 리스너를 붙였다(`[T] SPY` 로그 · 코드 변경 아님). 입력은 실제 F10 키(`maker_keyboard_input`) · DEV 세팅은 행 버튼이 부르는 같은 메서드 `_SkillWindowLogic:OnDevSetupClicked()` (MCP 마우스는 엔진 UI 버튼을 못 누른다).
+
+| # | 단계 | 결과 | 로그 |
+|---|---|:--:|---|
+| 1 | Lv1 초보자 F10 ① | PASS | `[Skill] [DEV] job switch NOVICE -> MAGICIAN/0 (level 1) skills cleared=0 · no JobChangedEvent` · `ShowTab(0) jobLine=MAGICIAN tier=1 rows=3` |
+| 2 | F10 ② | PASS | `MAGICIAN -> WARRIOR/0` · `ShowTab(0) jobLine=WARRIOR … rows=2` |
+| 3 | F10 ③ | PASS | `WARRIOR -> ARCHER/0` · `ShowTab(0) jobLine=ARCHER … rows=2` |
+| 4 | F10 ④ | PASS | `ARCHER -> THIEF/0` · `ShowTab(0) jobLine=THIEF … rows=2` |
+| 5 | F10 ⑤ | PASS | `THIEF -> PIRATE/0` · `ShowTab(0) jobLine=PIRATE … rows=2` (스크린샷: 해적 1차 탭 섬머솔트 킥 Lv.0 · DEV 세팅 행) |
+| 6 | DEV 세팅 (해적) | PASS | `[DevRemote] +level 29 -> Lv30`(20:21:35) → `[Skill] [DEV] job state PIRATE/0 -> PIRATE/3 (no event)` → `learn-all PIRATE skills=5 tier=3 level=30`(20:21:36) · 확인 `lv=30 job=PIRATE/3 SK_P11=5/5 SK_P12=5/5 SK_P21=5/5 SK_P22=5/5 SK_P31=1/1 spy=0` |
+| 7 | Lv30 F10 ① | PASS | `PIRATE -> MAGICIAN/3 (level 30) skills cleared=5` · `learned=0` |
+| 8 | 전환 뒤 DEV 세팅 (마법사) | PASS | `learn-all MAGICIAN skills=6 tier=3 level=30` · `SK_M11=5/5 SK_M12=5/5 SK_M13=5/5 SK_M21=5/5 SK_M22=5/5 SK_M31=1/1` |
+| 9 | Lv30 F10 ②~⑤ | PASS | `MAGICIAN -> WARRIOR/3 … cleared=6` → `WARRIOR -> ARCHER/3` → `ARCHER -> THIEF/3` → `THIEF -> PIRATE/3` · 차수 3 유지 · 마지막 `job=PIRATE/3 lv=30 learned=0` |
+| 10 | 이벤트·부작용 | PASS | 세션 내내 `spy=0`(JobChangedEvent 0 회) · `[Skill] JOB `(ChangeJob) 로그 0 · Village/Claim 로그 0 · 에러 0 |
+
+**DEV 세팅 타이밍:** A 의 레벨 RPC 가 Lv1 → Lv30 을 한 서버 틱(20:21:35) 안에 끝내고, `DevLearnAll` 은 `DevSetupDelay` 0.5s 뒤(20:21:36) `level=30 tier=3` 으로 돌았다 → 모든 스킬 MAX. 수정 필요 없음. (예전 세션에서 레벨업이 느렸던 것은 콘솔 스크립트 실행 속도였고 이 RPC 경로와 무관하다.)
+
+**Lv30 에서 직업별 스킬 MAX 까지 키 순서** (새로 입장한 Lv1 초보자 · K 로 스킬 창 열기):
+- 마법사: F10 ×1 → DEV 세팅
+- 전사: F10 ×2 → DEV 세팅
+- 궁수: F10 ×3 → DEV 세팅
+- 도적: F10 ×4 → DEV 세팅
+- 해적: F10 ×5 → DEV 세팅
+- 이미 Lv30 이면: F10 을 원하는 직업까지 누른 뒤 DEV 세팅 (순서 마법사 → 전사 → 궁수 → 도적 → 해적 → 마법사)
+
+**판정: PASS** (10 단계 전부).
