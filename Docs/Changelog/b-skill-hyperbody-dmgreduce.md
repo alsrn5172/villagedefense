@@ -56,7 +56,42 @@ PR #85. 전사 스킬 점검(2026-09-24 · #83 브랜치 · Maker MCP) 중 확�
 
 ### Play 검증
 
-(Maker 재시작 · Reimport All 뒤 추가)
+(2026-09-24 · Maker MCP · `Orbis_Lobby_VictoriaStation` · 이 브랜치 `6bb9c17` · Reimport All → `refresh` → `logs(build)` → `play`)
+
+**빌드 경고: 1 before → 1 after** (기존 `LWA-1111` · 에러 0 · Play 뒤 재확인도 같음). Refresh 뒤 `git status` 깨끗 — `SkillBuffs.codeblock` 재생성 없음.
+
+조건: 전사 Lv30 · 3차 · ATK 75 · 최대 HP 201450 · 스네일 2마리(`FarmReward.MonsterId=100000` → 접촉 147) · 실제 시전 경로(`_SkillCaster:Cast("SK_W21")`). 서버 폴러가 받아들인 피격마다 직전 HP 와 0.3s 뒤 HP(= 되돌림 뒤)를 찍었다.
+
+**버프 없음 — 타당 147**
+```
+[T] HIT#1 t=0.22 buff=none pre=201450 post=201303 net=147 max=201450
+[T] HIT#7 t=9.48 buff=none pre=200568 post=200421 net=147 max=201450
+```
+
+**Lv1 — 타당 117 (−20%)** · 16타 전부 같다
+```
+[Buff] ON HYPER_BODY skill=SK_W21 lv=1 dur=45 ratio=20 secondary=20
+[Buff] HYPER_BODY maxHp 201450 +40290 (20%) -> 241740 hp=240564
+[Buff] HYPER_BODY reduce 147 -> 117 (-20%)
+[Buff] HYPER_BODY hp refund +30 (240417 -> 240447)
+[T] HIT#9 t=11.52 buff=lv1/-20% pre=240564 post=240447 net=117 max=241740
+[T] HIT#24 t=31.36 buff=lv1/-20% pre=238809 post=238692 net=117 max=241740
+```
+
+**Lv5 — 타당 88 (−40%)** · Lv1 버프가 45초로 끝난 뒤 새로 시전(직전 6타 = 147)
+```
+[T] HIT5#6 t=7.27 buff=none pre=200715 post=200568 net=147 max=201450
+[Buff] ON HYPER_BODY skill=SK_W21 lv=5 dur=45 ratio=60 secondary=40
+[Buff] HYPER_BODY maxHp 201450 +120870 (60%) -> 322320 hp=321438
+[Buff] HYPER_BODY reduce 147 -> 88 (-40%)
+[Buff] HYPER_BODY hp refund +59 (321291 -> 321350)
+[T] HIT5#7 t=9.22 buff=lv5/-40% pre=321438 post=321350 net=88 max=322320
+[T] HIT5#9 t=11.28 buff=lv5/-40% pre=321262 post=321174 net=88 max=322320
+```
+
+`floor(147 × 0.8) = 117` · `floor(147 × 0.6) = 88` 과 정확히 같다. 아이언 바디 반사(`IRON_BODY reflect … took=147`)는 감소와 무관하게 그대로 나간다 — 반사는 원래 받은 피해가 아니라 최대 HP 기준이다.
+
+**판정: PASS** (Lv1 · Lv5 둘 다). 한 방에 죽는 피해·피해 숫자 표시는 위 "한계" 그대로 — A 의 사전 훅 전까지는 확인 대상이 아니다.
 
 ### 건드리지 않은 것
 
