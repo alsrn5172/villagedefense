@@ -376,3 +376,45 @@ Ctrl 6번(한손검) · body 로 들어온 액션: `alert`(×1.33 Loop · 엔진
 - 두손검 7회 중 앞 4회는 무기 교체 스크립트가 서버 측정 스크립트를 멈춰 서버 접촉을 못 쟀다 → 측정을 다시 걸고 3회 더(클라 측정은 7회 전부).
 
 **판정: PASS** — 접촉 0.45s · 약 0.80s(휘두르기 끝)에 행동 가능 · 한손 · 두손 모두 휘두르기가 끊기지 않는다.
+
+## 2026-09-25 (7차) — 타격 이펙트 두 겹(hit/0 + hit/1) · 휘두르기 잔상(임시 80003316) · 두손검 세트 재확인
+
+### 결정 (사용자 2026-09-25)
+
+- **두손검 세트 = swingT1 · swingT2 · swingT3 그대로**(stabT1 은 넣지 않는다). `SkillMotionSet.csv` 는 바꾸지 않았다.
+  - 근거 = 휘두르기 7종을 0.05배속으로 프레임마다 멈춰 다시 찍은 캡처(찍을 때마다 배경색에 프레임 번호를 새겨 스크린샷 지연을 걸러냄 · 저장소 밖 `design-handoff/trails/`).
+  - swingT1 · swingT2 는 **접촉 프레임이 픽셀까지 같고** 시작만 다르다(휘두르는 각 136° · 92°). swingT3 는 아래 뒤에서 앞 위로 올려 베기(231°).
+  - stabT1 은 전사의 은빛 대검으로 **칼이 어느 프레임에도 그려지지 않는다**.
+  - 6차 1차 Play 의 "두손 휘두르기 T1 ≈ T3" 기록은 스크린샷 지연 때문에 **틀렸다**(정정).
+- **타격 이펙트** = 11001002 hit/0(`88a17d40…`) + hit/1(`c07906d7…`) 을 같은 자리에 겹쳐 **시전당 한 번**(`hitEffectPolicy` once 그대로).
+- **휘두르기 잔상** = 원작 흰 잔상은 디자이너 요청(`trail_swingO1/O2/O3` · `trail_swingT1/T2/T3` · 규격 = 저장소 밖 `design-handoff/trails/spec.md`). 그때까지 80003316 잔상 sprite 를 임시로 쓴다.
+
+### 수정 — `Skill/SkillExecutors.mlua`
+
+- `effectOverrides.SK_W11`: `impact2`(hit/1) · `trail`(모션별 6개) · `trailSeconds` 0.35(접촉 0.45 → 휘두르기 끝 0.80 · 6차 실측).
+- `ExecutePowerStrike`: 접촉 순간 hit/0 · hit/1 을 같은 자리(대상 발 +0.5)에 한 번씩 → 로그 `POWER STRIKE contact … hitFx=2`. 시전 순간 `ScheduleSwingTrail` 호출 — 대상이 없어도(헛스윙) 잔상은 뜬다.
+- 신규 `ScheduleSwingTrail`: 이번 시전에 고른 모션(`motionPicks`)의 `trail` 항목을 `hitAt` 에 `PlaySpriteFlash`(기존 · B 투사체 모델에 sprite 를 실어 `trailSeconds` 뒤 스스로 사라짐 · 바라보는 쪽으로 뒤집음).
+
+| 모션 | 임시 잔상 (80003316 `afterimage/…/2/0`) | 크기 | offsetY |
+|---|---|---|---|
+| swingT1 | `swordTL/swingT1` `98d2124f…` | 168×120 | −0.1 |
+| swingT2 | `swordTL/swingT2` `447033cc…` | 144×88 | −0.1 |
+| swingT3 | `swordTL/swingT3` `64e8406f…` | 164×124 | −0.1 |
+| swingO1 | `swordTS/swingT3` `c0ca367e…` | 120×96 | −0.2 |
+| swingO2 | `swordTS/swingT1` `32aff8b2…` | 136×84 | −0.2 |
+| swingO3 | `swordTS/swingT2` `a654159d…` | 116×84 | −0.2 |
+
+- 한손검: 팩에 한손 잔상이 없어 두손 잔상의 작은 쪽(`swordTS`)을 재사용한다. 모션마다 휘두르는 방향이 가장 가까운 것을 골랐다(swingO1 아래→앞→위 = T3 · swingO2 내려찍기 = T1 · swingO3 앞위→아래 = T2).
+- `offsetY` −0.1 / −0.2 = 예전 콤보(`9c5f0b0`)에서 Play 로 맞춘 값 그대로.
+
+### Play 검증 3차 — 연출 (대기 · 재입장 + Reimport All 뒤)
+
+| 항목 | 기대 | 결과 |
+|---|---|---|
+| 빌드 경고 | 1 → 1 | 대기 |
+| hit/0 + hit/1 | 접촉 순간 대상 위에 두 클립 · `hitFx=2` · 시전당 1회 | 대기 |
+| 두손 잔상 T1 · T2 · T3 | 모션마다 다른 잔상 · 0.45s 에 떠서 0.35s 뒤 사라짐 · 로그 `sprite flash SK_W11_trail_swingT*` | 대기 |
+| 한손 잔상 O1 · O2 · O3 | 위 표의 `swordTS` 잔상 | 대기 |
+| 헛스윙 | 대상 없음 → 잔상만 · 타격 이펙트 없음 | 대기 |
+| 좌우 | 왼쪽 · 오른쪽 모두 휘두르는 쪽에 잔상 | 대기 |
+| 세션 첫 시전 | 첫 잔상이 늦게 뜨지 않는지 | 대기 |
