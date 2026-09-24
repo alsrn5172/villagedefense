@@ -2133,7 +2133,9 @@ script SkillExecutors extends Logic
         --   t=0.85  **2타**(절반 · hit/0) → thrustFxDelay(0.1) 뒤 찌르기 잔상(팩 afterimage/stabOF · 두손검 swordTL / 한손검 swordTS · effectOverrides.thrust[무기])
         -- 잔상과 타격: 처음엔 잔상 0.85 · 타격 0.95 로 따로 → "이펙트 먼저, 공격은 나중"(2026-09-13 사용자 제보) → 같은 프레임으로 합쳤는데도 잔상이 먼저 보였다
         -- (피해 숫자·피격 반응이 클라에 그려지기까지 한 박자 더 걸린다) → 사용자 제안 "이펙트를 조금 더 늦추면 같아진다": 타격을 먼저 부르고 잔상은 thrustFxDelay 뒤에. 이 값 하나로 맞춘다.
-        -- 두 타의 합 = 표의 150%→300%(HitCount 1 유지 · 각 0.5배 · SkillAttack.DealSkillDamageToTargetScaled). 시전 락 1.2s(SkillCaster.castLockOverrides). 조정은 아래 상수.
+        -- 두 타의 합 = 표의 150%→300%(HitCount 1 유지). 시전 락 1.2s(SkillCaster.castLockOverrides). 조정은 아래 상수.
+        -- 2026-09-24 사용자 결정(#83): ① 대상은 **시전 순간 한 번** 고르고 두 타 모두 그 대상에게만(예전엔 타마다 최근접을 다시 골라 한 시전이 두 마리를 때렸다)
+        --   ② 한 시전 합계 = DamageAt = floor(ATK × 비율 / 100) 정확히 · 1타 = 몫(floor(합/2)) · 2타 = 나머지(예전 0.5 × 2 는 타마다 내림이라 Lv5 225 → 112 + 112 = 224).
         local chopAt = 0.2
         local hit1At = 0.45
         local thrustAt = 0.75
@@ -2142,18 +2144,27 @@ script SkillExecutors extends Logic
         local uid = ""
         if isvalid(casterEntity.PlayerComponent) then uid = casterEntity.PlayerComponent.UserId end
         local hitRuid = self:GetSpecRuid(skillId, "impact")
-        local function strike(index, mul)
+        -- 시전 순간 대상 고정 + 합계를 몫/나머지로 나눈다(위 2026-09-24 결정).
+        local target = nil
+        if isvalid(skillAttack) then target = skillAttack:FindSkillTarget(skillId, box, false) end
+        local total = 0
+        if uid ~= "" then total = math.floor(_SkillDatabase:DamageAt(skillId, level, uid)) end
+        local amounts = { math.floor(total / 2) }
+        amounts[2] = total - amounts[1]
+        local targetName = "none"
+        if isvalid(target) then targetName = tostring(target.Name) end
+        log("SkillExecutors: POWER STRIKE locked target=" .. targetName .. " total=" .. tostring(total) .. " split=" .. tostring(amounts[1]) .. "+" .. tostring(amounts[2]))
+        local function strike(index)
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
-            local target = skillAttack:FindSkillTarget(skillId, box, false)
             if not isvalid(target) then
-                log("SkillExecutors: POWER STRIKE hit" .. tostring(index) .. " no target in front — consumed")
+                log("SkillExecutors: POWER STRIKE hit" .. tostring(index) .. " no locked target (none at cast or gone) — consumed")
                 return
             end
             local tp = target.TransformComponent.WorldPosition
             if hitRuid ~= "" then
                 _EffectService:PlayEffect(hitRuid, casterEntity, Vector3(tp.x, tp.y + 0.5, tp.z), 0, Vector3(1, 1, 1), false)
             end
-            skillAttack:DealSkillDamageToTargetScaled(skillId, level, target, mul, 1)
+            skillAttack:DealSkillDamageToTargetAmount(skillId, level, target, amounts[index], 1)
         end
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
@@ -2168,7 +2179,7 @@ script SkillExecutors extends Logic
             if swing ~= nil then
                 self:PlaySpriteFlash(swing.ruid, casterEntity, swing.offsetX or 0, swing.offsetY or 0, swing.scale or 1, swing.seconds or 0.25, skillId .. "_swing")
             end
-            strike(1, 0.5)
+            strike(1)
         end, hit1At)
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
@@ -2190,7 +2201,7 @@ script SkillExecutors extends Logic
             log("SkillExecutors: POWER STRIKE thrust flame weapon=" .. tostring(wt) .. " afterimage=" .. tostring(thrust ~= nil) .. " (+" .. tostring(thrustFxDelay) .. "s after hit2)")
         end
         _TimerService:SetTimerOnce(function()
-            strike(2, 0.5)
+            strike(2)
             _TimerService:SetTimerOnce(thrustFlame, thrustFxDelay)
         end, hit2At)
         log("SkillExecutors: POWER STRIKE combo " .. skillId .. " chop@" .. tostring(chopAt) .. " hit1+arc@" .. tostring(hit1At) .. " thrust@" .. tostring(thrustAt) .. " hit2@" .. tostring(hit2At) .. " flame@" .. tostring(hit2At + thrustFxDelay))

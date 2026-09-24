@@ -35,6 +35,10 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property number PendingDamageMul = 1
 
+    -- 이번 타격 패스의 피해를 호출자가 정한 정수로 고정한다(DealSkillDamageToTargetAmount · 파워 스트라이크 2단 = 합계의 몫/나머지). -1 = 안 씀. 패스가 끝나면 -1 로.
+    @HideFromInspector
+    property integer PendingDamageOverride = -1
+
     -- 이번 타격 패스의 표시 타수(GetDisplayHitCount). 패스가 끝나면 1 로.
     @HideFromInspector
     property integer PendingDisplayHits = 1
@@ -141,6 +145,7 @@ script SkillAttack extends AttackComponent
     @ExecSpace("ServerOnly")
     method void EndPass()
         self.PendingDamageMul = 1
+        self.PendingDamageOverride = -1
         self.PendingDisplayHits = 1
         self.PendingSkillId = ""
         self.PendingImpactRuid = ""
@@ -191,6 +196,10 @@ script SkillAttack extends AttackComponent
         if attackInfo == self.FlatTag then
             -- 평값 패스(DealFlatDamageToTarget): 스킬 표가 아니라 호출자가 준 값. 아이언 바디 반사 = 최대 HP × 반사율.
             return self.PendingFlatDamage
+        end
+        if self.PendingDamageOverride >= 0 then
+            -- 정수 고정 패스(DealSkillDamageToTargetAmount): 호출자가 DamageAt 합계를 나눈 값. 태그는 스킬 id 그대로라 크리·표시·픽파켓은 스킬 타격과 같다.
+            return self.PendingDamageOverride
         end
         if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
             log_warning("SkillAttack: CalcDamage attacker has no PlayerComponent, cannot resolve userId for " .. tostring(attackInfo))
@@ -388,7 +397,7 @@ script SkillAttack extends AttackComponent
 
     @ExecSpace("ServerOnly")
     method void DealSkillDamageToTargetScaled(string skillId, number level, Entity target, number mul, number displayHits)
-        -- 단일 대상 타격 + 피해 배율·표시 타수 분리(파워 스트라이크 2단 콤보 = 0.5 × 2). DealSkillDamageToTarget 과 같은 경로.
+        -- 단일 대상 타격 + 피해 배율·표시 타수 분리. DealSkillDamageToTarget 과 같은 경로. (파워 스트라이크 2단은 2026-09-24 부터 DealSkillDamageToTargetAmount — 합계를 정수로 나눠야 해서.)
         if not isvalid(target) or not isvalid(target.TransformComponent) then return end
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
@@ -405,6 +414,29 @@ script SkillAttack extends AttackComponent
         self.SingleTarget = nil
 
         log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " mul=" .. tostring(mul) .. " display=" .. tostring(displayHits))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSkillDamageToTargetAmount(string skillId, number level, Entity target, integer amount, number displayHits)
+        -- 단일 대상 타격 · 피해 = amount 그대로(정수). 여러 타로 나눈 스킬이 "합계 = DamageAt" 를 정확히 맞출 때 쓴다(파워 스트라이크 · 나머지는 마지막 타).
+        -- 배율(0.5 등)로 나누면 타마다 내림이 따로 걸려 합계가 1 모자란다(225 → 112 + 112). DealSkillDamageToTargetScaled 와 같은 경로에 값만 고정한다.
+        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
+        if amount == nil or amount <= 0 then return end
+        self:EnsureShape()
+        local p = target.TransformComponent.WorldPosition
+        self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
+        self.Shape.Size = Vector2(self.SingleTargetBoxSize.x, self.SingleTargetBoxSize.y)
+        self.Shape.Angle = 0
+        if displayHits == nil or displayHits < 1 then displayHits = 1 end
+
+        self.SingleTarget = target
+        self:BeginPass(skillId, level, 1, math.floor(displayHits))
+        self.PendingDamageOverride = math.floor(amount)
+        self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        self:EndPass()
+        self.SingleTarget = nil
+
+        log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " amount=" .. tostring(amount) .. " display=" .. tostring(displayHits))
     end
 
     -- Spawns a real travelling script.SkillProjectile entity for behavior="PROJECTILE" skills.
