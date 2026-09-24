@@ -147,6 +147,8 @@ const CANONICAL = {
     "TertiaryEffect,TertiaryPerLevel,RecastMpCostMul,#Note",
   JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
   JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
+  // 스킬 모션 세트 — B 등록서(계약서 §1 · A-2-23 · 2026-09-24 · PR #83). Skill/ 하위 폴더라 이름에 경로를 붙인다(readCsv 가 path.join).
+  "Skill/SkillMotionSet": "SkillId,WeaponType,Seq,Mode,CoreAction,PartsAction,PlayRate,HitTime,LockTime,Enabled,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -262,6 +264,7 @@ const PK = {
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
   JobTier: ["JobId", "Tier"],
+  "Skill/SkillMotionSet": ["SkillId", "WeaponType", "Seq"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);

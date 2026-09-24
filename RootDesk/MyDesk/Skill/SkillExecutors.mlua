@@ -100,6 +100,13 @@ script SkillExecutors extends Logic
     -- [서버] 버프 지속 동안 시전자에 붙여 반복 재생하는 이펙트(effectOverrides[skill].loop): userId -> buffTag -> EffectService serial. 재시전 시 옛것을 지운다.
     property table buffLoopEffects = {}
 
+    -- [서버] 모션 세트(SkillMotionSet · A-2-23)에서 마지막으로 고른 모션. userId → { skillId, weaponType, row }.
+    -- 실행기가 그 모션의 HitTime 을 읽는다(ExecutePowerStrike). PlayMotion 이 시전마다 덮어쓴다.
+    property table motionPicks = {}
+
+    -- [서버] 세트별 직전 순번 — "<userId>|<SkillId>|<WeaponType>" → seq. RANDOM 은 직전과 같은 모션을 다시 안 고르고, SEQUENCE 는 다음 순번으로 간다.
+    property table lastMotionSeq = {}
+
     -- 대마법(SK_M31) 폭발 연출(ExecuteBlast) 파라미터. 반지름 자체는 CSV Range 가 정한다(0 이면 BlastDefaultRadius).
     property number BlastDefaultRadius = 2.5
 
@@ -399,7 +406,7 @@ script SkillExecutors extends Logic
             -- spec 키: ruid · noFlip(화면 연출은 좌우 뒤집기 없음) · offsetY(부착 위치 · world unit) · scale. loop = 버프 지속 동안 반복(ExecuteBuff) · mob = 대상 몬스터에 부착(ExecuteTaunt).
             SK_W11 = {   -- 파워 스트라이크 — 2026-09-24 원작(1차 파워 스트라이크) 쪽으로: skill/1100.img/skill/11001002 (시그너스 소울마스터 1차 파워 스트라이크 · AI 태그 "파워 스트라이크" ·
                 -- 원작 1001004 팩은 MSW 인덱스에 없어 가장 가까운 원작 팩 · skill-maker 원장). effect 8프레임 152×136(시전) + hit/0 6프레임 127×81(타격). 잔상(예전 80003316 swing/thrust) 없음.
-                -- hitAt = 시전(모션 시작)부터 칼이 닿는 순간까지(초) — ExecutePowerStrike 가 이 시점에 한 번 때린다. ⚠ 잠정값: Play 에서 swingO1/swingT1 클립을 재서 바꾼다(Task 5).
+                -- hitAt = 폴백 타격 시점(초). 정상 경로는 모션 세트(Skill/SkillMotionSet.csv)에서 고른 모션의 HitTime(실측) — 세트가 없을 때만 이 값.
                 cast = { ruid = "aae5027da69747d3b2cd2bd0f26987e0" },
                 impact = { ruid = "88a17d40d6e34abd948cac09724b22fa" },
                 hitAt = 0.45,
@@ -672,6 +679,55 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method any PickMotionFromSet(string uid, string skillId)
+        -- 모션 세트에서 이번 시전 모션을 고른다. 세트 = (스킬, 장착 무기) → 없으면 (스킬, 직업 기본 무기)(ResolveMotionRow ② 와 같은 이유). 둘 다 없으면 nil(→ WeaponMotion).
+        --   FIXED    : 첫 행(Seq 가장 작은 것)
+        --   RANDOM   : 무작위 · 행이 2개 이상이면 **직전과 같은 모션은 빼고** 고른다(반복 없음)
+        --   SEQUENCE : 직전 다음 순번(끝이면 처음으로)
+        -- 고른 행은 motionPicks[uid] 에 남긴다(실행기가 HitTime 을 읽는다). 로그 "[Skill] motion pick …".
+        if _SkillDatabase == nil or uid == nil or uid == "" then return nil end
+        local wt = ""
+        if _PlayerMotion ~= nil then wt = _PlayerMotion:WeaponTypeOf(uid) or "" end
+        local set = nil
+        if wt ~= "" then set = _SkillDatabase:GetMotionSet(skillId, wt) end
+        if set == nil then
+            local job = ""
+            if _PlayerSkillState ~= nil then job = _PlayerSkillState:GetJobId(uid) or "" end
+            local jobWt = self:JobDefaultWeaponType(job)
+            if jobWt ~= "" and jobWt ~= wt then
+                set = _SkillDatabase:GetMotionSet(skillId, jobWt)
+                if set ~= nil then wt = jobWt end
+            end
+        end
+        if set == nil or #set.rows == 0 then return nil end
+        local key = uid .. "|" .. skillId .. "|" .. wt
+        local last = self.lastMotionSeq[key]
+        local n = #set.rows
+        local idx = 1
+        if set.mode == "RANDOM" and n > 1 then
+            local pool = {}
+            for i, r in ipairs(set.rows) do
+                if r.seq ~= last then table.insert(pool, i) end
+            end
+            if #pool == 0 then
+                for i = 1, n do table.insert(pool, i) end
+            end
+            idx = pool[_UtilLogic:RandomIntegerRange(1, #pool)]
+        elseif set.mode == "SEQUENCE" and n > 1 then
+            idx = 1
+            for i, r in ipairs(set.rows) do
+                if r.seq == last then idx = (i % n) + 1 end
+            end
+        end
+        local row = set.rows[idx]
+        self.lastMotionSeq[key] = row.seq
+        local pick = { skillId = skillId, weaponType = wt, row = row }
+        self.motionPicks[uid] = pick
+        log("[Skill] motion pick " .. skillId .. " " .. wt .. " " .. set.mode .. " -> " .. row.core .. " (seq " .. tostring(row.seq) .. " · prev " .. tostring(last) .. " · hit " .. tostring(row.hitTime) .. " · lock " .. tostring(row.lockTime) .. ") (" .. uid .. ")")
+        return pick
+    end
+
+    @ExecSpace("ServerOnly")
     method table ResolveMotionRow(string uid, string motionId, boolean ownRowOnly)
         -- WeaponMotion 행 해석. 반환 { row, weaponType } (row nil = 재생할 것 없음). 순서:
         --   ① 장착 무기의 스킬 전용 행 → ② 직업 기본 무기(JobDefaultWeaponType)의 스킬 전용 행 → ③ (ownRowOnly 가 아니면) 장착 무기의 기본 공격 행 → ④ 맨손이면 직업 기본 무기의 기본 공격 행.
@@ -710,6 +766,13 @@ script SkillExecutors extends Logic
         -- WeaponMotion 행을 찾아(ResolveMotionRow) 그 유저의 클라에서 재생한다(A 의 PlayerMotion.PlayAction 을 그대로 부른다 · A 파일 편집 없음).
         -- ownRowOnly = 스킬 전용 행만 재생(무기 기본 공격 행으로의 폴백 금지 · 이동 스킬 / 순서 단계).
         -- SkillCaster.RequestCast(시전 행) · PlayMotionSequence(_2/_END) 가 전부 이 한 곳을 쓴다.
+        -- 모션 세트(SkillMotionSet · A-2-23 · 2026-09-24 #83)가 있으면 그게 먼저다 — 세트에서 하나 골라 재생하고 WeaponMotion 은 보지 않는다.
+        local picked = self:PickMotionFromSet(uid, motionId)
+        if picked ~= nil then
+            _PlayerMotion:PlayAction(picked.row.core, picked.row.parts, picked.row.rate, "ONETIME", uid)
+            self:PlayShadowMimic(uid, picked.row.core)
+            return true
+        end
         local res = self:ResolveMotionRow(uid, motionId, ownRowOnly)
         if res.row == nil then
             if not ownRowOnly then
@@ -2111,8 +2174,8 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method void ExecutePowerStrike(string skillId, table skillData, Entity casterEntity, number level, any skillAttack, table box)
         -- 파워 스트라이크(SK_W11) — 2026-09-24 사용자 결정(#83 · skill-maker 원장 Task 3). 원작 1차 파워 스트라이크처럼 **한 번 휘둘러 한 번** 때린다.
-        --   t=0      (ExecuteMeleeArc) 시전 이펙트 11001002 effect + Use 사운드 · (SkillCaster) 시전 행 모션 = WeaponMotion SK_W11
-        --            (한손검 swingO1 · 두손검 swingT1 고정 — SkillMotionSet 등록 PR #90 이 머지되면 RANDOM swingO1/O2/O3 · swingT1/T2/T3 반복 없음으로 옮긴다)
+        --   t=0      (ExecuteMeleeArc) 시전 이펙트 11001002 effect + Use 사운드 · (SkillCaster → PlayMotion) 모션 = Skill/SkillMotionSet.csv SK_W11 세트
+        --            (한손검 swingO1/O2/O3 · 두손검 swingT1/T2/T3 RANDOM · 반복 없음 · PickMotionFromSet). 타격 시점 = 고른 모션의 HitTime
         --   t=0      **대상 · 피해 · 크리를 여기서 고정한다**(PAJ-01): 앞쪽 상자 안 최근접 하나(FindSkillTarget · 시체는 후보에서 빠진다) · 피해 = DamageAt 전액 · 크리 = 닷지(GUARANTEED_CRIT) 여부
         --   t=hitAt  칼이 닿는 순간 **한 번** 넣는다(PAJ-02 (a) · 원장에 편차 기록 — HP 를 시전 순간이 아니라 접촉 순간에 넣어 표시와 맞춘다 · 몬스터 쪽 death-hold 없이도 어긋나지 않게).
         --            고정 대상이 사라졌거나 죽었거나 죽는 중이면 아무것도 안 한다(시체 보호 · SkillAttack.IsDeadOrDying). 타격 이펙트 = 11001002 hit/0 한 번(hitEffectPolicy once).
@@ -2122,6 +2185,13 @@ script SkillExecutors extends Logic
         if entry ~= nil and entry.hitAt ~= nil and entry.hitAt >= 0 then hitAt = entry.hitAt end
         local uid = ""
         if isvalid(casterEntity.PlayerComponent) then uid = casterEntity.PlayerComponent.UserId end
+        -- 이번 시전에 모션 세트에서 고른 모션(SkillCaster → PlayMotion → PickMotionFromSet · 같은 서버 틱)의 실측 HitTime 이 있으면 그것.
+        local pick = self.motionPicks[uid]
+        local motionName = "fallback"
+        if pick ~= nil and pick.skillId == skillId then
+            motionName = pick.row.core
+            if pick.row.hitTime > 0 then hitAt = pick.row.hitTime end
+        end
         local hitRuid = self:GetSpecRuid(skillId, "impact")
         ---@type Entity
         local target = nil
@@ -2132,7 +2202,7 @@ script SkillExecutors extends Logic
         if uid ~= "" and _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(uid) then crit = 1 end
         local targetName = "none"
         if isvalid(target) then targetName = tostring(target.Name) end
-        log("SkillExecutors: POWER STRIKE locked target=" .. targetName .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " lv=" .. tostring(level) .. " hit@" .. tostring(hitAt))
+        log("SkillExecutors: POWER STRIKE locked target=" .. targetName .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " lv=" .. tostring(level) .. " motion=" .. motionName .. " hit@" .. tostring(hitAt))
         if not isvalid(target) then
             log("SkillExecutors: POWER STRIKE no target in front — swing only (cast consumed)")
             return

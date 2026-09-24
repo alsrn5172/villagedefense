@@ -174,3 +174,119 @@ SkillAttack: dealt SK_W11 to T_ps_1 lv=5 amount=113 display=1   ← 2타 (나머
 ### Play 검증 (3차)
 
 (재입장 · Reimport All 뒤 추가) — Ctrl 기본 공격이 무기 세트에서 무작위로 고르는지(증거) · swingO1/swingT1 클립 길이 실측 → `hitAt` · 시전 락 교체 · skill-maker 하네스(P · H/D) · Lv1 = 112 · Lv5 = 225 (한 대상 · 다른 몬스터 0) · 시체는 안 맞음 · 빌드 경고 N → N
+
+## 2026-09-25 (4차) — PR 합치기: #90 · #91 · #92 · #93 → 이 PR · `SkillMotionSet` 구현 (파워 스트라이크 RANDOM)
+
+사용자 지시 2026-09-25: 등록 PR #90(`SkillMotionSet`) · 진영 필터 #91 · 맨손 거절 #92 · 분신 렌더 순서 #93 의 커밋을 이 브랜치로 가져왔다(cherry-pick · 충돌 없음). 각 PR 의 조각은 아래 절로 옮기고 파일은 지웠다(PR 하나 · 조각 하나). A 는 #40 5813661726 에서 "시전 순간 대상 · 피해 · 크리 고정 → 접촉 순간 1회" 를 **정식안**으로 확정했다(3차의 편차 기록이 정식이 됨).
+
+### `SkillMotionSet` 구현 — 3차의 "고정 행 임시" 를 대체
+
+등록(A-2-23)과 구현이 같은 PR 이 됐으므로 3차의 `WeaponMotion.csv` 고정 행(swingO1 / swingT1)을 표로 옮겼다.
+
+| 위치 | 변경 |
+|---|---|
+| `Skill/SkillMotionSet.csv` + `.userdataset` (신규 · UUID `d01fa504-4b38-42da-8f9a-25f8effe4128`) | SK_W11 × SWORD_1H swingO1/O2/O3 · SWORD_2H swingT1/T2/T3 · `RANDOM` · `HitTime` 0.45 · `LockTime` 0.6 (**잠정 · Play 실측으로 교체**) |
+| `Skill/SkillDatabase.mlua` | `LoadMotionSets` · `GetMotionSet(skillId, weaponType)` · `MotionSetLockSeconds(skillId)` — 세트별 행(Seq 순) · Mode 가 섞이면 경고 |
+| `Skill/SkillExecutors.mlua` `PickMotionFromSet` | 세트 = (스킬, 장착 무기) → 없으면 (스킬, 직업 기본 무기). FIXED = 첫 행 · **RANDOM = 직전 모션을 뺀 나머지에서 무작위** · SEQUENCE = 다음 순번. 고른 행은 `motionPicks[uid]` · 로그 `[Skill] motion pick …` |
+| `PlayMotion` | 세트가 있으면 세트에서 고른 모션을 재생하고 `WeaponMotion` 은 보지 않는다 |
+| `ExecutePowerStrike` | 타격 시점 = 고른 모션의 `HitTime`(없으면 `effectOverrides.SK_W11.hitAt`) · 로그에 `motion=` |
+| `Skill/SkillCaster.mlua` `GetCastLockSeconds` | 세트에 `LockTime` 이 있으면 그 스킬 세트의 최댓값(클라 예측 락 · 서버 락 같은 값 — 무작위로 고른 모션은 서버만 안다) → 없으면 `castLockOverrides` |
+| `WeaponMotion.csv:9-10` (B 행) | SK_W11 SWORD_1H/2H `Enabled=false`(세트로 옮김) |
+| `Docs/tools/check-integrity.cjs` | CANONICAL `Skill/SkillMotionSet` · PK `SkillId`+`WeaponType`+`Seq` |
+| `Docs/스키마-계약.md` | #90 의 등록(§0-2 `MotionMode` · §1 · 등록서 · A-2-23 · 변경 이력) + 상태를 "등록 + 구현 PR #83" 으로 |
+
+### 계약서 — 아직 넣지 않은 줄
+
+스킬 등록서 8번(`스키마-계약.md:274`)에 맨손 거절의 `EquipService` 호출 한 줄을 적어야 한다. 같은 줄을 #86 이 고치고 있어 지금 넣으면 두 PR 이 같은 줄에서 충돌한다 → **#86 머지 뒤** 추가한다. (변경 이력 첫 행은 이 PR 과 #86 이 둘 다 추가해 어느 쪽이든 뒤에 머지하는 쪽이 한 번 풀어야 한다.)
+
+### 4차 · 등록 문서 (원래 #90) — 2026-09-24 — [등록] 스킬 모션 세트 `SkillMotionSet` (문서만)
+
+계약서 §1 등록 절차 1단계 — **코드 없이 문서만.** 머지된 뒤 구현한다. 사용자 결정 2026-09-24 (skill-maker 원장 DATA-02 · 모션 표 승인).
+
+| 위치 | 변경 |
+|---|---|
+| `Docs/스키마-계약.md` §0-2 | 열거값 `MotionMode` (`FIXED` · `RANDOM` · `SEQUENCE`) |
+| §1 등록된 시스템 | "스킬 모션 세트" 행 |
+| §1 등록서 | 8항목 — 8번에 남의 폴더 파일 수정 없음 → §3-3 self-merge 대상 |
+| A-2-23 | `SkillMotionSet` 헤더 `SkillId,WeaponType,Seq,Mode,CoreAction,PartsAction,PlayRate,HitTime,LockTime,Enabled,#Note` |
+| 변경 이력 | 2026-09-24 행 |
+
+`check-integrity.cjs` CANONICAL · PK 는 구현 PR 에서 CSV 파일과 같이 넣는다(지금 넣으면 "파일 없음" 경고만 는다).
+
+### 4차 · 진영 필터 (원래 #91) — 2026-09-24 — 스킬이 우리 편을 때리지 않게 (진영 필터)
+
+PR #91. skill-maker 점검(2026-09-24)에서 발견: 스킬 타격 경로(`SkillAttack` · `SkillProjectile`)에 진영 판정이 없어, `CollisionGroups.Monster` 에 있는 우리 편(수비대 · 우리 미니언 · 우리 시설)과 중립까지 맞을 수 있었다. 기본 공격은 이미 거른다(`PlayerAttack.mlua:91` `_FactionLogic:IsEnemy`).
+
+**헤더 변경 없음 · 새 CSV 열 · 이벤트 · RPC 없음.** `PlayerAttack.mlua` · `Faction/FactionLogic.mlua`(A)는 건드리지 않았다 — `IsEnemy` 호출만.
+
+#### 수정
+
+| 위치 | 변경 |
+|---|---|
+| `Skill/SkillAttack.mlua:248-250` `IsAttackTarget` | 맨 앞에 `_FactionLogic:IsEnemy(self.Entity, defender)` 가 false 면 false. 모든 스킬 타격(상자 · 원 · 단일 대상 · 평값 반사)과 후보 수집(probe · `FindSkillTarget(s)`)에 걸린다 |
+| `Skill/SkillProjectile.mlua:282-288` `IsAttackTarget` | 같은 규칙. 공격자는 투사체가 아니라 **시전자**(`_UserService:GetUserEntityByUserId(CasterUserId)`) — 투사체 엔티티엔 진영이 없어 `FactionLogic` 이 중립으로 본다. 시전자를 못 찾으면 아무도 안 맞는다 |
+
+- 스킬 피해는 전부 `AttackFast` → `IsAttackTarget` 을 지난다(`SkillAttack` 6곳 · `SkillProjectile` 1곳 · 직접 HP 쓰기 없음) → 두 곳으로 전부 덮인다.
+- 도발(SK_W22)은 이미 `SkillExecutors:2277` 에서 `IsEnemy` 로 걸렀다 — 이제 후보 수집 단계에서도 빠진다.
+- #83 도 `SkillAttack.IsAttackTarget` 을 고친다(시체 제외 · `__base` 줄 뒤). 이 PR 은 그 두 줄 **앞**에 넣어 두 PR 의 변경이 겹치지 않는다.
+
+#### Play 검증
+
+(재입장 · Reimport All 뒤 추가) — 수비대 옆에서 스킬 → 수비대 피해 0 · 몬스터는 그대로 피해 · 빌드 경고 N → N
+
+### 4차 · 맨손 거절 (원래 #92) — 2026-09-24 — 맨손이면 공격 스킬 거절 + 토스트
+
+PR #92. **출처: #40 5813570100 (A 결정 · 사용자 확정 2026-09-24)** — 맨손 하한을 올리지도 몬스터 HP 를 낮추지도 않고, 대신 무기가 없으면 공격을 못 하게 한다. 이 PR 은 **스킬 쪽**만. 기본 공격 쪽은 `PlayerAttack.mlua` 담당 이관(규칙 PR #88) 머지 뒤 PlayerAttack PR 에서 같은 문구로 한다.
+
+**헤더 변경 없음 · 새 CSV 열 · 이벤트 · RPC 없음.** A 파일 수정 없음 — `Item/EquipService`(`EnsureUser` · `EquippedItemId` `:249`) · `UIToast`(`ShowMessage`) 는 호출만.
+
+#### 규칙
+
+| 시전 | 맨손일 때 |
+|---|---|
+| `MELEE_ARC` · `PROJECTILE` · `AOE` | 거절 + 토스트 "무기를 장착해야 공격할 수 있습니다" |
+| `ORIGIN` 중 피해 궁(`EffectUnit` `ATK_PCT` / `STACK_PCT` — 대마법 · 폭풍의 화살 · 메소 익스플로전 · 함포 사격) | 거절 + 토스트 |
+| 에너지 차지 변신 중 재시전(주먹) | 거절 + 토스트 (행은 `BUFF_SELF` 지만 재시전은 공격) |
+| 버프(`BUFF_SELF` · 불굴의 진 `ORIGIN`/`SEC`) · 이동(`BLINK`) · 도발(`TAUNT`) | **그대로 시전** |
+
+거절은 MP(6) · 쿨다운 · 사용 횟수 · 영혼석 게이트 앞(4-2)이라 아무것도 소모하지 않는다.
+
+#### 수정 — `Skill/SkillCaster.mlua`
+
+| 위치 | 변경 |
+|---|---|
+| `:79` | `UnarmedToast` 속성(토스트 문구) |
+| `:157` `IsDamagingCast(skill, isRecast)` | 신규 — 위 표 |
+| `:171` `HasWeapon(userId)` | 신규 — `EquippedItemId(uid, e, "WEAPON") ~= ""` · `_EquipService` 가 없으면 막지 않는다 |
+| `:407-414` `RequestCast` 게이트 4-2 | 시전 락(4-1) 뒤 · 사용 제한(5) 앞. 로그 `[Skill] unarmed — <skill> refused` · `CastResult(false, "no weapon equipped")` |
+
+- 정상 흐름에서는 맨손이 안 생긴다(매치 시작 킷에 몽둥이 · `InventoryService.mlua:50`) — 플레이어가 무기를 직접 뺐을 때뿐. **Maker 에서 매치 없이 로비에서 시험하면 무기가 없을 수 있다** — 공격 스킬 시험 전에 무기를 장착한다.
+- 계약서 스킬 등록서 8번에 `EquipService` 호출을 한 줄 적어야 한다 — 같은 칸을 #86 이 고치고 있어 #86 머지 뒤 이 브랜치에서 추가한다.
+
+#### Play 검증
+
+(재입장 · Reimport All 뒤 추가) — 맨손: 파워 스트라이크 · 에너지볼트 거절 + 토스트 · MP/쿨다운 그대로 · 하이퍼 바디 · 텔레포트는 시전됨 / 무기 장착: 전부 정상 · 빌드 경고 N → N
+
+### 4차 · 분신 렌더 순서 (원래 #93) — 2026-09-24 — 분신 · 에너지 차지 불꽃 렌더 층 = Default / 플레이어 순서값 − 1
+
+PR #93. **출처: #40 5813565483 (A 답 · 사용자 확정 2026-09-24).** 플레이어는 발판과 무관하게 `Default` / 4 고정(A 의 `Map/PlayerFrontLayer` · 예외 = 포탈 `Default`/5). `Default` 층에서 A 가 쓰는 값은 4 · 5 뿐이고 맵에 박힌 `Default` 오브젝트는 2 이하 → 분신 = `Default` / 3 이면 플레이어 · 포탈 말고는 전부 분신 뒤.
+
+**헤더 변경 없음 · 새 CSV 열 · 이벤트 · RPC 없음.** A 파일 수정 없음 — `_PlayerFrontLayer.PlayerSortingLayer` · `PlayerOrderInLayer` 읽기만.
+
+#### 수정 — `Skill/SkillExecutors.mlua`
+
+| 위치 | 변경 |
+|---|---|
+| 속성 | `ShadowOrderInLayer = 2` → `ShadowOrderBelowPlayer = 1`(플레이어보다 몇 칸 뒤) |
+| `ApplyShadowSorting` | `SortingLayer` = `_PlayerFrontLayer.PlayerSortingLayer` · `OrderInLayer` = `PlayerOrderInLayer − 1`. `_LaneFacilityService.SortingLayerBelow`(밟은 발판 층) 의존 제거 · `_PlayerFrontLayer` 가 없으면 옵션 없음 |
+| 주석 3곳 | 새 규칙으로 |
+
+영향: 쉐도우 파트너 분신(서 있기 루프 · 따라하기) · 에너지 차지 불꽃(`loopFlame.sortBehind`) — `ApplyShadowSorting` 을 부르는 곳 전부.
+
+- 예전엔 발판 층 + 2 였다 — 플레이어가 `Default` 로 옮겨 간 뒤(A · 2026-09-22)로는 발판 층이 `Default` **아래**라 분신이 플레이어 뒤에 있긴 했지만 시설 · NPC 뒤로도 숨었고, 공중(발 아래 발판 없음)에서 걸면 옵션이 빠져 플레이어 **앞**에 그려졌다.
+- #64(에너지 차지 불꽃 층이 시전한 발판 층에 고정)의 원인이 발판 층이었으므로 이 변경으로 없어질 것으로 본다 — Play 확인 전까지는 #64 를 닫지 않는다.
+- ⚠ A 는 "`OrderInLayer` 는 동기화되지 않아 클라에서 써야 한다"(`PlayerFrontLayer.mlua:10`)고 했다. 이 경로는 컴포넌트 속성이 아니라 서버의 `_EffectService:PlayEffectAttached` **재생 옵션**이다 — 옵션이 클라 렌더에 반영되는지 Play 에서 확인한다(안 되면 클라 경로로 옮긴다).
+
+#### Play 검증
+
+(재입장 · Reimport All 뒤 추가) — 쉐도우 파트너 분신 · 에너지 차지 불꽃이 플레이어 바로 뒤 · 시설 · NPC 앞 · 공중 시전도 뒤 · 로그 `layer=Default/3` · 빌드 경고 N → N
