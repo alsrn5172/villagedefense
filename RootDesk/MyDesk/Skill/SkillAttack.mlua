@@ -35,9 +35,14 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property number PendingDamageMul = 1
 
-    -- 이번 타격 패스의 피해를 호출자가 정한 정수로 고정한다(DealSkillDamageToTargetAmount · 파워 스트라이크 2단 = 합계의 몫/나머지). -1 = 안 씀. 패스가 끝나면 -1 로.
+    -- 이번 타격 패스의 피해를 호출자가 정한 정수로 고정한다(DealSkillDamageToTargetAmount · 파워 스트라이크 = 시전 순간 DamageAt). -1 = 안 씀. 패스가 끝나면 -1 로.
     @HideFromInspector
     property integer PendingDamageOverride = -1
+
+    -- 이번 타격 패스의 크리티컬을 호출자가 정한 값으로 고정한다(-1 = 안 씀 · 0 = 아님 · 1 = 크리). 시전 순간에 판정해 둔 값을 타격 시점에 그대로 쓴다
+    -- (파워 스트라이크 · skill-maker 원장 PAJ-01/02 · 2026-09-24). 패스가 끝나면 -1 로.
+    @HideFromInspector
+    property integer PendingCritOverride = -1
 
     -- 이번 타격 패스의 표시 타수(GetDisplayHitCount). 패스가 끝나면 1 로.
     @HideFromInspector
@@ -146,6 +151,7 @@ script SkillAttack extends AttackComponent
     method void EndPass()
         self.PendingDamageMul = 1
         self.PendingDamageOverride = -1
+        self.PendingCritOverride = -1
         self.PendingDisplayHits = 1
         self.PendingSkillId = ""
         self.PendingImpactRuid = ""
@@ -198,7 +204,7 @@ script SkillAttack extends AttackComponent
             return self.PendingFlatDamage
         end
         if self.PendingDamageOverride >= 0 then
-            -- 정수 고정 패스(DealSkillDamageToTargetAmount): 호출자가 DamageAt 합계를 나눈 값. 태그는 스킬 id 그대로라 크리·표시·픽파켓은 스킬 타격과 같다.
+            -- 정수 고정 패스(DealSkillDamageToTargetAmount): 호출자가 시전 순간에 고정한 DamageAt. 태그는 스킬 id 그대로라 크리·표시·픽파켓은 스킬 타격과 같다.
             return self.PendingDamageOverride
         end
         if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
@@ -213,6 +219,8 @@ script SkillAttack extends AttackComponent
         -- 닷지(SK_A22 · GUARANTEED_CRIT · b/skill-archer-thief-pirate) 활성이면 반드시 크리티컬. 그 외엔 false(스킬엔 확률 크리 없음 · 예전과 같다).
         -- ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐이라 ServerOnly 인 SkillBuffs 를 불러도 된다.
         if attackInfo == self.FlatTag or attackInfo == self.ProbeTag then return false end
+        -- 시전 순간에 고정한 크리(DealSkillDamageToTargetAmount 의 critLocked). 타격 시점에 다시 판정하지 않는다.
+        if self.PendingCritOverride >= 0 then return self.PendingCritOverride == 1 end
         if _SkillBuffs ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
             return _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId)
         end
@@ -258,6 +266,9 @@ script SkillAttack extends AttackComponent
         --   그 외                  : 기존과 같다 — 상자 안 전부.
         if not isvalid(defender) then return false end
         if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        -- 시체 제외(2026-09-24 · #83): 죽은/죽는 중인 몬스터는 DestroyDelay 동안 HitComponent 가 남아 있어(Monster.Dead) 그대로 두면
+        -- 고정 대상 타격이나 범위 스킬이 시체를 또 때린다(피해 숫자 · 픽파켓 · 반사). 후보 수집(probe)에서도 뺀다.
+        if self:IsDeadOrDying(defender) then return false end
         if attackInfo == self.ProbeTag then
             table.insert(self.Candidates, defender)
             return false
@@ -397,7 +408,7 @@ script SkillAttack extends AttackComponent
 
     @ExecSpace("ServerOnly")
     method void DealSkillDamageToTargetScaled(string skillId, number level, Entity target, number mul, number displayHits)
-        -- 단일 대상 타격 + 피해 배율·표시 타수 분리. DealSkillDamageToTarget 과 같은 경로. (파워 스트라이크 2단은 2026-09-24 부터 DealSkillDamageToTargetAmount — 합계를 정수로 나눠야 해서.)
+        -- 단일 대상 타격 + 피해 배율·표시 타수 분리. DealSkillDamageToTarget 과 같은 경로. (파워 스트라이크는 2026-09-24 부터 1타 · DealSkillDamageToTargetAmount — 시전 순간 고정값.)
         if not isvalid(target) or not isvalid(target.TransformComponent) then return end
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
@@ -417,11 +428,16 @@ script SkillAttack extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
-    method void DealSkillDamageToTargetAmount(string skillId, number level, Entity target, integer amount, number displayHits)
-        -- 단일 대상 타격 · 피해 = amount 그대로(정수). 여러 타로 나눈 스킬이 "합계 = DamageAt" 를 정확히 맞출 때 쓴다(파워 스트라이크 · 나머지는 마지막 타).
-        -- 배율(0.5 등)로 나누면 타마다 내림이 따로 걸려 합계가 1 모자란다(225 → 112 + 112). DealSkillDamageToTargetScaled 와 같은 경로에 값만 고정한다.
-        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
-        if amount == nil or amount <= 0 then return end
+    method boolean DealSkillDamageToTargetAmount(string skillId, number level, Entity target, integer amount, number displayHits, integer critLocked)
+        -- 단일 대상 타격 · 피해 = amount 그대로(정수) · 크리 = critLocked(-1 = 타격 시점 판정 · 0 = 아님 · 1 = 크리).
+        -- 시전 순간에 대상 · 피해 · 크리를 고정해 두고 타격 시점에 한 번만 넣는 스킬이 쓴다(파워 스트라이크 · skill-maker 원장 PAJ-01/02 (a)).
+        -- 반환 = 타격을 시도했는가. 대상이 사라졌거나 죽었거나 죽는 중이면 아무것도 안 하고 false(시체 보호 · IsDeadOrDying).
+        if not isvalid(target) or not isvalid(target.TransformComponent) then return false end
+        if amount == nil or amount <= 0 then return false end
+        if self:IsDeadOrDying(target) then
+            log("SkillAttack: " .. skillId .. " locked target " .. tostring(target.Name) .. " is dead/dying — hit skipped")
+            return false
+        end
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
         self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
@@ -432,11 +448,26 @@ script SkillAttack extends AttackComponent
         self.SingleTarget = target
         self:BeginPass(skillId, level, 1, math.floor(displayHits))
         self.PendingDamageOverride = math.floor(amount)
+        if critLocked ~= nil and critLocked >= 0 then self.PendingCritOverride = critLocked end
         self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
         self:EndPass()
         self.SingleTarget = nil
 
-        log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " amount=" .. tostring(amount) .. " display=" .. tostring(displayHits))
+        log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(critLocked) .. " display=" .. tostring(displayHits))
+        return true
+    end
+
+    method boolean IsDeadOrDying(Entity defender)
+        -- 몬스터(script.Monster · A)가 죽었거나(IsDead) HP 가 0 이하인가. Monster 컴포넌트가 없는 대상(미니언 · 시설 등)은 false — 그쪽 규칙은 각 HitComponent 가 한다.
+        -- IsDead 는 Monster.Dead 가 켜고 DestroyDelay 뒤 숨김·파괴 전까지 HitComponent 가 살아 있다(Monster.mlua:302-327) — 그 사이가 "죽는 중".
+        -- ExecSpace 없음: IsAttackTarget(서버 피격 파이프라인)과 서버 실행기에서만 부른다.
+        if not isvalid(defender) then return true end
+        ---@type Monster
+        local mon = defender:GetComponent("script.Monster")
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return true end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return true end
+        return false
     end
 
     -- Spawns a real travelling script.SkillProjectile entity for behavior="PROJECTILE" skills.

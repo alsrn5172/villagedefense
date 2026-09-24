@@ -141,3 +141,36 @@ SkillAttack: dealt SK_W11 to T_ps_1 lv=5 amount=113 display=1   ← 2타 (나머
 **Lv5 실제 시전 경로**에서도 합계는 같다 — `POWER STRIKE locked target=none total=225 split=112+113`. 이때는 로그와 시전 사이 6초 동안 스네일이 걸어 나가 앞쪽 상자가 비어 있었고(`candidates=0`), 두 타 모두 `no locked target … consumed` 로 **아무도 안 맞았다** — "시전 때 대상이 없으면 소모" 동작 그대로다.
 
 **판정: PASS** — 한 시전의 모든 타 = 시전 순간 고정 대상 · 합계 = `DamageAt`(Lv1 112 · Lv5 225) · 나머지는 2타.
+
+## 2026-09-24 (3차) — 1타로 재구성 · 시전 순간 대상·피해·크리 고정 · 시체 보호 · 원작 1차 팩 연출
+
+**9/13 히어로식 2단 콤보(섬광 → 내려찍기 1타 → 찌르기 2타 · 잔상 2종)를 대체한다.** 사용자 결정 2026-09-24 (skill-maker 원장 `.maplestory-skill-maker-ledger.md` · Task 2/3):
+
+- **1타 · `DamageAt` 전액 · 시전 순간 고정 대상.** 2차의 몫/나머지 분할(2타)은 없어졌다.
+- **PAJ-02 (a):** 대상 · 피해 · 크리는 시전 순간에 고정하고, HP 는 **칼이 닿는 순간 한 번** 지금 경로(`SkillAttack` → `AttackFast` → 몬스터 `HitComponent`)로 넣는다. skill-maker 기본(시전 순간 HP · 표시만 지연)과 다르다 — 몬스터 쪽에 표시 지연 `TakeDamage` · death-hold 가 없어서(A · #40 5813562531 대기) 원장에 편차로 기록했다.
+- **시체 보호:** 고정 대상이 죽었거나 죽는 중이면(`script.Monster.IsDead` 또는 `Hp <= 0`) 아무것도 안 한다. 범위 스킬 · 후보 수집에서도 뺀다.
+- **모션:** 승인 표는 RANDOM(반복 없음 · 한손검 swingO1/O2/O3 · 두손검 swingT1/T2/T3)이다. 표 자리 `Skill/SkillMotionSet.csv` 는 **등록 PR #90** 이 먼저 머지돼야 해서, 그전에는 사용자 결정(DATA-02)대로 `WeaponMotion.csv` **고정 행**(swingO1 / swingT1 · 둘 다 이 월드에서 이미 쓰는 W 모션)으로 나간다.
+- **연출:** 원작 1001004 팩은 MSW 인덱스에 없어 가장 가까운 원작 팩 `skill/1100.img/skill/11001002`(1차 파워 스트라이크) — 시전 `aae5027da69747d3b2cd2bd0f26987e0` · 타격 `88a17d40d6e34abd948cac09724b22fa` · 사운드 `e0178f48602742c0bd8b295fdc27261c`. 예전 잔상(내려찍기 · 찌르기)은 뺐고 한손검 잔상은 없다.
+
+### 수정
+
+| 위치 | 변경 |
+|---|---|
+| `Skill/SkillExecutors.mlua:2114` `ExecutePowerStrike` | `ExecutePowerStrikeCombo` 를 대체. 시전 순간 `FindSkillTarget` · `amount = DamageAt` · `crit = IsGuaranteedCrit` 고정 → `hitAt` 뒤 `DealSkillDamageToTargetAmount` 한 번 · 맞았을 때만 hit/0 한 번(hitEffectPolicy once). 로그 `POWER STRIKE locked target=… amount=… crit=…` · `POWER STRIKE contact target=… hit=…` |
+| `:398-404` `effectOverrides.SK_W11` | cast/impact = 11001002 · `hitAt = 0.45`(**잠정 · Play 실측으로 교체**) · `swing`/`thrust` 삭제 |
+| `:592` `castSounds.SK_W11` | `e0178f48…`(11001002 `_audio/Use`) |
+| `:1984` `ExecuteMeleeArc` | SK_W11 → `ExecutePowerStrike` |
+| `Skill/SkillAttack.mlua:45` | `PendingCritOverride`(-1/0/1) — `CalcCritical`(`:223`)이 있으면 그 값을 쓴다 · `EndPass` 가 -1 로 |
+| `:271` `IsAttackTarget` | `IsDeadOrDying` 이면 false(probe 후보 · 모든 스킬 타격) |
+| `:431` `DealSkillDamageToTargetAmount` | 반환 boolean · 인자 `critLocked` 추가 · 죽은/죽는 중 대상이면 로그만 남기고 false |
+| `:460` `IsDeadOrDying` | 신규. `script.Monster` 가 없으면 false(미니언 · 시설은 각자 HitComponent 규칙) |
+| `Skill/SkillCaster.mlua:88` | 시전 락 1.2 → **0.6**(잠정 · Play 실측으로 교체) |
+| `WeaponMotion.csv:9-10` (B 행) | SK_W11 시전 행 alert → **swingO1 / swingT1** (시전 행이 곧 공격 모션) |
+| `:11-12` · `:66-67` (B 행) | `SK_W11_1` · `SK_W11_2` `Enabled=false`(부르는 코드 없음) |
+| `SkillInfo.csv` SK_W11 `#Note` | 새 팩 · 1타 설명. 수치 열 변경 없음 |
+
+헤더 변경 없음 · 새 CSV 열 · 이벤트 · RPC 없음.
+
+### Play 검증 (3차)
+
+(재입장 · Reimport All 뒤 추가) — Ctrl 기본 공격이 무기 세트에서 무작위로 고르는지(증거) · swingO1/swingT1 클립 길이 실측 → `hitAt` · 시전 락 교체 · skill-maker 하네스(P · H/D) · Lv1 = 112 · Lv5 = 225 (한 대상 · 다른 몬스터 0) · 시체는 안 맞음 · 빌드 경고 N → N
