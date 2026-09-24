@@ -96,8 +96,8 @@ BR RESULT2 hp=996640.0/1000000 damage=3360.0  DamageAt(SK_P31,1)=112
 
 | 위치 | 변경 |
 |---|---|
-| `Skill/SkillExecutors.ExecutePowerStrikeCombo` (`:2147-2168`) | 대상을 **시전 순간 한 번** 고른다(`FindSkillTarget` 1회). 두 타 모두 그 대상에게만. 시전 때 대상이 없거나 사라졌으면 그 타는 소모(재탐색 없음) |
-| 같은 곳 (`:2150-2153`) | 합계 `total = DamageAt(skillId, level, uid)` 를 한 번 구해 **1타 = floor(total/2) · 2타 = total − 1타**. 로그 `POWER STRIKE locked target=… total=… split=a+b` (`:2156`) |
+| `Skill/SkillExecutors.ExecutePowerStrikeCombo` (`:2147-2169`) | 대상을 **시전 순간 한 번** 고른다(`FindSkillTarget` 1회). 두 타 모두 그 대상에게만. 시전 때 대상이 없거나 사라졌으면 그 타는 소모(재탐색 없음) |
+| 같은 곳 (`:2151-2154`) | 합계 `total = DamageAt(skillId, level, uid)` 를 한 번 구해 **1타 = floor(total/2) · 2타 = total − 1타**. 로그 `POWER STRIKE locked target=… total=… split=a+b` (`:2157`) |
 | `Skill/SkillAttack` (`:40` · `:148` · `:200-203`) | `PendingDamageOverride`(−1 = 안 씀) — `CalcDamage` 가 이 값이 있으면 그대로 돌려준다. `EndPass` 가 −1 로 되돌린다 |
 | `Skill/SkillAttack.DealSkillDamageToTargetAmount` (`:420`) | 신규. `DealSkillDamageToTargetScaled` 와 같은 단일 대상 경로에 **정수 피해만 고정**. 태그는 스킬 id 그대로라 크리·표시 타수·픽파켓 훅은 기존 스킬 타격과 같다 |
 
@@ -107,4 +107,37 @@ BR RESULT2 hp=996640.0/1000000 damage=3360.0  DamageAt(SK_P31,1)=112
 
 ### Play 검증
 
-(Maker 재시작 · Reimport All 뒤 추가)
+(2026-09-24 · Maker MCP · `Orbis_Lobby_VictoriaStation` · 이 브랜치 · Reimport All → `refresh` → `logs(build)` → `play`)
+
+**빌드 경고: 1 before → 1 after** (기존 `LWA-1111` · 에러 0 · Play 뒤 재확인도 같음 · Info 182 → 182). 처음 refresh 에서 `LIA-1114` Info 2건(`target.Name` · `target.TransformComponent` — `local target = nil` 을 nil 타입으로 본 정적 분석 오탐)이 늘어 `---@type Entity` 한 줄(`:2148`)을 붙였고, 재 refresh 뒤 Info 182 로 원래와 같다. Refresh 뒤 `SkillAttack.codeblock` 재생성 없음.
+
+조건: 전사 Lv30 · 3차 · ATK 75 · 스네일 2마리(HP 100000) 앞쪽 · 아이언 바디 Lv0(반사가 몬스터 HP 를 건드리지 않게).
+
+```
+[T] PS setup lv=30 job=WARRIOR/3 W11=1 W12=0 atk=75 DamageAt(1)=112 DamageAt(5)=225 look=-1.0
+```
+
+**Lv1 — 실제 시전(`_SkillCaster:Cast`) · 합계 112 · 한 마리만**
+```
+SkillAttack: FindSkillTarget SK_W11 candidates=1 ... -> T_ps_1
+SkillExecutors: POWER STRIKE locked target=T_ps_1 total=112 split=56+56
+SkillAttack: dealt SK_W11 to T_ps_1 lv=1 amount=56 display=1   ← 1타
+SkillAttack: dealt SK_W11 to T_ps_1 lv=1 amount=56 display=1   ← 2타
+[T] PS1 after ps1 dmg=112.0 ps2 dmg=0.0
+```
+
+**Lv5 — 시전 뒤 대상 뒤바꾸기 · 합계 225 · 고정 대상만**
+두 마리를 앞쪽 0.9 / 1.5 에 두고 `_SkillExecutors:Execute`(시전 비용·쿨다운 게이트만 건너뛰고 같은 `ExecutePowerStrikeCombo`)로 Lv5 시전 → **1타와 2타 사이(+0.6s)에 T_ps_2 를 0.4 로 옮겨 가장 가깝게** 만들었다(예전 코드면 2타가 T_ps_2 로 갔다).
+```
+[T] PS5swap cast dir=-1.0 ps1 dx=-0.92 ps2 dx=-1.50
+SkillAttack: FindSkillTarget SK_W11 candidates=2 ... -> T_ps_1
+SkillExecutors: POWER STRIKE locked target=T_ps_1 total=225 split=112+113
+SkillAttack: dealt SK_W11 to T_ps_1 lv=5 amount=112 display=1   ← 1타
+[T] PS5swap swapped at +0.6 ps1 dx=-1.70 ps2 dx=-0.40 (ps2 now nearest)
+SkillAttack: dealt SK_W11 to T_ps_1 lv=5 amount=113 display=1   ← 2타 (나머지)
+[T] PS5swap result ps1 dmg=225.0 ps2 dmg=0.0
+```
+
+**Lv5 실제 시전 경로**에서도 합계는 같다 — `POWER STRIKE locked target=none total=225 split=112+113`. 이때는 로그와 시전 사이 6초 동안 스네일이 걸어 나가 앞쪽 상자가 비어 있었고(`candidates=0`), 두 타 모두 `no locked target … consumed` 로 **아무도 안 맞았다** — "시전 때 대상이 없으면 소모" 동작 그대로다.
+
+**판정: PASS** — 한 시전의 모든 타 = 시전 순간 고정 대상 · 합계 = `DamageAt`(Lv1 112 · Lv5 225) · 나머지는 2타.
