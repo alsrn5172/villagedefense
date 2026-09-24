@@ -136,6 +136,23 @@ PR #85. 전사 스킬 점검(2026-09-24 · #83 브랜치 · Maker MCP) 중 확�
 
 `Docs/스키마-계약.md` 스킬 등록서 8번의 `PlayerHit.mlua` 항목에 이 훅을 한 줄 더 적어야 한다. 같은 줄(`:274`)과 변경 이력 첫 행을 #86 도 고친다 — 여기서 고치면 두 PR 이 같은 줄에서 충돌하므로 **#86 머지 뒤 이 브랜치에서 추가**한다.
 
-### Play 검증
+### Play 검증 (2026-09-25 · Maker MCP · `Orbis_Lobby_VictoriaStation` · 이 브랜치 `2d7ffaf` · Reimport All → play)
 
-(Maker 재입장 · Reimport All 뒤 추가)
+**빌드 경고: 1 before → 1 after** (기존 `LWA-1111` · 에러 0 · Info 182 → 182). Play 뒤 `git status` 깨끗.
+
+시작 상태: `MagicGuardSelfWire/DarkSightSelfWire/EnergyShieldSelfWire/HyperBodySelfWire = false/false/false/false`. 버프는 실제 시전 경로(`_SkillCaster:RequestCast`) · Lv30 3차 · DEV 세팅(`ChangeJob` + `DevLearnAll`)으로 직업을 바꿨다.
+**피해 하네스:** 로비에 몬스터가 없어 스네일(`monster100000`)을 `SpawnByModelId` 로 옆에 놓고, 정한 피해를 `PlayerHit:OnHit(스네일, 피해, …)` 로 직접 넣었다(엔진이 부르는 것과 같은 진입점 · 훅 → `__base:OnHit`). 스네일 자체 공격은 이 월드 공식으로 Lv30 에게 1 이라(하이퍼 바디 −40% 면 `reduce 1 -> 0`) 끄고 썼다. 피격마다 HitEvent 스파이가 `dmg` · HP · 상태를 찍었다.
+
+| # | 경우 | 결과 | 증거 |
+|---|---|:--:|---|
+| H1 | 하이퍼 바디 Lv5 · 147 | PASS · **감소 한 번** | `HYPER_BODY reduce 147 -> 88 (-40%)` 한 줄 · HP 322320 → 322232(**−88**) · HitEvent `dmg=88`(피해 숫자 = 감소 뒤) · `refund` 줄 없음 |
+| H2 | 하이퍼 바디 · **HP 100 · 150(죽는 피해)** | PASS · 생존 | `reduce 150 -> 90` · `H2 post hp=10 dead=false` · 상태 HIT(경직은 기대대로) |
+| M1 | 매직 가드 Lv5(75%) · **HP 100 · 150** | PASS · 생존 | `[Summon] -mp 112` · `MAGIC_GUARD absorb 112/150 -> hp 38` 한 번 · `M1d post hp=62 dead=false` · HitEvent `dmg=38` |
+| C | 대조 — 버프 없음 · HP 100 · 150 | 사망(기대대로) | 매직 가드가 45초로 끝난 직후 같은 피해 → `M1b post hp=-50` · 상태 DEAD — 위 세 버프가 없으면 이 피해로 죽는다는 대조 |
+| E1 | 에너지 쉴드 Lv5 · **HP 100 · 150 · 전액 흡수** | PASS · 경직/넉백 없음 | `shield=60435 (30% of maxHp)` → `ENERGY_SHIELD absorb 150/150 -> shield 60285` · `E1 post hp=100` · 상태 **IDLE**(+0.3s 도 IDLE) · HitEvent 없음 |
+| D1 | 다크 사이트 · **HP 100 · 150** | PASS · 경직 없이 회피 | `DARK_SIGHT evaded 150` · `OFF DARK_SIGHT (evaded)` · `D1 post hp=100` · 상태 **IDLE**(+0.3s 도 IDLE) · HitEvent 없음 · 버프 1회 소모 |
+| X | 두 번 감소 없음(세션 전체) | PASS | `hp refund`(옛 자가 배선) **0 줄** · `HYPER_BODY reduce` 35 줄(H1 · H2 + 스네일 접촉 1→0 33회) · `absorb` 4 줄 — 피격 1회당 감소/흡수 1회 |
+
+**하네스 에러 2건(코드 문제 아님):** `05:32:49` · `05:34:30` `Object reference not set to an instance of an object.` — 앞 테스트에서 아이언 바디 반사(80580)로 죽어 사라진 스네일을 공격자로 넘겨 엔진 `__base:OnHit` 이 던졌다(`attacker=false` 로 확인). 같은 호출을 살아 있는 스네일로 다시 하니(M1d) 정상. 실제 게임에서 엔진은 살아 있는 공격자로 `OnHit` 을 부르므로 해당 없다.
+
+**판정: PASS** (H1 · H2 · M1 · E1 · D1 · X). A 파일(`PlayerHit.mlua`) 수정이 있어 A 리뷰 승인 전까지 Draft.
