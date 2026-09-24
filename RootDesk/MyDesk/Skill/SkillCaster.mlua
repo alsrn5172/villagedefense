@@ -19,6 +19,17 @@ script SkillCaster extends Logic
     -- false 로 두면 MP 게이트(GetEcon.mp >= MpCost)만 검사하고 차감은 하지 않는다(과거 대기 모드).
     property boolean UseSpendMp = true
 
+    -- ───────────── 궁극기 비용 (2026-09-24 기획 답변 1번 · b/skill-ult-soulstone-cost) ─────────────
+    -- 궁(Behavior ORIGIN)은 낙인의 영혼석을 쓴다. 개수 = 지금 매치 ★ 의 발록 입장권(DifficultyRule BALROG_TICKET · A 의 DifficultyService) 기준:
+    --   일반 궁 = ceil(입장권 / 2)(★1/3/5 = 3/15/100) · UltimateFullTicketSkills(대마법) = 입장권과 같은 수(5/30/200).
+    -- 개수는 RequestCast 게이트 5-2 에서 세고, 실행기가 실제로 돈 **뒤에만** 뺀다 — 거절된 시전(동전 0 메소 익스플로전 · 영혼석 부족 등)은 아무것도 안 쓴다.
+    -- 매치 밖(DifficultyService.Current() = 0 · 로비·Maker 매치 없이)은 ★ 도 입장권도 없어 0 개. 사용 제한은 아직 판당 1번(SkillInfo UseLimit · A 의 도전 시작 신호 대기).
+    property string UltimateCostItemId = "BRAND_SOULSTONE"
+
+    property table UltimateFullTicketSkills = {
+        SK_M31 = true,
+    }
+
     -- ───────────── 시전 락 (2026-09-09 · 메이플 원작 기준: 스킬 시전 중 이동 불가 · 다른 스킬 시전 불가) ─────────────
     -- 원작의 "공격 딜레이": 시전 모션이 도는 동안 땅에서는 못 움직이고, 어떤 스킬도 다시 못 쓴다. 공중 시전은 궤적을 유지한다.
     -- 구조는 .claude/skills/maplestory-skill-maker/references/player/casting.md 의 원칙을 이 프로젝트 범위로 줄인 것:
@@ -394,6 +405,16 @@ script SkillCaster extends Logic
                 return
             end
         end
+        -- 5-2. 궁극기 영혼석 — 세기만 한다. 빼는 것은 실행기가 돈 뒤(아래 "영혼석 차감"). MP(6) 앞이라 부족하면 MP 도 안 쓴다.
+        local stoneCost = self:UltimateStoneCost(skillId, skill)
+        if stoneCost > 0 then
+            local have = 0
+            if _InventoryService ~= nil then have = _InventoryService:CountItem(uid, self.UltimateCostItemId) end
+            if have < stoneCost then
+                self:CastResult(skillId, false, "not enough " .. self.UltimateCostItemId .. " (need " .. tostring(stoneCost) .. ", have " .. tostring(have) .. ")", 0, castId, uid)
+                return
+            end
+        end
         -- 6. MP — 원장은 SummonManager.econ (A). 차감은 SpendMp 만 (UseSpendMp 참조).
         local mp = 0
         if _SummonManager ~= nil then
@@ -482,6 +503,15 @@ script SkillCaster extends Logic
         if isvalid(caster) then
             self:EnsureSkillAttack(caster)
             _SkillExecutors:Execute(skill.behavior, skillId, skill, caster, level)
+            -- 영혼석 차감: 실행기가 실제로 돈 뒤에만. 5-2 에서 센 뒤 이 호출까지 대기 없이 이어지므로 개수는 그대로다.
+            if stoneCost > 0 then
+                if _InventoryService ~= nil and _InventoryService:RemoveItem(uid, self.UltimateCostItemId, stoneCost) then
+                    _InventoryService:PushInventory(uid)
+                    log("[Skill] ultimate " .. skillId .. " cost " .. self.UltimateCostItemId .. " x" .. tostring(stoneCost) .. " consumed (" .. uid .. ")")
+                else
+                    log_warning("[Skill] ultimate " .. skillId .. " cast but " .. self.UltimateCostItemId .. " x" .. tostring(stoneCost) .. " could not be removed (" .. uid .. ")")
+                end
+            end
         else
             log_warning("SkillCaster: caster entity not found for " .. uid .. ", skipping executor for " .. skillId)
         end
@@ -497,6 +527,27 @@ script SkillCaster extends Logic
 
         log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " recast=" .. tostring(isRecast) .. " (" .. uid .. ")")
         self:CastResult(skillId, true, "ok", cooldown, castId, uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer UltimateStoneCost(string skillId, table skill)
+        -- 궁극기 영혼석 개수(0 = 비용 없음). 궁(ORIGIN)이 아니거나 매치 밖(★ 0)이면 0. 입장권 = DifficultyRule BALROG_TICKET(A · DifficultyService).
+        if skill == nil or skill.behavior ~= "ORIGIN" then return 0 end
+        if _DifficultyService == nil then return 0 end
+        local d = _DifficultyService:Current()
+        if d <= 0 then
+            log("[Skill] ultimate " .. skillId .. " cost 0 — no match running (difficulty 0)")
+            return 0
+        end
+        local ticket = math.floor(_DifficultyService:GetNumFor(d, "BALROG_TICKET"))
+        if ticket <= 0 then
+            log_warning("[Skill] ultimate " .. skillId .. " cost 0 — no BALROG_TICKET rule for ★" .. tostring(d))
+            return 0
+        end
+        local cost = math.ceil(ticket / 2)
+        if self.UltimateFullTicketSkills[skillId] then cost = ticket end
+        log("[Skill] ultimate " .. skillId .. " cost ★" .. tostring(d) .. " ticket=" .. tostring(ticket) .. " -> " .. tostring(cost))
+        return cost
     end
 
     @ExecSpace("ServerOnly")
