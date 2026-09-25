@@ -58,13 +58,19 @@
 
 **메모리 시험(파일 반영 전 · 같은 값)**: 한손 W = `stand2` → 1.0s alert×2.5 → 1.6s stand1 · 시전 중 검 보임(스크린샷) · 이펙트 `offsetX=0.05`. 두손 W = alert×2.5 → alert×2.5 → stand1 · 시전 뒤 대검 보임(은빛 · 강철).
 
-**최종 재확인(이 커밋 · 새 Play)**: 대기
+**최종 재확인(`c63b35c` · 2026-09-25 · Maker 재시작 → 월드 입장 → Reimport All → 새 Play · Maker MCP)**: PASS · 사용자 시각 확인 PASS(W · E · R · 한손 · 두손)
+
+**빌드 경고: 1 → 1**(`LWA-1111` 기존 · 에러 0). 실행 경고 = 기존 것만(`BossCatalog` · `LWA-3047` · 첫 시전 `LWA-3048`). `.codeblock` 재생성 없음.
 
 | 항목 | 기대 | 결과 |
 |---|---|---|
-| 하이퍼 바디 세션 첫 시전 | 예열 로그 · 첫 시전부터 제시간에 뜬다 | 대기 |
-| 하이퍼 바디 한손 | stand2 · 검 보임 · 이펙트 `offsetX=0.05` | 대기 |
-| 하이퍼 바디 두손 | alert 2.5배속 · 이펙트 `offsetX=0.04` | 대기 |
-| 도발 한손 · 두손 | stabO1 / alert 2.5배속 · 이펙트 `offsetX=0.04` | 대기 |
-| 불굴의 진 한손 | alert 2.5배속 · 검 보임 | 대기 |
-| W · E · R 뒤 두손검 | stand1 · 대검이 계속 보인다 | 대기 |
+| 예열 | 입장 3s 뒤 컷신 + 하이퍼 바디 | PASS — 서버 `SkillExecutors: cutscene prewarm x8`(예전 7 + 하이퍼 바디) |
+| 하이퍼 바디 세션 첫 시전 | 첫 시전부터 제시간 | PASS — W 를 누르기 전 클라에서 리마스터 클립 로드 **18ms**(이미 받아 둠) · 예열 안 한 클립은 첫 로드 207~219ms / 두 번째 17ms |
+| 예열 순간 프레임 | 튀지 않는다 | 따뜻한 입장(Play 재시작 · 캐시가 남아 있음)만 측정: 예열 2s 전 ~ 8s 뒤 0.5s 구간마다 평균 17.1~17.3ms · 최대 18~19ms · 50ms 넘는 프레임 없음. 차가운 입장(Maker 재시작 첫 Play)은 프로브가 4s 늦게 떠 못 쟀다 → 미리보기 캡처 때 잰다 |
+| 하이퍼 바디 한손 | stand2 · 검 보임 · `offsetX=0.05` | PASS — `stand2` → +1.01s alert×2.5 → +1.60s stand1 · `facing=-1 flipX=false offsetX=0.05` · 시전 중 · 뒤 검 보임(스크린샷) |
+| 하이퍼 바디 두손 | alert 2.5배속 · `offsetX=0.04` | PASS — alert×2.5 → +1.00s alert×2.5 → +1.59s stand1 · `offsetX=0.04` · 뒤 대검 보임 |
+| 도발 한손 · 두손 | stabO1 / alert 2.5배속 · `offsetX=0.04` | PASS — 한손 `stabO1` · 두손 alert×2.5 → +1.0s alert×2.5 → +1.6s stand1 · 둘 다 `offsetX=0.04` · `taunted=3 pulled=3` · 끌려온 달팽이마다 mob 클립 |
+| 불굴의 진 한손 · 두손 | alert 2.5배속 → 컷신 뒤 stand1 | PASS — alert×2.5 → +1.5s alert×2.5 → +5.5s stand1 · 컷신이 걷힌 뒤 검 · 대검 보임 |
+| W · E · R 뒤 두손검 | stand1 · 대검이 계속 보인다 | PASS — 세 스킬 모두 `_END` = stand1 · 대검 보임 |
+
+참고: 달팽이가 몸에 닿는 동안 엔진 피격(HIT) 반응이 0.5s 마다 alert×1 / stand1 을 번갈아 보내 alert×2.5 를 일찍 끊을 수 있다(기존 전투 동작 · 이 PR 과 무관). W · R 확인 때는 달팽이를 잠시 치워 두고 쟀다.
