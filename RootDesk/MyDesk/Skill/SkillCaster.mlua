@@ -306,22 +306,31 @@ script SkillCaster extends Logic
         -- → 락 동안 0.05s 마다 HP 를 보고, 0 이하가 되면 곧바로 락을 풀고(상태기 복구) 사라진 사망을 다시 건다(ProcessDead · 클라에서 부르면 이 클라 DEAD → 서버 IsDead 에도 반영).
         -- 그리고 서버에 알린다(ReportCastLockDeath) — 서버가 이 시전자의 스킬 연출 엔티티를 지운다. 늦은 스킬 타격은 SkillAttack.IsAttackTarget 이 막는다.
         -- 이 시전의 락이 끝나면(타이머 · 서버 거절 · 다음 시전) 감시도 스스로 멈춘다.
-        local watchId = 0
-        watchId = _TimerService:SetTimerRepeat(function()
-            if not self.castLockActive or self.activeCastId ~= castId then
+        -- HP 가 **이 시전 동안 0 으로 떨어질 때만** 사망을 다시 건다 — 시전을 HP 0 인 채 시작하면 감시하지 않는다.
+        --   A 의 부활 팝업 선택(PlayerRespawnService.Choose → ProcessRevive)은 HP 0 인 채 살려 둔다. 그 상태의 첫 지상 시전이
+        --   곧바로 사망 · 페널티를 한 번 더 부르던 것(2026-09-25 Play 재현: 사망 #6)을 막는다. HP 0 부활 자체는 A 몫(#40).
+        local startHp = 1
+        if isvalid(player) and isvalid(player.PlayerComponent) then startHp = player.PlayerComponent.Hp end
+        if startHp <= 0 then
+            log("SkillCaster: cast lock #" .. tostring(castId) .. " started at HP " .. tostring(startHp) .. " — death watch off (only a drop to 0 during the cast re-applies death)")
+        else
+            local watchId = 0
+            watchId = _TimerService:SetTimerRepeat(function()
+                if not self.castLockActive or self.activeCastId ~= castId then
+                    _TimerService:ClearTimer(watchId)
+                    return
+                end
+                local pl = _UserService.LocalPlayer
+                if not isvalid(pl) or not isvalid(pl.PlayerComponent) then return end
+                if pl.PlayerComponent.Hp > 0 then return end
                 _TimerService:ClearTimer(watchId)
-                return
-            end
-            local pl = _UserService.LocalPlayer
-            if not isvalid(pl) or not isvalid(pl.PlayerComponent) then return end
-            if pl.PlayerComponent.Hp > 0 then return end
-            _TimerService:ClearTimer(watchId)
-            self:ReleaseCastLock(castId, "dead")
-            local wasDead = pl.PlayerComponent:IsDead()
-            if not wasDead then pl.PlayerComponent:ProcessDead() end
-            log("SkillCaster: HP " .. tostring(pl.PlayerComponent.Hp) .. " during cast lock #" .. tostring(castId) .. " — lock released, death " .. (wasDead and "already applied" or "re-applied"))
-            self:ReportCastLockDeath(castId)
-        end, 0.05)
+                self:ReleaseCastLock(castId, "dead")
+                local wasDead = pl.PlayerComponent:IsDead()
+                if not wasDead then pl.PlayerComponent:ProcessDead() end
+                log("SkillCaster: HP " .. tostring(pl.PlayerComponent.Hp) .. " during cast lock #" .. tostring(castId) .. " — lock released, death " .. (wasDead and "already applied" or "re-applied"))
+                self:ReportCastLockDeath(castId)
+            end, 0.05)
+        end
 
         log("SkillCaster: cast lock ON #" .. tostring(castId) .. " " .. skillId .. " grounded=" .. tostring(grounded)
             .. " cachedInputSpeed=" .. tostring(self.cachedInputSpeed) .. " fixedLookAt=" .. tostring(isvalid(controller) and controller.FixedLookAt or 0))
@@ -364,6 +373,8 @@ script SkillCaster extends Logic
         -- 서버에서도 HP 가 0 이하(또는 이미 사망)인지 확인한 뒤, 이 시전자의 스킬 연출 엔티티(SkillExecutors.PlaySpriteFlash 가 스폰하는 SkillFx_<uid>_* ·
         -- 휘두르기 잔상 등)를 지운다. 접촉 순간에 늦게 스폰하는 연출도 잡도록 1.5s 동안 0.1s 마다 다시 쓸어낸다.
         -- 그사이 부활하면(부활 팝업에서 곧바로 고르기 등) 쓸기를 멈춘다 — 부활 직후 새로 시전한 스킬의 연출은 지우지 않는다.
+        --   부활 판정 = 사망(IsDead)을 한 번 본 뒤 다시 살아남 · HP 는 보지 않는다(A 의 팝업 부활은 HP 0 인 채 살린다 · 2026-09-25 Play).
+        --   알림이 올 때 서버는 아직 IsDead=false 일 수 있어(HP 0 만 먼저 옴 · Play 실측) "사망을 본 뒤" 가 필요하다.
         -- 늦게 들어가는 스킬 타격 자체는 SkillAttack.IsAttackTarget(시전자가 쓰러졌으면 false)이 막는다.
         if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local player = _UserService:GetUserEntityByUserId(senderUserId)
@@ -387,10 +398,18 @@ script SkillCaster extends Logic
         end
         local removed = sweep()
         local ticks = 15
+        local sawDead = player.PlayerComponent:IsDead()
         local sweepId = 0
         sweepId = _TimerService:SetTimerRepeat(function()
             ticks = ticks - 1
-            local revived = isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent.Hp > 0 and not player.PlayerComponent:IsDead()
+            local revived = false
+            if isvalid(player) and isvalid(player.PlayerComponent) then
+                if player.PlayerComponent:IsDead() then
+                    sawDead = true
+                elseif sawDead then
+                    revived = true
+                end
+            end
             if not revived then removed = removed + sweep() end
             if ticks <= 0 or revived then
                 _TimerService:ClearTimer(sweepId)
