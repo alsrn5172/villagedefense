@@ -17,8 +17,13 @@
 - `Window/Content/JobChange` (940×460 · 기본 꺼짐) + `Message` (32 · Maple · CostLabel 과 같은 색). 제목은 NPC 이름(`PendingDisplayName`), 버튼 · 안내 줄은 기존 Footer 를 같이 쓴다
 
 ### 검증
-- mLua 진단 0 · ui_lint 경고 전후 동일(기존 13)
-- ⚠ **Play 미검증** (Maker 연결 끊김). 볼 것: 스폰 로그 `[NpcSpawner] ready map=LithHarbor_Village_MinimiMain spawned=n/m` · 클릭 → `[Common] jobchange …` → B `[Skill] JOB NOVICE -> …` · 위치 · 겹침 눈 확인
+- mLua 진단 0 · ui_lint 경고 전후 동일(기존 13) · **빌드 경고 1 → 1** (기존 `LWA-1111` · 에러 0)
+- **Play PASS** (2026-09-26 · 개인 월드 · 이 워크트리 · `LithHarbor_Village_MinimiMain` 을 열고 Play):
+  - `[NpcSpawner] ready map=LithHarbor_Village_MinimiMain spawned=7/7` — `VD_JOB_*` 5명 x 11.3~16.1 · y -1.37 · 각 SpriteRUID · 이름표 · `UiRoute jobchange:<JobId>` · `MapLayer1/3` (서버에서 엔티티 실측)
+  - 전사 전직관 `RequestOpen` → `[VillageNpcInteractor] approved … npc=VD_JOB_WARRIOR` → `[Common] jobchange open job=WARRIOR`. 창 제목 "주먹펴고 일어서" · 문구 "전사로 전직하시겠습니까?" · JobChange 페이지만 켜짐 · 버튼 활성
+  - 레벨 10(테스트용 `econ.level` 대입 · 메모리만) → [전 직] → `[Common] jobchange request job=WARRIOR` → B `[Skill] JOB NOVICE -> WARRIOR/1 (level 10)` → 직업 WARRIOR/1
+  - 로비에서는 리스항구가 인스턴스 맵이라 `MoveToMapPosition` 으로 넘어가지 않아, 맵을 직접 열고 Play 했다. `[Match] handoff 없음 … room=TestPlayInstance` 에러 1건은 직접 테스트 Play 라 인계 레코드가 없어서다(이번 변경과 무관)
+- 남은 것: 위치 · 겹침 · 모습 눈 확인(사용자)
 
 ### B 쪽
 - B 파일 수정 없음. 부탁 1건: `RequestChooseJob` 거절 사유 토스트 (#40 comment 5836663915)
