@@ -166,7 +166,7 @@ SkillAttack: dealt SK_W11 to T_ps_1 lv=5 amount=113 display=1   ← 2타 (나머
 | `:460` `IsDeadOrDying` | 신규. `script.Monster` 가 없으면 false(미니언 · 시설은 각자 HitComponent 규칙) |
 | `Skill/SkillCaster.mlua:88` | 시전 락 1.2 → **0.6**(잠정 · Play 실측으로 교체) |
 | `WeaponMotion.csv:9-10` (B 행) | SK_W11 시전 행 alert → **swingO1 / swingT1** (시전 행이 곧 공격 모션) |
-| `:11-12` · `:66-67` (B 행) | `SK_W11_1` · `SK_W11_2` `Enabled=false`(부르는 코드 없음) |
+| `:66-67` (B 행) | `SK_W11_2` `Enabled=false`(부르는 코드 없음) · `:11-12` `SK_W11_1` 은 **main 그대로 둔다**(2026-09-25 되돌림 — 아래 "WeaponMotion.csv 줄바꿈 수리" 절) |
 | `SkillInfo.csv` SK_W11 `#Note` | 새 팩 · 1타 설명. 수치 열 변경 없음 |
 
 헤더 변경 없음 · 새 CSV 열 · 이벤트 · RPC 없음.
@@ -537,3 +537,12 @@ pivot 이 그림 밖이던 원화는 투명 여백을 덧대 pivot 을 그림 �
 
 직업 전환 · 투사체 속도(스크린샷용 1.2) · 홀드 포즈는 전부 메모리만.
 별건(무관 · 수정 안 함 · 원장 궁수 라운드 메모): 더블 샷 둘째 화살(VisualOnly)이 첫 화살 명중 뒤 대상 주변을 돌며 매 프레임 좌우로 뒤집힌다(약 0.5s · 유도 로직).
+
+## 2026-09-25 (7차) — WeaponMotion.csv 줄바꿈 수리 · SK_W11_1 행은 main 그대로
+
+#94(`b/skill-warrior-effects`)와 로컬에서 합쳐 보다 찾았다(미리보기 캡처용 로컬 브랜치 · 푸시 안 함).
+
+- **줄바꿈이 깨져 있었다**: 이 PR 이 고친 `WeaponMotion.csv` 행 6개 중 4개(`SK_W11_1` · `SK_W11_2` 1H/2H)는 `#Note` 가운데에 CR 이 하나씩 끼어 있었고, 2개(`SK_W11` 1H/2H)는 줄 끝이 CRLF 가 아니라 LF 였다(main · 다른 행은 전부 CRLF). 내용은 그대로 두고 줄바꿈만 CRLF 로 고쳤다.
+- **union 병합 중복**: 이 PR 은 9~12행, #94 는 바로 아래 13~14행을 고친다. `*.csv merge=union`(`.gitattributes`)이라 둘을 어느 순서로 합쳐도 충돌 대신 두 쪽 줄을 다 남겨 `MOTION_SK_W11_*` · `MOTION_SK_W21_SWORD_*` 가 두 줄씩 생기고 줄바꿈이 섞였다(표는 뒤 행이 이겨 파워 스트라이크 옛 행이 다시 켜진다). `check-integrity` C3(기본 키 중복)은 WeaponMotion 을 보지 않아 통과한다.
+- **수리**: `MOTION_SK_W11_1_SWORD_1H/2H`(11~12행)는 **main 그대로** 둔다 — 부르는 코드가 없어(`SK_W11_1` 호출 없음) 켜져 있어도 무해하고, 이 PR 과 #94 사이에 바뀌지 않은 줄이 생겨 병합이 깨끗해진다. `SK_W11` 1H/2H 끔(9~10행) · `SK_W11_2` 끔(66~67행)은 그대로.
+- 확인: 3-way 병합(`git merge-file` · main 기준) — 이 PR → #94 · #94 → 이 PR 둘 다 충돌 0 · 결과 같음 · CRLF 74 · 중복 키 없음. **머지 순서 자유.**
