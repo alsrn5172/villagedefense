@@ -543,6 +543,6 @@ pivot 이 그림 밖이던 원화는 투명 여백을 덧대 pivot 을 그림 �
 #94(`b/skill-warrior-effects`)와 로컬에서 합쳐 보다 찾았다(미리보기 캡처용 로컬 브랜치 · 푸시 안 함).
 
 - **줄바꿈이 깨져 있었다**: 이 PR 이 고친 `WeaponMotion.csv` 행 6개 중 4개(`SK_W11_1` · `SK_W11_2` 1H/2H)는 `#Note` 가운데에 CR 이 하나씩 끼어 있었고, 2개(`SK_W11` 1H/2H)는 줄 끝이 CRLF 가 아니라 LF 였다(main · 다른 행은 전부 CRLF). 내용은 그대로 두고 줄바꿈만 CRLF 로 고쳤다.
-- **union 병합 중복**: 이 PR 은 9~12행, #94 는 바로 아래 13~14행을 고친다. `*.csv merge=union`(`.gitattributes`)이라 둘을 어느 순서로 합쳐도 충돌 대신 두 쪽 줄을 다 남겨 `MOTION_SK_W11_*` · `MOTION_SK_W21_SWORD_*` 가 두 줄씩 생기고 줄바꿈이 섞였다(표는 뒤 행이 이겨 파워 스트라이크 옛 행이 다시 켜진다). `check-integrity` C3(기본 키 중복)은 WeaponMotion 을 보지 않아 통과한다.
+- **union 병합 중복**: 이 PR 은 9~12행, #94 는 바로 아래 13~14행을 고친다. `*.csv merge=union`(`.gitattributes`)이라 둘을 어느 순서로 합쳐도 충돌 대신 두 쪽 줄을 다 남겨 `MOTION_SK_W11_*` · `MOTION_SK_W21_SWORD_*` 가 두 줄씩 생기고 줄바꿈이 섞였다(`PlayerMotion` 은 같은 키면 뒤 행이 이겨 머지 순서에 따라 #94 의 하이퍼 바디 한손 자세가 옛 heal 행으로 되돌아갈 수 있었다 · 파워 스트라이크는 `SkillMotionSet` 을 쓰므로 영향 없음). `check-integrity` C3(`WeaponMotion: ["MotionId"]`)는 병합 결과에서 FAIL 6건으로 잡지만, PR 검사는 상대 PR 이 머지되기 전 main 기준이라 다시 돌리지 않으면 통과로 보일 수 있다.
 - **수리**: `MOTION_SK_W11_1_SWORD_1H/2H`(11~12행)는 **main 그대로** 둔다 — 부르는 코드가 없어(`SK_W11_1` 호출 없음) 켜져 있어도 무해하고, 이 PR 과 #94 사이에 바뀌지 않은 줄이 생겨 병합이 깨끗해진다. `SK_W11` 1H/2H 끔(9~10행) · `SK_W11_2` 끔(66~67행)은 그대로.
 - 확인: 3-way 병합(`git merge-file` · main 기준) — 이 PR → #94 · #94 → 이 PR 둘 다 충돌 0 · 결과 같음 · CRLF 74 · 중복 키 없음. **머지 순서 자유.**
