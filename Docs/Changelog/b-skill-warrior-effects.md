@@ -1,6 +1,6 @@
 # b/skill-warrior-effects
 
-## 2026-09-25 — 하이퍼 바디 = 리마스터(루프 없음 · 예열) · 시전 이펙트 위치 보정 · 전사 버프·도발 자세(한손 하이퍼 바디 stand2 · 한손 불굴의 진 · 두손 = alert 2.5배속 · 한손 도발 stabO1) · 두손검 서 있기 복귀 = stand1
+## 2026-09-25 — 하이퍼 바디 = 리마스터(루프 없음 · 예열) · 시전 이펙트 위치 보정 · 전사 버프·도발 자세(한손 하이퍼 바디 stand2 · 한손 불굴의 진 · 두손 = alert 2.5배속 · 한손 도발 stabO1 · 두손 도발 swingT3 0프레임 고정) · 두손검 서 있기 복귀 = stand1
 
 ### 결정 (사용자 2026-09-25 · 전사 연출 점검 · Play 메모리 시험으로 확인한 뒤 파일 반영)
 
@@ -13,7 +13,8 @@
 - **두손 하이퍼 바디 = alert 2.5배속 유지**(사용자 선택 · 도발 두손과 같은 자세 · 값도 0.04 로 같다). swingT3 0프레임 고정(0.2배속 → `_2` 가 1.0s 에 덮음)도 메모리로 비교했다: 1프레임은 한 번도 안 나왔고 대검도 보였지만 쓰지 않는다.
 - **한손 불굴의 진 = alert 2.5배속**: 한손 heal 은 1~2프레임에서 검이 사라진다. 라이브 참고 자료 없음(화면 컷신이 자세를 덮는다).
 - **두손검 서 있기 복귀(`_END`) = stand1**: 하이퍼 바디 · 도발 · 불굴의 진의 두손 `_END` 행이 stand2 였는데 두손검 아바타 아이템은 stand2 에서 대검을 안 그려, 시전 뒤 움직일 때까지 대검이 사라졌다(main 에 이미 있던 문제). 엔진 기본 서 있기도 이 대검들에 stand1 을 고른다.
-- **한손 도발** = stabO1 찌르기 한 번 · **두손 도발 · 두손 불굴의 진** = alert 2.5배속. 두손 찌르기(stabT1)는 전사의 은빛 대검이 안 그려져 쓰지 않는다.
+- **한손 도발** = stabO1 찌르기 한 번 · **두손 불굴의 진** = alert 2.5배속. 두손 찌르기(stabT1)는 전사의 은빛 대검이 안 그려져 쓰지 않는다.
+- **두손 도발 = swingT3 0프레임 고정**(두 번째 결정 · 사용자 2026-09-25): swingT3 0.2배속 Onetime → 0프레임(두 손을 모아 대검을 몸 뒤로 내린 자세)이 1.5s 이어지고 1.0s 에 `_2` alert 2.5배속이 덮는다 → 1.6s `_END` stand1. 하이퍼 바디 두손 때 메모리로 시험한 방법 그대로(1프레임 안 나옴 · 은빛 · 강철 대검 보임). 예전 = alert 2.5배속.
 
 ### 실측 (2026-09-25 · Play 메모리 · 지도 그림 숨김 · 줌 500 · 프레임 고정 = `StartFrameIndex = EndFrameIndex`)
 
@@ -39,7 +40,7 @@
 | `MOTION_SK_W21_SWORD_1H` (하이퍼 바디 한손) | heal 1.5 ZigzagLoop | **stand2 1 ZigzagLoop** |
 | `MOTION_SK_W21_SWORD_2H` (하이퍼 바디 두손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
 | `MOTION_SK_W22_SWORD_1H` (도발 한손) | heal 1.5 ZigzagLoop | **stabO1 1 Onetime** |
-| `MOTION_SK_W22_SWORD_2H` (도발 두손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
+| `MOTION_SK_W22_SWORD_2H` (도발 두손) | heal 1.5 ZigzagLoop | **swingT3 0.2 Onetime**(0프레임 고정) |
 | `MOTION_SK_W31_SWORD_1H` (불굴의 진 한손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
 | `MOTION_SK_W31_SWORD_2H` (불굴의 진 두손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
 | `MOTION_SK_W21_END_SWORD_2H` | stand2 | **stand1** |
@@ -74,3 +75,5 @@
 | W · E · R 뒤 두손검 | stand1 · 대검이 계속 보인다 | PASS — 세 스킬 모두 `_END` = stand1 · 대검 보임 |
 
 참고: 달팽이가 몸에 닿는 동안 엔진 피격(HIT) 반응이 0.5s 마다 alert×1 / stand1 을 번갈아 보내 alert×2.5 를 일찍 끊을 수 있다(기존 전투 동작 · 이 PR 과 무관). W · R 확인 때는 달팽이를 잠시 치워 두고 쟀다.
+
+**두손 도발 swingT3 재확인(다음 Play · 차가운 입장)**: 대기 — 1프레임이 안 나오는지(프레임 변경 로그) · 은빛(T30) · 강철(T20) 대검이 보이는지 · 끌어오기 · mob 클립 · 도발 두손 위치 재측정(0.04 유지 · 몸 질량과 2 art px 넘게 어긋날 때만 바꾼다) · 예열 순간 프레임(차가운 입장).
