@@ -10,11 +10,14 @@
 - 계약서 `NpcRole` `COMMON_JOB_CHANGE` 설명 + 변경 이력 1행 (#40 comment 5836663915 공지)
 
 ### 코드 (`Npc/CommonNpcUIController.mlua`)
-- 라우트 `jobchange:<JobId>` → 공용 창에 전직 확인 페이지(`Content/JobChange`) → Footer 버튼 "전 직" → **B `PlayerSkillState.RequestChooseJob(jobId)`** (기존 Server RPC · 조건 초보자 · Lv10 은 B 가 서버에서 본다) → 창 닫기. 예전 `jobchange`(B 스킬 창 토글)는 뺐다
-- 로그: `[Common] jobchange open job=…` · `[Common] jobchange request job=…`
+- 라우트 `jobchange:<JobId>` → **메이플식 NPC 대화창**(`OpenTalk` · 사용자 2026-09-26 "NPC 가 왼쪽에 그림, 대사가 나오게"): 왼쪽 초상(지금 맵에 선 그 NPC 의 SpriteRUID 를 그대로 · `FindNpcSprite`) + 이름표, 오른쪽 대사. 대사는 클라 미러(B `LocalJobId` · `LocalLevel` · `_JobDatabase:GetRequiredLevel`)로 고른다: 이미 전직 → "이미 전직을 마쳤군…" / 레벨 부족 → "아직은 이르네. 10레벨이 되면…" / 그 외 → "전사가 되고 싶은가?" + [예]
+- [예] → **B `PlayerSkillState.RequestChooseJob(jobId)`** (기존 Server RPC · 최종 판정은 B 서버) → 닫기. [대화 그만하기] → 닫기. 예전 `jobchange`(B 스킬 창 토글)는 뺐다
+- 로그: `[Common] jobchange talk job=… ask=…` · `[Common] jobchange request job=…`
 
-### UI (`CommonNpcGroup` · UIBuilder · 추가만 · 70 → 72 엔티티)
-- `Window/Content/JobChange` (940×460 · 기본 꺼짐) + `Message` (32 · Maple · CostLabel 과 같은 색). 제목은 NPC 이름(`PendingDisplayName`), 버튼 · 안내 줄은 기존 Footer 를 같이 쓴다
+### UI (`CommonNpcGroup` · UIBuilder · 추가만 · 70 → 78 엔티티)
+- 루트 아래 `NpcTalk` (1100×400 · 기본 꺼짐 · 파란 틀) — `PortraitBg`(초상 칸 · `Portrait` · `NamePlate`) · `TextBg/Line`(대사 · Maple 30) · `BtnEnd` "대화 그만하기" · `BtnYes` "예" (버튼은 컨테이너 안에 중첩). 스킨은 공용 흰 둥근사각 9-slice(`f5e5fbd6…`) 틴트만
+- **NPC 클립은 UI 에서도 발 피벗으로 그려진다**(rect 중심 = 발) → `Portrait` rect 중심을 이름표 바로 위(y -90)에 둬야 머리가 칸 안에 들어온다(실측 · 처음엔 칸 위로 삐져나왔다)
+- 처음 만든 확인 페이지(`Window/Content/JobChange`)는 지웠다
 
 ### 검증
 - mLua 진단 0 · ui_lint 경고 전후 동일(기존 13) · **빌드 경고 1 → 1** (기존 `LWA-1111` · 에러 0)
@@ -23,6 +26,8 @@
   - 전사 전직관 `RequestOpen` → `[VillageNpcInteractor] approved … npc=VD_JOB_WARRIOR` → `[Common] jobchange open job=WARRIOR`. 창 제목 "주먹펴고 일어서" · 문구 "전사로 전직하시겠습니까?" · JobChange 페이지만 켜짐 · 버튼 활성
   - 레벨 10(테스트용 `econ.level` 대입 · 메모리만) → [전 직] → `[Common] jobchange request job=WARRIOR` → B `[Skill] JOB NOVICE -> WARRIOR/1 (level 10)` → 직업 WARRIOR/1
   - 로비에서는 리스항구가 인스턴스 맵이라 `MoveToMapPosition` 으로 넘어가지 않아, 맵을 직접 열고 Play 했다. `[Match] handoff 없음 … room=TestPlayInstance` 에러 1건은 직접 테스트 Play 라 인계 레코드가 없어서다(이번 변경과 무관)
+- **재검증 (대화창 · 2026-09-26)**: Lv1 → "아직은 이르네…"(예 없음) · Lv10 → "전사가 되고 싶은가?" + [예] → `[Skill] JOB NOVICE -> WARRIOR/1` · 전직 뒤 하인즈 → "이미 전직을 마쳤군…"(예 없음) · 초상 2종(넓은 주먹펴고 일어서 · 긴 하인즈) 칸 안 확인(스샷) · 빌드 에러 0 · 레벨은 클라 `curLevel` / 서버 `econ.level` 을 메모리에서만 올렸다
+- Codex 코드 리뷰 2회(읽기 전용 · MCP 끔 · 새 세션) — 6항목 모두 OK (대화창으로 바꾸기 전 코드 기준)
 - 남은 것: 위치 · 겹침 · 모습 눈 확인(사용자)
 
 ### B 쪽
