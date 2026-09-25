@@ -1,55 +1,70 @@
 # b/skill-warrior-effects
 
-## 2026-09-25 — 하이퍼 바디 = 리마스터(루프 없음) · 시전 이펙트 위치 보정 · 두손검 버프·도발 자세 = alert 2.5배속 · 한손 도발 = stabO1 찌르기
+## 2026-09-25 — 하이퍼 바디 = 리마스터(루프 없음 · 예열) · 시전 이펙트 위치 보정 · 전사 버프·도발 자세(한손 하이퍼 바디 stand2 · 한손 불굴의 진 · 두손 = alert 2.5배속 · 한손 도발 stabO1) · 두손검 서 있기 복귀 = stand1
 
-### 결정 (사용자 2026-09-25 · 전사 연출 점검 · 메모리 시험으로 확인)
+### 결정 (사용자 2026-09-25 · 전사 연출 점검 · Play 메모리 시험으로 확인한 뒤 파일 반영)
 
 - **스킬 모습 규칙**: "최신" = **지금 라이브 메이플스토리에서 보이는 모습**(라이브에서 없어진 스킬은 없어지기 전 마지막 모습) · 스킬 하나는 한 모습으로. 예전의 "일반 스킬은 원작 · 궁은 최신" 규칙을 대체한다.
 - **하이퍼 바디(SK_W21)** = 2022 리마스터 `skill/15003.img/skill/150038003` effect `1e9d9b0a…`(17프레임 · 붉은 갑옷 형상 · 바라보는 쪽으로 뒤집음). **지속 루프는 없앤다** — 사용자 영상(2003 · 2010 빅뱅 · 2022 리마스터)에서 지금 라이브 판은 버프 동안 캐릭터에 아무것도 남지 않는다. 옛 판의 노란 기둥은 시전 때 잠깐 뜨는 연출이었다.
+- **하이퍼 바디 예열**: 세션 첫 시전만 리마스터 클립 로드(0.26s · 두 번째 0.017s) 때문에 늦게 떴다 → 궁 컷신처럼 입장 때 예열한다.
 - **도발(SK_W22)** = 노블 디맨드 `1211013` 그대로(라이브 팔라딘 스킬). 처음 이 PR 에 넣었던 몬스터 마그넷(80003292) 변경은 **뺐다**.
-- **시전 이펙트 위치**: 하이퍼 바디 · 도발 시전 이펙트가 몸보다 뒤에 떴다(아래 실측). 우리 쪽 원인(발 기준점에 오프셋 0 으로 붙임)만 고친다.
-- **두손검 자세**: 두손검 아바타 아이템에 `heal` 프레임이 없어 heal 동안 대검이 사라진다(2026-09-25 Play 확인) → 하이퍼 바디 · 도발 · 불굴의 진 **두손 시전 행 = alert 2.5배속**. 두손 버프 자세는 디자인 요청하지 않는다.
-- **한손 도발** = stabO1 찌르기 한 번. 두손 찌르기(stabT1)는 전사의 은빛 대검이 안 그려져 쓰지 않는다.
+- **시전 이펙트 위치**: 시작점 = 시전 자세의 **시각 질량(알파 가중 · 무기 뺀 몸) 추정** → 사용자가 Play 에서 숫자 키로 눈으로 고른다. 최종 **하이퍼 바디 1H 0.05 · 2H 0.04 / 도발 1H 0.04 · 2H 0.04**(바라보는 쪽 +).
+- **한손 하이퍼 바디 = stand2**: 라이브 2022 리마스터 시전 자세(두 주먹을 가슴 앞에 모으고 검은 몸 뒤로)와 alert · stand1 · stand2 · swingO1~3 / swingT1~3 0프레임을 나란히 비교해 가장 가까웠다. stand2 는 서 있기 왕복이라 3프레임 모두 같은 자세 + 검이 보인다 → 프레임 고정 없이 그대로 재생.
+- **두손 하이퍼 바디 = alert 2.5배속 유지**(사용자 선택 · 도발 두손과 같은 자세 · 값도 0.04 로 같다). swingT3 0프레임 고정(0.2배속 → `_2` 가 1.0s 에 덮음)도 메모리로 비교했다: 1프레임은 한 번도 안 나왔고 대검도 보였지만 쓰지 않는다.
+- **한손 불굴의 진 = alert 2.5배속**: 한손 heal 은 1~2프레임에서 검이 사라진다. 라이브 참고 자료 없음(화면 컷신이 자세를 덮는다).
+- **두손검 서 있기 복귀(`_END`) = stand1**: 하이퍼 바디 · 도발 · 불굴의 진의 두손 `_END` 행이 stand2 였는데 두손검 아바타 아이템은 stand2 에서 대검을 안 그려, 시전 뒤 움직일 때까지 대검이 사라졌다(main 에 이미 있던 문제). 엔진 기본 서 있기도 이 대검들에 stand1 을 고른다.
+- **한손 도발** = stabO1 찌르기 한 번 · **두손 도발 · 두손 불굴의 진** = alert 2.5배속. 두손 찌르기(stabT1)는 전사의 은빛 대검이 안 그려져 쓰지 않는다.
 
-### 위치 실측 (2026-09-25 · #83 빌드 Play · 회색 배경 · 줌 250 · 프레임 고정)
+### 실측 (2026-09-25 · Play 메모리 · 지도 그림 숨김 · 줌 500 · 프레임 고정 = `StartFrameIndex = EndFrameIndex`)
 
-- 시전 이펙트는 `PlayEffectAttached(…, Vector3(offsetX × facing, …))` 로 **발 기준점(엔티티 원점 = 뒷발)** 에 붙는다. 오프셋이 0 이었다.
-- 몸(머리 가운데)은 자세에 따라 발 기준점보다 앞에 있다: **heal ≈ 11 art px · alert / stand ≈ 4 · stabO1 찌르기 프레임 ≈ 23**.
-- 클립은 제 pivot 에 가운데다: 옛 하이퍼 바디 기둥 ±2 px · 리마스터 −2~−7 px · 노블 디맨드 그림자는 그림이 pivot 보다 7~9 px 뒤(원화 배치 — 건드리지 않음).
-- 그래서 heal 자세에서 하이퍼 바디 기둥은 몸보다 ≈ 11 px, 도발 그림자는 ≈ 16~18 px 뒤에 떴다. 좌우 · 한손 · 두손 모두 같은 방향(뒤)으로.
+- 시전 이펙트는 `PlayEffectAttached(…, Vector3(offsetX × facing, …))` 로 **발 기준점(엔티티 원점 = 뒷발)** 에 붙는다(첫 커밋 전에는 오프셋 0).
+- 몸의 시각 질량(무기를 투명하게 한 몸 · 알파 가중) − 발 기준점(월드→화면 · 줌 반영): **한손 stand2 5.2 · alert 5.2 · heal 11.8 · 두손 swingT3 0프레임 5.0 art px**. 첫 측정(heal ≈ 11 · alert ≈ 4)과 맞는다. 긴 머리카락이 질량의 대부분이라 팔 자세가 달라도 값이 거의 같다.
+- 클립 쪽: 리마스터 −2~−7 px · 노블 디맨드 그림자는 그림이 pivot 보다 7~9 px 뒤(원화 배치 — 건드리지 않음).
+- 아바타에 없는 액션: `alert2` · `threat`(없는 이름은 오류 없이 이전 프레임을 그대로 둔다).
+- 무기 그림(이 월드 아이템): 한손 heal 1~2프레임 = 검 없음 · 두손 heal · stand2 · swingO1~3 · stabT1/T2 = 대검 없음 · 두손에서 대검이 보이는 자세 = alert · stand1 · swingT1~3.
+- 두손검 서 있기: 은빛(T30) · 강철(T20) 대검 = stand1 에서 보이고 stand2 에서 안 보인다 · 엔진 기본 서 있기 = stand1. **청동 대검(T10)은 서 있기 프레임이 아예 없다**(stand1 · stand2 · 엔진 기본 모두 안 보이고 alert 에서만 보인다) — 무기 그림이라 스킬 담당 아님 · 변경 없음 · A 요청 없음.
 
 ### 수정
 
 - `RootDesk/MyDesk/Skill/SkillExecutors.mlua`
-  - `effectOverrides.SK_W21`: cast = 리마스터 `1e9d9b0ac90c45649c01cd9d1cf80678`(`noFlip` 없음 → 바라보는 쪽으로 뒤집힘) · `offsetXByWeapon = { SWORD_1H = 0.11, SWORD_2H = 0.04 }` · **`loop` 항목 삭제**(옛 `affected` `df2d826e…`).
-  - `effectOverrides.SK_W22`: 노블 디맨드 cast `9a4f1f2b…` · mob `94772084…` 그대로 + `offsetXByWeapon = { SWORD_1H = 0.18, SWORD_2H = 0.04 }`.
+  - `effectOverrides.SK_W21`: cast = 리마스터 `1e9d9b0ac90c45649c01cd9d1cf80678`(`noFlip` 없음 → 바라보는 쪽으로 뒤집힘) · `offsetXByWeapon = { SWORD_1H = 0.05, SWORD_2H = 0.04 }` · `prewarm = true` · **`loop` 항목 삭제**(옛 `affected` `df2d826e…`).
+  - `effectOverrides.SK_W22`: 노블 디맨드 cast `9a4f1f2b…` · mob `94772084…` 그대로 + `offsetXByWeapon = { SWORD_1H = 0.04, SWORD_2H = 0.04 }`.
   - `PlayStageEffect`(시전 이펙트 분기): spec 에 `offsetXByWeapon` 이 있으면 장착 무기(맨손이면 직업 기본 무기 · `MotionWeaponTypeOf`) 값을 `offsetX` 대신 쓴다. 로그에 `offsetX=` 추가.
-  - 주석 1곳(`GetMotionSequence` 두손 행).
-- `RootDesk/MyDesk/WeaponMotion.csv` — B 행 4개, 값만 바꿨다(헤더 · 열 변경 없음):
+  - `PrewarmCutscenesFor`: `cast.cutsceneSeconds` 가 있는 화면 컷신 **또는 `cast.prewarm = true` 인 시전 이펙트**를 예열한다. 컷신 판정(궁 무적 창 · 분신 숨김 · 컷신 길이)은 그대로 `cutsceneSeconds` 만 본다.
+  - 주석(`CutscenePrewarm` · `GetMotionSequence`).
+- `RootDesk/MyDesk/WeaponMotion.csv` — B 행 9개, 값만 바꿨다(헤더 · 열 변경 없음):
 
-| MotionId | 예전 | 지금 |
+| MotionId | 예전(main) | 지금 |
 |---|---|---|
-| `MOTION_SK_W21_SWORD_2H` (하이퍼 바디) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
+| `MOTION_SK_W21_SWORD_1H` (하이퍼 바디 한손) | heal 1.5 ZigzagLoop | **stand2 1 ZigzagLoop** |
+| `MOTION_SK_W21_SWORD_2H` (하이퍼 바디 두손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
 | `MOTION_SK_W22_SWORD_1H` (도발 한손) | heal 1.5 ZigzagLoop | **stabO1 1 Onetime** |
 | `MOTION_SK_W22_SWORD_2H` (도발 두손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
-| `MOTION_SK_W31_SWORD_2H` (불굴의 진) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
+| `MOTION_SK_W31_SWORD_1H` (불굴의 진 한손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
+| `MOTION_SK_W31_SWORD_2H` (불굴의 진 두손) | heal 1.5 ZigzagLoop | **alert 2.5 ZigzagLoop** |
+| `MOTION_SK_W21_END_SWORD_2H` | stand2 | **stand1** |
+| `MOTION_SK_W22_END_SWORD_2H` | stand2 | **stand1** |
+| `MOTION_SK_W31_END_SWORD_2H` | stand2 | **stand1** |
 
 ### 건드리지 않은 것
 
-- 한손 하이퍼 바디 · 불굴의 진(heal → alert → stand1) · 순서 시점(`_2` 1.0 / 1.5s · `_END` 1.6 / 5.5s).
-- 도발 소리 · 끌어모으기 · 추격 로직 · mob 클립.
-- 불굴의 진(세이크리드 바스티온 · 최신) · 아이언 바디(패시브 · 이펙트 없음).
-- 궁수 닷지(SK_A22): 활도 두손 무기라 heal 동안 활이 사라질 수 있다 — 궁수 차례에 확인한다.
+- 순서 시점(`_2` 1.0 / 1.5s · `_END` 1.6 / 5.5s) · `_2` 행(alert 2.5배속) · 한손 `_END`(stand1).
+- 도발 소리 · 끌어모으기 · 추격 로직 · mob 클립 · 불굴의 진 컷신(세이크리드 바스티온) · 아이언 바디(패시브 · 이펙트 없음).
+- 궁수: 닷지(SK_A22) heal 동안 활이 사라질 수 있고, 닷지 · 폭풍의 화살의 `_END` BOW 행도 stand2 라 같은 문제일 수 있다 — 궁수 차례에 확인한다.
 
-### Play 검증 (대기)
+### Play 검증
 
-**빌드 경고: ? → ?** (대기)
+**1차(`2e5c401` · MCP)**: 빌드 경고 1 → 1(`LWA-1111` 기존 · 에러 0). 리마스터 · 뒤집기 · 루프 없음 · 노블 디맨드 · 한손 도발 stabO1 · 두손 alert 2.5배속 PASS(자세한 표 = PR 본문).
+
+**메모리 시험(파일 반영 전 · 같은 값)**: 한손 W = `stand2` → 1.0s alert×2.5 → 1.6s stand1 · 시전 중 검 보임(스크린샷) · 이펙트 `offsetX=0.05`. 두손 W = alert×2.5 → alert×2.5 → stand1 · 시전 뒤 대검 보임(은빛 · 강철).
+
+**최종 재확인(이 커밋 · 새 Play)**: 대기
 
 | 항목 | 기대 | 결과 |
 |---|---|---|
-| 하이퍼 바디 시전 | 리마스터 붉은 형상 · 바라보는 쪽 · 몸 가운데(한손 +0.11 · 두손 +0.04) | 대기 |
-| 하이퍼 바디 지속 | 캐릭터에 아무것도 남지 않는다 | 대기 |
-| 도발 시전 | 노블 디맨드 · 몸 가운데(한손 +0.18 · 두손 +0.04) | 대기 |
-| 한손 도발 | stabO1 찌르기 · 칼이 보인다 → `_2` alert → `_END` stand1 | 대기 |
-| 두손 도발 · 하이퍼 바디 · 불굴의 진 | alert 2.5배속 · 대검이 계속 보인다 → `_END` stand2 | 대기 |
-| 한손 하이퍼 바디 · 불굴의 진 | 그대로 | 대기 |
+| 하이퍼 바디 세션 첫 시전 | 예열 로그 · 첫 시전부터 제시간에 뜬다 | 대기 |
+| 하이퍼 바디 한손 | stand2 · 검 보임 · 이펙트 `offsetX=0.05` | 대기 |
+| 하이퍼 바디 두손 | alert 2.5배속 · 이펙트 `offsetX=0.04` | 대기 |
+| 도발 한손 · 두손 | stabO1 / alert 2.5배속 · 이펙트 `offsetX=0.04` | 대기 |
+| 불굴의 진 한손 | alert 2.5배속 · 검 보임 | 대기 |
+| W · E · R 뒤 두손검 | stand1 · 대검이 계속 보인다 | 대기 |
