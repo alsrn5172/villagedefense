@@ -301,6 +301,28 @@ script SkillCaster extends Logic
             end
         end
 
+        -- 시전 락 중 사망 감시(2026-09-25 · b/skill-castlock-death · #83 4차 Play 에서 발견): 위에서 상태기(StateComponent)를 끈 동안 치명타를 맞으면
+        -- 엔진의 사망 전이(DEAD)가 무시되고 락이 풀린 뒤에도 다시 오지 않았다(HP −700 · IsDead=false 로 계속 살아 있음).
+        -- → 락 동안 0.05s 마다 HP 를 보고, 0 이하가 되면 곧바로 락을 풀고(상태기 복구) 사라진 사망을 다시 건다(ProcessDead · 클라에서 부르면 이 클라 DEAD → 서버 IsDead 에도 반영).
+        -- 그리고 서버에 알린다(ReportCastLockDeath) — 서버가 이 시전자의 스킬 연출 엔티티를 지운다. 늦은 스킬 타격은 SkillAttack.IsAttackTarget 이 막는다.
+        -- 이 시전의 락이 끝나면(타이머 · 서버 거절 · 다음 시전) 감시도 스스로 멈춘다.
+        local watchId = 0
+        watchId = _TimerService:SetTimerRepeat(function()
+            if not self.castLockActive or self.activeCastId ~= castId then
+                _TimerService:ClearTimer(watchId)
+                return
+            end
+            local pl = _UserService.LocalPlayer
+            if not isvalid(pl) or not isvalid(pl.PlayerComponent) then return end
+            if pl.PlayerComponent.Hp > 0 then return end
+            _TimerService:ClearTimer(watchId)
+            self:ReleaseCastLock(castId, "dead")
+            local wasDead = pl.PlayerComponent:IsDead()
+            if not wasDead then pl.PlayerComponent:ProcessDead() end
+            log("SkillCaster: HP " .. tostring(pl.PlayerComponent.Hp) .. " during cast lock #" .. tostring(castId) .. " — lock released, death " .. (wasDead and "already applied" or "re-applied"))
+            self:ReportCastLockDeath(castId)
+        end, 0.05)
+
         log("SkillCaster: cast lock ON #" .. tostring(castId) .. " " .. skillId .. " grounded=" .. tostring(grounded)
             .. " cachedInputSpeed=" .. tostring(self.cachedInputSpeed) .. " fixedLookAt=" .. tostring(isvalid(controller) and controller.FixedLookAt or 0))
     end
@@ -334,6 +356,46 @@ script SkillCaster extends Logic
         self.castLockActive = false
         self.activeCastId = 0
         log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")")
+    end
+
+    @ExecSpace("Server")
+    method void ReportCastLockDeath(integer castId)
+        -- 클라의 시전 락 사망 감시(LockPresentation)가 "락 중 HP 0 → 락 풀고 사망" 을 알린다(2026-09-25 · b/skill-castlock-death).
+        -- 서버에서도 HP 가 0 이하(또는 이미 사망)인지 확인한 뒤, 이 시전자의 스킬 연출 엔티티(SkillExecutors.PlaySpriteFlash 가 스폰하는 SkillFx_<uid>_* ·
+        -- 휘두르기 잔상 등)를 지운다. 접촉 순간에 늦게 스폰하는 연출도 잡도록 1.5s 동안 0.1s 마다 다시 쓸어낸다.
+        -- 늦게 들어가는 스킬 타격 자체는 SkillAttack.IsAttackTarget(시전자가 쓰러졌으면 false)이 막는다.
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        local player = _UserService:GetUserEntityByUserId(senderUserId)
+        if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+        if player.PlayerComponent.Hp > 0 and not player.PlayerComponent:IsDead() then
+            log_warning("SkillCaster: cast-lock death report #" .. tostring(castId) .. " ignored — server HP " .. tostring(player.PlayerComponent.Hp) .. " (" .. senderUserId .. ")")
+            return
+        end
+        local map = player.CurrentMap
+        local prefix = "SkillFx_" .. senderUserId .. "_"
+        local function sweep()
+            if not isvalid(map) then return 0 end
+            local n = 0
+            for _, e in ipairs(map.Children:ToTable()) do
+                if isvalid(e) and string.sub(e.Name, 1, string.len(prefix)) == prefix then
+                    e:Destroy()
+                    n = n + 1
+                end
+            end
+            return n
+        end
+        local removed = sweep()
+        local ticks = 15
+        local sweepId = 0
+        sweepId = _TimerService:SetTimerRepeat(function()
+            ticks = ticks - 1
+            removed = removed + sweep()
+            if ticks <= 0 then
+                _TimerService:ClearTimer(sweepId)
+                log("SkillCaster: cast-lock death #" .. tostring(castId) .. " — skill fx sweep done, removed " .. tostring(removed) .. " (" .. senderUserId .. ")")
+            end
+        end, 0.1)
+        log("SkillCaster: cast-lock death #" .. tostring(castId) .. " reported · hp=" .. tostring(player.PlayerComponent.Hp) .. " dead=" .. tostring(player.PlayerComponent:IsDead()) .. " · skill fx removed " .. tostring(removed) .. " (" .. senderUserId .. ")")
     end
 
     @ExecSpace("Server")
