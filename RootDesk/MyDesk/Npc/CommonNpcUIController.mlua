@@ -1,7 +1,7 @@
 @Logic
 script CommonNpcUIController extends Logic
 
-	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문).
+	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문) / jobchange:<JobId>(리스항구 직업별 전직관 · 2026-09-26).
 	-- dispatch: 대상 마을 4개(내 마을 제외) + 보낼 묶음 수 스테퍼 → RequestDispatch. 아래 대기열 4행은 아직 투입 전인 내 파병 — 누르면 취소(WO-014 · 2026-09-09).
 	-- gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → RequestDimensionGate(스텁).
 	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). 확인 팝업(PopupGroup)은 M1 뼈대에서 생략(미결). UUID 는 UIBuilder write({bind}) 주입.
@@ -47,11 +47,20 @@ script CommonNpcUIController extends Logic
 
 	property TextGUIRendererComponent gateStatus = "f20f26ff-fba6-4775-bbf7-7b9fc610ee83"
 
+	-- jobchange(리스항구 직업별 전직관 5명 · 2026-09-26 a/lith-job-instructors): 확인 페이지 + 문구
+	property Entity contentJob = "319e7d08-a0eb-4727-b661-3bc7c36393b5"
+
+	property TextGUIRendererComponent jobMessage = "92878e48-9698-4dd5-9737-fa2d131479eb"
+
 	@HideFromInspector
 	property boolean isOpen = false
 
 	@HideFromInspector
 	property string route = ""
+
+	-- jobchange 라우트의 직업(WARRIOR / MAGICIAN / ARCHER / THIEF / PIRATE). 전직관 1명 = 직업 1개.
+	@HideFromInspector
+	property string jobId = ""
 
 	@HideFromInspector
 	property any handlers = nil
@@ -146,15 +155,15 @@ script CommonNpcUIController extends Logic
 	method void Open(string route)
 		-- 다른 창을 닫고 라우트를 켠다.
 		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("CommonNpcGroup") end
-		-- jobchange(리스항구 전직 교관 · 2026-09-22 B1): 공용 창을 쓰지 않고 B 의 스킬 창(전직 탭이 있는 창)을 연다. 훅 한 줄 — SkillWindowLogic.Toggle (클라 공개 메서드).
-		if route == "jobchange" then
-			self:SetOpen(false)
-			if _SkillWindowLogic ~= nil then
-				_SkillWindowLogic:Toggle()
-				log("[Common] jobchange -> SkillWindow toggle")
-			else
-				log_warning("[Common] jobchange: _SkillWindowLogic 없음")
-			end
+		-- jobchange:<JobId>(리스항구 직업별 전직관 5명 · 2026-09-26 a/lith-job-instructors): 확인 페이지를 열고, 전직 버튼이 B 의
+		-- PlayerSkillState.RequestChooseJob(jobId)(Server RPC)를 부른다. 조건(초보자 · Lv10)은 B 가 서버에서 본다. 예전 공용 교관 1명은 B 스킬 창을 열었다.
+		if string.sub(route, 1, 10) == "jobchange:" then
+			self.jobId = string.sub(route, 11)
+			self.selVillage = ""
+			self.waiting = false
+			self:SetOpen(true)
+			self:GoRoute("jobchange")
+			log("[Common] jobchange open job=" .. self.jobId)
 			return
 		end
 		if route ~= "dispatch" and route ~= "dimensiongate" then route = "dispatch" end
@@ -185,11 +194,17 @@ script CommonNpcUIController extends Logic
 	method void GoRoute(string route)
 		-- Content 하위 컨테이너 하나만. Footer 는 둘 다 쓴다(파병 / 이동).
 		self.route = route
-		local titles = { dispatch = "파병 접수", dimensiongate = "차원 관문" }
+		local titles = { dispatch = "파병 접수", dimensiongate = "차원 관문", jobchange = "전직" }
 		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "공용" end
 		if isvalid(self.contentDispatch) then self.contentDispatch.Enable = (route == "dispatch") end
 		if isvalid(self.contentGate) then self.contentGate.Enable = (route == "dimensiongate") end
+		if isvalid(self.contentJob) then self.contentJob.Enable = (route == "jobchange") end
 		if isvalid(self.footer) then self.footer.Enable = true end
+		if route == "jobchange" then
+			-- 서버 뷰가 필요 없다(전직 조건은 B 가 서버에서 본다).
+			self:RenderJob()
+			return
+		end
 		if isvalid(self.btnPrimary) then
 			self.btnPrimary.Enable = false
 			if self.btnPrimary.Entity.TextGUIRendererComponent ~= nil then
@@ -216,6 +231,28 @@ script CommonNpcUIController extends Logic
 		if not isvalid(parent) then return end
 		local c = parent:GetChildByName(childName)
 		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	-- ── jobchange ──────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderJob()
+		-- 전직관 1명 = 직업 1개. 문구는 안내만 — 실제 조건(초보자 · Lv10)은 B RequestChooseJob 이 서버에서 다시 본다.
+		local labels = { WARRIOR = "전사로", MAGICIAN = "마법사로", ARCHER = "궁수로", THIEF = "도적으로", PIRATE = "해적으로" }
+		local label = labels[self.jobId]
+		if isvalid(self.jobMessage) then
+			if label ~= nil then
+				self.jobMessage.Text = label .. " 전직하시겠습니까?\n\n초보자일 때 한 번만 · Lv10 이상"
+			else
+				self.jobMessage.Text = "알 수 없는 직업입니다 (" .. self.jobId .. ")"
+			end
+		end
+		if isvalid(self.costLabel) then self.costLabel.Text = "한 번 고르면 이번 판 동안 바꿀 수 없습니다" end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = (label ~= nil)
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.Text = "전 직" end
+		end
 	end
 
 	-- ── dispatch ───────────────────────────────────────────────
@@ -391,7 +428,17 @@ script CommonNpcUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnPrimary()
-		-- dispatch = 파병 요청 · dimensiongate = 이동 요청. 응답이 올 때까지 버튼 잠금.
+		-- dispatch = 파병 요청 · dimensiongate = 이동 요청. 응답이 올 때까지 버튼 잠금. jobchange = B 전직 요청 후 닫기.
+		if self.route == "jobchange" then
+			if self.jobId ~= "" and _PlayerSkillState ~= nil then
+				_PlayerSkillState:RequestChooseJob(self.jobId)
+				log("[Common] jobchange request job=" .. self.jobId)
+			else
+				log_warning("[Common] jobchange: _PlayerSkillState 없음 또는 직업 없음 job=" .. self.jobId)
+			end
+			self:Close()
+			return
+		end
 		if self.waiting or self.selVillage == "" then return end
 		self.waiting = true
 		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
