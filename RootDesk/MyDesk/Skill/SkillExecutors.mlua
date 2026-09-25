@@ -415,6 +415,7 @@ script SkillExecutors extends Logic
                 hitAt = 0.45,
                 -- trail = 휘두르기 잔상 **임시**(2026-09-25 사용자 결정 · ScheduleSwingTrail): 고른 모션마다 skill/800033.img/skill/80003316 의 1프레임 sprite(afterimage/<크기>/swingT<n>/2/0)를
                 --   접촉 순간(hitAt)부터 trailSeconds(0.35 = 접촉 0.45 → 휘두르기 끝 0.80 · 실측) 동안 PlaySpriteFlash 로. 헛스윙에도 뜬다(휘두르기 연출).
+                --   시전 순간 숨긴 채 스폰 → hitAt 에 드러냄(2026-09-25 3차 Play: 접촉 순간 스폰은 클라에 약 0.2s 늦게 와 0.14~0.18s 만 보였다).
                 --   두손검 = 같은 이름의 swordTL(168×120 · 144×88 · 164×124). 한손검 = 원작 한손 잔상이 팩에 없어 swordTS(작은 쪽 · 136×84 · 116×84 · 120×96)를 재사용 —
                 --   휘두르는 방향이 가장 가까운 것: swingO1(아래→앞→위 반시계) = T3 · swingO2(위→앞아래 내려찍기) = T1 · swingO3(앞위→아래 시계) = T2 (design-handoff/trails/spec.md 실측).
                 --   offsetY -0.1(TL) / -0.2(TS) = 예전 콤보(9c5f0b0)에서 Play 로 맞춘 값 그대로. 디자이너 원작 흰 잔상(trail_<motion>.png)이 오면 ruid · offset 만 바꾼다.
@@ -2257,18 +2258,16 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ScheduleSwingTrail(string skillId, Entity casterEntity, string motionName, number hitAt)
-        -- 휘두르기 잔상(#83 · 2026-09-25 사용자 결정 · 임시): 이번 시전에 고른 모션(swingO1~3 · swingT1~3)의 effectOverrides[skill].trail 항목을
-        -- 접촉 순간(hitAt)에 PlaySpriteFlash 로 trailSeconds 동안 띄운다. 헛스윙에도 띄운다(타격이 아니라 휘두르기 연출). 표에 없는 모션(폴백 등)은 아무것도 안 한다.
-        -- 시전 락(이동 · 방향 고정) 안이라 스폰 순간의 위치 · 방향 = 시전 순간과 같다.
+        -- 휘두르기 잔상(#83 · 2026-09-25 사용자 결정): 이번 시전에 고른 모션(swingO1~3 · swingT1~3)의 effectOverrides[skill].trail 항목을
+        -- 시전 순간 숨긴 채 스폰하고 접촉 순간(hitAt)에 드러내 trailSeconds 동안 보인다(PlaySpriteFlash showAt · 클라 도착 지연 보정). 헛스윙에도 띄운다(타격이 아니라 휘두르기 연출).
+        -- 표에 없는 모션(폴백 등)은 아무것도 안 한다. 시전 락(이동 · 방향 고정) 안이라 시전 순간의 위치 · 방향 = 접촉 순간과 같다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.trail == nil then return end
         local spec = entry.trail[motionName]
         if spec == nil or spec.ruid == nil or spec.ruid == "" then return end
+        if not isvalid(casterEntity) then return end
         local seconds = entry.trailSeconds or 0.35
-        _TimerService:SetTimerOnce(function()
-            if not isvalid(casterEntity) then return end
-            self:PlaySpriteFlash(spec.ruid, casterEntity, spec.offsetX or 0, spec.offsetY or 0, spec.scale or 1, seconds, skillId .. "_trail_" .. motionName)
-        end, hitAt)
+        self:PlaySpriteFlash(spec.ruid, casterEntity, spec.offsetX or 0, spec.offsetY or 0, spec.scale or 1, hitAt, seconds, skillId .. "_trail_" .. motionName)
     end
 
     method any PickWeaponSpec(string skillId, string key, string weaponType)
@@ -2281,12 +2280,16 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method void PlaySpriteFlash(string ruid, Entity casterEntity, number offsetX, number offsetY, number scale, number seconds, string tag)
+    method void PlaySpriteFlash(string ruid, Entity casterEntity, number offsetX, number offsetY, number scale, number showAt, number seconds, string tag)
         -- 1프레임 sprite(팩 afterimage/…/swingT1 처럼 animationclip 이 아닌 것)를 시전자 위치에 잠깐 보여 준다.
         -- EffectService 는 sprite RUID 를 못 튼다(2026-09-13 Play: PlayEffectAttached 에 넘기면 아무것도 안 뜸) → B 의 투사체 모델
-        -- (model://skillprojectile = SpriteRenderer + script.SkillProjectile · Models/Skills)을 빌려 VisualOnly · Speed 0 · MaxLifetime = seconds 로 스폰한다.
-        -- 피해·판정 없음(VisualOnly 는 AttackFast 전에 return) · seconds 뒤 스스로 Destroy. 방향은 SkillProjectile.SetDirection(Scale.x 부호)로 —
+        -- (model://skillprojectile = SpriteRenderer + script.SkillProjectile · Models/Skills)을 빌려 VisualOnly · Speed 0 · MaxLifetime = showAt + seconds 로 스폰한다.
+        -- 피해·판정 없음(VisualOnly 는 AttackFast 전에 return) · 다 보이고 나면 스스로 Destroy. 방향은 SkillProjectile.SetDirection(Scale.x 부호)로 —
         -- 팩 잔상 sprite 는 투사체 sprite 와 같이 왼쪽을 본다. pivot 은 sprite 자산의 것(WZ 원점)이 그대로 쓰인다.
+        -- showAt > 0(2026-09-25 #83 3차 Play 실측 · 사용자 결정): 지금 **숨긴 채(알파 0)** 스폰하고 showAt 초 뒤 알파를 되돌려 seconds 동안 보인다.
+        --   접촉 순간에 스폰하면 클라에 엔티티가 약 0.2s 늦게 도착해 잔상이 휘두르기 끝에야 0.14~0.18s 만 보였다(목표 0.35s). 숨긴 채 미리 보내면
+        --   클라가 그동안 엔티티를 받고 sprite 도 미리 불러 둔다(첫 로드 0.22~0.27s). 드러내기는 속성(Color) 동기화 한 번이라 거의 제때 도착한다.
+        --   Enable 대신 알파를 쓰는 이유: 꺼진 렌더러는 sprite 를 미리 불러 둔다는 보장이 없다.
         if ruid == nil or ruid == "" or not isvalid(casterEntity) then return end
         local map = casterEntity.CurrentMap
         if not isvalid(map) or not isvalid(casterEntity.TransformComponent) then return end
@@ -2301,20 +2304,33 @@ script SkillExecutors extends Logic
             log_warning("SkillExecutors: sprite flash spawn failed " .. tostring(tag))
             return
         end
+        local delay = showAt or 0
+        if delay < 0 then delay = 0 end
         local mover = fx:GetComponent("script.SkillProjectile")
         if isvalid(mover) then
             mover.VisualOnly = true
             mover.Speed = 0
-            mover.MaxLifetime = seconds
+            mover.MaxLifetime = delay + seconds
             mover.SkillId = tag
         end
         local sprite = fx.SpriteRendererComponent
-        if isvalid(sprite) then sprite.SpriteRUID = ruid end
+        if isvalid(sprite) then
+            sprite.SpriteRUID = ruid
+            if delay > 0 then
+                local c0 = sprite.Color
+                sprite.Color = Color(c0.r, c0.g, c0.b, 0)
+                _TimerService:SetTimerOnce(function()
+                    if not isvalid(fx) or not isvalid(sprite) then return end
+                    sprite.Color = Color(c0.r, c0.g, c0.b, c0.a)
+                    log("SkillExecutors: sprite flash " .. tostring(tag) .. " shown (+" .. tostring(delay) .. "s · " .. tostring(seconds) .. "s)")
+                end, delay)
+            end
+        end
         local s = scale or 1
         if s <= 0 then s = 1 end
         fx.TransformComponent.Scale = Vector3(s, s, 1)
         if isvalid(mover) then mover:SetDirection(facing) end
-        log("SkillExecutors: sprite flash " .. tostring(tag) .. " ruid=" .. ruid .. " facing=" .. tostring(facing) .. " scale=" .. tostring(s) .. " " .. tostring(seconds) .. "s")
+        log("SkillExecutors: sprite flash " .. tostring(tag) .. " ruid=" .. ruid .. " facing=" .. tostring(facing) .. " scale=" .. tostring(s) .. " hidden until +" .. tostring(delay) .. "s then " .. tostring(seconds) .. "s")
     end
 
     @ExecSpace("ServerOnly")
