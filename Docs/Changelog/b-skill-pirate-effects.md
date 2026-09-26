@@ -1,5 +1,25 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 2차 (2026-09-27 · 사용자 결정 + 피해 검산)
+
+| 무엇 | 전 → 후 | 근거 | 위치 |
+|---|---|---|---|
+| 써머솔트 킥 이동 | 뒤로 0.70 → **제자리(driftX 0)** · 나머지(시간 · 판정 1.7/0.9/1.85 · 6명 · 크기) 그대로 | 사용자 결정 "원작대로 제자리" · 원작 5001002 는 캐릭터 좌표 이동 없음 | `SkillExecutors` SK_P11.backflip |
+| 써머솔트 킥 이펙트 자리 | offsetX −0.33 **그대로** | 재확인: 영상 2번째 시전(9.36~9.99s · 왼쪽 봄)은 이름표·카메라가 가만히 있는 동안(world x 310±1px) 잰 값 = 밀림 없음. 1번째 시전(오른쪽 봄 · 밀리는 중)도 호가 몸 기준 −0.38~+0.73 캐릭터 키에 붙어 따라간다(부착) | — |
+| 에너지 쉴드 그림 | 제로 이뮨 배리어 101120109 → **바이퍼 디펜스 폼 5120011 한 팩**: cast = repeat `51d514ea` 0~12 한 번 · loop = repeat 13~20(1.11s 뒤 · 새 `loop.startDelay`) · loopEnd = end `693d4c4e` · 원본 크기 · 발 기준 · 좌우 대칭 | 사용자 결정. 라이브러리 이름은 "오펜스 폼" 이지만 KMS 389 5120011 repeat 20/21 · end 12/12 프레임이 크기·pivot 일치 · 지연 합 1830/960ms · repeatIdx 13 · KMS 359/360 엔 repeat/end 없음(`design-handoff/pirate-refs/library/defense_form_proof.txt`) | `SkillExecutors` SK_P22 · `PlayBuffLoop`/`RemoveBuffLoop` |
+| 에너지 쉴드 소리 | 시전 = 이뮨 배리어 Pre `5d388814` → **엔젤릭버스터 파워 트랜스퍼 Use `b86f0000`** · 터짐 = 이뮨 배리어 End `26311ed7` → **없음** | 디펜스 폼 팩엔 소리 없음 · 가장 가까운 해적 보호막 스킬 소리 · 깨지는 해적 소리는 라이브러리에 없음 | `castSounds` · `extraSounds` |
+| 피스트 인 레인지 피해 | 누름 1번 = 대상마다 **판정 1번 × (표 % × 10)** (+0.23s · 숫자 10개가 0.05s 간격 · 폭발 10번은 연출만) → **판정 10번 × 표 %** (+0.23s 부터 0.12s 간격 · 폭발 1번 = 타격 1번 · 대상은 첫 타 때 고정) | 사용자 요청 "폭발 10번이 각각 1타" · 합계는 같다(표 30%x10 → 50%x10) | `SkillExecutors.ExecuteChargePunch` · `PunchSequenceHits` · `SkillAttack.SnapshotTargets`/`DealSequenceHit`/`BaseSkillId` |
+| 함포 사격 피해 | **변경 없음** — 파마다 대상마다 판정 1번 × (150% × 5) · 숫자 5개 · 6파 = 30 × 150% = 4500% | 표와 같다 | — |
+
+- ⚠ **A 필요:** 몬스터 무적 0.4s(`Faction/MonsterHit.mlua:26`)가 있는 동안 0.12s 간격 타격은 1·5·9번째만 들어간다(3 × 표 %). 2~10번째 타격은 attackInfo = `SK_P21#k` 로 보낸다 — A 가 `IsHitTarget` 에서 `#` 이 붙은 attackInfo 만 무적 시간을 건너뛰면 10타 전부 들어간다(#40). 예외 전에 Play 할 때는 `SkillExecutors.PunchSequenceHits = false` 로 예전 방식(판정 1번 × 10).
+- 툴팁 문구는 바뀌지 않는다("피스트 인 레인지 데미지 30% x 10타").
+
+### Play 체크리스트 (2차 추가)
+
+8. 써머솔트 킥: 제자리(위치 로그 · 발판 끝 아님) · 이펙트가 몸에 맞게 붙는지 양쪽 방향.
+9. 에너지 쉴드: 원반 → 방울(0~12) → 1.11s 뒤 반복(로그 `buff loop effect SK_P22 … started after 1.11s`) · 깨지면 end · 첫 1.11s 안에 깨져도 end 가 나오고 반복이 안 걸리는지 · 방울 크기(캐릭터를 감싸는지) · 시전 소리.
+10. 피스트 인 레인지: 로그 `PUNCH SEQUENCE SK_P21 targets=N hits=10 every 0.12s` + `sequence hit SK_P21` · `SK_P21#2` … `#10` · 대상 HP 가 몇 번 줄어드는지(A 예외 전 = 3번 · 뒤 = 10번) · 폭발 10번이 타격과 같은 때.
+
 ## 1차 (2026-09-27)
 
 기반: #114 `7c719ee`(= origin/main `3b6c972` + PlayerAttack 버프 훅). **로컬 커밋만(push · PR 전).**

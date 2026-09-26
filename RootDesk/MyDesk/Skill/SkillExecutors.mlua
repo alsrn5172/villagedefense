@@ -141,6 +141,16 @@ script SkillExecutors extends Logic
     -- 대상 상한 (skillId -> 정수 · BuildHandlerTable 에서 채운다 · TargetCapOf). 없는 스킬 = 상한 없음.
     property table skillTargetCaps = {}
 
+    -- 버프 루프 늦게 걸기(loop.startDelay · 에너지 쉴드 디펜스 폼 repeatIdx) 차례 번호. 기다리는 동안 끊긴 루프를 구분한다(PlayBuffLoop · RemoveBuffLoop "#pending").
+    @HideFromInspector
+    property integer buffLoopSeq = 0
+
+    -- 피스트 인 레인지(SK_P21 재시전): true = 폭발 10번 = 타격 10번(0.12s 간격 · 타격마다 표 % 한 번 · 2026-09-27 사용자 요청).
+    --   false = 예전 방식(첫 타 때 판정 1번에 피해 ×10 · 숫자 10개 · 폭발 10번은 연출만).
+    --   ⚠ 몬스터 무적 0.4s(A 의 Faction/MonsterHit.mlua:26 IsHitTarget)가 있는 동안 0.12s 간격 타격은 1·5·9번째만 들어간다 → A 의 예외(#40)가 필요하다.
+    --     2~10번째 타격은 attackInfo = "SK_P21#k" 로 보낸다(SkillAttack.DealSequenceHit · A 가 "#" 붙은 attackInfo 만 무적 시간을 건너뛰게 하면 된다).
+    property boolean PunchSequenceHits = true
+
     -- 함포 사격(barrage): HitCount 를 이만큼의 파로 나눈다 · 파 간격(초 · 몬스터 무적 0.4s 보다 길게) · 파마다 떨어지는 폭탄 연출 개수 · 폭탄 흩뿌림(반지름 비율).
     property integer BarrageWaves = 6
 
@@ -619,9 +629,12 @@ script SkillExecutors extends Logic
                 --   spinFraction 0.4 → 0.25 = 한 바퀴 도는 시간 0.16s 그대로(2026-09-13 사용자 "회전은 빠르게"). height 0.45 · centerY 0.35 그대로 —
                 --     영상 정점에서 몸 가운데가 발 위 1.17 캐릭터 키, 우리 = centerY 0.35 + height 0.45 = 0.80 유닛 = 1.14 캐릭터 키.
                 --   ⚠ 영상은 몸이 거꾸로 선 채 +0.20~+0.65 동안 머문다(원작 액션 프레임) — 회전으로는 그 "멈춤" 을 못 낸다. 레벨업 빛(+0.38~)이 겹쳐 뒤쪽 구간은 흐리다.
-                backflip = { delay = 0.03, seconds = 0.65, height = 0.45, centerY = 0.35, hitDelay = 0.10, spinFraction = 0.25, driftX = 0.70, driftSeconds = 0.45 },
-                --   ⚠ driftX: 원작(공식 KMS 5001002)은 **제자리** 공중제비다(바디 액션 move 는 그림 오프셋 · 캐릭터 좌표 이동 없음 · research-original.md §1-2).
-                --     영상(옛 판 수치 = 빅뱅 이전 Lv7 · 비공식 클래식 클라)과 2026-09-14 사용자 요청("조금 뒤로 이동하면서")이 뒤로 이동이라 0.70 을 둔다. 원작대로 = 0.
+                backflip = { delay = 0.03, seconds = 0.65, height = 0.45, centerY = 0.35, hitDelay = 0.10, spinFraction = 0.25, driftX = 0, driftSeconds = 0.45 },
+                --   🔴 driftX 0 = **제자리**(2026-09-27 사용자 결정 "원작대로 제자리에서"). 원작(공식 KMS 5001002)은 제자리 공중제비다
+                --     (바디 액션 move 는 그림 오프셋 · 캐릭터 좌표 이동 없음 · research-original.md §1-2). 예전 0.70(영상 · 2026-09-14 "조금 뒤로") → 0.35 → 0.
+                --     driftSeconds 는 driftX 가 0 이면 쓰이지 않는다(다시 밀리게 할 때를 위해 남긴다).
+                --   cast offsetX −0.33 은 밀림과 무관하다(재확인 2026-09-27): 영상 2번째 시전(9.36~9.99s · 왼쪽 봄)은 이름표·카메라가 가만히 있는 동안(world x 310±1px) 호가 보여
+                --     "밀림 없음" 상태에서 잰 값이고, 1번째 시전(오른쪽 봄 · 밀리는 중)에서도 호는 몸 기준 −0.38~+0.73 캐릭터 키에 붙어 따라간다(시전자 부착) → 그대로.
                 -- box(2026-09-27): 판정 = 원작 최신(KMS 360~389 · 라이브) lt(-170,-185) rb(90,5) → 앞 1.7 · 뒤 0.9 · 위 1.85 유닛(CSV Range 2 = 앞쪽만 2 는 이 스킬에선 안 쓴다).
                 --   대상 상한 = skillTargetCaps.SK_P11(원작 mobCount 6). 예전 = 앞쪽 Range 2 × MeleeArcHeight 1.5 · 상한 없음.
                 box = { front = 1.7, back = 0.9, up = 1.85 },
@@ -691,19 +704,27 @@ script SkillExecutors extends Logic
                 punchCast0 = { ruid = "90d4195a7c2b4b4ab3632df9c66948d0", offsetX = 0 },
                 punchHitDelay = 0.23,
                 -- repeatInterval(2026-09-27 · 사용자 영상 fist_enrage_ref.mp4 실측): 대상 위 폭발 10번 = 2022 데스티니 57.400…58.467s · 2023 VI 65.067…66.167s
-                --   → 간격 ≈ 0.12s(첫 폭발 → 마지막 1.07~1.10s). ExecuteChargePunch 가 HitCount 만큼 반복시킨다(연출만 · 피해는 한 번).
+                --   → 간격 ≈ 0.12s(첫 폭발 → 마지막 1.07~1.10s). ExecuteChargePunch 가 HitCount 만큼 튼다.
+                --   PunchSequenceHits = true(기본 · 2026-09-27 사용자 요청): 폭발 1번 = 타격 1번(표 % × 1 · 합계 = 표 % × 10). false = 예전(첫 타에 피해 ×10 한 번 · 폭발은 연출만).
                 --   hit/0 = VI 8c8621fd…(8프레임 · 188×192 · 빨간 구체 → 분홍/파랑 폭발). 예전 = 5121020 hit/0 37463e84….
                 punchImpact = { ruid = "8c8621fd03ac49f692c2082ea29fd065", repeatInterval = 0.12 },
             },
-            SK_P22 = {   -- 에너지 쉴드 — 원작에 없는 스킬(해적에 보호막 스킬 없음). 2026-09-13 제보 "격자무늬(키네시스 싸이킥 실드) 말고 다른 것" → 제로 이뮨 배리어 skill/10112.img/skill/101120109(원작 보호막 방울 · 캐릭터를 감싸는 반투명 구):
+            SK_P22 = {   -- 에너지 쉴드 — 원작에 이 이름의 스킬은 없다. 가장 가까운 원작 해적 보호막 = 바이퍼 디펜스 폼(아래 2026-09-27 · 지금 쓰는 그림).
+                --   [이력] 2026-09-13 제보 "격자무늬(키네시스 싸이킥 실드) 말고 다른 것" → 제로 이뮨 배리어 skill/10112.img/skill/101120109(보호막 방울):
                 --   cast = effect_ple/pre(방울이 생김 · 121×116 · 8프레임) · loop = effect_ple/loop(109×99 · 8프레임) · loopEnd = effect_ple/end(방울이 터짐 · 보호막 소진 때 StopBuffLoop 가 한 번) · 소리 Pre(castSounds)/End(extraSounds.finish).
                 --   pivot(가운데 프레임 112×100 · (55,61)) 이 그림 가운데보다 11px 위 → 구의 중심을 몸통(0.35)에: scale 0.85 · offsetY 0.45. 좌우 대칭이라 noFlip.
                 --   예전 = 키네시스 싸이킥 실드 special 28d6092c…(격자 고리) + 미하일 51111004 시전 6a227a1b….
                 --   whileTransformed(2026-09-14 "W 뒤 E 를 누르면 노란 원이 변신 캐릭터 크기와 안 맞는다")는 2026-09-16 에 제거했다: 방울을 키우던 이유가 슈퍼 트랜스폼의 **몸을 바꾸는 변신**(불꽃 캐릭터 form ≈1.16 유닛)이었는데
                 --   그 스킬이 에너지 차지로 바뀌면서 캐릭터를 다른 몸으로 교체하지 않는다 → 방울은 항상 아바타 크기(scale 0.85 · offsetY 0.45) 하나면 된다. 같이 쓰이던 AdjustSpecForForm/IsFormActive/ReplayShieldLoop 도 함께 삭제.
-                cast = { ruid = "7aa944dcc77b4d448ff87734f7d81fd2", noFlip = true, offsetY = 0.45, scale = 0.85 },
-                loop = { ruid = "19694b839af642fa9c70e73280cc7be9", noFlip = true, offsetY = 0.45, scale = 0.85 },
-                loopEnd = { ruid = "224122b4e421480881d23acf23bd1e59", offsetY = 0.45, scale = 0.85 },
+                -- 🔴 2026-09-27 b/skill-pirate-effects 사용자 결정: 그림 = **바이퍼 디펜스 폼 skill/512.img/skill/5120011**(원작 해적 보호막 · KMS 1.2.368 부터 라이브) 한 팩만.
+                --   라이브러리 색인 이름은 "오펜스 폼" 이지만 이 팩이 맞다: repeat 51d514ea… 21프레임 중 20프레임 · end 693d4c4e… 12프레임 전부가 KMS 389 5120011/repeat · /end 와
+                --   크기·pivot 이 픽셀 단위로 같고(나머지 1프레임 = WZ _outlink 라 크기를 못 읽음 · origin x 같음) 지연 합 1830ms / 960ms 도 같다. KMS 359/360 의 5120011 엔 repeat/end 가 없다.
+                --   원작 재생 방식: repeat 을 처음엔 0~12 프레임까지 한 번(원반 → 방울이 생김) → repeatIdx 13 부터 13~20 반복 → 보호막이 끝나면 end.
+                --   → cast = repeat 0~12 한 번 · loop = repeat 13~20(startDelay 1.11s = 0~12 지연 합 뒤에 건다) · loopEnd = end. 원본 크기 · pivot = 캐릭터 발(원작 배치) · 좌우 대칭(noFlip).
+                --   크기: 방울 ≈ 1.5 × 1.5 유닛(가운데 발 위 ≈0.5) — 캐릭터(0.70)를 감싼다. 예전 = 제로 이뮨 배리어 101120109(pre 7aa944dc… · loop 19694b83… · end 224122b4… · x0.85 · +0.45).
+                cast = { ruid = "51d514ea697047ec8025de52a3b4c903", noFlip = true, startFrame = 0, endFrame = 12 },
+                loop = { ruid = "51d514ea697047ec8025de52a3b4c903", noFlip = true, startFrame = 13, endFrame = 20, startDelay = 1.11 },
+                loopEnd = { ruid = "693d4c4e2a8f4197822d1c362230cfd8" },
             },
             SK_P31 = {   -- 함포 사격 — skill/524.img/skill/5241500 드레드노트(캡틴 오리진 · 기획서 추천): screen 79프레임 컷신(1434×835) · 폭탄 = skill/522.img/skill/5221022 배틀쉽 봄버 hit/0(217×187 · 파마다 3발)
                 -- cutsceneSeconds 4.3 = 컷신 표시 + 실측 실패 때의 대체 길이(드레드노트 79프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
@@ -743,7 +764,9 @@ script SkillExecutors extends Logic
             SK_T31 = "0fb09c17cade4f41895807a3154c6813",   -- 일도양단 (오디오 검색 1순위 · 2026-09-13 컷신 추가와 함께 · 예전 값 acb0f702… = 메소 익스플로젼 Hit)
             SK_P11 = "85398b7f1a5340469034ff1f67e6b412",   -- 써머솔트 킥 강화 400004134 Use (2026-09-13 · 예전 값 6010e41f… = 스트라이커 15001002 Use)
             SK_P21 = "6829607402014177967d41324a0b78ea",   -- 에너지 차지 진입(1단). 세 티어가 같이 쓴다 — ENERGY/ULTRA 팩엔 자체 오디오가 없다
-            SK_P22 = "5d388814166742adabb883cb8ff1b96b",   -- 이뮨 배리어 101120109 Pre (2026-09-13 · 예전 값 668564fe… = 미하일 51111004 Use)
+            -- 에너지 쉴드: 디펜스 폼(5120011) 팩엔 소리가 없다 → 가장 가까운 해적 소리 = 엔젤릭버스터 파워 트랜스퍼 skill/6510.img/skill/65101002 _audio/Use(2.25s · 해적 계열 보호막 스킬 · 2026-09-27).
+            --   예전 5d388814… = 제로 이뮨 배리어 Pre(그 전 668564fe… = 미하일 51111004 Use).
+            SK_P22 = "b86f000001014496b409b71c8bf942f1",
             -- 함포 사격: 배틀쉽 봄버 skill/522.img/skill/5221022 _audio/Use (2.06s · 2026-09-27 b/skill-pirate-effects). 예전 38dd6c9b… 는 "드레드노트" 오디오 검색 1순위였지만
             --   태그상 드라코 슬래셔(400011079) Hit — 해적 소리가 아니다. 드레드노트(5241500)·HEXA 팩(514/524)엔 소리가 하나도 없어 같은 캡틴의 포격 스킬 소리를 쓴다(파마다 소리 = 같은 팩 Attack1).
             SK_P31 = "686297b95cc34db9a713adaaff436909",
@@ -754,7 +777,7 @@ script SkillExecutors extends Logic
             SK_T11 = { hit = "48c2f4049db54b3b88b9144320d3d41a" },     -- 럭키 세븐 Hit
             SK_P11 = { hit = "1b54e03352ae4430ae39be54d2ee88f4" },     -- 써머솔트 킥 강화 400004134 Hit (2026-09-13 · 예전 값 8e7b0c6f… = 스트라이커 Hit)
             SK_P21 = { punch = "1b6eedf4e6d14684abd96a444dfa59a7", hit = "6e58d1e3abc44a1ba059842159b7c035" },   -- 2단 주먹 시전 / 명중 (피스트 인레이지 · 티어 공용)
-            SK_P22 = { finish = "26311ed71f6b47ec9e45f614aeaf1eeb" },  -- 이뮨 배리어 End (보호막이 터질 때 · StopBuffLoop 의 loopEnd 와 같이)
+            -- 에너지 쉴드 터짐 소리: 없음(2026-09-27). 예전 26311ed7… = 제로 이뮨 배리어 End — 디펜스 폼 팩엔 소리가 없고, 라이브러리의 해적 소리 중 "보호막이 깨지는" 소리가 없어 뺐다.
             SK_P31 = { wave = "8fd7da623fe54f359638e4004216440a" },    -- 배틀쉽 봄버 Attack1 (파마다)
         }
     end
@@ -1259,6 +1282,34 @@ script SkillExecutors extends Logic
         local zRot = 0
         if startFrame ~= nil then opt["StartFrameIndex"] = startFrame end
         if endFrame ~= nil then opt["EndFrameIndex"] = endFrame end
+        -- startDelay(2026-09-27 · 에너지 쉴드 디펜스 폼): 원작 repeatIdx 처럼 첫 바퀴(cast = 같은 클립 앞 구간)가 끝난 뒤에 반복 구간을 건다.
+        --   기다리는 동안 버프가 끝나면(보호막 소진 · 재시전 · 매치 초기화 → RemoveBuffLoop 가 "#pending" 을 지운다) 걸지 않는다.
+        local startDelay = spec.startDelay or 0
+        if startDelay > 0 then
+            self.buffLoopSeq = self.buffLoopSeq + 1
+            local token = self.buffLoopSeq
+            perUser[buffTag .. "#pending"] = token
+            local offVec = Vector3((spec.offsetX or 0) * facing, offY, 0)
+            local rest = duration - startDelay
+            _TimerService:SetTimerOnce(function()
+                if perUser[buffTag .. "#pending"] ~= token then return end
+                perUser[buffTag .. "#pending"] = nil
+                if not isvalid(casterEntity) then return end
+                local lateSerial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, offVec, zRot, Vector3(s, s, 1), true, opt)
+                perUser[buffTag] = lateSerial
+                if rest > 0 then
+                    _TimerService:SetTimerOnce(function()
+                        if perUser[buffTag] == lateSerial then
+                            _EffectService:RemoveEffect(lateSerial)
+                            perUser[buffTag] = nil
+                        end
+                    end, rest)
+                end
+                log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " started after " .. tostring(startDelay) .. "s serial=" .. tostring(lateSerial))
+            end, startDelay)
+            log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " waits " .. tostring(startDelay) .. "s (cast plays the first pass)")
+            return
+        end
         local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, offY, 0), zRot, Vector3(s, s, 1), true, opt)
         perUser[buffTag] = serial
         -- avatarAlpha / hideAvatar(슈퍼 트랜스폼 · 불꽃 캐릭터로 교체): 루프가 떠 있는 동안 아바타를 avatarAlpha(hideAvatar = 0)로 투명하게(전 클라 · SkillBuffs.SetAvatarAlpha 와 같은 호출).
@@ -1362,6 +1413,11 @@ script SkillExecutors extends Logic
         if flameSerial ~= nil then
             _EffectService:RemoveEffect(flameSerial)
             perUser[buffTag .. "#flame"] = nil
+            had = true
+        end
+        -- 아직 안 걸린 늦은 루프(loop.startDelay · "#pending"): 지우면 타이머가 걸지 않는다. 보호막이 첫 바퀴 안에 깨져도 끝 연출은 나와야 하므로 had = true.
+        if perUser[buffTag .. "#pending"] ~= nil then
+            perUser[buffTag .. "#pending"] = nil
             had = true
         end
         local serial = perUser[buffTag]
@@ -1906,6 +1962,44 @@ script SkillExecutors extends Logic
         local entry = self.effectOverrides[skillId]
         local hitDelay = 0
         if entry ~= nil and entry.punchHitDelay ~= nil and entry.punchHitDelay > 0 then hitDelay = entry.punchHitDelay end
+        local interval = 0
+        if entry ~= nil and entry.punchImpact ~= nil and entry.punchImpact.repeatInterval ~= nil then interval = entry.punchImpact.repeatInterval end
+        if self.PunchSequenceHits and hitCount > 1 and interval > 0 then
+            -- 🔴 2026-09-27: 폭발 1번 = 타격 1번. 대상은 첫 타 때 고정(가까운 순 · 상한 skillTargetCaps) · k번째 타격 = hitDelay + (k−1) × interval · 표 % × 1.
+            --   폭발(연출)은 타격이 몬스터 무적에 막혀도 고정한 대상 위에 제때 튼다 — 무적 예외(A)가 없을 때도 화면은 원작 그대로다.
+            local fireSeq = function()
+                if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+                local targets = skillAttack:SnapshotTargets(skillId, box, self:TargetCapOf(skillId))
+                local impact = self:GetSpecRuid(skillId, "punchImpact")
+                local sc = self:GetSpecScale(skillId, "punchImpact")
+                local hitSound = self:GetExtraSound(skillId, "hit")
+                log("SkillExecutors: PUNCH SEQUENCE " .. skillId .. " targets=" .. tostring(#targets) .. " hits=" .. tostring(hitCount) .. " every " .. tostring(interval) .. "s")
+                for k = 1, math.floor(hitCount) do
+                    local idx = k
+                    _TimerService:SetTimerOnce(function()
+                        if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+                        for _, t in ipairs(targets) do
+                            if isvalid(t) and isvalid(t.TransformComponent) then
+                                local tp = t.TransformComponent.WorldPosition
+                                if impact ~= "" then
+                                    _EffectService:PlayEffect(impact, casterEntity, Vector3(tp.x, tp.y + 0.5, tp.z), 0, Vector3(sc, sc, 1), false)
+                                end
+                                if idx == 1 then self:PlaySoundRuid(hitSound, casterEntity, tp) end
+                            end
+                        end
+                        skillAttack:DealSequenceHit(skillId, level, box, targets, idx)
+                    end, (idx - 1) * interval)
+                end
+            end
+            if hitDelay > 0 then
+                _TimerService:SetTimerOnce(fireSeq, hitDelay)
+            else
+                fireSeq()
+            end
+            log("SkillExecutors: CHARGE PUNCH " .. skillId .. " sequence range=" .. tostring(range) .. " dir=" .. tostring(dirX)
+                .. " hits=" .. tostring(hitCount) .. " first=" .. tostring(hitDelay) .. "s interval=" .. tostring(interval) .. "s cap=" .. tostring(self:TargetCapOf(skillId)) .. " lv=" .. tostring(level))
+            return
+        end
         local fire = function()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
             skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "punchImpact")

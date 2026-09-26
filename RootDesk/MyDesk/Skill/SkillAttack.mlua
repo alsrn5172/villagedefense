@@ -72,6 +72,10 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property number PendingImpactScale = 1
 
+    -- 연속 타격 표식(b/skill-pirate-effects 2026-09-27 · 피스트 인 레인지 10타): 2타째부터 attackInfo = 스킬 id .. 이 표식 .. 번호("SK_P21#2").
+    -- 몬스터 무적 0.4s(A 의 Faction/MonsterHit.IsHitTarget)를 "같은 시전의 다음 타격" 만 건너뛰게 할 때 A 가 이 표식을 본다(#40 제안). 피해 값은 BaseSkillId 로 원래 id.
+    property string SequenceHitTag = "#"
+
     -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
     property number CritDamageRate = 2.0
 
@@ -260,7 +264,17 @@ script SkillAttack extends AttackComponent
             return 0
         end
         local userId = attacker.PlayerComponent.UserId
-        return math.floor(_SkillDatabase:DamageAt(attackInfo, self.PendingLevel, userId) * self.PendingDamageMul)
+        -- 연속 타격(DealSequenceHit)의 2타째부터는 attackInfo = "<스킬>#k" — 피해 값은 스킬 id 로 찾는다.
+        return math.floor(_SkillDatabase:DamageAt(self:BaseSkillId(attackInfo), self.PendingLevel, userId) * self.PendingDamageMul)
+    end
+
+    method string BaseSkillId(string attackInfo)
+        -- "SK_P21#3" → "SK_P21". 표식(SequenceHitTag)이 없으면 그대로. 양쪽 인스턴스 공용(ExecSpace 없음).
+        if attackInfo == nil then return "" end
+        -- string.find 는 값 두 개(시작 · 끝)를 돌려준다 — 받는 변수도 둘(하나면 빌드가 LWA-1111 UnbalancedAssignment · SkillWindowLogic.LabelFor 와 같은 처리).
+        local p, pEnd = string.find(attackInfo, self.SequenceHitTag, 1, true)
+        if p == nil then return attackInfo end
+        return string.sub(attackInfo, 1, p - 1)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
@@ -414,6 +428,43 @@ script SkillAttack extends AttackComponent
         self.Candidates = {}
         log("SkillAttack: FindSkillTargets " .. skillId .. " candidates=" .. tostring(#found))
         return found
+    end
+
+    @ExecSpace("ServerOnly")
+    method table SnapshotTargets(string skillId, table shape, integer maxTargets)
+        -- 연속 타격 대상 고정(피스트 인 레인지): shape 상자 안 대상을 한 번 골라 목록으로 돌려준다(probe · 피해 없음).
+        -- maxTargets > 0 이면 시전자에게 가까운 순서로 그만큼(CapTargetsByShape) · 0 이면 전부(FindSkillTargets).
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        if maxTargets ~= nil and maxTargets > 0 then
+            self:CapTargetsByShape(skillId, self.Shape, maxTargets)
+            local picked = self.CappedTargets
+            self.CappedTargets = nil
+            if picked == nil then return {} end
+            return picked
+        end
+        return self:FindSkillTargets(skillId, shape)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSequenceHit(string skillId, number level, table shape, table targets, integer hitIndex)
+        -- 연속 타격 한 번(피스트 인 레인지 10타 중 hitIndex 번째): 고정한 targets 만 · 피해 = 표 % × 1 · 표시 1타.
+        -- 2타째부터 attackInfo = skillId .. SequenceHitTag .. hitIndex — 몬스터 무적 0.4s 예외용 표식(A 의 MonsterHit · #40). 연출(폭발)은 부르는 쪽이 따로 튼다.
+        if _SpectateService ~= nil and isvalid(self.Entity.PlayerComponent) and _SpectateService:Blocked(self.Entity.PlayerComponent.UserId) then return end
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        local info = skillId
+        if hitIndex ~= nil and hitIndex > 1 then info = skillId .. self.SequenceHitTag .. tostring(hitIndex) end
+        self:BeginPass(skillId, level, 1, 1)
+        self.CappedTargets = targets
+        if self.CappedTargets == nil then self.CappedTargets = {} end
+        self:AttackFast(self.Shape, info, CollisionGroups.Monster)
+        self:EndPass()
+        log("SkillAttack: sequence hit " .. info .. " lv=" .. tostring(level) .. " targets=" .. tostring(#targets))
     end
 
     @ExecSpace("ServerOnly")
