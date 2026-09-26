@@ -1,0 +1,134 @@
+@Logic
+script MatchTallyService extends Logic
+
+	-- 매치 집계 (WO-031 묶음 2 · GDD §4.12 집계 정의 · 계약서 A-2-26 · A-4 PublicPlayerSummary).
+	--   MonsterKillCount = 일반 사냥 몹 처치 보상을 받은 횟수(FarmReward 막타 귀속 · 자이언트 포함 · 미니언 제외)
+	--   BossKillCount    = 보스 처치 판정(최다 누적 피해)을 받은 횟수(BossRewardService)
+	--   VillageGrowth    = GrowthPoint 액션 점수 합 — 같은 액션 키(유형:대상:단계)는 매치당 한 번만(같은 소비 반복으로 무한 획득 금지)
+	-- 서버 메모리 원장이다(저장 안 함 · 룸마다 따로 · StartMatch 가 ResetForMatch). 결과 화면 순위 ④ · 공개 통계(묶음 3)가 읽는다.
+	-- 🔴 처치·보스 처치 이벤트는 여기 한 곳으로 모인다 — 계정 기록(도감 · 업적 · 묶음 4·5)도 여기서 넘긴다(FarmReward·BossRewardService 에 줄을 늘리지 않는다).
+
+	-- userId → 처치 수
+	@HideFromInspector
+	property any kills = nil
+
+	-- userId → 보스 처치 판정 수
+	@HideFromInspector
+	property any bossKills = nil
+
+	-- userId → 성장도 점수
+	@HideFromInspector
+	property any growth = nil
+
+	-- userId → { [actionKey] = true } 이미 받은 성장 액션
+	@HideFromInspector
+	property any growthKeys = nil
+
+	-- ActionType → 점수 (GrowthPoint.csv · 없으면 기본값)
+	@HideFromInspector
+	property any growthDef = nil
+
+	method void OnBeginPlay()
+		-- 서버만 원장.
+		if not self:IsServer() then return end
+		self:ResetForMatch()
+		self:LoadGrowthDef()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadGrowthDef()
+		-- GrowthPoint.csv (계약서 A-2-26). 🔴 DataSet 행은 1-based. 표가 없으면 WO-031 §6 초안값.
+		self.growthDef = { FACILITY_LEVEL = 3, TRAINING_LEVEL = 2, CRAFT_FIRST = 2, RECRUIT_FIRST = 1 }
+		local t = _DataService:GetTable("GrowthPoint")
+		if t == nil then
+			log_warning("[Tally] GrowthPoint dataset not found — 기본값 사용")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local key = t:GetCell(i, "ActionType") or ""
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if key ~= "" then
+				self.growthDef[key] = enabled and math.max(0, math.floor(tonumber(t:GetCell(i, "Points")) or 0)) or 0
+				n = n + 1
+			end
+		end
+		log("[Tally] GrowthPoint loaded: " .. tostring(n) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch()
+		-- 새 판: 집계를 비운다.
+		self.kills = {}
+		self.bossKills = {}
+		self.growth = {}
+		self.growthKeys = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMonsterKill(string userId, integer monsterId, string eliteId)
+		-- 일반 사냥 몹 처치 보상 1건(FarmReward.GiveRewards · 막타 플레이어). monsterId 0(미니언)은 부르는 쪽이 거른다.
+		if userId == nil or userId == "" or monsterId <= 0 then return end
+		if self.kills == nil then self:ResetForMatch() end
+		local n = (self.kills[userId] or 0) + 1
+		self.kills[userId] = n
+		-- 로그는 1 · 10 · 50 · 100 마다만(초당 수십 마리를 잡아도 콘솔이 안 넘친다).
+		if n == 1 or n == 10 or n == 50 or n % 100 == 0 then
+			log("[Tally] kill " .. userId .. " n=" .. tostring(n) .. " last=" .. tostring(monsterId) .. ((eliteId ~= nil and eliteId ~= "") and (" elite=" .. eliteId) or ""))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossKill(string bossId, string topUserId, any dmg)
+		-- 보스 1마리 사망 · 처치 판정(최다 피해)을 받은 참가자(BossRewardService.OnBossKilled). dmg = userId → 누적 피해(도감 인정용 · 묶음 4).
+		if topUserId == nil or topUserId == "" then return end
+		if self.bossKills == nil then self:ResetForMatch() end
+		local n = (self.bossKills[topUserId] or 0) + 1
+		self.bossKills[topUserId] = n
+		log("[Tally] boss " .. tostring(bossId) .. " top=" .. topUserId .. " n=" .. tostring(n))
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AddGrowth(string userId, string actionType, string target, integer level)
+		-- 성장 액션 1건. 키 = 유형:대상:단계 · 매치당 한 번. 더한 점수를 돌려준다(이미 받았거나 표에 없으면 0).
+		if userId == nil or userId == "" then return 0 end
+		if self.growth == nil then self:ResetForMatch() end
+		if self.growthDef == nil then self:LoadGrowthDef() end
+		local pts = self.growthDef[actionType] or 0
+		if pts <= 0 then return 0 end
+		local key = actionType .. ":" .. tostring(target) .. ":" .. tostring(level)
+		local seen = self.growthKeys[userId]
+		if seen == nil then
+			seen = {}
+			self.growthKeys[userId] = seen
+		end
+		if seen[key] then return 0 end
+		seen[key] = true
+		local total = (self.growth[userId] or 0) + pts
+		self.growth[userId] = total
+		log("[Tally] growth " .. userId .. " +" .. tostring(pts) .. " " .. key .. " total=" .. tostring(total))
+		return pts
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer KillsOf(string userId)
+		-- 이번 판 처치 수.
+		if self.kills == nil or userId == nil then return 0 end
+		return self.kills[userId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer BossKillsOf(string userId)
+		-- 이번 판 보스 처치 판정 수.
+		if self.bossKills == nil or userId == nil then return 0 end
+		return self.bossKills[userId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GrowthOf(string userId)
+		-- 이번 판 마을 성장도.
+		if self.growth == nil or userId == nil then return 0 end
+		return self.growth[userId] or 0
+	end
+
+end
