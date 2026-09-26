@@ -92,3 +92,11 @@ PR #98. **출처: #40 comment 5831420626 (A 결정 · 사용자 강민구 2026-0
 
 - 두 번 다 `revive=choice hp=201450/201450 mp=500000/500000` (HP 최대 · MP 그대로 · 레벨 유지 30).
 - 남은 것: **A 의 MP 답**(#40 5842209860 — 두 부활 모두 MP 도 채울지) → 그 전까지 Draft. 만렙 실제 차감을 0 으로 할지는 A 의 `SummonManager` 설계 몫(이 PR 은 팝업을 실제와 맞췄다).
+
+## 4차 — MP 도 채움 (2026-09-26 · A 답 #40 5844239483)
+
+- A 결정(사용자 강민구): **두 부활(시간 · 선택) 모두 MP 도 최대치**, 만렙 경험치 차감은 그대로.
+- `Match/PlayerRespawnService.mlua` `OnRevive` — 두 부활이 모두 지나가는 곳 — 에서 `_SummonManager:GrantMp(userId, floor(maxMp - mp))` (0 이하면 안 부름 · `GrantMp` 가 maxMp clamp · HUD Push · `[Summon] +mp …` 로그). `Choose` 주석만 고침(HP 는 그대로 즉시 채움 · MP 는 `OnRevive` 에서 — 선택 부활은 최대 `PollInterval` 0.25s 뒤).
+- 계약서 8번 추가 줄 · 변경 이력 행 문구 갱신(`GrantMp` 호출만 · `SummonManager` 수정 없음).
+- LSP 깨끗 · `check-integrity` 는 아래. **Play 확인 전 → Draft 유지.**
+- Play 체크(다음 라운드): 죽기 전 MP 를 줄여 두고(`[Summon] -mp`) ① 시간 부활 ② 선택 부활(메소 · 경험치) 각각 `[Summon] +mp N -> mp=max` + `revive=… hp=max mp=max/max`.
