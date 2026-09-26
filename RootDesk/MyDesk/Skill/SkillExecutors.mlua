@@ -182,6 +182,18 @@ script SkillExecutors extends Logic
 
     property any prewarmEnterHandler = nil
 
+    -- 예열을 **지금 직업 것만 · 전직 뒤에** 한다(b/skill-prewarm-job · 2026-09-25). 예전엔 입장 3s 뒤 다섯 직업의 화면 컷신을 전부 0.01 배율로 한꺼번에 재생했고,
+    -- 차가운 입장(Maker 완전 재시작 뒤)에서 ≈2s 끊겼다(멈춤 258 / 281 / 285 ms · #94 실측). 매치 입장 때는 초보자라 예열할 것이 없고, JobChangedEvent 때 그 직업 것만 한다.
+    -- CutscenePrewarmMode: "play" = 예전처럼 그 유저에 붙여 보이지 않는 크기로 한 번 재생(서버 · 그 맵의 모든 클라가 같이 받는다) · "preload" = 그 유저 클라에서 _ResourceService:PreloadAsync(그리지 않고 받아 두기 · 그 유저만).
+    --   기본 "preload"(2026-09-26 차가운 입장 Play · 사용자 결정): 두 방식 모두 첫 궁이 시전 순간 끊김 없이 제때 뜨고(예열 안 한 대조군 = 102ms + 늦게 뜸), 전직 순간 끊김도 비슷했다
+    --   (preload 97ms 한 번 · play 85ms 한 번 / 133프레임 클립 50~92ms 4프레임). "play" 는 남의 전직 때 같은 맵의 다른 플레이어까지 끊기게 할 수 있어 "preload" 로.
+    property string CutscenePrewarmMode = "preload"
+
+    property any prewarmJobHandler = nil
+
+    -- 서버: userId → 예열을 마친 직업(같은 직업의 차수 올림 JobChangedEvent 는 다시 안 한다). 입장 때마다 비운다(새 클라 = 캐시 없음).
+    property table prewarmedJobs = {}
+
     -- 서버: userId → 진행 중인 모션 순서(PlayMotionSequence)의 타이머 id 목록. 새 시전이 오면 이전 순서를 취소한다 — 텔레포트(쿨 1s) 연타 때 이전 _END(서 있기)가
     -- 새 시전의 heal 왕복을 0.5s 만에 끊는 것을 막는다. 가장 최근 시전이 애니메이션을 가진다.
     property table motionSeqTimers = {}
@@ -283,6 +295,10 @@ script SkillExecutors extends Logic
             _UserService:DisconnectEvent(UserEnterEvent, self.prewarmEnterHandler)
             self.prewarmEnterHandler = nil
         end
+        if self.prewarmJobHandler ~= nil then
+            _PlayerSkillState:DisconnectEvent(JobChangedEvent, self.prewarmJobHandler)
+            self.prewarmJobHandler = nil
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -326,6 +342,8 @@ script SkillExecutors extends Logic
         -- 입장 유저마다(이미 들어온 유저 포함) 컷신 예열을 건다(SkillBuffs.OnBeginPlay 와 같은 UserEnterEvent 패턴).
         if not self.CutscenePrewarm then return end
         self.prewarmEnterHandler = _UserService:ConnectEvent(UserEnterEvent, self.OnPrewarmUserEnter)
+        -- 전직(JobChangedEvent · PlayerSkillState.ChangeJob 이 서버에서 발행)마다 그 직업 것만 예열한다. 입장 때는 지금 직업이 있을 때만(매치 입장 = 초보자 → 할 것 없음).
+        self.prewarmJobHandler = _PlayerSkillState:ConnectEvent(JobChangedEvent, self.OnPrewarmJobChanged)
         for _, user in ipairs(_UserService.UserEntities.Values) do
             if isvalid(user) and isvalid(user.PlayerComponent) then
                 self:PrewarmCutscenesFor(user.PlayerComponent.UserId)
@@ -336,40 +354,92 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method void OnPrewarmUserEnter(UserEnterEvent event)
         if event.UserId ~= nil and event.UserId ~= "" then
+            -- 새로 들어온 클라는 캐시가 비어 있다 → 예전 세션에 예열한 직업 기록을 지우고 다시 본다.
+            self.prewarmedJobs[event.UserId] = nil
             self:PrewarmCutscenesFor(event.UserId)
         end
     end
 
     @ExecSpace("ServerOnly")
+    method void OnPrewarmJobChanged(JobChangedEvent event)
+        -- 전직 · 직업 바꾸기(DEV) 때 그 직업 것을 예열한다. 같은 직업의 차수 올림은 PrewarmCutscenesFor 가 prewarmedJobs 로 거른다.
+        if event == nil or event.UserId == nil or event.UserId == "" then return end
+        self:PrewarmCutscenesFor(event.UserId)
+    end
+
+    @ExecSpace("ServerOnly")
     method void PrewarmCutscenesFor(string userId)
-        -- CutscenePrewarmDelay 뒤 화면 컷신 클립을 전부 그 유저 발밑 아래(보이지 않는 곳)에 아주 작게 한 번 재생한다. 피해·사운드 없음.
+        -- CutscenePrewarmDelay 뒤 그 유저의 **지금 직업** 예열 목록(PrewarmRuidsFor)을 CutscenePrewarmMode 로 한 번 받아 둔다. 피해·사운드 없음.
+        -- 직업이 없거나(초보자) 이미 이 직업을 예열했으면 아무것도 안 한다.
         _TimerService:SetTimerOnce(function()
             local player = _UserService:GetUserEntityByUserId(userId)
             if not isvalid(player) then return end
-            local s = self.CutscenePrewarmScale
-            local n = 0
-            local seen = {}
-            for skillId, entry in pairs(self.effectOverrides) do
-                local spec = entry.cast
-                -- 화면 컷신 = cast.cutsceneSeconds 가 있는 것(2026-09-14 · 예전 "scale + noFlip" 기준은 에너지 쉴드 방울 cast 까지 잡았다).
-                -- cast.prewarm = 컷신은 아니지만 첫 재생이 늦게 뜨는 시전 이펙트(예열만 · 컷신 판정(무적 창 · 분신 숨김)에는 쓰지 않는다).
-                if spec ~= nil and spec.ruid ~= nil and (spec.cutsceneSeconds ~= nil or spec.prewarm == true) then
-                    _EffectService:PlayEffectAttached(spec.ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
-                    n = n + 1
-                end
-                -- 파워 스트라이크 찌르기 잔상(thrust · 무기별)도 첫 재생이 늦게 떴다(2026-09-13 Play 프레임) → 같이 예열. 같은 RUID 는 한 번만.
-                if entry.thrust ~= nil then
-                    for _, t in pairs(entry.thrust) do
-                        if t.ruid ~= nil and not seen[t.ruid] then
-                            seen[t.ruid] = true
-                            _EffectService:PlayEffectAttached(t.ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
-                            n = n + 1
-                        end
-                    end
+            local jobId = _PlayerSkillState:GetJobId(userId)
+            if jobId == nil or jobId == "" or jobId == _PlayerSkillState.NoviceJobId then
+                log("SkillExecutors: prewarm skipped — no job yet (" .. userId .. ")")
+                return
+            end
+            if self.prewarmedJobs[userId] == jobId then return end
+            self.prewarmedJobs[userId] = jobId
+            local ruids = self:PrewarmRuidsFor(jobId)
+            if #ruids == 0 then
+                log("SkillExecutors: prewarm " .. jobId .. " — nothing to prewarm (" .. userId .. ")")
+                return
+            end
+            if self.CutscenePrewarmMode == "preload" then
+                self:PreloadClipsOnClient(table.concat(ruids, ","), userId)
+            else
+                local s = self.CutscenePrewarmScale
+                for _, ruid in ipairs(ruids) do
+                    _EffectService:PlayEffectAttached(ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
                 end
             end
-            log("SkillExecutors: cutscene prewarm x" .. tostring(n) .. " (" .. userId .. ")")
+            log("SkillExecutors: prewarm " .. jobId .. " x" .. tostring(#ruids) .. " mode=" .. self.CutscenePrewarmMode .. " [" .. table.concat(ruids, ",") .. "] (" .. userId .. ")")
         end, self.CutscenePrewarmDelay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table PrewarmRuidsFor(string jobId)
+        -- 그 직업(SkillInfo.ReqJob = jobId) 스킬 중 첫 재생이 늦게 뜨는 클립 RUID 목록(같은 RUID 는 한 번).
+        --   · cast.cutsceneSeconds 가 있는 화면 컷신 = 그 직업의 궁(불굴의 진 · 대마법 · 폭풍의 화살 · 메소 익스플로전 · 함포 사격)
+        --   · cast.prewarm = true 인 시전 이펙트(컷신은 아니지만 첫 재생이 늦게 뜬다 · #94 하이퍼 바디 = 쓸만한 하이퍼 바디 · 라이브 2022 모습과 일치) — 이 필드는 #94 가 넣는다. #94 전에는 해당 없음.
+        --   · thrust(main 의 파워 스트라이크 2단 찌르기 잔상 · 무기별) — #83 이 thrust 를 지우면 저절로 빠진다.
+        _SkillDatabase:EnsureLoaded()
+        local ruids = {}
+        local seen = {}
+        local function add(ruid)
+            if ruid ~= nil and ruid ~= "" and not seen[ruid] then
+                seen[ruid] = true
+                table.insert(ruids, ruid)
+            end
+        end
+        for skillId, entry in pairs(self.effectOverrides) do
+            local skill = _SkillDatabase:GetSkill(skillId)
+            if skill ~= nil and skill.requiredJobLine == jobId then
+                local spec = entry.cast
+                if spec ~= nil and (spec.cutsceneSeconds ~= nil or spec.prewarm == true) then add(spec.ruid) end
+                if entry.thrust ~= nil then
+                    for _, t in pairs(entry.thrust) do add(t.ruid) end
+                end
+            end
+        end
+        return ruids
+    end
+
+    @ExecSpace("Client")
+    method void PreloadClipsOnClient(string ruidCsv)
+        -- CutscenePrewarmMode "preload": 서버(PrewarmCutscenesFor)가 그 유저 클라에만 보낸다. 그리지 않고 받아 두기만 한다(_ResourceService:PreloadAsync).
+        -- 첫 시전이 제때 뜨는지 · 끊김이 줄었는지는 차가운 입장 Play 로 "play" 와 비교한다(결과 = PR 본문).
+        local list = {}
+        for ruid in string.gmatch(ruidCsv, "[^,]+") do table.insert(list, ruid) end
+        if #list == 0 then return end
+        local t0 = _UtilLogic.ElapsedSeconds
+        log("SkillExecutors: client preload start x" .. tostring(#list))
+        _ResourceService:PreloadAsync(list, function(results)
+            local parts = {}
+            for key, status in pairs(results or {}) do table.insert(parts, tostring(key) .. "=" .. tostring(status)) end
+            log(string.format("SkillExecutors: client preload done x%d in %.2fs [%s]", #list, _UtilLogic.ElapsedSeconds - t0, table.concat(parts, " ")))
+        end)
     end
 
     @ExecSpace("ServerOnly")
