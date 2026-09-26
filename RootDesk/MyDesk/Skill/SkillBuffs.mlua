@@ -102,7 +102,32 @@ script SkillBuffs extends Logic
     property any unyieldingTimers = nil
 
     -- 다크 사이트 은신 알파. 1 = 불투명.
-    property number DarkSightAlpha = 0.35
+    -- b/skill-thief-effects (2026-09-27 · 사용자 영상 "다크 사이트의 변화" 리마스터 2022 모험가 도적 3회 시전): 은신 중 캐릭터 알파 실측 0.37~0.41(중앙값) → 0.4. 예전 값 0.35.
+    property number DarkSightAlpha = 0.4
+
+    -- 다크 사이트 알파 전환(같은 영상): 시전 → 알파 0.4 도달까지 ≈0.5s(연기가 몸을 덮은 채 옅어짐) · 은신이 끝날 때 1 로 돌아오기까지 ≈0.45s.
+    -- 0 이면 한 번에 바꾼다(예전 동작). 단계 수만큼 SetAlpha(Client · 전 클라)를 나눠 부른다 — 한 번 전환에 RPC 가 단계 수만큼.
+    property number DarkSightFadeInSeconds = 0.5
+
+    property number DarkSightFadeOutSeconds = 0.45
+
+    property integer DarkSightFadeSteps = 5
+
+    -- [서버] userId -> 진행 중인 다크 사이트 알파 전환 타이머 id 목록(새 전환이 오면 이전 것을 취소 · 회피 직후 재시전 등).
+    property table darkSightFadeTimers = {}
+
+    -- 다크 사이트 중 공격하면 은신이 풀리는가(b/skill-thief-effects · 기획 미정 → 원작 기본값 · #40 질문 3).
+    -- 원작: 고전(GMS v83) "공격할 수도 없다" · 최신(KMS 389) 스킬을 쓰면 해제(일부 이동기·연막·베일 예외 · 어드밴스드 다크 사이트 15% 유지는 섀도어/듀블 전용).
+    -- true = 공격 스킬(EffectUnit ATK_PCT · SkillUsedEvent) 또는 기본 공격(PlayerAttack.AttackNormal)을 쓰는 순간 해제. 버프·이동 스킬은 해제하지 않는다.
+    property boolean DarkSightBreaksOnAttack = true
+
+    -- 픽파켓이 떨어지지 않는 스킬 id(쉼표 구분 · "" = 모든 공격). 원작은 메소 익스플로젼 타격에서 동전이 안 떨어진다("SK_T31").
+    -- 기획 답 2026-09-24 7번 "'공격'은 모든 공격" 을 따라 비워 둔다 — #40 질문 2 의 답이 원작대로면 "SK_T31" 한 칸.
+    property string PickpocketExcludedSkillIds = ""
+
+    -- 쉐도우 파트너 ×2 가 붙지 않는 스킬 id(쉼표 구분 · "" = 모든 공격). 원작 섀도어판 쉐도우 파트너는 메소 익스플로젼을 따라 하지 않는다("SK_T31").
+    -- 기획 답 2026-09-24 7번 "'공격'은 모든 공격" 을 따라 비워 둔다 — #40 질문 4 의 답이 원작대로면 "SK_T31" 한 칸.
+    property string ShadowPartnerExcludedSkillIds = ""
 
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
@@ -130,7 +155,14 @@ script SkillBuffs extends Logic
     -- [서버] 픽파켓 중복 방지: userId -> targetEntity -> 마지막 드랍 시각. "1번(타수 아님)" = 같은 대상은 PickpocketDedupeSeconds 안에 한 번.
     property table pickpocketLast = {}
 
-    property number PickpocketDedupeSeconds = 0.5
+    -- b/skill-thief-effects: 0.5 → 0.3 — 표 "1번(타수 아님) 때리면" = 공격 1번(시전·기본 공격 1회)마다 대상당 1번. 0.5 면 럭키 세븐 연타(시전 락 0.4s)로 같은 대상을
+    -- 두 번째 칠 때 동전이 빠졌다. 0.3 은 한 공격 안의 다타(볼리 2발째 0.12s 뒤 · 에너지 차지 연타 한 패스)를 한 번으로 묶는 폭으로 남긴다(#40 질문 1).
+    property number PickpocketDedupeSeconds = 0.3
+
+    -- 픽파켓 타격당 메소 개수의 소수점(b/skill-thief-effects · 2026-09-27 사용자 표 "1~2 meso (if fractional isn't possible: 1 meso Lv1–4, 2 meso at Lv5)"):
+    -- true = 내림(CSV 1 + 0.25/lv → Lv1~4 = 1개 · Lv5 = 2개 · 기획 원문 "소숫점 안되면 그냥 5렙에만 2메소"). false = 예전 방식(소수점을 확률로 · 1.25 = 25% 로 2개).
+    -- 메소는 정수 재화라 소수점 드랍이 없다 → 표의 대체 규칙을 기본값으로 둔다.
+    property boolean PickpocketRoundDown = true
 
     -- 픽파켓 동전 모델(A 의 Farm/MesoCoin · FarmReward.DropCoins 와 같은 EntryKey). 주인은 DropOwner 로 시전자에게.
     property string MesoCoinModelId = "mesocoin"
@@ -449,7 +481,7 @@ script SkillBuffs extends Logic
             self.shields[userId] = amount
             log("[Buff] ENERGY_SHIELD shield=" .. tostring(amount) .. " (" .. tostring(ratio) .. "% of maxHp " .. tostring(maxHp) .. ") (" .. userId .. ")")
         elseif buffTag == self.TagDarkSight then
-            self:SetAvatarAlpha(userId, self.DarkSightAlpha)
+            self:FadeAvatarAlpha(userId, 1, self.DarkSightAlpha, self.DarkSightFadeInSeconds)
         elseif buffTag == self.TagEnergyCharge then
             self:ApplyChargeMobility(userId)
         elseif buffTag == self.TagInvulnerable then
@@ -484,7 +516,7 @@ script SkillBuffs extends Logic
         if buffTag == self.TagEnergyShield then
             self.shields[userId] = nil
         elseif buffTag == self.TagDarkSight then
-            self:SetAvatarAlpha(userId, 1)
+            self:FadeAvatarAlpha(userId, self.DarkSightAlpha, 1, self.DarkSightFadeOutSeconds)
         elseif buffTag == self.TagEnergyCharge then
             self:EndChargeState(userId)
         elseif buffTag == self.TagInvulnerable then
@@ -521,6 +553,32 @@ script SkillBuffs extends Logic
         if not isvalid(avatar) then return end
         avatar:SetAlpha(alpha)
         log("[Buff] avatar alpha=" .. tostring(alpha) .. " (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FadeAvatarAlpha(string userId, number fromAlpha, number toAlpha, number seconds)
+        -- 아바타 알파를 seconds 동안 DarkSightFadeSteps 단계로 바꾼다(b/skill-thief-effects · 다크 사이트 영상 실측 전환 ≈0.5s/0.45s).
+        -- 이전 전환이 진행 중이면 취소하고 새로 시작한다(마지막 단계 값 = toAlpha 가 항상 남는다). seconds ≤ 0 이나 단계 ≤ 1 이면 SetAvatarAlpha 한 번(예전 동작).
+        local prev = self.darkSightFadeTimers[userId]
+        if prev ~= nil then
+            for _, id in ipairs(prev) do _TimerService:ClearTimer(id) end
+            self.darkSightFadeTimers[userId] = nil
+        end
+        local steps = self.DarkSightFadeSteps
+        if seconds == nil or seconds <= 0 or steps == nil or steps <= 1 then
+            self:SetAvatarAlpha(userId, toAlpha)
+            return
+        end
+        local ids = {}
+        for k = 1, steps do
+            local a = fromAlpha + (toAlpha - fromAlpha) * k / steps
+            local id = _TimerService:SetTimerOnce(function()
+                self:SetAvatarAlpha(userId, a)
+            end, seconds * (k - 1) / (steps - 1))
+            table.insert(ids, id)
+        end
+        self.darkSightFadeTimers[userId] = ids
+        log("[Buff] avatar alpha fade " .. tostring(fromAlpha) .. " -> " .. tostring(toAlpha) .. " over " .. tostring(seconds) .. "s x" .. tostring(steps) .. " (" .. userId .. ")")
     end
 
     -- ───────────────────────── 서버: StatService BUFF 레이어 단일 기록자 ─────────────────────────
@@ -880,6 +938,7 @@ script SkillBuffs extends Logic
         if _JobPassiveLogic == nil or not isvalid(target) or isvalid(target.PlayerComponent) then return end
         local perHit = _JobPassiveLogic:PassiveRatio(userId, self.TagPickpocket)
         if perHit <= 0 then return end
+        if self:IdInList(self.PickpocketExcludedSkillIds, skillId) then return end
 
         local now = _UtilLogic.ServerElapsedSeconds
         local per = self.pickpocketLast[userId]
@@ -894,10 +953,12 @@ script SkillBuffs extends Logic
         if last ~= nil and now - last < self.PickpocketDedupeSeconds then return end
         per[target] = now
 
-        -- 1.25 → 1개 + 25% 확률로 1개 더 (표 "소수점 안되면 5렙에만 2개" 대신 소수점을 확률로 푼다).
-        local count = math.floor(perHit)
-        local frac = perHit - count
-        if frac > 0 and _UtilLogic:RandomDouble() < frac then count = count + 1 end
+        -- 소수점: PickpocketRoundDown(기본) = 내림 → Lv1~4 1개 · Lv5 2개(표의 대체 규칙). false 면 예전처럼 1.25 → 1개 + 25% 확률로 1개 더.
+        local count = self:PickpocketCount(perHit)
+        if not self.PickpocketRoundDown then
+            local frac = perHit - count
+            if frac > 0 and _UtilLogic:RandomDouble() < frac then count = count + 1 end
+        end
         if count <= 0 then return end
 
         local map = target.CurrentMap
@@ -922,6 +983,47 @@ script SkillBuffs extends Logic
             _SoundService:PlaySoundAtPos(self.PickpocketSoundRuid, tp, target, 1.0)
         end
         log("[Buff] PICKPOCKET +" .. tostring(dropped) .. " meso at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ")")
+    end
+
+    method boolean IdInList(string list, string id)
+        -- 쉼표 구분 목록(공백 무시)에 id 가 있는가. 빈 목록이면 false. PickpocketExcludedSkillIds · ShadowPartnerExcludedSkillIds 용.
+        if list == nil or list == "" or id == nil or id == "" then return false end
+        for item in string.gmatch(list, "[^,]+") do
+            local trimmed, trimCount = string.gsub(item, "%s", "")
+            if trimmed == id then return true end
+        end
+        return false
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsShadowPartnerExcluded(string skillId)
+        -- 쉐도우 파트너 ×2 를 이 스킬에 안 붙이는가(ShadowPartnerExcludedSkillIds). SkillDatabase.DamageAt 이 부른다.
+        return self:IdInList(self.ShadowPartnerExcludedSkillIds, skillId)
+    end
+
+    @ExecSpace("ServerOnly")
+    @EventSender("Logic", "SkillCaster")
+    handler HandleSkillUsed(SkillUsedEvent event)
+        -- 스킬 시전 성공(SkillCaster.RequestCast 끝의 SkillUsedEvent)마다: 공격 스킬(EffectUnit ATK_PCT)이면 다크 사이트를 푼다(DarkSightBreaksOnAttack).
+        if not self.DarkSightBreaksOnAttack or event == nil then return end
+        local skill = _SkillDatabase:GetSkill(event.SkillId)
+        if skill == nil or skill.effectUnit ~= "ATK_PCT" then return end
+        self:BreakDarkSightByAttack(event.UserId, event.SkillId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void BreakDarkSightByAttack(string userId, string source)
+        -- 원작 기본값(#40 질문 3): 다크 사이트 중 공격하면 은신 해제. 스킬은 HandleSkillUsed · 기본 공격은 PlayerAttack.AttackNormal 이 부른다.
+        if not self.DarkSightBreaksOnAttack or userId == nil or userId == "" then return end
+        if self:GetBuff(userId, self.TagDarkSight) == nil then return end
+        self:EndBuffNow(userId, self.TagDarkSight, "attacked · " .. tostring(source))
+    end
+
+    method integer PickpocketCount(number perHit)
+        -- 픽파켓 타격당 메소 개수의 정수 부분(내림). PickpocketRoundDown 이면 이것이 곧 드랍 개수 — 스킬 창 툴팁(SkillWindowLogic · 클라)도 같은 값을 보여 준다.
+        -- ExecSpace 없음(서버 드랍 · 클라 툴팁 양쪽에서 부른다 · 상태를 읽지 않는 순수 계산).
+        if perHit == nil or perHit <= 0 then return 0 end
+        return math.floor(perHit + 0.0001)
     end
 
     -- ───────────────────────── 서버 → 클라 미러 ─────────────────────────
