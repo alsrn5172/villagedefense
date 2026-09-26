@@ -145,11 +145,22 @@ script SkillExecutors extends Logic
     @HideFromInspector
     property integer buffLoopSeq = 0
 
-    -- 피스트 인 레인지(SK_P21 재시전): true = 폭발 10번 = 타격 10번(0.12s 간격 · 타격마다 표 % 한 번 · 2026-09-27 사용자 요청).
-    --   false = 예전 방식(첫 타 때 판정 1번에 피해 ×10 · 숫자 10개 · 폭발 10번은 연출만).
-    --   ⚠ 몬스터 무적 0.4s(A 의 Faction/MonsterHit.mlua:26 IsHitTarget)가 있는 동안 0.12s 간격 타격은 1·5·9번째만 들어간다 → A 의 예외(#40)가 필요하다.
-    --     2~10번째 타격은 attackInfo = "SK_P21#k" 로 보낸다(SkillAttack.DealSequenceHit · A 가 "#" 붙은 attackInfo 만 무적 시간을 건너뛰게 하면 된다).
-    property boolean PunchSequenceHits = true
+    -- 피스트 인 레인지(SK_P21 재시전) 판정 방식. 🔴 기본 false(2026-09-27 사용자 결정): 첫 타(+0.23s)에 대상마다 판정 1번 × (표 % × 10) —
+    --   합계가 표(30%x10 → 50%x10)와 같다(함포 사격 파마다 150% × 5 와 같은 방식). 숫자 10개는 PunchDamageSkinDelay 간격으로 뜨고 폭발 10번(0.12s)과 맞는다.
+    --   true = 폭발 1번 = 타격 1번(0.12s 간격 · 표 % × 1 × 10번). ⚠ 몬스터 무적 0.4s(A 의 Faction/MonsterHit.mlua:26 IsHitTarget) 때문에
+    --     A 의 예외(#40 · attackInfo 에 "#" 이면 무적 건너뛰기)가 들어오기 전에는 1·5·9번째만 들어간다 → 예외가 들어온 뒤에만 켠다.
+    --     2~10번째 타격은 attackInfo = "SK_P21#k" 로 보낸다(SkillAttack.DealSequenceHit).
+    property boolean PunchSequenceHits = false
+
+    -- 피스트 인 레인지 판정 1번(PunchSequenceHits false)의 숫자 10개 간격(초 · 2026-09-27). 엔진은 공격 한 번의 숫자를 공격한 엔티티의
+    --   DamageSkinSettingComponent.DelayPerAttack 간격으로 띄운다(Environment/NativeScripts/Component/DamageSkinSettingComponent.d.mlua · 공격별 값은 없다).
+    --   플레이어 모델 값 = 0.05(Global/DefaultPlayer.model damageDelayPerAttack · A). 주먹 한 번 동안만 시전자 값을 이 값으로 바꾸고
+    --   마지막 주먹의 숫자가 다 뜬 뒤 원래 값으로 되돌린다(ApplyPunchDamageSkinDelay). 0 = 건드리지 않는다(엔진 0.05).
+    property number PunchDamageSkinDelay = 0.12
+
+    -- [서버] userId -> { original = 원래 DelayPerAttack, token = 차례 번호 } (ApplyPunchDamageSkinDelay 되돌리기용).
+    @HideFromInspector
+    property table punchSkinDelayRestore = {}
 
     -- 함포 사격(barrage): HitCount 를 이만큼의 파로 나눈다 · 파 간격(초 · 몬스터 무적 0.4s 보다 길게) · 파마다 떨어지는 폭탄 연출 개수 · 폭탄 흩뿌림(반지름 비율).
     property integer BarrageWaves = 6
@@ -705,7 +716,8 @@ script SkillExecutors extends Logic
                 punchHitDelay = 0.23,
                 -- repeatInterval(2026-09-27 · 사용자 영상 fist_enrage_ref.mp4 실측): 대상 위 폭발 10번 = 2022 데스티니 57.400…58.467s · 2023 VI 65.067…66.167s
                 --   → 간격 ≈ 0.12s(첫 폭발 → 마지막 1.07~1.10s). ExecuteChargePunch 가 HitCount 만큼 튼다.
-                --   PunchSequenceHits = true(기본 · 2026-09-27 사용자 요청): 폭발 1번 = 타격 1번(표 % × 1 · 합계 = 표 % × 10). false = 예전(첫 타에 피해 ×10 한 번 · 폭발은 연출만).
+                --   PunchSequenceHits = false(기본 · 2026-09-27 사용자 결정): 첫 타에 판정 1번 × (표 % × 10) · 숫자 10개 = PunchDamageSkinDelay 0.12s 간격 · 폭발 10번 = 연출.
+                --   true(A 의 무적 예외 뒤): 폭발 1번 = 타격 1번(표 % × 1 · 합계 같음).
                 --   hit/0 = VI 8c8621fd…(8프레임 · 188×192 · 빨간 구체 → 분홍/파랑 폭발). 예전 = 5121020 hit/0 37463e84….
                 punchImpact = { ruid = "8c8621fd03ac49f692c2082ea29fd065", repeatInterval = 0.12 },
             },
@@ -2015,6 +2027,8 @@ script SkillExecutors extends Logic
             end
             skillAttack:DealSkillDamage(skillId, level, box)
         end
+        -- 숫자 10개 간격 = 폭발 간격(PunchDamageSkinDelay 0.12 · 시전 순간에 걸어 +hitDelay 의 판정 전에 동기화되게). 마지막 숫자가 뜬 뒤 되돌린다.
+        self:ApplyPunchDamageSkinDelay(casterEntity, hitDelay + hitCount * interval + 0.3)
         if hitDelay > 0 then
             _TimerService:SetTimerOnce(fire, hitDelay)
         else
@@ -2022,6 +2036,41 @@ script SkillExecutors extends Logic
         end
         log("SkillExecutors: CHARGE PUNCH " .. skillId .. " range=" .. tostring(range) .. " dir=" .. tostring(dirX)
             .. " hits=" .. tostring(hitCount) .. " hitDelay=" .. tostring(hitDelay) .. " cap=" .. tostring(self:TargetCapOf(skillId)) .. " lv=" .. tostring(level))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyPunchDamageSkinDelay(Entity casterEntity, number holdSeconds)
+        -- 피스트 인 레인지 판정 1번의 숫자 10개를 폭발 간격으로 띄운다(2026-09-27). 엔진에 공격별 간격은 없고 공격한 엔티티의
+        -- DamageSkinSettingComponent.DelayPerAttack(@Sync)만 있다 → 시전자 값을 잠깐 PunchDamageSkinDelay 로 바꾸고 holdSeconds 뒤 원래 값으로.
+        -- 연타로 다시 부르면 되돌리는 시각만 뒤로 민다(token). 원래 값은 처음 바꿀 때 한 번만 적어 둔다(연타 중 0.12 를 원래 값으로 착각하지 않게).
+        -- 그동안 같은 플레이어의 다른 여러 타 공격(함포 사격 파 5타 등)도 이 간격으로 뜬다 — 주먹 한 번 길이(≈1.5s) 동안만이다.
+        local d = self.PunchDamageSkinDelay
+        if d == nil or d <= 0 then return end
+        if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
+        local ds = casterEntity.DamageSkinSettingComponent
+        if not isvalid(ds) then
+            log_warning("SkillExecutors: punch damage-skin spacing skipped — caster has no DamageSkinSettingComponent")
+            return
+        end
+        local uid = casterEntity.PlayerComponent.UserId
+        local rec = self.punchSkinDelayRestore[uid]
+        if rec == nil then
+            rec = { original = ds.DelayPerAttack, token = 0 }
+            self.punchSkinDelayRestore[uid] = rec
+        end
+        rec.token = rec.token + 1
+        local token = rec.token
+        ds.DelayPerAttack = d
+        _TimerService:SetTimerOnce(function()
+            local r = self.punchSkinDelayRestore[uid]
+            if r == nil or r.token ~= token then return end
+            self.punchSkinDelayRestore[uid] = nil
+            if isvalid(casterEntity) and isvalid(casterEntity.DamageSkinSettingComponent) then
+                casterEntity.DamageSkinSettingComponent.DelayPerAttack = r.original
+            end
+            log("SkillExecutors: punch damage-skin spacing restored " .. tostring(r.original) .. " (" .. uid .. ")")
+        end, holdSeconds)
+        log("SkillExecutors: punch damage-skin spacing " .. tostring(d) .. "s (was " .. tostring(rec.original) .. ") for " .. string.format("%.2f", holdSeconds) .. "s (" .. uid .. ")")
     end
 
     @ExecSpace("ServerOnly")

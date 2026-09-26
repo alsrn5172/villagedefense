@@ -1,5 +1,20 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 3차 (2026-09-27 · 피스트 인 레인지 기본값 되돌림 · #114 `615bcb9` 위로 rebase)
+
+| 무엇 | 전 → 후 | 근거 | 위치 |
+|---|---|---|---|
+| 피스트 인 레인지 판정 | 기본 `PunchSequenceHits = true`(판정 10번 × 표 %) → **기본 false**(첫 타 +0.23s 에 판정 1번 × (표 % × 10) = 표 합계 · 함포 사격과 같은 방식). 10타 경로는 스위치 뒤에 그대로 | 사용자 결정: 판정 1번 × 10 도 표 합계와 같다 · 진짜 10타는 A 의 무적 예외 뒤 | `SkillExecutors.PunchSequenceHits` |
+| 피스트 인 레인지 숫자 간격 | 숫자 10개 0.05s 간격(플레이어 모델 `DelayPerAttack` 0.05) → **0.12s**(폭발 간격과 같게) | 엔진은 공격별 간격이 없고 공격한 엔티티의 `DamageSkinSettingComponent.DelayPerAttack`(@Sync)만 있다 → 주먹 한 번 동안만 시전자 값을 0.12 로 바꾸고 마지막 숫자 뒤(+hitDelay + 10 × 0.12 + 0.3s) 원래 값으로 되돌린다(연타는 되돌리는 시각만 민다) | `SkillExecutors.PunchDamageSkinDelay` · `ApplyPunchDamageSkinDelay` |
+| 폭발 10번 | 0.12s 간격 연출 그대로 | — | `punchImpact.repeatInterval` |
+
+- 그 사이(주먹 한 번 ≈1.5s) 같은 플레이어의 다른 여러 타 공격 숫자도 0.12s 간격으로 뜬다(예: 그 안에 쓴 함포 사격 파 5타). `PunchDamageSkinDelay = 0` 이면 건드리지 않는다.
+- rebase: `7c719ee` → #114 현재 `615bcb9`(픽파켓 기본 공격 드랍을 명중일 때만 · A/B 파일 겹침 없음).
+
+### Play 체크리스트 (3차 추가)
+
+11. 피스트 인 레인지(기본): 로그 `punch damage-skin spacing 0.12s (was 0.05)` → `… restored 0.05` · 대상마다 HP 가 **한 번** 준다(= 표 % × 10) · 숫자 10개가 폭발 10번과 같이 0.12s 간격으로 뜬다 · 연타해도 마지막 주먹 뒤에만 0.05 로 돌아온다 · 끝난 뒤 기본 공격 숫자 간격 0.05.
+
 ## 2차 (2026-09-27 · 사용자 결정 + 피해 검산)
 
 | 무엇 | 전 → 후 | 근거 | 위치 |
