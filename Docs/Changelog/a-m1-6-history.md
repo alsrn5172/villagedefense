@@ -17,3 +17,9 @@
 
 - LSP clean · `check-integrity` 통과.
 - 🟡 **Maker 검증 대기**: TEST 프로필 매치 1판 → 만료 → `[History] +1 <uid> o=TIMEOUT rk=1/1` · `[AcctRec] save MatchHistory bytes=` → 로비 계정 창 기록 탭 1줄 · 재접속 뒤 유지 · 21판째에 가장 오래된 줄이 빠짐(execute_script 로 Append 반복) · 발록 선취 판(`o=BALROG`) 뒤 심장·계정 경험치·도감·업적 값이 로비 재로드 후 그대로.
+
+## Codex 교차 리뷰 반영 (2026-09-26 · 묶음 5+6 · 2회)
+
+- 정산 줄도 판당 1번(묶음 5 의 `recordsSettled` 가드 안으로).
+- `MarkLeft` 가 포기·강퇴·접속 끊김 경로에서 겹치면 LEFT 줄이 여러 개 생길 수 있었다 → **처음 이탈할 때만** 1줄.
+- 날짜: `//` 는 Lua 5.3 정수 floor 나눗셈(음수도 맞음) · `EpochOffsetSec` 는 64비트 정수 — 바꾸지 않음.

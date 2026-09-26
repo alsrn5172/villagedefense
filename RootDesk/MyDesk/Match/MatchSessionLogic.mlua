@@ -84,6 +84,10 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property any lastRewards = nil
 
+	-- 이번 판 계정 기록(업적 · 플레이 기록) 정산을 했나 — ShowResult 가 어떤 경로로든 두 번 돌아도 카운터·기록이 두 번 쌓이지 않게(WO-031 · Codex 리뷰 2026-09-26)
+	@HideFromInspector
+	property boolean recordsSettled = false
+
 	-- 🔴 매치를 **떠난** 참가자 (포기 · 접속 끊김). 탈락 판정과 별개로 들고 있는다 —
 	--    마을을 아직 안 잡은 사람은 넥서스가 없어서 Eliminate 를 태울 수 없는데,
 	--    그러면 "전원 탈락" 이 영영 성립하지 않아 매치가 끝나지 않는다.
@@ -280,6 +284,7 @@ script MatchSessionLogic extends Logic
 		if _PlayerRespawnService ~= nil then _PlayerRespawnService:ResetForMatch(self.participants) end
 		if _GuideService ~= nil then _GuideService:ResetForMatch(self.participants) end
 		self.lastRewards = nil
+		self.recordsSettled = false
 
 		self.Elapsed = 0
 		self.PhaseElapsed = 0
@@ -751,10 +756,11 @@ script MatchSessionLogic extends Logic
 		--    이 표가 없으면 그 사람 때문에 매치가 영영 안 끝난다.
 		if userId == nil or userId == "" then return end
 		if self.leftUsers == nil then self.leftUsers = {} end
+		local firstLeave = (self.leftUsers[userId] ~= true)
 		self.leftUsers[userId] = true
 		self:SnapshotRow(userId, true)
-		-- 플레이 기록 LEFT 1줄 (WO-031 묶음 6) — 매치가 도는 중에 나갔을 때만(끝난 뒤 로비로 가는 건 정산 줄이 이미 있다).
-		if self.Running and _MatchHistoryService ~= nil then
+		-- 플레이 기록 LEFT 1줄 (WO-031 묶음 6) — 매치가 도는 중에 **처음** 나갔을 때만(경로가 겹쳐도 한 줄 · 끝난 뒤 로비로 가는 건 정산 줄이 이미 있다 · Codex 리뷰 2026-09-26).
+		if firstLeave and self.Running and _MatchHistoryService ~= nil then
 			local lv = (_VillageOwnership ~= nil) and _VillageOwnership:LevelOf(userId) or 1
 			_MatchHistoryService:AppendLeft(userId, self.Difficulty, #(self.participants or {}), lv, self:KillsOf(userId))
 		end
@@ -835,13 +841,15 @@ script MatchSessionLogic extends Logic
 		-- 순위 보상 (B8 · RankReward): 정렬 순서가 순위. 심장·계정 경험치를 지급한 뒤 결과 화면 reward= 에 싣는다.
 		self.lastRewards = nil
 		if _RankRewardService ~= nil then self.lastRewards = _RankRewardService:Settle(rows, self.Difficulty, self.leftUsers) end
-		-- 업적 (WO-031 묶음 5): 정산 판 수 · 1위 · 발록이 쓰러진 판의 발록 피해. 중도 이탈자는 빠진다(정산이 없다).
-		if _AchievementService ~= nil then
+		-- 업적 (WO-031 묶음 5): 정산 판 수 · 1위 · 발록이 쓰러진 판의 발록 피해. 중도 이탈자는 빠진다(정산이 없다). 판당 1번(recordsSettled).
+		local firstSettle = not self.recordsSettled
+		self.recordsSettled = true
+		if firstSettle and _AchievementService ~= nil then
 			local balrogDown = (_BalrogRoomService ~= nil and _BalrogRoomService.Winner ~= nil and _BalrogRoomService.Winner ~= "")
 			_AchievementService:OnMatchSettled(rows, self.Difficulty, balrogDown, self.leftUsers)
 		end
-		-- 플레이 기록 (WO-031 묶음 6 · MatchHistory · 정산 받은 판마다 1줄). 결과 = BALROG(선취) · ALL_OUT(전원 탈락) · TIMEOUT(시간 종료).
-		if _MatchHistoryService ~= nil then
+		-- 플레이 기록 (WO-031 묶음 6 · MatchHistory · 정산 받은 판마다 1줄 · 판당 1번). 결과 = BALROG(선취) · ALL_OUT(전원 탈락) · TIMEOUT(시간 종료).
+		if firstSettle and _MatchHistoryService ~= nil then
 			local outcome = "TIMEOUT"
 			if _BalrogRoomService ~= nil and _BalrogRoomService.Winner ~= nil and _BalrogRoomService.Winner ~= "" then
 				outcome = "BALROG"
