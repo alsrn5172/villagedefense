@@ -39,6 +39,10 @@ script PlayerSkillState extends Logic
 
     property integer DevTestMp = 500000
 
+    -- ⚠ DEV 직업 전환 순서(F10 · DevTestMode 전용 · b/skill-debug-jobswitch 2026-09-24). 초보자·목록 밖 직업이면 첫 칸부터.
+    -- 전환은 ChangeJob 을 거치지 않는다 — JobChangedEvent 를 안 보내서 구독자(마을 획득 등 A 게임플레이)가 반응하지 않는다(DevSetJobState).
+    property table DevJobOrder = { "MAGICIAN", "WARRIOR", "ARCHER", "THIEF", "PIRATE" }
+
     -- ⚠ DEV 원버튼: A 리모컨 레벨 RPC 가 먼저 처리되도록 학습·MP 세팅을 이만큼(초) 늦춘다.
     property number DevSetupDelay = 0.5
 
@@ -333,7 +337,10 @@ script PlayerSkillState extends Logic
         local u = self:EnsureUser(uid)
         if u == nil then return end
         _SkillDatabase:EnsureLoaded()
-        self:TryAdvanceTier(uid)
+        -- 차수는 DEV 경로라 JobChangedEvent 없이 맞춘다(DevSetJobState · b/skill-debug-jobswitch). 레벨로 정하는 값은 TryAdvanceTier 와 같다.
+        if u.jobId ~= self.NoviceJobId then
+            self:DevSetJobState(uid, u.jobId, self:TierForLevel(u.jobId, self:GetLevel(uid)), false)
+        end
         local n = 0
         for skillId, skill in pairs(_SkillDatabase.skillsById) do
             if skill.requiredJobLine == u.jobId then
@@ -343,6 +350,75 @@ script PlayerSkillState extends Logic
         end
         log("[Skill] [DEV] learn-all " .. u.jobId .. " skills=" .. tostring(n) .. " tier=" .. tostring(u.tier) .. " level=" .. tostring(self:GetLevel(uid)) .. " (" .. uid .. ")")
         if _JobPassiveLogic ~= nil then _JobPassiveLogic:LogPassives(uid) end
+        self:PushState(uid)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDevSwitchJob()
+        -- ⚠ DEV (F10 · DevTestMode 전용): 레벨·전직 여부와 무관하게 DevJobOrder 의 다음 직업으로. 본체는 DevSwitchJob.
+        -- DevTestMode 가 false 면 무시한다 — 클라(SkillWindowLogic.OnDevChooseJob)도 그때는 이 RPC 대신 예전 RequestChooseJob 을 보낸다.
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        local uid = senderUserId
+        if not self.DevTestMode then
+            log("[Skill] [DEV] job switch ignored (DevTestMode=false) (" .. uid .. ")")
+            return
+        end
+        self:DevSwitchJob(uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevSwitchJob(string uid)
+        -- ⚠ DEV: 다음 직업 · 차수 = 지금 레벨로(10/20/30) · 이전 직업 스킬 레벨 초기화(DEV 세팅 행이 새 직업을 올릴 수 있게) · 버프 비움.
+        -- JobChangedEvent 를 보내지 않는다(ChangeJob 을 안 거친다) — 창 갱신은 PushState → SyncState → NotifyStateChanged("job"/"skill").
+        if not self.DevTestMode then return end
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _JobDatabase:EnsureLoaded()
+        local order = self.DevJobOrder
+        local nextJob = order[1]
+        for i, jobId in ipairs(order) do
+            if jobId == u.jobId then
+                nextJob = order[(i % #order) + 1]
+            end
+        end
+        local cleared = 0
+        for _, lv in pairs(u.skillLevels) do
+            if lv ~= nil and lv > 0 then cleared = cleared + 1 end
+        end
+        local prev = u.jobId
+        u.skillLevels = {}
+        u.cooldownEndsAt = {}
+        -- 이전 직업의 버프(하이퍼 바디 최대 HP · 쉐도우 파트너 등)가 새 직업에 남지 않게. 매치 시작 초기화와 같은 경로(SkillBuffs · B).
+        if _SkillBuffs ~= nil then _SkillBuffs:ResetMatchState(uid) end
+        local level = self:GetLevel(uid)
+        self:DevSetJobState(uid, nextJob, self:TierForLevel(nextJob, level), true)
+        log("[Skill] [DEV] job switch " .. prev .. " -> " .. nextJob .. "/" .. tostring(u.tier) .. " (level " .. tostring(level)
+            .. ") skills cleared=" .. tostring(cleared) .. " · no JobChangedEvent (" .. uid .. ")")
+    end
+
+    method number TierForLevel(string jobId, number level)
+        -- 그 직업에서 레벨이 허용하는 최고 차수(JobTier.ReqLevel · 10/20/30). TryAdvanceTier 의 반복과 같은 판정.
+        local tier = 0
+        while tier < self.MaxTier do
+            local req = _JobDatabase:GetRequiredLevel(jobId, tier + 1)
+            if req <= 0 or level < req then break end
+            tier = tier + 1
+        end
+        return tier
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevSetJobState(string uid, string jobId, number tier, boolean forcePush)
+        -- ⚠ DEV 전용: jobId/tier 를 **JobChangedEvent 없이** 쓴다(ChangeJob 과 달리). 정식 경로(전직·차수 상승)는 계속 ChangeJob 하나다.
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        tier = math.floor(tier)
+        if u.jobId == jobId and u.tier == tier and not forcePush then return end
+        if u.jobId ~= jobId or u.tier ~= tier then
+            log("[Skill] [DEV] job state " .. u.jobId .. "/" .. tostring(u.tier) .. " -> " .. jobId .. "/" .. tostring(tier) .. " (no event) " .. uid)
+        end
+        u.jobId = jobId
+        u.tier = tier
         self:PushState(uid)
     end
 
