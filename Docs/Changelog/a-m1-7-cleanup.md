@@ -13,7 +13,25 @@
 ## 검증
 
 - LSP clean · `check-integrity` 통과.
-- 🟡 **Maker 검증 대기**: 5레인 부하(레시피 = `Docs/M1-정리후보.md` 끝) · 배포 게이트는 게시 월드에서만 확인 가능(Maker 에서는 그대로 켜짐 — `[DevRemote] ready (server) enabled=true`).
+- 배포 게이트는 게시 월드에서만 확인 가능(Maker 에서는 그대로 켜짐 — `[DevRemote] ready (server) enabled=true`).
+
+## Maker 검증 (2026-09-26 · 개인 월드에 이 워크트리 · Reimport All)
+
+| 항목 | 결과 |
+|---|---|
+| 빌드 | 새 경고 0 (예전부터 있던 `ParseStatCsv` LWA-1111 1건뿐) |
+| 로비 | 새 Logic 전부 로드 · 새 계정 기록 로드 `mon=0 boss=0 achDone=0 hist=0` · 계정 창 4탭 서버 응답(도감 38 · 업적 17 · 칭호 17 · 기록 NONE) |
+| 로비 → 매치 | 실제 경로(`RequestCreateMatch` → `RequestStartMatch`)로 인스턴스 룸 입장 · 기록 3키 다시 로드 |
+| 집계 · 도감 · 업적 | 처치 101(엘리트 1 포함) → 도감 T1 +5 · T2(100) +10 · 엘리트 T1 +10 / 보스 2220000 → 도감 T1 +15 · `ACH_BOSS_1` 완료(+50 · Lv1→2) · 칭호 `TTL_BOSS_HUNTER` 지급 / 성장도 +3 · 같은 키 재요청 0 · +1 / 공개 요약 `SUM|…|101|1|` |
+| 성능 | 처치 100건 = 게임 루프 안 2ms (Maker 스크립트로 부르면 14초 — 실행기 탓) |
+| 파병 배지 | 서버 `HENESYS - -> 소` · 클라 `[DispatchBadge] client 소` |
+| 중복 파괴 | `TestDestroyOnce(HENESYS,false)` **PASS** (포탑 파괴·알림 2/2 · 억제기 1/1 · 폭발 1/1 · 두 번째 치명타 INVALID) |
+| 정산 | 전원 탈락 종료 → `ACH_MATCH_1` 완료 · `RANK_FIRST` 없음(탈락한 1위 — 규칙대로) · 기록 1줄 `rk=1 o=ALL_OUT x=25 k=201` · 이탈 저장 `AccountAchievement 124B` · `MatchHistory 99B` |
+| 유지 | 로비 복귀 · 두 번째 룸 입장 모두 `mon=1 boss=1 achDone=2 hist=1` 로 다시 로드 · 칭호 장착 → 이름표 `신입 수비대원 밍키타`(룸 이동 뒤에도 다시 붙음) |
+| 5레인 부하 | 5마을 점유(가짜 주인 4) · TEST 웨이브 90초: 대기 fps 29~32 → 미니언 40마리 동시 21~26 · 최장 프레임 0.46초. 가짜 주인에게 가는 RPC 오류(LEA-3032) 265건이 섞여 실제보다 나쁘게 나왔을 수 있음 · 파병 상한은 이번에 안 잼 |
+
+- Reimport 로 생긴 새 `.codeblock` 8개(묶음 2·4·5·6 스크립트)는 **이 묶음(맨 위)에 모아 커밋** — 스택을 한 번에 머지하므로 main 결과는 같다. 묶음 2~6 브랜치를 따로 머지하면 그 스크립트가 Maker 에 등록되지 않는다.
+- 새 codeblock 머리의 `CoreVersion` 은 사용자 Maker 기준 `26.7.0.0`(기존 파일 113개도 이미 26.7 · 28개는 26.5).
 
 ## 사용자 결정 반영 (2026-09-26)
 
