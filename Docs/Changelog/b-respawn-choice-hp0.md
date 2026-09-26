@@ -77,3 +77,18 @@ PR #98. **출처: #40 comment 5831420626 (A 결정 · 사용자 강민구 2026-0
 - Play 로 식 검증(같은 세션 · 메모리만): Lv30 · exp 50000 · 레벨 시작 24595 · within 25405 → **옛 팝업 0 · 새 식 1250 · 실제 `DeductExpInLevel` 1250** (`match new=true`). 레벨 시작 그대로(exp 24595) → **새 식 0 · 실제 0**.
 - 만렙이면 실제 차감을 0 으로 하는 것은 **A 의 `SummonManager` 설계 변경**이라 이 PR 범위 밖(A 결정 사항 · PR · #40 에 설명).
 - LSP 에러 0. 새 코드 자체의 Maker Play 는 아직(다음 Play 에서 만렙 팝업 표시 = 실제 차감 확인).
+
+## 2026-09-26 (3차) — Play: 새 팝업 코드(`7001307`) 만렙 표시 = 실제 차감 · PASS
+
+### Play (2026-09-26 · 로컬 테스트 브랜치 `c4d35ce` = origin/main + #83 `7078f3e` + 이 PR `7001307` + #84 `47f53c8` + #84 DEV 토글 · Reimport All · Maker MCP · 정적 룸 로비 맵)
+
+- 빌드: 오류 0 · 경고 1 → 1(기존 `LWA-1111`). 실행: 하네스 에러 `[BalrogRoom] 방N 스포너 없음` ×6(로비에서 매치 시작) + 기존 경고 9 — 이 PR 과 무관.
+- 준비(메모리만): `_MatchSessionLogic:StartMatch({uid}, 1)` → PHASE3(유료 구간) · `GrantKillReward` 로 Lv30 **레벨 시작 경험치에 딱 맞춤**(exp 24595 = Σ `GetNeedExp(1..29)` · 구간 필요치 `GetNeedExp(30)` = 2500 → 최대 차감 1250) · 메소 105(메소 선택 불가 → 경험치만). 사망 = 서버 `PlayerComponent:ProcessDead(uid)` · 선택 = 클라 `_PlayerRespawnUIController:OnClick("EXP")`(버튼 `ButtonClickEvent` 가 부르는 본체와 같은 메서드). 팝업 표시는 클라에서 `btnExp` 글자를 읽고 스크린샷으로도 봤다.
+
+| # | 경우 | 팝업(클라 버튼 글자) | 실제 차감 | 판정 |
+|---|---|---|---|---|
+| 6a | Lv30 · **레벨 시작 그대로**(exp 24595 · 구간 안 0) | `경험치 -0 (레벨 유지)` · `[ReviveUI] show … expCut=0` · 서버 `ExpCutOf=0` | `penalty=EXP:0` · exp 24595 그대로 | **PASS** |
+| 6b | Lv30 · **레벨 시작 + 1800**(exp 26395 · 구간 안 1800) | `경험치 -1250 (레벨 유지)` · `expCut=1250` · 서버 `ExpCutOf=1250` | `-exp 1250 (death penalty) -> exp=25145 lv=30` · `penalty=EXP:1250` | **PASS** — 팝업 = 실제 |
+
+- 두 번 다 `revive=choice hp=201450/201450 mp=500000/500000` (HP 최대 · MP 그대로 · 레벨 유지 30).
+- 남은 것: **A 의 MP 답**(#40 5842209860 — 두 부활 모두 MP 도 채울지) → 그 전까지 Draft. 만렙 실제 차감을 0 으로 할지는 A 의 `SummonManager` 설계 몫(이 PR 은 팝업을 실제와 맞췄다).
