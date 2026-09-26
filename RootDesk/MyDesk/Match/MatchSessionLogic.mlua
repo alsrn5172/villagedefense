@@ -276,6 +276,7 @@ script MatchSessionLogic extends Logic
 		if _BossRewardService ~= nil then _BossRewardService:ResetForMatch() end
 		if _EliteSpawner ~= nil then _EliteSpawner:ResetForMatch() end
 		if _RankRewardService ~= nil then _RankRewardService:ResetForMatch() end
+		if _MatchTallyService ~= nil then _MatchTallyService:ResetForMatch() end
 		if _PlayerRespawnService ~= nil then _PlayerRespawnService:ResetForMatch(self.participants) end
 		if _GuideService ~= nil then _GuideService:ResetForMatch(self.participants) end
 		self.lastRewards = nil
@@ -702,6 +703,7 @@ script MatchSessionLogic extends Logic
 			damage = self:BalrogDamageOf(userId),   -- 발록 누적 피해 (WO-017 · MaxHp - 현재 HP)
 			coreHp = self:CoreHpOf(userId),
 			level = lv,
+			kills = self:KillsOf(userId),            -- 몬스터 처치 수 (순위 ④ · WO-031 묶음 2)
 			elim = eliminated,
 		}
 		log("[Match] 마지막 모습 기록 " .. userId .. " lv=" .. tostring(lv) ..
@@ -804,18 +806,23 @@ script MatchSessionLogic extends Logic
 					damage = self:BalrogDamageOf(uid),   -- 발록 누적 피해 (WO-017 · MaxHp - 현재 HP)
 					coreHp = self:CoreHpOf(uid),
 					level = lv,
+					kills = self:KillsOf(uid),            -- 몬스터 처치 수 (순위 ④ · WO-031 묶음 2)
 					elim = elim,
 				})
 			end
 		end
 
-		-- 순위: ① 발록 피해 ② 넥서스 잔여 HP ③ 최종 레벨 (결과 화면의 열 순서와 같다)
+		-- 순위: ① 발록 피해 ② 넥서스 잔여 HP ③ 최종 레벨 ④ 몬스터 처치 수 ⑤ 이름순 (GDD §8 · 결과 화면의 열 순서와 같다)
 		-- 🔴 탈락자는 뒤로 (표시 순위와 보상 순위(최하위)를 맞춘다 · Codex 리뷰 2026-09-23).
+		-- ⑤ 는 마지막 결정자라 정렬이 늘 같은 순서를 낸다(같은 값끼리 순서가 판마다 바뀌어 보상이 흔들리지 않게).
 		table.sort(rows, function(a, b)
 			if (a.elim == true) ~= (b.elim == true) then return not a.elim end
 			if a.damage ~= b.damage then return a.damage > b.damage end
 			if a.coreHp ~= b.coreHp then return a.coreHp > b.coreHp end
-			return a.level > b.level
+			if a.level ~= b.level then return a.level > b.level end
+			if (a.kills or 0) ~= (b.kills or 0) then return (a.kills or 0) > (b.kills or 0) end
+			if a.name ~= b.name then return a.name < b.name end
+			return a.uid < b.uid
 		end)
 
 		-- 순위 보상 (B8 · RankReward): 정렬 순서가 순위. 심장·계정 경험치를 지급한 뒤 결과 화면 reward= 에 싣는다.
@@ -835,8 +842,8 @@ script MatchSessionLogic extends Logic
 
 	@ExecSpace("ServerOnly")
 	method string BuildResultCsv(any rows, string forUserId, string reason)
-		-- 계약(MatchResultUIController:SetResultCsv): title=..;reason=..;reward=..;me=0;r0=순위|이름|발록피해|넥서스HP|레벨|탈락
-		--   me 는 **0-base 행 번호**다 (내 행에 ▶ 가 붙는다).
+		-- 계약(MatchResultUIController:SetResultCsv): title=..;reason=..;reward=..;me=0;r0=순위|이름|발록피해|넥서스HP|레벨|탈락|처치
+		--   me 는 **0-base 행 번호**다 (내 행에 ▶ 가 붙는다). 처치(7번째)는 WO-031 묶음 2 에서 뒤에 붙였다 — 앞 6칸의 뜻은 그대로.
 		local parts = {}
 		table.insert(parts, "title=매치 결과")
 		table.insert(parts, "reason=" .. self:SafeText(reason or ""))
@@ -864,9 +871,16 @@ script MatchSessionLogic extends Logic
 			local mark = "0"
 			if r.elim then mark = "1" end
 			table.insert(parts, "r" .. tostring(i - 1) .. "=" .. tostring(i) .. "|" .. r.name .. "|" ..
-				tostring(r.damage) .. "|" .. tostring(r.coreHp) .. "|" .. tostring(r.level) .. "|" .. mark)
+				tostring(r.damage) .. "|" .. tostring(r.coreHp) .. "|" .. tostring(r.level) .. "|" .. mark .. "|" .. tostring(r.kills or 0))
 		end
 		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer KillsOf(string userId)
+		-- 그 사람의 이번 판 몬스터 처치 수(MatchTallyService · 없으면 0).
+		if _MatchTallyService == nil then return 0 end
+		return _MatchTallyService:KillsOf(userId)
 	end
 
 	@ExecSpace("ServerOnly")
