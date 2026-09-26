@@ -102,6 +102,39 @@ script SkillProjectile extends AttackComponent
 
     property number FloorTolerance = 0.6
 
+    -- 폭발(에너지볼트 SK_M11 · b/skill-magician-effects 2026-09-26 · 기획 확인 "처음 맞은 적 자리에서 폭발 · 주변 최대 6명"):
+    -- ExplodeSizeX/Y 가 0 보다 크면 날아가다 처음 닿은 몬스터 자리에서 터진다. 폭발 상자 = 그 몬스터 발 기준(중심 = 발 + ExplodeCenterY · 가로 ExplodeSizeX × 세로 ExplodeSizeY).
+    -- 맞는 대상은 최대 ExplodeMaxTargets 명 — 처음 닿은 몬스터는 언제나 포함, 나머지는 폭발 중심에서 가까운 순. 0 = 폭발 없음(예전처럼 닿은 것만).
+    -- 값은 SkillExecutors.effectOverrides[skill].explode → SkillAttack.SpawnProjectile 이 스폰 직후 넣는다.
+    property number ExplodeSizeX = 0
+
+    property number ExplodeSizeY = 0
+
+    property number ExplodeCenterY = 0
+
+    property integer ExplodeMaxTargets = 0
+
+    -- 후보만 모으는 패스(피해 없음)의 attackInfo. SkillAttack.ProbeTag 와 같은 값 · 스킬 id 와 겹치지 않는다.
+    property string ProbeTag = "probe"
+
+    -- probe 패스 동안만 채운다(IsAttackTarget).
+    @HideFromInspector
+    property table Candidates = {}
+
+    -- 폭발 패스 동안만: 맞을 대상(엔티티 → true). IsAttackTarget 이 이 밖은 거른다. nil = 거르지 않음.
+    @HideFromInspector
+    property any AllowedTargets = nil
+
+    -- 폭발 패스 표시: 명중 사운드는 폭발 한 번에 한 번만(대상 6명이면 같은 소리 6겹) · 맞은 수 세기.
+    @HideFromInspector
+    property boolean explodePass = false
+
+    @HideFromInspector
+    property boolean explodeSoundPlayed = false
+
+    @HideFromInspector
+    property integer explodeHits = 0
+
     @HideFromInspector
     property any Shape = nil
 
@@ -235,7 +268,111 @@ script SkillProjectile extends AttackComponent
         self.Shape.Position = Vector2(pos.x, pos.y)
         self.Shape.Size = Vector2(self.RangeX, self.RangeY)
         self.Shape.Angle = 0
+        if self.ExplodeSizeX > 0 and self.ExplodeSizeY > 0 then
+            self:TryExplode(pos)
+            return
+        end
         self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TryExplode(Vector3 pos)
+        -- 폭발형 명중 검사: 지금 날아가는 상자(Shape · RangeX × RangeY)에 닿은 몬스터를 피해 없이 모은다. 없으면 계속 난다.
+        -- 첫 대상 = 유도 대상이 닿았으면 그것, 아니면 볼트에서 가장 가까운 것(가는 길에 먼저 닿은 몬스터에서 터진다).
+        self.Candidates = {}
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local touched = self.Candidates
+        self.Candidates = {}
+        if #touched == 0 then return end
+
+        local first = nil
+        local best = math.huge
+        for _, c in ipairs(touched) do
+            if isvalid(c) and isvalid(c.TransformComponent) then
+                if c == self.TargetEntity then
+                    first = c
+                    break
+                end
+                local p = c.TransformComponent.WorldPosition
+                local dx = p.x - pos.x
+                local dy = p.y - pos.y
+                local d = dx * dx + dy * dy
+                if d < best then
+                    best = d
+                    first = c
+                end
+            end
+        end
+        if first == nil then return end
+        self:Explode(first, pos)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void Explode(Entity first, Vector3 contactPos)
+        -- 첫 대상 발 기준 폭발 상자 안 몬스터를 최대 ExplodeMaxTargets 명(첫 대상 포함 · 나머지는 폭발 중심에서 가까운 순) 한 번에 때린다.
+        -- 피해 · 크리 · 픽파켓 · 명중 이펙트는 보통 명중과 같은 길(AttackFast → CalcDamage / OnAttack). 볼트는 터지면 사라진다.
+        -- 이웃은 터지는 순간에 고른다 — 폭발 자리가 시전 때는 정해지지 않기 때문(스킬 메이커 "시전 시점 스냅샷" 과 다름 · 원장에 기록).
+        self.consumed = true
+        local fp = first.TransformComponent.WorldPosition
+        local cx = fp.x
+        local cy = fp.y + self.ExplodeCenterY
+        self.Shape.Position = Vector2(cx, cy)
+        self.Shape.Size = Vector2(self.ExplodeSizeX, self.ExplodeSizeY)
+        self.Shape.Angle = 0
+        self.Candidates = {}
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local inBox = self.Candidates
+        self.Candidates = {}
+
+        local others = {}
+        local firstInBox = false
+        for _, c in ipairs(inBox) do
+            if c == first then
+                firstInBox = true
+            elseif isvalid(c) and isvalid(c.TransformComponent) then
+                local p = c.TransformComponent.WorldPosition
+                local dx = p.x - cx
+                local dy = p.y - cy
+                table.insert(others, { e = c, d = dx * dx + dy * dy })
+            end
+        end
+        table.sort(others, function(a, b) return a.d < b.d end)
+
+        local cap = self.ExplodeMaxTargets
+        if cap < 1 then cap = 1 + #others end
+        local allowed = {}
+        allowed[first] = true
+        local chosen = 1
+        for _, o in ipairs(others) do
+            if chosen >= cap then break end
+            allowed[o.e] = true
+            chosen = chosen + 1
+        end
+
+        self.AllowedTargets = allowed
+        self.explodePass = true
+        self.explodeSoundPlayed = false
+        self.explodeHits = 0
+        self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        if not firstInBox then
+            -- 폭발 상자가 첫 대상 콜라이더에 안 닿는 경우(발보다 한참 위에 콜라이더가 있는 몬스터 등): 닿았던 비행 상자로 첫 대상만 한 번 더.
+            local only = {}
+            only[first] = true
+            self.AllowedTargets = only
+            self.Shape.Position = Vector2(contactPos.x, contactPos.y)
+            self.Shape.Size = Vector2(self.RangeX, self.RangeY)
+            self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        end
+        self.explodePass = false
+        self.AllowedTargets = nil
+
+        log("[SkillProjectile] EXPLODE " .. self.SkillId .. " first=" .. tostring(first.Name)
+            .. " at (" .. string.format("%.2f", cx) .. "," .. string.format("%.2f", cy) .. ") box "
+            .. tostring(self.ExplodeSizeX) .. "x" .. tostring(self.ExplodeSizeY)
+            .. " inBox=" .. tostring(#inBox) .. " firstInBox=" .. tostring(firstInBox)
+            .. " chosen=" .. tostring(chosen) .. "/" .. tostring(self.ExplodeMaxTargets)
+            .. " hit=" .. tostring(self.explodeHits) .. " (" .. self.CasterUserId .. ")")
+        self.Entity:Destroy(0.05)
     end
 
     -- Impact effect fires here, from the normal AttackFast/HitEvent pipeline - not a
@@ -251,9 +388,15 @@ script SkillProjectile extends AttackComponent
                     local aim = self:AimPointOf(defender)
                     _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, aim, 0, Vector3(1, 1, 1), false)
                 end
-                if self.HitSoundRUID ~= "" then
+                -- 폭발 패스에서는 한 번만(대상마다 같은 소리가 겹친다).
+                if self.HitSoundRUID ~= "" and not (self.explodePass and self.explodeSoundPlayed) then
                     _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)
+                    if self.explodePass then self.explodeSoundPlayed = true end
                 end
+            end
+            if self.explodePass then
+                self.explodeHits = self.explodeHits + 1
+                log("[SkillProjectile] EXPLODE hit #" .. tostring(self.explodeHits) .. " " .. tostring(defender.Name) .. " (" .. self.SkillId .. ")")
             end
             -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
             if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
@@ -279,12 +422,21 @@ script SkillProjectile extends AttackComponent
     method boolean IsAttackTarget(Entity defender, string attackInfo)
         -- 같은 층 판정: SameFloorOnly 면 발이 시전자 발(FloorY)보다 FloorTolerance 이상 낮은 대상은 맞지 않는다(아래층 제외). 나머지는 부모 판정 그대로.
         -- ⚠ 부모(AttackComponent.IsAttackTarget)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014 · Boss/BossProjectileAttack 과 같은 형태).
+        -- 폭발형(b/skill-magician-effects): attackInfo == ProbeTag 면 후보만 모으고 아무도 안 맞는다 · AllowedTargets 가 있으면 그 안의 대상만 맞는다.
         if self.SameFloorOnly and isvalid(defender) and isvalid(defender.TransformComponent) then
             if defender.TransformComponent.WorldPosition.y < self.FloorY - self.FloorTolerance then
                 return false
             end
         end
-        return __base:IsAttackTarget(defender, attackInfo)
+        if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        if attackInfo == self.ProbeTag then
+            table.insert(self.Candidates, defender)
+            return false
+        end
+        if self.AllowedTargets ~= nil then
+            return self.AllowedTargets[defender] == true
+        end
+        return true
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
