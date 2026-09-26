@@ -5,7 +5,7 @@
 ## 2026-09-26
 
 ### 접속할 때 1번 외형 선택 — 모험가 남 / 모험가 여 / 내 아바타
-- **새 표** `RootDesk/MyDesk/AvatarLook.csv` + `.userdataset` (계약서 A-2-27): 7행 = `EXPLORER_M` · `EXPLORER_F` + 직업 행(`WARRIOR` · `MAGICIAN` · `ARCHER` · `THIEF` · `PIRATE`). RUID 는 사용자가 준 JSON 프리셋 그대로(해적은 교체본 · 원문 대조 완료). `head` 는 넣지 않음(엔진이 피부에 맞춤) · 궁수 JSON 은 피부가 없어 엘프 피부 · 도적·해적은 두손 무기만(사용자 결정).
+- **새 표** `RootDesk/MyDesk/AvatarLook.csv` + `.userdataset` (계약서 A-2-27): 7행 = `EXPLORER_M` · `EXPLORER_F` + 직업 행(`WARRIOR` · `MAGICIAN` · `ARCHER` · `THIEF` · `PIRATE`). RUID 는 사용자가 준 JSON 프리셋 그대로(해적은 교체본 · 원문 대조 완료). `head` 는 넣지 않음(엔진이 피부에 맞춤) · 궁수 JSON 은 피부가 없어 엘프 피부 · 도적·해적은 두손 무기만(사용자 결정) · **보조무기는 7행 모두 비움**(원본 JSON 에 잘못 들어간 것 · 사용자 2026-09-26).
 - **새 서버** `Item/AvatarLookService.mlua` (@Logic · 룸마다): 선택 기록 = 공유 메모리 `LOOK_<userId>`(A-4 `AvatarLookRecord` · 로그인 세션 한정). 로비 입장 때 복귀 표식(`ret`)이 없으면 새 접속 → 기록을 지우고 선택창을 연다. 매치 룸은 입장 때 기록을 읽어 그대로 입힌다(1초 간격 3회 재시도). `JobChangedEvent`(B) 구독 → "전직 시 외형 변경" O 인 모험가만 직업 외형으로 다시 입힌다.
 - 외형 규칙: 내 아바타 = 계정 아바타 그대로 · 장비 외형 안 보임(무기 포함). 모험가 = 프리셋 + 장착 장비(빈 칸은 프리셋). 모험가 + O + 전직 = 직업 프리셋 고정(장비·무기 안 보임). 모험가 + X = 전직해도 모험가 + 장비. 한벌옷이 있으면 상·하의 칸, 두손 무기가 있으면 한손·보조 칸은 비운다.
 - **새 UI** `ui/AvatarSelectGroup` (UIBuilder · GroupOrder 16 · 딤 + 카드 3장 · 카드마다 UI 아바타 미리보기 · 모험가 카드에 작은 "전직 시 외형 변경 O/X" 토글, 기본 O) + 클라 `Item/AvatarSelectUIController.mlua` (서버가 `SetOpen` 으로 열고 닫는다 · 준비되면 `RequestSync` 로 한 번 더 물어봄).
