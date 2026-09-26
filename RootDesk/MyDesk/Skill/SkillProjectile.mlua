@@ -102,6 +102,18 @@ script SkillProjectile extends AttackComponent
 
     property number FloorTolerance = 0.6
 
+    -- 볼리 공유(b/skill-archer-effects · 더블 샷 · SkillAttack.IsSharedVolley): 같은 볼리의 발들이 같은 테이블 { dealt, aim } 을 든다.
+    -- 먼저 맞힌 발이 피해(DamageMul · 표시 DisplayHits 타)를 내고 dealt = true · aim = 맞은 조준점. 나머지 발은 판정 없이 대상(없으면 aim)에 닿을 때
+    -- 명중 이펙트 · 사운드만 내고 사라진다(FinishVolleyFollower) — 0.1s 뒤 둘째 피해는 MonsterHit.ImmuneCooldown(0.4s) 때문에 어차피 무효. nil = 볼리 아님.
+    property any Volley = nil
+
+    -- 단일 대상(b/skill-archer-effects · 스나이핑 · SkillAttack.IsSingleTargetProjectile): true 면 유도 대상(TargetEntity · 보스 우선)만 맞는다.
+    -- 대상이 사라져 유도가 풀리면(TargetEntity nil) 제한 없음.
+    property boolean SingleTargetOnly = false
+
+    -- 볼리 후속 발이 대상에 "닿았다"고 보는 조준점까지 거리(world unit).
+    property number VolleyArriveDistance = 0.3
+
     @HideFromInspector
     property any Shape = nil
 
@@ -224,6 +236,12 @@ script SkillProjectile extends AttackComponent
         -- Body-less entity -> Translate is safe and not overwritten by physics next frame.
         transform:Translate(self.DirectionX * self.Speed * delta, self.DirectionY * self.Speed * delta)
 
+        -- 볼리 후속 발(b/skill-archer-effects): 같은 볼리의 다른 발이 이미 피해를 냈으면 판정 없이 닿을 때 이펙트만(대상 주위를 도는 것도 여기서 끝난다).
+        if self.Volley ~= nil and self.Volley.dealt and not self.consumed then
+            self:FinishVolleyFollower(transform.WorldPosition)
+            return
+        end
+
         if self.consumed or self.VisualOnly then
             return
         end
@@ -247,6 +265,12 @@ script SkillProjectile extends AttackComponent
     -- "spawn effect after N seconds" timer. This is the actual fix for the detonates-in-place
     -- bug: the effect now happens exactly where and when the bolt lands, because it lands.
     method void OnAttack(Entity defender)
+        -- 볼리 공유: 이 발이 피해를 냈다 → 같은 볼리의 나머지 발은 후속(이펙트만)으로. 맞은 조준점을 남겨 대상이 사라져도 거기서 끝나게 한다.
+        if self.Volley ~= nil and isvalid(defender) and not self.Volley.dealt then
+            self.Volley.dealt = true
+            self.Volley.aim = self:AimPointOf(defender)
+            log("[SkillProjectile] volley " .. self.SkillId .. " dealt by this arrow x" .. tostring(self.DamageMul) .. " on " .. tostring(defender.Name))
+        end
         if isvalid(defender) then
             local t = defender.TransformComponent
             if isvalid(t) then
@@ -289,7 +313,33 @@ script SkillProjectile extends AttackComponent
                 return false
             end
         end
+        -- 단일 대상(스나이핑 · b/skill-archer-effects): 유도 대상만. 유도가 풀렸으면(nil) 제한 없음.
+        if self.SingleTargetOnly and self.TargetEntity ~= nil and defender ~= self.TargetEntity then
+            return false
+        end
         return __base:IsAttackTarget(defender, attackInfo)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FinishVolleyFollower(Vector3 pos)
+        -- 볼리 후속 발(피해 없음): 유도 대상의 조준점(대상이 없으면 먼저 맞힌 발의 Volley.aim)에 VolleyArriveDistance 안으로 닿으면
+        -- 명중 이펙트 · 사운드만 내고 사라진다. 조준점이 없으면(직선 발사) 수명까지 날아간다.
+        local aim = self.Volley.aim
+        local target = self.TargetEntity
+        if isvalid(target) and isvalid(target.TransformComponent) then aim = self:AimPointOf(target) end
+        if aim == nil then return end
+        local dx = aim.x - pos.x
+        local dy = aim.y - pos.y
+        if dx * dx + dy * dy > self.VolleyArriveDistance * self.VolleyArriveDistance then return end
+        self.consumed = true
+        if self.HitEffectRUID ~= "" then
+            _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, aim, 0, Vector3(1, 1, 1), false)
+        end
+        if self.HitSoundRUID ~= "" then
+            _SoundService:PlaySoundAtPos(self.HitSoundRUID, aim, self.Entity, 1.0)
+        end
+        log("[SkillProjectile] volley follower " .. self.SkillId .. " arrived — effect only (damage already dealt)")
+        self.Entity:Destroy(0.05)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
