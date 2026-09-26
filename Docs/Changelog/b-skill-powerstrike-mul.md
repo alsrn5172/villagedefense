@@ -562,7 +562,11 @@ A 점검 코멘트 5831420893(2026-09-25 · 코드 읽기): A 파일 부분 문�
 **`holdAi` 를 넣은 이유 (코드 읽기):** 죽이는 타격은 HIT 를 거치지 않고 다음 틱에 `ConditionIsDead` 로 DEAD 가 된다. 살아 있는 피격은 `ReactToHit` 가 `CastFreezeLeft` 를 세워 추적 AI 가 방향을 안 쓰지만(`StateTypeChase.mlua:52`), 사망 분기에는 그게 없다. 그 사이 배회 AI 는 **매 프레임** FlipX 를 쓰고(`StateTypeWander.mlua:43`), 추적 AI 는 `flipTimeLeft` 가 0 이면 목표 쪽으로 쓴다(`StateTypeChase.mlua:103-107` — 목표가 공격자가 아닐 수 있다: 분신 · 다른 플레이어의 스킬). 부활하면 각 AI 의 `OnEnter` 가 새로 잡는다(`StateTypeChase.OnEnter` `flipTimeLeft = 0` · `StateTypeWander.OnEnter` 방향 뒤집기) — 부활 뒤 동작은 바뀌지 않는다.
 
 - LSP 진단: 에러 0 · 경고 0. `check-integrity`: 통과.
-- **Maker Play: 아직** (사용자 복귀 뒤 · 로컬 테스트 브랜치 #83 + #98 + #84 한 번에). 체크: 추적 몹 · 배회 몹을 **공격자 반대쪽을 보고 걷는 중에** 한 방에 죽인다 → die 클립이 공격자 쪽 · 로그 1줄 · 보스 · 미니언 · 수비대는 로그 없음 · 살아 있는 피격은 전과 같음 · 부활 뒤 걷는 방향 정상.
+- **Maker Play PASS (2026-09-26 · 로컬 테스트 브랜치 `local/test-face-hp0-cutscene` = main + #83 `60f231c` + #98 + #84 · Maker MCP · 로비 맵 · 기본 공격 Ctrl)** · 빌드 에러 0 · 경고 1 → 1(`LWA-1111`):
+  - 달팽이(추적 · HP 1 · 공격자 반대쪽을 보게 돌려 둠) → `[Monster] lethal hit — t83snail faces attacker … (left=false flipX=true)` · DEAD +0.05/+0.2/+0.5/+0.9s 모두 `flipX=true`.
+  - 스포아(배회 · WANDER 상태로 공격자 반대쪽으로 걷는 중) → 같은 로그 · `wanderDirLeft=false`(공격자 쪽) · DEAD 동안 `flipX=true` 유지 — holdAi 가 필요한 경우.
+  - 살아 있는 피격: 공격자 쪽 · lethal 로그 없음(전과 같음). 부활(RespawnDelay 2s): HP 복구 · `HitComponent` 켜짐 · CHASE · `flipTimeLeft` 0.06 → 0.72 로 돈다(AI 정상).
+  - 런타임 미확인: 보스 · 레인 미니언 · 수비대 제외(살아 있는 피격과 같은 코드 경로).
 
 ### A 점검의 다른 항목 (변경 없음)
 
