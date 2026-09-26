@@ -1,0 +1,214 @@
+@Logic
+script AvatarSelectUIController extends Logic
+	-- 접속 외형 선택창 클라 컨트롤러 (AvatarSelectGroup · WO-032). 서버 AvatarLookService 가 SetOpen 으로 열고 닫는다 — 낙관적 UI 없음.
+	--   카드 3장: 모험가 남 / 모험가 여 / 내 아바타. 모험가 카드엔 작은 "전직 시 외형 변경" [On | Off] 스위치(기본 On · 카드마다 따로).
+	--   스위치는 On·Off 가 둘 다 보이고, 켜진 쪽만 색 칸 + 굵은 흰 글자 · 꺼진 쪽은 보통 회색 글자 (사용자 2026-09-26).
+	--   미리보기 = 카드마다 UI 아바타(AvatarGUIRenderer + CostumeManager). 모험가는 AvatarLook 표 행, 내 아바타는 계정 아바타 그대로.
+	--   UUID 는 UIBuilder write({bind}) 가 주입한다.
+
+	property Entity root = "5f60bb5f-49ad-456e-abdb-5fe3ae3a7416"
+
+	property Entity avatarM = "0d5ec389-ffc3-4056-bc8b-7005d2919eed"
+
+	property Entity avatarF = "ed5d87b7-57f2-4a79-acad-700693cc1246"
+
+	property Entity avatarMy = "ba406ac6-63a6-4134-8b76-c2be793ad2be"
+
+	property ButtonComponent btnPickM = "9b85f248-f289-4ef7-a587-56a17df094d9"
+
+	property ButtonComponent btnPickF = "b3f3426f-c123-4c2e-90de-f23fcb403f5c"
+
+	property ButtonComponent btnPickMy = "f873c98d-60e3-4938-aba0-c43a03462a47"
+
+	property ButtonComponent btnOnM = "d08cf9e3-0629-4785-831d-d98141901a3c"
+
+	property ButtonComponent btnOffM = "90118e6c-a749-4426-b18b-5428e4998839"
+
+	property ButtonComponent btnOnF = "bd8a3318-7e8c-473e-9f86-e9c330177617"
+
+	property ButtonComponent btnOffF = "7ee6cc02-20b3-44a0-a326-e2e8570587f4"
+
+	property TextGUIRendererComponent textOnM = "d08cf9e3-0629-4785-831d-d98141901a3c"
+
+	property TextGUIRendererComponent textOffM = "90118e6c-a749-4426-b18b-5428e4998839"
+
+	property TextGUIRendererComponent textOnF = "bd8a3318-7e8c-473e-9f86-e9c330177617"
+
+	property TextGUIRendererComponent textOffF = "7ee6cc02-20b3-44a0-a326-e2e8570587f4"
+
+	property TextGUIRendererComponent hintM = "7068171c-1dc1-452b-8687-7366e35adf7b"
+
+	property TextGUIRendererComponent hintF = "39cd32ff-d4f3-47dd-b3e6-78f205d2c353"
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property boolean jobLookM = true
+
+	@HideFromInspector
+	property boolean jobLookF = true
+
+	@HideFromInspector
+	property boolean waiting = false
+
+	@HideFromInspector
+	property boolean opened = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · 닫힌 채로 시작. 서버가 입장 때 보낸 열기가 이 Logic 준비 전에 왔을 수 있어 한 번 물어본다.
+		self.handlers = {}
+		self:Bind(self.btnPickM, function() self:Pick("EXPLORER_M") end)
+		self:Bind(self.btnPickF, function() self:Pick("EXPLORER_F") end)
+		self:Bind(self.btnPickMy, function() self:Pick("MY") end)
+		self:Bind(self.btnOnM, function() self:SetJobLook("M", true) end)
+		self:Bind(self.btnOffM, function() self:SetJobLook("M", false) end)
+		self:Bind(self.btnOnF, function() self:SetJobLook("F", true) end)
+		self:Bind(self.btnOffF, function() self:SetJobLook("F", false) end)
+		self:Show(false)
+		if _AvatarLookService ~= nil then
+			_AvatarLookService:RequestSync()
+		end
+		log("[LookUI] ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Bind(ButtonComponent btn, any fn)
+		-- ButtonComponent 프로퍼티에 클릭을 건다.
+		if not isvalid(btn) then
+			return
+		end
+		table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(boolean on)
+		self.opened = on
+		if isvalid(self.root) then
+			self.root.Enable = on
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetOpen(boolean on)
+		-- 서버 → 클라: 선택창 열기(새 접속) / 닫기(선택 확정).
+		self.waiting = false
+		if on and self.opened then
+			return
+		end
+		-- 켠 뒤에 칠한다 — 꺼진 UI 아바타에 쓴 외형이 켤 때 반영 안 될 수 있다.
+		self:Show(on)
+		if on then
+			self.jobLookM = true
+			self.jobLookF = true
+			self:RefreshToggles()
+			self:RefreshPreviews()
+		end
+		log("[LookUI] open=" .. tostring(on))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Pick(string mode)
+		-- 카드 [선택] → 서버에 확정 요청. 응답(SetOpen false)이 올 때까지 다른 입력은 막는다.
+		if not self.opened or self.waiting then
+			return
+		end
+		local jobLook = false
+		if mode == "EXPLORER_M" then
+			jobLook = self.jobLookM
+		elseif mode == "EXPLORER_F" then
+			jobLook = self.jobLookF
+		end
+		self.waiting = true
+		_AvatarLookService:RequestChoose(mode, jobLook)
+		log("[LookUI] pick " .. mode .. " jobLook=" .. tostring(jobLook))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetJobLook(string which, boolean on)
+		-- "전직 시 외형 변경" 스위치: [On] 누르면 켬 · [Off] 누르면 끔 (누른 쪽으로 정해진다 · 뒤집기 아님).
+		if not self.opened or self.waiting then
+			return
+		end
+		if which == "M" then
+			self.jobLookM = on
+		else
+			self.jobLookF = on
+		end
+		self:RefreshToggles()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshToggles()
+		self:PaintSwitch(self.btnOnM, self.textOnM, self.btnOffM, self.textOffM, self.hintM, self.jobLookM)
+		self:PaintSwitch(self.btnOnF, self.textOnF, self.btnOffF, self.textOffF, self.hintF, self.jobLookF)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintSwitch(ButtonComponent btnOn, TextGUIRendererComponent textOn, ButtonComponent btnOff, TextGUIRendererComponent textOff, TextGUIRendererComponent hint, boolean on)
+		-- 켜진 쪽 = 색 칸(On 초록 · Off 붉은색) + 굵은 흰 글자, 꺼진 쪽 = 스위치 바탕색 + 보통 회색 글자.
+		self:PaintSegment(btnOn, textOn, on, Color(0.24, 0.62, 0.40, 1))
+		self:PaintSegment(btnOff, textOff, not on, Color(0.66, 0.32, 0.30, 1))
+		if isvalid(hint) then
+			if on then
+				hint.Text = "전직하면 직업 외형으로 고정돼요"
+			else
+				hint.Text = "전직해도 모험가 외형 + 장비"
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintSegment(ButtonComponent btn, TextGUIRendererComponent label, boolean active, Color activeColor)
+		if isvalid(btn) and isvalid(btn.Entity.SpriteGUIRendererComponent) then
+			if active then
+				btn.Entity.SpriteGUIRendererComponent.Color = activeColor
+			else
+				btn.Entity.SpriteGUIRendererComponent.Color = Color(0.10, 0.12, 0.16, 1)
+			end
+		end
+		if isvalid(label) then
+			if active then
+				label.FontStyle = FontStyleType.Bold
+				label.FontColor = Color(1, 1, 1, 1)
+			else
+				label.FontStyle = FontStyleType.Normal
+				label.FontColor = Color(0.55, 0.58, 0.64, 1)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshPreviews()
+		-- 카드 미리보기: 모험가 = 표 프리셋만(장비 없음) · 내 아바타 = 내 계정 아바타 그대로.
+		self:PaintLook(self.avatarM, "EXPLORER_M")
+		self:PaintLook(self.avatarF, "EXPLORER_F")
+		if isvalid(self.avatarMy) and isvalid(self.avatarMy.CostumeManagerComponent) then
+			local c = self.avatarMy.CostumeManagerComponent
+			local p = _UserService.LocalPlayer
+			if isvalid(p) and isvalid(p.PlayerComponent) then
+				c.DefaultEquipUserId = p.PlayerComponent.UserId
+			end
+			c.UseCustomEquipOnly = false
+			_AvatarLookService:WriteSlots(c, {})
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintLook(Entity e, string lookId)
+		if not isvalid(e) or not isvalid(e.CostumeManagerComponent) then
+			log_warning("[LookUI] preview skipped: no CostumeManagerComponent (" .. lookId .. ")")
+			return
+		end
+		local look = _AvatarLookService:LookOf(lookId)
+		if look == nil then
+			log_warning("[LookUI] no AvatarLook row " .. lookId)
+			return
+		end
+		local c = e.CostumeManagerComponent
+		c.UseCustomEquipOnly = true
+		_AvatarLookService:WriteSlots(c, look)
+	end
+
+end
