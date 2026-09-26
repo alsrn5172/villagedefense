@@ -14,3 +14,9 @@
 
 - LSP clean · `check-integrity` 통과.
 - 🟡 **Maker 검증 대기**: 5레인 부하(레시피 = `Docs/M1-정리후보.md` 끝) · 배포 게이트는 게시 월드에서만 확인 가능(Maker 에서는 그대로 켜짐 — `[DevRemote] ready (server) enabled=true`).
+
+## 사용자 결정 반영 (2026-09-26)
+
+- 정리: **4번만 삭제** — `MonsterInfo` 행 `9010028` · `9010033`(모델 없는 쓰로우백 2종 · 런타임 참조 없음 · 문서·히트박스 캐시에만 이름) → `check-integrity` C6 경고 2건 해소. 1~3번(테스트맵·리모콘 · 개발용 스탯 리모컨 · 맵 박제 NPC 3개)은 남김.
+- WO-031 §4~§6 초안 **확정** → `CollectionReward` · `GrowthPoint` · `AchievementConfig` · `TitleInfo` 노트의 "초안" 을 "확정 2026-09-26" 으로.
+- 보스 도감 인정 = 최다 피해 1명(묶음 4 브랜치에서 `BossCreditAllHitters` 기본 false · 계약 A-2-25 문구 · 앞으로 merge).
