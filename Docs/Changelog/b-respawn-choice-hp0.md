@@ -18,7 +18,7 @@ PR #98. **출처: #40 comment 5831420626 (A 결정 · 사용자 강민구 2026-0
 | 위치 | 변경 |
 |---|---|
 | `Choose` (`:170` 부근) | `ProcessRevive` 바로 뒤 `pc.Hp = pc.MaxHp`. 폴링 `OnRevive` 까지 기다리지 않는 이유: 폴링 간격(`PollInterval` 0.25s) 동안 HP 0 으로 살아 있어 그 사이 맞으면 또 쓰러진다. 로그 `[Death] user=… revive=choice hp=H/H mp=M/MM` |
-| `ExpCutOf` (`:126`) | 레벨이 `_MonsterCatalog:GetMaxLevel()` 이상이면 0. `ExpProgress` 는 만렙에서 바를 가득 채워(within = need) 보여 주는 표시용이라 팝업만 −(need × 0.5)를 보였다. 실제 차감과 같아진다 |
+| `ExpCutOf` (`:126`) | ~~레벨이 `_MonsterCatalog:GetMaxLevel()` 이상이면 0~~ → **2026-09-26 (2차) 실제 차감과 같은 식**(아래 절). `ExpProgress` 는 만렙에서 바를 가득 채워(within = need) 보여 주는 표시용이라 팝업만 −(need × 0.5)를 보였다 |
 | `OnRevive` 마지막 로그 | 끝에 `revive=timed/choice hp=… mp=…` — 두 부활 경로의 HP · MP 를 같은 꼴로 비교 |
 | 새 `MpText(userId)` (ServerOnly) | 로그용 `"mp/maxMp"` (`SummonManager` econ · 없으면 `?`) |
 
@@ -47,3 +47,33 @@ PR #98. **출처: #40 comment 5831420626 (A 결정 · 사용자 강민구 2026-0
 | 6 | 만렙(30) 사망 팝업 | 경험치 쪽 표시 **0** · `[Death] … choice? … expCut=0` · 고르면 `penalty=EXP:0` |
 | 7 | 만렙 아래(예 Lv20) 사망 팝업 | 표시 = 지금과 같음(구간 안 경험치와 need × 0.5 중 작은 값) · 실제 차감과 같다 |
 | 8 | 1P 이전(무료) 사망 | 기존대로 무료 토스트 · `revive=timed` · HP 최대 |
+
+## 2026-09-26 (2차) — Play 결과 · 팝업 경험치 = 실제 차감과 같은 식 (만렙 "0" 전제가 틀렸다)
+
+### Play (2026-09-26 · 로컬 테스트 브랜치 `local/test-face-hp0-cutscene` = main + #83 + 이 PR `5e25708` + #84 · Maker MCP · 정적 룸 로비 맵 · `_MatchSessionLogic:StartMatch({uid}, 1)`)
+
+빌드: 에러 0 · 경고 1 → 1(기존 `LWA-1111`). 실행: 이 PR 과 무관한 하네스 에러 `[BalrogRoom] 방N 스포너 없음` ×6 / 매치(로비 정적 룸에 발록 맵이 없다) + 기존 경고 9.
+
+| # | 경우 | 결과 |
+|---|---|---|
+| 1 | PHASE2 사망 → **메소** 선택 | **PASS** — `chose MESO` → `revive=choice hp=201450/201450 mp=100/100` → `-meso 5000 -> meso=15000` · `penalty=MESO:5000 … revive=choice hp=201450/201450` |
+| 2 | Lv21 PHASE2 사망 → **경험치** 선택 | **PASS** — `revive=choice hp=201000/201000 mp=400/500` · 서버 +1s/+3s · 클라 모두 `hp=201000/201000` · `penalty=EXP:265` |
+| 3 | 고르지 않고 15s 시간 부활 (무료 1P · 유료 PHASE2 · Lv30) | **PASS** — `revive=timed hp=200000/200000` · `hp=201450/201450 mp=440/680` · `hp=201450/201450 mp=89/100` |
+| 4 | MP 비교 | **PASS(= 코드 읽기)** — 선택 부활 MP 그대로(400/500 → 400/500) · 시간 부활은 회복 틱만(340 → 440 / 74 → 89). 어느 부활도 MP 를 채우지 않는다 → A 에게 설계 질문 #40 5842209860 |
+| 5 | 선택 부활 직후 한 대 | 실제 타격은 안 했다 — 부활 직후 HP 최대(1 · 3s 뒤에도)로 대신 확인 |
+| 6 | 만렙(30) 사망 팝업 | **FAIL → 이번 수정.** 팝업 `expCut=0` 인데 실제 `penalty=EXP:1250`(`-exp 1250 … exp=27485 lv=30`) |
+| 7 | Lv21 사망 팝업 | **PASS** — 팝업 265 = 실제 265 |
+| 8 | 1P 이전(무료) 사망 | **PASS** — `free (deaths=1)` → 15s 뒤 `revive=timed hp=200000/200000` |
+
+### 왜 6번이 틀렸나 — "만렙이면 경험치 획득 0 → 실제 차감 0" 이 코드와 다르다
+
+- 만렙에서도 경험치는 계속 쌓인다: `Farm/FarmReward.GiveRewards`(`:157`) → `Summon/SummonManager.GrantKillReward`(`:386` · `e.exp = e.exp + exp`)에 만렙 상한이 없다.
+- 실제 차감 `SummonManager.DeductExpInLevel`(`:354`)은 레벨 시작 경험치부터 쌓인 구간 안 경험치(`within`)와 `need × 0.5` 중 작은 값을 깎는다 → 만렙에서 쌓인 게 있으면 0 이 아니다.
+- 2026-09-25 에 "실제 0" 이었던 것은 그 캐릭터가 **레벨 시작 경험치에 딱 맞춰** 만렙이었기 때문(DEV 리모컨이 다음 레벨까지 남은 값만 넣는다)이다.
+
+### 수정 — `ExpCutOf` 가 `DeductExpInLevel` 과 같은 식
+
+- 레벨 시작 경험치 = Σ `_MonsterCatalog:GetNeedExp(1..level-1)` · 구간 필요치 = `GetNeedExp(level)`(0 이면 한 레벨 아래 값) · `within = max(0, exp − 레벨 시작)` · 팝업 = `max(0, min(within, floor(구간 × ExpPenaltyRatio)))`. 도감이 없으면 `SummonManager.ExpPerLevel` 폴백(같은 식). **`SummonManager` 는 고치지 않았다**(호출 · 읽기만).
+- Play 로 식 검증(같은 세션 · 메모리만): Lv30 · exp 50000 · 레벨 시작 24595 · within 25405 → **옛 팝업 0 · 새 식 1250 · 실제 `DeductExpInLevel` 1250** (`match new=true`). 레벨 시작 그대로(exp 24595) → **새 식 0 · 실제 0**.
+- 만렙이면 실제 차감을 0 으로 하는 것은 **A 의 `SummonManager` 설계 변경**이라 이 PR 범위 밖(A 결정 사항 · PR · #40 에 설명).
+- LSP 에러 0. 새 코드 자체의 Maker Play 는 아직(다음 Play 에서 만렙 팝업 표시 = 실제 차감 확인).
