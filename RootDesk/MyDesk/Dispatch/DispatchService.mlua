@@ -28,7 +28,7 @@ script DispatchService extends Logic
 	-- 레인 HUD 배지 갱신 주기(초). 배지가 켜진 마을이 있을 때만 돈다.
 	property number BadgeScanInterval = 1.0
 
-	-- badge[targetVillageId] = 마지막으로 주인에게 보낸 등급("" = 꺼짐). 레인에 파병 개체가 남아 있는 마을만 들어 있다.
+	-- badge[targetVillageId] = { grade = 마지막으로 보낸 등급, owner = 그걸 받은 userId }. 레인에 파병 개체가 남아 있는 마을만 들어 있다.
 	@HideFromInspector
 	property any badge = nil
 
@@ -263,22 +263,32 @@ script DispatchService extends Logic
 	@ExecSpace("ServerOnly")
 	method void RefreshBadge(string villageId)
 		-- 레인의 파병 개체 수 → 등급 → 바뀌었으면 주인 HUD 에 보낸다. 0 이 되면 배지를 끄고 목록에서 뺀다.
+		-- 🔴 **마지막으로 받은 사람**을 원장에 둔다(Codex 리뷰 2026-09-26): 주인이 탈락·바뀌면 OwnerOf 로는 옛 수신자를 못 찾아
+		--    그 사람 HUD 에 배지가 남고, 새 주인은 같은 등급이면 못 받는다.
 		if self.badge == nil then self.badge = {} end
 		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
-		local grade = self:GradeForUnits(self:CountAliveDispatched(villageId))
-		if owner == "" then grade = "" end
-		local prev = self.badge[villageId]
-		if grade ~= (prev or "") then
+		local grade = ""
+		if owner ~= "" then grade = self:GradeForUnits(self:CountAliveDispatched(villageId)) end
+		local rec = self.badge[villageId]
+		local prevGrade = (rec ~= nil) and rec.grade or ""
+		local prevOwner = (rec ~= nil) and rec.owner or ""
+		if prevOwner ~= "" and prevOwner ~= owner then
+			-- 받던 사람이 바뀌었다 → 옛 수신자 배지를 끄고 새 주인은 처음부터 받는다.
+			if _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge("", prevOwner) end
+			log("[DispatchBadge] " .. villageId .. " receiver " .. prevOwner .. " -> " .. ((owner ~= "") and owner or "-") .. " (old off)")
+			prevGrade = ""
+		end
+		if grade ~= prevGrade then
 			if owner ~= "" and _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge(grade, owner) end
-			log("[DispatchBadge] " .. villageId .. " " .. ((prev ~= nil and prev ~= "") and prev or "-") .. " -> " .. ((grade ~= "") and grade or "off"))
-			if grade == "" and prev ~= nil and prev ~= "" and owner ~= "" and _LaneStateService ~= nil then
+			log("[DispatchBadge] " .. villageId .. " " .. ((prevGrade ~= "") and prevGrade or "-") .. " -> " .. ((grade ~= "") and grade or "off"))
+			if grade == "" and prevGrade ~= "" and owner ~= "" and _LaneStateService ~= nil then
 				_LaneStateService:Toast(owner, "레인의 파병 개체를 모두 막았습니다")
 			end
 		end
 		if grade == "" then
 			self.badge[villageId] = nil
 		else
-			self.badge[villageId] = grade
+			self.badge[villageId] = { grade = grade, owner = owner }
 			self:EnsureBadgeTimer()
 		end
 	end
@@ -307,11 +317,10 @@ script DispatchService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void ResetBadges()
-		-- 매치 초기화: 배지 원장을 비우고 주인들 HUD 를 끈다.
+		-- 매치 종료: 배지 원장을 비우고 마지막 수신자들 HUD 를 끈다.
 		if self.badge == nil then return end
-		for vid, grade in pairs(self.badge) do
-			local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(vid) or ""
-			if owner ~= "" and grade ~= "" and _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge("", owner) end
+		for _, rec in pairs(self.badge) do
+			if rec ~= nil and rec.owner ~= nil and rec.owner ~= "" and _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge("", rec.owner) end
 		end
 		self.badge = {}
 		if self.badgeTimerId ~= 0 then
