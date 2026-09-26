@@ -62,12 +62,39 @@ script PlayerAttack extends AttackComponent
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
 		-- ⚠ 임시 배선 (A · 사용자 지시 2026-09-05): 고정 50 → 스탯 기반 범위 데미지. B 의 공격 파이프라인이 오면 그쪽이 덮는다.
 		--    MISS 면 0. 서버 원장이 없으면(클라) 1.
-		return _StatService:CalcPlayerDamage(attacker, defender)
+		-- b/playerattack-buff-hooks (2026-09-26 · #88 뒤 B 담당): 스킬 피해(SkillDatabase.DamageAt)와 같은 순서로 버프를 얹는다 —
+		--   ① 쉐도우 파트너(SHADOW_PARTNER) 분신 배율 ×GetOutgoingDamageMul(활성 = 2배) ② 매직 가드(MAGIC_GUARD) + 현재 MP 5% (GetOnHitBonusDamage · 타격마다 그때의 MP).
+		--   MISS(0)에는 얹지 않는다. ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014) — SkillBuffs 는 ServerOnly 라 서버에서만 부른다.
+		local dmg = _StatService:CalcPlayerDamage(attacker, defender)
+		if dmg <= 0 or _SkillBuffs == nil or not self:IsServer() then return dmg end
+		if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then return dmg end
+		local userId = attacker.PlayerComponent.UserId
+		local mul = _SkillBuffs:GetOutgoingDamageMul(userId)
+		local bonus = _SkillBuffs:GetOnHitBonusDamage(userId)
+		if mul == 1 and bonus <= 0 then return dmg end
+		local out = math.floor(dmg * mul) + bonus
+		log("[PlayerAttack] buff dmg " .. tostring(dmg) .. " -> " .. tostring(out) .. " (shadowPartner x" .. tostring(mul) .. " · magicGuard +" .. tostring(bonus) .. ") (" .. userId .. ")")
+		return out
 	end
 
 	method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
 		-- ⚠ 임시 배선: 상시 참(RandomDouble < 1.2) → LUK 기반 크리 확률.
+		-- b/playerattack-buff-hooks: 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 기본 공격도 반드시 크리티컬(기획 답 #7 "모든 공격" · 스킬은 SkillAttack/SkillProjectile.CalcCritical).
+		if _SkillBuffs ~= nil and self:IsServer() and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
+			if _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId) then
+				log("[PlayerAttack] guaranteed crit (Dodge GUARANTEED_CRIT) (" .. attacker.PlayerComponent.UserId .. ")")
+				return true
+			end
+		end
 		return _StatService:RollCritical(attacker)
+	end
+
+	method void OnAttack(Entity defender)
+		-- b/playerattack-buff-hooks: 기본 공격 타격마다 픽파켓(SK_T12 · STACK_GAIN) 메소 드랍 — 스킬과 같은 훅(SkillBuffs.OnSkillHitMonster · 같은 대상 중복 방지는 그쪽).
+		-- probe 패스는 IsAttackTarget 이 false 라 여기 오지 않는다. ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014).
+		if not isvalid(defender) or _SkillBuffs == nil or not self:IsServer() then return end
+		if not isvalid(self.Entity.PlayerComponent) then return end
+		_SkillBuffs:OnSkillHitMonster(self.Entity.PlayerComponent.UserId, defender, "BASIC")
 	end
 
 	method float GetCriticalDamageRate()
