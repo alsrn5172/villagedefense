@@ -129,6 +129,9 @@ script PlayerRespawnService extends Logic
 		local e = _SummonManager:EnsureUser(userId)
 		if e == nil then return 0 end
 		local p = _SummonManager:ExpProgress(e.exp)
+		-- 만렙은 경험치를 더 얻지 못해 실제 차감(DeductExpInLevel)이 0 이다. ExpProgress 는 만렙 바를 가득 채워(within = need) 보여 주므로
+		-- 그대로 쓰면 팝업만 −(need × 비율)을 보인다 → 만렙이면 0 (B · #40 comment 5831420626 · PR #98).
+		if _MonsterCatalog ~= nil and p.level >= _MonsterCatalog:GetMaxLevel() then return 0 end
 		return math.min(math.max(0, math.floor(p.within)), math.floor(p.need * self.ExpPenaltyRatio))
 	end
 
@@ -174,8 +177,23 @@ script PlayerRespawnService extends Logic
 		log("[Death] user=" .. userId .. " chose " .. kind)
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent:IsDead() then
-			player.PlayerComponent:ProcessRevive(userId)
+			local pc = player.PlayerComponent
+			pc:ProcessRevive(userId)
+			-- ProcessRevive 는 HP 를 채우지 않아 HP 0 인 채 살아 있었다(2026-09-25 Play · #40 comment 5830769756).
+			-- 시간 부활(엔진 자동 부활 = HP 최대치)과 같게 바로 채운다 — 폴링 OnRevive 까지 기다리면 그 사이(최대 PollInterval) HP 0 으로 맞는다.
+			-- MP 는 엔진에 없고 SummonManager econ 이 진상이다. 사망 · 시간 부활 어느 쪽도 MP 를 바꾸지 않으므로 여기서도 그대로 둔다 (B · #40 comment 5831420626 · PR #98).
+			pc.Hp = pc.MaxHp
+			log("[Death] user=" .. userId .. " revive=choice hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MpText(string userId)
+		-- 로그용 "mp/maxMp" (SummonManager econ · 없으면 "?"). 선택 부활 · 시간 부활의 MP 를 같은 꼴로 비교하려고 쓴다.
+		if _SummonManager == nil then return "?" end
+		local e = _SummonManager:EnsureUser(userId)
+		if e == nil then return "?" end
+		return tostring(e.mp) .. "/" .. tostring(e.maxMp)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -237,6 +255,9 @@ script PlayerRespawnService extends Logic
 			if applied == "MESO" then _UIToast:ShowMessage("내 마을에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
 			else _UIToast:ShowMessage("내 마을에서 부활 — 경험치 " .. tostring(amount) .. " 차감 (레벨 유지)", userId) end
 		end
-		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0))
+		local how = "timed"
+		if p.choice ~= "" then how = "choice" end
+		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0)
+			.. " revive=" .. how .. " hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 	end
 end
