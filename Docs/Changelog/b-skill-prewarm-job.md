@@ -50,3 +50,8 @@
 - 전직한 본인에게는 두 방식이 같았다(첫 궁 끊김 0 · 전직 순간 한 번 85~97ms).
 - 차이는 **다른 플레이어**: `"play"` 는 서버 이펙트라 그 맵의 모든 클라가 같이 받는다 → 남의 전직 때 같은 맵 사람도 끊길 수 있다(그 자리에 있던 사람만 도움). `"preload"` 는 전직한 사람 클라만 받는다 → 다른 사람은 그 사람이 궁을 처음 쓸 때 한 번(대조군 수준 ≈100ms) 끊길 수 있다. 플레이어가 마을 · 레인에 흩어져 있어 `"play"` 의 이득이 작다 → `"preload"`.
 - `Skill/SkillExecutors.mlua` `CutscenePrewarmMode = "preload"` + 주석. `"play"` 경로는 그대로 남아 있다(속성만 바꾸면 돌아간다).
+
+### main 합치기 — #94 와 겹친 한 곳 (2026-09-26 · #94 머지 뒤)
+
+- `origin/main`(`3b6c972` · #94 포함) 합침. 충돌 1곳 = `Skill/SkillExecutors.mlua` `PrewarmCutscenesFor` 본문 → **이 PR 판**(`PrewarmRuidsFor(jobId)` · 지금 직업만 · `CutscenePrewarmMode`). #94 의 `cast.prewarm == true` 는 `PrewarmRuidsFor` 가 이미 포함한다(`SkillExecutors.mlua:420`) (#40 5844560359 A 안내).
+- LSP 깨끗 · `check-integrity` 전부 통과(경고 4 = main 과 같음).
