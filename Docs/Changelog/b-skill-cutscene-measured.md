@@ -53,3 +53,38 @@
   옛 리터럴이었다면 다섯 모두 무적이 컷신보다 0.5~0.8s 먼저 끝났다.
 - 쉐도우 파트너(SK_T22) 켠 채 R(SK_T31): `shadow hidden for cutscene 5.1299998909235s` · 서버 감시로 분신 루프 OFF 37.168 → 재생성(`buff loop effect SK_T22 … for 43.83s`) 42.293 = **5.125s** · 무적 끝 42.429. 화면: 컷신 위에 분신이 그려지지 않음 · 컷신이 걷힌 첫 프레임(26.32~26.83 사이)부터 분신이 기준 프레임과 같은 자리에 보임.
 - 확인 못 한 것: 몬스터 피격(로비라 적 없음 · `ULTIMATE hit ignored` 미확인).
+
+## 2026-09-26 — 궁 화면 컷신을 시전자 화면에만 전체 화면 UI 로 (맵 끝 빈자리 · HUD 가 위에 그려지던 것)
+
+**출처: #40 comment 5830063946 (A 결정 · 사용자 강민구 2026-09-25)** — B 가 새 UI 그룹을 직접 만든다(뼈대 S1 · 배선 S3 둘 다) · `GroupOrder` 는 **모든 UI 그룹 중 최상위**(값은 B · 30). 제안 = B #40 5821698253. 사용자(박승현) 지시 2026-09-26: #84 에 넣고 Play 전까지 Draft.
+
+### 문제 (2026-09-25 Maker Play 실측 · 1920×1080 · 5821698253)
+
+- 컷신은 UI 가 아니라 **플레이어에 붙인 월드 이펙트**다(`PlayStageEffect` → `PlayEffectAttached` · scale 1.4 · offsetY 1.0). 카메라는 맵 끝에서 멈추므로(`ConfineCameraArea`) 맵 왼쪽 끝에서는 화면 오른쪽 약 10~15% 가 비었다. 크기(20.4 × 12.1 월드 유닛)가 아니라 위치 문제.
+- HUD 는 전부 UI 그룹이라 월드 이펙트의 SortingLayer/OrderInLayer 와 관계없이 **항상 위**에 그려졌다.
+
+### 수정
+
+| 위치 | 변경 |
+|---|---|
+| **새 UI 파일 `ui/SkillCutsceneGroup`** (UIBuilder · 파일 = 그룹 이름) | 루트 UI 그룹 `SkillCutsceneGroup` — `GroupOrder 30`(지금 가장 큰 `RevivePopupGroup` 20 · 런타임 21 보다 위) · `GroupType 1`(모든 그룹과 같은 층) · `DefaultShow true` · `CanvasGroup` `BlocksRaycasts false` · `Interactable false`(표시 전용 · 뒤 UI 클릭을 막지 않는다). 자식 `Cutscene` sprite 하나 — 가운데 앵커 · `Simple` · `PreserveSprite None` · raycast 끔 · **기본 꺼짐**(자리표시 sprite = 빌더 기본 · 꺼져 있어 안 보이고, 입장 때 컷신 클립을 받지 않는다). `ui_lint` clean |
+| `Skill/SkillExecutors.mlua` 속성 | `CutsceneUI`(true · false 면 예전과 같음) · `cutsceneUiSprite`(Entity · UIBuilder 바인딩 = `Cutscene` UUID `ff01f805…`) · 클라 상태 `cutsceneUiToken` · `cutsceneUiTimer` · `cutsceneUiClipSize` |
+| `PlayStageEffect` cast 분기 | 화면 컷신(`cast.cutsceneSeconds` 있음)이면 분신 숨김 다음에 `ShowCutsceneUI(skillId, ruid, GetCutsceneSeconds(skillId), 시전자 userId)` — **시전자 클라에만** 간다. 월드 이펙트는 그대로 모두에게 |
+| `ShowCutsceneUI` (Client) | `PreloadAsync({ruid})` 콜백에서 `StartCutsceneUI`. 새 시전이 오면 번호(`cutsceneUiToken`)가 바뀌어 이전 콜백 · 끄기 타이머는 아무것도 안 한다 |
+| `StartCutsceneUI` (ClientOnly) | 클립 프레임 크기(px) → UI 그룹 루트 크기(없으면 1920×1080)를 **덮는** 배율 `max(가로비, 세로비)` 로 `RectSize` · 가운데. 넘치는 쪽은 화면 밖이라 잘린다(늘이지 않는다 · 클립 1.69 : 1 이면 16:9 에서 위아래가 조금 잘린다). 같은 클립도 0프레임부터 돌게 끈 채로 `ImageRUID` 를 바꾸고 켠다 → `seconds`(서버 실측 길이) 뒤 `HideCutsceneUI` |
+| `CutsceneClipSize` (ClientOnly) | `LoadAnimationClipAndWait`(PreloadAsync 뒤라 기다리지 않는다) → 프레임 `FrameSprite.Width/Height` 최대 · 최소를 로그로 · RUID 마다 캐시. 못 재면 1456×860 |
+| `Docs/스키마-계약.md` | 스킬 등록서 7번 **추가 줄**(표 아래 인용 줄 — 7번 표 칸은 #86 · #83 · #85 가 고치는 8번 칸 바로 위라 겹치지 않게) + 변경 이력 1행 |
+
+로그: `SkillExecutors: cutscene UI <SkillId> on — clip WxH canvas WxH rect WxH for Ns` · `… off` · `cutscene UI clip <ruid> frames max WxH min WxH`.
+
+### 모르는 것 (Play 에서 확인)
+
+- **프레임마다 크기가 다른 클립**: UI sprite 는 프레임마다 `RectSize` 에 맞춰 늘인다(원작 이펙트는 프레임을 잘라 둔다). 로그 `frames max … min …` 가 같으면 문제없다. 다르면 흔들림이 보일 수 있다 → 그때 판단.
+- **UI 그룹 루트 `RectSize`** 가 실제 화면 비율을 따르는지(로그 `canvas`). 16:9 가 아닌 창에서 덮는지.
+- **시전자 화면의 월드 이펙트**는 그대로 재생된다(UI 아래). 클립에 투명한 프레임(시작 · 끝 페이드)이 있으면 두 겹이 보일 수 있다.
+- 같은 궁을 쿨타임 뒤 다시 쓸 때 0프레임부터 도는지 · 채팅 아이콘(엔진 기본 채팅)이 덮이는지.
+
+### 검증
+
+- LSP 진단: 에러 0 · 경고 0. `ui_lint` clean. `check-integrity`: 통과.
+- **Maker Play: 아직** — 새 UI 파일은 Maker Refresh 로 등록된다(로컬 테스트 브랜치 #83 + #98 + #84 한 번에). 체크리스트는 PR 본문.

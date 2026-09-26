@@ -214,6 +214,22 @@ script SkillExecutors extends Logic
 
     property table shadowFacingTimers = {}
 
+    -- 궁 화면 컷신 UI(b/skill-cutscene-measured · #40 comment 5830063946 A 결정 · 2026-09-26): 화면 컷신(cast.cutsceneSeconds 가 있는 것)은 월드 이펙트라
+    -- 플레이어에 붙어 맵 끝에서 화면 한쪽이 비고(카메라가 맵 끝에서 멈춘다), UI 그룹(HUD)이 그 위에 그려졌다. 그래서 **시전자 화면에만** 같은 클립을
+    -- ui/SkillCutsceneGroup(GroupOrder 30 · 모든 UI 그룹 위)의 전체 화면 sprite 로 한 번 더 재생한다 — 화면을 덮는 크기 · 클립 비율 유지 · 넘치는 쪽은 잘린다.
+    -- 다른 플레이어는 지금처럼 월드 이펙트만 본다. false 면 UI 컷신을 쓰지 않는다(예전과 같음).
+    property boolean CutsceneUI = true
+
+    -- ui/SkillCutsceneGroup/Cutscene (UIBuilder 바인딩 · 클라에서만 유효 · 서버에서는 nil).
+    property Entity cutsceneUiSprite = "ff01f805-e353-4eb2-9547-588dcac35b1e"
+
+    -- 클라: 가장 최근 UI 컷신 번호(새 시전이 오면 이전 것의 늦은 콜백 · 끄기 타이머를 무시한다) · 끄기 타이머 id · RUID → 첫 프레임 크기(px) 캐시.
+    property integer cutsceneUiToken = 0
+
+    property integer cutsceneUiTimer = 0
+
+    property table cutsceneUiClipSize = {}
+
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
     property number BackflipDriftX = 0.35
@@ -980,6 +996,10 @@ script SkillExecutors extends Logic
                     -- 2026-09-14 제보 "W 뒤 E 를 누르면 캐릭터가 사라진다": 예전 기준 "scale + noFlip" 에 에너지 쉴드 방울 cast(scale 0.85 · noFlip)가 걸려 변신 form 을 5.5초 숨겼다 → 명시 필드로.
                     if stage == "cast" and spec.cutsceneSeconds ~= nil and isvalid(casterEntity.PlayerComponent) then
                         self:HideShadowFor(casterEntity.PlayerComponent.UserId, self:GetCutsceneSeconds(skillId))
+                        -- 시전자 화면에만 전체 화면 UI 컷신(CutsceneUI · #40 5830063946). 마지막 인자 = 받을 클라(시전자).
+                        if self.CutsceneUI then
+                            self:ShowCutsceneUI(skillId, spec.ruid, self:GetCutsceneSeconds(skillId), casterEntity.PlayerComponent.UserId)
+                        end
                     end
                 else
                     local s = spec.scale or 1
@@ -1003,6 +1023,110 @@ script SkillExecutors extends Logic
         else
             _ParticleService:PlayBasicParticle(particleType, casterEntity, pos, 0, Vector3(1, 1, 1), false)
         end
+    end
+
+    @ExecSpace("Client")
+    method void ShowCutsceneUI(string skillId, string ruid, number seconds)
+        -- 시전자 클라에서만 돈다(PlayStageEffect 가 시전자 userId 를 마지막 인자로 보낸다). 클립을 받아 둔 뒤(PreloadAsync · 예열했으면 곧바로) StartCutsceneUI 로 켠다.
+        -- 받는 동안 새 시전이 오면 번호(cutsceneUiToken)가 바뀌어 이전 콜백은 아무것도 안 한다.
+        if ruid == nil or ruid == "" or seconds == nil or seconds <= 0 then return end
+        if not isvalid(self.cutsceneUiSprite) then
+            log_warning("SkillExecutors: cutscene UI " .. skillId .. " skipped — ui/SkillCutsceneGroup/Cutscene not found")
+            return
+        end
+        self.cutsceneUiToken = self.cutsceneUiToken + 1
+        local token = self.cutsceneUiToken
+        _ResourceService:PreloadAsync({ ruid }, function()
+            if token ~= self.cutsceneUiToken then return end
+            self:StartCutsceneUI(skillId, ruid, seconds, token)
+        end)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StartCutsceneUI(string skillId, string ruid, number seconds, integer token)
+        -- 전체 화면 sprite 에 클립을 걸고 켠다 → seconds(서버 GetCutsceneSeconds = 클립 실측 길이) 뒤 끈다.
+        -- 크기: 클립 프레임 크기(px)로 비율을 잡고 UI 그룹 루트(화면 전체) 크기를 **덮도록**(가로 · 세로 중 큰 배율) 키운다 — 넘치는 쪽은 화면 밖이라 잘린다. 늘이지 않는다.
+        local e = self.cutsceneUiSprite
+        if not isvalid(e) then return end
+        local sr = e.SpriteGUIRendererComponent
+        local tr = e.UITransformComponent
+        if not isvalid(sr) or not isvalid(tr) then return end
+        local size = self:CutsceneClipSize(ruid)
+        local cw = 1920
+        local ch = 1080
+        local parent = e.Parent
+        if isvalid(parent) and isvalid(parent.UITransformComponent) then
+            local rs = parent.UITransformComponent.RectSize
+            if rs.x > 0 and rs.y > 0 then
+                cw = rs.x
+                ch = rs.y
+            end
+        end
+        local scale = math.max(cw / size.x, ch / size.y)
+        tr.RectSize = Vector2(size.x * scale, size.y * scale)
+        tr.anchoredPosition = Vector2(0, 0)
+        -- 같은 클립을 다시 걸 때도 0프레임부터 돌게 끈 채로 바꾸고 다시 켠다.
+        e.Enable = false
+        sr.ImageRUID = DataRef(ruid)
+        e.Enable = true
+        if self.cutsceneUiTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneUiTimer)
+            self.cutsceneUiTimer = 0
+        end
+        self.cutsceneUiTimer = _TimerService:SetTimerOnce(function()
+            if token ~= self.cutsceneUiToken then return end
+            self.cutsceneUiTimer = 0
+            self:HideCutsceneUI(skillId)
+        end, seconds)
+        log("SkillExecutors: cutscene UI " .. skillId .. " on — clip " .. tostring(size.x) .. "x" .. tostring(size.y) .. " canvas " .. tostring(cw) .. "x" .. tostring(ch)
+            .. " rect " .. string.format("%.0fx%.0f", size.x * scale, size.y * scale) .. " for " .. string.format("%.2f", seconds) .. "s")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void HideCutsceneUI(string skillId)
+        -- UI 컷신을 끈다(클립은 그대로 두고 엔티티만 끈다 · 다음 시전이 다시 건다).
+        local e = self.cutsceneUiSprite
+        if isvalid(e) then
+            e.Enable = false
+        end
+        log("SkillExecutors: cutscene UI " .. skillId .. " off")
+    end
+
+    @ExecSpace("ClientOnly")
+    method Vector2 CutsceneClipSize(string ruid)
+        -- 클립 프레임 크기(px · 가장 큰 가로 · 세로). PreloadAsync 콜백 안에서만 부른다(받아 둔 뒤라 LoadAnimationClipAndWait 가 기다리지 않는다). RUID 마다 한 번 재고 캐시.
+        -- 못 재면 1456×860(대마법 프로즌 라이트닝 screen · 화면 컷신은 대개 1.65~1.72 : 1).
+        local cached = self.cutsceneUiClipSize[ruid]
+        if cached ~= nil then return cached end
+        local w = 0
+        local h = 0
+        local minW = 0
+        local minH = 0
+        local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+        if clip ~= nil and clip.Frames ~= nil then
+            for i = 1, #clip.Frames do
+                local f = clip.Frames[i]
+                local sp = nil
+                if f ~= nil then sp = f.FrameSprite end
+                if sp ~= nil and sp.Width > 0 and sp.Height > 0 then
+                    if sp.Width > w then w = sp.Width end
+                    if sp.Height > h then h = sp.Height end
+                    if minW == 0 or sp.Width < minW then minW = sp.Width end
+                    if minH == 0 or sp.Height < minH then minH = sp.Height end
+                end
+            end
+        end
+        if w <= 0 or h <= 0 then
+            w = 1456
+            h = 860
+            log_warning("SkillExecutors: cutscene UI clip " .. ruid .. " frame size unknown — 1456x860 used")
+        else
+            -- 프레임마다 크기가 다르면(원작 이펙트는 프레임을 잘라 둔다) UI 는 프레임마다 RectSize 에 맞춰 늘인다 → Play 에서 보고 판단하려고 로그를 남긴다.
+            log("SkillExecutors: cutscene UI clip " .. ruid .. " frames max " .. tostring(w) .. "x" .. tostring(h) .. " min " .. tostring(minW) .. "x" .. tostring(minH))
+        end
+        local size = Vector2(w, h)
+        self.cutsceneUiClipSize[ruid] = size
+        return size
     end
 
     @ExecSpace("ServerOnly")
