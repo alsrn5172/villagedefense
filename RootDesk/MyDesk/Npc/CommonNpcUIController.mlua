@@ -1,7 +1,7 @@
 @Logic
 script CommonNpcUIController extends Logic
 
-	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문).
+	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문) / jobchange:<JobId>(리스항구 직업별 전직관 · 2026-09-26).
 	-- dispatch: 대상 마을 4개(내 마을 제외) + 보낼 묶음 수 스테퍼 → RequestDispatch. 아래 대기열 4행은 아직 투입 전인 내 파병 — 누르면 취소(WO-014 · 2026-09-09).
 	-- gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → RequestDimensionGate(스텁).
 	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). 확인 팝업(PopupGroup)은 M1 뼈대에서 생략(미결). UUID 는 UIBuilder write({bind}) 주입.
@@ -47,11 +47,28 @@ script CommonNpcUIController extends Logic
 
 	property TextGUIRendererComponent gateStatus = "f20f26ff-fba6-4775-bbf7-7b9fc610ee83"
 
+	-- jobchange(리스항구 직업별 전직관 5명 · 2026-09-26 a/lith-job-instructors): 메이플식 NPC 대화창(왼쪽 초상 + 이름 · 오른쪽 대사 · 아래 버튼 2개)
+	property Entity talkRoot = "76ccdd7b-f692-438d-9670-06eadecf9a9b"
+
+	property SpriteGUIRendererComponent talkPortrait = "db0fc330-eb4e-4c11-b321-9028cb2b9d32"
+
+	property TextGUIRendererComponent talkName = "7b6c33b7-947d-415c-a582-dcf3b288b879"
+
+	property TextGUIRendererComponent talkLine = "3247bf9c-4b14-439b-8bce-7c86a5dad7a1"
+
+	property ButtonComponent btnTalkEnd = "59a34074-00e6-46ad-a2c1-1c5796b09599"
+
+	property ButtonComponent btnTalkYes = "5725d7b3-5f58-411d-b19f-1dc6cca76973"
+
 	@HideFromInspector
 	property boolean isOpen = false
 
 	@HideFromInspector
 	property string route = ""
+
+	-- jobchange 라우트의 직업(WARRIOR / MAGICIAN / ARCHER / THIEF / PIRATE). 전직관 1명 = 직업 1개.
+	@HideFromInspector
+	property string jobId = ""
 
 	@HideFromInspector
 	property any handlers = nil
@@ -98,6 +115,8 @@ script CommonNpcUIController extends Logic
 		end
 		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
 		if isvalid(self.btnPrimary) then bind(self.btnPrimary.Entity, function() self:OnPrimary() end) end
+		if isvalid(self.btnTalkEnd) then bind(self.btnTalkEnd.Entity, function() self:Close() end) end
+		if isvalid(self.btnTalkYes) then bind(self.btnTalkYes.Entity, function() self:OnTalkYes() end) end
 		if isvalid(self.btnCartMinus) then bind(self.btnCartMinus.Entity, function() self:Step(-1) end) end
 		if isvalid(self.btnCartPlus) then bind(self.btnCartPlus.Entity, function() self:Step(1) end) end
 		if isvalid(self.targetRoot) then
@@ -146,15 +165,13 @@ script CommonNpcUIController extends Logic
 	method void Open(string route)
 		-- 다른 창을 닫고 라우트를 켠다.
 		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("CommonNpcGroup") end
-		-- jobchange(리스항구 전직 교관 · 2026-09-22 B1): 공용 창을 쓰지 않고 B 의 스킬 창(전직 탭이 있는 창)을 연다. 훅 한 줄 — SkillWindowLogic.Toggle (클라 공개 메서드).
-		if route == "jobchange" then
-			self:SetOpen(false)
-			if _SkillWindowLogic ~= nil then
-				_SkillWindowLogic:Toggle()
-				log("[Common] jobchange -> SkillWindow toggle")
-			else
-				log_warning("[Common] jobchange: _SkillWindowLogic 없음")
-			end
+		-- jobchange:<JobId>(리스항구 직업별 전직관 5명 · 2026-09-26 a/lith-job-instructors): 공용 창 대신 메이플식 NPC 대화창(OpenTalk).
+		-- [예] 가 B 의 PlayerSkillState.RequestChooseJob(jobId)(Server RPC)를 부른다. 최종 조건(초보자 · Lv10)은 B 가 서버에서 본다. 예전 공용 교관 1명은 B 스킬 창을 열었다.
+		if string.sub(route, 1, 10) == "jobchange:" then
+			self.jobId = string.sub(route, 11)
+			self.selVillage = ""
+			self.waiting = false
+			self:OpenTalk()
 			return
 		end
 		if route ~= "dispatch" and route ~= "dimensiongate" then route = "dispatch" end
@@ -178,6 +195,7 @@ script CommonNpcUIController extends Logic
 		self.isOpen = open
 		if isvalid(self.dimmer) then self.dimmer.Enable = open end
 		if isvalid(self.window) then self.window.Enable = open end
+		if not open and isvalid(self.talkRoot) then self.talkRoot.Enable = false end
 		log("[Common] open=" .. tostring(open))
 	end
 
@@ -216,6 +234,89 @@ script CommonNpcUIController extends Logic
 		if not isvalid(parent) then return end
 		local c = parent:GetChildByName(childName)
 		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	-- ── jobchange (NPC 대화창) ─────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OpenTalk()
+		-- 메이플식 NPC 대화창: 왼쪽 초상 + 이름, 오른쪽 대사. 전직관 1명 = 직업 1개.
+		-- 대사는 클라 미러(B LocalJobId · LocalLevel)로 먼저 고르고, [예] 뒤 최종 판정은 B 서버(RequestChooseJob)가 한다.
+		local r = _VillageNpcUIController
+		local catalogId = ""
+		local npcName = ""
+		if r ~= nil then
+			catalogId = r.PendingCatalogNpcId
+			npcName = r.PendingDisplayName
+		end
+		self.route = "jobchange"
+		self.isOpen = true
+		if isvalid(self.dimmer) then self.dimmer.Enable = false end
+		if isvalid(self.window) then self.window.Enable = false end
+		if isvalid(self.talkName) then self.talkName.Text = npcName end
+		-- 초상 = 지금 맵에 서 있는 그 전직관의 스프라이트(모델이 정본 · 여기에 RUID 를 적지 않는다).
+		if isvalid(self.talkPortrait) then
+			local ruid = self:FindNpcSprite(catalogId)
+			if ruid ~= "" then self.talkPortrait.ImageRUID = DataRef(ruid) end
+		end
+		local subjects = { WARRIOR = "전사가", MAGICIAN = "마법사가", ARCHER = "궁수가", THIEF = "도적이", PIRATE = "해적이" }
+		local subject = subjects[self.jobId]
+		local myJob = ""
+		local myLevel = 1
+		local novice = "NOVICE"
+		if _PlayerSkillState ~= nil then
+			myJob = _PlayerSkillState:LocalJobId() or ""
+			myLevel = _PlayerSkillState:LocalLevel() or 1
+			novice = _PlayerSkillState.NoviceJobId or "NOVICE"
+		end
+		local req = 10
+		if _JobDatabase ~= nil then
+			local v = _JobDatabase:GetRequiredLevel(self.jobId, 1)
+			if v ~= nil and v > 0 then req = v end
+		end
+		local line = ""
+		local canAsk = false
+		if subject == nil then
+			line = "..."
+		elseif myJob ~= "" and myJob ~= novice then
+			line = "이미 전직을 마쳤군. 자네의 길을 계속 가게."
+		elseif myLevel < req then
+			line = "아직은 이르네. " .. tostring(math.floor(req)) .. "레벨이 되면 다시 찾아오게."
+		else
+			line = subject .. " 되고 싶은가?"
+			canAsk = true
+		end
+		if isvalid(self.talkLine) then self.talkLine.Text = line end
+		if isvalid(self.btnTalkYes) then self.btnTalkYes.Entity.Enable = canAsk end
+		if isvalid(self.talkRoot) then self.talkRoot.Enable = true end
+		log("[Common] jobchange talk job=" .. self.jobId .. " npc=" .. catalogId .. " myJob=" .. myJob .. " lv=" .. tostring(myLevel) .. " ask=" .. tostring(canAsk))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FindNpcSprite(string catalogNpcId)
+		-- 지금 맵에서 NpcSpawner 가 만든 "Npc_<CatalogNpcId>_<순번>" 엔티티를 찾아 SpriteRUID 를 돌려준다. 없으면 "".
+		if catalogNpcId == "" then return "" end
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then return "" end
+		local prefix = "Npc_" .. catalogNpcId .. "_"
+		for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+			if string.sub(c.Name, 1, #prefix) == prefix and isvalid(c.SpriteRendererComponent) then
+				return c.SpriteRendererComponent.SpriteRUID
+			end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnTalkYes()
+		-- [예] = B 전직 요청 후 닫기. 결과(전직 · 차수)는 B PushState 로 스킬 창 · HUD 에 반영된다.
+		if self.jobId ~= "" and _PlayerSkillState ~= nil then
+			_PlayerSkillState:RequestChooseJob(self.jobId)
+			log("[Common] jobchange request job=" .. self.jobId)
+		else
+			log_warning("[Common] jobchange: _PlayerSkillState 없음 또는 직업 없음 job=" .. self.jobId)
+		end
+		self:Close()
 	end
 
 	-- ── dispatch ───────────────────────────────────────────────
