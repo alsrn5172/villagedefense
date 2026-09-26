@@ -19,15 +19,16 @@ script SkillBuffs extends Logic
     --                  되돌려 준다(SkillAttack.DealFlatDamageToTarget). 들어오는 피해를 바꾸지 않으므로 A 연결 없이 동작한다.
     --   HYPER_BODY     하이퍼 바디(SK_W21 · 버프): 최대 HP +20~60% 는 A 의 StatService BUFF 레이어(SetLayerCsv · 계약상 B 몫)로 넣고,
     --                  피해 −20~40% 는 GetDamageMul/ReduceDamage 로 낸다(A 의 PlayerHit 연결 대기).
+    --                  2026-09-24 b/skill-prehit-hook 부터 PlayerHit.OnHit 사전 훅(ModifyIncomingDamage)으로 HP 감산 전에 준다(자가 배선 HyperBodySelfWire 는 끔).
     --   INVULNERABLE   불굴의 진(SK_W31 · 궁 · 2026-09-13 사용자 변경): 8초간 ① HP = 최대 HP 고정(StartUnyielding 0.1s 틱 + 피격 시 즉시)
     --                  ② 피격 경직·넉백 없음(PlayerHit.OnHit 이 IsUnyielding 이면 기본 피격 처리를 건너뛰고 OnUnyieldingHit 만 · 아이언 바디 반사는 그대로)
     --                  ③ 피격 무적 시간 절반(PlayerHit.IsHitTarget 이 GetHitImmuneMul 을 곱한다). 태그 이름은 계약(INVULNERABLE) 그대로.
     -- b/skill-archer-thief-pirate (2026-09-12 · 추가기획1 궁수·도적·해적 표) 가 채우는 태그:
     --   GUARANTEED_CRIT 닷지(SK_A22 · BLINK 도착 뒤 6~10초): IsGuaranteedCrit → SkillAttack/SkillProjectile.CalcCritical 이 반드시 true(배율 2.0).
-    --   DARK_SIGHT      다크 사이트(SK_T21 · 10초): 아바타 알파 0.35(SetAlpha · 전 클라). 첫 피격 1회 무효 = ConsumeEvadeOnce. A 연결 전엔 HitEvent 뒤 HP 전액 되돌림(자가 배선).
+    --   DARK_SIGHT      다크 사이트(SK_T21 · 10초): 아바타 알파 0.35(SetAlpha · 전 클라). 첫 피격 1회 무효 = ConsumeEvadeOnce(PlayerHit 사전 훅 · 경직 없음).
     --   SHADOW_PARTNER  쉐도우 파트너(SK_T22 · 60초): GetOutgoingDamageMul = 1 + 100% → SkillDatabase.DamageAt 이 곱한다. 분신 클립은 SkillExecutors.PlayBuffLoop.
     --   ENERGY_SHIELD   에너지 쉴드(SK_P22 · 깨질 때까지): 시전 시 최대 HP × 10~30% 를 shields 에 넣고 피격마다 깎는다(AbsorbByShield). 0 이 되면 버프 종료.
-    --                   A 연결 전엔 HitEvent 뒤 흡수분 HP 되돌림(자가 배선). Duration 0 은 NoExpireSeconds 로 바꿔 원장에 넣는다.
+    --                   PlayerHit 사전 훅이 HP 감산 전에 흡수(전액 흡수 = 경직·넉백 없음). Duration 0 은 NoExpireSeconds 로 바꿔 원장에 넣는다.
     --   ENERGY_CHARGE   에너지 차지(SK_P21 · 30초 · 2026-09-16 슈퍼 트랜스폼 교체): 이동속도 +SecondaryAt% · 점프력 +TertiaryAt% 를
     --                   StatService BUFF 레이어(speed/jump)에 이 태그 몫으로 올린다(ApplyChargeMobility). 플레이어 스탯 직접 쓰기 없음 — 합산·반영은 StatService.Recalculate.
     --                   활성 중 같은 키 재입력 = 10연타 주먹(SkillCaster.IsRecastActive 가 쿨다운 게이트를 건너뛴다 · SkillExecutors.ExecuteChargePunch). 상태는 소모되지 않아 지속시간 내내 반복.
@@ -81,13 +82,16 @@ script SkillBuffs extends Logic
     -- 아이언 바디 반사를 끈다(디버그). true 면 반사 없이 로그만.
     property boolean ReflectEnabled = true
 
-    -- 매직 가드 임시 자가 배선(HitEvent 뒤 HP 되돌리기). A 의 PlayerHit 정식 연결 후 false 로.
-    property boolean MagicGuardSelfWire = true
+    -- 임시 자가 배선 4개(HitEvent 뒤 HP 되돌리기) — 2026-09-24 b/skill-prehit-hook 에서 전부 끔.
+    -- 이제 PlayerHit.OnHit 가 HP 감산 전에 ModifyIncomingDamage 를 부른다(#40 5813239867). 다시 켜면 흡수·감소가 두 번 들어간다
+    -- (보호막 · MP 두 번 소모 · 하이퍼 바디 두 번 감소). 스위치는 PlayerHit 훅을 되돌릴 때만 쓴다.
+    property boolean MagicGuardSelfWire = false
 
-    -- 다크 사이트·에너지 쉴드 임시 자가 배선(HitEvent 뒤 HP 되돌리기). A 가 PlayerHit 에서 ModifyIncomingDamage 를 부르게 되면 false 로(안 끄면 두 번).
-    property boolean DarkSightSelfWire = true
+    property boolean DarkSightSelfWire = false
 
-    property boolean EnergyShieldSelfWire = true
+    property boolean EnergyShieldSelfWire = false
+
+    property boolean HyperBodySelfWire = false
 
     -- "깨질 때까지" 버프(에너지 쉴드 · CSV Duration 0)가 원장에 들어갈 때 쓰는 지속(초). 만료 타이머는 사실상 안 돈다.
     property number NoExpireSeconds = 100000
@@ -196,12 +200,14 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method void OnPlayerHitEvent(string userId, HitEvent event)
-        -- HitEvent 는 피해가 이미 확정된 뒤에 온다 — 들어오는 피해는 여기서 못 바꾼다(그건 A 의 PlayerHit → ModifyIncomingDamage).
-        -- 그래서 A 연결 전까지의 임시 자가 배선은 전부 "HP 를 되돌리는" 방식이다(한 방에 죽는 피해는 못 살린다 · 정식 경로에서만 가능):
+        -- HitEvent 는 피해가 이미 확정된 뒤에 온다 — 들어오는 피해는 여기서 못 바꾼다(그건 PlayerHit.OnHit 사전 훅 → ModifyIncomingDamage).
+        -- 2026-09-24 b/skill-prehit-hook 부터 ①~④ 는 사전 훅이 맡고 *SelfWire 4개는 false — 여기서는 ⑤ 반사만 돈다.
+        -- 아래 ①~④ 는 훅을 되돌릴 때를 위한 옛 자가 배선이다("HP 를 되돌리는" 방식 · 한 방에 죽는 피해는 못 살린다):
         --   ① 다크 사이트(SK_T21): 첫 피격 1회 = 전액 되돌림 + 버프 종료. 회피한 타격은 아래(보호막·매직 가드·반사)로 안 내려간다.
         --   ② 에너지 쉴드(SK_P22): 보호막이 남은 만큼 되돌리고 보호막을 깎는다. 0 이 되면 버프 종료.
-        --   ③ 매직 가드(SK_M22): 남은 피해의 흡수율만큼 MP 로 내고(AbsorbDamage · SpendMp) 같은 양의 HP 를 되돌린다.
-        --   ④ 아이언 바디(SK_W12): 공격자에게 최대 HP × 반사율(5~25%) 만큼 되돌려 준다 — 몬스터(플레이어 아님 · 진영상 적)일 때만.
+        --   ③ 하이퍼 바디(SK_W21): 남은 피해를 20~40% 줄인 만큼(ReduceDamage) HP 를 되돌린다. ModifyIncomingDamage 와 같은 순서(보호막 뒤 · 매직 가드 앞).
+        --   ④ 매직 가드(SK_M22): 남은 피해의 흡수율만큼 MP 로 내고(AbsorbDamage · SpendMp) 같은 양의 HP 를 되돌린다.
+        --   ⑤ 아이언 바디(SK_W12): 공격자에게 최대 HP × 반사율(5~25%) 만큼 되돌려 준다 — 몬스터(플레이어 아님 · 진영상 적)일 때만.
         local damage = event.TotalDamage or 0
         if self.DarkSightSelfWire and damage > 0 and self:GetBuff(userId, self.TagDarkSight) ~= nil then
             self:ConsumeEvadeOnce(userId)
@@ -213,6 +219,13 @@ script SkillBuffs extends Logic
             if absorbed > 0 then
                 self:RefundHp(userId, absorbed, "ENERGY_SHIELD")
                 damage = damage - absorbed
+            end
+        end
+        if self.HyperBodySelfWire and damage > 0 then
+            local reduced = self:ReduceDamage(userId, damage)
+            if reduced < damage then
+                self:RefundHp(userId, damage - reduced, "HYPER_BODY")
+                damage = reduced
             end
         end
         if self.MagicGuardSelfWire then self:MagicGuardRefund(userId, damage) end
