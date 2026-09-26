@@ -21,3 +21,7 @@
 - 🟡 **Maker 검증 대기** (WO-031 §8 — Maker 단계에서 묶어서): 개인 월드에 이 워크트리 → Reimport All → Play(TEST) →
   ① 두 마을 소유 + 파병 접수 → 투입 뒤 `[Dispatch] release` · `[DispatchBadge] <vid> - -> 중` · 클라 `[DispatchBadge] client 중` · 파병 개체 처치 뒤 `-> off`
   ② `_LaneStateService:TestDestroyOnce("<vid>", false)` → `[DestroyOnce] … PASS`(넥서스 포함은 마지막에 `true`)
+
+## Codex 교차 리뷰 반영 (2026-09-26 · 묶음 1+2 · 2회 일치)
+
+- 🔴 배지 원장이 등급만 들고 있어 주인이 탈락·바뀌면 옛 수신자 HUD 에 배지가 남고 새 주인은 같은 등급이면 못 받았다 → 원장 = `{ grade, owner }` · 수신자가 바뀌면 옛 사람에게 끄기 RPC 후 새 주인에게 처음부터 · `ResetBadges` 도 마지막 수신자 기준.

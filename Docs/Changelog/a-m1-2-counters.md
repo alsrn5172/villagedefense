@@ -17,3 +17,8 @@
 
 - LSP 7파일 clean · `check-integrity` 통과(`GrowthPoint` C1 헤더 · C3 키 · C4 쌍).
 - 🟡 **Maker 검증 대기**: 개인 월드 Reimport All → Play(TEST) → `[Tally] GrowthPoint loaded: 4 rows` · 사냥 → `[Tally] kill <uid> n=1/10` · 보스 → `[Tally] boss` · 시설 강화 → `[Tally] growth … FACILITY_LEVEL:TOWER:2` · 만료 → 결과 화면 처치 열 · 처치 수만 다른 두 행에서 순위 ④ (2인 · 다인 세션 또는 execute_script 로 kills 대입)
+
+## Codex 교차 리뷰 반영 (2026-09-26 · 묶음 1+2 · 2회 일치)
+
+- 🔴 처치 수를 보상 지급 조건(막타 유저 엔티티·`SummonManager` 유효) 밖에서 세서 보상을 못 받은 막타도 셌다 → `GrantKillReward` 블록 안으로(GDD 정의 "보상을 받은 횟수").
+- 기각 2건: 결과 CSV 이름 구분자 — `SafeName` 이 이미 `[;=|]` 를 지운다 · 보스가 일반 처치로 세짐 — 보스 모델 8개에 `FarmReward` 가 없다(확인).
