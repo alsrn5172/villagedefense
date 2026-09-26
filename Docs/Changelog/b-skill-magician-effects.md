@@ -114,3 +114,4 @@
 - `ExecuteBlink` 도착 피해 호출에서 바로: `SkillAttack.PendingImpactRuid = hit` + 새 `PendingImpactAtBody = true` → `SkillAttack.OnAttack` 이 맞은 몬스터마다 **몸 중심(콜라이더 중심) · 크기 1.0 · 뒤집기 없음**으로 재생. `EndPass` 가 둘 다 지운다. 다른 스킬의 impact(발 + 0.5)는 그대로.
 - 피해 % · 범위(2.4 × 1.6) · 대상 수(제한 없음)는 그대로 — #40 5849932530 기획 답 대기. Play 메모리 확인: 도착마다 달팽이 8/8 · 박쥐에 hit 그림.
 - 박쥐 측정(코드 변경 없음): 이 빌드의 박쥐는 날지 않는다(MoveType fly 를 쓰는 코드 없음 · 중력 1.0 · 판정 = 박쥐 발 위 0.20~0.52). 착지 13번 시험 — 가로 1.44 이내 · 박쥐 발 1.40 미만 높이면 명중(13/13 예측 일치). 제보 때 빗나간 7번은 가로 2.1~3.0.
+- **새는 경로 막기(사용자 요청):** `DealSkillDamage` 관전자 차단으로 빠질 때도 `EndPass`(impact · 몸 중심 · 사운드 초기화) · `DealSkillDamageToTarget(Scaled)` 대상 없음으로 빠질 때도 `EndPass` · `ExecuteBlink` 는 호출 뒤에 `PendingImpactRuid` / `PendingImpactAtBody` 를 한 번 더 지운다 → 몸 중심 설정이 다음 타격 패스로 새는 경로가 없다.
