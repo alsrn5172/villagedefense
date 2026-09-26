@@ -90,3 +90,9 @@
 - **에너지볼트 크기 · 위치 = P2**(영상에 가장 가까움): 영상 배율 1.67(뿔버섯 56×52 → 94×87). 발 기준 native px — 구체 중심 영상 (41, 22) vs 우리 (62, 29) · 크기 영상 ≈ 1.15배 → `cast.scale = 1.15` · `offsetX = −0.30` · `offsetY = −0.11` → 구체 중심 (0.41, 0.22). 볼트 출발점 = 같은 구체 중심 `spawn (0.41, 0.22)`. 볼트 크기 · 명중 이펙트 크기는 영상과 같아(1.0) 그대로.
 - **텔레포트 · 텔레포트 강화 도착 = 오른쪽을 볼 때 뒤집기**(사용자 선택 3): 새 spec 필드 `flipWithFacing`(PlayStageEffect impact 분기 · 없으면 예전 그대로) · 텔레포트 크기 **1.15**(사용자 "캐릭터보다 조금 크게"). 강화 포털은 1.0.
 - 남은 차이(코드 밖 · 다음에): 명중 이펙트 위치 — 우리는 대상 콜라이더 중심에 클립 원점을 둬 그림이 영상보다 ≈0.2 낮다(영상은 몸 중심). `SkillProjectile.OnAttack` 에 높이 오프셋이 없어 메모리로 못 바꿨다.
+
+## 명중 이펙트 높이 +0.20 (2026-09-27 · 사용자 "코드로 0.2 정도 올려")
+
+- `SkillProjectile.HitPointOf(target)` 새 메서드: 대상 콜라이더 중심(없으면 발 + `TargetAimOffsetY`) · **스킬별 예외 없음**. `OnAttack` 명중 이펙트 = `HitPointOf + (0, HitEffectOffsetY)`. 조준점 `AimPointOf` 는 그대로(볼트 궤적용) — main 의 #82(에너지볼트 조준 = 발 + 0.5)와 섞여도 명중 그림 자리는 바뀌지 않는다.
+- `SkillProjectile.HitEffectOffsetY`(기본 0) ← `SkillAttack.SpawnOneProjectile` 이 `SkillExecutors:GetImpactOffsetY(skillId)`(= `effectOverrides[skill].impact.offsetY` · 없으면 0)로 넣는다.
+- `SK_M11.impact.offsetY = 0.20` — 다른 투사체(더블 샷 · 럭키 세븐 · 스나이핑 · 애로우 블로우)는 0 = 예전과 같음.

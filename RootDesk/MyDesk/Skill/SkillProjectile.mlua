@@ -91,6 +91,10 @@ script SkillProjectile extends AttackComponent
     -- 명중 시 재생할 사운드 RUID(원작 팩 _audio/Hit). 비면 없음.
     property string HitSoundRUID = ""
 
+    -- 명중 이펙트 높이 보정(world unit · b/skill-magician-effects 2026-09-26): 클립 원점을 대상 몸 중심(콜라이더 중심)에서 이만큼 올린다.
+    -- 스킬별 값 = SkillExecutors.effectOverrides[skill].impact.offsetY (SkillAttack.SpawnOneProjectile 이 넣는다 · 없으면 0).
+    property number HitEffectOffsetY = 0
+
     -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
     property number CritDamageRate = 2.0
 
@@ -195,7 +199,7 @@ script SkillProjectile extends AttackComponent
 
     method Vector3 AimPointOf(Entity target)
         -- 조준점(월드) = 대상 HitComponent 콜라이더 중심(발 + ColliderOffset · BoxSize 가 0 이 아닐 때). 없으면 발 + TargetAimOffsetY.
-        -- OnAttack 의 명중 이펙트 위치도 같은 점을 쓴다(화살이 닿은 곳에 hit 클립). ExecSpace 없음 = 서버 피격 파이프라인(OnAttack)에서도 부른다.
+        -- 명중 이펙트 자리는 HitPointOf(같은 콜라이더 중심 · 스킬별 예외 없음) + HitEffectOffsetY 가 따로 정한다(b/skill-magician-effects). ExecSpace 없음 = 서버에서도 부른다.
         local t = target.TransformComponent.WorldPosition
         local hit = target.HitComponent
         if isvalid(hit) then
@@ -375,6 +379,21 @@ script SkillProjectile extends AttackComponent
         self.Entity:Destroy(0.05)
     end
 
+    method Vector3 HitPointOf(Entity target)
+        -- 명중 이펙트 기준점 = 대상 몸 중심(HitComponent 콜라이더 중심 · BoxSize 가 0 이 아닐 때). 없으면 발 + TargetAimOffsetY.
+        -- AimPointOf(조준점)와 달리 스킬별 예외가 없다 — 볼트 궤적(조준)과 명중 그림 자리를 따로 둔다(b/skill-magician-effects 2026-09-26).
+        local t = target.TransformComponent.WorldPosition
+        local hit = target.HitComponent
+        if isvalid(hit) then
+            local off = hit.ColliderOffset
+            local size = hit.BoxSize
+            if off ~= nil and size ~= nil and size.y > 0 then
+                return Vector3(t.x + off.x, t.y + off.y, t.z)
+            end
+        end
+        return Vector3(t.x, t.y + self.TargetAimOffsetY, t.z)
+    end
+
     -- Impact effect fires here, from the normal AttackFast/HitEvent pipeline - not a
     -- "spawn effect after N seconds" timer. This is the actual fix for the detonates-in-place
     -- bug: the effect now happens exactly where and when the bolt lands, because it lands.
@@ -384,9 +403,10 @@ script SkillProjectile extends AttackComponent
             if isvalid(t) then
                 local p = t.WorldPosition
                 if self.HitEffectRUID ~= "" then
-                    -- 명중 이펙트는 조준점(콜라이더 중심)에 — 예전 발 + 0.5 는 작은 몬스터 머리 위에 떴다(b/skill-archer-motion).
-                    local aim = self:AimPointOf(defender)
-                    _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, aim, 0, Vector3(1, 1, 1), false)
+                    -- 명중 이펙트는 대상 몸 중심(콜라이더 중심)에 — 예전 발 + 0.5 는 작은 몬스터 머리 위에 떴다(b/skill-archer-motion).
+                    -- b/skill-magician-effects: 조준점(AimPointOf)이 아니라 HitPointOf — 볼트가 어디를 노리든(#82 에너지볼트 발 + 0.5) 명중 그림은 몸 중심 + HitEffectOffsetY.
+                    local hp = self:HitPointOf(defender)
+                    _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, Vector3(hp.x, hp.y + self.HitEffectOffsetY, hp.z), 0, Vector3(1, 1, 1), false)
                 end
                 -- 폭발 패스에서는 한 번만(대상마다 같은 소리가 겹친다).
                 if self.HitSoundRUID ~= "" and not (self.explodePass and self.explodeSoundPlayed) then
