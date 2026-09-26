@@ -546,3 +546,26 @@ pivot 이 그림 밖이던 원화는 투명 여백을 덧대 pivot 을 그림 �
 - **union 병합 중복**: 이 PR 은 9~12행, #94 는 바로 아래 13~14행을 고친다. `*.csv merge=union`(`.gitattributes`)이라 둘을 어느 순서로 합쳐도 충돌 대신 두 쪽 줄을 다 남겨 `MOTION_SK_W11_*` · `MOTION_SK_W21_SWORD_*` 가 두 줄씩 생기고 줄바꿈이 섞였다(`PlayerMotion` 은 같은 키면 뒤 행이 이겨 머지 순서에 따라 #94 의 하이퍼 바디 한손 자세가 옛 heal 행으로 되돌아갈 수 있었다 · 파워 스트라이크는 `SkillMotionSet` 을 쓰므로 영향 없음). `check-integrity` C3(`WeaponMotion: ["MotionId"]`)는 병합 결과에서 FAIL 6건으로 잡지만, PR 검사는 상대 PR 이 머지되기 전 main 기준이라 다시 돌리지 않으면 통과로 보일 수 있다.
 - **수리**: `MOTION_SK_W11_1_SWORD_1H/2H`(11~12행)는 **main 그대로** 둔다 — 부르는 코드가 없어(`SK_W11_1` 호출 없음) 켜져 있어도 무해하고, 이 PR 과 #94 사이에 바뀌지 않은 줄이 생겨 병합이 깨끗해진다. `SK_W11` 1H/2H 끔(9~10행) · `SK_W11_2` 끔(66~67행)은 그대로.
 - 확인: 3-way 병합(`git merge-file` · main 기준) — 이 PR → #94 · #94 → 이 PR 둘 다 충돌 0 · 결과 같음 · CRLF 74 · 중복 키 없음. **머지 순서 자유.**
+
+## 2026-09-26 (11차) — 죽이는 타격도 공격자 쪽으로 돌아본다 (A 점검 5831420893 2번 · Draft 로 되돌림)
+
+A 점검 코멘트 5831420893(2026-09-25 · 코드 읽기): A 파일 부분 문제 없음 + **"2번 — 사용자(강민구) 결정: 죽이는 타격도 공격자 쪽으로 돌아본다. 살아 있는 피격과 같은 `FaceAttacker` 규칙(보스 · 미니언 · 수비대 제외 그대로)으로 사망 분기에도."** 사용자(박승현) 지시 2026-09-26: 구현 · Play 전까지 Draft.
+
+### 수정 — `Monster.mlua` (A 파일 · #40 5813661726 승인 범위 + 위 A 결정)
+
+| 위치 | 변경 |
+|---|---|
+| `HandleHitEvent` 사망 분기(`:418`) | `Dead()` **앞에서** 보스(`BossSkillRunner`)가 아니면 `FaceAttacker(event.AttackerEntity, true)`. die 클립이 돌아본 쪽으로 재생된다. 시체 재타격(`originalHp <= 0`)은 전처럼 이 분기에 안 온다 |
+| `FaceAttacker(attacker, holdAi)` (`:475`) | 인자 `holdAi` 추가. 살아 있는 피격(`ReactToHit` `:529`)은 `false` — 동작 그대로. `true` 면 스프라이트 방향과 함께 **걷는 AI 쪽 값도 같은 방향으로** 맞춘다: 추적 `StateChaseMonster.flipTimeLeft` ≥ 1s · 배회 `StateMoveMonster.wanderDirLeft = 공격자 쪽`. 로그 `[Monster] lethal hit — <이름> faces attacker <이름> (left=… flipX=…)` |
+| 제외 | 보스 = 부르는 쪽에서(두 곳 다) · 레인 미니언 · 수비대 = `FaceAttacker` 안에서(켜진 `StateChaseMonster`/`StateMoveMonster` 가 없으면 아무것도 안 한다) — 살아 있는 피격과 같다 |
+
+**`holdAi` 를 넣은 이유 (코드 읽기):** 죽이는 타격은 HIT 를 거치지 않고 다음 틱에 `ConditionIsDead` 로 DEAD 가 된다. 살아 있는 피격은 `ReactToHit` 가 `CastFreezeLeft` 를 세워 추적 AI 가 방향을 안 쓰지만(`StateTypeChase.mlua:52`), 사망 분기에는 그게 없다. 그 사이 배회 AI 는 **매 프레임** FlipX 를 쓰고(`StateTypeWander.mlua:43`), 추적 AI 는 `flipTimeLeft` 가 0 이면 목표 쪽으로 쓴다(`StateTypeChase.mlua:103-107` — 목표가 공격자가 아닐 수 있다: 분신 · 다른 플레이어의 스킬). 부활하면 각 AI 의 `OnEnter` 가 새로 잡는다(`StateTypeChase.OnEnter` `flipTimeLeft = 0` · `StateTypeWander.OnEnter` 방향 뒤집기) — 부활 뒤 동작은 바뀌지 않는다.
+
+- LSP 진단: 에러 0 · 경고 0. `check-integrity`: 통과.
+- **Maker Play: 아직** (사용자 복귀 뒤 · 로컬 테스트 브랜치 #83 + #98 + #84 한 번에). 체크: 추적 몹 · 배회 몹을 **공격자 반대쪽을 보고 걷는 중에** 한 방에 죽인다 → die 클립이 공격자 쪽 · 로그 1줄 · 보스 · 미니언 · 수비대는 로그 없음 · 살아 있는 피격은 전과 같음 · 부활 뒤 걷는 방향 정상.
+
+### A 점검의 다른 항목 (변경 없음)
+
+- 1번(`jumpArmed = true` · `jumpTimeLeft = 0`) — A 가 문제없다고 봄.
+- 투사체 확인 부탁(더블 샷 · 스나이핑 · 럭키 세븐) — **이미 6차 Play 에서 PASS** (위 "Play 검증 6차" 표 · 이 조각 534행 · 첫 보이는 프레임부터 제 sprite). PR 코멘트로 답함.
+- 머지 순서: #86 → 이 PR 의 `스키마-계약.md:274` 한 줄(맨 위 TODO) → 이 PR. 그대로.

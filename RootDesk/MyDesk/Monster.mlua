@@ -412,6 +412,11 @@ script Monster extends Component
 		end
 
 		self:PlaySoundToMap(self.DieSoundRUID, self.SoundVolume)
+		-- 죽이는 타격도 공격자 쪽으로 돌아본다(A 점검 #83 comment 5831420893 2번 · 사용자 강민구 결정 2026-09-25). 살아 있는 피격(ReactToHit)과 같은 규칙 —
+		-- 보스(BossSkillRunner) 제외 · 레인 미니언 · 수비대는 FaceAttacker 안에서 빠진다. Dead() 보다 먼저 돌려 die 클립이 돌아본 쪽으로 재생된다.
+		if not isvalid(self.Entity.BossSkillRunner) then
+			self:FaceAttacker(event.AttackerEntity, true)
+		end
 		self:Dead()
 		local timerFunc = function() self:Respawn() end
 
@@ -467,27 +472,44 @@ script Monster extends Component
 	end
 
 	@ExecSpace("ServerOnly")
-	method void FaceAttacker(Entity attacker)
+	method void FaceAttacker(Entity attacker, boolean holdAi)
 		-- 공격자 쪽을 보게 스프라이트를 뒤집는다(#40 5813661726 2번). 걷는 AI 와 같은 식 — FlipX = (왼쪽을 향하나) ~= SpriteFacesLeftByDefault
 		-- (StateTypeChase:94 · StateTypeWander:43). 켜진 StateChaseMonster / StateMoveMonster 가 있는 몹만 — 레인 미니언 · 수비대(FactionAI 가
 		-- Scale.x 로 방향을 잡는다)와 보스(BossSkillRunner)는 건드리지 않는다. HIT 동안은 걷는 AI 가 돌지 않아 이 방향이 유지되고, CHASE 로 돌아오면 AI 가 다시 잡는다.
+		-- 부르는 곳: 살아 있는 피격(ReactToHit · holdAi false) · 죽이는 타격(HandleHitEvent 사망 분기 · holdAi true · 2026-09-26 #83). 보스 제외는 두 곳 다 부르는 쪽에서.
+		-- holdAi: 죽이는 타격은 HIT 를 거치지 않고 다음 틱에 DEAD 로 넘어간다. 그 사이 배회 AI(StateTypeWander.OnUpdate 는 매 프레임 FlipX 를 쓴다) ·
+		-- 추적 AI(flipTimeLeft 가 0 이면 목표 쪽으로 쓴다)가 방향을 되돌리지 않게 AI 쪽 값도 같은 방향으로 맞춘다. 부활하면 각 AI 의 OnEnter 가 새로 잡는다
+		-- (StateTypeChase.OnEnter flipTimeLeft = 0 · StateTypeWander.OnEnter 방향 뒤집기).
 		if not isvalid(attacker) or not isvalid(attacker.TransformComponent) then return end
 		local tr = self.Entity.TransformComponent
 		local sr = self.Entity.SpriteRendererComponent
 		if not isvalid(tr) or not isvalid(sr) then return end
 		local facesLeft = nil
 		local chase = self.Entity.StateChaseMonster
+		local wander = nil
 		if isvalid(chase) and chase.Enable then
 			facesLeft = chase.SpriteFacesLeftByDefault
 		else
-			local wander = self.Entity.StateMoveMonster
+			chase = nil
+			wander = self.Entity.StateMoveMonster
 			if isvalid(wander) and wander.Enable then
 				facesLeft = wander.SpriteFacesLeftByDefault
+			else
+				wander = nil
 			end
 		end
 		if facesLeft == nil then return end
 		local goingLeft = attacker.TransformComponent.WorldPosition.x < tr.WorldPosition.x
 		sr.FlipX = goingLeft ~= facesLeft
+		if holdAi then
+			if chase ~= nil and chase.flipTimeLeft < 1 then
+				chase.flipTimeLeft = 1
+			end
+			if wander ~= nil then
+				wander.wanderDirLeft = goingLeft
+			end
+			log("[Monster] lethal hit — " .. self.Entity.Name .. " faces attacker " .. attacker.Name .. " (left=" .. tostring(goingLeft) .. " flipX=" .. tostring(sr.FlipX) .. ")")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -504,7 +526,7 @@ script Monster extends Component
 		local runner = self.Entity.BossSkillRunner
 		local isBoss = isvalid(runner)
 		if not isBoss then
-			self:FaceAttacker(attacker)
+			self:FaceAttacker(attacker, false)
 		end
 		if isBoss then
 			-- 패턴 중엔 아무 반응 없음 (모션도 안 바뀐다)
