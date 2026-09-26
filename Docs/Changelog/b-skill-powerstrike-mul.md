@@ -573,3 +573,9 @@ A 점검 코멘트 5831420893(2026-09-25 · 코드 읽기): A 파일 부분 문�
 - 1번(`jumpArmed = true` · `jumpTimeLeft = 0`) — A 가 문제없다고 봄.
 - 투사체 확인 부탁(더블 샷 · 스나이핑 · 럭키 세븐) — **이미 6차 Play 에서 PASS** (위 "Play 검증 6차" 표 · 이 조각 534행 · 첫 보이는 프레임부터 제 sprite). PR 코멘트로 답함.
 - 머지 순서: #86 → 이 PR 의 `스키마-계약.md:274` 한 줄(맨 위 TODO) → 이 PR. 그대로.
+
+### main 합치기 + 계약서 스킬 등록서 8번 (2026-09-26 · #86 머지 뒤)
+
+- `origin/main`(`3b6c972` · #86 · #94 · #110 등) 합침. 충돌 1곳 = `Docs/스키마-계약.md` A-2 끝 — #110 의 `A-2-27 AvatarLook` 과 이 PR 의 `A-2-23 SkillMotionSet` 이 같은 자리 → **둘 다 남김(번호 순 23 → 27)** (#40 5844560359 A 안내).
+- 스킬 등록서 8번(지금 main `:305` · 예전 `:274`)에 보류한 줄: `Item/EquipService.mlua` `EnsureUser` · `EquippedItemId` 호출만(맨손 거절) · `Monster.mlua` · `StateTypeChase.mlua`(A 승인 #40 5813661726). 같은 칸에 #85 의 `PlayerHit` 사전 피해 훅 문장도 넣어 **#85 와 글자까지 같은 한 줄** → 두 PR 의 머지 순서와 상관없이 이 줄은 충돌하지 않는다.
+- `check-integrity` 전부 통과(경고 4 = main 과 같음).
