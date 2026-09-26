@@ -756,8 +756,14 @@ script MatchSessionLogic extends Logic
 		--    이 표가 없으면 그 사람 때문에 매치가 영영 안 끝난다.
 		if userId == nil or userId == "" then return end
 		if self.leftUsers == nil then self.leftUsers = {} end
+		local firstLeave = (self.leftUsers[userId] ~= true)
 		self.leftUsers[userId] = true
 		self:SnapshotRow(userId, true)
+		-- 플레이 기록 LEFT 1줄 (WO-031 묶음 6) — 매치가 도는 중에 **처음** 나갔을 때만(경로가 겹쳐도 한 줄 · 끝난 뒤 로비로 가는 건 정산 줄이 이미 있다 · Codex 리뷰 2026-09-26).
+		if firstLeave and self.Running and _MatchHistoryService ~= nil then
+			local lv = (_VillageOwnership ~= nil) and _VillageOwnership:LevelOf(userId) or 1
+			_MatchHistoryService:AppendLeft(userId, self.Difficulty, #(self.participants or {}), lv, self:KillsOf(userId))
+		end
 		-- 이탈자는 부활·안내 감시에서도 뺀다 (Codex 리뷰 2026-09-23).
 		if _PlayerRespawnService ~= nil then _PlayerRespawnService:RemoveParticipant(userId) end
 		if _GuideService ~= nil then _GuideService:RemoveParticipant(userId) end
@@ -841,6 +847,16 @@ script MatchSessionLogic extends Logic
 		if firstSettle and _AchievementService ~= nil then
 			local balrogDown = (_BalrogRoomService ~= nil and _BalrogRoomService.Winner ~= nil and _BalrogRoomService.Winner ~= "")
 			_AchievementService:OnMatchSettled(rows, self.Difficulty, balrogDown, self.leftUsers)
+		end
+		-- 플레이 기록 (WO-031 묶음 6 · MatchHistory · 정산 받은 판마다 1줄 · 판당 1번). 결과 = BALROG(선취) · ALL_OUT(전원 탈락) · TIMEOUT(시간 종료).
+		if firstSettle and _MatchHistoryService ~= nil then
+			local outcome = "TIMEOUT"
+			if _BalrogRoomService ~= nil and _BalrogRoomService.Winner ~= nil and _BalrogRoomService.Winner ~= "" then
+				outcome = "BALROG"
+			elseif reason == "전원 탈락" then
+				outcome = "ALL_OUT"
+			end
+			_MatchHistoryService:OnMatchSettled(rows, self.Difficulty, outcome, self.lastRewards, self.leftUsers)
 		end
 
 		if _MatchResultUIController == nil then

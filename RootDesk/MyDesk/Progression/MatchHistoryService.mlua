@@ -1,0 +1,103 @@
+@Logic
+script MatchHistoryService extends Logic
+
+	-- 플레이 기록 (WO-031 묶음 6 · 계약서 A-4 MatchHistory · GDD §4.12 · 로드맵 "결과 화면 = 플레이 기록").
+	--   저장 키 MatchHistory(AccountRecordData.hist) · 최신이 앞 · MaxEntries 넘으면 뒤(오래된 것)부터 버린다.
+	--   한 줄 = { t = 정산 UTC 초, d = ★, rk = 순위(0 = 없음), n = 참가 인원, o = MatchOutcome, h = 발록의 심장, x = 계정 경험치, k = 처치 수, lv = 매치 레벨, ti = TitleId }
+	--   정산 받은 판(탈락자 포함)마다 1줄(MatchSessionLogic.ShowResult) · 끝나기 전에 나간 판은 나가는 순간 o = LEFT 1줄(MarkLeft).
+	--   🔴 계정 값만 적는다(매치 재화 없음) · 저장은 PlayerDBManager 단일 창구(더티 → 다음 저장 · 룸 이동 동기 저장).
+
+	property integer MaxEntries = 20
+
+	-- DateTime.UtcNow.Elapsed(서기 1년 기준 ms) → 유닉스 초 차이
+	property integer EpochOffsetSec = 62135596800
+
+	@ExecSpace("ServerOnly")
+	method integer NowUnix()
+		-- 지금 UTC 유닉스 초. 🔴 ServerElapsedSeconds 는 월드 재시작 때 0 으로 돌아가 날짜로 못 쓴다(BalrogHeartService 와 같은 이유).
+		return math.floor(DateTime.UtcNow.Elapsed / 1000) - self.EpochOffsetSec
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Append(string userId, any row)
+		-- 맨 앞에 1줄 · 상한 넘는 뒷줄 버림 · 더티. 로드 전이면 건너뛴다(쓰지 않는다).
+		if _AccountRecordData == nil then return end
+		local rec = _AccountRecordData:Get(userId, "hist")
+		if rec == nil then
+			log_warning("[History] skip (not loaded) " .. tostring(userId))
+			return
+		end
+		table.insert(rec.r, 1, row)
+		while #rec.r > self.MaxEntries do table.remove(rec.r) end
+		_AccountRecordData:Touch(userId, "hist")
+		log("[History] +1 " .. userId .. " o=" .. tostring(row.o) .. " rk=" .. tostring(row.rk) .. "/" .. tostring(row.n)
+			.. " d=" .. tostring(row.d) .. " h=" .. tostring(row.h) .. " x=" .. tostring(row.x) .. " k=" .. tostring(row.k) .. " size=" .. tostring(#rec.r))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TitleIdOf(string userId)
+		-- 그 판 장착 칭호 TitleId(없으면 "").
+		if _AccountData == nil then return "" end
+		return _AccountData:GetEquippedTitle(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMatchSettled(any rows, integer difficulty, string outcome, any rewards, any leftUsers)
+		-- 정산 판: rows = 결과 정렬(순위) · rewards = RankRewardService.Settle 결과(userId → { hearts, exp, … }) · 중도 이탈자는 이미 LEFT 줄을 썼다.
+		if rows == nil then return end
+		local now = self:NowUnix()
+		for i, r in ipairs(rows) do
+			local uid = r.uid
+			local left = (leftUsers ~= nil and leftUsers[uid] == true)
+			if uid ~= nil and uid ~= "" and not left then
+				local rw = (rewards ~= nil) and rewards[uid] or nil
+				self:Append(uid, {
+					t = now, d = difficulty, rk = i, n = #rows, o = outcome,
+					h = (rw ~= nil) and (rw.hearts or 0) or 0, x = (rw ~= nil) and (rw.exp or 0) or 0,
+					k = r.kills or 0, lv = r.level or 1, ti = self:TitleIdOf(uid),
+				})
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AppendLeft(string userId, integer difficulty, integer players, integer level, integer kills)
+		-- 끝나기 전에 나감(포기 · 강퇴 · 접속 끊김) — 순위·보상 없음. 접속이 이미 끊겼으면 원장이 없어 조용히 건너뛴다.
+		self:Append(userId, { t = self:NowUnix(), d = difficulty, rk = 0, n = players, o = "LEFT", h = 0, x = 0, k = kills, lv = level, ti = self:TitleIdOf(userId) })
+	end
+
+	@ExecSpace("ServerOnly")
+	method string FormatKst(integer unixSec)
+		-- 유닉스 초 → "MM/DD HH:MM"(한국 시간 · UTC+9). 날짜 계산 = 그레고리력 일수 변환(Howard Hinnant civil_from_days).
+		local s = unixSec + 9 * 3600
+		local days = s // 86400
+		local secs = s - days * 86400
+		local z = days + 719468
+		local era = z // 146097
+		local doe = z - era * 146097
+		local yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+		local doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+		local mp = (5 * doy + 2) // 153
+		local day = doy - (153 * mp + 2) // 5 + 1
+		local month = (mp < 10) and (mp + 3) or (mp - 9)
+		return string.format("%02d/%02d %02d:%02d", month, day, secs // 3600, (secs % 3600) // 60)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildView(string userId)
+		-- 계정 창 기록 탭: H|날짜|★|순위|인원|결과|심장|경험치|처치|레벨|칭호이름 (최신이 앞) · 없으면 NONE
+		local rec = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "hist") or nil
+		if rec == nil then return "LOADING" end
+		if #rec.r == 0 then return "NONE" end
+		local rows = {}
+		for _, h in ipairs(rec.r) do
+			local tn = (_TitleService ~= nil) and _TitleService:NameOf(tostring(h.ti or "")) or ""
+			table.insert(rows, table.concat({ "H", self:FormatKst(math.floor(tonumber(h.t) or 0)), tostring(math.floor(tonumber(h.d) or 0)),
+				tostring(math.floor(tonumber(h.rk) or 0)), tostring(math.floor(tonumber(h.n) or 0)), tostring(h.o or ""),
+				tostring(math.floor(tonumber(h.h) or 0)), tostring(math.floor(tonumber(h.x) or 0)), tostring(math.floor(tonumber(h.k) or 0)),
+				tostring(math.floor(tonumber(h.lv) or 0)), tn }, "|"))
+		end
+		return table.concat(rows, ";")
+	end
+
+end
