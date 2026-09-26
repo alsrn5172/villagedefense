@@ -131,4 +131,99 @@ script MatchTallyService extends Logic
 		return self.growth[userId] or 0
 	end
 
+	-- ── 공개 통계 PublicPlayerSummary (WO-031 묶음 3 · 계약 A-4 · GDD §4.12 통계 분석관) ──
+
+	@ExecSpace("ServerOnly")
+	method any SurvivorsFor(string viewerId)
+		-- 지금 매치의 생존자 전원(참가자 − 탈락 − 중도 이탈 − 보는 사람 자신) · 참가 순서. 인원 가변(고정 5인 아님).
+		local out = {}
+		local m = _MatchSessionLogic
+		if m == nil or m.participants == nil then return out end
+		-- 🔴 보는 사람도 **지금 매치의 생존자**여야 한다(Codex 리뷰 2026-09-26): 탈락·이탈·다른 매치 사람이 RPC 를 직접 불러도 빈 목록.
+		if not m:IsParticipant(viewerId) then return out end
+		if _VillageOwnership ~= nil and _VillageOwnership:IsEliminated(viewerId) then return out end
+		if m.leftUsers ~= nil and m.leftUsers[viewerId] == true then return out end
+		for i = 1, #m.participants do
+			local uid = m.participants[i]
+			local skip = (uid == viewerId)
+			if not skip and _VillageOwnership ~= nil and _VillageOwnership:IsEliminated(uid) then skip = true end
+			if not skip and m.leftUsers ~= nil and m.leftUsers[uid] == true then skip = true end
+			if not skip then table.insert(out, uid) end
+		end
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsSurvivorFor(string viewerId, string userId)
+		-- viewerId 의 통계 창이 userId 를 볼 수 있나(같은 매치 생존자 · 자신 아님).
+		for _, uid in ipairs(self:SurvivorsFor(viewerId)) do
+			if uid == userId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Clean(string s)
+		-- 뷰 CSV 구분자(";" 행 · "|" 칸 · "=")를 이름에서 지운다.
+		if s == nil then return "" end
+		local out, _n = string.gsub(s, "[;|=]", " ")
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PublicSummary(string userId)
+		-- 🔴 허용 필드만 복사한다(GDD §4.12 · 계약 A-4). 매치·계정 재화 · 창고 · 시설 레벨/HP/파괴 · 수비대 · 파병 편성 · 발록 피해는 넣지 않는다.
+		--   name · level(매치 레벨) · growth · bossKills · kills · lineStage(1 포탑 · 2 억제기 · 3 넥서스 · 0 마을 없음) · title(칭호 이름 · 묶음 5) · gear("슬롯:ItemId:강화,…")
+		local name = userId
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent.Nickname ~= nil and player.PlayerComponent.Nickname ~= "" then
+			name = player.PlayerComponent.Nickname
+		end
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		local level = (e ~= nil) and (e.level or 1) or 1
+		local lineStage = 0
+		if _LaneStateService ~= nil then
+			local vid = _LaneStateService:VillageOfUser(userId)
+			if vid ~= "" then
+				local v = _LaneStateService:EnsureVillage(vid)
+				if v ~= nil then
+					local front = _LaneStateService:FrontStage(v)
+					if front == "TOWER" then lineStage = 1 elseif front == "SUPPRESSOR" then lineStage = 2 else lineStage = 3 end
+				end
+			end
+		end
+		local gear = {}
+		if _EquipService ~= nil and _InventoryService ~= nil and _EquipService.slots ~= nil then
+			local eq = _EquipService:EnsureUser(userId)
+			if eq ~= nil then
+				for _, slot in ipairs(_EquipService.slots) do
+					local iid = eq[slot]
+					if iid ~= nil and iid ~= "" then
+						local it = _InventoryService:Find(userId, iid)
+						if it ~= nil then table.insert(gear, slot .. ":" .. tostring(it.itemId) .. ":" .. tostring(it.enh or 0)) end
+					end
+				end
+			end
+		end
+		return {
+			uid = userId, name = self:Clean(name), level = level,
+			growth = self:GrowthOf(userId), bossKills = self:BossKillsOf(userId), kills = self:KillsOf(userId),
+			lineStage = lineStage, title = self:Clean(self:TitleNameOf(userId)), gear = table.concat(gear, ","),
+		}
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TitleNameOf(string userId)
+		-- 장착 칭호 이름(묶음 5 에서 칭호 원장을 붙인다). 지금은 없음.
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PublicSummaryCsv(string userId)
+		-- 상세 뷰 한 줄: SUM|uid|이름|레벨|성장도|보스처치|몬스터처치|전선단계|칭호|장비
+		local s = self:PublicSummary(userId)
+		return table.concat({ "SUM", s.uid, s.name, tostring(s.level), tostring(s.growth), tostring(s.bossKills),
+			tostring(s.kills), tostring(s.lineStage), s.title, s.gear }, "|")
+	end
+
 end
