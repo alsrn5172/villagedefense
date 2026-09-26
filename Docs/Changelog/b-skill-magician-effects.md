@@ -96,3 +96,8 @@
 - `SkillProjectile.HitPointOf(target)` 새 메서드: 대상 콜라이더 중심(없으면 발 + `TargetAimOffsetY`) · **스킬별 예외 없음**. `OnAttack` 명중 이펙트 = `HitPointOf + (0, HitEffectOffsetY)`. 조준점 `AimPointOf` 는 그대로(볼트 궤적용) — main 의 #82(에너지볼트 조준 = 발 + 0.5)와 섞여도 명중 그림 자리는 바뀌지 않는다.
 - `SkillProjectile.HitEffectOffsetY`(기본 0) ← `SkillAttack.SpawnOneProjectile` 이 `SkillExecutors:GetImpactOffsetY(skillId)`(= `effectOverrides[skill].impact.offsetY` · 없으면 0)로 넣는다.
 - `SK_M11.impact.offsetY = 0.20` — 다른 투사체(더블 샷 · 럭키 세븐 · 스나이핑 · 애로우 블로우)는 0 = 예전과 같음.
+
+## 에너지볼트 조준 = 발 + 0.22 · 수평 비행 (2026-09-27 · 사용자 선택 3)
+
+- main 합침(`3b6c972` · #82 포함) 뒤 `SkillProjectile.AimPointOf` 의 SK_M11 예외를 **발 + 0.5 → 발 + 0.22**. 발사 높이(`effectOverrides.SK_M11.spawn.offsetY` 0.22)와 같아 볼트가 수평으로 난다(레드 영상 ≈0.20 수평). #82(B · 곡선 궤적 복구)의 곡선은 없어진다.
+- 다른 투사체는 그대로(콜라이더 중심). 명중 그림 자리(`HitPointOf` + 0.20)도 그대로.
