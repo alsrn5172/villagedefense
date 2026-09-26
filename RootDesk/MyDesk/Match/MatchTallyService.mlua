@@ -28,6 +28,10 @@ script MatchTallyService extends Logic
 	@HideFromInspector
 	property any growthDef = nil
 
+	-- userId → { [key] = true } 매치당 한 번만 세는 일(업적 ENHANCE_ALL_MAX 등 · 묶음 5)
+	@HideFromInspector
+	property any onceKeys = nil
+
 	method void OnBeginPlay()
 		-- 서버만 원장.
 		if not self:IsServer() then return end
@@ -63,6 +67,22 @@ script MatchTallyService extends Logic
 		self.bossKills = {}
 		self.growth = {}
 		self.growthKeys = {}
+		self.onceKeys = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean MarkOnce(string userId, string key)
+		-- 이번 판 처음이면 true(그리고 표시) · 이미 했으면 false.
+		if userId == nil or userId == "" then return false end
+		if self.onceKeys == nil then self.onceKeys = {} end
+		local seen = self.onceKeys[userId]
+		if seen == nil then
+			seen = {}
+			self.onceKeys[userId] = seen
+		end
+		if seen[key] then return false end
+		seen[key] = true
+		return true
 	end
 
 	@ExecSpace("ServerOnly")
@@ -76,8 +96,12 @@ script MatchTallyService extends Logic
 		if n == 1 or n == 10 or n == 50 or n % 100 == 0 then
 			log("[Tally] kill " .. userId .. " n=" .. tostring(n) .. " last=" .. tostring(monsterId) .. ((eliteId ~= nil and eliteId ~= "") and (" elite=" .. eliteId) or ""))
 		end
-		-- 계정 기록으로 넘긴다(여기 한 곳): 도감(묶음 4).
+		-- 계정 기록으로 넘긴다(여기 한 곳): 도감(묶음 4) · 업적 누적(묶음 5).
 		if _CollectionService ~= nil then _CollectionService:OnMonsterKill(userId, monsterId, eliteId) end
+		if _AchievementService ~= nil then
+			_AchievementService:Add(userId, "MONSTER_KILL", 0, 1)
+			if eliteId ~= nil and eliteId ~= "" then _AchievementService:Add(userId, "ELITE_KILL", 0, 1) end
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -88,8 +112,9 @@ script MatchTallyService extends Logic
 		local n = (self.bossKills[topUserId] or 0) + 1
 		self.bossKills[topUserId] = n
 		log("[Tally] boss " .. tostring(bossId) .. " top=" .. topUserId .. " n=" .. tostring(n))
-		-- 계정 기록으로 넘긴다: 도감(묶음 4 · 인정 규칙은 CollectionService.BossCreditAllHitters).
+		-- 계정 기록으로 넘긴다: 도감(묶음 4 · 인정 규칙은 CollectionService.BossCreditAllHitters) · 업적 BOSS_KILL(지역 보스 · 최다 피해 판정 · 묶음 5).
 		if _CollectionService ~= nil then _CollectionService:OnBossKill(bossId, topUserId, dmg) end
+		if _AchievementService ~= nil then _AchievementService:Add(topUserId, "BOSS_KILL", 0, 1) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -224,8 +249,9 @@ script MatchTallyService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method string TitleNameOf(string userId)
-		-- 장착 칭호 이름(묶음 5 에서 칭호 원장을 붙인다). 지금은 없음.
-		return ""
+		-- 장착 칭호 이름(TitleService · 없으면 "").
+		if _TitleService == nil then return "" end
+		return _TitleService:EquippedNameOf(userId)
 	end
 
 	@ExecSpace("ServerOnly")

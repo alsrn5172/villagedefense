@@ -1,0 +1,187 @@
+@Logic
+script AchievementService extends Logic
+
+	-- 업적 (WO-031 묶음 5 · 계약서 A-2-23 AchievementConfig · A-4 AccountAchievement · GDD §4.12).
+	--   진행 = 계정 누적 카운터 c["<CondType>:<CondParam>"] (AccountRecordData.ach) · 도감 도출 조건(DEX_FOUND · DEX_BOSS)은 도감에서 센다.
+	--   달성 = 목표 이상이 되는 순간 서버가 **자동 지급**(계정 경험치 + 칭호) + d[AchievementId] = 1 기록 — d 에 있으면 두 번 안 준다.
+	--   로드 직후 한 번 다시 판정한다(행을 나중에 추가해도 이미 넘긴 계정이 받는다).
+	-- 이벤트 대신 직접 호출(계약 B-3 Progression 예약 유지): MatchTallyService(처치·보스) · CollectionService(새 발견) · MatchSessionLogic(정산)
+	--   · LaneStateService(모집·파병) · EnhanceService/EquipService(강화 전부 최대).
+
+	-- 정렬된 업적 정의 { id, name, desc, cond, param, target, exp, title, order }
+	@HideFromInspector
+	property any defs = nil
+
+	-- 장비 6칸(보조무기 제외 · ENHANCE_ALL_MAX)
+	@HideFromInspector
+	property any coreSlots = nil
+
+	method void OnBeginPlay()
+		-- 서버만 표를 읽는다.
+		if not self:IsServer() then return end
+		self.coreSlots = { "WEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }
+		self:Load()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Load()
+		-- AchievementConfig.csv. 🔴 DataSet 행은 1-based.
+		self.defs = {}
+		local t = _DataService:GetTable("AchievementConfig")
+		if t == nil then
+			log_warning("[Ach] AchievementConfig dataset not found — 업적 없음")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local id = tostring(t:GetCell(i, "AchievementId") or "")
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if id ~= "" and enabled then
+				local nm, _n = string.gsub(tostring(t:GetCell(i, "Name") or id), "[;|=]", " ")
+				local ds, _m = string.gsub(tostring(t:GetCell(i, "Desc") or ""), "[;|=]", " ")
+				table.insert(self.defs, {
+					id = id, name = nm, desc = ds, cond = tostring(t:GetCell(i, "CondType") or ""),
+					param = math.floor(tonumber(t:GetCell(i, "CondParam")) or 0),
+					target = math.max(0, math.floor(tonumber(t:GetCell(i, "Target")) or 0)),
+					exp = math.max(0, math.floor(tonumber(t:GetCell(i, "AccountExp")) or 0)),
+					title = tostring(t:GetCell(i, "TitleId") or ""),
+					order = math.floor(tonumber(t:GetCell(i, "SortOrder")) or 0),
+				})
+			end
+		end
+		table.sort(self.defs, function(a, b)
+			if a.order ~= b.order then return a.order < b.order end
+			return a.id < b.id
+		end)
+		log("[Ach] AchievementConfig loaded: " .. tostring(#self.defs) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method string CounterKey(string cond, integer param)
+		-- 누적 카운터 키.
+		return cond .. ":" .. tostring(param)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Add(string userId, string cond, integer param, integer amount)
+		-- 계정 누적 카운터 += amount → 그 조건의 업적만 다시 판정. 로드 전이면 조용히 건너뛴다.
+		if amount <= 0 or _AccountRecordData == nil then return end
+		local rec = _AccountRecordData:Get(userId, "ach")
+		if rec == nil then return end
+		local key = self:CounterKey(cond, param)
+		rec.c[key] = (rec.c[key] or 0) + amount
+		_AccountRecordData:Touch(userId, "ach")
+		self:Evaluate(userId, cond)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TargetOf(any d)
+		-- 목표 수. 도감 도출 조건의 0 = 도감 전 종.
+		if d.target > 0 then return d.target end
+		if d.cond == "DEX_FOUND" and _CollectionService ~= nil and _CollectionService.monList ~= nil then return #_CollectionService.monList end
+		if d.cond == "DEX_BOSS" and _CollectionService ~= nil and _CollectionService.bossList ~= nil then return #_CollectionService.bossList end
+		return 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer ProgressOf(string userId, any d, any rec)
+		-- 지금 진행 값.
+		if d.cond == "DEX_FOUND" then return (_CollectionService ~= nil) and _CollectionService:FoundMonsters(userId) or 0 end
+		if d.cond == "DEX_BOSS" then return (_CollectionService ~= nil) and _CollectionService:FoundBosses(userId) or 0 end
+		return rec.c[self:CounterKey(d.cond, d.param)] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Evaluate(string userId, string onlyCond)
+		-- 아직 안 받은 업적 중 목표를 넘긴 것 전부 지급(onlyCond = "" 이면 전부 본다).
+		if self.defs == nil or _AccountRecordData == nil then return end
+		local rec = _AccountRecordData:Get(userId, "ach")
+		if rec == nil then return end
+		for _, d in ipairs(self.defs) do
+			if (onlyCond == "" or d.cond == onlyCond) and rec.d[d.id] == nil then
+				if self:ProgressOf(userId, d, rec) >= self:TargetOf(d) then self:Complete(userId, d, rec) end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Complete(string userId, any d, any rec)
+		-- 달성: 기록 먼저(두 번 안 주게) → 계정 경험치 → 칭호 → 알림.
+		rec.d[d.id] = 1
+		_AccountRecordData:Touch(userId, "ach")
+		if d.exp > 0 and _AccountLevelService ~= nil then _AccountLevelService:AddExp(userId, d.exp, "ACHIEVEMENT") end
+		local titleName = ""
+		if d.title ~= "" and _TitleService ~= nil then
+			_TitleService:Grant(userId, d.title)
+			titleName = _TitleService:NameOf(d.title)
+		end
+		log("[Ach] complete " .. d.id .. " exp+" .. tostring(d.exp) .. " title=" .. d.title .. " (" .. userId .. ")")
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage("업적 달성: " .. d.name .. " — 계정 경험치 +" .. tostring(d.exp) .. ((titleName ~= "") and (" · 칭호 " .. titleName) or ""), userId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Recheck(string userId)
+		-- 전부 다시 판정(로드 직후 · 새 도감 발견 뒤).
+		self:Evaluate(userId, "")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMatchSettled(any rows, integer difficulty, boolean balrogDown, any leftUsers)
+		-- 매치 정산(MatchSessionLogic.ShowResult · 정렬 순서 = 순위 · 탈락자는 뒤). 중도 이탈자는 정산이 없으니 업적도 없다.
+		--   MATCH_SETTLED +1 · 탈락 안 한 1위 = RANK_FIRST(무관 + ★) · 발록이 쓰러진 판에서 발록 피해 > 0 = BALROG_HIT
+		if rows == nil then return end
+		for i, r in ipairs(rows) do
+			local uid = r.uid
+			local left = (leftUsers ~= nil and leftUsers[uid] == true)
+			if uid ~= nil and uid ~= "" and not left then
+				self:Add(uid, "MATCH_SETTLED", 0, 1)
+				if i == 1 and not r.elim then
+					self:Add(uid, "RANK_FIRST", 0, 1)
+					self:Add(uid, "RANK_FIRST", difficulty, 1)
+				end
+				if balrogDown and (r.damage or 0) > 0 then self:Add(uid, "BALROG_HIT", 0, 1) end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckEnhanceAll(string userId)
+		-- 장비 6칸(무기·모자·상의·하의·신발·장갑)이 전부 장착 + 각자 최대 강화면 ENHANCE_ALL_MAX +1 — 매치당 한 번(MatchTallyService.MarkOnce).
+		if _EquipService == nil or _InventoryService == nil or _ItemCatalog == nil then return end
+		local eq = _EquipService:EnsureUser(userId)
+		if eq == nil then return end
+		for _, slot in ipairs(self.coreSlots or {}) do
+			local iid = eq[slot]
+			if iid == nil or iid == "" then return end
+			local it = _InventoryService:Find(userId, iid)
+			if it == nil then return end
+			local def = _ItemCatalog:Get(it.itemId)
+			if def == nil or (def.maxEnhance or 0) <= 0 or (it.enh or 0) < def.maxEnhance then return end
+		end
+		if _MatchTallyService ~= nil and not _MatchTallyService:MarkOnce(userId, "ENHANCE_ALL_MAX") then return end
+		log("[Ach] enhance-all-max " .. userId)
+		self:Add(userId, "ENHANCE_ALL_MAX", 0, 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildView(string userId)
+		-- 계정 창 업적 탭: SUM|달성|전체 · A|id|이름|설명|진행|목표|경험치|칭호이름|받음(1/0)
+		local rec = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "ach") or nil
+		if rec == nil then return "LOADING" end
+		local rows = {}
+		local done = 0
+		for _, d in ipairs(self.defs or {}) do
+			if rec.d[d.id] ~= nil then done = done + 1 end
+		end
+		table.insert(rows, "SUM|" .. tostring(done) .. "|" .. tostring(#(self.defs or {})))
+		for _, d in ipairs(self.defs or {}) do
+			local target = self:TargetOf(d)
+			local cur = math.min(self:ProgressOf(userId, d, rec), target)
+			local tn = (_TitleService ~= nil) and _TitleService:NameOf(d.title) or ""
+			table.insert(rows, table.concat({ "A", d.id, d.name, d.desc, tostring(cur), tostring(target), tostring(d.exp), tn, (rec.d[d.id] ~= nil) and "1" or "0" }, "|"))
+		end
+		return table.concat(rows, ";")
+	end
+
+end
