@@ -170,11 +170,19 @@ script SkillExecutors extends Logic
     -- 컷신 예열(2026-09-13 Play 실측): 화면 크기 screen 클립(1400×850 · 60~130프레임)은 그 세션에서 처음 재생할 때 에셋 로딩 때문에 몇 초 뒤에야 뜨거나
     -- 아예 안 보였다(파이널 에임 · 일도양단 모두 2회차부터 즉시). 유저가 들어오면 CutscenePrewarmDelay 뒤 각 컷신 RUID 를 그 유저에 붙여 보이지 않는 크기로 한 번 재생해
     -- 클라가 미리 받아 두게 한다. 목록은 effectOverrides 의 cast 중 scale 이 있는 화면 연출(불굴의 진·대마법·폭풍의 화살·메소 익스플로전·함포 사격).
+    -- + cast.prewarm = true 인 시전 이펙트(하이퍼 바디 = 쓸만한 하이퍼 바디(라이브 2022 모습과 일치) · 2026-09-25 #94 Play 실측: 세션 첫 시전만 클립 로드 0.26s 만큼 늦게 떴다 · 두 번째 0.017s).
     property boolean CutscenePrewarm = true
 
     property number CutscenePrewarmDelay = 3
 
     property number CutscenePrewarmScale = 0.01
+
+    -- 컷신 길이 실측(b/skill-cutscene-measured · 2026-09-24): 서버 시작 CutsceneMeasureDelay 뒤 한 번, 화면 컷신 cast 클립(cast.cutsceneSeconds 가 있는 것)마다
+    -- _ResourceService:LoadAnimationClipAndWait → Frame.Delay 합 → PlayRate 로 나눈 초를 cutsceneClipSeconds[skillId] 에 둔다(MeasureCutsceneClips).
+    -- 동기 로드라 시전 경로에서는 부르지 않는다. GetCutsceneSeconds 가 이 값을 먼저 쓰고, 없거나 0 이면 cast.cutsceneSeconds 리터럴로 돌아간다.
+    property number CutsceneMeasureDelay = 0.5
+
+    property table cutsceneClipSeconds = {}
 
     -- PlaySpriteFlash 가 스폰하는 sprite 엔티티 이름 일련번호(같은 프레임에 둘 이상 떠도 이름이 겹치지 않게).
     property integer spriteFlashCount = 0
@@ -192,7 +200,7 @@ script SkillExecutors extends Logic
     -- 서버: userId → 분신 서 있기 루프 복귀 타이머 id(PlayShadowMimic · HideShadowFor 가 같이 쓴다).
     property table shadowMimicTimers = {}
 
-    -- 화면 컷신(cast 에 scale + noFlip 이 있는 연출) 동안 분신을 숨기는 시간(초 · spec.cutsceneSeconds 가 있으면 그것). 2026-09-13 제보 "쉐도우 파트너 중 R(메소 익스플로전)을 누르면
+    -- 화면 컷신 동안 분신을 숨기는 시간(초). 2026-09-24 부터 PlayStageEffect 는 GetCutsceneSeconds(실측 · 없으면 리터럴)를 넘기고 이 값은 쓰지 않는다(예비값). 2026-09-13 제보 "쉐도우 파트너 중 R(메소 익스플로전)을 누르면
     -- 컷신 내내 분신이 보인다" — 분신 루프·따라하기 클립은 컷신 위에 그려진다. 컷신이 걷힌 뒤(메소 익스플로전 `_END` 5.5 와 같은 시점) 남은 버프 시간만큼 루프를 다시 건다.
     property number CutsceneShadowHideSeconds = 5.5
 
@@ -215,6 +223,28 @@ script SkillExecutors extends Logic
     property table shadowFacing = {}
 
     property table shadowFacingTimers = {}
+
+    -- 궁 화면 컷신 UI(b/skill-cutscene-measured · #40 comment 5830063946 A 결정 · 2026-09-26): 화면 컷신(cast.cutsceneSeconds 가 있는 것)은 월드 이펙트라
+    -- 플레이어에 붙어 맵 끝에서 화면 한쪽이 비고(카메라가 맵 끝에서 멈춘다), UI 그룹(HUD)이 그 위에 그려졌다. 그래서 **시전자 화면에만** 같은 클립을
+    -- ui/SkillCutsceneGroup(GroupOrder 30 · 모든 UI 그룹 위)의 전체 화면 sprite 로 한 번 더 재생한다 — 화면을 덮는 크기 · 클립 비율 유지 · 넘치는 쪽은 잘린다.
+    -- 다른 플레이어는 지금처럼 월드 이펙트만 본다. false 면 UI 컷신을 쓰지 않는다(예전과 같음).
+    property boolean CutsceneUI = true
+
+    -- ui/SkillCutsceneGroup/Cutscene (UIBuilder 바인딩 · 클라에서만 유효 · 서버에서는 nil).
+    property Entity cutsceneUiSprite = "ff01f805-e353-4eb2-9547-588dcac35b1e"
+
+    -- UI 컷신 오버스캔 배율(2026-09-26 Play): 화면을 덮는 배율(가로비 · 세로비 중 큰 쪽)에 이만큼 더 곱한다. 클립 그림은 프레임 캔버스 안쪽에서 투명하게
+    -- 흐려져, 덮는 크기(1.00)로도 화면 가장자리마다 맵이 비쳤다(보기 939×528 에서 한 변 4~32px · 맵 끝 · 가운데 같음). 흐린 테두리를 화면 밖으로 민다.
+    -- 프레임마다 제 크기로 그리는 건 그대로다. 0 이하면 1. 1.08 = 사용자가 Play 에서 1.00/1.04/1.08/1.12 를 맵 끝에서 비교해 고른 값(5종 궁 모두 가득 참 · 2026-09-26).
+    -- 디자이너가 컷신을 새로 넘겨주면(테두리 처리 포함) 이 값은 다시 정한다.
+    property number CutsceneOverscan = 1.08
+
+    -- 클라: 가장 최근 UI 컷신 번호(새 시전이 오면 이전 것의 늦은 콜백 · 끄기 타이머를 무시한다) · 끄기 타이머 id · RUID → 프레임 크기(px · 가장 큰 가로 · 세로) 캐시.
+    property integer cutsceneUiToken = 0
+
+    property integer cutsceneUiTimer = 0
+
+    property table cutsceneUiClipSize = {}
 
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
@@ -251,6 +281,9 @@ script SkillExecutors extends Logic
         self:BuildEffectOverrides()
         self:BuildCastSounds()
         self:StartCutscenePrewarm()
+        _TimerService:SetTimerOnce(function()
+            self:MeasureCutsceneClips()
+        end, self.CutsceneMeasureDelay)
     end
 
     @ExecSpace("ServerOnly")
@@ -258,6 +291,42 @@ script SkillExecutors extends Logic
         if self.prewarmEnterHandler ~= nil then
             _UserService:DisconnectEvent(UserEnterEvent, self.prewarmEnterHandler)
             self.prewarmEnterHandler = nil
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void MeasureCutsceneClips()
+        -- 화면 컷신 클립의 실제 재생 길이(초)를 재서 cutsceneClipSeconds[skillId] 에 캐시한다. EffectService 는 serial 로 재생 상태·끝 이벤트를 알려 주지 않는다
+        -- (EffectService.d.mlua: PlayEffect/PlayEffectAttached/RemoveEffect 뿐) → 클립 메타데이터(AnimationClip.Frames[].Delay · PlayRate)로 길이를 구한다.
+        -- 방식은 A 의 Boss/BossSkillRunner.mlua ClipSeconds 와 같다(프레임 지연 합 · 합이 20 보다 크면 ms 로 보고 /1000). 그 메서드를 부르지 않고 여기서 따로 잰다(Skill/ 안에서만).
+        -- cast 옵션에 PlayRate 를 넘기지 않으므로(PlayStageEffect) 클립 자체의 PlayRate 만 반영한다.
+        for skillId, entry in pairs(self.effectOverrides) do
+            local spec = entry.cast
+            if spec ~= nil and spec.ruid ~= nil and spec.cutsceneSeconds ~= nil then
+                local clip = _ResourceService:LoadAnimationClipAndWait(spec.ruid)
+                if clip == nil or clip.Frames == nil then
+                    log_warning("SkillExecutors: cutscene measure " .. skillId .. " ruid=" .. spec.ruid .. " failed (no clip) — literal " .. tostring(spec.cutsceneSeconds) .. "s kept")
+                else
+                    local n = #clip.Frames
+                    local total = 0
+                    for i = 1, n do
+                        local f = clip.Frames[i]
+                        if f ~= nil and f.Delay ~= nil then
+                            total = total + f.Delay
+                        end
+                    end
+                    if total > 20 then
+                        total = total / 1000
+                    end
+                    local rate = clip.PlayRate
+                    if rate ~= nil and rate > 0 then
+                        total = total / rate
+                    end
+                    self.cutsceneClipSeconds[skillId] = total
+                    log("SkillExecutors: cutscene measure " .. skillId .. " ruid=" .. spec.ruid .. " frames=" .. tostring(n)
+                        .. " playRate=" .. tostring(rate) .. " measured=" .. string.format("%.3f", total) .. "s literal=" .. tostring(spec.cutsceneSeconds) .. "s")
+                end
+            end
         end
     end
 
@@ -292,7 +361,8 @@ script SkillExecutors extends Logic
             for skillId, entry in pairs(self.effectOverrides) do
                 local spec = entry.cast
                 -- 화면 컷신 = cast.cutsceneSeconds 가 있는 것(2026-09-14 · 예전 "scale + noFlip" 기준은 에너지 쉴드 방울 cast 까지 잡았다).
-                if spec ~= nil and spec.ruid ~= nil and spec.cutsceneSeconds ~= nil then
+                -- cast.prewarm = 컷신은 아니지만 첫 재생이 늦게 뜨는 시전 이펙트(예열만 · 컷신 판정(무적 창 · 분신 숨김)에는 쓰지 않는다).
+                if spec ~= nil and spec.ruid ~= nil and (spec.cutsceneSeconds ~= nil or spec.prewarm == true) then
                     _EffectService:PlayEffectAttached(spec.ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
                     n = n + 1
                 end
@@ -396,7 +466,8 @@ script SkillExecutors extends Logic
                 cast = { ruid = "7969eaa970fc48b18fd29aea56b1f583", noFlip = true },
             },
             SK_M31 = {   -- 대마법 — skill/224.img/skill/2241500 프로즌 라이트닝(썬콜 오리진 · 기획서 추천): screen 92프레임 컷신(1445×859 · pivot 중앙) · 세이크리드 바스티온과 같은 보정
-                -- cutsceneSeconds(2026-09-13 · 궁 무적 창 = 컷신 길이 · SkillCaster 가 GetCutsceneSeconds 로 읽는다 · 분신/변신 루프 숨김 길이도 같이): screen 92프레임 ≈ 5.0s(세이크리드 바스티온 89f = 4.8s 실측 비례).
+                -- cutsceneSeconds = 화면 컷신 표시 + 실측 실패 때의 대체 길이(초). 실제 길이는 MeasureCutsceneClips 가 클립 Frame.Delay 로 잰 값(GetCutsceneSeconds · 2026-09-24).
+                --   궁 무적 창 · 분신 숨김 · 예열 목록이 이 필드 유무로 컷신을 가린다. 5.0 = screen 92프레임을 세이크리드 바스티온(89f ≈ 4.8s)에 비례시킨 옛 추정(2026-09-13).
                 cast = { ruid = "56a96a64e56646d085dc631392330837", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 5.0 },
                 impact = { ruid = "05ab65bf3aaf4a82b0de9129fcf122f5", scale = 2.0 },   -- hit/0 (204×212) 을 폭발 중심에 · 있으면 ExecuteBlast 의 엔진 파티클 연쇄는 생략
             },
@@ -432,18 +503,26 @@ script SkillExecutors extends Logic
                     swingO3 = { ruid = "93eab70df40a492da810bcc87db9de27" },                   -- SK_W11_trail_swingO3_bv (80003330 swordOL/swingO3 1프레임 +249° · 112×60)
                 },
             },
-            SK_W21 = {   -- 하이퍼 바디 — skill/000.img/skill/0008003 (하이퍼 바디): effect 12프레임(시전) + affected 7프레임(지속 중 반복)
-                cast = { ruid = "2e96311164ef44e384f03de145c9b604", noFlip = true },
-                loop = { ruid = "df2d826ed24144f681f9d74473f47991" },
+            SK_W21 = {   -- 하이퍼 바디 — 2026-09-25 사용자 결정(#94 · 원장 "Skill look rule" = 지금 라이브 게임의 모습): 쓸만한 하이퍼 바디(라이브 2022 모습과 일치) skill/15003.img/skill/150038003 effect 17프레임(최대 280×356 · 붉은 갑옷 형상)
+                -- 바라보는 쪽으로 뒤집는다(형상이라 좌우 대칭이 아니다). **지속 루프 없음** — 2022 리마스터(현재 라이브)는 버프 동안 캐릭터에 아무것도 남지 않는다(사용자 영상 hyper_body_versions).
+                -- 예전 = skill/000.img/skill/0008003 effect 2e963111…(noFlip) + affected df2d826e…(지속 루프 · 옛 판의 노란 기둥은 시전 때 잠깐 뜨는 연출이었다).
+                -- offsetXByWeapon(바라보는 쪽 +): 시전 이펙트는 발 기준점(뒷발)에 붙는데 몸은 시전 자세만큼 앞에 있다. 클립은 제 pivot 에 가운데(±7px 이내)라 보정은 우리 쪽.
+                --   2026-09-25 사용자 결정(#94): 시작점 = 시전 자세의 시각 질량(알파 가중 · 무기 뺀 몸) 추정 → 사용자가 Play 에서 숫자 키로 눈으로 골랐다.
+                --   한손 stand2(WeaponMotion SK_W21 SWORD_1H) 질량 ≈ 5.2 art px → 0.05 · 두손 alert 질량 ≈ 5.2 art px → 0.04(사용자 선택 · 도발 두손과 같은 값).
+                -- prewarm: 세션 첫 시전만 클립 로드로 ≈0.26s 늦게 떴다 → 입장 때 컷신과 같이 예열(PrewarmCutscenesFor · 컷신 판정에는 안 쓴다).
+                cast = { ruid = "1e9d9b0ac90c45649c01cd9d1cf80678", offsetXByWeapon = { SWORD_1H = 0.05, SWORD_2H = 0.04 }, prewarm = true },
             },
             SK_W22 = {   -- 도발 — skill/121.img/skill/1211013 노블 디맨드(= 페이지 "위협" 의 현행 이름): effect(시전자) + mob(끌려온 몬스터마다)
-                cast = { ruid = "9a4f1f2b15be4ba488287e585b3598a0" },
+                -- offsetXByWeapon(바라보는 쪽 +): 노블 디맨드 그림자는 발 기준점에 붙는데 몸은 시전 자세만큼 앞에 있다 — 한손 stabO1 찌르기 · 두손 swingT3 0프레임 고정.
+                --   그림자 그림이 제 pivot 보다 7~9 px 뒤에 그려진 것(원화 배치)은 건드리지 않는다.
+                --   2026-09-25 사용자 결정(#94): 1H 0.04 · 2H 0.04 — 실측 추정(0.18 / 0.21 · 0.12)에서 시작해 사용자가 Play 에서 숫자 키로 눈으로 골랐다.
+                cast = { ruid = "9a4f1f2b15be4ba488287e585b3598a0", offsetXByWeapon = { SWORD_1H = 0.04, SWORD_2H = 0.04 } },
                 mob = { ruid = "94772084ac224ef8bc6a1ff469d111bf" },
             },
             SK_W31 = {   -- 불굴의 진 — skill/124.img/skill/1241500 세이크리드 바스티온(팔라딘 오리진 · 기획서 추천): screen 89프레임 컷신(1436×840 · 시전자에 부착 · 뒤집기 없음)
                 -- 클립 pivot 이 정중앙(0.5, 0.5)이라 발 위치(0)에 붙이면 아래 절반이 땅 밑으로 간다 → 카메라 중심(≈ 발 +1.0 unit)까지 올린다.
                 -- 원본 픽셀 크기가 1920×1080 화면보다 작아 scale 1.4 로 화면을 채운다 (2026-09-10 사용자 제보 "화면을 못 채우고 낮다" → 1차 보정 · 스크린샷으로 재조정).
-                -- cutsceneSeconds 4.8 = 세이크리드 바스티온 89프레임 실측(2026-09-13). buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 불굴의 진 버프(HP 고정 · 경직 없음 ·
+                -- cutsceneSeconds 4.8 = 컷신 표시 + 실측 실패 때의 대체 길이(2026-09-13 Play 스크린샷으로 잰 89프레임 ≈ 4.8s · 실제 길이는 MeasureCutsceneClips). buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 불굴의 진 버프(HP 고정 · 경직 없음 ·
                 --   피격 무적 절반)를 시전 즉시 걸되 길이 = 컷신 + CSV Duration(8) → 컷신이 걷힌 뒤에도 8초. 전사는 다른 직업의 "피격 무시" 궁 무적 대신 이 고정으로 버틴다(SkillCaster.GetUltimateInvulnMul SK_W31 = 0).
                 cast = { ruid = "132f5fc6a6614ea4bc9a52f27877c1ce", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.8 },
                 buffExtendsByCutscene = true,
@@ -471,7 +550,7 @@ script SkillExecutors extends Logic
                 depart = { ruid = "4797106d3d1c415a9af3eb9475edbbc9" },
             },
             SK_A31 = {   -- 폭풍의 화살 — skill/324.img/skill/3241500 파이널 에임(신궁 오리진 · 기획서 추천): screen 133프레임 컷신(1456×860 · 세이크리드 바스티온과 같은 보정) · hit/0(187×180)
-                -- cutsceneSeconds 7.2 = 파이널 에임 screen 133프레임 추정(세이크리드 바스티온 비례 · 2026-09-13 · 궁 무적 창 = 컷신 길이).
+                -- cutsceneSeconds 7.2 = 컷신 표시 + 실측 실패 때의 대체 길이(파이널 에임 133프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
                 cast = { ruid = "e73ca8e6f7d64c3c9de9e12010f9c93a", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 7.2 },
                 impact = { ruid = "b36801c6a25e4581952e0df59111daeb" },
             },
@@ -509,7 +588,7 @@ script SkillExecutors extends Logic
             },
             SK_T31 = {   -- 메소 익스플로전 — 컷신 = skill/424.img/skill/4241500 일도양단(섀도어 오리진 · Halve Cut) screen 85프레임(1455×858 · 세이크리드 바스티온과 같은 보정 · 2026-09-13 사용자 "도적 컷신" 요청)
                 -- 폭발 중심 = skill/424.img/skill/4241006 메소 익스플로젼 VI effect0(475×314) · 동전마다 skill/40000.img/skill/400004110 hit/0~8 (컷신이 도는 동안 연쇄 폭발 · ExecuteMesoOrigin)
-                -- cutsceneSeconds 4.6 = 일도양단 screen 85프레임 추정(세이크리드 바스티온 비례 · 2026-09-13 · 궁 무적 창 = 컷신 길이 · 분신 숨김도 이 길이).
+                -- cutsceneSeconds 4.6 = 컷신 표시 + 실측 실패 때의 대체 길이(일도양단 85프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips · 분신 숨김도 그 길이).
                 cast = { ruid = "7ed742194f3c430ab359dc3c511da469", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.6 },
                 impact = { ruid = "538c9a0b06d44519a0d5c8d0e2e61e1f", scale = 1.2 },
                 coinHits = {
@@ -601,7 +680,7 @@ script SkillExecutors extends Logic
                 loopEnd = { ruid = "224122b4e421480881d23acf23bd1e59", offsetY = 0.45, scale = 0.85 },
             },
             SK_P31 = {   -- 함포 사격 — skill/524.img/skill/5241500 드레드노트(캡틴 오리진 · 기획서 추천): screen 79프레임 컷신(1434×835) · 폭탄 = skill/522.img/skill/5221022 배틀쉽 봄버 hit/0(217×187 · 파마다 3발)
-                -- cutsceneSeconds 4.3 = 드레드노트 screen 79프레임 추정(세이크리드 바스티온 비례 · 2026-09-13 · 궁 무적 창 = 컷신 길이 · 변신 루프 숨김도 이 길이).
+                -- cutsceneSeconds 4.3 = 컷신 표시 + 실측 실패 때의 대체 길이(드레드노트 79프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
                 cast = { ruid = "d35352dca42144a7bb7e64735fe364bf", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.3 },
                 impact = { ruid = "354977ce7834417fb4fe29598c2e31b8" },
             },
@@ -813,6 +892,9 @@ script SkillExecutors extends Logic
         -- 2026-09-13 사용자 요청 "하이퍼 바디·도발·불굴의 진은 공격 동작이 아니라 전투 중 대기 자세" → alert 로 했더니 제보 "몬스터와 충돌할 때(엔진 HIT 상태 = alert 1배속)와
         -- 같아 보이고 너무 정적" → heal(손 들기) + `_2` = alert **2.5배속** ZigzagLoop(빠른 전투 자세 · HIT 와 구분) → 다시 제보 "한 번 들기는 너무 미묘 · 공격 동작은 말고 더 눈에 띄게"
         -- → 시전 행 = heal **1.5배속 ZigzagLoop**(팔을 위아래로 계속 흔드는 동작) 을 시전 락 동안 돌리고, 그다음 `_2` 빠른 전투 자세 → `_END` 서 있기.
+        -- 2026-09-25 (#94 · 사용자 결정): 두손검(SWORD_2H) 시전 행은 heal 대신 alert 2.5배속(도발만 swingT3 0.2배속 = 0프레임 고정 → `_2` 가 1.0s 에 덮는다) — 두손검 아바타 아이템에 heal 프레임이 없어 heal 동안 대검이 사라졌다.
+        --   한손 도발(SK_W22 SWORD_1H) 시전 행 = stabO1 찌르기 한 번. 한손 하이퍼 바디 = stand2(라이브 2022 리마스터 시전 자세에 가장 가깝다) ·
+        --   한손 불굴의 진 = alert 2.5배속(한손 heal 은 1~2프레임에서 검이 사라진다). 두손검 _END = stand1(stand2 는 대검을 안 그린다). 순서(_2 · _END 시점)는 그대로.
         -- 시전 모션은 RequestCast 처리 뒤 서버→클라로 가서 키 입력 +0.3s 쯤 보이기 시작한다(Play 프레임) → `_2` 는 하이퍼 바디·도발 1.0s · 불굴의 진 1.5s(시전 락 끝).
         -- 원작 버프 자세(alert2)는 메이커 아바타에 없다(Play 확인: alert2~alert7 은 없는 이름과 같이 stand 로 남는다 · 있는 것 = 14 상태 + 무기 공격 액션).
         -- 왕복 재생은 다음 움직임까지 계속되므로 _END 행(stand1/stand2 ZigzagLoop)으로 되돌린다: 하이퍼 바디·도발 1.6s · 불굴의 진 5.5s(컷신 ≈4.8s 가 걷힌 뒤).
@@ -919,7 +1001,7 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method table PreCheck(string skillId, table skill, Entity casterEntity)
         -- 실행기 사전 조건. SkillCaster.RequestCast 가 MP 차감 앞에서 부른다 — 여기서 거절되면 아무것도 소모되지 않는다.
-        -- 메소 익스플로전(SK_T31): 반경 안 시전자가 주울 수 있는 메소 동전이 0 개면 거절(UseLimit 1 인 궁을 헛되이 쓰지 않게).
+        -- 메소 익스플로전(SK_T31): 반경 안 시전자가 주울 수 있는 메소 동전이 0 개면 거절(궁 비용 영혼석 5개 · 쿨타임 2분을 헛되이 쓰지 않게 · SkillCaster 게이트 5-1 이 5-2 영혼석보다 앞).
         if self.originModes[skillId] == "meso" then
             if not isvalid(casterEntity.PlayerComponent) then return { ok = false, reason = "no PlayerComponent" } end
             local radius = skill.range
@@ -950,9 +1032,12 @@ script SkillExecutors extends Logic
 
     method number GetCutsceneSeconds(string skillId)
         -- 그 스킬의 화면 컷신 길이(초 · effectOverrides[skill].cast.cutsceneSeconds). 없으면 0. SkillCaster.RequestCast 가 궁 무적 창 길이로 쓰고(2026-09-13 사용자 요청 "컷신 동안 피격 무시"),
-        -- HideShadowFor/HideTransformLoopFor 가 루프 숨김 길이로, ExecuteOrigin 이 불굴의 진 버프 연장(buffExtendsByCutscene)에 쓴다. 서버 표(BuildEffectOverrides)만 채워져 있다.
+        -- HideShadowFor 가 분신 숨김 길이로, ExecuteOrigin 이 불굴의 진 버프 연장(buffExtendsByCutscene)에 쓴다. 서버 표(BuildEffectOverrides)만 채워져 있다.
+        -- b/skill-cutscene-measured(2026-09-24): 실측값(cutsceneClipSeconds · MeasureCutsceneClips)을 먼저 쓰고, 아직 없거나 0 이면 리터럴로 돌아간다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.cast == nil or entry.cast.cutsceneSeconds == nil then return 0 end
+        local measured = self.cutsceneClipSeconds[skillId]
+        if measured ~= nil and measured > 0 then return measured end
         return entry.cast.cutsceneSeconds
     end
 
@@ -997,12 +1082,22 @@ script SkillExecutors extends Logic
                     if spec.startFrame ~= nil then opt["StartFrameIndex"] = spec.startFrame end
                     if spec.endFrame ~= nil then opt["EndFrameIndex"] = spec.endFrame end
                     local s = spec.scale or 1
-                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
-                    log("SkillExecutors: " .. stage .. " effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]))
+                    -- offsetXByWeapon(#94 · 2026-09-25 하이퍼 바디 · 도발): 시전 자세가 무기마다 달라(WeaponMotion 행) 몸 위치도 다르다 → 장착 무기(맨손이면 직업 기본 무기) 값이 있으면 offsetX 대신.
+                    local ox = spec.offsetX or 0
+                    if spec.offsetXByWeapon ~= nil and isvalid(casterEntity.PlayerComponent) then
+                        local wox = spec.offsetXByWeapon[self:MotionWeaponTypeOf(casterEntity.PlayerComponent.UserId)]
+                        if wox ~= nil then ox = wox end
+                    end
+                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(ox * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+                    log("SkillExecutors: " .. stage .. " effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]) .. " offsetX=" .. tostring(ox))
                     -- 화면 컷신(cast.cutsceneSeconds 가 있는 것 · 예열 목록과 같은 기준)이면 쉐도우 파트너 분신을 컷신 동안 숨긴다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
                     -- 2026-09-14 제보 "W 뒤 E 를 누르면 캐릭터가 사라진다": 예전 기준 "scale + noFlip" 에 에너지 쉴드 방울 cast(scale 0.85 · noFlip)가 걸려 변신 form 을 5.5초 숨겼다 → 명시 필드로.
                     if stage == "cast" and spec.cutsceneSeconds ~= nil and isvalid(casterEntity.PlayerComponent) then
-                        self:HideShadowFor(casterEntity.PlayerComponent.UserId, spec.cutsceneSeconds or self.CutsceneShadowHideSeconds)
+                        self:HideShadowFor(casterEntity.PlayerComponent.UserId, self:GetCutsceneSeconds(skillId))
+                        -- 시전자 화면에만 전체 화면 UI 컷신(CutsceneUI · #40 5830063946). 마지막 인자 = 받을 클라(시전자).
+                        if self.CutsceneUI then
+                            self:ShowCutsceneUI(skillId, spec.ruid, self:GetCutsceneSeconds(skillId), casterEntity.PlayerComponent.UserId)
+                        end
                     end
                 else
                     local s = spec.scale or 1
@@ -1026,6 +1121,114 @@ script SkillExecutors extends Logic
         else
             _ParticleService:PlayBasicParticle(particleType, casterEntity, pos, 0, Vector3(1, 1, 1), false)
         end
+    end
+
+    @ExecSpace("Client")
+    method void ShowCutsceneUI(string skillId, string ruid, number seconds)
+        -- 시전자 클라에서만 돈다(PlayStageEffect 가 시전자 userId 를 마지막 인자로 보낸다). 클립을 받아 둔 뒤(PreloadAsync · 예열했으면 곧바로) StartCutsceneUI 로 켠다.
+        -- 받는 동안 새 시전이 오면 번호(cutsceneUiToken)가 바뀌어 이전 콜백은 아무것도 안 한다.
+        if ruid == nil or ruid == "" or seconds == nil or seconds <= 0 then return end
+        if not isvalid(self.cutsceneUiSprite) then
+            log_warning("SkillExecutors: cutscene UI " .. skillId .. " skipped — ui/SkillCutsceneGroup/Cutscene not found")
+            return
+        end
+        self.cutsceneUiToken = self.cutsceneUiToken + 1
+        local token = self.cutsceneUiToken
+        _ResourceService:PreloadAsync({ ruid }, function()
+            if token ~= self.cutsceneUiToken then return end
+            self:StartCutsceneUI(skillId, ruid, seconds, token)
+        end)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StartCutsceneUI(string skillId, string ruid, number seconds, integer token)
+        -- 전체 화면 sprite 에 클립을 걸고 켠다 → seconds(서버 GetCutsceneSeconds = 클립 실측 길이) 뒤 끈다.
+        -- 크기: 클립 프레임 크기(px)로 비율을 잡고 UI 그룹 루트(화면 전체) 크기를 **덮도록**(가로 · 세로 중 큰 배율) 키운다 — 넘치는 쪽은 화면 밖이라 잘린다. 늘이지 않는다.
+        -- 그 위에 CutsceneOverscan 만큼 더 키워 클립 그림의 흐린 테두리까지 화면 밖으로 민다(가운데 기준 · 네 변 같은 비율).
+        local e = self.cutsceneUiSprite
+        if not isvalid(e) then return end
+        local sr = e.SpriteGUIRendererComponent
+        local tr = e.UITransformComponent
+        if not isvalid(sr) or not isvalid(tr) then return end
+        local size = self:CutsceneClipSize(ruid)
+        local cw = 1920
+        local ch = 1080
+        local parent = e.Parent
+        if isvalid(parent) and isvalid(parent.UITransformComponent) then
+            local rs = parent.UITransformComponent.RectSize
+            if rs.x > 0 and rs.y > 0 then
+                cw = rs.x
+                ch = rs.y
+            end
+        end
+        local cover = math.max(cw / size.x, ch / size.y)
+        local over = self.CutsceneOverscan
+        if over <= 0 then over = 1 end
+        local scale = cover * over
+        tr.RectSize = Vector2(size.x * scale, size.y * scale)
+        tr.anchoredPosition = Vector2(0, 0)
+        -- 같은 클립을 다시 걸 때도 0프레임부터 돌게 끈 채로 바꾸고 다시 켠다.
+        e.Enable = false
+        sr.ImageRUID = DataRef(ruid)
+        e.Enable = true
+        if self.cutsceneUiTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneUiTimer)
+            self.cutsceneUiTimer = 0
+        end
+        self.cutsceneUiTimer = _TimerService:SetTimerOnce(function()
+            if token ~= self.cutsceneUiToken then return end
+            self.cutsceneUiTimer = 0
+            self:HideCutsceneUI(skillId)
+        end, seconds)
+        log("SkillExecutors: cutscene UI " .. skillId .. " on — clip " .. tostring(size.x) .. "x" .. tostring(size.y) .. " canvas " .. tostring(cw) .. "x" .. tostring(ch)
+            .. " rect " .. string.format("%.0fx%.0f", size.x * scale, size.y * scale) .. " overscan " .. string.format("%.2f", over) .. " for " .. string.format("%.2f", seconds) .. "s")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void HideCutsceneUI(string skillId)
+        -- UI 컷신을 끈다(클립은 그대로 두고 엔티티만 끈다 · 다음 시전이 다시 건다).
+        local e = self.cutsceneUiSprite
+        if isvalid(e) then
+            e.Enable = false
+        end
+        log("SkillExecutors: cutscene UI " .. skillId .. " off")
+    end
+
+    @ExecSpace("ClientOnly")
+    method Vector2 CutsceneClipSize(string ruid)
+        -- 클립 프레임 크기(px · 가장 큰 가로 · 세로). PreloadAsync 콜백 안에서만 부른다(받아 둔 뒤라 LoadAnimationClipAndWait 가 기다리지 않는다). RUID 마다 한 번 재고 캐시.
+        -- 못 재면 1456×860(대마법 프로즌 라이트닝 screen · 화면 컷신은 대개 1.65~1.72 : 1).
+        local cached = self.cutsceneUiClipSize[ruid]
+        if cached ~= nil then return cached end
+        local w = 0
+        local h = 0
+        local minW = 0
+        local minH = 0
+        local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+        if clip ~= nil and clip.Frames ~= nil then
+            for i = 1, #clip.Frames do
+                local f = clip.Frames[i]
+                local sp = nil
+                if f ~= nil then sp = f.FrameSprite end
+                if sp ~= nil and sp.Width > 0 and sp.Height > 0 then
+                    if sp.Width > w then w = sp.Width end
+                    if sp.Height > h then h = sp.Height end
+                    if minW == 0 or sp.Width < minW then minW = sp.Width end
+                    if minH == 0 or sp.Height < minH then minH = sp.Height end
+                end
+            end
+        end
+        if w <= 0 or h <= 0 then
+            w = 1456
+            h = 860
+            log_warning("SkillExecutors: cutscene UI clip " .. ruid .. " frame size unknown — 1456x860 used")
+        else
+            -- 프레임마다 크기가 다르면(원작 이펙트는 프레임을 잘라 둔다) UI 는 프레임마다 RectSize 에 맞춰 늘인다 → Play 에서 보고 판단하려고 로그를 남긴다.
+            log("SkillExecutors: cutscene UI clip " .. ruid .. " frames max " .. tostring(w) .. "x" .. tostring(h) .. " min " .. tostring(minW) .. "x" .. tostring(minH))
+        end
+        local size = Vector2(w, h)
+        self.cutsceneUiClipSize[ruid] = size
+        return size
     end
 
     @ExecSpace("ServerOnly")

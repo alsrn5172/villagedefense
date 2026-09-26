@@ -139,6 +139,9 @@ const CANONICAL = {
   RankReward: "Rank,Difficulty,Hearts,AccountExp,Condition,Enabled,#Note",
   GuideStep: "StepKey,Kind,Text,MarkerMap,Once,Enabled,#Note",
 
+  // 접속 외형 선택 (2026-09-26 · a/avatar-look-select · WO-032 · A-2-27)
+  AvatarLook: "LookId,Hair,Face,Body,Cap,Cape,Coat,Longcoat,Pants,Shoes,Glove,OneHandWeapon,TwoHandWeapon,SubWeapon,#Note",
+
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
   SkillInfo:
     "SkillId,Tab,SlotOrder,SkillName,IconRUID,Description,MaxLevel,SpCost,EffectPerLevel,Cooldown," +
@@ -260,6 +263,7 @@ const PK = {
   MonsterRecruit: ["MonsterId"],
   RankReward: ["Rank", "Difficulty"],
   GuideStep: ["StepKey"],
+  AvatarLook: ["LookId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],

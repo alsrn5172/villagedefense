@@ -292,18 +292,31 @@ script SkillDatabase extends Logic
     end
 
     method number GetAttackPower(string userId)
-        -- The ONLY place base_attack is ever read (R-equivalent of the old single-source rule
-        -- for base_effect). Resolves userId's current job_line/tier and looks up base_attack
-        -- for that (job_line, tier) pair in JobTier.
+        -- The single source of the attack power that skill damage is multiplied by; DamageAt
+        -- is its only consumer. Two sources, tried in this order:
+        --   1. _StatService:GetAttackPower(userId) - the real ledger (weapon + enhance + buff).
+        --   2. JobTier.base_attack for the user's (job_line, tier) - the pre-stat fallback,
+        --      still a flat 75 on every row. Also the ONLY place base_attack is ever read.
+        -- Returns 0 only when BOTH miss: the ledger gave 0 (client side, or the account is not
+        -- loaded yet) AND no JobTier row matches the pair. That last case logs a warning.
         --
-        -- NOTE: PlayerSkillState does not yet expose a per-user job_line/tier accessor (its
-        -- jobId property is a single legacy string like "MAGE1", and it is not keyed by
-        -- userId at all - see the migration report). GetJobLine/GetTier below are called
-        -- speculatively against that not-yet-existing API; until it's added this always logs
-        -- a warning and returns 0.
+        -- PlayerSkillState DOES key job/tier by userId now (GetJobId/GetTier below). The older
+        -- note here - "speculative calls against a not-yet-existing API, always returns 0" -
+        -- described the pre-migration state and no longer applies.
         self:EnsureJobsLoaded()
 
-        -- 서버 전용 경로(DamageAt ← SkillAttack/SkillProjectile.CalcDamage). PlayerSkillState 의 userId 키 원장을 읽는다.
+        -- 1순위: A 의 최종 총공격력(무기 + 강화 + 버프 · Stat/StatService.mlua:363). 이걸 읽어야 스킬 피해가
+        -- 장비·강화를 탄다 (A 요청 #40 comment 5794751478 · B 수락 5794891849 · WO-029 §3).
+        --   StatService.users 는 ServerOnly 로만 채워지므로(EnsureUser :92) 클라에서 불리면 0 이 온다(:365~367).
+        --   계정·스탯이 아직 안 올라온 시점에도 0 이다 → 둘 다 아래 JobTier 폴백으로 내려간다.
+        if _StatService ~= nil then
+            local atk = _StatService:GetAttackPower(userId) or 0
+            if atk > 0 then
+                return atk
+            end
+        end
+
+        -- 폴백: JobTier.BaseAttack. 서버 전용 경로(DamageAt ← SkillAttack/SkillProjectile.CalcDamage). PlayerSkillState 의 userId 키 원장을 읽는다.
         local jobLine = _PlayerSkillState:GetJobId(userId)
         local tier = _PlayerSkillState:GetTier(userId)
         local job = self.jobsByKey[self:JobKey(jobLine, tier)]

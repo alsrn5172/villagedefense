@@ -13,11 +13,23 @@ script SkillCaster extends Logic
     --   · 에너지 차지 쿨다운(2026-09-16): 첫 입력이 아니라 **상태가 끝날 때** 시작한다(cooldownStartsAtBuffEnd → SkillBuffs.EndChargeState).
     --   · 2단 주먹의 시전 락 길이는 상수가 아니라 **공격 클립 길이**다(castLockClips → WarmClipLockCache → clipLockCache). 그동안 같은 키 입력은 삼켜진다.
     --   · 실행기 사전 조건(SkillExecutors.PreCheck): 메소 익스플로전(SK_T31)은 주변 동전이 0 개면 MP·쿨다운·사용 횟수 소모 없이 거절.
-    --   · 궁 시전 무적(b/skill-thief-motion · 전 직업): Behavior ORIGIN 스킬은 시전 락 길이만큼 SkillBuffs.BeginCastInvulnerability — 컷신 동안 피격 무시.
+    --   · 궁 시전 무적(b/skill-thief-motion · 전 직업): Behavior ORIGIN 스킬은 컷신 길이(SkillExecutors.GetCutsceneSeconds · 클립 실측) + CutsceneInvulnPad 만큼
+    --     SkillBuffs.BeginCastInvulnerability — 컷신 동안 피격 무시. 컷신 길이가 없으면 시전 락 길이.
 
     -- SummonManager.SpendMp(B · PR #41 · main 24204a3 에 머지됨)를 쓴다. 2026-09-10 사용자 지시로 켬 — 시전마다 MP 차감, 매직 가드 흡수분도 SpendMp 로.
     -- false 로 두면 MP 게이트(GetEcon.mp >= MpCost)만 검사하고 차감은 하지 않는다(과거 대기 모드).
     property boolean UseSpendMp = true
+
+    -- ───────────── 궁극기 비용 (#40 5813232188 · A 결정 · 사용자 확정 2026-09-24 · b/skill-ult-soulstone-cost) ─────────────
+    -- 궁(Behavior ORIGIN) 5종 공통: 쓸 때마다 낙인의 영혼석 UltimateStoneCount 개. ★ 무관 · 대마법도 같다 · 어디서나(발록 방 밖 포함).
+    -- 사용 제한은 쿨타임 2분 하나(SkillInfo Cooldown 120 · UseLimit 0). 이전 기획 답변 1번(★ 입장권 기준 개수 · 도전 1번마다 1번)을 대체한다.
+    -- 개수는 RequestCast 게이트 5-2 에서 세고, 실행기가 실제로 돈 **뒤에만** 뺀다 — 거절된 시전(동전 0 메소 익스플로전 · 영혼석 부족 등)은 아무것도 안 쓴다.
+    -- 부족하면 거절 + 토스트(UIToast). 툴팁 문구(SkillWindowLogic.FormatCost)도 이 두 값을 읽는다.
+    property string UltimateCostItemId = "BRAND_SOULSTONE"
+
+    property string UltimateCostItemName = "낙인의 영혼석"
+
+    property integer UltimateStoneCount = 5
 
     -- ───────────── 시전 락 (2026-09-09 · 메이플 원작 기준: 스킬 시전 중 이동 불가 · 다른 스킬 시전 불가) ─────────────
     -- 원작의 "공격 딜레이": 시전 모션이 도는 동안 땅에서는 못 움직이고, 어떤 스킬도 다시 못 쓴다. 공중 시전은 궤적을 유지한다.
@@ -35,6 +47,10 @@ script SkillCaster extends Logic
     -- 시전 락 길이(초). 원작 에너지볼트 공격 딜레이 ≈ 0.8s 의 절반(2026-09-09 요청). 스킬별로 castLockOverrides 에 넣고, 없으면 기본값.
     -- CSV 열(CastTime)로 승격하려면 헤더 변경이라 협업-규칙 §1-5(스키마-계약 선행 PR + 공지)를 먼저 거친다.
     property number DefaultCastLockSeconds = 0.4
+
+    -- 궁 시전 무적 창 여유(초 · b/skill-cutscene-measured 2026-09-24): 무적은 서버가 시전을 처리한 순간 시작하지만 컷신 클립은 클라에 왕복 지연만큼 늦게 뜬다 →
+    -- 실측 컷신 길이만 쓰면 화면에서 컷신이 걷히기 조금 전에 무적이 끝난다. 컷신 길이가 있을 때 무적 창에만 더한다(분신 숨김 · 불굴의 진 버프 연장에는 안 더한다).
+    property number CutsceneInvulnPad = 0.15
 
     property table castLockOverrides = {}
 
@@ -331,6 +347,37 @@ script SkillCaster extends Logic
             end
         end
 
+        -- 시전 락 중 사망 감시(2026-09-25 · b/skill-castlock-death · #83 4차 Play 에서 발견): 위에서 상태기(StateComponent)를 끈 동안 치명타를 맞으면
+        -- 엔진의 사망 전이(DEAD)가 무시되고 락이 풀린 뒤에도 다시 오지 않았다(HP −700 · IsDead=false 로 계속 살아 있음).
+        -- → 락 동안 0.05s 마다 HP 를 보고, 0 이하가 되면 곧바로 락을 풀고(상태기 복구) 사라진 사망을 다시 건다(ProcessDead · 클라에서 부르면 이 클라 DEAD → 서버 IsDead 에도 반영).
+        -- 그리고 서버에 알린다(ReportCastLockDeath) — 서버가 이 시전자의 스킬 연출 엔티티를 지운다. 늦은 스킬 타격은 SkillAttack.IsAttackTarget 이 막는다.
+        -- 이 시전의 락이 끝나면(타이머 · 서버 거절 · 다음 시전) 감시도 스스로 멈춘다.
+        -- HP 가 **이 시전 동안 0 으로 떨어질 때만** 사망을 다시 건다 — 시전을 HP 0 인 채 시작하면 감시하지 않는다.
+        --   A 의 부활 팝업 선택(PlayerRespawnService.Choose → ProcessRevive)은 HP 0 인 채 살려 둔다. 그 상태의 첫 지상 시전이
+        --   곧바로 사망 · 페널티를 한 번 더 부르던 것(2026-09-25 Play 재현: 사망 #6)을 막는다. HP 0 부활 자체는 A 몫(#40).
+        local startHp = 1
+        if isvalid(player) and isvalid(player.PlayerComponent) then startHp = player.PlayerComponent.Hp end
+        if startHp <= 0 then
+            log("SkillCaster: cast lock #" .. tostring(castId) .. " started at HP " .. tostring(startHp) .. " — death watch off (only a drop to 0 during the cast re-applies death)")
+        else
+            local watchId = 0
+            watchId = _TimerService:SetTimerRepeat(function()
+                if not self.castLockActive or self.activeCastId ~= castId then
+                    _TimerService:ClearTimer(watchId)
+                    return
+                end
+                local pl = _UserService.LocalPlayer
+                if not isvalid(pl) or not isvalid(pl.PlayerComponent) then return end
+                if pl.PlayerComponent.Hp > 0 then return end
+                _TimerService:ClearTimer(watchId)
+                self:ReleaseCastLock(castId, "dead")
+                local wasDead = pl.PlayerComponent:IsDead()
+                if not wasDead then pl.PlayerComponent:ProcessDead() end
+                log("SkillCaster: HP " .. tostring(pl.PlayerComponent.Hp) .. " during cast lock #" .. tostring(castId) .. " — lock released, death " .. (wasDead and "already applied" or "re-applied"))
+                self:ReportCastLockDeath(castId)
+            end, 0.05)
+        end
+
         log("SkillCaster: cast lock ON #" .. tostring(castId) .. " " .. skillId .. " grounded=" .. tostring(grounded)
             .. " cachedInputSpeed=" .. tostring(self.cachedInputSpeed) .. " fixedLookAt=" .. tostring(isvalid(controller) and controller.FixedLookAt or 0))
     end
@@ -364,6 +411,58 @@ script SkillCaster extends Logic
         self.castLockActive = false
         self.activeCastId = 0
         log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")")
+    end
+
+    @ExecSpace("Server")
+    method void ReportCastLockDeath(integer castId)
+        -- 클라의 시전 락 사망 감시(LockPresentation)가 "락 중 HP 0 → 락 풀고 사망" 을 알린다(2026-09-25 · b/skill-castlock-death).
+        -- 서버에서도 HP 가 0 이하(또는 이미 사망)인지 확인한 뒤, 이 시전자의 스킬 연출 엔티티(SkillExecutors.PlaySpriteFlash 가 스폰하는 SkillFx_<uid>_* ·
+        -- 휘두르기 잔상 등)를 지운다. 접촉 순간에 늦게 스폰하는 연출도 잡도록 1.5s 동안 0.1s 마다 다시 쓸어낸다.
+        -- 그사이 부활하면(부활 팝업에서 곧바로 고르기 등) 쓸기를 멈춘다 — 부활 직후 새로 시전한 스킬의 연출은 지우지 않는다.
+        --   부활 판정 = 사망(IsDead)을 한 번 본 뒤 다시 살아남 · HP 는 보지 않는다(A 의 팝업 부활은 HP 0 인 채 살린다 · 2026-09-25 Play).
+        --   알림이 올 때 서버는 아직 IsDead=false 일 수 있어(HP 0 만 먼저 옴 · Play 실측) "사망을 본 뒤" 가 필요하다.
+        -- 늦게 들어가는 스킬 타격 자체는 SkillAttack.IsAttackTarget(시전자가 쓰러졌으면 false)이 막는다.
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        local player = _UserService:GetUserEntityByUserId(senderUserId)
+        if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+        if player.PlayerComponent.Hp > 0 and not player.PlayerComponent:IsDead() then
+            log_warning("SkillCaster: cast-lock death report #" .. tostring(castId) .. " ignored — server HP " .. tostring(player.PlayerComponent.Hp) .. " (" .. senderUserId .. ")")
+            return
+        end
+        local map = player.CurrentMap
+        local prefix = "SkillFx_" .. senderUserId .. "_"
+        local function sweep()
+            if not isvalid(map) then return 0 end
+            local n = 0
+            for _, e in ipairs(map.Children:ToTable()) do
+                if isvalid(e) and string.sub(e.Name, 1, string.len(prefix)) == prefix then
+                    e:Destroy()
+                    n = n + 1
+                end
+            end
+            return n
+        end
+        local removed = sweep()
+        local ticks = 15
+        local sawDead = player.PlayerComponent:IsDead()
+        local sweepId = 0
+        sweepId = _TimerService:SetTimerRepeat(function()
+            ticks = ticks - 1
+            local revived = false
+            if isvalid(player) and isvalid(player.PlayerComponent) then
+                if player.PlayerComponent:IsDead() then
+                    sawDead = true
+                elseif sawDead then
+                    revived = true
+                end
+            end
+            if not revived then removed = removed + sweep() end
+            if ticks <= 0 or revived then
+                _TimerService:ClearTimer(sweepId)
+                log("SkillCaster: cast-lock death #" .. tostring(castId) .. " — skill fx sweep " .. (revived and "stopped (revived)" or "done") .. ", removed " .. tostring(removed) .. " (" .. senderUserId .. ")")
+            end
+        end, 0.1)
+        log("SkillCaster: cast-lock death #" .. tostring(castId) .. " reported · hp=" .. tostring(player.PlayerComponent.Hp) .. " dead=" .. tostring(player.PlayerComponent:IsDead()) .. " · skill fx removed " .. tostring(removed) .. " (" .. senderUserId .. ")")
     end
 
     @ExecSpace("Server")
@@ -432,6 +531,17 @@ script SkillCaster extends Logic
                 return
             end
         end
+        -- 5-2. 궁극기 영혼석 — 세기만 한다. 빼는 것은 실행기가 돈 뒤(아래 "영혼석 차감"). MP(6) 앞이라 부족하면 MP 도 안 쓴다.
+        local stoneCost = self:UltimateStoneCost(skillId, skill)
+        if stoneCost > 0 then
+            local have = 0
+            if _InventoryService ~= nil then have = _InventoryService:CountItem(uid, self.UltimateCostItemId) end
+            if have < stoneCost then
+                self:RejectToast(uid, self.UltimateCostItemName .. "이 부족합니다 (필요 " .. tostring(stoneCost) .. "개 · 보유 " .. tostring(have) .. "개)")
+                self:CastResult(skillId, false, "not enough " .. self.UltimateCostItemId .. " (need " .. tostring(stoneCost) .. ", have " .. tostring(have) .. ")", 0, castId, uid)
+                return
+            end
+        end
         -- 6. MP — 원장은 SummonManager.econ (A). 차감은 SpendMp 만 (UseSpendMp 참조).
         local mp = 0
         if _SummonManager ~= nil then
@@ -470,13 +580,15 @@ script SkillCaster extends Logic
         end
         -- 궁(Behavior ORIGIN · 직업별 R · 대마법·불굴의 진·폭풍의 화살·메소 익스플로전·함포 사격) 시전 중 무적(2026-09-13 사용자 요청 "모든 직업의 궁은 사용 중 무적" · b/skill-thief-motion):
         -- SkillBuffs 가 피격을 통째로 무시한다(PlayerHit.OnHit → OnCastInvulnerableHit · ModifyIncomingDamage 0).
-        -- 2026-09-13 사용자 요청 ② (b/skill-pirate-motion): 창 길이 = 시전 락이 아니라 **컷신 길이**(SkillExecutors.GetCutsceneSeconds · effectOverrides cast.cutsceneSeconds · 없으면 시전 락) × GetUltimateInvulnMul —
+        -- 2026-09-13 사용자 요청 ② (b/skill-pirate-motion): 창 길이 = 시전 락이 아니라 **컷신 길이** × GetUltimateInvulnMul —
         -- "다른 직업은 컷신 동안 단순히 피격 무시" · 전사(불굴의 진)는 0 = 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 반사 유지)로 버틴다.
+        -- 2026-09-24 (b/skill-cutscene-measured): 컷신 길이 = SkillExecutors.GetCutsceneSeconds = 클립 Frame.Delay 실측(MeasureCutsceneClips · 없으면 cast.cutsceneSeconds 리터럴)
+        -- + CutsceneInvulnPad(클라에 컷신이 늦게 뜨는 만큼). 컷신 길이가 없으면 예전처럼 시전 락.
         if skill.behavior == "ORIGIN" and _SkillBuffs ~= nil and lockSeconds > 0 then
             local invuln = lockSeconds
             if _SkillExecutors ~= nil then
                 local cs = _SkillExecutors:GetCutsceneSeconds(skillId)
-                if cs > 0 then invuln = cs end
+                if cs > 0 then invuln = cs + self.CutsceneInvulnPad end
             end
             invuln = invuln * self:GetUltimateInvulnMul(skillId)
             if invuln > 0 then
@@ -520,6 +632,15 @@ script SkillCaster extends Logic
         if isvalid(caster) then
             self:EnsureSkillAttack(caster)
             _SkillExecutors:Execute(skill.behavior, skillId, skill, caster, level)
+            -- 영혼석 차감: 실행기가 실제로 돈 뒤에만. 5-2 에서 센 뒤 이 호출까지 대기 없이 이어지므로 개수는 그대로다.
+            if stoneCost > 0 then
+                if _InventoryService ~= nil and _InventoryService:RemoveItem(uid, self.UltimateCostItemId, stoneCost) then
+                    _InventoryService:PushInventory(uid)
+                    log("[Skill] ultimate " .. skillId .. " cost " .. self.UltimateCostItemId .. " x" .. tostring(stoneCost) .. " consumed (" .. uid .. ")")
+                else
+                    log_warning("[Skill] ultimate " .. skillId .. " cast but " .. self.UltimateCostItemId .. " x" .. tostring(stoneCost) .. " could not be removed (" .. uid .. ")")
+                end
+            end
         else
             log_warning("SkillCaster: caster entity not found for " .. uid .. ", skipping executor for " .. skillId)
         end
@@ -535,6 +656,21 @@ script SkillCaster extends Logic
 
         log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " recast=" .. tostring(isRecast) .. " (" .. uid .. ")")
         self:CastResult(skillId, true, "ok", cooldown, castId, uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer UltimateStoneCost(string skillId, table skill)
+        -- 궁극기 영혼석 개수(0 = 비용 없음). 궁(ORIGIN)이면 ★ · 장소와 무관하게 UltimateStoneCount(#40 5813232188).
+        if skill == nil or skill.behavior ~= "ORIGIN" then return 0 end
+        log("[Skill] ultimate " .. skillId .. " cost " .. self.UltimateCostItemId .. " x" .. tostring(self.UltimateStoneCount) .. " (flat)")
+        return self.UltimateStoneCount
+    end
+
+    @ExecSpace("ServerOnly")
+    method void RejectToast(string userId, string message)
+        -- 시전 거절 사유를 그 유저 화면에 토스트로(UIToast · A 의 공용 토스트 · 호출만). 로그도 남긴다.
+        log("[Skill] reject toast -> " .. userId .. ": " .. message)
+        if _UIToast ~= nil then _UIToast:ShowMessage(message, userId) end
     end
 
     @ExecSpace("ServerOnly")
