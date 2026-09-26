@@ -1,0 +1,487 @@
+@Logic
+script AvatarLookService extends Logic
+
+	-- 접속 외형 선택 (WO-032 · 계약서 A-2-27 `AvatarLook` · A-4 `AvatarLookRecord`). 서버 원장 + 외형 계산. 룸마다 따로 돈다.
+	--   로그인당 1번 고른다(재로그인 전까지): 모험가 남(EXPLORER_M) / 모험가 여(EXPLORER_F) / 내 아바타(MY).
+	--   · MY     = 계정 아바타 그대로. 장착 장비는 외형에 안 보인다(캐시템처럼 · 무기 포함).
+	--   · 모험가 = AvatarLook 프리셋 + 장착 장비. "전직 시 외형 변경"(jobLook · 기본 O)이면 전직 뒤 직업 행(LookId = JobId)으로
+	--             고정되고 장비·무기는 안 보인다. X 면 전직해도 모험가 외형 + 장비 그대로.
+	--   · 선택 전(기록 없음) = 옛 동작(계정 아바타 + 장비 6부위) — EquipService.ApplyCostume 이 그대로 처리한다.
+	-- 외형을 실제로 입히는 창구는 EquipService.ApplyCostume 하나다(입장 · 장착 변경 · 매치 리셋). 이 서비스는 ApplyTo 로 그 안에 끼어든다.
+	-- 기록 = 공유 메모리 LOOK_<userId> { mode · jobLook("1"/"0") · ret(로비 복귀 표식 = UTC ms · 없으면 "0") } — 룸 사이 인계 전용.
+	--   정적 룸(로비) 입장 때 ret 이 ReturnWindowSeconds 안이면 매치에서 돌아온 것 → 기록 유지. 아니면 새 접속 → 기록 지우고 선택창.
+
+	property string TableName = "AvatarLook"
+
+	-- 로비 복귀 표식 유효 시간. MatchLobbyGateway.ReturnToStation 이 이동 직전에 쓰고 로비가 몇 초 안에 읽는다.
+	property number ReturnWindowSeconds = 120
+
+	-- 매치 룸 입장 때 기록 읽기 재시도(1초 간격).
+	property integer ReadRetryMax = 3
+
+	@HideFromInspector
+	property any looks = nil
+
+	@HideFromInspector
+	property any records = nil
+
+	@HideFromInspector
+	property any awaiting = nil
+
+	@HideFromInspector
+	property any arriving = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		self.records = {}
+		self.awaiting = {}
+		self.arriving = {}
+		self:LoadLooks()
+		_UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+		_UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
+		-- 전직(B 발행). PlayerSkillState.ChangeJob 이 jobId 를 바꾼 뒤 보낸다.
+		if _PlayerSkillState ~= nil then
+			_PlayerSkillState:ConnectEvent(JobChangedEvent, self.OnJobChanged)
+		end
+		-- 이미 들어와 있는 유저도 처리(에디터 플레이는 보통 여기 걸린다).
+		for _, user in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(user) and isvalid(user.PlayerComponent) then
+				self:Arrive(user.PlayerComponent.UserId, 0)
+			end
+		end
+		log("[Look] AvatarLookService ready (server) instance=" .. tostring(self:InInstance()))
+	end
+
+	-- ── 표 (서버·클라 공용 — 선택창 미리보기도 같은 행을 쓴다) ─────────────
+
+	method void LoadLooks()
+		-- AvatarLook.csv → LookId 별 13부위 RUID. 🔴 GetTable 행은 1-based.
+		self.looks = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Look] no table " .. self.TableName)
+			return
+		end
+		local cols = { "Hair", "Face", "Body", "Cap", "Cape", "Coat", "Longcoat", "Pants", "Shoes", "Glove", "OneHandWeapon", "TwoHandWeapon", "SubWeapon" }
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local id = tostring(t:GetCell(i, "LookId") or "")
+			if id ~= "" then
+				local row = {}
+				for _, c in ipairs(cols) do
+					row[c] = tostring(t:GetCell(i, c) or "")
+				end
+				self.looks[id] = row
+				n = n + 1
+			end
+		end
+		log("[Look] AvatarLook rows=" .. tostring(n))
+	end
+
+	method any LookOf(string lookId)
+		-- 그 LookId 의 프리셋 행(없으면 nil).
+		if self.looks == nil then
+			self:LoadLooks()
+		end
+		return self.looks[lookId]
+	end
+
+	method void WriteSlots(any costume, any s)
+		-- 프리셋 표(s)를 CostumeManagerComponent 17칸에 그대로 쓴다. s 에 없는 칸은 "" (= 비움).
+		-- 🔴 한벌옷은 상의·하의 칸을, 두손 무기는 한손·보조 칸을 함께 쓴다 → 있으면 겹치는 칸을 비운다.
+		costume.CustomHairEquip = s.Hair or ""
+		costume.CustomFaceEquip = s.Face or ""
+		costume.CustomBodyEquip = s.Body or ""
+		costume.CustomCapEquip = s.Cap or ""
+		costume.CustomCapeEquip = s.Cape or ""
+		costume.CustomGloveEquip = s.Glove or ""
+		costume.CustomShoesEquip = s.Shoes or ""
+		local longcoat = s.Longcoat or ""
+		if longcoat ~= "" then
+			costume.CustomLongcoatEquip = longcoat
+			costume.CustomCoatEquip = ""
+			costume.CustomPantsEquip = ""
+		else
+			costume.CustomLongcoatEquip = ""
+			costume.CustomCoatEquip = s.Coat or ""
+			costume.CustomPantsEquip = s.Pants or ""
+		end
+		local twoHand = s.TwoHandWeapon or ""
+		if twoHand ~= "" then
+			costume.CustomTwoHandedWeaponEquip = twoHand
+			costume.CustomOneHandedWeaponEquip = ""
+			costume.CustomSubWeaponEquip = ""
+		else
+			costume.CustomTwoHandedWeaponEquip = ""
+			costume.CustomOneHandedWeaponEquip = s.OneHandWeapon or ""
+			costume.CustomSubWeaponEquip = s.SubWeapon or ""
+		end
+		costume.CustomFaceAccessoryEquip = ""
+		costume.CustomEyeAccessoryEquip = ""
+		costume.CustomEarAccessoryEquip = ""
+		costume.CustomEarEquip = ""
+	end
+
+	-- ── 외형 계산 (EquipService.ApplyCostume 이 부른다) ─────────────────
+
+	@ExecSpace("ServerOnly")
+	method boolean ApplyTo(any costume, string userId, any eq)
+		-- 고른 외형을 입힌다. 기록이 없으면 false → EquipService 가 옛 동작(계정 아바타 + 장비)으로 입힌다.
+		-- eq = EquipService 가 계산한 장착 장비 RUID { weapon · twoHand · sub · cap · coat · pants · shoes · glove } (빈 칸 = "").
+		local rec = nil
+		if self.records ~= nil then
+			rec = self.records[userId]
+		end
+		if rec == nil then
+			-- 옛 동작으로 돌아갈 때 이전 외형(프리셋 머리·피부 등)이 남지 않게 비운다.
+			if costume.UseCustomEquipOnly then
+				costume.UseCustomEquipOnly = false
+				self:WriteSlots(costume, {})
+			end
+			return false
+		end
+		if rec.mode == "MY" then
+			-- 계정 아바타 그대로 · 장비 안 보임(무기 포함).
+			costume.UseCustomEquipOnly = false
+			self:WriteSlots(costume, {})
+			log("[Look] applied MY (" .. userId .. ")")
+			return true
+		end
+		local lookId = rec.mode
+		local showGear = true
+		if rec.jobLook and _PlayerSkillState ~= nil then
+			local job = _PlayerSkillState:GetJobId(userId)
+			if job ~= nil and job ~= "" and job ~= _PlayerSkillState.NoviceJobId and self:LookOf(job) ~= nil then
+				lookId = job
+				showGear = false
+			end
+		end
+		local look = self:LookOf(lookId)
+		if look == nil then
+			log_warning("[Look] no AvatarLook row " .. tostring(lookId) .. " — 옛 동작으로 입힌다 (" .. userId .. ")")
+			return false
+		end
+		local s = {}
+		for k, v in pairs(look) do
+			s[k] = v
+		end
+		if showGear then
+			self:Overlay(s, eq)
+		end
+		costume.UseCustomEquipOnly = true
+		self:WriteSlots(costume, s)
+		log("[Look] applied " .. lookId .. " gear=" .. tostring(showGear) .. " (" .. userId .. ")")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Overlay(any s, any eq)
+		-- 모험가 프리셋 위에 장착 장비를 덮는다. 빈 장비 칸은 프리셋 그대로.
+		-- 무기 한손/두손 규칙은 EquipService 와 같다(두손 무기 = 한손·보조 비움 · 방패는 두손과 같이 못 든다).
+		if eq == nil then
+			return
+		end
+		if eq.weapon ~= nil and eq.weapon ~= "" then
+			if eq.twoHand then
+				s.TwoHandWeapon = eq.weapon
+				s.OneHandWeapon = ""
+				s.SubWeapon = ""
+			else
+				s.OneHandWeapon = eq.weapon
+				s.TwoHandWeapon = ""
+			end
+		end
+		if eq.sub ~= nil and eq.sub ~= "" and s.TwoHandWeapon == "" then
+			s.SubWeapon = eq.sub
+		end
+		if eq.cap ~= nil and eq.cap ~= "" then
+			s.Cap = eq.cap
+		end
+		if eq.coat ~= nil and eq.coat ~= "" then
+			s.Coat = eq.coat
+			s.Longcoat = ""
+		end
+		if eq.pants ~= nil and eq.pants ~= "" then
+			s.Pants = eq.pants
+			s.Longcoat = ""
+		end
+		if eq.shoes ~= nil and eq.shoes ~= "" then
+			s.Shoes = eq.shoes
+		end
+		if eq.glove ~= nil and eq.glove ~= "" then
+			s.Glove = eq.glove
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reapply(string userId)
+		-- 외형을 다시 입힌다 — 창구는 EquipService.ApplyCostume 하나(장비 원장을 거기서 읽는다).
+		if userId == nil or userId == "" then
+			return
+		end
+		if _EquipService ~= nil then
+			_EquipService:ApplyCostume(userId)
+		end
+	end
+
+	-- ── 입장 · 퇴장 · 전직 ─────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void OnUserEnter(UserEnterEvent event)
+		local uid = event.UserId
+		if uid ~= nil and uid ~= "" then
+			self:Arrive(uid, 0)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserLeave(UserLeaveEvent event)
+		-- 룸을 떠나면(로그아웃 · 룸 이동) 이 룸의 원장만 지운다. 공유 메모리 기록은 다음 룸이 읽는다.
+		local uid = event.UserId
+		if uid == nil or uid == "" then
+			return
+		end
+		self.records[uid] = nil
+		self.awaiting[uid] = nil
+		self.arriving[uid] = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnJobChanged(JobChangedEvent event)
+		-- 전직 → "전직 시 외형 변경" O 인 모험가만 직업 외형으로 다시 입힌다.
+		local uid = event.UserId
+		if uid == nil or uid == "" or self.records == nil then
+			return
+		end
+		local rec = self.records[uid]
+		if rec == nil or rec.mode == "MY" or rec.jobLook ~= true then
+			return
+		end
+		log("[Look] job changed " .. tostring(event.PrevJobId) .. " -> " .. tostring(event.NewJobId) .. " (" .. uid .. ")")
+		self:Reapply(uid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Arrive(string userId, integer tries)
+		-- 입장: 공유 메모리 기록을 비동기로 읽어 새 접속 / 매치 복귀 / 매치 룸 입장을 가른다(이벤트 안에서 기다리지 않는다).
+		if tries == 0 then
+			if self.arriving[userId] == true then
+				return
+			end
+			self.arriving[userId] = true
+		end
+		local code, mem = _RoomService:GetSharedMemory(self:MemName(userId))
+		if mem == nil then
+			log_warning("[Look] GetSharedMemory failed code=" .. tostring(code) .. " (" .. userId .. ")")
+			self.arriving[userId] = nil
+			if not self:InInstance() then
+				self:FreshLogin(userId)
+			end
+			return
+		end
+		mem:BatchGetVariableAsync({ "mode", "jobLook", "ret" }, function(res)
+			self:OnRecordRead(userId, tries, res)
+		end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnRecordRead(string userId, integer tries, any res)
+		if not isvalid(_UserService:GetUserEntityByUserId(userId)) then
+			self.arriving[userId] = nil
+			return
+		end
+		local rec = self:ParseRecord(res)
+		if self:InInstance() then
+			-- 매치 룸: 로비에서 고른 기록을 그대로 쓴다. 없으면 잠깐 뒤 다시 읽고, 끝내 없으면 옛 동작.
+			if rec == nil and tries < self.ReadRetryMax then
+				_TimerService:SetTimerOnce(function() self:Arrive(userId, tries + 1) end, 1.0)
+				return
+			end
+			self.arriving[userId] = nil
+			self:Adopt(userId, rec, "room")
+			return
+		end
+		self.arriving[userId] = nil
+		-- 정적 룸(로비): 방금 매치에서 돌아왔으면(ret 표식) 기록을 그대로 쓰고 표식을 지운다.
+		if rec ~= nil and rec.ret > 0 and self:NowMs() - rec.ret <= self.ReturnWindowSeconds * 1000 then
+			self:Adopt(userId, rec, "return")
+			self:WriteRecord(userId, rec.mode, rec.jobLook, 0, true)
+			return
+		end
+		self:FreshLogin(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Adopt(string userId, any rec, string why)
+		-- 읽은 기록을 이 룸의 원장으로 삼고 외형을 다시 입힌다.
+		if rec == nil then
+			self.records[userId] = nil
+			log("[Look] " .. why .. " no record (" .. userId .. ")")
+		else
+			self.records[userId] = { mode = rec.mode, jobLook = rec.jobLook }
+			log("[Look] " .. why .. " mode=" .. rec.mode .. " jobLook=" .. tostring(rec.jobLook) .. " (" .. userId .. ")")
+		end
+		self:Reapply(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FreshLogin(string userId)
+		-- 새 접속: 지난 로그인의 기록을 지우고 옛 동작으로 되돌린 뒤 선택창을 연다.
+		self.records[userId] = nil
+		self.awaiting[userId] = true
+		_RoomService:DeleteSharedMemoryAsync(self:MemName(userId), function(c) end)
+		self:Reapply(userId)
+		if _AvatarSelectUIController ~= nil then
+			_AvatarSelectUIController:SetOpen(true, userId)
+		end
+		log("[Look] fresh login → select (" .. userId .. ")")
+	end
+
+	@ExecSpace("Server")
+	method void RequestSync()
+		-- 클라 선택창이 준비됐다는 알림. 입장 때 보낸 열기가 클라 준비 전에 가서 사라졌을 수 있으니 고를 차례면 다시 연다.
+		local uid = senderUserId
+		if uid == nil or uid == "" or self.awaiting == nil then
+			return
+		end
+		if self.awaiting[uid] == true and _AvatarSelectUIController ~= nil then
+			_AvatarSelectUIController:SetOpen(true, uid)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestChoose(string mode, boolean jobLook)
+		-- 클라 요청: 외형 선택 확정. 로그인당 1번 — 이미 골랐으면 창만 닫는다.
+		local uid = senderUserId
+		if uid == nil or uid == "" then
+			return
+		end
+		if mode ~= "EXPLORER_M" and mode ~= "EXPLORER_F" and mode ~= "MY" then
+			log_warning("[Look] bad mode " .. tostring(mode) .. " (" .. uid .. ")")
+			return
+		end
+		if mode == "MY" then
+			jobLook = false
+		end
+		if self.records[uid] == nil then
+			self.records[uid] = { mode = mode, jobLook = jobLook }
+			self:WriteRecord(uid, mode, jobLook, 0, false)
+			self:Reapply(uid)
+			log("[Look] chose " .. mode .. " jobLook=" .. tostring(jobLook) .. " (" .. uid .. ")")
+		end
+		self.awaiting[uid] = nil
+		if _AvatarSelectUIController ~= nil then
+			_AvatarSelectUIController:SetOpen(false, uid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MarkReturn(string userId)
+		-- 매치 룸 → 로비 이동 직전(MatchLobbyGateway.ReturnToStation). 로비가 "새 접속"으로 오인하지 않게 복귀 표식을 남긴다.
+		-- 🔴 동기 쓰기 — 이동이 먼저 끝나면 로비가 표식 없이 읽는다. 아직 안 골랐으면 표식도 없다(로비에서 다시 고른다).
+		if userId == nil or userId == "" or self.records == nil then
+			return
+		end
+		local rec = self.records[userId]
+		if rec == nil then
+			return
+		end
+		self:WriteRecord(userId, rec.mode, rec.jobLook, self:NowMs(), false)
+		log("[Look] mark return (" .. userId .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReapplyAfterReset(string userId)
+		-- MatchResetService.ResetUser 끝에서 부른다. 리셋 순서상 장비(외형)가 직업(PlayerSkillState)보다 먼저 초기화되어
+		-- 전 판 직업 외형이 남을 수 있다 → 직업까지 초기화된 뒤 한 번 더 입힌다.
+		self:Reapply(userId)
+	end
+
+	-- ── 공유 메모리 기록 ──────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void WriteRecord(string userId, string mode, boolean jobLook, integer ret, boolean async)
+		local code, mem = _RoomService:GetSharedMemory(self:MemName(userId))
+		if mem == nil then
+			log_warning("[Look] record write skipped: GetSharedMemory code=" .. tostring(code) .. " (" .. userId .. ")")
+			return
+		end
+		local jl = "0"
+		if jobLook then
+			jl = "1"
+		end
+		local vals = { mode = mode, jobLook = jl, ret = tostring(ret) }
+		if async then
+			mem:BatchSetVariableAsync(vals, function(res)
+				if not self:AllOk(res) then
+					log_warning("[Look] record write failed (async) (" .. userId .. ")")
+				end
+			end)
+			return
+		end
+		local res = mem:BatchSetVariableAndWait(vals)
+		if not self:AllOk(res) then
+			log_warning("[Look] record write failed (" .. userId .. ")")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ParseRecord(any res)
+		-- BatchGet 결과 → { mode, jobLook, ret } 또는 nil(기록 없음 · 형식 틀림).
+		-- 🔴 Code 는 enum 이라 `== 0` 은 항상 거짓 — SharedMemoryResultCode.OK 와 비교한다. 결과는 Dictionary 라 pairs 로 돈다.
+		if res == nil then
+			return nil
+		end
+		local mode = ""
+		local jobLook = ""
+		local ret = "0"
+		for name, v in pairs(res) do
+			if v ~= nil and v.Code == SharedMemoryResultCode.OK and v.Info ~= nil then
+				local val = tostring(v.Info.Value or "")
+				if name == "mode" then
+					mode = val
+				elseif name == "jobLook" then
+					jobLook = val
+				elseif name == "ret" then
+					ret = val
+				end
+			end
+		end
+		if mode ~= "EXPLORER_M" and mode ~= "EXPLORER_F" and mode ~= "MY" then
+			return nil
+		end
+		return { mode = mode, jobLook = jobLook == "1", ret = math.floor(tonumber(ret) or 0) }
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AllOk(any res)
+		-- BatchSet 결과의 세 칸이 전부 OK 인가.
+		if res == nil then
+			return false
+		end
+		local n = 0
+		for name, v in pairs(res) do
+			if v ~= nil and v.Code == SharedMemoryResultCode.OK then
+				n = n + 1
+			end
+		end
+		return n >= 3
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MemName(string userId)
+		return "LOOK_" .. userId
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean InInstance()
+		return _RoomService ~= nil and _RoomService:IsInstanceRoom()
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer NowMs()
+		-- 🔴 룸을 넘는 시각은 DateTime.UtcNow.Elapsed(ms). ServerElapsedSeconds 는 룸마다 0 부터라 비교가 안 된다.
+		return DateTime.UtcNow.Elapsed
+	end
+
+end
