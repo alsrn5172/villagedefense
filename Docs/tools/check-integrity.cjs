@@ -144,6 +144,8 @@ const CANONICAL = {
   TitleInfo: "TitleId,Name,Desc,SortOrder,Enabled,#Note",
   CollectionReward: "Kind,Tier,Kills,AccountExp,Name,Enabled,#Note",
   GrowthPoint: "ActionType,Points,Enabled,#Note",
+  // 접속 외형 선택 (2026-09-26 · a/avatar-look-select · WO-032 · A-2-27)
+  AvatarLook: "LookId,Hair,Face,Body,Cap,Cape,Coat,Longcoat,Pants,Shoes,Glove,OneHandWeapon,TwoHandWeapon,SubWeapon,#Note",
 
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
   SkillInfo:
@@ -268,6 +270,7 @@ const PK = {
   TitleInfo: ["TitleId"],
   CollectionReward: ["Kind", "Tier"],
   GrowthPoint: ["ActionType"],
+  AvatarLook: ["LookId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
