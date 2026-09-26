@@ -156,3 +156,9 @@ PR #85. 전사 스킬 점검(2026-09-24 · #83 브랜치 · Maker MCP) 중 확�
 **하네스 에러 2건(코드 문제 아님):** `05:32:49` · `05:34:30` `Object reference not set to an instance of an object.` — 앞 테스트에서 아이언 바디 반사(80580)로 죽어 사라진 스네일을 공격자로 넘겨 엔진 `__base:OnHit` 이 던졌다(`attacker=false` 로 확인). 같은 호출을 살아 있는 스네일로 다시 하니(M1d) 정상. 실제 게임에서 엔진은 살아 있는 공격자로 `OnHit` 을 부르므로 해당 없다.
 
 **판정: PASS** (H1 · H2 · M1 · E1 · D1 · X). A 파일(`PlayerHit.mlua`) 수정이 있어 A 리뷰 승인 전까지 Draft.
+
+### main 합치기 + 계약서 스킬 등록서 8번 (2026-09-26 · #86 머지 뒤)
+
+- `origin/main`(`3b6c972`) 합침 — 충돌 없음.
+- 스킬 등록서 8번 `PlayerHit.mlua` 항목에 사전 피해 훅 `_SkillBuffs:ModifyIncomingDamage` 한 문장(#40 5813239867). 같은 칸에 #83 의 등록 문장도 넣어 **#83 과 글자까지 같은 한 줄** → 두 PR 의 머지 순서와 상관없이 이 줄은 충돌하지 않는다.
+- `check-integrity` 전부 통과(경고 4 = main 과 같음).
