@@ -24,7 +24,7 @@ PR #86. **출처: #40 5813232188 (A 결정 · 사용자 확정 2026-09-24).** �
 | `Skill/SkillCaster.mlua:22-31` | 속성 `UltimateCostItemId = "BRAND_SOULSTONE"` · `UltimateCostItemName = "낙인의 영혼석"` · `UltimateStoneCount = 5` (`UltimateFullTicketSkills` 삭제) |
 | `:408-418` 게이트 5-2 | PreCheck(5-1) 뒤 · MP(6) 앞에서 개수만 센다. 부족하면 `RejectToast` + `CastResult(false, "not enough BRAND_SOULSTONE (need 5, have N)")` |
 | `:507-515` | 실행기 뒤 차감(변경 없음) |
-| `:534` `UltimateStoneCost` | ★ 입장권 계산 삭제 → ORIGIN 이면 `UltimateStoneCount`. 로그 `[Skill] ultimate … cost BRAND_SOULSTONE x5 (★d · flat)` |
+| `:534` `UltimateStoneCost` | ★ 입장권 계산 삭제 → ORIGIN 이면 `UltimateStoneCount`. 로그 `[Skill] ultimate … cost BRAND_SOULSTONE x5 (flat)` (2026-09-26 부터 ★ 없음 — 아래 절) |
 | `:544` `RejectToast` | 신규. `_UIToast:ShowMessage(message, userId)` + 로그 `[Skill] reject toast -> …` |
 | `Skill/SkillWindowLogic.mlua:1353-1356` `FormatCost` | ORIGIN 이면 "낙인의 영혼석 5개 소모" (값은 `_SkillCaster` 속성) |
 | `SkillInfo.csv` 궁 5행(SK_W31 · SK_M31 · SK_A31 · SK_T31 · SK_P31) | `Cooldown` 0 → **120** · `UseLimit` 1 → **0** · `#Note` 끝에 규칙 한 줄(옛 "UseLimit 1" 문구 제거). 헤더 변경 없음 |
@@ -79,3 +79,10 @@ PR #86. **출처: #40 5813232188 (A 결정 · 사용자 확정 2026-09-24).** �
 
 - `Docs/스키마-계약.md` 변경 이력 표: 이 PR 의 2026-09-24 행을 표 맨 위(머리줄 바로 아래)에서 **2026-09-23 행 바로 아래**로 한 줄 내렸다. 내용은 그대로.
 - 이유: #83 도 같은 자리(표 맨 위)에 행을 넣어 둘째 머지 때 충돌했다. 사이에 안 바뀐 줄이 생겨 #83 · #86 을 어느 순서로 합쳐도 충돌하지 않는다(3-way 병합 두 순서 확인). **#83 과 머지 순서 자유.**
+
+## 2026-09-26 — A 리뷰 요청 반영: `_DifficultyService:Current()` 호출 삭제
+
+- 출처: A 리뷰 코멘트 5831421482 — `UltimateStoneCost` 가 로그 한 줄 때문에 A API `_DifficultyService:Current()` 를 불렀다. 로직에 안 쓰이고 계약서 스킬 등록서 8번 목록에도 없다.
+- `Skill/SkillCaster.mlua` `UltimateStoneCost`(`:534`): `local d` · `_DifficultyService:Current()` 두 줄 삭제. 로그는 그대로 남기고 ★ 만 뺐다 → `[Skill] ultimate <SkillId> cost BRAND_SOULSTONE x5 (flat)`.
+- 동작 변화 없음: 반환값은 전과 같이 `UltimateStoneCount`(5). 위 Play 표의 `(★d · flat)` 로그는 이 수정 전 기록이다.
+- LSP 진단: 에러 0 · 경고 0. Maker Play 재검증은 하지 않았다(로그 문자열 · 사용하지 않던 지역 변수만 바뀜).
