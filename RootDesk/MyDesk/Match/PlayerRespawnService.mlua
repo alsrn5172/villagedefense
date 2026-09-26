@@ -124,12 +124,26 @@ script PlayerRespawnService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer ExpCutOf(string userId)
-		-- 지금 죽으면 깎일 경험치 (팝업 표시용 · 실제 차감은 SummonManager.DeductExpInLevel).
+		-- 지금 죽으면 깎일 경험치 (팝업 표시용). 실제 차감(SummonManager.DeductExpInLevel)과 **같은 식**으로 센다 — 레벨 시작 경험치부터 쌓인 구간 안
+		-- 경험치와 (구간 필요치 × ExpPenaltyRatio) 중 작은 값. 예전엔 ExpProgress(표시용 · 만렙이면 바를 가득 채워 within = need)를 써서 만렙 팝업이
+		-- 실제와 달랐다. 만렙에서도 경험치는 계속 쌓이므로(FarmReward → GrantKillReward 에 만렙 상한 없음) 실제 차감이 0 이 아닐 수 있다 —
+		-- 2026-09-26 Play: Lv30 · 구간 안 25405 → 실제 1250 (B · #40 comment 5831420626 · PR #98). 레벨 시작 경험치 그대로면 0.
 		if _SummonManager == nil then return 0 end
 		local e = _SummonManager:EnsureUser(userId)
 		if e == nil then return 0 end
-		local p = _SummonManager:ExpProgress(e.exp)
-		return math.min(math.max(0, math.floor(p.within)), math.floor(p.need * self.ExpPenaltyRatio))
+		local level = e.level
+		local levelStart = 0
+		local span = 0
+		if _MonsterCatalog ~= nil then
+			for lv = 1, level - 1 do levelStart = levelStart + _MonsterCatalog:GetNeedExp(lv) end
+			span = _MonsterCatalog:GetNeedExp(level)
+			if span <= 0 then span = _MonsterCatalog:GetNeedExp(math.max(1, level - 1)) end
+		else
+			levelStart = (level - 1) * _SummonManager.ExpPerLevel
+			span = _SummonManager.ExpPerLevel
+		end
+		local within = math.max(0, e.exp - levelStart)
+		return math.max(0, math.min(within, math.floor(span * self.ExpPenaltyRatio)))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -174,8 +188,23 @@ script PlayerRespawnService extends Logic
 		log("[Death] user=" .. userId .. " chose " .. kind)
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent:IsDead() then
-			player.PlayerComponent:ProcessRevive(userId)
+			local pc = player.PlayerComponent
+			pc:ProcessRevive(userId)
+			-- ProcessRevive 는 HP 를 채우지 않아 HP 0 인 채 살아 있었다(2026-09-25 Play · #40 comment 5830769756).
+			-- 시간 부활(엔진 자동 부활 = HP 최대치)과 같게 바로 채운다 — 폴링 OnRevive 까지 기다리면 그 사이(최대 PollInterval) HP 0 으로 맞는다.
+			-- MP 는 엔진에 없고 SummonManager econ 이 진상이다. MP 는 두 부활이 모두 지나가는 OnRevive 에서 최대치로 채운다(#40 comment 5844239483 A 결정).
+			pc.Hp = pc.MaxHp
+			log("[Death] user=" .. userId .. " revive=choice hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MpText(string userId)
+		-- 로그용 "mp/maxMp" (SummonManager econ · 없으면 "?"). 선택 부활 · 시간 부활의 MP 를 같은 꼴로 비교하려고 쓴다.
+		if _SummonManager == nil then return "?" end
+		local e = _SummonManager:EnsureUser(userId)
+		if e == nil then return "?" end
+		return tostring(e.mp) .. "/" .. tostring(e.maxMp)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -237,6 +266,17 @@ script PlayerRespawnService extends Logic
 			if applied == "MESO" then _UIToast:ShowMessage("내 마을에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
 			else _UIToast:ShowMessage("내 마을에서 부활 — 경험치 " .. tostring(amount) .. " 차감 (레벨 유지)", userId) end
 		end
-		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0))
+		-- MP 도 최대치로 — 시간 부활 · 선택 부활 모두 여기를 지난다(#40 comment 5844239483 · 사용자 강민구 2026-09-26 A 결정). econ.mp 원장은 SummonManager(GrantMp 가 maxMp clamp · HUD Push).
+		if _SummonManager ~= nil then
+			local e = _SummonManager:EnsureUser(userId)
+			if e ~= nil then
+				local refill = math.floor((e.maxMp or 0) - (e.mp or 0))
+				if refill > 0 then _SummonManager:GrantMp(userId, refill) end
+			end
+		end
+		local how = "timed"
+		if p.choice ~= "" then how = "choice" end
+		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0)
+			.. " revive=" .. how .. " hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 	end
 end
