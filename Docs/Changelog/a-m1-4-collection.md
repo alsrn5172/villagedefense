@@ -18,3 +18,11 @@
 - LSP 전부 clean(`_AccountRecordUIController` Symbol not found info = 새 Logic · Maker refresh 뒤 사라짐). `check-integrity` 통과(`CollectionReward` C1·C3·C4). ui_lint 경고 = 탭 버튼 88px 미만 · 제목 줄 위 버튼 겹침(닫기 버튼과 같은 꼴).
 - 🟡 **Maker 검증 대기**: Reimport All(새 Logic 5개 `.codeblock` 생성 → 커밋) → Play → `[AcctRec] loaded` · 사냥 `[Coll] tier MONSTER 발견` + `[Account] exp +5 (COLLECTION)` · 저장 `[AcctRec] save AccountCollection bytes=` · 로비 창 "내 기록" → `[AcctUI] view collection rows=` · 룸 이동·재접속 뒤 값 유지 · 같은 단계 재지급 없음.
 - 👁 눈 확인(사용자): 계정 창 배치 · "내 기록" 버튼 위치.
+
+## Codex 교차 리뷰 반영 (2026-09-26 · 묶음 3+4 · 2회)
+
+- 🔴 늦게 끝난 옛 세션 로드가 새 세션 원장을 덮은 뒤에야 버려졌다(도감 · **프로필도 같은 구멍**) → `PlayerDBManager` 가 BatchGet 직후 · 도메인 디코드 **전에** 세션 번호를 본다.
+- 보스 도감 인정의 대체 경로(최다 피해 1명)·매치 원장 없는 경우가 참가자 검사를 건너뛰었다 → 참가자만 · 원장 없으면 인정 안 함.
+- 저장본 안쪽 칸(`mon` `boss` `c` `d` `r`)이 표가 아니면 `pairs` 가 터져 영구 LOADING → 표인지 보고 아니면 빈 값.
+- 계정 창이 LOADING 마다 1초 뒤 무한 재요청 → 10번 상한 뒤 멈추고 안내.
+- **알려진 한계(고치지 않음 · 기존 설계 · AccountData 도 같다)**: ① 이탈 저장이 실패해도 원장을 버린다(재시도 없음 — 손실 범위 = 마지막 주기 저장(300초)·룸 이동 동기 저장 이후) ② 도감 단계 기록(`AccountCollection`)과 계정 경험치(`AccountProfile`)가 다른 키라 BatchSet 이 **일부만** 성공하면 경험치 유실 또는 다음 판 재지급(한 요청 안의 두 키 · 금액이 작다). ③ 같은 탭의 늦은 응답은 RPC 순서대로 와서 마지막 것이 이긴다(순서 보장 전제).
