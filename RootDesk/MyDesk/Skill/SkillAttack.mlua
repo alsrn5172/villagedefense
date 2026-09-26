@@ -35,6 +35,15 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property number PendingDamageMul = 1
 
+    -- 이번 타격 패스의 피해를 호출자가 정한 정수로 고정한다(DealSkillDamageToTargetAmount · 파워 스트라이크 = 시전 순간 DamageAt). -1 = 안 씀. 패스가 끝나면 -1 로.
+    @HideFromInspector
+    property integer PendingDamageOverride = -1
+
+    -- 이번 타격 패스의 크리티컬을 호출자가 정한 값으로 고정한다(-1 = 안 씀 · 0 = 아님 · 1 = 크리). 시전 순간에 판정해 둔 값을 타격 시점에 그대로 쓴다
+    -- (파워 스트라이크 · skill-maker 원장 PAJ-01/02 · 2026-09-24). 패스가 끝나면 -1 로.
+    @HideFromInspector
+    property integer PendingCritOverride = -1
+
     -- 이번 타격 패스의 표시 타수(GetDisplayHitCount). 패스가 끝나면 1 로.
     @HideFromInspector
     property integer PendingDisplayHits = 1
@@ -75,6 +84,11 @@ script SkillAttack extends AttackComponent
 
     -- 볼리(더블 샷 · 럭키 세븐): 2발째부터의 발사 간격(초). 2발째부터는 VisualOnly(피해 없음).
     property number VolleyInterval = 0.12
+
+    -- 스킬별 투사체 sprite 가 없을 때 쓰는 기본 투사체 = 에너지볼트 공(skill/200.img/skill/2001008 ball · SK_M11).
+    -- 2026-09-25 #83: 예전엔 SkillProjectile.model 의 기본 SpriteRUID 였다. 그러면 화살 · 표창 스킬도 스폰 첫 프레임(클라가 모델 기본값만 받은 한 프레임)에
+    -- 이 공이 보였다 → 모델 기본값은 "" 로 비우고 SpawnOneProjectile 이 항상 sprite 를 넣는다.
+    property string DefaultProjectileSpriteRUID = "d393500fd23f4537a2dd1f65089fc4a1"
 
     -- 단일 대상 선택 (대마법 SK_M31 · b/skill-magician). PlayerAttack.AttackNormal 의 2패스(probe 로 후보 수집 → 하나만 실제 타격)와 같은 꼴.
     -- Candidates 는 "probe" 패스 동안만 채워지고, SingleTarget 이 잡혀 있는 동안 IsAttackTarget 이 그 하나만 통과시킨다.
@@ -130,7 +144,9 @@ script SkillAttack extends AttackComponent
         -- 타격 패스 시작: CalcDamage/GetDisplayHitCount/OnAttack 이 읽는 값을 한 번에 세팅한다. EndPass 와 짝.
         self.PendingLevel = level
         self.PendingSkillId = skillId
-        if mul == nil or mul < 1 then mul = 1 end
+        -- 1 미만 배율도 그대로 쓴다(`<= 0` 만 1 로). 예전 `< 1` 은 N타 배율(항상 ≥ 1)만 오던 시절의 가드라,
+        -- 파워 스트라이크 2단 콤보(각 0.5)를 1 로 올려 표의 2배를 넣고 있었다. DealSkillDamageToTargetScaled(:395) 와 같은 꼴.
+        if mul == nil or mul <= 0 then mul = 1 end
         self.PendingDamageMul = mul
         if displayHits == nil or displayHits < 1 then displayHits = 1 end
         self.PendingDisplayHits = math.floor(displayHits)
@@ -139,6 +155,8 @@ script SkillAttack extends AttackComponent
     @ExecSpace("ServerOnly")
     method void EndPass()
         self.PendingDamageMul = 1
+        self.PendingDamageOverride = -1
+        self.PendingCritOverride = -1
         self.PendingDisplayHits = 1
         self.PendingSkillId = ""
         self.PendingImpactRuid = ""
@@ -190,6 +208,10 @@ script SkillAttack extends AttackComponent
             -- 평값 패스(DealFlatDamageToTarget): 스킬 표가 아니라 호출자가 준 값. 아이언 바디 반사 = 최대 HP × 반사율.
             return self.PendingFlatDamage
         end
+        if self.PendingDamageOverride >= 0 then
+            -- 정수 고정 패스(DealSkillDamageToTargetAmount): 호출자가 시전 순간에 고정한 DamageAt. 태그는 스킬 id 그대로라 크리·표시·픽파켓은 스킬 타격과 같다.
+            return self.PendingDamageOverride
+        end
         if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
             log_warning("SkillAttack: CalcDamage attacker has no PlayerComponent, cannot resolve userId for " .. tostring(attackInfo))
             return 0
@@ -202,6 +224,8 @@ script SkillAttack extends AttackComponent
         -- 닷지(SK_A22 · GUARANTEED_CRIT · b/skill-archer-thief-pirate) 활성이면 반드시 크리티컬. 그 외엔 false(스킬엔 확률 크리 없음 · 예전과 같다).
         -- ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐이라 ServerOnly 인 SkillBuffs 를 불러도 된다.
         if attackInfo == self.FlatTag or attackInfo == self.ProbeTag then return false end
+        -- 시전 순간에 고정한 크리(DealSkillDamageToTargetAmount 의 critLocked). 타격 시점에 다시 판정하지 않는다.
+        if self.PendingCritOverride >= 0 then return self.PendingCritOverride == 1 end
         if _SkillBuffs ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
             return _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId)
         end
@@ -245,8 +269,14 @@ script SkillAttack extends AttackComponent
         --   attackInfo == ProbeTag : 후보만 모으고 아무도 안 맞는다(피해·OnHit 없음).
         --   SingleTarget 이 있으면  : 그 하나만 맞는다(DealSkillDamageToTarget).
         --   그 외                  : 기존과 같다 — 상자 안 전부.
+        -- 진영 필터(2026-09-24 · b/skill-attack-faction-filter): 우리 편(수비대 · 우리 미니언 · 우리 시설 · 다른 플레이어) · 중립은 맞지 않는다.
+        -- 기본 공격 PlayerAttack.IsAttackTarget(:91)과 같은 규칙 — _FactionLogic:IsEnemy(시전자, 대상). probe(후보 수집) 패스에서도 빠진다.
+        if isvalid(defender) and _FactionLogic ~= nil and not _FactionLogic:IsEnemy(self.Entity, defender) then return false end
         if not isvalid(defender) then return false end
         if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        -- 시체 제외(2026-09-24 · #83): 죽은/죽는 중인 몬스터는 DestroyDelay 동안 HitComponent 가 남아 있어(Monster.Dead) 그대로 두면
+        -- 고정 대상 타격이나 범위 스킬이 시체를 또 때린다(피해 숫자 · 픽파켓 · 반사). 후보 수집(probe)에서도 뺀다.
+        if self:IsDeadOrDying(defender) then return false end
         if attackInfo == self.ProbeTag then
             table.insert(self.Candidates, defender)
             return false
@@ -357,7 +387,8 @@ script SkillAttack extends AttackComponent
         -- CircleShape(Environment/NativeScripts/Misc/CircleShape.d.mlua) 를 호출마다 만든다 — 반지름이 스킬마다 달라 상자 Shape 처럼 재사용할 이득이 없다.
         -- 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → DamageAt × PendingDamageMul).
         if radius <= 0 then radius = 1 end
-        if mul == nil or mul < 1 then mul = 1 end
+        -- BeginPass(:133) 와 같은 기준(`<= 0` 만 1 로). 지금 호출부는 전부 n·hits ≥ 1 이라 동작은 그대로다.
+        if mul == nil or mul <= 0 then mul = 1 end
         if displayHits == nil or displayHits < 1 then displayHits = 1 end
         local circle = CircleShape(Vector2(cx, cy), radius)
         self:BeginPass(skillId, level, mul, math.floor(displayHits))
@@ -389,7 +420,7 @@ script SkillAttack extends AttackComponent
 
     @ExecSpace("ServerOnly")
     method void DealSkillDamageToTargetScaled(string skillId, number level, Entity target, number mul, number displayHits)
-        -- 단일 대상 타격 + 피해 배율·표시 타수 분리(파워 스트라이크 2단 콤보 = 0.5 × 2). DealSkillDamageToTarget 과 같은 경로.
+        -- 단일 대상 타격 + 피해 배율·표시 타수 분리. DealSkillDamageToTarget 과 같은 경로. (파워 스트라이크는 2026-09-24 부터 1타 · DealSkillDamageToTargetAmount — 시전 순간 고정값.)
         if not isvalid(target) or not isvalid(target.TransformComponent) then return end
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
@@ -408,6 +439,49 @@ script SkillAttack extends AttackComponent
         log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " mul=" .. tostring(mul) .. " display=" .. tostring(displayHits))
     end
 
+    @ExecSpace("ServerOnly")
+    method boolean DealSkillDamageToTargetAmount(string skillId, number level, Entity target, integer amount, number displayHits, integer critLocked)
+        -- 단일 대상 타격 · 피해 = amount 그대로(정수) · 크리 = critLocked(-1 = 타격 시점 판정 · 0 = 아님 · 1 = 크리).
+        -- 시전 순간에 대상 · 피해 · 크리를 고정해 두고 타격 시점에 한 번만 넣는 스킬이 쓴다(파워 스트라이크 · skill-maker 원장 PAJ-01/02 (a)).
+        -- 반환 = 타격을 시도했는가. 대상이 사라졌거나 죽었거나 죽는 중이면 아무것도 안 하고 false(시체 보호 · IsDeadOrDying).
+        if not isvalid(target) or not isvalid(target.TransformComponent) then return false end
+        if amount == nil or amount <= 0 then return false end
+        if self:IsDeadOrDying(target) then
+            log("SkillAttack: " .. skillId .. " locked target " .. tostring(target.Name) .. " is dead/dying — hit skipped")
+            return false
+        end
+        self:EnsureShape()
+        local p = target.TransformComponent.WorldPosition
+        self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
+        self.Shape.Size = Vector2(self.SingleTargetBoxSize.x, self.SingleTargetBoxSize.y)
+        self.Shape.Angle = 0
+        if displayHits == nil or displayHits < 1 then displayHits = 1 end
+
+        self.SingleTarget = target
+        self:BeginPass(skillId, level, 1, math.floor(displayHits))
+        self.PendingDamageOverride = math.floor(amount)
+        if critLocked ~= nil and critLocked >= 0 then self.PendingCritOverride = critLocked end
+        self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        self:EndPass()
+        self.SingleTarget = nil
+
+        log("SkillAttack: dealt " .. skillId .. " to " .. tostring(target.Name) .. " lv=" .. tostring(level) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(critLocked) .. " display=" .. tostring(displayHits))
+        return true
+    end
+
+    method boolean IsDeadOrDying(Entity defender)
+        -- 몬스터(script.Monster · A)가 죽었거나(IsDead) HP 가 0 이하인가. Monster 컴포넌트가 없는 대상(미니언 · 시설 등)은 false — 그쪽 규칙은 각 HitComponent 가 한다.
+        -- IsDead 는 Monster.Dead 가 켜고 DestroyDelay 뒤 숨김·파괴 전까지 HitComponent 가 살아 있다(Monster.mlua:302-327) — 그 사이가 "죽는 중".
+        -- ExecSpace 없음: IsAttackTarget(서버 피격 파이프라인)과 서버 실행기에서만 부른다.
+        if not isvalid(defender) then return true end
+        ---@type Monster
+        local mon = defender:GetComponent("script.Monster")
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return true end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return true end
+        return false
+    end
+
     -- Spawns a real travelling script.SkillProjectile entity for behavior="PROJECTILE" skills.
     -- "Server" (not "ServerOnly") for the same reason DealSkillDamage is: the whole
     -- SkillHotbar -> SkillCaster -> SkillExecutors chain runs client-side today, so this is the
@@ -419,7 +493,7 @@ script SkillAttack extends AttackComponent
     -- positive = right, negative = left). Passing a client-read value instead would be trusting
     -- the client for something the server can read itself off the same entity.
     --
-    -- b/skill-archer-thief-pirate: spriteRuid(화살·표창 스프라이트 · "" = 모델 기본 에너지볼트) · hitSoundRuid · preferBoss(스나이핑 보스 우선) ·
+    -- b/skill-archer-thief-pirate: spriteRuid(화살·표창 스프라이트 · "" = DefaultProjectileSpriteRUID 에너지볼트) · hitSoundRuid · preferBoss(스나이핑 보스 우선) ·
     -- hitCount > 1 = 볼리(첫 발 피해 ×N · 표시 N타, 이후 발은 VolleyInterval 간격으로 VisualOnly).
     -- b/skill-thief-motion: spawnOffsetX(0 이면 ProjectileSpawnOffsetX) — 럭키 세븐은 시전 이펙트(초승달) 중심에서 표창이 나가야 해서 스킬별 앞쪽 거리를 받는다(effectOverrides.spawn).
     --   spriteScale(마지막 인자 · 0/1 이면 그대로) = 투사체 스프라이트 크기 배율(Transform.Scale · 판정 상자 RangeX/Y 는 월드 크기라 안 커진다) — 럭키 세븐 표창 1.3.
@@ -516,10 +590,13 @@ script SkillAttack extends AttackComponent
             return nil
         end
 
-        -- 스킬별 스프라이트(화살·표창). SpriteRUID 는 @Sync 라 서버 쓰기가 클라에 반영된다. 비면 모델 기본(에너지볼트).
-        if spriteRuid ~= nil and spriteRuid ~= "" then
-            local sprite = proj.SpriteRendererComponent
-            if isvalid(sprite) then sprite.SpriteRUID = spriteRuid end
+        -- 스킬별 스프라이트(화살·표창). SpriteRUID 는 @Sync 라 서버 쓰기가 클라에 반영된다. 비면 DefaultProjectileSpriteRUID(에너지볼트).
+        -- 모델 기본 SpriteRUID 는 ""(스폰 첫 프레임에 아무것도 안 그림 · #83) — 그래서 여기서 항상 넣는다.
+        local sprite = proj.SpriteRendererComponent
+        if isvalid(sprite) then
+            local ruid = spriteRuid
+            if ruid == nil or ruid == "" then ruid = self.DefaultProjectileSpriteRUID end
+            sprite.SpriteRUID = ruid
         end
 
         mover.Speed = speed

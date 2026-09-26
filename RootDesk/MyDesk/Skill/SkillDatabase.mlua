@@ -19,6 +19,14 @@ script SkillDatabase extends Logic
 
     property boolean isJobsLoaded = false
 
+    -- 스킬 모션 세트(계약서 A-2-23 · Skill/SkillMotionSet.csv · 2026-09-24 #83). 키 "<SkillId>|<WeaponType>" →
+    -- { mode = "FIXED"|"RANDOM"|"SEQUENCE", rows = { {seq, core, parts, rate, hitTime, lockTime}, ... seq 오름차순 } }. Enabled=false 행은 뺀다.
+    property string motionSetDatasetName = "SkillMotionSet"
+
+    property table motionSets = {}
+
+    property boolean isMotionSetsLoaded = false
+
     method void OnBeginPlay()
         -- Loads every SkillInfo + JobTier row once, into skillsById / jobsByKey.
         self:EnsureLoaded()
@@ -130,6 +138,81 @@ script SkillDatabase extends Logic
 
         self.isJobsLoaded = true
         log("SkillDatabase: resolved dataset '" .. self.jobDatasetName .. "', loaded " .. tostring(count) .. " rows")
+    end
+
+    method void EnsureMotionSetsLoaded()
+        -- 모션 세트 표를 1회 읽는다(양쪽 인스턴스 — 서버는 모션 선택 · 타격 시점, 클라는 시전 락 길이에 쓴다).
+        if not self.isMotionSetsLoaded then self:LoadMotionSets() end
+    end
+
+    method void LoadMotionSets()
+        -- SkillMotionSet(A-2-23) 을 세트별로 묶는다. 한 세트의 Mode 가 행마다 다르면 경고하고 첫 행 값을 쓴다(계약서 규칙).
+        self.isMotionSetsLoaded = true
+        self.motionSets = {}
+        local ds = _DataService:GetTable(self.motionSetDatasetName)
+        if ds == nil then
+            log_warning("SkillDatabase: dataset '" .. self.motionSetDatasetName .. "' was not found — skill motions fall back to WeaponMotion")
+            return
+        end
+        local count = ds:GetRowCount()
+        local used = 0
+        for i = 1, count do
+            local on = string.lower(tostring(ds:GetCell(i, "Enabled") or "true")) ~= "false"
+            local skillId = ds:GetCell(i, "SkillId") or ""
+            local wt = string.upper(ds:GetCell(i, "WeaponType") or "")
+            local core = ds:GetCell(i, "CoreAction") or ""
+            if on and skillId ~= "" and wt ~= "" and core ~= "" then
+                local key = skillId .. "|" .. wt
+                local mode = string.upper(ds:GetCell(i, "Mode") or "FIXED")
+                local set = self.motionSets[key]
+                if set == nil then
+                    set = { mode = mode, rows = {} }
+                    self.motionSets[key] = set
+                elseif set.mode ~= mode then
+                    log_warning("SkillDatabase: motion set " .. key .. " mixes Mode " .. set.mode .. "/" .. mode .. " — using " .. set.mode)
+                end
+                local parts = ds:GetCell(i, "PartsAction") or ""
+                if parts == "" then parts = core end
+                table.insert(set.rows, {
+                    seq = self:ParseNumber(key, "seq", ds:GetCell(i, "Seq")),
+                    core = core,
+                    parts = parts,
+                    rate = self:ParseNumberOr(key, "play_rate", ds:GetCell(i, "PlayRate"), 1),
+                    hitTime = self:ParseNumber(key, "hit_time", ds:GetCell(i, "HitTime")),
+                    lockTime = self:ParseNumber(key, "lock_time", ds:GetCell(i, "LockTime")),
+                })
+                used = used + 1
+            end
+        end
+        local sets = 0
+        for _, set in pairs(self.motionSets) do
+            table.sort(set.rows, function(a, b) return a.seq < b.seq end)
+            sets = sets + 1
+        end
+        log("SkillDatabase: resolved dataset '" .. self.motionSetDatasetName .. "', loaded " .. tostring(used) .. "/" .. tostring(count) .. " rows in " .. tostring(sets) .. " sets")
+    end
+
+    method any GetMotionSet(string skillId, string weaponType)
+        -- (스킬, 무기 종류) 세트 또는 nil.
+        self:EnsureMotionSetsLoaded()
+        if skillId == nil or weaponType == nil then return nil end
+        return self.motionSets[skillId .. "|" .. string.upper(weaponType)]
+    end
+
+    method number MotionSetLockSeconds(string skillId)
+        -- 그 스킬의 모든 세트 · 모든 행 중 가장 긴 LockTime(0 = 세트 없음 · 값 없음). 클라 예측 락과 서버 락이 같은 값을 쓰게
+        -- (무작위로 고른 모션은 서버만 알아서 클라는 행별 값을 쓸 수 없다) SkillCaster.GetCastLockSeconds 가 부른다.
+        self:EnsureMotionSetsLoaded()
+        local best = 0
+        local prefix = skillId .. "|"
+        for key, set in pairs(self.motionSets) do
+            if string.sub(key, 1, #prefix) == prefix then
+                for _, r in ipairs(set.rows) do
+                    if r.lockTime > best then best = r.lockTime end
+                end
+            end
+        end
+        return best
     end
 
     method string JobKey(string jobLine, number tier)
