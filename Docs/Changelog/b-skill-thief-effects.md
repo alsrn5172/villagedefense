@@ -116,7 +116,7 @@
 
 ### 남은 것 / 후속
 - **#83 머지 뒤:** `PlayArmArc` → #83 `PlaySpriteFlash` 교체(세로 배율 인자 하나 추가 필요 · (5) 참고). ~~럭키 세븐 팔 잔상 가로 배율(scaleX 1.0 / 0.8 / 0.7)은 월드 확인 뒤 값 하나만 바꾼다~~ → **0.7 완료 `851dbd4`**((6)).
-- **보류(사용자 결정 2026-09-27) · #102 머지 + #115 rebase 뒤:** `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → T 실행에서 본 두 증상을 같이 고친다: ① 2발째 표창이 맞은 뒤에도 남아 계속 날아간다(VisualOnly 는 명중·소멸이 없다 · `SkillProjectile.mlua:227-229`) ② 2발째 명중 폭발 `7368bd9b…` 이 없다(영상 = 별 폭발 두 번 0.13s 간격). 함수는 #102 `b91a8fe` `Skill/SkillAttack.mlua:522`. 이 브랜치는 #114 기반이라 코드 지금은 없음.
+- **보류(사용자 결정 2026-09-27) · #102 머지 + main 병합 뒤**(`git fetch origin && git merge origin/main` · rebase 금지 · `SkillInfo.csv` union 중복이 생기면 저장소 밖 `villagedefense-harness/thief-check/fix_skillinfo_union.cjs origin/main <병합 전 이 브랜치 끝> SK_T` → `check-integrity`)**:** `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → T 실행에서 본 두 증상을 같이 고친다: ① 2발째 표창이 맞은 뒤에도 남아 계속 날아간다(VisualOnly 는 명중·소멸이 없다 · `SkillProjectile.mlua:227-229`) ② 2발째 명중 폭발 `7368bd9b…` 이 없다(영상 = 별 폭발 두 번 0.13s 간격). 함수는 #102 `b91a8fe` `Skill/SkillAttack.mlua:522`. 이 브랜치는 #114 기반이라 코드 지금은 없음.
 - **보류 · 기획 답 대기(#40 5858689104):** 답이 "1마리"면 #102 머지 뒤 `SkillAttack.IsSingleTargetProjectile`(#102 `b91a8fe` `:528`)에 `SK_T11` 추가. 다른 답이면 넣지 않는다.
 - ~~픽파켓 MISS 가드는 #114 몫이다~~ → **완료(2026-09-27 · 사용자 지시 · Round 9 H 재확인용)**: #114 브랜치 `b/playerattack-buff-hooks` 로컬 `615bcb9` 에 커밋(PlayerAttack.OnAttack → CalcDamage · 피해 > 0) · 이 브랜치를 그 위로 rebase — 이 브랜치의 `PlayerAttack.mlua` 변경은 다크 사이트 해제 훅(AttackNormal) 하나만 남았다. #114 · 이 브랜치 모두 push 전.
 - 메소 동전 그림(A 의 `Global/MesoCoin.model` `3b88d8df…`)은 메소가 아니라 마일리지 "M" 알림 그림이다(태그 API) — 아이템 외형이라 손대지 않았다. 후보 = 골드 메소 드랍 `5c78b56b…`(비교 시트 C).
