@@ -1,5 +1,14 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 5차 (2026-09-27 · 탈락 이벤트 구독 뺌)
+
+| 무엇 | 전 → 후 | 근거 |
+|---|---|---|
+| 탈락 때 숫자 간격 | A 의 `PlayerEliminatedEvent` 를 받아 곧바로 되돌림 → **구독 없음 · 감시의 보통 만료가 되돌린다**(마지막 주먹 +≈1.73s · 0.1s 주기) | A 의 탈락 경로(`LaneStateService.Eliminate` → `SpectateService.Enter` · `MatchSessionLogic.OnPlayerEliminated` → `BalrogRoomService.OnEliminated`)는 엔티티를 **숨기고 멈추기만** 한다(SetVisible false · 조작/피격 끔 · 중력 0 · Neutral) — HP · IsDead · 엔티티 그대로, ResetMatchState 안 탐. 감시 타이머는 SkillExecutors 것이라 계속 돈다 → 0.12 가 남는 길이 없다 |
+
+- `DelayPerAttack` 을 쓰는 곳 조사(원격 브랜치 27개 전부): 런타임에 쓰는 곳은 이 PR 의 `SkillExecutors` 뿐. 나머지는 모델 초기값(`Global/DefaultPlayer` `damageDelayPerAttack` 0.05 · `Global/Player` 속성 정의 · 모든 브랜치 같음)뿐이고 `_DamageSkinService` 를 부르는 스크립트도 없다 → 창 안에서 우리 되돌리기가 남의 값을 덮는 경우 없음.
+- A 의존: 이제 A 의 이벤트를 받지 않는다. 남은 연결은 A 가 이미 부르는 우리 `SkillBuffs.ResetMatchState` 한 줄뿐.
+
 ## 4차 (2026-09-27 · 숫자 간격 되돌리기 안전하게 · 낡은 주석)
 
 | 무엇 | 전 → 후 | 위치 |
@@ -9,16 +18,16 @@
 | 사망 | 감시가 HP 0 또는 `IsDead()` 를 보면 곧바로 되돌린다(≤0.1s) | `WatchPunchDamageSkinDelay` |
 | 엔티티 제거 · 엔티티 바뀜 | 없어졌으면 기록만 버린다(값을 들고 있던 컴포넌트도 없어짐) · 같은 유저의 새 엔티티면 옛 기록을 정리하고 새 엔티티 값으로 새로 적는다(`Entity.Id` 비교) | 같은 곳 |
 | 매치를 떠남 | 포기 · 로비로 · 접속 끊김 · 새 매치 시작 = A 의 `MatchResetService.ResetUser` → **`SkillBuffs.ResetMatchState`** 에서 곧바로 되돌린다 | `SkillBuffs.ResetMatchState` |
-| 탈락(관전으로) | A 가 보내는 계약 이벤트 `PlayerEliminatedEvent`(`_LaneStateService`)를 받아 곧바로 되돌린다 | `SkillExecutors.OnBeginPlay` / `OnEndPlay` |
+| 탈락(관전으로) | ~~A 가 보내는 계약 이벤트 `PlayerEliminatedEvent`(`_LaneStateService`)를 받아 곧바로 되돌린다~~ → 5차에서 뺌(보통 만료가 되돌린다) | — |
 | 룸 종료 | `OnEndPlay` 가 남은 기록을 전부 되돌리고 타이머를 멈춘다 | `SkillExecutors.OnEndPlay` |
 | 낡은 주석 5곳 | 함포 사격 간격 0.45s → 0.58s · "상자 안 전부" → 대상 상한(써머솔트 6 · 피스트 4 · 함포 15) · 에너지 차지 쿨타임 = 시전 순간 | `SkillExecutors.mlua` |
 
 - 창 안의 다른 숫자: 간격은 공격한 **엔티티**마다 하나라 창(≈1.7s) 안에 같은 플레이어가 쓴 다른 여러 숫자 공격도 0.12s 간격으로 뜬다. 해적은 함포 사격 파(숫자 5개)뿐이다 — 써머솔트 킥 · 기본 공격은 숫자 1개라 차이가 없다. 몬스터가 플레이어를 때린 숫자는 몬스터 값이라 그대로. 표시만 바뀌고 피해는 판정 때 한 번에 들어간다 → 그대로 둔다.
-- A 파일 변경 없음(A 의 이벤트를 **받기만** 한다).
+- A 파일 변경 없음.
 
 ### Play 체크리스트 (4차 추가)
 
-12. 숫자 간격 되돌리기: ① 연타 2번 → `spacing 0.12s … until +1.73s` 두 줄 뒤 `restored 0.05 (done …)` **한 줄** ② 주먹 직후 죽기 → `restored 0.05 (death …)` ③ 주먹 직후 로비로/포기 → `restored 0.05 (match reset …)` ④ 주먹 직후 탈락 → `(eliminated …)` ⑤ 그 뒤 기본 공격 숫자 간격 0.05.
+12. 숫자 간격 되돌리기: ① 연타 2번 → `spacing 0.12s … until +1.73s` 두 줄 뒤 `restored 0.05 (done …)` **한 줄** ② 주먹 직후 죽기 → `restored 0.05 (death …)` ③ 주먹 직후 로비로/포기 → `restored 0.05 (match reset …)` ④ 주먹 직후 탈락 → 마지막 주먹 +≈1.73s 에 `restored 0.05 (done …)`(5차 · 관전 중에도 감시가 돈다) ⑤ 그 뒤 기본 공격 숫자 간격 0.05.
 
 ## 3차 (2026-09-27 · 피스트 인 레인지 기본값 되돌림 · #114 `615bcb9` 위로 rebase)
 
