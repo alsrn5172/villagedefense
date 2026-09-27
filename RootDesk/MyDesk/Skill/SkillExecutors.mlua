@@ -10,7 +10,7 @@ script SkillExecutors extends Logic
     --   ORIGIN    originSingleTarget 에 있는 스킬(대마법 SK_M31)은 화면 안 단일 대상(보스 우선 · 없으면 최근접)에 HitCount 회. 나머지는 화면 전체 1회.
     --   PASSIVE   시전 없음 — 값은 JobPassiveLogic(연성 SK_M12) 이 스킬 레벨에서 읽는다.
     -- b/skill-warrior (추가기획1 전사 표):
-    --   MELEE_ARC meleeSingleTarget 에 있는 스킬(파워 스트라이크 SK_W11)은 앞쪽 상자 안 최근접 하나에 HitCount 회. 나머지(섬머솔트 킥)는 상자 전부.
+    --   MELEE_ARC meleeSingleTarget 에 있는 스킬(파워 스트라이크 SK_W11)은 앞쪽 상자 안 최근접 하나에 HitCount 회. 나머지(섬머솔트 킥)는 상자 안 가까운 순 최대 skillTargetCaps 명(2026-09-27 · SK_P11 6 · 없으면 전부).
     --   ORIGIN    BuffTag 가 있고 EffectUnit 이 ATK_PCT 가 아닌 행(불굴의 진 SK_W31)은 피해 없이 그 버프를 Duration 동안 켠다(컷신 = 시전 락).
     --   TAUNT     도발(SK_W22): 반경(BaseEffect) 상자 안 적 몬스터를 시전자 위치로 끌어모으고 Duration 동안 시전자를 고정 추격시킨다(StateChaseMonster.SetTarget).
     --   PASSIVE   아이언 바디(SK_W12) 반사는 SkillBuffs.OnPlayerHitEvent(플레이어 HitEvent) 가 한다.
@@ -156,11 +156,22 @@ script SkillExecutors extends Logic
     --   DamageSkinSettingComponent.DelayPerAttack 간격으로 띄운다(Environment/NativeScripts/Component/DamageSkinSettingComponent.d.mlua · 공격별 값은 없다).
     --   플레이어 모델 값 = 0.05(Global/DefaultPlayer.model damageDelayPerAttack · A). 주먹 한 번 동안만 시전자 값을 이 값으로 바꾸고
     --   마지막 주먹의 숫자가 다 뜬 뒤 원래 값으로 되돌린다(ApplyPunchDamageSkinDelay). 0 = 건드리지 않는다(엔진 0.05).
+    --   그동안 같은 플레이어의 다른 여러 숫자 공격도 이 간격으로 뜬다 — 해적은 함포 사격 파(5개)뿐이다(써머솔트 킥 · 기본 공격은 숫자 1개라 간격이 없다).
+    --   숫자 표시만 바뀐다: 피해는 판정 때 한 번에 들어가고(SkillAttack → MonsterHit) 숫자 간격은 거기에 관여하지 않는다.
     property number PunchDamageSkinDelay = 0.12
 
-    -- [서버] userId -> { original = 원래 DelayPerAttack, token = 차례 번호 } (ApplyPunchDamageSkinDelay 되돌리기용).
+    -- 위 간격을 되돌릴 때까지 시전자를 보는 주기(초 · 2026-09-27). 사망(HP 0 · IsDead) · 엔티티 제거는 이 주기 안에 잡는다.
+    --   매치를 떠날 때(SkillBuffs.ResetMatchState)와 탈락(PlayerEliminatedEvent)은 기다리지 않고 곧바로 되돌린다.
+    property number PunchSkinWatchInterval = 0.1
+
+    -- [서버] userId -> { entity = 바꾼 플레이어 엔티티, entityId, original = 원래 DelayPerAttack, untilAt = 되돌릴 시각(ServerElapsedSeconds), timer = 감시 타이머 id }
+    --   (ApplyPunchDamageSkinDelay 가 만들고 RestorePunchDamageSkinDelay 만 지운다).
     @HideFromInspector
     property table punchSkinDelayRestore = {}
+
+    -- [서버] _LaneStateService 의 PlayerEliminatedEvent 핸들러(탈락 = 매치에서 빠짐 → 숫자 간격을 곧바로 되돌린다).
+    @HideFromInspector
+    property any eliminatedHandler = nil
 
     -- 함포 사격(barrage): HitCount 를 이만큼의 파로 나눈다 · 파 간격(초 · 몬스터 무적 0.4s 보다 길게) · 파마다 떨어지는 폭탄 연출 개수 · 폭탄 흩뿌림(반지름 비율).
     property integer BarrageWaves = 6
@@ -301,6 +312,14 @@ script SkillExecutors extends Logic
         _TimerService:SetTimerOnce(function()
             self:MeasureCutsceneClips()
         end, self.CutsceneMeasureDelay)
+        -- 탈락한 플레이어의 피스트 인 레인지 숫자 간격을 곧바로 되돌린다(A 의 LaneStateService.Eliminate 가 보내는 계약 이벤트 · 계약서 B-3).
+        if _LaneStateService ~= nil then
+            self.eliminatedHandler = _LaneStateService:ConnectEvent(PlayerEliminatedEvent, function(event)
+                if event ~= nil and event.UserId ~= nil and event.UserId ~= "" then
+                    self:RestorePunchDamageSkinDelay(event.UserId, "eliminated")
+                end
+            end)
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -309,6 +328,14 @@ script SkillExecutors extends Logic
             _UserService:DisconnectEvent(UserEnterEvent, self.prewarmEnterHandler)
             self.prewarmEnterHandler = nil
         end
+        if self.eliminatedHandler ~= nil and _LaneStateService ~= nil then
+            _LaneStateService:DisconnectEvent(PlayerEliminatedEvent, self.eliminatedHandler)
+        end
+        self.eliminatedHandler = nil
+        -- 룸이 닫힐 때 남은 숫자 간격 감시 타이머를 멈추고 값을 되돌린다.
+        local uids = {}
+        for uid, _ in pairs(self.punchSkinDelayRestore) do table.insert(uids, uid) end
+        for _, uid in ipairs(uids) do self:RestorePunchDamageSkinDelay(uid, "end play") end
     end
 
     @ExecSpace("ServerOnly")
@@ -426,7 +453,7 @@ script SkillExecutors extends Logic
         self.originSingleTarget = {
             SK_M31 = true,
         }
-        -- 파워 스트라이크(SK_W11): 추가기획1 전사 A "단일 대상 강한 공격" — 앞쪽 상자 안 최근접 하나. 섬머솔트 킥(SK_P11)은 상자 전부 그대로.
+        -- 파워 스트라이크(SK_W11): 추가기획1 전사 A "단일 대상 강한 공격" — 앞쪽 상자 안 최근접 하나. 섬머솔트 킥(SK_P11)은 상자 안 가까운 순 최대 6명(아래 skillTargetCaps).
         self.meleeSingleTarget = {
             SK_W11 = true,
         }
@@ -1945,9 +1972,9 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ExecuteChargePunch(string skillId, table skillData, Entity casterEntity, number level)
-        -- 2단: 차지가 도는 동안의 재입력. 앞쪽 Range × MeleeArcHeight 상자 안 **적 전부**에게 HitCount(10)연타.
-        -- 상태·쿨다운은 건드리지 않는다 — 상태는 소모되지 않고(지속시간 내내 반복), 쿨다운은 상태가 끝날 때
-        -- SkillBuffs.EndChargeState 가 건다. 같은 키 연타는 SkillCaster 의 시전 락(공격 클립 길이)이 삼킨다.
+        -- 2단: 차지가 도는 동안의 재입력. 앞쪽 Range × MeleeArcHeight 상자 안 적(가까운 순 · 최대 skillTargetCaps.SK_P21 = 4명)에게 HitCount(10)연타.
+        -- 상태·쿨다운은 건드리지 않는다 — 상태는 소모되지 않고(지속시간 내내 반복), 쿨다운은 1단 시전 순간에 SkillCaster 가 건다
+        -- (2026-09-27 원작대로 · cooldownStartsAtBuffEnd.SK_P21 = true 면 예전처럼 상태 끝에서 SkillBuffs.EndChargeState 가). 같은 키 연타는 SkillCaster 의 시전 락(공격 클립 길이)이 삼킨다.
         -- 연출은 레벨과 무관하게 한 벌: punchCast(시전자 부착) · punchImpact(맞은 대상마다 · SkillAttack.OnAttack).
         -- 2026-09-27: 그림 = 피스트 인레이지 VI(punchCast + punchCast0 겹) · 피해·첫 폭발은 punchHitDelay 뒤(영상 VI +0.233s · 접촉 순간) · 대상 상한 = skillTargetCaps.
         local pos = casterEntity.TransformComponent.WorldPosition
@@ -2042,8 +2069,12 @@ script SkillExecutors extends Logic
     method void ApplyPunchDamageSkinDelay(Entity casterEntity, number holdSeconds)
         -- 피스트 인 레인지 판정 1번의 숫자 10개를 폭발 간격으로 띄운다(2026-09-27). 엔진에 공격별 간격은 없고 공격한 엔티티의
         -- DamageSkinSettingComponent.DelayPerAttack(@Sync)만 있다 → 시전자 값을 잠깐 PunchDamageSkinDelay 로 바꾸고 holdSeconds 뒤 원래 값으로.
-        -- 연타로 다시 부르면 되돌리는 시각만 뒤로 민다(token). 원래 값은 처음 바꿀 때 한 번만 적어 둔다(연타 중 0.12 를 원래 값으로 착각하지 않게).
-        -- 그동안 같은 플레이어의 다른 여러 타 공격(함포 사격 파 5타 등)도 이 간격으로 뜬다 — 주먹 한 번 길이(≈1.5s) 동안만이다.
+        -- 되돌리기(2026-09-27 · 한 곳 = RestorePunchDamageSkinDelay):
+        --   · 플레이어마다 기록 하나 + 감시 타이머 하나. 원래 값은 기록이 없을 때(= 바뀌어 있지 않을 때) 한 번만 적는다 → 연타 중의 0.12 를 원래 값으로 착각하지 않는다.
+        --   · 연타(창 안 재시전)는 되돌릴 시각을 늦추기만 한다(max) → 앞 주먹의 시각에 일찍 되돌리지 않고, 마지막 주먹 뒤에 한 번만 되돌린다.
+        --   · 감시(PunchSkinWatchInterval)가 사망(HP 0 · IsDead)이면 곧바로 되돌리고, 엔티티가 없어졌으면 기록만 버린다(값을 들고 있던 컴포넌트도 같이 없어졌다).
+        --   · 매치를 떠남(SkillBuffs.ResetMatchState = 포기 · 로비로 · 접속 끊김 · 새 매치 시작) · 탈락(PlayerEliminatedEvent) · 룸 종료(OnEndPlay)도 여기로 온다.
+        --   · 같은 유저의 엔티티가 바뀌었으면(다시 만들어짐) 옛 기록을 먼저 정리하고 새 엔티티 값으로 새로 적는다.
         local d = self.PunchDamageSkinDelay
         if d == nil or d <= 0 then return end
         if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
@@ -2054,23 +2085,62 @@ script SkillExecutors extends Logic
         end
         local uid = casterEntity.PlayerComponent.UserId
         local rec = self.punchSkinDelayRestore[uid]
-        if rec == nil then
-            rec = { original = ds.DelayPerAttack, token = 0 }
-            self.punchSkinDelayRestore[uid] = rec
+        if rec ~= nil and (not isvalid(rec.entity) or rec.entityId ~= casterEntity.Id) then
+            self:RestorePunchDamageSkinDelay(uid, "new entity")
+            rec = nil
         end
-        rec.token = rec.token + 1
-        local token = rec.token
+        if rec == nil then
+            rec = { entity = casterEntity, entityId = casterEntity.Id, original = ds.DelayPerAttack, untilAt = 0, timer = 0 }
+            self.punchSkinDelayRestore[uid] = rec
+            local watch = self.PunchSkinWatchInterval
+            if watch == nil or watch <= 0 then watch = 0.1 end
+            rec.timer = _TimerService:SetTimerRepeat(function()
+                self:WatchPunchDamageSkinDelay(uid)
+            end, watch)
+        end
+        local untilAt = _UtilLogic.ServerElapsedSeconds + holdSeconds
+        if untilAt > rec.untilAt then rec.untilAt = untilAt end
         ds.DelayPerAttack = d
-        _TimerService:SetTimerOnce(function()
-            local r = self.punchSkinDelayRestore[uid]
-            if r == nil or r.token ~= token then return end
-            self.punchSkinDelayRestore[uid] = nil
-            if isvalid(casterEntity) and isvalid(casterEntity.DamageSkinSettingComponent) then
-                casterEntity.DamageSkinSettingComponent.DelayPerAttack = r.original
-            end
-            log("SkillExecutors: punch damage-skin spacing restored " .. tostring(r.original) .. " (" .. uid .. ")")
-        end, holdSeconds)
-        log("SkillExecutors: punch damage-skin spacing " .. tostring(d) .. "s (was " .. tostring(rec.original) .. ") for " .. string.format("%.2f", holdSeconds) .. "s (" .. uid .. ")")
+        log("SkillExecutors: punch damage-skin spacing " .. tostring(d) .. "s (was " .. tostring(rec.original) .. ") until +" .. string.format("%.2f", rec.untilAt - _UtilLogic.ServerElapsedSeconds) .. "s (" .. uid .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void WatchPunchDamageSkinDelay(string userId)
+        -- ApplyPunchDamageSkinDelay 의 감시 타이머(PunchSkinWatchInterval 마다). 되돌릴 때가 되면 RestorePunchDamageSkinDelay 한 곳으로.
+        local rec = self.punchSkinDelayRestore[userId]
+        if rec == nil then return end
+        local e = rec.entity
+        if not isvalid(e) then
+            self:RestorePunchDamageSkinDelay(userId, "entity removed")
+            return
+        end
+        local pc = e.PlayerComponent
+        if isvalid(pc) and (pc.Hp <= 0 or pc:IsDead()) then
+            self:RestorePunchDamageSkinDelay(userId, "death")
+            return
+        end
+        if _UtilLogic.ServerElapsedSeconds >= rec.untilAt then
+            self:RestorePunchDamageSkinDelay(userId, "done")
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void RestorePunchDamageSkinDelay(string userId, string reason)
+        -- 피스트 인 레인지 숫자 간격을 원래 값으로 되돌리는 **유일한** 자리. 감시 타이머를 멈추고 기록을 지운다. 기록이 없으면 아무 일도 안 한다(몇 번 불러도 안전).
+        -- 부르는 곳: WatchPunchDamageSkinDelay(끝 · 사망 · 엔티티 제거) · ApplyPunchDamageSkinDelay(엔티티 바뀜) · SkillBuffs.ResetMatchState(매치 떠남 · 새 매치) ·
+        --   PlayerEliminatedEvent(탈락) · OnEndPlay(룸 종료).
+        if userId == nil or userId == "" then return end
+        local rec = self.punchSkinDelayRestore[userId]
+        if rec == nil then return end
+        self.punchSkinDelayRestore[userId] = nil
+        if rec.timer ~= nil and rec.timer ~= 0 then _TimerService:ClearTimer(rec.timer) end
+        local e = rec.entity
+        if isvalid(e) and isvalid(e.DamageSkinSettingComponent) then
+            e.DamageSkinSettingComponent.DelayPerAttack = rec.original
+            log("SkillExecutors: punch damage-skin spacing restored " .. tostring(rec.original) .. " (" .. tostring(reason) .. " · " .. userId .. ")")
+        else
+            log("SkillExecutors: punch damage-skin spacing record dropped — entity gone (" .. tostring(reason) .. " · " .. userId .. ")")
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -2348,7 +2418,7 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method void ExecuteBarrageOrigin(string skillId, table skillData, Entity casterEntity, number level)
         -- 함포 사격(SK_P31 · 추가기획1 해적 궁 "광역 연속 폭격 (컷신) · 150% × 30회"): 컷신(cast · 드레드노트 screen) 뒤 CSV Duration 시점부터
-        --   HitCount(30)를 BarrageWaves(6) 파로 나눠 BarrageInterval(0.45s · 몬스터 무적 0.4s 보다 길게) 간격으로 시전자 중심 반지름 Range(8) 안 전부에
+        --   HitCount(30)를 BarrageWaves(6) 파로 나눠 BarrageInterval(0.58s · 원작 풍랑 1.02~3.9s · 몬스터 무적 0.4s 보다 길게) 간격으로 시전자 중심 반지름 Range(8) 안(파마다 가까운 순 최대 15명 · skillTargetCaps)에
         --   파당 타수 × 150% (DealSkillDamageCircleScaled · 표시 = 파당 타수). 합계 = 30 × 150%. 파마다 폭탄 hit 클립 BarrageBombsPerWave 개 + wave 사운드.
         local radius = skillData.range
         if radius <= 0 then radius = 3 end

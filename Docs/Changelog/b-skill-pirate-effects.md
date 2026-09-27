@@ -1,5 +1,25 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 4차 (2026-09-27 · 숫자 간격 되돌리기 안전하게 · 낡은 주석)
+
+| 무엇 | 전 → 후 | 위치 |
+|---|---|---|
+| 숫자 간격 되돌리기 | 주먹마다 타이머 1개(token 이 맞으면 되돌림) → **플레이어마다 기록 1개 + 감시 타이머 1개**(0.1s · `PunchSkinWatchInterval`). 되돌리는 곳은 `RestorePunchDamageSkinDelay` 한 곳 | `SkillExecutors.ApplyPunchDamageSkinDelay` · `WatchPunchDamageSkinDelay` · `RestorePunchDamageSkinDelay` |
+| 연타 | 되돌릴 시각을 늦추기만 한다(max) · 원래 값은 기록이 없을 때 한 번만 적는다 → 일찍 되돌리지도, 0.12 를 남기지도 않는다 | 같은 곳 |
+| 사망 | 감시가 HP 0 또는 `IsDead()` 를 보면 곧바로 되돌린다(≤0.1s) | `WatchPunchDamageSkinDelay` |
+| 엔티티 제거 · 엔티티 바뀜 | 없어졌으면 기록만 버린다(값을 들고 있던 컴포넌트도 없어짐) · 같은 유저의 새 엔티티면 옛 기록을 정리하고 새 엔티티 값으로 새로 적는다(`Entity.Id` 비교) | 같은 곳 |
+| 매치를 떠남 | 포기 · 로비로 · 접속 끊김 · 새 매치 시작 = A 의 `MatchResetService.ResetUser` → **`SkillBuffs.ResetMatchState`** 에서 곧바로 되돌린다 | `SkillBuffs.ResetMatchState` |
+| 탈락(관전으로) | A 가 보내는 계약 이벤트 `PlayerEliminatedEvent`(`_LaneStateService`)를 받아 곧바로 되돌린다 | `SkillExecutors.OnBeginPlay` / `OnEndPlay` |
+| 룸 종료 | `OnEndPlay` 가 남은 기록을 전부 되돌리고 타이머를 멈춘다 | `SkillExecutors.OnEndPlay` |
+| 낡은 주석 5곳 | 함포 사격 간격 0.45s → 0.58s · "상자 안 전부" → 대상 상한(써머솔트 6 · 피스트 4 · 함포 15) · 에너지 차지 쿨타임 = 시전 순간 | `SkillExecutors.mlua` |
+
+- 창 안의 다른 숫자: 간격은 공격한 **엔티티**마다 하나라 창(≈1.7s) 안에 같은 플레이어가 쓴 다른 여러 숫자 공격도 0.12s 간격으로 뜬다. 해적은 함포 사격 파(숫자 5개)뿐이다 — 써머솔트 킥 · 기본 공격은 숫자 1개라 차이가 없다. 몬스터가 플레이어를 때린 숫자는 몬스터 값이라 그대로. 표시만 바뀌고 피해는 판정 때 한 번에 들어간다 → 그대로 둔다.
+- A 파일 변경 없음(A 의 이벤트를 **받기만** 한다).
+
+### Play 체크리스트 (4차 추가)
+
+12. 숫자 간격 되돌리기: ① 연타 2번 → `spacing 0.12s … until +1.73s` 두 줄 뒤 `restored 0.05 (done …)` **한 줄** ② 주먹 직후 죽기 → `restored 0.05 (death …)` ③ 주먹 직후 로비로/포기 → `restored 0.05 (match reset …)` ④ 주먹 직후 탈락 → `(eliminated …)` ⑤ 그 뒤 기본 공격 숫자 간격 0.05.
+
 ## 3차 (2026-09-27 · 피스트 인 레인지 기본값 되돌림 · #114 `615bcb9` 위로 rebase)
 
 | 무엇 | 전 → 후 | 근거 | 위치 |
