@@ -1,5 +1,18 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 9차 (2026-09-28 · 에너지 쉴드 아이콘 = 디펜스 폼 · 그림과 같은 팩)
+
+- `SkillInfo.csv` SK_P22 `IconRUID`: `9868d220…`(제로 이뮨 배리어 101120109 icon) → **`3cbfb551f77049f3bff4aa4f5eee047e`**. 바꾼 것은 그 한 줄의 `IconRUID` · `#Note` 뿐이다. BOM · CRLF · 33 열은 그대로다.
+  - 이 RUID 는 바이퍼 디펜스 폼 `skill/512.img/skill/5120011` 팩의 `icon` 원소다(`iconDisabled` · `iconMouseOver` 가 아님). 에너지 쉴드 그림(`repeat` 51d514ea… · `end` 693d4c4e…)과 같은 팩이다.
+  - 리소스 라이브러리 확인(2026-09-28): sprite · category skill · 32×32(예전 아이콘과 같은 종류 · 크기). 이 RUID 를 가진 팩은 5120011 하나뿐이다. 태그: 너클 엑스퍼트 · 카운터 어택(KMS 359 에서 이 id 의 이름).
+- 8차 때 "아이콘은 그대로" 라고 적은 것은 사용자 결정이 아니었다. 핸드오프 · 원장 · 메모리에 제로 아이콘을 남기라는 결정이 없어서 그림과 맞췄다(사용자 지시).
+- 코드는 바뀌지 않았다. 스킬 창은 CSV 의 `IconRUID` 를 그대로 쓰고, 다른 곳에 예전 RUID 를 적어 둔 코드도 없다.
+- 확인: `check-integrity` 통과(경고 4 = main). `.mlua` 는 바뀌지 않아 LSP 는 필요 없다.
+
+### Play 체크리스트 (9차 추가)
+
+14. 스킬 창의 에너지 쉴드 칸에 **새 아이콘**(디펜스 폼 5120011 icon `3cbfb551…`)이 보인다. 미리보기: https://mod-resource-search-images.dn.nexoncdn.co.kr/maplestory_world/3cbfb551f77049f3bff4aa4f5eee047e.png. 예전 제로 이뮨 배리어 아이콘(`9868d220…`)이 아니다. Lv1 · Lv5 양쪽에서 같은 아이콘이다(키 − 로 레벨 전환). 툴팁의 수치는 P8 그대로다.
+
 ## 8차 (2026-09-28 · 낡은 주석 · 메모 정리 · 동작 변화 없음)
 
 2026-09-27 에 그림을 바꾸고도 예전 팩을 "지금" 으로 적어 둔 글을 고쳤다. 코드 · 값 · CSV 의 #Note 말고 다른 열은 그대로다. 값은 코드와 `design-handoff/pirate-refs/library/pirate-library.md`(라이브러리 조회 기록)로 하나씩 확인했다.
