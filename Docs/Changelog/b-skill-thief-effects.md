@@ -37,7 +37,7 @@
 ### 영상 실측 → 적용 (자세한 표 = `design-handoff/thief-refs/measurements.md`)
 - **럭키 세븐**(`Skill/SkillExecutors.mlua` `effectOverrides.SK_T11` · `SkillInfo.csv` Speed): 라이브 2022 리마스터(보라 7표창)는 라이브러리에 없다 → 같은 팩 **CharLevel/25**(영상 "캐릭터 Lv.25" 구간과 같은 그림 · 라이브러리의 가장 새 원작): cast `77d56fb6…`(startFrame 1 — WZ 0프레임 = 빈 1×1 360ms) · hit `7368bd9b…` · 표창 = 수비 표창 **bullet** 클립 `551dec3d…`(예전 = 인벤토리 아이콘 `5d2441df…`). 1발 t0+0.15 → `spawn.delay` 0.2 → **0.15** · 스폰 (앞 1.02, 위 0.09) → **(0.95, 0.26)** · 2발 +0.12(VolleyInterval 그대로) · 2발 0.09 아래(`spawn.volleyGapY` −0.09 · 새 `SkillAttack.VolleyGapY`) · 속도 CSV **14 → 6**(영상 5.8~6.6 u/s) · 표창 scale 1.3 → **1.0**(영상 ≈18 px · ⚠ 2026-09-13 사용자 "조금 더 크게" 를 되돌림).
 - **다크 사이트**: 클립 `abdf05be…` = 모험가 원작 4001003/effect(태그 API · 흰 연기 · 고전 판) 그대로 · 영상 2022 연기 크기(≈0.85 × 0.9 unit)에 맞춰 **scale 1.5** · 은신 알파 0.35 → **0.4**(영상 0.37~0.41) · 알파 전환 **0.5s 들어가기 / 0.45s 돌아오기**(`SkillBuffs.FadeAvatarAlpha` · 5단계).
-- **쉐도우 파트너**: 라이브 2022 나이트로드판은 라이브러리에 없다 → 같은 리마스터의 **섀도어판 4211008**: cast `01615030…`(noFlip) · 새 `appear` = special/summoned `6f05153b…`(시전 순간 분신 자리 · 빈 0프레임 660ms 뒤 붉은 불씨 폭발 · 새 `SkillExecutors.PlayAppearEffect`) · 분신 루프 **1.15s 뒤**(영상 · `loop.delay` → `HideShadowFor` 재사용) · 분신 위치 offsetX −0.45 → **−0.33**(영상 ≈0.38 unit 뒤 − 몸 중심 0.05). 분신 몸 stand1 `f4aba8c3…` 그대로(4111002 · 4211008 같은 그림 · 투명도는 그림에 들어 있다).
+- ~~**쉐도우 파트너**: 라이브 2022 나이트로드판은 라이브러리에 없다 → 같은 리마스터의 **섀도어판 4211008**~~ → **(4)에서 바꿈** — 4211008 cast 는 2022 리마스터가 아니라 리마스터 전 그림이었다(아래): cast `01615030…`(noFlip) · 새 `appear` = special/summoned `6f05153b…`(시전 순간 분신 자리 · 빈 0프레임 660ms 뒤 붉은 불씨 폭발 · 새 `SkillExecutors.PlayAppearEffect`) · 분신 루프 **1.15s 뒤**(영상 · `loop.delay` → `HideShadowFor` 재사용) · 분신 위치 offsetX −0.45 → **−0.33**(영상 ≈0.38 unit 뒤 − 몸 중심 0.05). 분신 몸 stand1 `f4aba8c3…` 그대로(4111002 · 4211008 같은 그림 · 투명도는 그림에 들어 있다).
 - **메소 익소플로전**: 영상 없음 → 원작 기준. 그림은 그대로(컷신 = 임시 일도양단 · 다른 궁과 같이 디자이너 mp4 로 교체 예정 · 중심 폭발 = HEXA VI effect0 · 동전 = 4211006 hit — HEXA 는 라이브러리에 hit 가 없어 섞는 것이 원장 규칙 예외에 해당).
 
 ### 검증
@@ -50,7 +50,7 @@
    - **표창 크기 = scale 1.0 유지(2026-09-27 사용자 결정 · 영상 기준).** 사용자가 월드에서 직접 보고 바꿀 수 있다 → 바꾸면 `effectOverrides.SK_T11.spawn.scale` 한 칸.
 2. 픽파켓: Lv1~4 `PICKPOCKET +1` · Lv5 `+2`(확률 없음) · 럭키 세븐 0.4s 연타로 같은 대상 → 매번 동전 · 기본 공격 MISS → 동전 없음(`[PlayerAttack]` 로그 · 피해 0).
 3. W 다크 사이트: `avatar alpha fade 1 -> 0.4 over 0.5s x5` · 연기 1.5배 · **Q · 기본 공격을 써도 은신 유지**(`[Buff] DARK_SIGHT kept (attacked · SK_T11)` / `(attacked · BASIC)` · 3차) · 몬스터 접촉 1번 → `OFF DARK_SIGHT (evaded)` + `fade 0.4 -> 1 over 0.45s` · 10초 뒤 해제 · 쉐도우 파트너(E)는 해제 안 됨.
-4. E 쉐도우 파트너: 먹 획 → 분홍 X(시전자) · +0.66s 분신 자리 붉은 불씨 · `appears after 1.15s` → 1.15s 에 분신 · 좌우 돌면 등 뒤 · 몸과 분신 간격(≈0.38 unit) 눈으로.
+4. E 쉐도우 파트너((4) 기준): 룬 원반이 캐릭터 가운데(좌우 뒤집힘) + 검은 먹 리본이 위·뒤로 돌며 오름(캐릭터 뒤 층) · 소환 폭발 없음 · `appears after 1.4s` → 1.4s 에 분신 · 좌우 돌면 등 뒤 · 몸과 분신 간격(≈0.38 unit) 눈으로.
 5. R 메소 익소플로전(3차): 픽파켓 동전 N개 + 사냥 드랍 동전 M개(자기 것)를 반경 안에 두고 → `MESO SK_T31 source floor=N+M summoned=0 (useFloor=true pickpocketOnly=false summonCount=0 cap=0)` · **사냥 동전도 소모된다**(그 메소는 못 줍는다) · 다른 사람 동전은 남는다 · 반경 안 자기 동전 0개면 `no meso nearby` 로 거절(재화·쿨 소모 없음).
 6. 스킬 창 툴팁 문구 4개 · 궁 이름 "메소 익소플로전".
 
@@ -75,8 +75,21 @@
   - 동전이 아닌 보상(보스 보상 · DropTable 재료 · 엘리트 확정 드랍 · 미니언 MesoBase · 빅토리아 주화)은 바닥에 놓이지 않고 바로 지급된다 — 해당 없음.
   - `DropOwner.IsPickableBy` 는 주인만(만료 없음) → **다른 사람 동전은 세지도 소모하지도 않는다.** 자동획득 ON(기본)이면 3.0 안 동전은 곧 빨려 오므로 실제로 터지는 것은 주로 3~6 거리의 자기 동전(자동획득 OFF 면 6 안 전부).
 - 검증: LSP(바꾼 4개 스크립트) 에러 0 · 경고 0 · `check-integrity` 통과(경고 4 = main) · 충돌 재확인(#83 · #100 · #116) · 도적+해적 합본 미리보기 — 결과는 #115 본문. Maker 런타임 🟡 BLOCKED(월드 사용 금지 · 체크리스트 = `메월드폴더/villagedefense-harness/thief-check/checklist.md`).
+## 2026-09-27 (4) — 연출 변경: 쉐도우 파트너 = 리마스터 전 나이트로드판 한 벌 (원작 메이플 = 연출 기준 · 사용자 참고 영상 "초기 2004" 와 같음)
+
+| 층 | 예전 (1차) | 지금 | 근거 |
+|---|---|---|---|
+| 시전 | `01615030…` 4211008 effect · noFlip | `8ef08d99…` **4111002 effect**(룬 원반 → 검은 가시 · 16프레임) · **뒤집음**(WZ 359 에 noFlip 없음) · (0, 0) · 원반 중심 발 기준 −0.04 / +0.32 = 캐릭터 가운데 | 영상 초기 2004: 원반이 캐릭터 가운데 |
+| 두 번째 층 | `6f05153b…` 4211008 special/summoned(라이브 시대 · 분신 자리 붉은 불씨) | `6db426f9…` **4111002 effect0**(검은 먹 리본 · 11프레임 × 85ms) · (0, 0) · 뒤집음 · **플레이어 뒤 층**(WZ z −1 · 새 `sortBehind`) | 영상 초기 2004: 위·뒤로 도는 검은 리본("용처럼") |
+| 분신 등장 | 1.15s(영상 2022) | **1.4s**(영상 초기 2004 · 소환 폭발 없음) | 같은 영상 |
+
+- commit `ff97325`. 연출만 바꿨다 — **버프 로직(×2 시작 · 지속 · 분신 동작)은 그대로.** ×2 는 예전대로 시전 순간(`SkillExecutors.mlua` ExecuteBuff `ApplyBuff`)부터라, 시전 락 0.6s 뒤 공격하면 분신이 보이기(1.4s) 전 0.8s 동안도 ×2 다(1차 1.15s 때는 0.55s) — 맞출지는 사용자 결정(#115 본문).
+- **정정:** 1차에서 "같은 2022 리마스터의 섀도어판" 이라고 적은 4211008 cast `01615030…` 는 **리마스터 전**(KMS 359 = 9프레임 · noFlip 없음) 그림이었다. 라이브(KMS 360+) 4211008 effect 는 16프레임이고 전부 4111002 라이브 그림을 `_outlink` 로 쓴다(라이브러리에 없음). `6f05153b…`(special/summoned)는 360+ 에만 있어 한 스킬에 두 시대가 섞여 있었다. 근거 = maplestory.io WZ(참고용 · 그림은 가져오지 않음).
+- 원작 두 층(effect · effect0)을 같은 순간에 튼다: cast 단계 = effect, `appear` 단계 = effect0(`offsetX = 0` 을 적어야 분신 자리로 가지 않는다). `PlayAppearEffect` 에 `sortBehind` 한 줄(분신 루프와 같은 `ApplyShadowSorting` · 층만).
+- 검증: LSP `SkillExecutors` 깨끗 · 나머지는 #115 본문. Maker 런타임 🟡 BLOCKED(체크리스트 4.1~4.3 · 4.14 · 4.15).
 ### 남은 것 / 후속
 - ~~픽파켓 MISS 가드는 #114 몫이다~~ → **완료(2026-09-27 · 사용자 지시 · Round 9 H 재확인용)**: #114 브랜치 `b/playerattack-buff-hooks` 로컬 `615bcb9` 에 커밋(PlayerAttack.OnAttack → CalcDamage · 피해 > 0) · 이 브랜치를 그 위로 rebase — 이 브랜치의 `PlayerAttack.mlua` 변경은 다크 사이트 해제 훅(AttackNormal) 하나만 남았다. #114 · 이 브랜치 모두 push 전.
+- **보류(사용자 결정 2026-09-27)** · #102 머지 + #115 rebase 뒤: `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → 2발째 표창도 명중 폭발 `7368bd9b…`(지금은 VisualOnly 라 `SkillProjectile.mlua:227-229` 에서 멈춤). 코드 지금은 없음.
 - 럭키 세븐 2발째 명중 이펙트(영상 = 별 폭발 두 번 0.13s 간격): #102 의 볼리 공유(`SkillAttack.IsSharedVolley`)가 머지되면 `SK_T11` 한 줄 추가로 2발째도 명중 이펙트. 이 브랜치는 #114 기반이라 넣지 않았다.
 - 메소 동전 그림(A 의 `Global/MesoCoin.model` `3b88d8df…`)은 메소가 아니라 마일리지 "M" 알림 그림이다(태그 API) — 아이템 외형이라 손대지 않았다. 후보 = 골드 메소 드랍 `5c78b56b…`(비교 시트 C).
 - 라이브러리 클립이 잘려 있다: 4211006 hit 는 15 중 6프레임 · 4211008 effect 는 16 중 9프레임(나머지는 팩 sprite).
