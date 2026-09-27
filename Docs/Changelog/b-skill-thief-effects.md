@@ -87,7 +87,23 @@
 - **정정:** 1차에서 "같은 2022 리마스터의 섀도어판" 이라고 적은 4211008 cast `01615030…` 는 **리마스터 전**(KMS 359 = 9프레임 · noFlip 없음) 그림이었다. 라이브(KMS 360+) 4211008 effect 는 16프레임이고 전부 4111002 라이브 그림을 `_outlink` 로 쓴다(라이브러리에 없음). `6f05153b…`(special/summoned)는 360+ 에만 있어 한 스킬에 두 시대가 섞여 있었다. 근거 = maplestory.io WZ(참고용 · 그림은 가져오지 않음).
 - 원작 두 층(effect · effect0)을 같은 순간에 튼다: cast 단계 = effect, `appear` 단계 = effect0(`offsetX = 0` 을 적어야 분신 자리로 가지 않는다). `PlayAppearEffect` 에 `sortBehind` 한 줄(분신 루프와 같은 `ApplyShadowSorting` · 층만).
 - 검증: LSP `SkillExecutors` 깨끗 · 나머지는 #115 본문. Maker 런타임 🟡 BLOCKED(체크리스트 4.1~4.3 · 4.14 · 4.15).
+## 2026-09-27 (5) — 연출 변경: 럭키 세븐 팔 잔상(파란 호) + 던지기 모션 swingO3 (원작 메이플 = 연출 기준 · 사용자 참고 영상 "럭키세븐의 변화" Lv.25 구간과 맞춤 · 미리보기 v2 승인)
+
+| 항목 | 예전 | 지금 | 근거 |
+|---|---|---|---|
+| 던지기 모션 | `MOTION_SK_T11_CLAW` swingT3 ×1.2 | **swingO3** ×1.2 (`WeaponMotion.csv:40` · 메소 익소플로전 `_2` 는 swingT3 그대로) | 원작 럭키 세븐 던지기의 표창 잔상 = swingO3 모양 호가 8번 중 6번(나머지 2번 swingO2 모양) |
+| 팔 잔상 | 없음 | 파란 호 한 장 = 80003330 swordOL/swingO3 1프레임 `a49c9904…` 을 색상만 +225°(영상 hue 246°) · 112×60 · pivot = 그림 뒤 끝(0.991071, 0.033333) · 업로드 sprite **`c81dcd53d6244d5eacc38682858c31bd`**(마법사 창 업로드 · `design-handoff/trail-recolor/SK_T11_arc_upload.txt`) · `effectOverrides.SK_T11.arc` | 영상 +0.12~0.35s 의 팔 잔상 · 미리보기 `design-handoff/trail-recolor/SK_T11_arc_compare_v2.png` |
+| 자리 · 크기 · 시간 | — | offsetX −0.22(원점 = 서 있을 때 발 중심 기준 · 앞끝이 원점 앞 0.83 u) · scaleY 0.62 + offsetY +0.14(호가 발 위 0.16~0.45 u = 영상 띠) · scaleX 1.0(데이터 값 · 앞끝 자동 고정) · alpha 0.9 · 시전 +0.10s 에 0.25s · 바라보는 쪽으로 뒤집음 | v2 실측(영상 앞끝 0.78~0.83 u · 띠 0.16~0.45 u) |
+
+- commit `8e48c11`. 연출만 바꿨다 — 피해 · 판정 · 시전 락 · 표창 발사 시점은 그대로.
+- `PlayArmArc`(#115 전용 · `FireProjectile` 의 시전 순간에서 부른다 · `arc` 가 없는 스킬은 아무 일 없음): sprite 는 EffectService 로 못 튼다 → 투사체 모델을 빌린다(PlaySpriteFlash 와 같은 방식 · 이름 `SkillFx_<uid>_SK_T11_arc_<n>` → SkillCaster 사망 정리 대상).
+  스폰 첫 프레임에 모델 기본 sprite(에너지볼트 공 `d393500f…`)가 한 번 보이는 문제(#83 2026-09-25 Play 프레임 실측)는 모델을 바꾸지 않고 **화면 밖(시전자 100 u 아래)에서 알파 0 으로 스폰 → +0.05s 에 제자리로(아직 알파 0) → +0.10s 에 알파 0.9** 로 피한다. 로그 3줄(spawned hidden → moved → shown).
+- scaleX 앞끝 고정: pivot 이 그림 뒤 끝이라 가로 배율을 줄이면 앞끝이 뒤로 당겨진다 → 실제 offsetX = offsetX + frontTip(1.05 u) × (1 − scaleX) — 0.8 → −0.01 · 0.7 → +0.095. 영상 호는 얼굴 근처에서 끝나고 우리 것(1.0)은 머리 뒤까지 간다 → 월드에서 1.0 / 0.8 / 0.7 을 보고 고른다(체크리스트 1.17 · 하네스 키 4).
+- 🔁 **#83 머지 뒤 교체:** `PlayArmArc` → #83 의 `PlaySpriteFlash`(showAt · alpha · 숨긴 채 스폰 · 모델 기본 sprite "")로. 단 그쪽 배율은 하나(scale)라 scaleY 0.62 를 쓰려면 세로 배율 인자 하나를 더해야 한다 — 교체 때 정한다. 이 브랜치의 `PlaySpriteFlash`(main 판)는 손대지 않았다(#83 이 그 메서드를 다시 쓴다 → 새 충돌 없음).
+- 원작의 무작위(swingO2 모양 2/8)는 #83 의 SkillMotionSet 이 있어야 해서 넣지 않았다(swingO3 하나).
+- 검증: LSP `SkillExecutors` 0 · `check-integrity` 통과(경고 4 = main) · 충돌 변화 없음(#83 `6952bdf` 1파일/1덩어리 SK_T22 블록 우리 16줄/그쪽 3줄 · #100 `e6128f3` 0 · #116 `db85dcf` 글자 충돌 0 + SkillInfo union 중복 10행 = 예전과 같음 · `WeaponMotion.csv:40` 은 아무 PR 과도 안 겹침) · 도적+해적 합본 미리보기(도적 `4e73fb3` + 해적 `db85dcf` + 이 변경) fixer → 중복 0 · integrity 통과 · LSP 4개 0. Maker 런타임 🟡 BLOCKED(체크리스트 1.3 · 1.14~1.19).
 ### 남은 것 / 후속
+- **#83 머지 뒤:** `PlayArmArc` → #83 `PlaySpriteFlash` 교체(세로 배율 인자 하나 추가 필요 · (5) 참고). 럭키 세븐 팔 잔상 가로 배율(scaleX 1.0 / 0.8 / 0.7)은 월드 확인 뒤 값 하나만 바꾼다.
 - ~~픽파켓 MISS 가드는 #114 몫이다~~ → **완료(2026-09-27 · 사용자 지시 · Round 9 H 재확인용)**: #114 브랜치 `b/playerattack-buff-hooks` 로컬 `615bcb9` 에 커밋(PlayerAttack.OnAttack → CalcDamage · 피해 > 0) · 이 브랜치를 그 위로 rebase — 이 브랜치의 `PlayerAttack.mlua` 변경은 다크 사이트 해제 훅(AttackNormal) 하나만 남았다. #114 · 이 브랜치 모두 push 전.
 - **보류(사용자 결정 2026-09-27)** · #102 머지 + #115 rebase 뒤: `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → 2발째 표창도 명중 폭발 `7368bd9b…`(지금은 VisualOnly 라 `SkillProjectile.mlua:227-229` 에서 멈춤). 코드 지금은 없음.
 - 럭키 세븐 2발째 명중 이펙트(영상 = 별 폭발 두 번 0.13s 간격): #102 의 볼리 공유(`SkillAttack.IsSharedVolley`)가 머지되면 `SK_T11` 한 줄 추가로 2발째도 명중 이펙트. 이 브랜치는 #114 기반이라 넣지 않았다.
