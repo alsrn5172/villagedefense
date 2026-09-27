@@ -172,6 +172,17 @@ script SkillBuffs extends Logic
     -- 동전 이름으로 동전을 찾는 코드는 저장소에 없다(2026-09-27 git grep) → 이름만 바꿔도 줍기·자석·수명은 그대로.
     property string PickpocketCoinName = "PickpocketMeso"
 
+    -- 픽파켓 동전 스폰 높이(b/skill-thief-effects · 2026-09-28 월드 T 분석): 몬스터 발밑 발판 위. 예전 = 몬스터 위치 +0.3(A FarmReward.DropCoins 와 같은 방식)이라
+    -- 동전이 튀어 오르며(MesoCoin.OnBeginPlay 의 AddForce) 몬스터가 선 것보다 높은 떠 있는 발판에 얹히기도 했다.
+    -- (x, 발 + PickpocketFloorProbeUp) 에서 아래로 PickpocketFloorSearch 안의 수평 발판 중 가장 가까운 표면(SkillMovement.ProbeFloor 와 같은 방식) + PickpocketFloorLift.
+    -- 규칙 = 발밑 발판(늘 바닥 땅이 아니다): 떠 있는 발판 위 몬스터면 그 발판. 발밑에서 못 찾으면 예전대로 +0.3.
+    property number PickpocketFloorProbeUp = 0.3
+
+    property number PickpocketFloorSearch = 10
+
+    -- 발판 위로 이만큼 띄워 스폰(발판 아래로 스폰하면 끝없이 떨어진다 · platform-maple).
+    property number PickpocketFloorLift = 0.05
+
     -- 픽파켓 드랍 소리(원작 픽 파킷 _audio/Use). 연타 때 시끄럽지 않게 PickpocketSoundInterval 로 제한.
     property string PickpocketSoundRuid = "eb009eb4ce0443068bbec5369f256b35"
 
@@ -970,10 +981,28 @@ script SkillBuffs extends Logic
         local t = target.TransformComponent
         if not isvalid(map) or not isvalid(t) then return end
         local tp = t.WorldPosition
+        -- 발밑 발판(PickpocketFloor* 설명): 몬스터 x 에서 한 번, 동전 x 마다 한 번 더(경사면이면 표면 높이가 다르다).
+        -- 동전 x 가 발판 끝을 넘어 더 낮은 발판이 잡히면 그 동전은 몬스터 x 로 되돌려 발밑 발판에 둔다.
+        local foothold = map.FootholdComponent
+        local probeY = tp.y + self.PickpocketFloorProbeUp
+        local feetFloor = nil
+        if isvalid(foothold) then feetFloor = self:PickpocketFloorY(foothold, tp.x, probeY) end
+        local floorNote = "none(+0.3)"
+        if feetFloor ~= nil then floorNote = string.format("%.2f (feet %.2f)", feetFloor, tp.y) end
         local dropped = 0
         for i = 1, count do
             local ox = (_UtilLogic:RandomDouble() - 0.5) * 0.6
-            local coin = _SpawnService:SpawnByModelId(self.MesoCoinModelId, self.PickpocketCoinName, Vector3(tp.x + ox, tp.y + 0.3, 0), map)
+            local cx = tp.x + ox
+            local cy = tp.y + 0.3
+            if feetFloor ~= nil then
+                local y = self:PickpocketFloorY(foothold, cx, probeY)
+                if y == nil or y < feetFloor - self.PickpocketFloorProbeUp then
+                    cx = tp.x
+                    y = feetFloor
+                end
+                cy = y + self.PickpocketFloorLift
+            end
+            local coin = _SpawnService:SpawnByModelId(self.MesoCoinModelId, self.PickpocketCoinName, Vector3(cx, cy, 0), map)
             if isvalid(coin) then
                 coin:AddComponent("script.DropOwner")
                 local own = coin:GetComponent("script.DropOwner")
@@ -987,7 +1016,27 @@ script SkillBuffs extends Logic
             self.pickpocketSoundAt = now
             _SoundService:PlaySoundAtPos(self.PickpocketSoundRuid, tp, target, 1.0)
         end
-        log("[Buff] PICKPOCKET +" .. tostring(dropped) .. " meso at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ")")
+        log("[Buff] PICKPOCKET +" .. tostring(dropped) .. " meso at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ") floor=" .. floorNote)
+    end
+
+    @ExecSpace("ServerOnly")
+    method any PickpocketFloorY(any foothold, number x, number probeY)
+        -- (x, probeY) 에서 아래로 PickpocketFloorSearch 안의 수평 발판 중 가장 가까운 표면 Y. 없으면 nil. SkillMovement.ProbeFloor(클라 전용)와 같은 방식을 서버에서.
+        local hits = foothold:RaycastAll(Vector2(x, probeY), Vector2(0, -1), self.PickpocketFloorSearch)
+        if hits == nil then return nil end
+        local best = nil
+        local bestDist = math.huge
+        for _, fh in ipairs(hits) do
+            if fh ~= nil and not fh:IsVertical() then
+                local y = fh:GetYByX(x)
+                local d = probeY - y
+                if d >= 0 and d < bestDist then
+                    best = y
+                    bestDist = d
+                end
+            end
+        end
+        return best
     end
 
     method boolean IdInList(string list, string id)
