@@ -102,10 +102,22 @@
 - 🔁 **#83 머지 뒤 교체:** `PlayArmArc` → #83 의 `PlaySpriteFlash`(showAt · alpha · 숨긴 채 스폰 · 모델 기본 sprite "")로. 단 그쪽 배율은 하나(scale)라 scaleY 0.62 를 쓰려면 세로 배율 인자 하나를 더해야 한다 — 교체 때 정한다. 이 브랜치의 `PlaySpriteFlash`(main 판)는 손대지 않았다(#83 이 그 메서드를 다시 쓴다 → 새 충돌 없음).
 - 원작의 무작위(swingO2 모양 2/8)는 #83 의 SkillMotionSet 이 있어야 해서 넣지 않았다(swingO3 하나).
 - 검증: LSP `SkillExecutors` 0 · `check-integrity` 통과(경고 4 = main) · 충돌 변화 없음(#83 `6952bdf` 1파일/1덩어리 SK_T22 블록 우리 16줄/그쪽 3줄 · #100 `e6128f3` 0 · #116 `db85dcf` 글자 충돌 0 + SkillInfo union 중복 10행 = 예전과 같음 · `WeaponMotion.csv:40` 은 아무 PR 과도 안 겹침) · 도적+해적 합본 미리보기(도적 `4e73fb3` + 해적 `db85dcf` + 이 변경) fixer → 중복 0 · integrity 통과 · LSP 4개 0. Maker 런타임 🟡 BLOCKED(체크리스트 1.3 · 1.14~1.19).
+## 2026-09-28 (6) — 월드 확인(T 실행 · 마법사 창) 분석 후속 · 이 창은 코드만
+
+| 항목 | 예전 | 지금 | commit |
+|---|---|---|---|
+| 럭키 세븐 팔 잔상 꼬리 | scaleX 1.0(꼬리가 머리 뒤까지) | **0.7** — T 실측: 호 뒤끝이 원점 앞 0.195 u(영상 0.20 u) · 앞끝 0.83 u 그대로(`Skill/SkillExecutors.mlua:586`) | `851dbd4` |
+| 픽파켓 동전 스폰 높이 | 몬스터 위치 +0.3(튀어 오르며 몬스터보다 높은 떠 있는 발판에 얹히기도 했다) | 몬스터 **발밑 발판** 위 +0.05 — 아래 방향 발판 레이캐스트(`SkillMovement.ProbeFloor` 방식 · 서버 `PickpocketFloorY`) · 동전 x 마다 다시 재고, 발판 끝을 넘어 더 낮은 발판이 잡힌 동전은 몬스터 x 로 되돌린다 · 못 찾으면 예전 +0.3 · 로그 끝 `floor=<y> (feet <y>)` / `floor=none(+0.3)`(`Skill/SkillBuffs.mlua:175-184` · `:984-1005` · `:1023`) | `f617947` |
+| 쉐도우 파트너 분신 · 기본 공격 | 스킬 모션만 따라 했다 | 기본 공격도 따라 한다 — `PlayAttack` 바로 뒤 장착 무기 기본 공격 행 CoreAction(아대 swingO3 · 단검 stabO1 · 둘 다 mimic 표에 있음)으로 `PlayShadowMimic`(`PlayerAttack.mlua:25-33`) · 맨손이면 안 부른다 | `20afd95` |
+
+- 전부 **연출·스폰 자리만** — 피해 · 판정 · ×2 · 픽파켓 1번 · MISS 가드 그대로. A 파일(`Farm/MesoCoin.mlua` · `Farm/FarmReward.mlua` · `Monster.mlua`)은 안 건드렸다 — 사냥 드랍은 예전 +0.3 그대로, MISS 넉백(약 0.2 u · `Monster.mlua:386-388` → `:487-488`)은 A 참고로 #40 [5858689104](https://github.com/alsrn5172/villagedefense/issues/40#issuecomment-5858689104) 에 적었다.
+- **럭키 세븐 대상 수는 그대로**(표창 판정 상자 0.8 × 0.8 안 전부 · `Skill/SkillProjectile.mlua:76-78` · `:238-242` · T 실행에서 0.2 u 간격 3마리가 한 번에 맞음). 표(skill-spec.md 36행)에 대상 수가 없다 → 기획 질문 #40 5858689104(원작 = 1마리). 답이 올 때까지 지금 동작.
+- 검증: LSP 3개(`SkillExecutors` · `SkillBuffs` · `PlayerAttack`) 에러 0 · 경고 0 · `check-integrity` 통과(경고 4 = main · pre-push 통과) · 충돌 변화 없음(#83 `6952bdf` 1파일/1덩어리 SK_T22 블록 우리 16줄/그쪽 3줄 · #116 `db85dcf` · #100 `e6128f3` · #102 `b91a8fe` · #85 · #96 · #98 · #114 글자 충돌 0). Maker 런타임 🟡 BLOCKED(월드 확인은 마법사 창 · 체크리스트 1.17 · 2.x 동전 · 4.x 분신).
+
 ### 남은 것 / 후속
-- **#83 머지 뒤:** `PlayArmArc` → #83 `PlaySpriteFlash` 교체(세로 배율 인자 하나 추가 필요 · (5) 참고). 럭키 세븐 팔 잔상 가로 배율(scaleX 1.0 / 0.8 / 0.7)은 월드 확인 뒤 값 하나만 바꾼다.
+- **#83 머지 뒤:** `PlayArmArc` → #83 `PlaySpriteFlash` 교체(세로 배율 인자 하나 추가 필요 · (5) 참고). ~~럭키 세븐 팔 잔상 가로 배율(scaleX 1.0 / 0.8 / 0.7)은 월드 확인 뒤 값 하나만 바꾼다~~ → **0.7 완료 `851dbd4`**((6)).
+- **보류(사용자 결정 2026-09-27) · #102 머지 + #115 rebase 뒤:** `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → T 실행에서 본 두 증상을 같이 고친다: ① 2발째 표창이 맞은 뒤에도 남아 계속 날아간다(VisualOnly 는 명중·소멸이 없다 · `SkillProjectile.mlua:227-229`) ② 2발째 명중 폭발 `7368bd9b…` 이 없다(영상 = 별 폭발 두 번 0.13s 간격). 함수는 #102 `b91a8fe` `Skill/SkillAttack.mlua:522`. 이 브랜치는 #114 기반이라 코드 지금은 없음.
+- **보류 · 기획 답 대기(#40 5858689104):** 답이 "1마리"면 #102 머지 뒤 `SkillAttack.IsSingleTargetProjectile`(#102 `b91a8fe` `:528`)에 `SK_T11` 추가. 다른 답이면 넣지 않는다.
 - ~~픽파켓 MISS 가드는 #114 몫이다~~ → **완료(2026-09-27 · 사용자 지시 · Round 9 H 재확인용)**: #114 브랜치 `b/playerattack-buff-hooks` 로컬 `615bcb9` 에 커밋(PlayerAttack.OnAttack → CalcDamage · 피해 > 0) · 이 브랜치를 그 위로 rebase — 이 브랜치의 `PlayerAttack.mlua` 변경은 다크 사이트 해제 훅(AttackNormal) 하나만 남았다. #114 · 이 브랜치 모두 push 전.
-- **보류(사용자 결정 2026-09-27)** · #102 머지 + #115 rebase 뒤: `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → 2발째 표창도 명중 폭발 `7368bd9b…`(지금은 VisualOnly 라 `SkillProjectile.mlua:227-229` 에서 멈춤). 코드 지금은 없음.
-- 럭키 세븐 2발째 명중 이펙트(영상 = 별 폭발 두 번 0.13s 간격): #102 의 볼리 공유(`SkillAttack.IsSharedVolley`)가 머지되면 `SK_T11` 한 줄 추가로 2발째도 명중 이펙트. 이 브랜치는 #114 기반이라 넣지 않았다.
 - 메소 동전 그림(A 의 `Global/MesoCoin.model` `3b88d8df…`)은 메소가 아니라 마일리지 "M" 알림 그림이다(태그 API) — 아이템 외형이라 손대지 않았다. 후보 = 골드 메소 드랍 `5c78b56b…`(비교 시트 C).
 - 라이브러리 클립이 잘려 있다: 4211006 hit 는 15 중 6프레임 · 4211008 effect 는 16 중 9프레임(나머지는 팩 sprite).
