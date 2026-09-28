@@ -1,5 +1,22 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 10차 (2026-09-28 · 합동 확인 P1~P8 결과 반영 · 마법사 창 MCP 실행 · `local/test-thief-pirate` 2f84a4f = #116 `db85dcf`)
+
+근거: 저장소 밖 `villagedefense-harness/thief-pirate-check/p-captures/RESULTS.md` + `requests/to-pirate.md`(R-P1~R-P7).
+
+- **R-P5 함포 사격 툴팁 "지속 1초"**
+  - 원인: `FormatEffect` 는 EffectUnit 이 SEC 가 아닌 스킬에 CSV Duration 을 "지속 N초" 로 붙인다. SK_P31 Duration 1 은 버프 지속이 아니라 **첫 폭격 시점**이다(`ExecuteBarrageOrigin` `lead = skillData.duration` · 실측 첫 파 +1.00s).
+  - 고침: `SkillWindowLogic.DurationIsDelayLabels` 에 `SK_P31 = "시전 {v}초 뒤 첫 폭격"` 을 넣었다. 툴팁은 "데미지 150% x 30타 · 시전 1초 뒤 첫 폭격" 이 된다.
+  - #102(b/skill-archer-effects)와 이름 · 모양이 같은 표다. `FormatEffect` 블록은 #102 와 글자까지 같게 두었다.
+    - `git merge-tree` 확인: #102 × 이 PR 의 `SkillWindowLogic` 충돌은 여전히 두 곳(선언 · 초기화)이다. `FormatEffect` 는 충돌하지 않는다.
+    - 합칠 때 초기화 쪽은 한 표에 SK_A21 · SK_A31 · SK_P31 을 모두 둔다(#102 가 archer-prep 패치 05 를 넣었으면 SK_M31 까지).
+  - 다른 궁극기(SK_M31 · SK_A31 · SK_T31)의 Duration 문구는 이 PR 에서 건드리지 않았다.
+- **P4.9 기록 보충(코드 변경 없음)**: 1차의 "1·5·9번째만 들어간다" 는 `script.MonsterHit` 가 붙은 몬스터(레인 · 진영 몬스터) 이야기다. 확인 키트의 달팽이에는 그 컴포넌트가 없어 10타가 다 들어갔다(키트 한계 · 요청 R-P2 = 키트 쪽).
+
+### Play 체크리스트 (10차 추가)
+
+15. 함포 사격 툴팁(Lv1 · Lv5): "데미지 150% x 30타 · 시전 1초 뒤 첫 폭격 / MP 55 · 낙인의 영혼석 5개 소모 · 쿨타임 120초" — "지속 1초" 가 없다.
+
 ## 9차 (2026-09-28 · 에너지 쉴드 아이콘 = 디펜스 폼 · 그림과 같은 팩)
 
 - `SkillInfo.csv` SK_P22 `IconRUID`: `9868d220…`(제로 이뮨 배리어 101120109 icon) → **`3cbfb551f77049f3bff4aa4f5eee047e`**. 바꾼 것은 그 한 줄의 `IconRUID` · `#Note` 뿐이다. BOM · CRLF · 33 열은 그대로다.
