@@ -972,6 +972,15 @@ script LaneStateService extends Logic
 		self:Push(senderUserId, kind)
 	end
 
+	@ExecSpace("Server")
+	method void RequestStatDetail(string whoId)
+		-- 통계 창에서 생존자 한 명 선택 → 공개 요약(PublicPlayerSummary · 허용 필드만) 한 줄. 같은 매치 생존자가 아니면(탈락·이탈·자신·다른 매치) "GONE".
+		local uid = senderUserId
+		local csv = "GONE|" .. tostring(whoId)   -- 대상 userId 를 실어 보낸다(늦게 온 옛 응답이 지금 선택을 지우지 않게 · Codex 리뷰 2026-09-26)
+		if _MatchTallyService ~= nil and _MatchTallyService:IsSurvivorFor(uid, whoId) then csv = _MatchTallyService:PublicSummaryCsv(whoId) end
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:SetView("statdetail", csv, uid) end
+	end
+
 	@ExecSpace("ServerOnly")
 	method string BuildView(string userId, string kind)
 		-- kind 별 행. 클라는 첫 필드로 행 종류를 판단한다. 마을이 필요한 뷰에 마을이 없으면 "NO_VILLAGE" 한 줄.
@@ -1066,20 +1075,14 @@ script LaneStateService extends Logic
 			for _, s in ipairs(v.storage) do add({ "S", s.itemId, tostring(s.count) }) end
 			if #rows == 0 then add({ "EMPTY" }) end
 		elseif kind == "stats" then
-			local p = _UserService:GetUserEntityByUserId(userId)
-			local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
-			local myName = (isvalid(p) and isvalid(p.PlayerComponent)) and p.PlayerComponent.Nickname or "?"
-			add({ "ME", myName, tostring((e ~= nil) and (e.level or 1) or 1), tostring((e ~= nil) and (e.exp or 0) or 0), tostring((e ~= nil) and (e.meso or 0) or 0), "0", "0" })
-			if isvalid(p) and isvalid(p.CurrentMap) then
-				local list = _UserService:GetUsersByMapName(p.CurrentMap.Name)
-				for _, ent in ipairs(list or {}) do
-					if isvalid(ent) and isvalid(ent.PlayerComponent) then
-						local uid = ent.PlayerComponent.UserId
-						local ee = (_SummonManager ~= nil) and _SummonManager:GetEcon(uid) or nil
-						add({ "P", uid, ent.PlayerComponent.Nickname or uid, tostring((ee ~= nil) and (ee.level or 1) or 1) })
-					end
-				end
+			-- 생존자 목록 (WO-031 묶음 3 · GDD §4.12): **매치 생존자 전원 · 자신 제외** · 공개 필드만(PublicPlayerSummary). P|userId|이름|레벨|칭호 · 없으면 NONE.
+			-- 예전 뼈대는 같은 맵 사람만 보이고 내 메소까지 실었다 → 매치 전체 · 비공개 필드 없음으로 바꿨다. 상세는 RequestStatDetail.
+			local list = (_MatchTallyService ~= nil) and _MatchTallyService:SurvivorsFor(userId) or {}
+			for _, uid in ipairs(list) do
+				local s = _MatchTallyService:PublicSummary(uid)
+				add({ "P", uid, s.name, tostring(s.level), s.title })
 			end
+			if #list == 0 then add({ "NONE" }) end
 		elseif kind == "dispatch" then
 			local own = self:VillageOfUser(userId)
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
