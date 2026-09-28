@@ -269,6 +269,9 @@ script SkillExecutors extends Logic
 
     property integer cutsceneUiTimer = 0
 
+    -- 클라: UI 컷신 페이드 타이머 id(cast.cutsceneFadeSeconds 가 있는 스킬만 · 함포 사격 2026-09-28). 끄거나 새 컷신을 걸 때 지우고 알파를 1 로 되돌린다.
+    property integer cutsceneUiFadeTimer = 0
+
     property table cutsceneUiClipSize = {}
 
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
@@ -768,7 +771,11 @@ script SkillExecutors extends Logic
             },
             SK_P31 = {   -- 함포 사격 — skill/524.img/skill/5241500 드레드노트(캡틴 오리진 · 기획서 추천): screen 79프레임 컷신(1434×835) · 폭탄 = 같은 드레드노트 팩 hit/0(72cef21e… · 15f · 424×348 · 흩뿌림 ×0.6 · 대상 hit ×1 · 파마다 3발 = BarrageBombsPerWave) · 시전 소리 = 배틀쉽 봄버 Use(686297b9…)
                 -- cutsceneSeconds 4.3 = 컷신 표시 + 실측 실패 때의 대체 길이(드레드노트 79프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
-                cast = { ruid = "d35352dca42144a7bb7e64735fe364bf", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.3 },
+                -- 🔴 2026-09-28 사용자 결정(합동 확인 P6.4): 컷신 UI(실측 4.89s)가 6파(+1.00~+3.91)를 전부 가렸다 → 컷신 **표시만** +1.0s 에 끝낸다.
+                --   cutsceneDisplaySeconds 1.0 = 시전자 전체 화면 UI 컷신 + 모두가 보는 월드 이펙트(서버 RemoveEffect) · cutsceneFadeSeconds 0.2 = UI 를 0.8→1.0s 동안 알파 1→0.
+                --   그대로 둔 것: 파 시점(첫 파 = CSV Duration 1 · 0.58s 간격) · 시전 락 3.5 · 무적 5.04s(GetCutsceneSeconds 4.89 + 0.15) · 다른 궁.
+                --   드레드노트 클립은 자리표시자다 — 기획에 약 1초짜리 컷신을 요청했다(#40).
+                cast = { ruid = "d35352dca42144a7bb7e64735fe364bf", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.3, cutsceneDisplaySeconds = 1.0, cutsceneFadeSeconds = 0.2 },
                 -- 2026-09-27 b/skill-pirate-effects: 폭탄 그림 = 드레드노트 자기 팩 hit/0(72cef21e… · 15프레임 · 424×348 · 청록 파편 폭발 · 컷신과 같은 2023 오리진).
                 --   예전 = 배틀쉽 봄버 5221022 hit/0 354977ce…(4차 · 불꽃 연기) — 한 스킬 안에 두 시대가 섞여 있었다.
                 --   impact = 파마다 흩뿌리는 폭탄(연출 · 예전 폭탄 252×204 와 같은 크기가 되게 x0.6) · targetHit = 맞은 대상마다(원작 hit/0 · 원본 크기).
@@ -1097,6 +1104,18 @@ script SkillExecutors extends Logic
         return entry.cast.cutsceneSeconds
     end
 
+    method number GetCutsceneDisplaySeconds(string skillId)
+        -- 화면 컷신을 **보여 주는** 길이(초). cast.cutsceneDisplaySeconds 가 클립보다 짧게 있으면 그 값 — 시전자 UI 컷신과 월드 이펙트를 그때 끝낸다.
+        -- 없으면 GetCutsceneSeconds(클립 실측) 그대로라 다른 궁은 예전과 같다. 무적 창 · 분신 숨김 · 불굴의 진 버프 연장은 GetCutsceneSeconds 를 계속 쓴다
+        -- (2026-09-28 사용자 결정 · 함포 사격 SK_P31: 첫 폭격 +1s 에 맞춰 컷신 표시만 1.0s · 무적 5.04s · 파 시점 · 시전 락은 그대로).
+        local full = self:GetCutsceneSeconds(skillId)
+        local entry = self.effectOverrides[skillId]
+        if entry == nil or entry.cast == nil then return full end
+        local d = entry.cast.cutsceneDisplaySeconds
+        if d ~= nil and d > 0 and (full <= 0 or d < full) then return d end
+        return full
+    end
+
     method void PlayStageEffect(string skillId, string stage, Entity casterEntity, Vector3 pos, any fallbackParticleType)
         -- Single override lookup shared by every executor's cast/impact visual beat. entry[stage]
         -- (from effectOverrides) is either { ruid = "..." } (real asset, via EffectService) or
@@ -1144,15 +1163,24 @@ script SkillExecutors extends Logic
                         local wox = spec.offsetXByWeapon[self:MotionWeaponTypeOf(casterEntity.PlayerComponent.UserId)]
                         if wox ~= nil then ox = wox end
                     end
-                    _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(ox * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+                    local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(ox * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
                     log("SkillExecutors: " .. stage .. " effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]) .. " offsetX=" .. tostring(ox))
                     -- 화면 컷신(cast.cutsceneSeconds 가 있는 것 · 예열 목록과 같은 기준)이면 쉐도우 파트너 분신을 컷신 동안 숨긴다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
                     -- 2026-09-14 제보 "W 뒤 E 를 누르면 캐릭터가 사라진다": 예전 기준 "scale + noFlip" 에 에너지 쉴드 방울 cast(scale 0.85 · noFlip)가 걸려 변신 form 을 5.5초 숨겼다 → 명시 필드로.
                     if stage == "cast" and spec.cutsceneSeconds ~= nil and isvalid(casterEntity.PlayerComponent) then
                         self:HideShadowFor(casterEntity.PlayerComponent.UserId, self:GetCutsceneSeconds(skillId))
+                        -- 보여 주는 길이(GetCutsceneDisplaySeconds): 클립보다 짧게 정한 스킬(cast.cutsceneDisplaySeconds · 함포 사격 1.0s)은
+                        -- 모두가 보는 이 월드 이펙트를 그때 서버가 지운다(RemoveEffect). 정하지 않은 궁은 예전처럼 클립이 끝까지 돈다.
+                        local display = self:GetCutsceneDisplaySeconds(skillId)
+                        if spec.cutsceneDisplaySeconds ~= nil and serial ~= nil and serial > 0 and display > 0 then
+                            _TimerService:SetTimerOnce(function()
+                                _EffectService:RemoveEffect(serial)
+                                log("SkillExecutors: cutscene world effect " .. skillId .. " removed at +" .. string.format("%.2f", display) .. "s (serial " .. tostring(serial) .. ")")
+                            end, display)
+                        end
                         -- 시전자 화면에만 전체 화면 UI 컷신(CutsceneUI · #40 5830063946). 마지막 인자 = 받을 클라(시전자).
                         if self.CutsceneUI then
-                            self:ShowCutsceneUI(skillId, spec.ruid, self:GetCutsceneSeconds(skillId), casterEntity.PlayerComponent.UserId)
+                            self:ShowCutsceneUI(skillId, spec.ruid, display, spec.cutsceneFadeSeconds or 0, casterEntity.PlayerComponent.UserId)
                         end
                     end
                 else
@@ -1180,9 +1208,10 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("Client")
-    method void ShowCutsceneUI(string skillId, string ruid, number seconds)
+    method void ShowCutsceneUI(string skillId, string ruid, number seconds, number fadeSeconds)
         -- 시전자 클라에서만 돈다(PlayStageEffect 가 시전자 userId 를 마지막 인자로 보낸다). 클립을 받아 둔 뒤(PreloadAsync · 예열했으면 곧바로) StartCutsceneUI 로 켠다.
         -- 받는 동안 새 시전이 오면 번호(cutsceneUiToken)가 바뀌어 이전 콜백은 아무것도 안 한다.
+        -- fadeSeconds(cast.cutsceneFadeSeconds · 없으면 0): 끄기 전 그만큼 알파를 1 → 0 으로 내린다(함포 사격 0.2s · 2026-09-28).
         if ruid == nil or ruid == "" or seconds == nil or seconds <= 0 then return end
         if not isvalid(self.cutsceneUiSprite) then
             log_warning("SkillExecutors: cutscene UI " .. skillId .. " skipped — ui/SkillCutsceneGroup/Cutscene not found")
@@ -1192,13 +1221,14 @@ script SkillExecutors extends Logic
         local token = self.cutsceneUiToken
         _ResourceService:PreloadAsync({ ruid }, function()
             if token ~= self.cutsceneUiToken then return end
-            self:StartCutsceneUI(skillId, ruid, seconds, token)
+            self:StartCutsceneUI(skillId, ruid, seconds, fadeSeconds or 0, token)
         end)
     end
 
     @ExecSpace("ClientOnly")
-    method void StartCutsceneUI(string skillId, string ruid, number seconds, integer token)
-        -- 전체 화면 sprite 에 클립을 걸고 켠다 → seconds(서버 GetCutsceneSeconds = 클립 실측 길이) 뒤 끈다.
+    method void StartCutsceneUI(string skillId, string ruid, number seconds, number fadeSeconds, integer token)
+        -- 전체 화면 sprite 에 클립을 걸고 켠다 → seconds(서버 GetCutsceneDisplaySeconds = 클립 실측 길이 · 스킬이 짧게 정했으면 그 값) 뒤 끈다.
+        -- fadeSeconds > 0 이면 끄기 fadeSeconds 전부터 알파를 선형으로 내려 seconds 에 0 이 되게 한다. 켤 때 · 끌 때 알파는 늘 1 로 되돌린다(다른 궁이 같은 sprite 를 쓴다).
         -- 크기: 클립 프레임 크기(px)로 비율을 잡고 UI 그룹 루트(화면 전체) 크기를 **덮도록**(가로 · 세로 중 큰 배율) 키운다 — 넘치는 쪽은 화면 밖이라 잘린다. 늘이지 않는다.
         -- 그 위에 CutsceneOverscan 만큼 더 키워 클립 그림의 흐린 테두리까지 화면 밖으로 민다(가운데 기준 · 네 변 같은 비율).
         local e = self.cutsceneUiSprite
@@ -1226,6 +1256,7 @@ script SkillExecutors extends Logic
         -- 같은 클립을 다시 걸 때도 0프레임부터 돌게 끈 채로 바꾸고 다시 켠다.
         e.Enable = false
         sr.ImageRUID = DataRef(ruid)
+        self:ResetCutsceneUIAlpha()
         e.Enable = true
         if self.cutsceneUiTimer ~= 0 then
             _TimerService:ClearTimer(self.cutsceneUiTimer)
@@ -1236,17 +1267,57 @@ script SkillExecutors extends Logic
             self.cutsceneUiTimer = 0
             self:HideCutsceneUI(skillId)
         end, seconds)
+        local fade = fadeSeconds or 0
+        if fade > 0 and fade < seconds then
+            -- 페이드: seconds − fade 부터 매 1/30s 알파 = 1 − (지난 시간 / fade). 새 컷신이 오면(token 바뀜) 스스로 멈춘다.
+            local fadeStart = -1
+            self.cutsceneUiFadeTimer = _TimerService:SetTimerRepeat(function()
+                if token ~= self.cutsceneUiToken or not isvalid(sr) then
+                    self:StopCutsceneUIFade()
+                    return
+                end
+                local now = _UtilLogic.ElapsedSeconds
+                if fadeStart < 0 then fadeStart = now end
+                local a = 1 - (now - fadeStart) / fade
+                if a < 0 then a = 0 end
+                local c = sr.Color
+                sr.Color = Color(c.r, c.g, c.b, a)
+                if a <= 0 then self:StopCutsceneUIFade() end
+            end, 1 / 30, seconds - fade)
+        end
         log("SkillExecutors: cutscene UI " .. skillId .. " on — clip " .. tostring(size.x) .. "x" .. tostring(size.y) .. " canvas " .. tostring(cw) .. "x" .. tostring(ch)
-            .. " rect " .. string.format("%.0fx%.0f", size.x * scale, size.y * scale) .. " overscan " .. string.format("%.2f", over) .. " for " .. string.format("%.2f", seconds) .. "s")
+            .. " rect " .. string.format("%.0fx%.0f", size.x * scale, size.y * scale) .. " overscan " .. string.format("%.2f", over) .. " for " .. string.format("%.2f", seconds) .. "s"
+            .. " fade " .. string.format("%.2f", fade) .. "s")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StopCutsceneUIFade()
+        -- UI 컷신 페이드 타이머를 멈춘다(알파는 건드리지 않는다 · 되돌리기는 ResetCutsceneUIAlpha).
+        if self.cutsceneUiFadeTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneUiFadeTimer)
+            self.cutsceneUiFadeTimer = 0
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ResetCutsceneUIAlpha()
+        -- 페이드를 멈추고 UI 컷신 sprite 알파를 1 로 되돌린다(켤 때 · 끌 때 · 다른 궁이 같은 sprite 를 쓴다).
+        self:StopCutsceneUIFade()
+        local e = self.cutsceneUiSprite
+        if not isvalid(e) or not isvalid(e.SpriteGUIRendererComponent) then return end
+        local sr = e.SpriteGUIRendererComponent
+        local c = sr.Color
+        if c.a ~= 1 then sr.Color = Color(c.r, c.g, c.b, 1) end
     end
 
     @ExecSpace("ClientOnly")
     method void HideCutsceneUI(string skillId)
-        -- UI 컷신을 끈다(클립은 그대로 두고 엔티티만 끈다 · 다음 시전이 다시 건다).
+        -- UI 컷신을 끈다(클립은 그대로 두고 엔티티만 끈다 · 다음 시전이 다시 건다). 페이드가 있었으면 알파를 1 로 되돌려 둔다.
         local e = self.cutsceneUiSprite
         if isvalid(e) then
             e.Enable = false
         end
+        self:ResetCutsceneUIAlpha()
         log("SkillExecutors: cutscene UI " .. skillId .. " off")
     end
 

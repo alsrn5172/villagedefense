@@ -1,5 +1,35 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 11차 (2026-09-28 · 사용자 결정 반영)
+
+- **재확인(마법사 창 · `local/test-thief-pirate-2` 1ce11ea = #115 c704c56 + 이 PR `2e9305f` · Reimport All 뒤 새 Play · 18:38~18:42)** — 체크리스트 14~16 통과:
+  - 14 아이콘: `BuildTooltipParts(SK_P22, 1/5).icon = 3cbfb551…`.
+  - 15 툴팁: `데미지 150% x 30타 · 시전 1초 뒤 첫 폭격`.
+  - 16 첫 터짐: 방울 → end 클립 사이 빈 프레임이 없다(≤1 프레임 · 예전 ≈0.57s).
+  - 근거: 저장소 밖 `requests/to-pirate.md` "Re-check".
+- **함포 사격 컷신 = +1.0s 에 끝(사용자 결정 · 합동 확인 P6.4)**
+  - 문제: 컷신 UI(드레드노트 클립 실측 4.89s)가 6파(+1.00~+3.91)를 전부 가렸다.
+  - 고침(SK_P31 만):
+    - `cast.cutsceneDisplaySeconds = 1.0` · `cutsceneFadeSeconds = 0.2`. 새 `SkillExecutors.GetCutsceneDisplaySeconds` = 이 값, 없으면 `GetCutsceneSeconds` 그대로다.
+    - 시전자 전체 화면 UI 컷신은 0.8→1.0s 동안 알파 1→0 으로 사라지고 1.0s 에 꺼진다(`StartCutsceneUI` 페이드 타이머). 켤 때 · 끌 때 알파를 1 로 되돌린다 — 다른 궁이 같은 sprite 를 쓴다.
+    - 모두가 보는 월드 이펙트(같은 클립 · `PlayEffectAttached` serial)는 서버가 +1.0s 에 `_EffectService:RemoveEffect` 로 지운다.
+  - 그대로 둔 것:
+    - 파 시점: 첫 파 = CSV Duration 1 · 0.58s 간격.
+    - 시전 락 3.5.
+    - `GetCutsceneSeconds` 와 그 읽는 곳 — 무적 창 5.04s(4.89 + 0.15) · 도적 분신 숨김 · 불굴의 진 버프 연장.
+    - 다른 궁 4종: `cutsceneDisplaySeconds` 가 없으면 동작이 예전과 같다(UI 로그 끝에 `fade 0.00s` 만 붙는다).
+  - `ShowCutsceneUI` 에 `fadeSeconds` 인자가 늘었다. 부르는 곳은 이 파일 한 곳이고, 다른 열린 브랜치에 부르는 곳이 없다(확인함).
+  - `SkillCaster.mlua:123` 주석을 고쳤다("드레드노트 컷신(Duration 1)" → 첫 파 = Duration · 표시 1.0s · 무적은 클립 길이).
+  - 드레드노트 클립은 자리표시자다. 기획에 약 1초짜리 컷신을 요청했다(#40).
+
+### Play 체크리스트 (11차 추가 · 다음 세션)
+
+17. 함포 사격(R) · 시전자 화면: 전체 화면 컷신이 +0.8s 부터 흐려져 **+1.0s 에 사라지고** 6파(+1.00 · +1.58 · +2.16 · +2.74 · +3.32 · +3.90)의 청록 파편이 전부 보인다.
+    - 로그: `cutscene UI SK_P31 on … for 1.00s fade 0.20s` → `cutscene UI SK_P31 off`.
+    - 다른 플레이어 화면(월드 이펙트): 로그 `cutscene world effect SK_P31 removed at +1.00s` · 드레드노트 그림이 +1.0s 에 없어지고 6파가 보인다.
+    - 무적은 그대로 ≈5.04s. 다른 궁(대마법 등)의 컷신은 예전처럼 끝까지 불투명하다.
+18. 소리(미룬 항목 · MCP 실행에선 못 들었다): E 에너지 쉴드 시전 = 엔젤릭버스터 파워 트랜스퍼 Use(`b86f0000…`) · R 함포 사격 시전 = 배틀쉽 봄버 Use(`686297b9…`) · 함포 사격 파마다 = 배틀쉽 봄버 Attack1(`8fd7da62…`).
+
 ## 10차 (2026-09-28 · 합동 확인 P1~P8 결과 반영 · 마법사 창 MCP 실행 · `local/test-thief-pirate` 2f84a4f = #116 `db85dcf`)
 
 근거: 저장소 밖 `villagedefense-harness/thief-pirate-check/p-captures/RESULTS.md` + `requests/to-pirate.md`(R-P1~R-P7).
