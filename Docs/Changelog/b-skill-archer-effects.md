@@ -30,3 +30,4 @@
 | 커밋 | 무엇 |
 |---|---|
 | 05 | 대마법(SK_M31) 툴팁 "지속 2초" → **"충전 2초 뒤 발동"** (`SkillWindowLogic.DurationIsDelayLabels` · CSV Duration 2 = 충전) |
+| 08 | 포커스(SK_A12) 아이콘 = **포커스 온 `322.img/3220021`** `ae9c846d…` (예전 = 스나이핑-보스 킬러 아이콘) · #Note 같이 |
