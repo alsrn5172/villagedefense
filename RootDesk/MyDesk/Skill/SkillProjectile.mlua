@@ -300,6 +300,7 @@ script SkillProjectile extends AttackComponent
             self.Volley.dealt = true
             self.Volley.aim = self:AimPointOf(defender)
             log("[SkillProjectile] volley " .. self.SkillId .. " dealt by this arrow x" .. tostring(self.DamageMul) .. " on " .. tostring(defender.Name))
+            self:PlayFollowImpact(defender)
         end
         if isvalid(defender) then
             local t = defender.TransformComponent
@@ -362,7 +363,8 @@ script SkillProjectile extends AttackComponent
         local dy = aim.y - pos.y
         if dx * dx + dy * dy > self.VolleyArriveDistance * self.VolleyArriveDistance then return end
         self.consumed = true
-        if self.HitEffectRUID ~= "" then
+        -- 두 번째 명중 연출(impactFollow)이 있는 스킬은 먼저 맞힌 발이 이미 불꽃 → 폭발을 냈다 → 이 발은 이펙트 없이 사라진다(b/skill-archer-effects · 더블 샷).
+        if self.HitEffectRUID ~= "" and not self:HasFollowImpact() then
             _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, aim, 0, Vector3(1, 1, 1), false)
         end
         if self.HitSoundRUID ~= "" then
@@ -370,6 +372,46 @@ script SkillProjectile extends AttackComponent
         end
         log("[SkillProjectile] volley follower " .. self.SkillId .. " arrived — effect only (damage already dealt)")
         self.Entity:Destroy(0.05)
+    end
+
+    method any FollowImpactSpec()
+        -- effectOverrides[SkillId].impactFollow(b/skill-archer-effects · 더블 샷 두 번째 명중 연출) 또는 nil.
+        if _SkillExecutors == nil or _SkillExecutors.effectOverrides == nil then return nil end
+        local entry = _SkillExecutors.effectOverrides[self.SkillId]
+        if entry == nil or entry.impactFollow == nil or entry.impactFollow.ruid == nil then return nil end
+        return entry.impactFollow
+    end
+
+    method boolean HasFollowImpact()
+        -- 두 번째 명중 연출이 있는 스킬인가(FinishVolleyFollower 가 후속 발 이펙트를 생략할지 본다).
+        return self:FollowImpactSpec() ~= nil
+    end
+
+    method void PlayFollowImpact(Entity defender)
+        -- 두 번째 명중 연출(b/skill-archer-effects · 원작 더블 샷: 작은 불꽃 → 0.1초 뒤 큰 별 폭발 · 영상 19.600 / 19.700s): impactFollow 가 있으면 delay 뒤 같은 조준점에 한 번.
+        -- 화살 엔티티는 0.05초 뒤 사라지므로 이펙트 주체는 시전자 플레이어로 둔다. 대상이 그새 사라져도 처음 조준점에서 터진다. 없으면 아무 일도 안 한다.
+        -- 분홍 sprite(impactFrames / impactFollowFrames 가 다 RUID · 사용자 결정 2026-09-27): 불꽃도 여기서 sprite 순서로 지금 · 폭발은 delay 뒤 sprite 순서로
+        --   (명중 클립은 GetImpactEffectRuid 가 비워 OnAttack 이 안 튼다). 자리표시자면 예전처럼 파란 클립 — 불꽃은 OnAttack 의 명중 클립 · 폭발은 아래 PlayEffect.
+        local spec = self:FollowImpactSpec()
+        if spec == nil or not isvalid(defender) then return end
+        local aim = self:AimPointOf(defender)
+        local caster = _UserService:GetUserEntityByUserId(self.CasterUserId)
+        if not isvalid(caster) then return end
+        local exec = _SkillExecutors
+        local entry = exec.effectOverrides[self.SkillId]
+        local tag = self.SkillId
+        if exec:HasValidFrames(entry.impactFrames) then exec:PlaySpriteSequence(entry.impactFrames, caster, aim, tag .. "_spark") end
+        local s = spec.scale or 1
+        local ruid = spec.ruid
+        local followFrames = entry.impactFollowFrames
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(caster) then return end
+            if exec:HasValidFrames(followFrames) then
+                exec:PlaySpriteSequence(followFrames, caster, aim, tag .. "_burst")
+            else
+                _EffectService:PlayEffect(ruid, caster, aim, 0, Vector3(s, s, 1), false)
+            end
+        end, spec.delay or 0.1)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
