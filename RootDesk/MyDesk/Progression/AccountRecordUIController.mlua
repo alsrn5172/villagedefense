@@ -37,6 +37,34 @@ script AccountRecordUIController extends Logic
 
 	property TextGUIRendererComponent collStatus = "9482c635-b240-49b3-9b0e-d148578870dc"
 
+
+	-- 업적 탭 (묶음 5)
+	property GridViewComponent achGrid = "c7df5394-e290-4c3a-9635-7978f875c3f2"
+
+	property Entity achTemplate = "1653bfb6-43d2-4478-a4c2-86f4aa218b6b"
+
+	property TextGUIRendererComponent achStatus = "33a9f39d-b12a-46f9-877d-063127364508"
+
+	-- 칭호 탭 (묶음 5)
+	property GridViewComponent titleGrid = "8f60e1af-b2ad-4f6d-9920-adaa741b59a5"
+
+	property Entity titleTemplate = "b004ac77-6476-486f-b815-0b3bbe23bf9f"
+
+	property TextGUIRendererComponent titleStatus = "82ea61fe-aea8-47f4-9aaf-68e2cdb3c46a"
+
+	property ButtonComponent btnUnequip = "eaaf0e70-6873-4c61-9d50-647306b41c38"
+
+	-- 업적 뷰 { {id, name, desc, cur, target, exp, title, done} } · 칭호 뷰 { equipped, list = { {id, name, desc, owned} } }
+	@HideFromInspector
+	property any achs = nil
+
+	@HideFromInspector
+	property any titles = nil
+
+	-- 칭호 셀 클릭 배선(셀 Id → {index, cell})
+	@HideFromInspector
+	property any boundTitleCells = nil
+
 	@HideFromInspector
 	property boolean isOpen = false
 
@@ -75,6 +103,7 @@ script AccountRecordUIController extends Logic
 		-- 버튼 · 탭 · 도감 그리드.
 		self.handlers = {}
 		self.boundCells = {}
+		self.boundTitleCells = {}
 		local function bind(btn, fn)
 			if isvalid(btn) then table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) }) end
 		end
@@ -84,11 +113,24 @@ script AccountRecordUIController extends Logic
 		bind(self.tabAchievement, function() self:GoTab("achievement") end)
 		bind(self.tabTitle, function() self:GoTab("title") end)
 		bind(self.tabHistory, function() self:GoTab("history") end)
+		bind(self.btnUnequip, function() self:RequestEquip("") end)
 		if isvalid(self.collGrid) then
 			if isvalid(self.collTemplate) then self.collGrid.ItemEntity = self.collTemplate end
 			self.collGrid.OnRefresh = function(index, entity) self:FillCell(index, entity) end
 			self.collGrid.TotalCount = 0
 			self.collGrid:Refresh(true, true)
+		end
+		if isvalid(self.achGrid) then
+			if isvalid(self.achTemplate) then self.achGrid.ItemEntity = self.achTemplate end
+			self.achGrid.OnRefresh = function(index, entity) self:FillAchCell(index, entity) end
+			self.achGrid.TotalCount = 0
+			self.achGrid:Refresh(true, true)
+		end
+		if isvalid(self.titleGrid) then
+			if isvalid(self.titleTemplate) then self.titleGrid.ItemEntity = self.titleTemplate end
+			self.titleGrid.OnRefresh = function(index, entity) self:FillTitleCell(index, entity) end
+			self.titleGrid.TotalCount = 0
+			self.titleGrid:Refresh(true, true)
 		end
 		self:SetOpen(false)
 		log("[AcctUI] ready (client) handlers=" .. tostring(#self.handlers))
@@ -169,7 +211,9 @@ script AccountRecordUIController extends Logic
 		end
 		self.retries = 0
 		local rows = self:SplitRows(csv)
-		if tabName == "collection" then self:RenderCollection(rows) end
+		if tabName == "collection" then self:RenderCollection(rows)
+		elseif tabName == "achievement" then self:RenderAchievements(rows)
+		elseif tabName == "title" then self:RenderTitles(rows) end
 		log("[AcctUI] view " .. tabName .. " rows=" .. tostring(#rows))
 	end
 
@@ -328,6 +372,146 @@ script AccountRecordUIController extends Logic
 			txt = txt .. " · 자이언트 " .. tostring(r.e) .. ((ex ~= nil) and (" (다음 +" .. tostring(ex.exp) .. ")") or "")
 		end
 		self.collStatus.Text = txt
+	end
+
+	-- ── 업적 탭 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderAchievements(any rows)
+		-- SUM|달성|전체 · A|id|이름|설명|진행|목표|경험치|칭호이름|받음
+		self.achs = {}
+		local done = 0
+		local total = 0
+		for _, f in ipairs(rows) do
+			if f[1] == "SUM" then
+				done = tonumber(f[2]) or 0
+				total = tonumber(f[3]) or 0
+			elseif f[1] == "A" then
+				table.insert(self.achs, { id = f[2], name = f[3], desc = f[4], cur = tonumber(f[5]) or 0, target = tonumber(f[6]) or 1,
+					exp = f[7] or "0", title = f[8] or "", done = (f[9] == "1") })
+			end
+		end
+		if isvalid(self.achGrid) then
+			self.achGrid.TotalCount = #self.achs
+			self.achGrid:Refresh(true, true)
+		end
+		if isvalid(self.achStatus) then
+			self.achStatus.Text = "달성 " .. tostring(done) .. " / " .. tostring(total) .. " · 달성하면 계정 경험치와 칭호를 바로 받습니다"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillAchCell(integer index, Entity cell)
+		-- 업적 한 줄: 이름 · 설명 · 진행 · 보상 · 상태.
+		local a = (self.achs ~= nil) and self.achs[index + 1] or nil
+		if a == nil or not isvalid(cell) then return end
+		self:SetText(cell, "Name", a.name)
+		self:SetText(cell, "Desc", a.desc)
+		self:SetText(cell, "Progress", tostring(a.cur) .. " / " .. tostring(a.target))
+		self:SetText(cell, "Reward", "계정 경험치 +" .. a.exp .. ((a.title ~= "") and (" · 칭호 " .. a.title) or ""))
+		self:SetText(cell, "State", a.done and "달성 · 받음" or "진행 중")
+		if cell.SpriteGUIRendererComponent ~= nil then
+			cell.SpriteGUIRendererComponent.Color = a.done and Color(0.30, 0.26, 0.12, 1) or Color(0.17, 0.25, 0.42, 1)
+		end
+	end
+
+	-- ── 칭호 탭 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderTitles(any rows)
+		-- EQ|장착TitleId · TI|id|이름|얻는 법|보유
+		self.titles = { equipped = "", list = {} }
+		local owned = 0
+		for _, f in ipairs(rows) do
+			if f[1] == "EQ" then
+				self.titles.equipped = f[2] or ""
+			elseif f[1] == "TI" then
+				local own = (f[5] == "1")
+				if own then owned = owned + 1 end
+				table.insert(self.titles.list, { id = f[2], name = f[3], desc = f[4], owned = own })
+			end
+		end
+		if isvalid(self.titleGrid) then
+			if self.titleGrid.TotalCount ~= #self.titles.list then
+				self.titleGrid.TotalCount = #self.titles.list
+				self.titleGrid:Refresh(true, true)
+			else
+				self:RepaintTitleCells()
+			end
+		end
+		self:UpdateTitleStatus(owned)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string EquippedName()
+		-- 장착 칭호 이름(없으면 "").
+		if self.titles == nil then return "" end
+		for _, t in ipairs(self.titles.list) do
+			if t.id == self.titles.equipped then return t.name end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateTitleStatus(integer owned)
+		-- 아래 줄: 장착 · 보유 수.
+		if not isvalid(self.titleStatus) or self.titles == nil then return end
+		local eq = self:EquippedName()
+		self.titleStatus.Text = "장착: " .. ((eq ~= "") and eq or "없음") .. " · 보유 " .. tostring(owned) .. " / " .. tostring(#self.titles.list)
+			.. " · 가진 칭호를 누르면 머리 위 이름표에 붙습니다"
+		if isvalid(self.btnUnequip) then self.btnUnequip.Enable = (self.titles.equipped ~= "") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillTitleCell(integer index, Entity cell)
+		-- 칭호 칸: 이름 + (장착 중 / 보유 · 누르면 장착 / 얻는 법). 없는 칭호는 어둡게.
+		local t = (self.titles ~= nil) and self.titles.list[index + 1] or nil
+		if t == nil or not isvalid(cell) then return end
+		local equipped = (self.titles.equipped == t.id)
+		self:SetText(cell, "Name", t.owned and t.name or "???")
+		self:SetText(cell, "Sub", equipped and "장착 중" or (t.owned and "보유 · 누르면 장착" or t.desc))
+		if cell.SpriteGUIRendererComponent ~= nil then
+			if equipped then
+				cell.SpriteGUIRendererComponent.Color = Color(0.72, 0.57, 0.23, 1)
+			elseif t.owned then
+				cell.SpriteGUIRendererComponent.Color = Color(0.17, 0.25, 0.42, 1)
+			else
+				cell.SpriteGUIRendererComponent.Color = Color(0.10, 0.14, 0.24, 1)
+			end
+		end
+		local bound = self.boundTitleCells[cell.Id]
+		self.boundTitleCells[cell.Id] = { index = index, cell = cell }
+		if bound == nil then
+			local id = cell.Id
+			local h = cell:ConnectEvent(ButtonClickEvent, function()
+				local rec = self.boundTitleCells[id]
+				if rec ~= nil then self:OnTitleClick(rec.index + 1) end
+			end)
+			table.insert(self.handlers, { e = cell, h = h })
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RepaintTitleCells()
+		-- 살아 있는 칭호 셀만 다시 칠한다.
+		if self.boundTitleCells == nil then return end
+		for _, rec in pairs(self.boundTitleCells) do
+			if rec ~= nil and isvalid(rec.cell) then self:FillTitleCell(rec.index, rec.cell) end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnTitleClick(integer idx)
+		-- 가진 칭호면 장착 요청(이미 장착이면 그대로). 없는 칭호는 얻는 법만 보인다.
+		local t = (self.titles ~= nil) and self.titles.list[idx] or nil
+		if t == nil or not t.owned or self.titles.equipped == t.id then return end
+		self:RequestEquip(t.id)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestEquip(string titleId)
+		-- 서버에 장착/해제 요청 → 서버가 칭호 탭을 다시 보낸다.
+		if _TitleService ~= nil then _TitleService:RequestEquip(titleId) end
 	end
 
 	method void OnEndPlay()
