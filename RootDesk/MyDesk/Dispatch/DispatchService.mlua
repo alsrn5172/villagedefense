@@ -19,12 +19,37 @@ script DispatchService extends Logic
 	@HideFromInspector
 	property integer orderSeq = 0
 
+	-- 방어자에게 보이는 총량 등급 경계(마릿수 · WO-031 §7 · 1묶음 = 5마리라 1묶음 = 중 · 2묶음부터 대).
+	-- 소 = 1 ~ GradeSmallMax · 중 = ~ GradeMidMax · 대 = 그 위. 🔴 정확한 마릿수·보낸 사람·몬스터 종류는 방어자에게 보내지 않는다(GDD §4.3).
+	property integer GradeSmallMax = 4
+
+	property integer GradeMidMax = 9
+
+	-- 레인 HUD 배지 갱신 주기(초). 배지가 켜진 마을이 있을 때만 돈다.
+	property number BadgeScanInterval = 1.0
+
+	-- badge[targetVillageId] = { grade = 마지막으로 보낸 등급, owner = 그걸 받은 userId }. 레인에 파병 개체가 남아 있는 마을만 들어 있다.
+	@HideFromInspector
+	property any badge = nil
+
+	@HideFromInspector
+	property integer badgeTimerId = 0
+
 	method void OnBeginPlay()
 		-- 서버만 원장.
 		if not self:IsServer() then return end
 		self.orders = {}
+		self.badge = {}
 		self:LoadRule()
-		log("[Dispatch] DispatchService ready (server)")
+		log("[Dispatch] DispatchService ready (server) grade=" .. tostring(self.GradeSmallMax) .. "/" .. tostring(self.GradeMidMax))
+	end
+
+	method void OnEndPlay()
+		-- 배지 스캔 타이머를 푼다.
+		if self.badgeTimerId ~= 0 then
+			_TimerService:ClearTimer(self.badgeTimerId)
+			self.badgeTimerId = 0
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -100,11 +125,16 @@ script DispatchService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method string GradeOf(string villageId)
-		-- 방어자에게 알리는 **총량 등급만** (GDD §4.3 정보 비대칭 — 보낸 사람·몬스터 종류는 감춘다).
-		local n = self:PendingUnits(villageId)
+		-- 방어자에게 알리는 **총량 등급만** (GDD §4.3 정보 비대칭 — 보낸 사람·몬스터 종류는 감춘다). 대기열 기준.
+		return self:GradeForUnits(self:PendingUnits(villageId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GradeForUnits(integer n)
+		-- 마릿수 → 등급 문자열(0 이하 = ""). 경계는 GradeSmallMax / GradeMidMax 속성.
 		if n <= 0 then return "" end
-		if n <= 8 then return "소" end
-		if n <= 24 then return "중" end
+		if n <= self.GradeSmallMax then return "소" end
+		if n <= self.GradeMidMax then return "중" end
 		return "대"
 	end
 
@@ -191,14 +221,112 @@ script DispatchService extends Logic
 					self.orders[villageId] = {}
 					total = total + spawned
 					log("[Dispatch] release " .. villageId .. " orders=" .. tostring(#list) .. " spawned=" .. tostring(spawned) .. " phase=" .. tostring(phaseName))
-					if _LaneStateService ~= nil and spawned > 0 then
-						_LaneStateService:Toast(owner, "파병이 섞였습니다 — 이번 웨이브에 " .. tostring(spawned) .. "마리 합류")
-						_LaneStateService:Push(owner, "defense")
+					if spawned > 0 then
+						-- 🔴 방어자에게는 **섞였다는 사실 + 총량 등급만** (WO-031 묶음 1 · 예전엔 정확한 마릿수를 토스트로 알렸다).
+						if _LaneStateService ~= nil then
+							_LaneStateService:Toast(owner, "파병이 웨이브에 섞였습니다 — 총량 " .. self:GradeForUnits(spawned))
+							_LaneStateService:Push(owner, "defense")
+						end
+						self:RefreshBadge(villageId)
 					end
 				end
 			end
 		end
 		return total
+	end
+
+	-- ── 레인 HUD 배지 (WO-031 묶음 1 · GDD §4.13 "파병 섞임 경고를 항상 보이게") ──
+
+	@ExecSpace("ServerOnly")
+	method integer CountAliveDispatched(string villageId)
+		-- 그 마을 레인 3맵에 살아 있는 파병 개체 수. 파병 미니언 이름 = "Minion_<마을>_D<번호>"(MinionFlowService.SpawnDispatched · Advance 가 유지).
+		if _LaneFacilityService == nil then return 0 end
+		local prefix = "Minion_" .. villageId .. "_D"
+		local n = 0
+		local seen = {}
+		for _, role in ipairs({ "LANE2", "LANE1", "VILLAGE" }) do
+			local row = _LaneFacilityService:LaneRow(villageId, role)
+			-- 커닝 공사장처럼 두 역할이 한 맵이면 한 번만 센다.
+			if row ~= nil and not seen[row.mapName] then
+				seen[row.mapName] = true
+				local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
+				if isvalid(map) then
+					for _, child in pairs(map.Children) do
+						if isvalid(child) and string.sub(child.Name, 1, #prefix) == prefix then n = n + 1 end
+					end
+				end
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshBadge(string villageId)
+		-- 레인의 파병 개체 수 → 등급 → 바뀌었으면 주인 HUD 에 보낸다. 0 이 되면 배지를 끄고 목록에서 뺀다.
+		-- 🔴 **마지막으로 받은 사람**을 원장에 둔다(Codex 리뷰 2026-09-26): 주인이 탈락·바뀌면 OwnerOf 로는 옛 수신자를 못 찾아
+		--    그 사람 HUD 에 배지가 남고, 새 주인은 같은 등급이면 못 받는다.
+		if self.badge == nil then self.badge = {} end
+		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
+		local grade = ""
+		if owner ~= "" then grade = self:GradeForUnits(self:CountAliveDispatched(villageId)) end
+		local rec = self.badge[villageId]
+		local prevGrade = (rec ~= nil) and rec.grade or ""
+		local prevOwner = (rec ~= nil) and rec.owner or ""
+		if prevOwner ~= "" and prevOwner ~= owner then
+			-- 받던 사람이 바뀌었다 → 옛 수신자 배지를 끄고 새 주인은 처음부터 받는다.
+			if _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge("", prevOwner) end
+			log("[DispatchBadge] " .. villageId .. " receiver " .. prevOwner .. " -> " .. ((owner ~= "") and owner or "-") .. " (old off)")
+			prevGrade = ""
+		end
+		if grade ~= prevGrade then
+			if owner ~= "" and _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge(grade, owner) end
+			log("[DispatchBadge] " .. villageId .. " " .. ((prevGrade ~= "") and prevGrade or "-") .. " -> " .. ((grade ~= "") and grade or "off"))
+			if grade == "" and prevGrade ~= "" and owner ~= "" and _LaneStateService ~= nil then
+				_LaneStateService:Toast(owner, "레인의 파병 개체를 모두 막았습니다")
+			end
+		end
+		if grade == "" then
+			self.badge[villageId] = nil
+		else
+			self.badge[villageId] = { grade = grade, owner = owner }
+			self:EnsureBadgeTimer()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureBadgeTimer()
+		-- 배지가 켜진 마을이 있는 동안만 BadgeScanInterval 마다 다시 센다. 없으면 타이머를 멈춘다.
+		if self.badgeTimerId ~= 0 then return end
+		self.badgeTimerId = _TimerService:SetTimerRepeat(function() self:ScanBadges() end, self.BadgeScanInterval, self.BadgeScanInterval)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ScanBadges()
+		-- 켜진 배지들을 다시 센다(파병 개체가 죽거나 넥서스가 깨져 정리되면 꺼진다).
+		if self.badge == nil or next(self.badge) == nil then
+			if self.badgeTimerId ~= 0 then
+				_TimerService:ClearTimer(self.badgeTimerId)
+				self.badgeTimerId = 0
+			end
+			return
+		end
+		local ids = {}
+		for vid, _ in pairs(self.badge) do table.insert(ids, vid) end
+		for _, vid in ipairs(ids) do self:RefreshBadge(vid) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetBadges()
+		-- 매치 종료: 배지 원장을 비우고 마지막 수신자들 HUD 를 끈다.
+		if self.badge == nil then return end
+		for _, rec in pairs(self.badge) do
+			if rec ~= nil and rec.owner ~= nil and rec.owner ~= "" and _MatchClockUIController ~= nil then _MatchClockUIController:SetDispatchBadge("", rec.owner) end
+		end
+		self.badge = {}
+		if self.badgeTimerId ~= 0 then
+			_TimerService:ClearTimer(self.badgeTimerId)
+			self.badgeTimerId = 0
+		end
 	end
 
 end
