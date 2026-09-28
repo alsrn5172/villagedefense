@@ -44,3 +44,9 @@
 | 닷지 출발 이펙트가 **도착점**에 떴다(클라가 먼저 옮겨 서버의 위치가 이미 도착점) | 클라가 옮기기 전에 출발 좌표를 서버에 보낸다(`SkillMovement.ReportBlinkOrigin` · Server) → `ExecuteBlink` 가 `depart.atOrigin` 일 때 그 좌표에 출발 이펙트(`TakeBlinkOrigin` · 2초 안 · 없으면 예전처럼 지금 위치 + 경고). 위치·판정은 그대로 |
 | **세션 첫 시전만** 더블 샷 분홍 sprite 가 흰 공처럼(로드 전) · 스나이핑 VI 조준 클립이 ≈1s 늦게(명중 뒤) 떴다 | 입장 때 예열(`PrewarmCutscenesFor` · #116 의 cast/loopEnd 예열과 같은 자리 · 같은 방식): 스나이핑 aim · mob · impact · ball 에 `prewarm = true`(클립 · 보이지 않는 곳 x0.01), 더블 샷 `prewarmFrames = true` → 분홍 13장을 발밑 40 유닛 아래에서 `PlaySpriteSequence` 로 한 번. SK_A21 #Note 에 팩 확인 · 예열 추가 |
 | 닷지 착지가 "뛰는 것처럼" 보였다 — 표의 목적지(캐릭터 스폰 로케이션)가 로비에서 바닥보다 1.2 유닛 위라 도착 뒤 떨어졌다 | 사용자 결정(2026-09-29): 목적지 규칙은 그대로, **스폰 지점 바로 아래 첫 수평 발판**에 세운다(`SkillMovement.FindFloorBelow` · 아래로 `DodgeFloorSearch` 5 유닛 `RaycastAll` · `ResolveVertical` 과 같은 방식). 발판이 없으면 예전처럼 스폰 지점. 로그 `landing snapped y … -> …` |
+
+## 4차 — 사용자 눈 확인 Q · W · E (2026-09-29 · 영상이 기준 · 표의 로직·수치 · 아이템 외형은 그대로)
+
+| 무엇 | 어떻게 |
+|---|---|
+| Q 더블 샷 화살이 영상(2009 lv.25 · 19.30~19.47s)의 **평범한 나무 화살 2발**과 달리 파란 흰 빛 화살(`3ee73e25…` = 와일드 헌터 33001105 ball/0 · 60×20) | 라이브러리에서 영상과 가장 가까운 평범한 화살 `7081cb1f…`(skill/800028.img/80002808 ball/0 · 44×8 · 갈색 대 · 회색 깃 · 앞촉 방향 같음)로 교체. 두 발 · 높이 · 속도는 그대로. SK_A11 #Note 갱신. 비교 `archer-check/captures/Q2a_doubleshot_arrow_video_vs_ours.png` |
