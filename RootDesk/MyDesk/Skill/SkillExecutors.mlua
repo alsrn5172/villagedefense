@@ -754,7 +754,8 @@ script SkillExecutors extends Logic
                 --   크기·pivot 이 픽셀 단위로 같고(나머지 1프레임 = WZ _outlink 라 크기를 못 읽음 · origin x 같음) 지연 합 1830ms / 960ms 도 같다. KMS 359/360 의 5120011 엔 repeat/end 가 없다.
                 --   원작 재생 방식: repeat 을 처음엔 0~12 프레임까지 한 번(원반 → 방울이 생김) → repeatIdx 13 부터 13~20 반복 → 보호막이 끝나면 end.
                 --   → cast = repeat 0~12 한 번 · loop = repeat 13~20(startDelay 1.11s = 0~12 지연 합 뒤에 건다) · loopEnd = end. 원본 크기 · pivot = 캐릭터 발(원작 배치) · 좌우 대칭(noFlip).
-                --   크기: 방울 ≈ 1.5 × 1.5 유닛(가운데 발 위 ≈0.5) — 캐릭터(0.70)를 감싼다. 예전 = 제로 이뮨 배리어 101120109(pre 7aa944dc… · loop 19694b83… · end 224122b4… · x0.85 · +0.45).
+                --   크기: 방울 테두리 ≈ 캐릭터 키의 1.5배(2026-09-28 P5 Play 캡처 실측 · 가운데 발 위 ≈0.5) · 프레임은 글로우 포함 208~220 × 168~224 px.
+                --     배율 1.0 = 원본 크기 그대로(2026-09-28 사용자 결정 · "조금 크다" 는 제보를 보고 원본 크기 유지로 정함). 예전 = 제로 이뮨 배리어 101120109(pre 7aa944dc… · loop 19694b83… · end 224122b4… · x0.85 · +0.45).
                 cast = { ruid = "51d514ea697047ec8025de52a3b4c903", noFlip = true, startFrame = 0, endFrame = 12 },
                 loop = { ruid = "51d514ea697047ec8025de52a3b4c903", noFlip = true, startFrame = 13, endFrame = 20, startDelay = 1.11 },
                 -- prewarm(2026-09-28): 세션 첫 터짐의 ≈0.57s 빈틈(P5 Play) → 입장 때 예열(PrewarmCutscenesFor · loopEnd.prewarm).
@@ -2657,6 +2658,8 @@ script SkillExecutors extends Logic
         -- 모든 클라(서버 인스턴스는 건너뛴다 · GetAvatarRootEntity 는 ClientOnly): 그 유저 아바타 루트를 키 순서로 움직인다 —
         -- { 시전 뒤 초, 각도, 몸 가운데 추가 높이 } 사이를 구간마다 smoothstep 으로 잇고(각도에 facing 부호), Position 은 회전 중심 보정(centerY·sinθ, centerY·(1−cosθ)) + 높이.
         -- 마지막 키 시각에 원래 값으로 되돌린다. BackflipTickSeconds 마다 갱신. 섬머솔트 킥 = 원작 somersault 자세 순서(거꾸로 매달린 채 머묾 · 2026-09-28 사용자 결정 A).
+        -- 🔴 시각 = 실제 흐른 시간(_UtilLogic.ElapsedSeconds − 시작 · 2026-09-28 R-P9): 예전엔 타이머가 불릴 때마다 tick(0.02)을 더했는데 Play 에서 타이머가
+        --   초당 ≈29.4 번만 불려 0.68s 키가 ≈1.16s 로 늘어졌다(똑바로 +1.17). 이제 타이머 빈도와 무관하게 마지막 키 +0.68 에 끝나고, 끝은 마지막 키로 딱 맞춘다.
         -- 같은 유저의 이전 백덤블링이 아직 돌고 있으면(연타) 먼저 원위치로 되돌리고 새로 시작한다. 엔티티가 사라지면(맵 이동·퇴장) 타이머만 정리한다.
         if not self:IsClient() then return end
         if keys == nil or #keys < 2 then return end
@@ -2687,7 +2690,7 @@ script SkillExecutors extends Logic
         local isOwner = (isvalid(_UserService.LocalPlayer) and _UserService.LocalPlayer == player)
         local drift = driftX or 0
         if not isOwner or not isvalid(player.TransformComponent) then drift = 0 end
-        local state = { t = t, pos = basePos, rot = baseRot, timer = 0, elapsed = 0 }
+        local state = { t = t, pos = basePos, rot = baseRot, timer = 0, elapsed = 0, startAt = _UtilLogic.ElapsedSeconds }
         self.backflipClientState[uid] = state
         state.timer = _TimerService:SetTimerRepeat(function()
             if not isvalid(root) or not isvalid(t) then
@@ -2695,16 +2698,21 @@ script SkillExecutors extends Logic
                 if self.backflipClientState[uid] == state then self.backflipClientState[uid] = nil end
                 return
             end
-            state.elapsed = state.elapsed + tick
-            if state.elapsed < 0 then return end
-            local p = state.elapsed / seconds
-            -- 뒤로 밀림은 driftSeconds 동안만(영상: 뜸 → 멈춤 0.45s). 총 이동량은 drift 그대로.
+            -- 실제 흐른 시간(타이머 빈도와 무관 · 마지막 키에서 멈춘다).
+            local prevElapsed = state.elapsed
+            local e = _UtilLogic.ElapsedSeconds - state.startAt
+            if e < 0 then e = 0 end
+            if e > seconds then e = seconds end
+            state.elapsed = e
+            -- 뒤로 밀림은 driftSeconds 동안만(영상: 뜸 → 멈춤 0.45s). 이번 틱에 흐른 만큼만 옮겨 총 이동량이 drift 와 딱 같다.
             local ds = driftSeconds
             if ds == nil or ds <= 0 or ds > seconds then ds = seconds end
-            if drift ~= 0 and state.elapsed <= ds and isvalid(player.TransformComponent) then
-                player.TransformComponent:Translate(-facing * drift * (tick / ds), 0)
+            if drift ~= 0 and prevElapsed < ds and isvalid(player.TransformComponent) then
+                local moved = math.min(e, ds) - prevElapsed
+                if moved > 0 then player.TransformComponent:Translate(-facing * drift * (moved / ds), 0) end
             end
-            if p >= 1 then
+            if e >= seconds then
+                -- 마지막 키에 딱 맞춰 끝낸다(마지막 키 = 360° · 높이 0 = 원래 자세).
                 t.ZRotation = baseRot
                 t.Position = basePos
                 _TimerService:ClearTimer(state.timer)
