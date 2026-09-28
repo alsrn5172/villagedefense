@@ -1,0 +1,292 @@
+@Logic
+script CollectionService extends Logic
+
+	-- 계정 도감 (WO-031 묶음 4 · 계약서 A-2-25 CollectionReward · A-4 AccountCollection · GDD §4.12).
+	--   칸 = 일반 종(MapMonsters 에 나오는 MonsterId · 켜진 행) + 보스(BossInfo 켜진 행). 자이언트는 그 종 칸에 합친다(처치 수 +1 · 자이언트 수 +1).
+	--   처치 단계(CollectionReward)에 닿는 순간 계정 경험치를 **자동 지급 + 받은 단계 기록**(tm/te/tb) — 같은 단계는 두 번 안 준다.
+	--   처치 인정: 일반·자이언트 = 막타(MatchTallyService.OnMonsterKill · FarmReward 보상 귀속) · 보스 = 최다 피해 1명(BossCreditAllHitters=false · 사용자 2026-09-26) · 발록 = 선취 승자.
+	-- 기록 원장은 AccountRecordData.coll(로드 전이면 조용히 건너뛴다). 화면은 로비 계정 창(AccountRecordService → AccountRecordUIController).
+
+	-- 보스 도감 인정 (WO-031 §9-1 · **사용자 결정 2026-09-26 = 최다 피해 1명**): false = 최다 피해 1명(보스 보상·BossKillCount 와 같은 기준) · true = 쓰러질 때 피해를 준 참가자 전원.
+	property boolean BossCreditAllHitters = false
+
+	-- tiers[kind] = { { tier, kills, exp, name }, ... } Tier 오름차순
+	@HideFromInspector
+	property any tiers = nil
+
+	-- 일반 종 목록 { { id, name, level, icon }, ... } (레벨 → ID 순) · monSet[id] = 칸
+	@HideFromInspector
+	property any monList = nil
+
+	@HideFromInspector
+	property any monSet = nil
+
+	-- 보스 목록 · bossSet[id] = 칸
+	@HideFromInspector
+	property any bossList = nil
+
+	@HideFromInspector
+	property any bossSet = nil
+
+	method void OnBeginPlay()
+		-- 서버만 표를 읽는다.
+		if not self:IsServer() then return end
+		self:Load()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Load()
+		-- CollectionReward(없으면 WO-031 §4 초안값) · MapMonsters · BossInfo. 🔴 DataSet 행은 1-based.
+		self.tiers = {
+			MONSTER = { { tier = 1, kills = 1, exp = 5, name = "발견" }, { tier = 2, kills = 100, exp = 10, name = "숙련" }, { tier = 3, kills = 500, exp = 15, name = "정복" } },
+			ELITE = { { tier = 1, kills = 1, exp = 10, name = "자이언트" } },
+			BOSS = { { tier = 1, kills = 1, exp = 15, name = "발견" }, { tier = 2, kills = 5, exp = 15, name = "숙련" } },
+		}
+		local t = _DataService:GetTable("CollectionReward")
+		if t == nil then
+			log_warning("[Coll] CollectionReward dataset not found — 기본값 사용")
+		else
+			local loaded = {}
+			local n = 0
+			for i = 1, t:GetRowCount() do
+				local kind = t:GetCell(i, "Kind") or ""
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				if kind ~= "" and enabled then
+					if loaded[kind] == nil then loaded[kind] = {} end
+					table.insert(loaded[kind], {
+						tier = math.floor(tonumber(t:GetCell(i, "Tier")) or 0), kills = math.max(1, math.floor(tonumber(t:GetCell(i, "Kills")) or 1)),
+						exp = math.max(0, math.floor(tonumber(t:GetCell(i, "AccountExp")) or 0)), name = tostring(t:GetCell(i, "Name") or ""),
+					})
+					n = n + 1
+				end
+			end
+			for kind, list in pairs(loaded) do
+				table.sort(list, function(a, b) return a.tier < b.tier end)
+				self.tiers[kind] = list
+			end
+			log("[Coll] CollectionReward loaded: " .. tostring(n) .. " rows")
+		end
+		-- 일반 종 = MapMonsters 켜진 행의 MonsterId (중복 제거)
+		self.monList = {}
+		self.monSet = {}
+		local mm = _DataService:GetTable("MapMonsters")
+		if mm ~= nil then
+			for i = 1, mm:GetRowCount() do
+				local id = math.floor(tonumber(mm:GetCell(i, "MonsterId")) or 0)
+				local enabled = string.lower(tostring(mm:GetCell(i, "Enabled") or "true")) ~= "false"
+				local key = tostring(id)
+				if id > 0 and enabled and self.monSet[key] == nil then
+					local e = { id = key, name = self:NameOf(id), level = self:LevelOf(id), icon = self:IconOf(id) }
+					self.monSet[key] = e
+					table.insert(self.monList, e)
+				end
+			end
+		end
+		table.sort(self.monList, function(a, b)
+			if a.level ~= b.level then return a.level < b.level end
+			return a.id < b.id
+		end)
+		-- 보스 = BossInfo 켜진 행
+		self.bossList = {}
+		self.bossSet = {}
+		local bi = _DataService:GetTable("BossInfo")
+		if bi ~= nil then
+			for i = 1, bi:GetRowCount() do
+				local key = tostring(bi:GetCell(i, "BossId") or "")
+				local enabled = string.lower(tostring(bi:GetCell(i, "Enabled") or "true")) ~= "false"
+				if key ~= "" and enabled and self.bossSet[key] == nil then
+					local e = { id = key, name = self:Clean(tostring(bi:GetCell(i, "Name") or key)), level = math.floor(tonumber(bi:GetCell(i, "Level")) or 0), icon = self:IconOf(tonumber(key) or 0) }
+					self.bossSet[key] = e
+					table.insert(self.bossList, e)
+				end
+			end
+		end
+		table.sort(self.bossList, function(a, b)
+			if a.level ~= b.level then return a.level < b.level end
+			return a.id < b.id
+		end)
+		log("[Coll] entries mon=" .. tostring(#self.monList) .. " boss=" .. tostring(#self.bossList) .. " bossCreditAll=" .. tostring(self.BossCreditAllHitters))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Clean(string s)
+		-- 뷰 구분자 제거.
+		if s == nil then return "" end
+		local out, _n = string.gsub(s, "[;|=]", " ")
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method string NameOf(integer id)
+		-- 도감 이름(MonsterCatalog · 없으면 ID).
+		local nm = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(id) or nil
+		if nm == nil or nm == "" then nm = tostring(id) end
+		return self:Clean(nm)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer LevelOf(integer id)
+		-- 몬스터 레벨(정렬용).
+		local lv = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetLevel(id) or 0
+		return math.floor(tonumber(lv) or 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string IconOf(integer id)
+		-- 썸네일 RUID(MonsterInfo.IconRUID · 없으면 "").
+		local r = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetIconRuid(id) or ""
+		if r == nil then return "" end
+		return r
+	end
+
+	-- ── 처치 → 도감 ─────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void OnMonsterKill(string userId, integer monsterId, string eliteId)
+		-- 일반 사냥 몹 처치 1건(막타 · MatchTallyService 가 넘긴다). 도감 칸이 아닌 몹은 무시.
+		if self.monSet == nil or _AccountRecordData == nil then return end
+		local key = tostring(monsterId)
+		local def = self.monSet[key]
+		if def == nil then return end
+		local rec = _AccountRecordData:Get(userId, "coll")
+		if rec == nil then return end   -- 로드 전 · 로드 실패 — 쓰지 않는다
+		local e = rec.mon[key]
+		if e == nil then
+			e = { k = 0, e = 0, tm = 0, te = 0 }
+			rec.mon[key] = e
+		end
+		e.k = e.k + 1
+		local isElite = (eliteId ~= nil and eliteId ~= "")
+		if isElite then e.e = e.e + 1 end
+		local names = {}
+		local gained = self:ClaimTiers(userId, "MONSTER", e, "k", "tm", names)
+		if isElite then gained = gained + self:ClaimTiers(userId, "ELITE", e, "e", "te", names) end
+		_AccountRecordData:Touch(userId, "coll")
+		if gained > 0 then self:Announce(userId, def.name, names, gained) end
+		self:AfterChange(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossKill(string bossId, string topUserId, any dmg)
+		-- 보스 1마리 사망. 인정 = BossCreditAllHitters 면 피해를 준 참가자 전원(dmg · 매치 참가자만) · 아니면 최다 피해 1명.
+		if self.bossSet == nil then return end
+		local key = tostring(bossId)
+		if self.bossSet[key] == nil then return end
+		-- 🔴 인정은 **지금 매치 참가자만**(Codex 리뷰 2026-09-26 — 대체 경로·원장 없는 경우도). 매치 원장이 없으면 아무도 인정하지 않는다.
+		if _MatchSessionLogic == nil then return end
+		local credited = {}
+		if self.BossCreditAllHitters and dmg ~= nil then
+			for uid, d in pairs(dmg) do
+				if (tonumber(d) or 0) > 0 and _MatchSessionLogic:IsParticipant(uid) then table.insert(credited, uid) end
+			end
+		end
+		if #credited == 0 and topUserId ~= nil and topUserId ~= "" and _MatchSessionLogic:IsParticipant(topUserId) then table.insert(credited, topUserId) end
+		for _, uid in ipairs(credited) do self:CreditBoss(uid, key) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CreditBoss(string userId, string bossKey)
+		-- 보스 칸 처치 +1 → 단계 보상.
+		if _AccountRecordData == nil then return end
+		local rec = _AccountRecordData:Get(userId, "coll")
+		if rec == nil then return end
+		local e = rec.boss[bossKey]
+		if e == nil then
+			e = { k = 0, tb = 0 }
+			rec.boss[bossKey] = e
+		end
+		e.k = e.k + 1
+		local names = {}
+		local gained = self:ClaimTiers(userId, "BOSS", e, "k", "tb", names)
+		_AccountRecordData:Touch(userId, "coll")
+		log("[Coll] boss " .. bossKey .. " +1 k=" .. tostring(e.k) .. " tb=" .. tostring(e.tb) .. " (" .. userId .. ")")
+		if gained > 0 then self:Announce(userId, self.bossSet[bossKey].name, names, gained) end
+		self:AfterChange(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer ClaimTiers(string userId, string kind, any e, string countField, string tierField, table names)
+		-- 닿은 단계 중 아직 안 받은 것 전부 지급(한 번에 여러 단계를 넘을 수 있다) · 받은 단계 이름은 names 에 붙인다. 반환 = 준 경험치 합.
+		local gained = 0
+		local list = (self.tiers ~= nil) and self.tiers[kind] or nil
+		if list == nil then return 0 end
+		for _, t in ipairs(list) do
+			if t.tier > (e[tierField] or 0) and (e[countField] or 0) >= t.kills then
+				e[tierField] = t.tier
+				gained = gained + t.exp
+				table.insert(names, t.name)
+				if t.exp > 0 and _AccountLevelService ~= nil then _AccountLevelService:AddExp(userId, t.exp, "COLLECTION") end
+				log("[Coll] tier " .. kind .. " " .. t.name .. " (T" .. tostring(t.tier) .. " at " .. tostring(e[countField]) .. ") exp+" .. tostring(t.exp) .. " (" .. userId .. ")")
+			end
+		end
+		return gained
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Announce(string userId, string entryName, any names, integer exp)
+		-- 토스트 한 줄: "도감 · 달팽이 발견 — 계정 경험치 +5".
+		if _UIToast == nil then return end
+		_UIToast:ShowMessage("도감 · " .. entryName .. " " .. table.concat(names, "·") .. " — 계정 경험치 +" .. tostring(exp), userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AfterChange(string userId)
+		-- 도감이 바뀐 뒤 — 도감에서 도출하는 업적(묶음 5)이 여기서 다시 센다.
+	end
+
+	-- ── 조회 ────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method integer FoundMonsters(string userId)
+		-- 발견한 일반 종 수(도감 목록 안).
+		local rec = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "coll") or nil
+		if rec == nil or self.monList == nil then return 0 end
+		local n = 0
+		for _, d in ipairs(self.monList) do
+			local e = rec.mon[d.id]
+			if e ~= nil and (e.k or 0) >= 1 then n = n + 1 end
+		end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer FoundBosses(string userId)
+		-- 발견한 보스 수.
+		local rec = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "coll") or nil
+		if rec == nil or self.bossList == nil then return 0 end
+		local n = 0
+		for _, d in ipairs(self.bossList) do
+			local e = rec.boss[d.id]
+			if e ~= nil and (e.k or 0) >= 1 then n = n + 1 end
+		end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildView(string userId)
+		-- 로비 계정 창 도감 탭(행 ";" · 칸 "|"):
+		--   SUM|발견종|전체종|발견보스|전체보스|총처치 · T|종류|단계|처치|경험치|이름
+		--   E|M|id|이름|레벨|아이콘|처치|자이언트|받은단계|받은자이언트단계 · E|B|id|이름|레벨|아이콘|처치|0|받은단계|0 · 로드 전 = LOADING
+		local rec = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "coll") or nil
+		if rec == nil or self.monList == nil then return "LOADING" end
+		local rows = {}
+		local total = 0
+		for _, e in pairs(rec.mon) do total = total + (e.k or 0) end
+		table.insert(rows, table.concat({ "SUM", tostring(self:FoundMonsters(userId)), tostring(#self.monList), tostring(self:FoundBosses(userId)), tostring(#self.bossList), tostring(total) }, "|"))
+		for kind, list in pairs(self.tiers or {}) do
+			for _, t in ipairs(list) do
+				table.insert(rows, table.concat({ "T", kind, tostring(t.tier), tostring(t.kills), tostring(t.exp), self:Clean(t.name) }, "|"))
+			end
+		end
+		for _, d in ipairs(self.monList) do
+			local e = rec.mon[d.id] or {}
+			table.insert(rows, table.concat({ "E", "M", d.id, d.name, tostring(d.level), d.icon, tostring(e.k or 0), tostring(e.e or 0), tostring(e.tm or 0), tostring(e.te or 0) }, "|"))
+		end
+		for _, d in ipairs(self.bossList) do
+			local e = rec.boss[d.id] or {}
+			table.insert(rows, table.concat({ "E", "B", d.id, d.name, tostring(d.level), d.icon, tostring(e.k or 0), "0", tostring(e.tb or 0), "0" }, "|"))
+		end
+		return table.concat(rows, ";")
+	end
+
+end
