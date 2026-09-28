@@ -19,6 +19,14 @@ script SkillDatabase extends Logic
 
     property boolean isJobsLoaded = false
 
+    -- 스킬 모션 세트(계약서 A-2-23 · Skill/SkillMotionSet.csv · 2026-09-24 #83). 키 "<SkillId>|<WeaponType>" →
+    -- { mode = "FIXED"|"RANDOM"|"SEQUENCE", rows = { {seq, core, parts, rate, hitTime, lockTime}, ... seq 오름차순 } }. Enabled=false 행은 뺀다.
+    property string motionSetDatasetName = "SkillMotionSet"
+
+    property table motionSets = {}
+
+    property boolean isMotionSetsLoaded = false
+
     method void OnBeginPlay()
         -- Loads every SkillInfo + JobTier row once, into skillsById / jobsByKey.
         self:EnsureLoaded()
@@ -132,6 +140,81 @@ script SkillDatabase extends Logic
         log("SkillDatabase: resolved dataset '" .. self.jobDatasetName .. "', loaded " .. tostring(count) .. " rows")
     end
 
+    method void EnsureMotionSetsLoaded()
+        -- 모션 세트 표를 1회 읽는다(양쪽 인스턴스 — 서버는 모션 선택 · 타격 시점, 클라는 시전 락 길이에 쓴다).
+        if not self.isMotionSetsLoaded then self:LoadMotionSets() end
+    end
+
+    method void LoadMotionSets()
+        -- SkillMotionSet(A-2-23) 을 세트별로 묶는다. 한 세트의 Mode 가 행마다 다르면 경고하고 첫 행 값을 쓴다(계약서 규칙).
+        self.isMotionSetsLoaded = true
+        self.motionSets = {}
+        local ds = _DataService:GetTable(self.motionSetDatasetName)
+        if ds == nil then
+            log_warning("SkillDatabase: dataset '" .. self.motionSetDatasetName .. "' was not found — skill motions fall back to WeaponMotion")
+            return
+        end
+        local count = ds:GetRowCount()
+        local used = 0
+        for i = 1, count do
+            local on = string.lower(tostring(ds:GetCell(i, "Enabled") or "true")) ~= "false"
+            local skillId = ds:GetCell(i, "SkillId") or ""
+            local wt = string.upper(ds:GetCell(i, "WeaponType") or "")
+            local core = ds:GetCell(i, "CoreAction") or ""
+            if on and skillId ~= "" and wt ~= "" and core ~= "" then
+                local key = skillId .. "|" .. wt
+                local mode = string.upper(ds:GetCell(i, "Mode") or "FIXED")
+                local set = self.motionSets[key]
+                if set == nil then
+                    set = { mode = mode, rows = {} }
+                    self.motionSets[key] = set
+                elseif set.mode ~= mode then
+                    log_warning("SkillDatabase: motion set " .. key .. " mixes Mode " .. set.mode .. "/" .. mode .. " — using " .. set.mode)
+                end
+                local parts = ds:GetCell(i, "PartsAction") or ""
+                if parts == "" then parts = core end
+                table.insert(set.rows, {
+                    seq = self:ParseNumber(key, "seq", ds:GetCell(i, "Seq")),
+                    core = core,
+                    parts = parts,
+                    rate = self:ParseNumberOr(key, "play_rate", ds:GetCell(i, "PlayRate"), 1),
+                    hitTime = self:ParseNumber(key, "hit_time", ds:GetCell(i, "HitTime")),
+                    lockTime = self:ParseNumber(key, "lock_time", ds:GetCell(i, "LockTime")),
+                })
+                used = used + 1
+            end
+        end
+        local sets = 0
+        for _, set in pairs(self.motionSets) do
+            table.sort(set.rows, function(a, b) return a.seq < b.seq end)
+            sets = sets + 1
+        end
+        log("SkillDatabase: resolved dataset '" .. self.motionSetDatasetName .. "', loaded " .. tostring(used) .. "/" .. tostring(count) .. " rows in " .. tostring(sets) .. " sets")
+    end
+
+    method any GetMotionSet(string skillId, string weaponType)
+        -- (스킬, 무기 종류) 세트 또는 nil.
+        self:EnsureMotionSetsLoaded()
+        if skillId == nil or weaponType == nil then return nil end
+        return self.motionSets[skillId .. "|" .. string.upper(weaponType)]
+    end
+
+    method number MotionSetLockSeconds(string skillId)
+        -- 그 스킬의 모든 세트 · 모든 행 중 가장 긴 LockTime(0 = 세트 없음 · 값 없음). 클라 예측 락과 서버 락이 같은 값을 쓰게
+        -- (무작위로 고른 모션은 서버만 알아서 클라는 행별 값을 쓸 수 없다) SkillCaster.GetCastLockSeconds 가 부른다.
+        self:EnsureMotionSetsLoaded()
+        local best = 0
+        local prefix = skillId .. "|"
+        for key, set in pairs(self.motionSets) do
+            if string.sub(key, 1, #prefix) == prefix then
+                for _, r in ipairs(set.rows) do
+                    if r.lockTime > best then best = r.lockTime end
+                end
+            end
+        end
+        return best
+    end
+
     method string JobKey(string jobLine, number tier)
         -- Composite key for jobsByKey - job_line alone is not unique now that every line has
         -- 3 tier rows.
@@ -209,18 +292,31 @@ script SkillDatabase extends Logic
     end
 
     method number GetAttackPower(string userId)
-        -- The ONLY place base_attack is ever read (R-equivalent of the old single-source rule
-        -- for base_effect). Resolves userId's current job_line/tier and looks up base_attack
-        -- for that (job_line, tier) pair in JobTier.
+        -- The single source of the attack power that skill damage is multiplied by; DamageAt
+        -- is its only consumer. Two sources, tried in this order:
+        --   1. _StatService:GetAttackPower(userId) - the real ledger (weapon + enhance + buff).
+        --   2. JobTier.base_attack for the user's (job_line, tier) - the pre-stat fallback,
+        --      still a flat 75 on every row. Also the ONLY place base_attack is ever read.
+        -- Returns 0 only when BOTH miss: the ledger gave 0 (client side, or the account is not
+        -- loaded yet) AND no JobTier row matches the pair. That last case logs a warning.
         --
-        -- NOTE: PlayerSkillState does not yet expose a per-user job_line/tier accessor (its
-        -- jobId property is a single legacy string like "MAGE1", and it is not keyed by
-        -- userId at all - see the migration report). GetJobLine/GetTier below are called
-        -- speculatively against that not-yet-existing API; until it's added this always logs
-        -- a warning and returns 0.
+        -- PlayerSkillState DOES key job/tier by userId now (GetJobId/GetTier below). The older
+        -- note here - "speculative calls against a not-yet-existing API, always returns 0" -
+        -- described the pre-migration state and no longer applies.
         self:EnsureJobsLoaded()
 
-        -- 서버 전용 경로(DamageAt ← SkillAttack/SkillProjectile.CalcDamage). PlayerSkillState 의 userId 키 원장을 읽는다.
+        -- 1순위: A 의 최종 총공격력(무기 + 강화 + 버프 · Stat/StatService.mlua:363). 이걸 읽어야 스킬 피해가
+        -- 장비·강화를 탄다 (A 요청 #40 comment 5794751478 · B 수락 5794891849 · WO-029 §3).
+        --   StatService.users 는 ServerOnly 로만 채워지므로(EnsureUser :92) 클라에서 불리면 0 이 온다(:365~367).
+        --   계정·스탯이 아직 안 올라온 시점에도 0 이다 → 둘 다 아래 JobTier 폴백으로 내려간다.
+        if _StatService ~= nil then
+            local atk = _StatService:GetAttackPower(userId) or 0
+            if atk > 0 then
+                return atk
+            end
+        end
+
+        -- 폴백: JobTier.BaseAttack. 서버 전용 경로(DamageAt ← SkillAttack/SkillProjectile.CalcDamage). PlayerSkillState 의 userId 키 원장을 읽는다.
         local jobLine = _PlayerSkillState:GetJobId(userId)
         local tier = _PlayerSkillState:GetTier(userId)
         local job = self.jobsByKey[self:JobKey(jobLine, tier)]

@@ -32,11 +32,95 @@ script MatchTallyService extends Logic
 	@HideFromInspector
 	property any onceKeys = nil
 
+	-- 🧪 5레인 부하 계측 (WO-031 묶음 7 · Maker Play 전용): StartLoadProbe(초) 동안 LoadLogInterval 마다 프레임·개체 수 로그 "[Load]".
+	property number LoadLogInterval = 5.0
+
+	@HideFromInspector
+	property number probeLeft = 0
+
+	@HideFromInspector
+	property number probeAcc = 0
+
+	@HideFromInspector
+	property integer probeFrames = 0
+
+	@HideFromInspector
+	property number probeMaxDt = 0
+
 	method void OnBeginPlay()
 		-- 서버만 원장.
 		if not self:IsServer() then return end
 		self:ResetForMatch()
 		self:LoadGrowthDef()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartLoadProbe(number seconds)
+		-- 🧪 부하 계측 시작(Maker Play 전용 · execute_script 로 부른다). 5마을 점유·TEST 웨이브는 호출하는 쪽이 만든다(변경 기록 레시피).
+		if not Environment:IsMakerPlay() then return end
+		self.probeLeft = math.max(1, seconds)
+		self.probeAcc = 0
+		self.probeFrames = 0
+		self.probeMaxDt = 0
+		log("[Load] probe start " .. tostring(seconds) .. "s interval=" .. tostring(self.LoadLogInterval))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 부하 계측 중일 때만 프레임을 센다(평소엔 한 줄 비교뿐).
+		if self.probeLeft <= 0 then return end
+		self.probeLeft = self.probeLeft - delta
+		self.probeAcc = self.probeAcc + delta
+		self.probeFrames = self.probeFrames + 1
+		if delta > self.probeMaxDt then self.probeMaxDt = delta end
+		if self.probeAcc >= self.LoadLogInterval or self.probeLeft <= 0 then
+			self:LogLoad()
+			self.probeAcc = 0
+			self.probeFrames = 0
+			self.probeMaxDt = 0
+			if self.probeLeft <= 0 then log("[Load] probe end") end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogLoad()
+		-- 한 줄: 서버 fps · 가장 긴 프레임 · 마을별 레인 미니언/수비대/파병 개체 · 파병 대기 마릿수.
+		local fps = (self.probeAcc > 0) and (self.probeFrames / self.probeAcc) or 0
+		local parts = {}
+		local totalMin, totalDef = 0, 0
+		if _LaneStateService ~= nil and _LaneStateService.villages ~= nil and _LaneFacilityService ~= nil then
+			for _, vv in ipairs(_LaneStateService.villages) do
+				local minions, defenders, dispatched = 0, 0, 0
+				local seen = {}
+				for _, role in ipairs({ "LANE2", "LANE1", "VILLAGE" }) do
+					local row = _LaneFacilityService:LaneRow(vv.id, role)
+					if row ~= nil and not seen[row.mapName] then
+						seen[row.mapName] = true
+						local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
+						if isvalid(map) then
+							local mp = "Minion_" .. vv.id .. "_"
+							local dp = "Defender_" .. vv.id .. "_"
+							for _, child in pairs(map.Children) do
+								if isvalid(child) then
+									local nm = child.Name
+									if string.sub(nm, 1, #mp) == mp then
+										minions = minions + 1
+										if string.sub(nm, #mp + 1, #mp + 1) == "D" then dispatched = dispatched + 1 end
+									elseif string.sub(nm, 1, #dp) == dp then
+										defenders = defenders + 1
+									end
+								end
+							end
+						end
+					end
+				end
+				totalMin = totalMin + minions
+				totalDef = totalDef + defenders
+				local pending = (_DispatchService ~= nil) and _DispatchService:PendingUnits(vv.id) or 0
+				table.insert(parts, vv.id .. "=" .. tostring(minions) .. "m/" .. tostring(defenders) .. "d/" .. tostring(dispatched) .. "x/" .. tostring(pending) .. "q")
+			end
+		end
+		log(string.format("[Load] fps=%.1f maxDt=%.3f minions=%d defenders=%d ", fps, self.probeMaxDt, totalMin, totalDef) .. table.concat(parts, " "))
 	end
 
 	@ExecSpace("ServerOnly")

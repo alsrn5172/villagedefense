@@ -630,7 +630,7 @@
 #### 공식 패키지 혼합 정책
 
 - 영구 계정 필드는 공식 [`player-data-package`](https://github.com/MSW-Git/MSWPackages/blob/main/player-data-package/README.md) 코어와 저장 키 충돌을 조사한 뒤 어댑터 뒤에 통합한다.
-- ~~업적은 공식 `quest-achievement-package` 코어를 같은 저장 진입점 뒤에서 사용한다.~~ → **업적은 직접 구현한다**(2026-09-25 정정). 그 패키지는 자체 `PlayerDBManager`·`PlayerAccount` 컴포넌트와 자체 저장을 들고 와 우리 단일 저장 창구와 이름·저장이 충돌한다. 업적 표 = `AchievementConfig` · 저장 키 = `AccountAchievement`(계약 A-2-23 · A-4).
+- ~~업적은 공식 `quest-achievement-package` 코어를 같은 저장 진입점 뒤에서 사용한다.~~ → **업적은 직접 구현한다**(2026-09-25 정정). 그 패키지는 자체 `PlayerDBManager`·`PlayerAccount` 컴포넌트와 자체 저장을 들고 와 우리 단일 저장 창구와 이름·저장이 충돌한다. 업적 표 = `AchievementConfig` · 저장 키 = `AccountAchievement`(계약 A-2-28 · A-4).
 - 공식 상점·인벤토리·재화 패키지는 영구 저장과 WorldShop 전제가 강하므로 M1 매치 전용 경제에는 그대로 사용하지 않는다.
 - 도감은 `MonsterCatalog` ID 를 키로 쓰는 전용 데이터로 구현한다 — 프로필과 **다른 저장 키** `AccountCollection`(자주 바뀌어 바이트를 분리 · 계약 A-4). `collections-package` 는 자료구조 모음이라 해당 없음.
 - 패키지 샘플 UI·관리자 도구는 가져오지 않으며, 영구 저장 진입점은 하나의 `PlayerDBManager`로 통합한다.

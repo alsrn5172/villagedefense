@@ -6,7 +6,7 @@ M1 마무리(기록 · 파병 · 통합 정리 · 허브 WO-031)의 **등록 PR*
 
 - `Docs/스키마-계약.md`
   - §1 등록서 "기록 · 칭호" 8항목(8번 전부 A 소유 · B 협의 없음) + 등록된 시스템 표 1행
-  - 새 표 4: A-2-23 `AchievementConfig`(A-3 예약 해소) · A-2-24 `TitleInfo` · A-2-25 `CollectionReward` · A-2-26 `GrowthPoint` — 파일은 쓰는 묶음(2 · 4 · 5)에서 생성
+  - 새 표 4: A-2-23 `AchievementConfig`(A-3 예약 해소 · 머지 때 A-2-28 로 옮김 — B `SkillMotionSet` 이 A-2-23 으로 먼저 머지) · A-2-24 `TitleInfo` · A-2-25 `CollectionReward` · A-2-26 `GrowthPoint` — 파일은 쓰는 묶음(2 · 4 · 5)에서 생성
   - §0-2 열거값 `AchievementCondType` `CollectionKind` `GrowthActionType` `MatchOutcome` 신설 · `SourceType += COLLECTION`
   - §0-5 `AccountProfile.SchemaVersion` 4 예고(`account_titles` · `account_title`)
   - A-4 `PublicPlayerSummary += TitleName` · 계정 저장 레코드 3종(`AccountCollection` · `AccountAchievement` · `MatchHistory`) 모양

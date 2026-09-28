@@ -144,6 +144,8 @@ const CANONICAL = {
   TitleInfo: "TitleId,Name,Desc,SortOrder,Enabled,#Note",
   CollectionReward: "Kind,Tier,Kills,AccountExp,Name,Enabled,#Note",
   GrowthPoint: "ActionType,Points,Enabled,#Note",
+  // 접속 외형 선택 (2026-09-26 · a/avatar-look-select · WO-032 · A-2-27)
+  AvatarLook: "LookId,Hair,Face,Body,Cap,Cape,Coat,Longcoat,Pants,Shoes,Glove,OneHandWeapon,TwoHandWeapon,SubWeapon,#Note",
 
   // 스킬·전직 — B 등록서(계약서 §1 · A-2-16 · b/skill-register). 파일은 feature/skill 에서 생성
   SkillInfo:
@@ -153,6 +155,8 @@ const CANONICAL = {
     "TertiaryEffect,TertiaryPerLevel,RecastMpCostMul,#Note",
   JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
   JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
+  // 스킬 모션 세트 — B 등록서(계약서 §1 · A-2-23 · 2026-09-24 · PR #83). Skill/ 하위 폴더라 이름에 경로를 붙인다(readCsv 가 path.join).
+  "Skill/SkillMotionSet": "SkillId,WeaponType,Seq,Mode,CoreAction,PartsAction,PlayRate,HitTime,LockTime,Enabled,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -268,10 +272,12 @@ const PK = {
   TitleInfo: ["TitleId"],
   CollectionReward: ["Kind", "Tier"],
   GrowthPoint: ["ActionType"],
+  AvatarLook: ["LookId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
   JobTier: ["JobId", "Tier"],
+  "Skill/SkillMotionSet": ["SkillId", "WeaponType", "Seq"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);
