@@ -42,3 +42,4 @@
 | 무엇 | 어떻게 |
 |---|---|
 | 닷지 출발 이펙트가 **도착점**에 떴다(클라가 먼저 옮겨 서버의 위치가 이미 도착점) | 클라가 옮기기 전에 출발 좌표를 서버에 보낸다(`SkillMovement.ReportBlinkOrigin` · Server) → `ExecuteBlink` 가 `depart.atOrigin` 일 때 그 좌표에 출발 이펙트(`TakeBlinkOrigin` · 2초 안 · 없으면 예전처럼 지금 위치 + 경고). 위치·판정은 그대로 |
+| **세션 첫 시전만** 더블 샷 분홍 sprite 가 흰 공처럼(로드 전) · 스나이핑 VI 조준 클립이 ≈1s 늦게(명중 뒤) 떴다 | 입장 때 예열(`PrewarmCutscenesFor` · #116 의 cast/loopEnd 예열과 같은 자리 · 같은 방식): 스나이핑 aim · mob · impact · ball 에 `prewarm = true`(클립 · 보이지 않는 곳 x0.01), 더블 샷 `prewarmFrames = true` → 분홍 13장을 발밑 40 유닛 아래에서 `PlaySpriteSequence` 로 한 번. SK_A21 #Note 에 팩 확인 · 예열 추가 |
