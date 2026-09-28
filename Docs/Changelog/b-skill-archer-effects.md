@@ -32,3 +32,4 @@
 | 05 | 대마법(SK_M31) 툴팁 "지속 2초" → **"충전 2초 뒤 발동"** (`SkillWindowLogic.DurationIsDelayLabels` · CSV Duration 2 = 충전) |
 | 08 | 포커스(SK_A12) 아이콘 = **포커스 온 `322.img/3220021`** `ae9c846d…` (예전 = 스나이핑-보스 킬러 아이콘) · #Note 같이 |
 | 02 | 화살 출발 높이 발 + 0.5 → **더블 샷 0.28 · 스나이핑 0.25** (`effectOverrides.SK_A11/SK_A21.spawn.offsetY` · 영상 실측) |
+| 07 | 더블 샷 두 발 **함께 출발**(0.12s 간격 → 0 · 둘째 발 0.04 아래 · `SkillAttack.VolleyTimingOverrides`) · 럭키 세븐 등은 그대로 |
