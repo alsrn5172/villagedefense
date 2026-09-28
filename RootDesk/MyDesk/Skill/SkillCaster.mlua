@@ -91,6 +91,9 @@ script SkillCaster extends Logic
     -- 서버 전용 상태: userId → 이 시각(ServerElapsedSeconds)까지 재시전 거절
     property table castLockUntil = {}
 
+    -- 맨손 거절 토스트(#40 5813570100 · RequestCast 게이트 4-2). 기본 공격(PlayerAttack)도 같은 문구를 쓴다.
+    property string UnarmedToast = "무기를 장착해야 공격할 수 있습니다"
+
     method void OnBeginPlay()
         -- 양쪽 인스턴스 모두. 스킬별 락 길이 (초).
         self.castLockOverrides = {
@@ -101,7 +104,7 @@ script SkillCaster extends Logic
             SK_M22 = 0.6,
             SK_M31 = 3.5,   -- 2026-09-10: 충전 2s(CSV Duration) + 연쇄 폭발 ≈1.5s
             -- b/skill-warrior: 파워 스트라이크(한 번 휘두르기) · 하이퍼 바디/도발(버프 모션) · 불굴의 진(컷신 포즈 — 무적 8초는 버프가 따로 센다).
-            SK_W11 = 1.2,   -- 파워 스트라이크 2단 콤보(2026-09-13 원작 영상): 섬광+자세 → 내려찍기(0.2 · 잔상+1타 0.45) → 찌르기(0.75 · 2타 0.85 · 잔상 0.95). SkillExecutors.ExecutePowerStrikeCombo
+            SK_W11 = 0.8,   -- 파워 스트라이크 1타(#83) **폴백값** = SkillMotionSet.LockTime 과 같은 값(휘두르기 6종 클립 끝 0.80s · 2026-09-25 Play 실측 · 둘이 갈라지지 않게). 정상 경로는 SkillMotionSet.LockTime(GetCastLockSeconds). 예전 잠정 0.6 · 2단 콤보 1.2
             SK_W21 = 0.6,
             SK_W22 = 0.6,
             SK_W31 = 1.5,
@@ -167,6 +170,28 @@ script SkillCaster extends Logic
         return skill ~= nil and skill.behavior == "BLINK"
     end
 
+    method boolean IsDamagingCast(table skill, boolean isRecast)
+        -- 피해를 주는 시전인가(맨손 거절 게이트 4-2 · #40 5813570100). 버프 · 이동 · 도발 · 패시브는 false.
+        --   MELEE_ARC · PROJECTILE · AOE          → true
+        --   ORIGIN                                → EffectUnit 이 ATK_PCT/STACK_PCT 인 궁만(불굴의 진 SK_W31 = SEC 버프 → false · SkillExecutors 의 ORIGIN 규칙과 같다)
+        --   재시전(에너지 차지 SK_P21 변신 중 주먹) → true — 행은 BUFF_SELF 지만 재시전은 공격이다
+        if skill == nil then return false end
+        if isRecast then return true end
+        local b = skill.behavior
+        if b == "MELEE_ARC" or b == "PROJECTILE" or b == "AOE" then return true end
+        if b == "ORIGIN" then return skill.effectUnit == "ATK_PCT" or skill.effectUnit == "STACK_PCT" end
+        return false
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean HasWeapon(string userId)
+        -- 무기 슬롯에 장착한 아이템이 있는가 — A 의 EquipService.EquippedItemId(:249 · 호출만). 장비 서비스가 없으면(테스트 월드) 막지 않는다.
+        if _EquipService == nil then return true end
+        local e = _EquipService:EnsureUser(userId)
+        if e == nil then return false end
+        return _EquipService:EquippedItemId(userId, e, "WEAPON") ~= ""
+    end
+
     method number GetUltimateInvulnMul(string skillId)
         -- 궁 시전 무적 창 배율(컷신 길이 × 이 값 · 2026-09-13 b/skill-pirate-motion). 기본 1 = 컷신 내내 피격 무시.
         -- 불굴의 진 SK_W31 = 0: 전사는 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 아이언 바디 반사 유지)로 버틴다 — "전사는 컷신 뒤 8초 HP 100% · 무적 시간 절반" 요청.
@@ -179,6 +204,11 @@ script SkillCaster extends Logic
         -- 캐시만 읽는다 — 여기서 클립을 로드하지 않는다(블로킹이라 시전이 끊긴다 · WarmClipLockCache 참조).
         -- 캐시에 없거나 시작할 때 측정에 실패했으면 castLockOverrides → DefaultCastLockSeconds 로 떨어진다.
         local v = self.clipLockCache[skillId]
+        -- 모션 세트(SkillMotionSet · A-2-23)에 실측 LockTime 이 있으면 그 스킬 세트의 최댓값(클라 · 서버 같은 값).
+        if v == nil and _SkillDatabase ~= nil then
+            local m = _SkillDatabase:MotionSetLockSeconds(skillId)
+            if m > 0 then v = m end
+        end
         if v == nil then v = self.castLockOverrides[skillId] end
         if v == nil then v = self.DefaultCastLockSeconds end
         if v < 0 then v = 0 end
@@ -476,6 +506,14 @@ script SkillCaster extends Logic
         local isMove = self:IsMovementSkill(skill)
         if lockedUntil > now and not isMove then
             self:CastResult(skillId, false, "casting (" .. tostring(math.floor((lockedUntil - now) * 100) / 100) .. "s left)", 0, castId, uid)
+            return
+        end
+        -- 4-2. 맨손 거절(#40 5813570100 · A 결정 · 사용자 확정 2026-09-24): 무기가 없으면 피해를 주는 스킬은 거절 + 토스트. 버프 · 이동 스킬은 해당 없음.
+        --      MP(6) · 쿨다운 · 사용 횟수 · 영혼석 앞이라 거절된 시전은 아무것도 소모하지 않는다.
+        if self:IsDamagingCast(skill, isRecast) and not self:HasWeapon(uid) then
+            log("[Skill] unarmed — " .. skillId .. " refused (" .. uid .. ")")
+            if _UIToast ~= nil then _UIToast:ShowMessage(self.UnarmedToast, uid) end
+            self:CastResult(skillId, false, "no weapon equipped", 0, castId, uid)
             return
         end
         -- 5. 사용 제한 (0 = 무제한)
