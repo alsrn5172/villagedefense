@@ -139,6 +139,11 @@ const CANONICAL = {
   RankReward: "Rank,Difficulty,Hearts,AccountExp,Condition,Enabled,#Note",
   GuideStep: "StepKey,Kind,Text,MarkerMap,Once,Enabled,#Note",
 
+  // 기록·칭호 — 계약서 §1 등록서(2026-09-26 · a/m1-finish 묶음 0). 파일은 각 묶음 구현 PR 에서 생성(2 GrowthPoint · 4 CollectionReward · 5 AchievementConfig·TitleInfo).
+  AchievementConfig: "AchievementId,Name,Desc,CondType,CondParam,Target,AccountExp,TitleId,SortOrder,Enabled,#Note",
+  TitleInfo: "TitleId,Name,Desc,SortOrder,Enabled,#Note",
+  CollectionReward: "Kind,Tier,Kills,AccountExp,Name,Enabled,#Note",
+  GrowthPoint: "ActionType,Points,Enabled,#Note",
   // 접속 외형 선택 (2026-09-26 · a/avatar-look-select · WO-032 · A-2-27)
   AvatarLook: "LookId,Hair,Face,Body,Cap,Cape,Coat,Longcoat,Pants,Shoes,Glove,OneHandWeapon,TwoHandWeapon,SubWeapon,#Note",
 
@@ -263,6 +268,10 @@ const PK = {
   MonsterRecruit: ["MonsterId"],
   RankReward: ["Rank", "Difficulty"],
   GuideStep: ["StepKey"],
+  AchievementConfig: ["AchievementId"],
+  TitleInfo: ["TitleId"],
+  CollectionReward: ["Kind", "Tier"],
+  GrowthPoint: ["ActionType"],
   AvatarLook: ["LookId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],

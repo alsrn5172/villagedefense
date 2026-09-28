@@ -1,9 +1,9 @@
 @Logic
 script VillageRecordUIController extends Logic
 
-	-- 기록 창(VillageRecordGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 collection(도감 관리인) / stats(통계 분석관).
-	-- collection: MonsterInfo 전 행을 GridView 로(발견 상태는 서버 원장 전이라 전부 미발견). stats: 같은 맵 생존자 목록 + 내 요약.
-	-- 값은 전부 서버 LaneStateService 뷰(SetView). UUID 는 UIBuilder write({bind}) 주입.
+	-- 기록 창(VillageRecordGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 collection(도감 관리인 · 매치 안 수비대 해금) / stats(통계 분석관).
+	-- stats (WO-031 묶음 3 · GDD §4.12): **매치 생존자 전원(자신 제외)** 목록 + 선택 상세 = 서버 PublicPlayerSummary(허용 필드만 · 아바타는 UI 아바타에 그 사람 기본 외형 + 장착 장비).
+	-- 값은 전부 서버 LaneStateService 뷰(SetView · stats / statdetail). UUID 는 UIBuilder write({bind}) 주입.
 
 	property Entity dimmer = "0ac4bc1d-3e72-4792-b5ec-ae792d880606"
 
@@ -36,6 +36,15 @@ script VillageRecordUIController extends Logic
 	property Entity detailRoot = "7dc0ec26-ea03-4038-a7e0-68c35eed6a4e"
 
 	property TextGUIRendererComponent statsStatus = "124a6415-d785-49bb-abd3-816982cdef1c"
+
+	-- 상세 아바타(AvatarGUIRenderer + CostumeManager) · 장비 목록 (WO-031 묶음 3)
+	property Entity detailAvatar = "2df3c326-da04-4e78-a830-3b2a56cd8de4"
+
+	property TextGUIRendererComponent detailGear = "07c4c947-f901-43ce-a592-ed5ae677542a"
+
+	-- 선택한 생존자 userId (상세 요청·응답 대조용)
+	@HideFromInspector
+	property string selUid = ""
 
 	@HideFromInspector
 	property boolean isOpen = false
@@ -167,9 +176,14 @@ script VillageRecordUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnView(string kind, string csv)
-		-- 서버 뷰 수신 → 현재 라우트면 그린다.
-		if not self.isOpen or kind ~= self.route then return end
+		-- 서버 뷰 수신 → 현재 라우트면 그린다. statdetail 은 stats 라우트의 상세 응답.
+		if not self.isOpen then return end
 		local rows = _VillageNpcUIController:SplitRows(csv)
+		if kind == "statdetail" then
+			if self.route == "stats" then self:RenderSummary(rows) end
+			return
+		end
+		if kind ~= self.route then return end
 		if kind == "collection" then self:RenderCollection(rows) else self:RenderStats(rows) end
 	end
 
@@ -317,12 +331,17 @@ script VillageRecordUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RenderStats(any rows)
-		-- ME|name|level|exp|meso|kills|balrog · P|userId|name|level (같은 맵 생존자)
+		-- P|userId|이름|레벨|칭호 (매치 생존자 · 자신 제외) · NONE = 다른 생존자 없음. 목록을 그리고 첫 사람(또는 이전 선택)을 상세로.
 		self.players = {}
 		for _, f in ipairs(rows) do
-			if f[1] == "ME" then self.me = { name = f[2], level = f[3], exp = f[4], meso = f[5], kills = f[6], balrog = f[7] }
-			elseif f[1] == "P" then table.insert(self.players, { userId = f[2], name = f[3], level = f[4] }) end
+			if f[1] == "P" then table.insert(self.players, { userId = f[2], name = f[3], level = f[4], title = f[5] or "" }) end
 		end
+		-- 이전에 고른 사람이 아직 있으면 그 사람, 아니면 첫 사람.
+		local sel = 0
+		for i, p in ipairs(self.players) do
+			if p.userId == self.selUid then sel = i - 1 end
+		end
+		self.selPlayer = sel
 		if isvalid(self.playerRoot) then
 			for i = 0, 4 do
 				local row = self.playerRoot:GetChildByName("PlayerRow_" .. tostring(i))
@@ -330,7 +349,7 @@ script VillageRecordUIController extends Logic
 				if isvalid(row) then
 					row.Enable = (p ~= nil)
 					if p ~= nil then
-						self:SetText(row, "Name", p.name)
+						self:SetText(row, "Name", self:TitledName(p.title, p.name))
 						self:SetText(row, "Level", "Lv " .. p.level)
 						if row.SpriteGUIRendererComponent ~= nil then
 							row.SpriteGUIRendererComponent.Color = (i == self.selPlayer) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
@@ -339,39 +358,119 @@ script VillageRecordUIController extends Logic
 				end
 			end
 		end
-		self:RenderDetail()
 		if isvalid(self.statsStatus) then
-			self.statsStatus.Text = "생존자 " .. tostring(#self.players) .. "명 (같은 맵 기준 · 매치 전체 목록은 Match 연동 후) · 처치·발록 피해는 Progression 원장 전"
+			local more = (#self.players > 5) and (" · 위 5명만 표시 (" .. tostring(#self.players) .. "명)") or ""
+			self.statsStatus.Text = (#self.players == 0) and "다른 생존자가 없습니다" or ("생존자 " .. tostring(#self.players) .. "명 (나 제외) · 이름을 누르면 공개 정보" .. more)
+		end
+		if #self.players == 0 then
+			self.selUid = ""
+			self:ClearDetail("다른 생존자가 없습니다")
+		else
+			self:SelectPlayer(self.selPlayer)
 		end
 	end
 
 	@ExecSpace("ClientOnly")
-	method void RenderDetail()
-		-- 오른쪽 상세: 선택한 생존자(나면 전체 요약, 남이면 공개 필드만).
-		if not isvalid(self.detailRoot) then return end
-		local p = self.players[self.selPlayer + 1]
-		local me = self.me or { name = "-", level = "-", exp = "-", meso = "-", kills = "0", balrog = "0" }
-		local isMe = (p == nil) or (p.name == me.name)
-		local vals = {}
-		if isMe then
-			vals = { { "닉네임", me.name }, { "레벨", "Lv " .. me.level }, { "경험치", me.exp }, { "메소", me.meso }, { "몬스터 처치", me.kills }, { "발록 누적 피해", me.balrog } }
-		else
-			vals = { { "닉네임", p.name }, { "레벨", "Lv " .. p.level }, { "경험치", "비공개" }, { "메소", "비공개" }, { "몬스터 처치", "-" }, { "발록 누적 피해", "-" } }
-		end
-		for i, v in ipairs(vals) do
-			local row = self.detailRoot:GetChildByName("DRow" .. tostring(i - 1))
-			if isvalid(row) then
-				self:SetText(row, "Chip", v[1])
-				self:SetText(row, "Cell", v[2])
+	method string TitledName(string title, string name)
+		-- "칭호 닉네임" (칭호가 없으면 닉네임만).
+		if title ~= nil and title ~= "" then return title .. " " .. (name or "") end
+		return name or ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearDetail(string msg)
+		-- 상세 비우기(선택 없음 · 불러오는 중 · 사라짐).
+		local labels = { "닉네임", "레벨", "마을 성장도", "몬스터 처치", "보스 처치", "전선" }
+		if isvalid(self.detailRoot) then
+			for i, lb in ipairs(labels) do
+				local row = self.detailRoot:GetChildByName("DRow" .. tostring(i - 1))
+				if isvalid(row) then
+					self:SetText(row, "Chip", lb)
+					self:SetText(row, "Cell", (i == 1) and (msg or "-") or "-")
+				end
 			end
 		end
+		if isvalid(self.detailGear) then self.detailGear.Text = "" end
+		if isvalid(self.detailAvatar) then self.detailAvatar.Enable = false end
 	end
 
 	@ExecSpace("ClientOnly")
-	method void OnPlayer(integer i)
-		-- 생존자 행 선택 (서버 호출 없음 · 공개 요약은 PublicPlayerSummary 연동 후).
-		if self.players[i + 1] == nil then return end
+	method void RenderSummary(any rows)
+		-- SUM|uid|이름|레벨|성장도|보스처치|몬스터처치|전선단계|칭호|장비("슬롯:ItemId:강화,…") · GONE = 그새 탈락·이탈.
+		local f = rows[1]
+		if f == nil then return end
+		if f[2] ~= self.selUid then return end   -- 늦게 온 옛 선택의 응답(SUM · GONE 둘 다 대상 userId 를 싣는다)
+		if f[1] ~= "SUM" then
+			self:ClearDetail("정보를 볼 수 없습니다 (탈락·이탈)")
+			if _LaneStateService ~= nil then _LaneStateService:RequestView("stats") end
+			return
+		end
+		local stages = { ["0"] = "마을 없음", ["1"] = "포탑 방어 중", ["2"] = "억제기 방어 중", ["3"] = "넥서스 방어 중" }
+		local vals = {
+			{ "닉네임", self:TitledName(f[9] or "", f[3] or "") }, { "레벨", "Lv " .. (f[4] or "1") }, { "마을 성장도", f[5] or "0" },
+			{ "몬스터 처치", f[7] or "0" }, { "보스 처치", f[6] or "0" }, { "전선", stages[f[8] or "0"] or "-" },
+		}
+		if isvalid(self.detailRoot) then
+			for i, v in ipairs(vals) do
+				local row = self.detailRoot:GetChildByName("DRow" .. tostring(i - 1))
+				if isvalid(row) then
+					self:SetText(row, "Chip", v[1])
+					self:SetText(row, "Cell", v[2])
+				end
+			end
+		end
+		self:ApplyAvatar(f[2] or "", f[10] or "")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyAvatar(string uid, string gear)
+		-- 상세 UI 아바타 = 그 사람 계정 기본 외형(DefaultEquipUserId) + 장착 장비(캐릭터 창 프리뷰와 같은 Custom*Equip 규칙) · 장비 목록 글자.
+		local items = {}
+		local lines = {}
+		local slotNames = { WEAPON = "무기", SUBWEAPON = "보조", HAT = "모자", TOP = "상의", BOTTOM = "하의", SHOES = "신발", GLOVES = "장갑" }
+		for part in string.gmatch(gear .. ",", "([^,]*),") do
+			local fs = {}
+			for x in string.gmatch(part .. ":", "([^:]*):") do table.insert(fs, x) end
+			if #fs >= 3 and fs[1] ~= "" then
+				local slot = fs[1]
+				local itemId = fs[2]
+				items[slot] = itemId
+				local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(itemId) or nil
+				local nm = (def ~= nil and def.name ~= nil) and def.name or itemId
+				local e = tonumber(fs[3]) or 0
+				table.insert(lines, (slotNames[slot] or slot) .. " " .. nm .. ((e > 0) and (" +" .. tostring(e)) or ""))
+			end
+		end
+		if isvalid(self.detailGear) then self.detailGear.Text = (#lines > 0) and table.concat(lines, "\n") or "장착 장비 없음" end
+		if not isvalid(self.detailAvatar) then return end
+		self.detailAvatar.Enable = (uid ~= "")
+		local costume = self.detailAvatar.CostumeManagerComponent
+		if not isvalid(costume) or _ItemCatalog == nil then return end
+		costume.DefaultEquipUserId = uid
+		local function ruid(slot) return _ItemCatalog:AvatarRuid(items[slot] or "") end
+		if _ItemCatalog:IsTwoHand(items["WEAPON"] or "") then
+			costume.CustomTwoHandedWeaponEquip = ruid("WEAPON")
+			costume.CustomOneHandedWeaponEquip = ""
+			costume.CustomSubWeaponEquip = ""
+		else
+			costume.CustomOneHandedWeaponEquip = ruid("WEAPON")
+			costume.CustomTwoHandedWeaponEquip = ""
+			costume.CustomSubWeaponEquip = ruid("SUBWEAPON")
+		end
+		costume.CustomCapEquip = ruid("HAT")
+		costume.CustomCoatEquip = ruid("TOP")
+		costume.CustomPantsEquip = ruid("BOTTOM")
+		costume.CustomShoesEquip = ruid("SHOES")
+		costume.CustomGloveEquip = ruid("GLOVES")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectPlayer(integer i)
+		-- i 번째 생존자를 고르고 서버에 공개 요약을 요청한다(응답 = statdetail).
+		local p = self.players[i + 1]
+		if p == nil then return end
 		self.selPlayer = i
+		self.selUid = p.userId
 		if isvalid(self.playerRoot) then
 			for k = 0, 4 do
 				local row = self.playerRoot:GetChildByName("PlayerRow_" .. tostring(k))
@@ -380,7 +479,15 @@ script VillageRecordUIController extends Logic
 				end
 			end
 		end
-		self:RenderDetail()
+		self:ClearDetail("불러오는 중…")
+		if _LaneStateService ~= nil then _LaneStateService:RequestStatDetail(p.userId) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPlayer(integer i)
+		-- 생존자 행 클릭.
+		if self.players[i + 1] == nil then return end
+		self:SelectPlayer(i)
 	end
 
 	method void OnEndPlay()

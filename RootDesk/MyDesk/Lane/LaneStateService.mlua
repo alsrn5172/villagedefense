@@ -76,6 +76,11 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property integer defenseTimerId = 0
 
+	-- 1회성 이벤트 집계 (WO-031 묶음 1 · 중복 파괴 테스트 · 5레인 부하 로그). tally["<마을>:<단계>:DESTROYED"] · ":ALERT" · "<마을>:BOOM" · "<마을>:ELIM" = 횟수.
+	-- 판마다 ResetMatchAll 이 비운다. 게임 규칙에는 안 쓴다 — 관측용.
+	@HideFromInspector
+	property any tally = nil
+
 	method void OnBeginPlay()
 		-- 서버만 원장. 표를 읽는다.
 		if not self:IsServer() then return end
@@ -370,7 +375,22 @@ script LaneStateService extends Logic
 		-- 시설 HP·레벨·수비대·창고·훈련이 마을 단위로 들어 있어 통째로 비운다.
 		-- 시설 엔티티 자체는 LaneFacilityService 가 마을 연결 시 다시 만든다.
 		self.states = {}
+		self.tally = {}
 		log("[Lane] 마을 상태 원장 초기화")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Tally(string key)
+		-- 1회성 이벤트 횟수 +1 (관측용 · 게임 규칙에 안 씀).
+		if self.tally == nil then self.tally = {} end
+		self.tally[key] = (self.tally[key] or 0) + 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TallyOf(string key)
+		-- 집계 값(없으면 0).
+		if self.tally == nil then return 0 end
+		return self.tally[key] or 0
 	end
 
 	@ExecSpace("ServerOnly")
@@ -452,6 +472,67 @@ script LaneStateService extends Logic
 		if self.towerDef[stage] ~= nil then self:FacilityAlert(villageId, self.towerDef[stage].name .. " 파괴! (리모콘)") end
 		self:Changed(villageId, stage)
 		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TestDestroyOnce(string villageId, boolean withCore)
+		-- 🧪 중복 파괴 테스트 (WO-031 묶음 1 · GDD §7 Phase 3 "동일 파괴 이벤트 중복 반영 방지"). Maker Play 전용.
+		-- 실제 관문 ApplyDamage 로: ① 포탑 같은 호출 흐름 치명타 2번 + 파괴 뒤 피해 ② 재건 뒤 재파괴 ③ 억제기 치명타 2번(폭발) ④ (withCore) 넥서스 치명타 2번(탈락).
+		-- 기대: DESTROYED·파괴 알림 = 파괴 사건마다 1회(포탑 2 · 억제기 1 · 넥서스 1) · 폭발 1 · 탈락 1 · 두 번째 치명타와 파괴 뒤 피해 = "INVALID".
+		-- 🔴 withCore 면 그 마을 주인이 탈락한다(1인 매치면 매치가 끝난다). 결과 문자열 + "[DestroyOnce]" 로그.
+		if not Environment:IsMakerPlay() then return "SKIP(not maker play)" end
+		local v = self:EnsureVillage(villageId)
+		if v == nil then return "FAIL(no village)" end
+		for _, s in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
+			if not v.towers[s].alive then return "FAIL(" .. s .. " already down — 초기화 뒤 다시)" end
+		end
+		local function k(stage, what) return villageId .. ":" .. stage .. ":" .. what end
+		local keys = { k("TOWER", "DESTROYED"), k("TOWER", "ALERT"), k("SUPPRESSOR", "DESTROYED"), k("SUPPRESSOR", "ALERT"),
+			k("CORE", "DESTROYED"), k("CORE", "ALERT"), villageId .. ":BOOM", villageId .. ":ELIM" }
+		local before = {}
+		for _, key in ipairs(keys) do before[key] = self:TallyOf(key) end
+		local big = 999999999
+		local r = {}
+		-- ① 포탑: 같은 흐름 두 번 + 파괴 뒤 1
+		table.insert(r, self:ApplyDamage(villageId, "TOWER", big, "DO_T1"))
+		table.insert(r, self:ApplyDamage(villageId, "TOWER", big, "DO_T2"))
+		table.insert(r, self:ApplyDamage(villageId, "TOWER", 1, "DO_T3"))
+		-- ② 재건(비용 없이 · 억제기가 살아 있으니 규칙상 허용) → 재파괴
+		local tw = v.towers["TOWER"]
+		tw.alive = true
+		tw.hp = self:MaxHp("TOWER", tw.lv)
+		self:Changed(villageId, "TOWER")
+		table.insert(r, self:ApplyDamage(villageId, "TOWER", big, "DO_T4"))
+		-- ③ 억제기: 두 번 (폭발 1회)
+		table.insert(r, self:ApplyDamage(villageId, "SUPPRESSOR", big, "DO_S1"))
+		table.insert(r, self:ApplyDamage(villageId, "SUPPRESSOR", big, "DO_S2"))
+		local expectR = { "", "INVALID", "INVALID", "", "", "INVALID" }
+		local expectD = { [keys[1]] = 2, [keys[2]] = 2, [keys[3]] = 1, [keys[4]] = 1, [keys[5]] = 0, [keys[6]] = 0, [keys[7]] = 1, [keys[8]] = 0 }
+		-- ④ 넥서스: 두 번 (탈락 1회)
+		if withCore then
+			table.insert(r, self:ApplyDamage(villageId, "CORE", big, "DO_C1"))
+			table.insert(r, self:ApplyDamage(villageId, "CORE", big, "DO_C2"))
+			table.insert(expectR, "")
+			table.insert(expectR, "INVALID")
+			expectD[keys[5]] = 1
+			expectD[keys[6]] = 1
+			expectD[keys[8]] = 1
+		end
+		local ok = true
+		local parts = {}
+		for i, want in ipairs(expectR) do
+			local got = r[i]
+			if got ~= want then ok = false end
+			table.insert(parts, "r" .. tostring(i) .. "=" .. ((got == "") and "ok" or tostring(got)))
+		end
+		for _, key in ipairs(keys) do
+			local d = self:TallyOf(key) - before[key]
+			if d ~= expectD[key] then ok = false end
+			table.insert(parts, key .. "+" .. tostring(d) .. "/" .. tostring(expectD[key]))
+		end
+		local res = (ok and "PASS " or "FAIL ") .. table.concat(parts, " ")
+		log("[DestroyOnce] " .. villageId .. " core=" .. tostring(withCore) .. " " .. res)
+		return res
 	end
 
 	@ExecSpace("ServerOnly")
@@ -663,8 +744,10 @@ script LaneStateService extends Logic
 			t.alive = false
 			destroyed = true
 			log("[Lane] " .. villageId .. " " .. stage .. " DESTROYED by " .. tostring(attackerName))
+			self:Tally(villageId .. ":" .. stage .. ":DESTROYED")
 			-- 파괴 알림은 세 단계 전부 (WO-016 — 넥서스도 · 예전엔 stage ~= "CORE" 조건으로 빠져 있었다). 넥서스는 곧이어 Eliminate 의 탈락 토스트가 덮는다.
 			self:FacilityAlert(villageId, self.towerDef[stage].name .. " 파괴!")
+			self:Tally(villageId .. ":" .. stage .. ":ALERT")
 			-- 억제기 폭발 (B3): 파괴 알림 직후 · 넥서스 탈락 판정보다 먼저.
 			if stage == "SUPPRESSOR" then self:SuppressorBoom(villageId) end
 			if _GuideService ~= nil then _GuideService:OnFacilityDestroyed(villageId, stage) end
@@ -689,6 +772,7 @@ script LaneStateService extends Logic
 		-- 억제기 파괴 폭발 (B3 · WO-027 §7 · 사용자 2026-09-22): 파괴 순간 억제기 바닥 기준 반경 SuppressorBoomRadius 안의 **미니언(MinionUnit)에게만**
 		-- SuppressorBoomDamage 고정 피해. 시설·수비대·플레이어는 안 맞는다. 폭발로 죽은 미니언은 처치 보상 없음(lastAttacker 없음).
 		-- 연출: ICBM special 클립을 억제기 층에 · Hit 사운드는 그 맵 안 유저에게 Client RPC(PlayBoomSoundLocal · 유저별 targetUserId).
+		self:Tally(villageId .. ":BOOM")
 		if _LaneFacilityService == nil or _LaneFacilityService.entities == nil then return end
 		local ent = _LaneFacilityService.entities[villageId .. ":SUPPRESSOR"]
 		if not isvalid(ent) then
@@ -836,6 +920,7 @@ script LaneStateService extends Logic
 		-- 시설 엔티티는 남긴다(주인 없음 → 회색 · 넥서스는 검게). 미니언 웨이브는 주인 없는 마을을 건너뛰므로 저절로 멈춘다.
 		local v = self.states[villageId]
 		if v == nil then return end
+		self:Tally(villageId .. ":ELIM")
 		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(villageId) or ""
 		local nDef = (_DefenderService ~= nil) and _DefenderService:DespawnVillage(villageId) or 0
 		local nMin = (_MinionFlowService ~= nil) and _MinionFlowService:DespawnVillage(villageId) or 0
@@ -885,6 +970,15 @@ script LaneStateService extends Logic
 	method void RequestView(string kind)
 		-- 클라(창 열 때)가 부른다.
 		self:Push(senderUserId, kind)
+	end
+
+	@ExecSpace("Server")
+	method void RequestStatDetail(string whoId)
+		-- 통계 창에서 생존자 한 명 선택 → 공개 요약(PublicPlayerSummary · 허용 필드만) 한 줄. 같은 매치 생존자가 아니면(탈락·이탈·자신·다른 매치) "GONE".
+		local uid = senderUserId
+		local csv = "GONE|" .. tostring(whoId)   -- 대상 userId 를 실어 보낸다(늦게 온 옛 응답이 지금 선택을 지우지 않게 · Codex 리뷰 2026-09-26)
+		if _MatchTallyService ~= nil and _MatchTallyService:IsSurvivorFor(uid, whoId) then csv = _MatchTallyService:PublicSummaryCsv(whoId) end
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:SetView("statdetail", csv, uid) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -981,20 +1075,14 @@ script LaneStateService extends Logic
 			for _, s in ipairs(v.storage) do add({ "S", s.itemId, tostring(s.count) }) end
 			if #rows == 0 then add({ "EMPTY" }) end
 		elseif kind == "stats" then
-			local p = _UserService:GetUserEntityByUserId(userId)
-			local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
-			local myName = (isvalid(p) and isvalid(p.PlayerComponent)) and p.PlayerComponent.Nickname or "?"
-			add({ "ME", myName, tostring((e ~= nil) and (e.level or 1) or 1), tostring((e ~= nil) and (e.exp or 0) or 0), tostring((e ~= nil) and (e.meso or 0) or 0), "0", "0" })
-			if isvalid(p) and isvalid(p.CurrentMap) then
-				local list = _UserService:GetUsersByMapName(p.CurrentMap.Name)
-				for _, ent in ipairs(list or {}) do
-					if isvalid(ent) and isvalid(ent.PlayerComponent) then
-						local uid = ent.PlayerComponent.UserId
-						local ee = (_SummonManager ~= nil) and _SummonManager:GetEcon(uid) or nil
-						add({ "P", uid, ent.PlayerComponent.Nickname or uid, tostring((ee ~= nil) and (ee.level or 1) or 1) })
-					end
-				end
+			-- 생존자 목록 (WO-031 묶음 3 · GDD §4.12): **매치 생존자 전원 · 자신 제외** · 공개 필드만(PublicPlayerSummary). P|userId|이름|레벨|칭호 · 없으면 NONE.
+			-- 예전 뼈대는 같은 맵 사람만 보이고 내 메소까지 실었다 → 매치 전체 · 비공개 필드 없음으로 바꿨다. 상세는 RequestStatDetail.
+			local list = (_MatchTallyService ~= nil) and _MatchTallyService:SurvivorsFor(userId) or {}
+			for _, uid in ipairs(list) do
+				local s = _MatchTallyService:PublicSummary(uid)
+				add({ "P", uid, s.name, tostring(s.level), s.title })
 			end
+			if #list == 0 then add({ "NONE" }) end
 		elseif kind == "dispatch" then
 			local own = self:VillageOfUser(userId)
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
@@ -1119,6 +1207,8 @@ script LaneStateService extends Logic
 			msg = d.name .. " 재건 완료"
 		end
 		log("[Lane] " .. v.id .. " " .. action .. " " .. stage .. " coin-" .. tostring(cost) .. " (" .. uid .. ")")
+		-- 마을 성장도: 시설이 새 레벨에 처음 도달 (WO-031 묶음 2 · GrowthPoint FACILITY_LEVEL · 같은 단계·레벨은 매치당 1번).
+		if action == "upgrade" and _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(uid, "FACILITY_LEVEL", stage, t.lv) end
 		self:Toast(uid, msg .. " (주화 -" .. tostring(cost) .. ")")
 		self:Changed(v.id, stage)
 	end
@@ -1151,6 +1241,10 @@ script LaneStateService extends Logic
 		log("[Recruit] " .. v.id .. " mob=" .. tostring(monsterId) .. " bundle=" .. tostring(rr.bundleSize) .. " spawned=" .. tostring(spawned) .. " hp=" .. tostring(math.floor(rr.guardHp * mul)) .. " atk=" .. tostring(math.floor(rr.guardAttack * mul)) .. " mat=" .. mat.itemId .. "-" .. tostring(mat.count) .. " (" .. uid .. ")")
 		table.insert(v.defenders, { key = tostring(monsterId), name = name, qty = spawned, lv = self:MonLevel(v, monsterId) })
 		log("[Lane] " .. v.id .. " recruit " .. tostring(monsterId) .. " " .. mat.itemId .. "-" .. tostring(mat.count) .. " spawned=" .. tostring(spawned) .. " bundles=" .. tostring(#v.defenders) .. " (" .. uid .. ")")
+		-- 마을 성장도: 수비 몬스터 종 첫 모집 (WO-031 묶음 2 · GrowthPoint RECRUIT_FIRST).
+		if spawned > 0 and _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(uid, "RECRUIT_FIRST", tostring(monsterId), 0) end
+		-- 업적 RECRUIT(모집한 개체 수 누적 · WO-031 묶음 5).
+		if spawned > 0 and _AchievementService ~= nil then _AchievementService:Add(uid, "RECRUIT", 0, spawned) end
 		self:Toast(uid, name .. " 1묶음(" .. tostring(spawned) .. "마리) 모집 — 최전방 " .. self.towerDef[self:FrontStage(v)].name .. " 앞에 집결")
 		self:Push(uid, "recruit")
 	end
@@ -1202,6 +1296,8 @@ script LaneStateService extends Logic
 		_InventoryService:PushInventory(uid)
 		v.mon[monsterId] = lv + 1
 		log("[Lane] " .. v.id .. " monster " .. tostring(monsterId) .. " Lv" .. tostring(lv + 1) .. " dream-" .. tostring(cost) .. " (" .. uid .. ")")
+		-- 마을 성장도: 훈련 한 단계 (WO-031 묶음 2 · GrowthPoint TRAINING_LEVEL · 조련사 RequestTrain 과 같은 키라 한 번만).
+		if _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(uid, "TRAINING_LEVEL", tostring(monsterId), lv + 1) end
 		self:Toast(uid, "Lv" .. tostring(lv + 1) .. " (배율 ×" .. string.format("%.1f", self:MonMul(v, monsterId)) .. ")")
 		self:Push(uid, "collection")
 	end
@@ -1245,6 +1341,8 @@ script LaneStateService extends Logic
 		v.mon[monsterId] = lv + 1
 		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
 		log("[Lane] " .. v.id .. " train " .. tostring(monsterId) .. " -> Lv" .. tostring(lv + 1) .. " dream-" .. tostring(nxt.cost) .. " (" .. uid .. ")")
+		-- 마을 성장도: 훈련 한 단계 (WO-031 묶음 2 · GrowthPoint TRAINING_LEVEL).
+		if _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(uid, "TRAINING_LEVEL", tostring(monsterId), lv + 1) end
 		self:Toast(uid, tostring(name) .. " Lv" .. tostring(lv + 1) .. " — 수비 몬스터 HP·공격 ×" .. string.format("%.1f", nxt.mul) .. " (새 묶음부터)")
 		self:Push(uid, "train")
 	end
@@ -1330,6 +1428,8 @@ script LaneStateService extends Logic
 				units = units + qty
 			end
 		end
+		-- 업적 DISPATCH_UNITS(파병 보낸 개체 수 누적 · WO-031 묶음 5).
+		if units > 0 and _AchievementService ~= nil then _AchievementService:Add(uid, "DISPATCH_UNITS", 0, units) end
 		log("[Lane] " .. v.id .. " dispatch " .. tostring(sent) .. " bundles (" .. tostring(units) .. " units) -> "
 			.. targetVillageId .. " cost=" .. tostring(cost) .. " (" .. uid .. ")")
 		if sent == 0 then
@@ -1337,8 +1437,9 @@ script LaneStateService extends Logic
 		else
 			self:Toast(uid, targetName .. " 로 " .. tostring(sent) .. "묶음(" .. tostring(units) .. "마리) 파병 접수 — 다음 투입 때 합류합니다 (그 전까지 취소 가능)")
 			-- 🔴 방어자에게는 **총량 등급만** 알린다 (GDD §4.3 정보 비대칭 — 누가·무엇을 보냈는지는 공개하지 않는다).
+			--    접수 순간엔 아직 안 섞였다 → "온다" 로 알리고, 실제로 섞이는 투입 순간은 DispatchService.Release 가 알린다 + 레인 HUD 배지(WO-031 묶음 1).
 			local grade = _DispatchService:GradeOf(targetVillageId)
-			if grade ~= "" then self:Toast(owner, "내 레인에 파병이 섞였습니다 — 총량 " .. grade) end
+			if grade ~= "" then self:Toast(owner, "내 레인으로 파병이 옵니다 — 다음 투입 때 섞임 · 총량 " .. grade) end
 		end
 		self:Push(uid, "dispatch")
 		self:Push(uid, "recruit")
