@@ -1,6 +1,6 @@
 # a/m1-5-achievements (묶음 5 · 통합 브랜치 `a/m1-finish` · base `a/m1-4-collection` · PR #111)
 
-업적 · 칭호 · 이름표 (WO-031 묶음 5 · GDD §4.12 · 계약 A-2-23 · A-2-24 · §0-5 SchemaVersion 4).
+업적 · 칭호 · 이름표 (WO-031 묶음 5 · GDD §4.12 · 계약 A-2-28(등록 때 A-2-23) · A-2-24 · §0-5 SchemaVersion 4).
 
 ## 바뀐 것
 
