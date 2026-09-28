@@ -21,6 +21,15 @@
   - `ShowCutsceneUI` 에 `fadeSeconds` 인자가 늘었다. 부르는 곳은 이 파일 한 곳이고, 다른 열린 브랜치에 부르는 곳이 없다(확인함).
   - `SkillCaster.mlua:123` 주석을 고쳤다("드레드노트 컷신(Duration 1)" → 첫 파 = Duration · 표시 1.0s · 무적은 클립 길이).
   - 드레드노트 클립은 자리표시자다. 기획에 약 1초짜리 컷신을 요청했다(#40).
+- **섬머솔트 킥 회전 = A(사용자 결정 · 합동 확인 P1.3)**
+  - 7차의 자세 순서 키(거꾸로 +0.20~+0.60 · 270° +0.65 · 똑바로 +0.68)가 최종이다. 사용자가 참고 영상과 나란히 놓은 비교(저장소 밖 `p-captures/P1_AB_video_right.png` · `P1_AB_video_left.png`)로 골랐다.
+  - B(예전 0.16s 한 바퀴 360°) 경로는 **지웠다**. 게임에서 그 경로를 쓰는 곳이 없었다 — `backflip` 스펙은 SK_P11 하나뿐이고(모든 열린 브랜치 · main 동일) 늘 `keys` 가 있다. 확인 키트의 키 3(`SS_CURVE` = keys 를 비움)만 그 경로로 들어갔다.
+    - 지운 것: `SkillExecutors` 속성 `BackflipSeconds` · `BackflipHeight` · `BackflipEase` · `BackflipSpinFraction`, SK_P11 스펙의 `delay` · `seconds` · `height` · `spinFraction`, `BackflipClient` 의 한 바퀴 분기.
+    - `BackflipClient` 인자: `(uid, facing, centerY, driftX, driftSeconds, keys)`. `keys` 가 2개 미만이면 돌지 않고 경고 로그를 남긴다.
+    - 서버 로그: `BACKFLIP facing=… keys 6 to +0.68s centerY=0.35 drift=0 over 0.45s`. 앞부분은 예전과 같다.
+    - 이력 주석(한 바퀴 시절 값)은 기록으로 남겼다. `SkillCaster.mlua:119` 주석을 키 순서로 고쳤다.
+  - 키트: 키 3 토글을 뺐다(저장소 밖 `pirate-check` · Play 멈춤 상태에서 고침).
+  - 원작 main 코드(b/skill-pirate-motion 때 머지된 한 바퀴)를 지우는 것이라, 이 PR 이 머지되면 main 에서도 사라진다. 다른 열린 PR 과 충돌 수는 늘지 않았다(merge-tree).
 
 ### Play 체크리스트 (11차 추가 · 다음 세션)
 
@@ -29,6 +38,7 @@
     - 다른 플레이어 화면(월드 이펙트): 로그 `cutscene world effect SK_P31 removed at +1.00s` · 드레드노트 그림이 +1.0s 에 없어지고 6파가 보인다.
     - 무적은 그대로 ≈5.04s. 다른 궁(대마법 등)의 컷신은 예전처럼 끝까지 불투명하다.
 18. 소리(미룬 항목 · MCP 실행에선 못 들었다): E 에너지 쉴드 시전 = 엔젤릭버스터 파워 트랜스퍼 Use(`b86f0000…`) · R 함포 사격 시전 = 배틀쉽 봄버 Use(`686297b9…`) · 함포 사격 파마다 = 배틀쉽 봄버 Attack1(`8fd7da62…`).
+19. 섬머솔트 킥(Q · 양쪽 방향): 예전처럼 거꾸로 매달리는 키 순서 회전이다(A). 로그 `SkillExecutors: BACKFLIP facing=±1 keys 6 to +0.68s centerY=0.35 drift=0 over 0.45s`. 제자리(`moved dx=0.00`) · 피해 +0.10s 그대로다.
 
 ## 10차 (2026-09-28 · 합동 확인 P1~P8 결과 반영 · 마법사 창 MCP 실행 · `local/test-thief-pirate` 2f84a4f = #116 `db85dcf`)
 
