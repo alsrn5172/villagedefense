@@ -205,6 +205,10 @@ script SkillExecutors extends Logic
     -- 플레이어 앞이고, 던지기 클립(special/swingT3)은 pivot 이 뒤쪽이라 팔이 발보다 44px 앞까지 뻗어 뒤집힌 쪽(오른쪽)에서 캐릭터 몸을 덮었다. ApplyShadowSorting.
     property integer ShadowOrderInLayer = 2
 
+    -- 플레이어 앞에 그리는 고정 위치 이펙트의 OrderInLayer(b/skill-archer-effects · 닷지 출발 · 같은 층의 플레이어 = 4 → 5 면 항상 앞). ApplyFrontSorting.
+    --   옵션이 없는 이펙트(Default 층)는 발판 층에 따라 플레이어 앞일 때도 뒤일 때도 있다(공중 · 높은 MapLayer 발판) — 층을 명시해 원작 z 0(캐릭터 앞)으로 고정한다.
+    property integer FrontEffectOrderInLayer = 5
+
     -- 분신이 항상 등 뒤에 있도록 바라보는 쪽을 살피는 간격(초 · b/skill-thief-motion · 2026-09-13 제보 "방향을 바꾸면 분신이 안 움직여 앞에 남는다"):
     -- 부착 이펙트의 localPosition 은 시전 때 한 번 정해지고(offsetX × facing) 플레이어 facing(LookDirectionX)은 Transform 을 뒤집지 않아 따라오지 않는다 →
     -- 버프 중 이 간격으로 facing 을 읽어 바뀌었으면 루프를 새 쪽으로 다시 건다(PlayBuffLoop · 남은 시간). 따라하기(루프 없음)·컷신 숨김 중엔 건너뛴다(복귀가 새 쪽으로 건다).
@@ -538,7 +542,9 @@ script SkillExecutors extends Logic
                 ball = { ruid = "38f9664abbec45a4b11b05ecc9ebfa02" },   -- VI ball(437×140 · 6프레임 · 불꽃 화살 · 원본 크기 = 원작 비율)
             },
             SK_A22 = {   -- 닷지 — 출발 지점에 skill/40000.img/skill/400004147 백스텝샷 effect(109×94 · 뒤로 빠지는 궁수). 도착 이펙트 없음(마법사 텔레포트 링과 겹치지 않게).
-                depart = { ruid = "4797106d3d1c415a9af3eb9475edbbc9" },
+                -- flipByFacing · frontOfPlayer(b/skill-archer-effects): 팩 = 건슬링어 백스텝샷 skill/520.img/skill/5201006/effect(태그 API) — 그림이 pivot 앞쪽 0.12~1.61 유닛에만 있어
+                --   바라보는 쪽으로 뒤집고(왼쪽 기준 그림), 원작 z 0(WZ effect 프레임에 z 없음 = 0 = 캐릭터 앞)대로 플레이어 층 앞(FrontEffectOrderInLayer)에 그린다.
+                depart = { ruid = "4797106d3d1c415a9af3eb9475edbbc9", flipByFacing = true, frontOfPlayer = true },
             },
             SK_A31 = {   -- 폭풍의 화살 — skill/324.img/skill/3241500 파이널 에임(신궁 오리진 · 기획서 추천): screen 133프레임 컷신(1456×860 · 세이크리드 바스티온과 같은 보정) · hit/0(187×180)
                 -- cutsceneSeconds 7.2 = 컷신 표시 + 실측 실패 때의 대체 길이(파이널 에임 133프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
@@ -1041,7 +1047,18 @@ script SkillExecutors extends Logic
                     end
                 else
                     local s = spec.scale or 1
-                    _EffectService:PlayEffect(spec.ruid, casterEntity, Vector3(pos.x, pos.y + (spec.offsetY or 0), pos.z), 0, Vector3(s, s, 1), false)
+                    -- flipByFacing / frontOfPlayer(b/skill-archer-effects · 닷지 출발): 고정 위치 이펙트도 바라보는 쪽으로 뒤집고(왼쪽 기준 그림) 플레이어 층 앞에 그린다.
+                    --   두 플래그가 없으면 예전 그대로(옵션 없음 = Default 층 · 뒤집기 없음).
+                    local opt = nil
+                    if spec.flipByFacing or spec.frontOfPlayer then
+                        opt = {}
+                        if spec.flipByFacing then opt["FlipX"] = (self:GetFacingX(casterEntity) > 0) end
+                        if spec.frontOfPlayer then self:ApplyFrontSorting(opt, casterEntity, pos) end
+                    end
+                    _EffectService:PlayEffect(spec.ruid, casterEntity, Vector3(pos.x, pos.y + (spec.offsetY or 0), pos.z), 0, Vector3(s, s, 1), false, opt)
+                    if opt ~= nil then
+                        log("SkillExecutors: " .. stage .. " effect " .. skillId .. " fixed · flipX=" .. tostring(opt["FlipX"]) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]))
+                    end
                 end
             else
                 self:PlayParticle(spec.particle, stage, casterEntity, pos)
@@ -1394,6 +1411,17 @@ script SkillExecutors extends Logic
         if layer == nil or layer == "" then return end
         opt["SortingLayer"] = layer
         opt["OrderInLayer"] = self.ShadowOrderInLayer
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyFrontSorting(table opt, Entity player, Vector3 at)
+        -- 고정 위치 이펙트를 플레이어 앞에 그리는 렌더 층(b/skill-archer-effects · 닷지 출발): at(이펙트 자리) 아래 발판의 SortingLayer + FrontEffectOrderInLayer(5 > 플레이어 4).
+        -- 발판을 못 찾으면(발 아래 3유닛 안에 없음 · 높은 공중) 옵션을 안 넣어 예전처럼 기본 층에 그린다. ApplyShadowSorting 의 반대(뒤 → 앞).
+        if _LaneFacilityService == nil or not isvalid(player) then return end
+        local layer = _LaneFacilityService:SortingLayerBelow(player.CurrentMap, at.x, at.y)
+        if layer == nil or layer == "" then return end
+        opt["SortingLayer"] = layer
+        opt["OrderInLayer"] = self.FrontEffectOrderInLayer
     end
 
     @ExecSpace("ServerOnly")
