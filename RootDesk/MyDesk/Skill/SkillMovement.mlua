@@ -51,6 +51,13 @@ script SkillMovement extends Logic
     @HideFromInspector
     property boolean hasEntryPos = false
 
+    -- [서버] 이동 스킬의 출발 좌표(userId -> { skillId, x, y, at }). 클라가 옮기기 전에 ReportBlinkOrigin 으로 보낸다 · TakeBlinkOrigin 이 한 번 꺼내고 지운다.
+    @HideFromInspector
+    property table blinkOrigins = {}
+
+    -- 출발 좌표를 믿는 시간(초). 이보다 오래된 보고는 버린다(시전이 서버에서 거절된 경우의 찌꺼기).
+    property number BlinkOriginMaxAge = 2
+
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
         self.spawnBlinkSkills = {
@@ -129,6 +136,23 @@ script SkillMovement extends Logic
                  dirX = dir.x, dirY = dir.y, branch = dest.branch }
     end
 
+    @ExecSpace("Server")
+    method void ReportBlinkOrigin(string skillId, number x, number y)
+        -- 클라 → 서버: 이동 직전의 발 위치. 이펙트 자리에만 쓴다(위치·판정은 바꾸지 않는다).
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        self.blinkOrigins[senderUserId] = { skillId = skillId, x = x, y = y, at = _UtilLogic.ServerElapsedSeconds }
+    end
+
+    @ExecSpace("ServerOnly")
+    method any TakeBlinkOrigin(string userId, string skillId)
+        -- ExecuteBlink 가 부른다: 같은 스킬의 최근(BlinkOriginMaxAge 안) 출발 좌표 { x, y } 를 한 번 돌려주고 지운다. 없으면 nil.
+        local o = self.blinkOrigins[userId]
+        self.blinkOrigins[userId] = nil
+        if o == nil or o.skillId ~= skillId then return nil end
+        if _UtilLogic.ServerElapsedSeconds - o.at > self.BlinkOriginMaxAge then return nil end
+        return { x = o.x, y = o.y }
+    end
+
     @ExecSpace("ClientOnly")
     method table TryDodge(string skillId, table skill)
         -- 닷지(SK_A22): 현재 맵의 SpawnLocation(이 맵에 들어온 지점에 가장 가까운 것)으로 즉시 이동. 없으면 맵 입장 위치. 그것도 없으면 취소.
@@ -155,6 +179,9 @@ script SkillMovement extends Logic
             log("SkillMovement: " .. skillId .. " cancelled — no SpawnLocation in " .. tostring(map.Name))
             return { ok = false, reason = "no spawn location" }
         end
+        -- 출발 이펙트 자리(b/skill-archer-effects 2026-09-28 Play): 서버는 옮겨진 뒤의 위치만 봐서 "출발" 이펙트가 도착점에 떴다 →
+        --   옮기기 전에 출발 좌표를 서버에 먼저 알린다(RequestCast 보다 먼저 가는 Server 호출 · ExecuteBlink 가 depart.atOrigin 일 때 읽는다).
+        self:ReportBlinkOrigin(skillId, origin.x, origin.y)
         movement:SetWorldPosition(Vector2(dest.x, dest.y))
         log("SkillMovement: " .. skillId .. " dodge from=(" .. tostring(origin.x) .. "," .. tostring(origin.y)
             .. ") to=(" .. tostring(dest.x) .. "," .. tostring(dest.y) .. ") branch=" .. dest.branch .. " map=" .. tostring(map.Name))
