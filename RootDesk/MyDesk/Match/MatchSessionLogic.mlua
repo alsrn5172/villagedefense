@@ -9,6 +9,7 @@ script MatchSessionLogic extends Logic
 	--    이제 매치는 `StartMatch(userIds, difficulty)` 를 불러야 시작한다. 부르는 쪽은 MatchLobbyGateway 다.
 	--    로비 없이 테스트하려면 `AutoStartOnPlay` 를 켠다.
 	-- Profile 은 TEST(LIVE÷8) · LIVE(0/4분/4분30초/16분30초/24분30초) — 리모컨에서 토글. MatchPhaseChangedEvent 발행.
+	-- 🔴 기본값은 **LIVE**(정식 · WO-033 ①-2 · 2026-09-29). Maker 에서 빨리 보려면 리모컨 "다음 웨이브" / "다음 페이즈" / TEST 토글을 쓴다.
 	-- B3(2026-09-23 · a/plan-0914): 웨이브는 MinionWave 표(StartSeconds = 매치 경과 시각 · 마을당 Count 마리 · SpawnGapSeconds 간격)로 투입한다.
 	--   MinionPhaseConfig 는 페이즈 시각·이름만 쓴다(간격·배율 열은 0/미사용). 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
 	--
@@ -17,7 +18,7 @@ script MatchSessionLogic extends Logic
 	-- 만료: MatchConfig.MatchDurationSeconds(LIVE 1800 · TEST 225). 도달하면 시계·웨이브를 멈추고 전체 토스트 + Phase="EXPIRED" 이벤트.
 	--       🔴 순위 판정·결과 화면·보상은 여기 없다 — 후속 WO(Progression) 몫이고 여기서는 "끝났다"만 알린다.
 
-	property string Profile = "TEST"
+	property string Profile = "LIVE"
 
 	-- 매치 만료까지의 초. MatchConfig 에서 읽는다 (표가 없으면 이 기본값).
 	property number MatchDuration = 1800
@@ -418,7 +419,7 @@ script MatchSessionLogic extends Logic
 	@ExecSpace("ServerOnly")
 	method void LoadWaves()
 		-- MinionWave 에서 Profile 행을 StartSeconds 순으로 (B3 · 계약 A-2-6a). StartSeconds < 0 인 P3-ZOMBIE 행은 좀비 개체 스탯 템플릿(스케줄 없음).
-		-- 표가 끝난 뒤의 반복 간격 = 마지막 두 행의 시각 차(3P 매분 · TEST 7.5초).
+		-- 표가 끝난 뒤의 반복 간격 = 마지막 두 행의 시각 차(3P 매분 · TEST 8초).
 		self.waves = {}
 		self.zombieTemplate = nil
 		self.waveRepeatGap = 0
@@ -514,9 +515,39 @@ script MatchSessionLogic extends Logic
 	@ExecSpace("ServerOnly")
 	method void SkipToNextPhase()
 		-- 🧪 다음 페이즈 시작 시각으로 점프.
+		-- WO-033 ①-2: 건너뛴 구간의 웨이브는 **투입하지 않고** 지나간 것으로 친다. 예전엔 OnUpdate 의 while 이 밀린 웨이브를 한 프레임에 몰아 냈다.
 		local nxt = self.phases and self.phases[self.CurrentPhase + 1] or nil
 		if nxt == nil then return end
 		self.Elapsed = nxt.start
+		local skipped = 0
+		if self.waves ~= nil then
+			while self.nextWave <= #self.waves and self.waves[self.nextWave].start < self.Elapsed do
+				self.nextWave = self.nextWave + 1
+				skipped = skipped + 1
+			end
+			if skipped > 0 and self.nextWave > #self.waves then
+				self.waveRepeatTimer = self.waveRepeatGap   -- 표가 끝났으면 반복은 지금부터 한 간격 뒤(OnUpdate 의 armed 규칙과 같다)
+			end
+		end
+		log("[Match] skip -> phase " .. tostring(nxt.name) .. " @" .. tostring(nxt.start) .. "s · skipped " .. tostring(skipped) .. " waves (nextWave=" .. tostring(self.nextWave) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SkipToNextWave()
+		-- 🧪 다음 웨이브를 바로 투입한다(WO-033 ①-2). 표에 남은 행이 있으면 그 시작 시각으로 점프 → 다음 프레임 OnUpdate 가 그 행 하나만 투입(페이즈도 시각을 따라간다).
+		--    표가 끝난 반복 구간이면 반복 타이머를 0 으로 → 다음 프레임에 마지막 행 반복 1회.
+		if not self.Running or self.waves == nil or #self.waves == 0 then
+			log("[Match] next wave ignored (running=" .. tostring(self.Running) .. ")")
+			return
+		end
+		if self.nextWave <= #self.waves then
+			local row = self.waves[self.nextWave]
+			if row.start > self.Elapsed then self.Elapsed = row.start end
+			log("[Match] next wave -> #" .. tostring(self.nextWave) .. " @" .. tostring(row.start) .. "s")
+		elseif self.waveRepeatGap > 0 then
+			self.waveRepeatTimer = 0
+			log("[Match] next wave -> repeat (gap " .. tostring(self.waveRepeatGap) .. "s)")
+		end
 	end
 
 	@ExecSpace("Server")
@@ -531,6 +562,13 @@ script MatchSessionLogic extends Logic
 		-- 🧪 리모컨: 다음 페이즈로.
 		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
 		self:SkipToNextPhase()
+	end
+
+	@ExecSpace("Server")
+	method void RequestNextWave()
+		-- 🧪 리모컨: 다음 웨이브 바로 투입 (WO-033 ①-2 · Maker Play 전용 — DevStatRemote.Enabled 게이트).
+		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
+		self:SkipToNextWave()
 	end
 
 	@ExecSpace("Server")
