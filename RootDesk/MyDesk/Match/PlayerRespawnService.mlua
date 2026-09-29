@@ -22,6 +22,14 @@ script PlayerRespawnService extends Logic
 
 	property number PollInterval = 0.25
 
+	-- 부활 이동 확인(WO-035 B): 옮긴 뒤 MoveCheckSeconds 에 되읽어 목적지 맵 · MoveCheckTolerance 안이 아니면 MoveMaxTries 까지 다시 옮긴다.
+	-- 허용 거리는 부활 직후 걸어서 벗어나는 폭보다 넉넉하게 — 죽은 자리에 남은 경우만 잡으면 된다.
+	property number MoveCheckSeconds = 0.5
+
+	property number MoveCheckTolerance = 3.0
+
+	property integer MoveMaxTries = 2
+
 	@HideFromInspector
 	property any participants = nil
 
@@ -221,6 +229,66 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method any SpawnPointOf(Entity map)
+		-- 그 맵의 첫 SpawnLocation 위치(Vector2). 없으면 nil. (조회 방식은 Skill/SkillMovement.FindSpawnLocation 과 같다)
+		if not isvalid(map) then return nil end
+		local comps = map:GetChildComponentsByTypeName("SpawnLocationComponent", true)
+		if comps == nil then return nil end
+		for _, c in ipairs(comps) do
+			local e = c.Entity
+			if isvalid(e) and isvalid(e.TransformComponent) then
+				local sp = e.TransformComponent.WorldPosition
+				return Vector2(sp.x, sp.y)
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MoveToRespawn(string userId, string destMap, Vector2 destPos, integer attempt)
+		-- 리스폰 위치로 옮기고 MoveCheckSeconds 뒤 실제로 갔는지 되읽는다(WO-035 B · 2026-09-29). 안 갔으면 한 번 더 · 그래도 아니면 에러 로그.
+		-- 목적지 맵이 이 룸에 없으면(맵 하나만 연 테스트 · 정적 룸) 엔진 이동이 조용히 실패해 죽은 자리에 남았다 → 지금 맵의 스폰 지점으로 보낸다.
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		local map = destMap
+		local pos = destPos
+		if not isvalid(_EntityService:GetEntityByPath("/maps/" .. map)) then
+			local here = player.CurrentMap
+			local sp = self:SpawnPointOf(here)
+			if sp == nil then
+				log_warning("[Death] respawn map " .. map .. " is not in this room · 스폰 지점도 없음 → 제자리 (" .. userId .. ")")
+				return
+			end
+			log_warning("[Death] respawn map " .. map .. " is not in this room → " .. tostring(here.Name) .. " 스폰 지점 (" .. userId .. ")")
+			map = here.Name
+			pos = sp
+		end
+		player.PlayerComponent:MoveToMapPosition(map, pos)
+		_TimerService:SetTimerOnce(function()
+			local pl = _UserService:GetUserEntityByUserId(userId)
+			if not isvalid(pl) or not isvalid(pl.TransformComponent) or not isvalid(pl.PlayerComponent) then return end
+			local nowMap = ""
+			if isvalid(pl.CurrentMap) then nowMap = pl.CurrentMap.Name end
+			local wp = pl.TransformComponent.WorldPosition
+			local dx = wp.x - pos.x
+			local dy = wp.y - pos.y
+			local near = (dx * dx + dy * dy) <= self.MoveCheckTolerance * self.MoveCheckTolerance
+			local where = "map=" .. nowMap .. " pos=(" .. string.format("%.2f", wp.x) .. "," .. string.format("%.2f", wp.y) .. ") want=" .. map
+				.. " (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ")"
+			if nowMap == map and near then
+				log("[Death] respawn check ok " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				return
+			end
+			if attempt < self.MoveMaxTries and not pl.PlayerComponent:IsDead() then
+				log_warning("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " → retry (" .. userId .. ")")
+				self:MoveToRespawn(userId, map, pos, attempt + 1)
+			else
+				log_error("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+			end
+		end, self.MoveCheckSeconds)
+	end
+
+	@ExecSpace("ServerOnly")
 	method void OnRevive(string userId, Entity player)
 		-- 부활 1건: 페널티 적용 → 리스폰 위치로 이동 → 팝업 닫기.
 		if self.pending == nil then return end
@@ -246,6 +314,8 @@ script PlayerRespawnService extends Logic
 			end
 		end
 		local target = ""
+		local destMap = ""
+		local destPos = nil
 		local pc = player.PlayerComponent
 		if p.penalty then
 			local vid = ""
@@ -253,13 +323,26 @@ script PlayerRespawnService extends Logic
 			local row = nil
 			if vid ~= "" then row = self:VillageRowOf(vid) end
 			if row ~= nil and row.map ~= "" and row.lane1 ~= "" then
-				target = "/maps/" .. row.map .. "/P_To_" .. row.lane1
-				pc:MoveToEntityByPath(target)
+				-- 내 마을의 1레인 쪽 포탈 자리. 포탈을 못 찾으면(이 룸에 그 맵이 없음 등) 아래 리스항구 경로로 넘어간다.
+				local path = "/maps/" .. row.map .. "/P_To_" .. row.lane1
+				local portal = _EntityService:GetEntityByPath(path)
+				if isvalid(portal) and isvalid(portal.TransformComponent) then
+					local pp = portal.TransformComponent.WorldPosition
+					target = path
+					destMap = row.map
+					destPos = Vector2(pp.x, pp.y)
+				else
+					log_warning("[Death] village respawn portal not found " .. path .. " (" .. userId .. ")")
+				end
 			end
 		end
 		if target == "" and _MatchLobbyGateway ~= nil then
 			target = _MatchLobbyGateway.MatchStartMapId
-			_MatchLobbyGateway:MoveTo(userId, _MatchLobbyGateway.MatchStartMapId, _MatchLobbyGateway.MatchStartSpawn)
+			destMap = _MatchLobbyGateway.MatchStartMapId
+			destPos = _MatchLobbyGateway.MatchStartSpawn
+		end
+		if destMap ~= "" and destPos ~= nil then
+			self:MoveToRespawn(userId, destMap, destPos, 1)
 		end
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
 		if p.penalty and _UIToast ~= nil then
