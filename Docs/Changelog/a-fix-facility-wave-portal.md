@@ -17,4 +17,18 @@
 
 - LSP clean(4파일) · Codex 교차 리뷰 2회(1회차 2건: 빨강 포탈 폭을 스프라이트 실측으로 정정 · 보스 입구 서버 여유는 지연 허용 설계라 유지 / 2회차 버그 없음).
 - UI: 엔티티 190 → 191(새 버튼만) · 기존 엔티티 의미 비교 차이 0 · 줄바꿈 CRLF 유지.
-- Maker 검증: 아래 표(예정).
+
+## Maker 검증 (2026-09-29 · 개인 월드에 이 워크트리 · Test_Lane_Fx Play · 서버 `server_instance_TestPlayInstance`)
+
+| 항목 | 방법 | 로그 | 판정 |
+|---|---|---|---|
+| 새 코드 적재 | 서버·클라 표식 | `[Match] MatchConfig loaded: duration=1800.0s (profile=LIVE)` · `[T33] client … remoteNextWave=true` · 새 에러 0 | PASS |
+| 포탈 상자 | 서버 `shrinkRows` 전수 + 스프라이트별 집계 | `[T33-A] shrunk 91/91` · `group edd691 (1.040, 0.710) x71` · `group 227851 (1.160, 0.795) x20` · off (0.010, 0.298)/(0.000, 0.275) | PASS (눈 확인은 사용자) |
+| 내 시설 방어선 | 플레이어(팀 1)를 공격자로 HitEvent 1000 을 시설에 직접 | `[Facility] ally hit ignored HENESYS TOWER … (1000)` · `HENESYS/TOWER team=21 rel=ALLY hp 60000 -> 60000` · `KERNING/TOWER team=22 rel=ENEMY hp 59070 -> 59020`(3페이즈 전 5%) | PASS |
+| LIVE + 다음 웨이브 | `SetProfile("LIVE")` → `SkipToNextWave` | `[Match] next wave -> #1 @450s` → `wave #1 P1-0 … at 450.0s`(1회) | PASS |
+| 페이즈 건너뛰기 몰림 | PHASE1 → `SkipToNextPhase` | `[Match] skip -> phase PHASE2 @990s · skipped 2 waves (nextWave=4)` · 그 뒤 `waveIndex=1` 그대로(몰림 없음) | PASS |
+| 리모콘 경로 | 클라 → 서버 `RequestNextWave`(버튼과 같은 호출) | `[Match] next wave -> #5 @1200s` → `wave #3 P2-2 … at 1200.0s` | PASS |
+| 헤네시스 발사 위치 | 시설 `LaneAttackFx` 값 | `HENESYS/TOWER launchX=0.7 launchY=0.18` · `HENESYS/SUPPRESSOR launchX=0.88 launchY=0.43` | PASS (눈 확인은 사용자) |
+
+- 에러 1건 `[Match] handoff 없음 — … room=TestPlayInstance` 은 테스트 룸(로비 인계 없음)이라 원래 나는 것 · 이 변경과 무관.
+- 못 본 것: 투사체 스킬로 남의 시설을 쳤을 때 5% 저항(시전자 해석 경로) — 실제 시전은 안 해 봤다(코드·Codex 리뷰만). 리모콘 버튼 실클릭(RPC 경로는 확인).
