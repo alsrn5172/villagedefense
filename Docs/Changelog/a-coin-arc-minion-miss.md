@@ -130,4 +130,23 @@ Codex 교차 검토 2회(gpt-5.6-terra · xhigh · 읽기 전용): 지적 4종 �
 
 - 못 본 것: 능력치 5행 + 내구도 + 긴 설명이 함께 있는 장비 툴팁(설명이 든 장비가 아직 없다) · 장비 탭 상세 패널에는 설명 칸을 넣지 않았다.
 - 관찰: 재료 아이템 툴팁에도 "Lv0 · 전직업" 과 빈 내구도 막대가 나온다(예전부터). 재료에서는 숨길지 사용자 결정.
-- 임시 그림(선물상자)으로 남은 것: 지역 재화 5종 · `ENERGY_CORE` · 빅토리아 주화 — 후보는 허브 `handoff/아이콘후보-2026-09-29/`.
+- 임시 그림으로 남아 있던 7종은 아래 절에서 사용자가 고른 그림으로 채웠다.
+
+## 아이콘 8종 — 사용자 선택 (2026-09-30)
+
+후보(허브 `handoff/아이콘후보-2026-09-29/` · 원작 아이템 그림 검색)에서 사용자가 번호로 골랐다.
+
+| 아이템 | 고른 그림(원작 이름) | RUID | 넣은 곳 |
+|---|---|---|---|
+| `REGION_HENESYS_SPORE` 헤네시스 포자 | 변종포자 32×28 | `ca8302951ab946f38fd1356c6c05aa0c` | `ItemInfo.IconRUID` |
+| `REGION_KERNING_THIEF_COIN` 도둑 주화 | 도적의 마음 조각 28×24 | `2944213d2ae24c6e832bb4e5ddcfec83` | `ItemInfo.IconRUID` |
+| `REGION_ELLINIA_SPIRIT_DUST` 정령 가루 | 반짝이는 가루 32×32 | `76ccbef909b8489f883036729c71ac18` | `ItemInfo.IconRUID` |
+| `REGION_NAUTILUS_PIRATE_COIN` 해적 주화 | 페페 코인 32×32 | `162c79878ef54f0db85101b160ade8d0` | `ItemInfo.IconRUID` |
+| `REGION_PERION_WARRIOR_TOKEN` 전사의 증표 | 용맹의 훈장 28×28 | `89af078f94b14eac81056015922efb0b` | `ItemInfo.IconRUID` |
+| `ENERGY_CORE` 에너지 코어 | (이름 없음) 파란 고리 32×36 | `4570b3929b524c19b1f4c60d4a4c7c95` | `ItemInfo.IconRUID` |
+| `BRAND_SOULSTONE` 낙인의 영혼석 | 뒤틀린 낙인의 영혼석 36×36 | `a1e0a94017b54c78a5fa70e466d75187` | `ItemInfo.IconRUID`(앞 커밋 그대로) |
+| 빅토리아 주화(지갑 재화 · 표에 행 없음) | (이름 없음) 금빛 주화 28×28 | `184093654538492ea60617c0e3dd5c51` | `Farm/ItemDrop.mlua` `CoinSprite` |
+
+- 이제 `ItemInfo` 148행 전부 아이콘이 있다(`catalog items=148 icon empty=0`). 임시 그림(선물상자)은 새 아이템이 아이콘 없이 들어왔을 때만 나온다.
+- 검증(Play · 런타임 Error 0): 9종을 바닥에 세워 놓고 캡처 — 로그의 `ruid` 가 위 표와 같고, 캡처에서 9개 모두 제 그림으로 보인다.
+- 빅토리아 주화 그림은 **바닥 드랍에만** 쓴다. 화면의 주화 표시(지갑 · 상점)는 건드리지 않았다.
