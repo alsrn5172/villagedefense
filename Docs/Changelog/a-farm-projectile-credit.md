@@ -24,4 +24,15 @@ B 파일은 읽기만(`SkillProjectile.CasterUserId` 속성). 계약서 변경 �
 ## 검증
 
 - LSP 4파일 깨끗 · `check-integrity` 전부 통과(경고 3 = 기존 박제 NPC).
-- 🟡 Maker Play(개인 월드에 이 워크트리 · Reimport All): 마법사 에너지볼트로 달팽이 처치 → `[FarmReward] … lasthit=<uid> top=<uid>` · `[Tally] kill … n=1` · `[Coll] tier …` · 동전 `[DropOwner] Meso owner=<uid>` 확인 예정. 근접 처치(회귀 없음)도 한 번.
+- ✅ Maker Play 2판(2026-09-29 · 개인 월드에 이 워크트리 · Reimport All · 빌드 경고 이전 1 → 이후 1 · 로그 판독까지 · 눈 확인 아님):
+
+| 무엇 | 결과(로그) |
+|---|---|
+| 사냥 — 에너지볼트(SK_M11) 처치 | `[FarmReward] …SP001… lasthit=<uid> top=<uid> dmg=123 exp=8` · `[Summon] +exp 8` · `[Tally] kill <uid> n=1` · `[Coll] tier MONSTER 발견 (T1 at 1) exp+5` · `dropped 3 meso … for <uid>` · `[DropOwner] Meso owner=<uid> mine=true` (2건) |
+| 사냥 — 근접(회귀) | 파워 스트라이크(SK_W11) `dealt … amount=168` → `[FarmReward] … lasthit=<uid> top=<uid> dmg=168 exp=8` · 아이언 바디 반사 처치도 같은 귀속(`dmg=50362`) |
+| 시설 — 3페이즈 전 | 남의 포탑(ELLINIA · FAKE_P2)에 에너지볼트 2발 · PHASE2 → 원장 60000 → 59988 (발당 6 = 123 × 0.05) |
+| 시설 — 3페이즈 | 같은 포탑에 1발 · PHASE3 → 59988 → 59865 (123 전액) |
+| 보스 — 누적 피해 원장 | 마노(2220000)에 에너지볼트 → `BossSpawner.dmg[<uid>]` 123 → 246 → 369 → 492 (보스 HP 938 → 446) |
+
+- 못 본 것: 보스를 투사체로 끝까지 잡았을 때의 최다 피해 보상(원장까지만 확인) · 침범 안내 토스트(순차 무적에 막히는 상황을 만들지 않음) · 다인 세션.
+- ⚠ 검증 중 발견(이 PR 범위 밖 · main 에 이미 있음): 계정 기록 자동 저장이 `LEA-3001 LuaTableToJsonType.UnknownType` 로 실패한다. `_HttpService:JSONEncode` 가 **빈 자식 표**(`boss = {}` · `d = {}` · `r = {}`)를 못 바꾼다(실험: `{ v = 1, r = {} }` 실패 · `{ v = 1 }` 성공). `AccountRecordData.SaveToDB` 에서 예외가 나 `PlayerDBManager.SaveForUser` 가 통째로 멈춘다 → 보스를 잡기 전·업적을 달성하기 전인 계정은 저장이 안 된다. 따로 고친다.
