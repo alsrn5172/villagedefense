@@ -89,82 +89,38 @@ script MesoCoin extends Component
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
-		-- 착지점을 정하고 포물선 비행을 시작한다. 발판을 못 찾으면 예전 물리(힘 낮춤)로.
-		local tr = self.Entity.TransformComponent
+		-- 착지점을 정하고 포물선 비행을 시작한다. 발판을 못 찾으면 예전 물리(힘 낮춤)로. 착지 계산은 Farm/GroundDrop 공용(아이템 드랍과 같은 규칙).
+		_GroundDrop:ApplyLayer(self.Entity)
 		local body = self.Entity.RigidbodyComponent
-		if not isvalid(tr) then
-			self.landed = true
-			return
-		end
-		local p = tr.WorldPosition
-		local dir = 1
-		if _UtilLogic:RandomDouble() < 0.5 then
-			dir = -1
-		end
-		local ownFloor = self:FloorYAt(p.x, p.y)
-		local wantX = p.x + dir * self.ArcSpread * _UtilLogic:RandomDouble()
-		local wantFloor = self:FloorYAt(wantX, p.y)
-		local lx = wantX
-		local ly = wantFloor
-		if ownFloor ~= nil and (wantFloor == nil or math.abs(wantFloor - ownFloor) > self.ArcSameFloorTolerance) then
-			-- 퍼진 자리가 절벽 밖이거나 다른 층 → 제자리에 떨군다
-			lx = p.x
-			ly = ownFloor
-		end
-		if ly == nil then
+		local plan = _GroundDrop:PlanLanding(self.Entity, self.ArcSpread, self.ArcSameFloorTolerance, self.ArcFloorSearch)
+		if plan == nil then
 			-- 물리로 떨어뜨린다. 줍기 · 자석은 바닥에 닿은 뒤부터(OnUpdate 가 IsOnGround 로 본다 · 사용자 결정 2026-09-29).
 			if isvalid(body) then
+				local dir = 1
+				if _UtilLogic:RandomDouble() < 0.5 then
+					dir = -1
+				end
 				body:AddForce(Vector2(dir * self.PopPower * _UtilLogic:RandomDouble(), self.PopLift))
 				self.falling = true
 			else
 				self.landed = true
 			end
-			log("[MesoCoin] no foothold below (" .. string.format("%.2f", p.x) .. "," .. string.format("%.2f", p.y) .. ") — physics fallback")
+			local tr = self.Entity.TransformComponent
+			if isvalid(tr) then
+				local p = tr.WorldPosition
+				log("[MesoCoin] no foothold below (" .. string.format("%.2f", p.x) .. "," .. string.format("%.2f", p.y) .. ") — physics fallback")
+			end
 			return
 		end
-		self.startX = p.x
-		self.startY = p.y
-		self.landX = lx
-		self.landY = ly + self.RestOffsetY
+		self.startX = plan.fromX
+		self.startY = plan.fromY
+		self.landX = plan.x
+		self.landY = plan.y + self.RestOffsetY
 		self.arcT = 0
 		self.arcOn = true
 		if isvalid(body) then
 			body.Enable = false
 		end
-	end
-
-	@ExecSpace("ServerOnly")
-	method any FloorYAt(number x, number fromY)
-		-- (x, fromY) 아래 ArcFloorSearch 안의 첫 발판 높이. 없으면 nil. 맵 FootholdComponent 레이(Monster.ReactToHit 넉백과 같은 방식).
-		local map = self.Entity.CurrentMap
-		if not isvalid(map) then
-			return nil
-		end
-		local fc = map.FootholdComponent
-		if not isvalid(fc) then
-			local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
-			if found ~= nil then
-				for _, c in ipairs(found) do
-					if isvalid(c) then
-						fc = c
-						break
-					end
-				end
-			end
-		end
-		if not isvalid(fc) then
-			return nil
-		end
-		local fh = fc:Raycast(Vector2(x, fromY + 0.2), Vector2(0, -1), self.ArcFloorSearch + 0.2)
-		if fh == nil or fh:IsVertical() then
-			return nil
-		end
-		local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
-		local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
-		if x < lo - 0.02 or x > hi + 0.02 then
-			return nil
-		end
-		return fh:GetYByX(x)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -176,7 +132,7 @@ script MesoCoin extends Component
 			u = math.min(1, self.arcT / self.ArcSeconds)
 		end
 		local x = self.startX + (self.landX - self.startX) * u
-		local y = self.startY + (self.landY - self.startY) * u + self.ArcHeight * 4 * u * (1 - u)
+		local y = _GroundDrop:ArcY(self.startY, self.landY, self.ArcHeight, u)
 		local tr = self.Entity.TransformComponent
 		if isvalid(tr) then
 			tr.WorldPosition = Vector3(x, y, tr.WorldPosition.z)
@@ -287,26 +243,14 @@ script MesoCoin extends Component
 
 	@ExecSpace("ServerOnly")
 	method boolean AutoPickupOn(Entity owner)
-		-- 주인의 자동획득 설정. 원장이 없으면 켜진 것으로 본다(기본 ON).
-		if _SummonManager == nil or not isvalid(owner.PlayerComponent) then
-			return true
-		end
-		return _SummonManager:IsAutoPickup(owner.PlayerComponent.UserId)
+		-- 주인의 자동획득 설정(Farm/GroundDrop 공용). 원장이 없으면 켜진 것으로 본다(기본 ON).
+		return _GroundDrop:AutoPickupOn(owner)
 	end
 
 	@ExecSpace("ServerOnly")
 	method void MoveToward(Vector3 from, number nx, number ny, number delta)
-		-- 동전을 주인 쪽으로 한 프레임 옮긴다.
-		-- 🔴 이 모델은 Rigidbody 를 쓴다 — TransformComponent 에 직접 대입하면 다음 프레임에 물리가 옛 좌표로 되돌린다(실측 이력).
-		--    Rigidbody 가 켜져 있으면 SetWorldPosition, 꺼져 있거나(포물선 착지 뒤 · WO-035 D) 없을 때만 Transform 대입.
-		local step = self.MagnetSpeed * delta
-		local nextPos = Vector3(from.x + nx * step, from.y + ny * step, from.z)
-		local body = self.Entity.RigidbodyComponent
-		if isvalid(body) and body.Enable then
-			body:SetWorldPosition(Vector2(nextPos.x, nextPos.y))
-		else
-			self.Entity.TransformComponent.WorldPosition = nextPos
-		end
+		-- 동전을 주인 쪽으로 한 프레임 옮긴다(Farm/GroundDrop 공용 — Rigidbody 가 켜져 있으면 SetWorldPosition · 꺼져 있으면 Transform).
+		_GroundDrop:MoveToward(self.Entity, from, nx, ny, self.MagnetSpeed * delta)
 	end
 
 	@ExecSpace("ServerOnly")

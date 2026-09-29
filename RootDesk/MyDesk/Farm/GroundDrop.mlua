@@ -1,0 +1,196 @@
+@Logic
+script GroundDrop extends Logic
+
+	-- 바닥 드랍 공용 창구 (WO-035 · 사용자 결정 2026-09-29 "아이템도 바닥에 · 규칙은 동전과 똑같이").
+	--   · 드랍의 움직임(착지점 찾기 · 포물선 · 자석)과 주인 찾기를 한 곳에 둔다 — 메소 동전(Farm/MesoCoin)과 아이템 드랍(Farm/ItemDrop)이 같이 쓴다.
+	--   · 아이템 드랍 생성(SpawnItem)도 여기 하나. 부르는 쪽 = DropTableLogic(일반몹 재료) · EliteSpawner(엘리트 확정 드랍) · BossRewardService(보스 보상).
+	--   · ItemsOnGround = false 면 SpawnItem 이 false 를 돌려주고 부르는 쪽은 예전처럼 인벤토리에 직접 넣는다(되돌리기 스위치).
+	-- 소유권 판정은 Farm/DropOwner 가 정본이다(주인만 보이고 주인만 줍는다).
+
+	property boolean ItemsOnGround = true
+
+	property string ItemModelId = "itemdrop"
+
+	-- 생성 위치 = 죽은 자리에서 위로 SpawnLift · 좌우 ±SpawnSpread/2 (FarmReward.DropCoins · B 픽파켓과 같은 값 — 셋 다 발 + 0.3).
+	-- PlanLanding 이 이 값으로 발 높이를 되짚는다. 드랍을 만드는 쪽이 높이를 바꾸면 여기도 같이 바꾼다.
+	property number SpawnLift = 0.3
+
+	property number SpawnSpread = 0.6
+
+	-- 드랍의 렌더 층. "Default" = 맵 그림(MapLayer0~7) 전부보다 앞 · 드랍 모델의 OrderInLayer 3 이라 플레이어(Default/4) 뒤 · 포탈(Default/5) 뒤.
+	-- 포물선 드랍은 Rigidbody 를 꺼서 발판 층을 따라가지 않는다 → 모델 기본 MapLayer0 에 남아 앞에 그려진 맵 오브젝트 뒤로 숨었다(리스항구 계단 · 2026-09-29 Play 캡처).
+	-- "" 로 비우면 층을 건드리지 않는다(모델 기본 · Rigidbody 가 켜진 드랍은 엔진이 발판 층으로 맞춘다).
+	property string DropSortingLayer = "Default"
+
+	@ExecSpace("ServerOnly")
+	method void ApplyLayer(Entity drop)
+		-- 드랍을 DropSortingLayer 에 고정한다(발판 층 자동 맞춤도 끈다). 동전 · 아이템 드랍이 OnBeginPlay 에서 부른다.
+		if self.DropSortingLayer == "" or not isvalid(drop) then
+			return
+		end
+		local body = drop.RigidbodyComponent
+		if isvalid(body) and body.LayerSettingType ~= AutomaticLayerOption.None then
+			body.LayerSettingType = AutomaticLayerOption.None
+		end
+		local sr = drop.SpriteRendererComponent
+		if isvalid(sr) and sr.SortingLayer ~= self.DropSortingLayer then
+			sr.SortingLayer = self.DropSortingLayer
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FootholdsOf(Entity map)
+		-- 맵의 FootholdComponent. 맵 엔티티 직속이 보통이고 타일맵 자식에 달린 경우도 있다(Monster.GetFootholdComponent 와 같은 탐색).
+		if not isvalid(map) then
+			return nil
+		end
+		local direct = map.FootholdComponent
+		if isvalid(direct) then
+			return direct
+		end
+		local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+		if found ~= nil then
+			for _, c in ipairs(found) do
+				if isvalid(c) then
+					return c
+				end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FloorYAt(Entity map, number x, number fromY, number search)
+		-- (x, fromY) 아래 search 안의 첫 발판 높이. 없으면 nil. 벽(세로 발판)·발판 범위 밖은 없는 것으로 본다.
+		local fc = self:FootholdsOf(map)
+		if not isvalid(fc) then
+			return nil
+		end
+		local fh = fc:Raycast(Vector2(x, fromY + 0.2), Vector2(0, -1), search + 0.2)
+		if fh == nil or fh:IsVertical() then
+			return nil
+		end
+		local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
+		local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
+		if x < lo - 0.02 or x > hi + 0.02 then
+			return nil
+		end
+		return fh:GetYByX(x)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PlanLanding(Entity drop, number spread, number sameFloorTolerance, number search)
+		-- 드랍의 착지점 { x, y, fromX, fromY }. 생성 위치 아래 발판(= 죽은 층)에 내려놓는다.
+		-- 퍼진 자리가 절벽 밖이거나 다른 층이면 제자리에 · 아래에 발판이 아예 없으면 nil(부르는 쪽이 물리로 떨어뜨린다).
+		-- 🔴 발판은 **죽은 몬스터의 발 높이**(생성 위치 − SpawnLift)부터 아래로 찾는다. 생성 위치에서 찾으면 발 바로 위의 낮은 단(0.3 위)에 얹혔다(2026-09-29 Play).
+		if not isvalid(drop) or not isvalid(drop.TransformComponent) then
+			return nil
+		end
+		local map = drop.CurrentMap
+		local p = drop.TransformComponent.WorldPosition
+		local feetY = p.y - self.SpawnLift
+		local dir = 1
+		if _UtilLogic:RandomDouble() < 0.5 then
+			dir = -1
+		end
+		local ownFloor = self:FloorYAt(map, p.x, feetY, search)
+		local wantX = p.x + dir * spread * _UtilLogic:RandomDouble()
+		local wantFloor = self:FloorYAt(map, wantX, feetY, search)
+		local lx = wantX
+		local ly = wantFloor
+		if ownFloor ~= nil and (wantFloor == nil or math.abs(wantFloor - ownFloor) > sameFloorTolerance) then
+			lx = p.x
+			ly = ownFloor
+		end
+		if ly == nil then
+			return nil
+		end
+		return { x = lx, y = ly, fromX = p.x, fromY = p.y }
+	end
+
+	method number ArcY(number fromY, number toY, number height, number u)
+		-- 포물선 높이: 시작~착지 직선 + 위로 볼록(꼭대기 = height). u = 0~1.
+		return fromY + (toY - fromY) * u + height * 4 * u * (1 - u)
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity OwnerOf(Entity drop)
+		-- 이 드랍을 주울 수 있는 플레이어(= DropOwner 주인)가 같은 맵에 있으면 그 엔티티. 없으면 nil. DropOwner 가 없으면 nil.
+		---@type DropOwner
+		local own = drop:GetComponent("script.DropOwner")
+		if not isvalid(own) then
+			return nil
+		end
+		local map = drop.CurrentMap
+		if not isvalid(map) or not isvalid(map.MapComponent) then
+			return nil
+		end
+		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		if users == nil then
+			return nil
+		end
+		for _, user in ipairs(users) do
+			if isvalid(user) and isvalid(user.PlayerComponent) and own:IsPickableBy(user.PlayerComponent.UserId) then
+				return user
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AutoPickupOn(Entity owner)
+		-- 주인의 자동획득(자석) 설정. 원장이 없으면 켜진 것으로 본다(기본 ON).
+		if _SummonManager == nil or not isvalid(owner) or not isvalid(owner.PlayerComponent) then
+			return true
+		end
+		return _SummonManager:IsAutoPickup(owner.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MoveToward(Entity drop, Vector3 from, number nx, number ny, number step)
+		-- 드랍을 주인 쪽으로 한 프레임 옮긴다.
+		-- 🔴 Rigidbody 가 켜져 있으면 Transform 직접 대입이 다음 프레임에 옛 좌표로 되돌려진다(실측 이력) → SetWorldPosition. 꺼져 있으면(포물선 착지 뒤) Transform 대입.
+		local nextPos = Vector3(from.x + nx * step, from.y + ny * step, from.z)
+		local body = drop.RigidbodyComponent
+		if isvalid(body) and body.Enable then
+			body:SetWorldPosition(Vector2(nextPos.x, nextPos.y))
+		else
+			drop.TransformComponent.WorldPosition = nextPos
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpawnItem(Entity map, Vector3 base, string ownerId, string kind, string itemId, integer count)
+		-- 바닥 아이템 드랍 1개. kind = "ITEM"(인벤토리 아이템) / "COIN"(빅토리아 주화 · 지갑). 만들지 못하면 false → 부르는 쪽이 직접 지급으로 돌아간다.
+		if not self.ItemsOnGround or not isvalid(map) or ownerId == nil or ownerId == "" or count <= 0 then
+			return false
+		end
+		local ox = (_UtilLogic:RandomDouble() - 0.5) * self.SpawnSpread
+		local drop = _SpawnService:SpawnByModelId(self.ItemModelId, "Drop_" .. itemId, Vector3(base.x + ox, base.y + self.SpawnLift, 0), map)
+		if not isvalid(drop) then
+			log_error("[GroundDrop] 드랍 스폰 실패 — modelId=" .. self.ItemModelId .. " item=" .. itemId)
+			return false
+		end
+		---@type ItemDrop
+		local item = drop:GetComponent("script.ItemDrop")
+		if not isvalid(item) then
+			log_error("[GroundDrop] 드랍 모델에 ItemDrop 이 없다 — modelId=" .. self.ItemModelId)
+			drop:Destroy()
+			return false
+		end
+		item.Kind = kind
+		item.ItemId = itemId
+		item.Count = count
+		drop:AddComponent("script.DropOwner")
+		---@type DropOwner
+		local own = drop:GetComponent("script.DropOwner")
+		if not isvalid(own) then
+			log_error("[GroundDrop] DropOwner attach failed — 직접 지급으로 돌아간다 (" .. itemId .. ")")
+			drop:Destroy()
+			return false
+		end
+		own.OwnerUserId = ownerId
+		log("[GroundDrop] " .. kind .. " " .. itemId .. " x" .. tostring(count) .. " at " .. tostring(map.Name) .. " (" .. string.format("%.2f", base.x + ox) .. "," .. string.format("%.2f", base.y + self.SpawnLift) .. ") for " .. ownerId)
+		return true
+	end
+end
