@@ -85,6 +85,29 @@ script PortalNetwork extends Logic
 	@HideFromInspector
 	property integer PortalOrderInLayer = 5
 
+	-- 🔴 포탈 인식 상자 = 스프라이트 폭 × **아래쪽 절반** (사용자 2026-09-26 "포탈 sprite 만큼 + 높이는 절반만" · WO-033 ①-3).
+	--    맵마다 .map 에 박힌 BoxSize(0.44 · 1.01×1.42 · 1.2×1.64 제각각)를 쓰지 않고, 노선 출발 포탈의 SpriteRUID 로 여기 표를 찾아
+	--    서버·클라가 각자 BoxSize/BoxOffset 을 같은 값으로 덮는다(엔진 ↑키 이동 · ↑키 스크립트 판정 · 서버 NearPortal 이 모두 이 상자를 본다).
+	--    항목 = RUID:폭:높이:아래끝(피벗 기준 y) · 월드 단위(px/100). 크기는 리소스 API(2026-09-29): 227851 = 116×159 · edd691 = 104×138~144.
+	--    폭·높이 = 스프라이트 실측(edd691 높이는 프레임 138~144 라 1.42) · 아래끝은 사용자가 스프라이트에 맞춰 둔 상자(1.2×1.64 @0.72 · 1.01×1.42 @0.63)에서 뺐다. 표에 없는 스프라이트는 기존 상자 그대로.
+	property string PortalSpriteBoxes = "227851c8f90a4818b52ff199a9b1320c:1.16:1.59:-0.10,edd691cd6ce2417c81f1aee6b6ebedd3:1.04:1.42:-0.08"
+
+	-- 인식 높이 = 스프라이트 높이 × 이 비율 (아래끝부터 위로)
+	property number PortalHeightRatio = 0.5
+
+	-- ↑키 판정: 발이 상자 아래끝보다 이만큼 아래여도 인정 (발판 두께 오차)
+	property number PortalFootTolerance = 0.05
+
+	@HideFromInspector
+	property any spriteSpecs = nil
+
+	-- 서버: 상자를 줄일 노선 출발 포탈(제한 노선 포함) { key, fromMap, fromPortal } · 끝난 key
+	@HideFromInspector
+	property any shrinkRows = nil
+
+	@HideFromInspector
+	property any shrunkKeys = nil
+
 	@HideFromInspector
 	property string layerAppliedMap = ""
 
@@ -129,14 +152,16 @@ script PortalNetwork extends Logic
 				if isvalid(source) and isvalid(source.PortalComponent) then
 					local portal = source.PortalComponent
 					if portal.Enable then
+						self:ShrinkPortalBox(source)   -- 층 보정 폴링(0.3초)보다 ↑ 가 먼저 와도 줄인 상자로 판정
 						local portalPosition = source.TransformComponent.WorldPosition
 						local offset = portal.BoxOffset
 						local size = portal.BoxSize
 						local dx = playerPosition.x - (portalPosition.x + offset.x)
 						local dy = playerPosition.y - (portalPosition.y + offset.y)
-						local halfWidth = size.x * 0.5 + 0.35
-						local halfHeight = size.y * 0.5 + 0.80
-						if math.abs(dx) <= halfWidth and math.abs(dy) <= halfHeight then
+						-- 🔴 여유 없음(WO-033 ①-3 · 예전 +0.35 / +0.80 이 "너무 넓다"의 원인). 폭 = 상자 폭 · 높이 = 상자(아래쪽 절반) + 발 오차.
+						local halfWidth = size.x * 0.5
+						local halfHeight = size.y * 0.5
+						if math.abs(dx) <= halfWidth and dy >= -halfHeight - self.PortalFootTolerance and dy <= halfHeight then
 							local distance = dx * dx + dy * dy
 							if closestDistance == nil or distance < closestDistance then
 								closestDistance = distance
@@ -366,6 +391,8 @@ script PortalNetwork extends Logic
 		self.invalidCount = 0
 		self.gatedCount = 0
 		self.finished = false
+		self.shrinkRows = {}
+		self.shrunkKeys = {}
 
 		local tableData = _DataService:GetTable(self.TableName)
 		local seenKeys = {}
@@ -390,6 +417,11 @@ script PortalNetwork extends Logic
 					toPortal = toPortal,
 					key = key
 				}
+
+				if fromMap ~= "" and fromPortal ~= "" and not seenKeys[key] then
+					-- 인식 상자 축소 대상(WO-033 ①-3): 바인딩 안 하는 제한 노선(발록·리스·지역보스)도 포함
+					table.insert(self.shrinkRows, { key = key, fromMap = fromMap, fromPortal = fromPortal })
+				end
 
 				if fromMap == "" or fromPortal == "" or toMap == "" or toPortal == "" then
 					self:RecordInvalid(row, "required column is empty")
@@ -444,6 +476,7 @@ script PortalNetwork extends Logic
 			return
 		end
 
+		self:ShrinkServerBoxes()
 		for _, row in ipairs(self.routes) do
 			if not self.boundKeys[row.key] and not self.invalidKeys[row.key] then
 				self:BindRow(row)
@@ -484,6 +517,7 @@ script PortalNetwork extends Logic
 		self:AttemptBindings()
 
 		if not self.finished and self.totalElapsed >= self.RetryTimeout then
+			self:ShrinkServerBoxes()
 			-- 이 룸에 없는 맵의 노선은 조용히 건너뛴다 (인스턴스 룸 = 매치 맵만 · 정적 룸 = 로비 맵만 · WO-024 · B11).
 			local absent = 0
 			for _, row in ipairs(self.routes) do
@@ -539,6 +573,7 @@ script PortalNetwork extends Logic
 
 		local seen = {}
 		local applied = 0
+		local shrunk = 0
 		for i = 1, tableData:GetRowCount() do
 			local enabledValue = tableData:GetCell(i, "Enabled")
 			local enabledText = string.lower(tostring(enabledValue))
@@ -552,12 +587,62 @@ script PortalNetwork extends Logic
 					portal.SpriteRendererComponent.SortingLayer = self.PortalSortingLayer
 					portal.SpriteRendererComponent.OrderInLayer = self.PortalOrderInLayer
 					applied = applied + 1
+					if self:ShrinkPortalBox(portal) then shrunk = shrunk + 1 end
 				end
 			end
 		end
 
 		log("[PortalNetwork] layer map=" .. mapName .. " portals=" .. tostring(applied)
-			.. " layer=" .. self.PortalSortingLayer .. "/" .. tostring(self.PortalOrderInLayer))
+			.. " layer=" .. self.PortalSortingLayer .. "/" .. tostring(self.PortalOrderInLayer) .. " box=" .. tostring(shrunk))
+	end
+
+	method any PortalSpriteSpec(string ruid)
+		-- PortalSpriteBoxes 에서 이 스프라이트의 { w, h, bottom }. 없으면 nil. 서버·클라 각자 한 번 파싱해 캐시.
+		if self.spriteSpecs == nil then
+			self.spriteSpecs = {}
+			for item in string.gmatch(self.PortalSpriteBoxes, "[^,]+") do
+				local parts = {}
+				for p in string.gmatch(item, "[^:]+") do table.insert(parts, p) end
+				local w = tonumber(parts[2])
+				local h = tonumber(parts[3])
+				local bottom = tonumber(parts[4])
+				if #parts == 4 and w ~= nil and h ~= nil and bottom ~= nil then
+					self.spriteSpecs[string.lower((string.gsub(parts[1], "%s", "")))] = { w = w, h = h, bottom = bottom }
+				end
+			end
+		end
+		if ruid == nil or ruid == "" then return nil end
+		return self.spriteSpecs[string.lower(ruid)]
+	end
+
+	method boolean ShrinkPortalBox(Entity source)
+		-- 노선 포탈 인식 상자를 "스프라이트 폭 × 아래쪽 PortalHeightRatio" 로 덮는다 (WO-033 ①-3). 서버·클라 각자 부른다.
+		-- 값이 스프라이트 표에서만 나오므로 몇 번을 불러도 같은 상자다(누적해서 줄지 않는다). 표에 없는 스프라이트면 손대지 않고 false.
+		if not isvalid(source) or not isvalid(source.PortalComponent) or not isvalid(source.SpriteRendererComponent) then return false end
+		local spec = self:PortalSpriteSpec(source.SpriteRendererComponent.SpriteRUID)
+		if spec == nil then return false end
+		local portal = source.PortalComponent
+		local h = spec.h * self.PortalHeightRatio
+		portal.BoxSize = Vector2(spec.w, h)
+		portal.BoxOffset = Vector2(portal.BoxOffset.x, spec.bottom + h * 0.5)
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ShrinkServerBoxes()
+		-- 서버: 아직 안 줄인 노선 출발 포탈(제한 노선 포함)을 찾아 상자를 줄인다. 맵이 늦게 뜨므로 바인딩 재시도와 같은 주기로 부른다.
+		if self.shrinkRows == nil then return end
+		for _, row in ipairs(self.shrinkRows) do
+			if not self.shrunkKeys[row.key] then
+				local source = _EntityService:GetEntityByPath("/maps/" .. row.fromMap .. "/" .. row.fromPortal)
+				if isvalid(source) then
+					self.shrunkKeys[row.key] = true
+					if not self:ShrinkPortalBox(source) and isvalid(source.SpriteRendererComponent) then
+						log_warning("[PortalNetwork] box kept (sprite not in PortalSpriteBoxes) " .. row.key .. " ruid=" .. tostring(source.SpriteRendererComponent.SpriteRUID))
+					end
+				end
+			end
+		end
 	end
 
 
