@@ -105,17 +105,51 @@ script AccountRecordData extends Logic
 	@ExecSpace("ServerOnly")
 	method void SaveToDB(string userId, table saveData, table savedGenerations)
 		-- ④ 더티인 키만 직렬화. 더티는 여기서 지우지 않는다(저장은 아직 실패할 수 있다).
+		-- 🔴 빈 자식 표를 뺀 사본(StripEmpty)을 인코딩한다 — 그대로 넣으면 보스를 안 잡은·업적이 없는 계정은 예외로 저장이 통째로 멈췄다(WO-035 A).
+		--    인코딩 실패는 그 키만 건너뛴다(더티가 남아 다음 저장에 다시 시도) — 한 키가 다른 키·다른 도메인 저장을 막지 않게.
 		local u = self.users ~= nil and self.users[userId] or nil
 		if u == nil or not u.loaded then return end
 		for _, part in ipairs({ "coll", "ach", "hist" }) do
 			if u.dirty[part] then
 				local key = self:KeyOf(part)
-				local json = _HttpService:JSONEncode(u[part])
-				saveData[key] = json
-				savedGenerations[key] = u.gen[part]
-				log("[AcctRec] save " .. key .. " bytes=" .. tostring(#json) .. " (" .. userId .. ")")
+				local packed = self:StripEmpty(u[part], 0)
+				local ok, json = pcall(function() return _HttpService:JSONEncode(packed) end)
+				if ok and type(json) == "string" and json ~= "" then
+					saveData[key] = json
+					savedGenerations[key] = u.gen[part]
+					log("[AcctRec] save " .. key .. " bytes=" .. tostring(#json) .. " (" .. userId .. ")")
+				else
+					-- 🔴 이 키는 이번 저장에서 빠진다. 룸 이동·이탈 저장도 막지 않는다 — 기록 한 칸 때문에 플레이어가 로비·매치에 갇히는 쪽이 더 나쁘다
+					--    (Codex 리뷰 2026-09-29 지적 · 판단). 빈 표는 StripEmpty 가 걸렀으므로 여기 오는 건 비정상 데이터뿐이다 → 에러 로그로 남긴다.
+					log_error("[AcctRec] encode failed " .. key .. " (" .. userId .. ") — 이 키만 건너뛴다(기록 유실 가능): " .. tostring(json))
+				end
 			end
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any StripEmpty(any t, integer depth)
+		-- 저장용 사본: 빈 표인 칸은 뺀다(안쪽까지). _HttpService:JSONEncode 는 빈 자식 표가 있으면 LEA-3001(LuaTableToJsonType.UnknownType) 예외를 던진다
+		-- (2026-09-29 실측 · { v = 1, r = {} } 실패 · { v = 1 } 성공 · {} 단독은 빈 문자열). 읽을 땐 Normalize 가 없는 칸을 빈 표로 채운다.
+		-- 🔴 빈 표만 뺀다. 깊이 한도(순환 방지)에 닿은 표는 **그대로 둔다** — 버리면 저장은 성공하고 내용만 조용히 잘린다(Codex 리뷰 2026-09-29).
+		--    그 안에 빈 표가 있으면 인코딩이 실패해 그 키만 건너뛴다(저장소의 옛 값은 그대로 남는다).
+		local out = {}
+		if type(t) ~= "table" then return out end
+		for k, v in pairs(t) do
+			if type(v) == "table" then
+				if next(v) ~= nil then
+					if depth >= 8 then
+						out[k] = v
+					else
+						local c = self:StripEmpty(v, depth + 1)
+						if next(c) ~= nil then out[k] = c end
+					end
+				end
+			else
+				out[k] = v
+			end
+		end
+		return out
 	end
 
 	@ExecSpace("ServerOnly")
