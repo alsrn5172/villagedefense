@@ -47,6 +47,10 @@ script Monster extends Component
 
 	property number HitStunSeconds = 0.5
 
+	-- 넉백 · 경직 간격(초). 몬스터 피격 무적이 없어져(2026-09-29 WO-034 · MonsterHit) 타격마다 피해가 들어가므로,
+	-- 밀림 · 경직은 이 간격으로만 건다(사용자 결정 "넉백·경직만 0.4초 간격"). 피해 · 플래시 · 돌아보기는 매 타격 그대로.
+	property number KnockbackInterval = 0.4
+
 	-- 피격 판정 상자를 런타임에 stand 클립으로 다시 잴지. 기본 false — 모델에 미리 계산해 넣었다(Docs/tools/monster-hitbox/harvest.cjs → apply.cjs · 사용자 지시: 매번 계산하지 말 것). 새 몬스터를 추가하면 그 두 스크립트로 값을 박거나 이 값을 켠다.
 	property boolean FitHitbox = false
 
@@ -82,6 +86,10 @@ script Monster extends Component
 	-- HIT → IDLE → CHASE 로 돌아올 때 1~3초 "서 있기" 를 다시 걸지 않는다(#40 5813661726 3번 · B 가 넣고 A 가 리뷰 승인 · 2026-09-25 #83).
 	@HideFromInspector
 	property number lastHitAt = -1000
+
+	-- 마지막으로 넉백 · 경직을 건 시각(KnockbackInterval 게이트 · WO-034).
+	@HideFromInspector
+	property number lastKnockAt = -1000
 
 	-- 위 "방금 맞았다" 창(초). HIT 0.5s(StateSet NCHasTimePassed) + IDLE → CHASE 전이 한두 틱을 덮는다.
 	property number HitResumeWindowSeconds = 1.2
@@ -541,6 +549,13 @@ script Monster extends Component
 		-- 고정형(피아누스 등)은 안 밀리고 안 멈춘다. 플래시(+HIT 상태의 hit 클립)만.
 		local isStatic = self:IsStaticMonster()
 
+		-- 넉백 · 경직은 KnockbackInterval(0.4초) 간격으로만 — 무적이 없어 다단 히트가 전부 들어가도 계속 밀리고 굳지 않게(WO-034).
+		local now = _UtilLogic.ElapsedSeconds
+		local knockReady = now - self.lastKnockAt >= self.KnockbackInterval
+		if knockReady then
+			self.lastKnockAt = now
+		end
+
 		-- 방향: 공격자에게서 멀어지는 쪽. 공격자를 모르면 바라보는 방향의 반대.
 		local tr = self.Entity.TransformComponent
 		local dir = 0
@@ -553,7 +568,7 @@ script Monster extends Component
 
 		-- 경직: StateChaseMonster 의 시전 정지 게이트를 빌린다 (StateTypeChase 가 이동을 건너뜀 → 힘이 덮어써지지 않는다)
 		local chase = self.Entity.StateChaseMonster
-		if not isStatic and isvalid(chase) and chase.CastFreezeLeft < self.HitStunSeconds then
+		if knockReady and not isStatic and isvalid(chase) and chase.CastFreezeLeft < self.HitStunSeconds then
 			chase.CastFreezeLeft = self.HitStunSeconds
 		end
 
@@ -562,7 +577,7 @@ script Monster extends Component
 		--    → 지금 밟은 발판의 GetYByX 로 y 를 표면에 맞추고, 발판 범위 밖으로는 안 민다(절벽 밖으로 떨어뜨리지 않음). 공중이면 안 옮긴다.
 		local body = self.Entity.RigidbodyComponent
 		-- 이미 밀리는 중이면 겹쳐 밀지 않는다 (연타·다단히트로 0.2 씩 누적돼 "여러 번 미끄러지는" 것 방지 · 플래시는 그대로)
-		if not isStatic and isvalid(body) and dir ~= 0 and self.KnockbackSteps > 0 and not self.knocking then
+		if knockReady and not isStatic and isvalid(body) and dir ~= 0 and self.KnockbackSteps > 0 and not self.knocking then
 			local stepDx = dir * self.KnockbackDistance / self.KnockbackSteps
 			local interval = self.KnockbackSeconds / self.KnockbackSteps
 			local n = 0
