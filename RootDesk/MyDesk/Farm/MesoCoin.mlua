@@ -30,9 +30,50 @@ script MesoCoin extends Component
 
 	property number ArmDelay = 0.35
 
+	-- ── 드랍 연출 (WO-035 D · 사용자 결정 2026-09-29 "원작식 포물선 연출로 교체") ──
+	-- 예전엔 생성 순간 물리 힘(AddForce) 한 번을 주고 엔진 물리에 맡겨서, 위에 발판이 있으면 동전이 그 위에 얹혔다.
+	-- 이제 서버가 포물선으로 직접 옮겨 **생성된 층의 발판**에 내려놓는다(위층 발판은 지나간다). 비행 중엔 Rigidbody 를 끈다.
+	-- 수치는 눈으로 맞추는 값 — ArcSeconds(비행 시간) · ArcHeight(꼭대기 높이) · ArcSpread(좌우로 퍼지는 최대 거리).
+	property number ArcSeconds = 0.45
+
+	property number ArcHeight = 0.6
+
+	property number ArcSpread = 0.5
+
+	-- 생성 위치에서 아래로 발판을 찾는 거리. 못 찾으면(공중 · 절벽 밖) 예전 물리로 떨어뜨린다.
+	property number ArcFloorSearch = 1.5
+
+	-- 착지 x 아래의 발판이 생성 위치 바로 아래 발판과 이만큼 넘게 차이 나면 다른 층으로 보고 제자리에 떨군다.
+	property number ArcSameFloorTolerance = 0.5
+
+	-- 착지 뒤 발판선에서 띄우는 높이(그림 피벗 보정).
+	property number RestOffsetY = 0
+
+	-- 발판을 못 찾았을 때 쓰는 예전 물리 힘(위로는 낮춰서).
 	property number PopPower = 1.6
 
-	property number PopLift = 2.5
+	property number PopLift = 1.2
+
+	@HideFromInspector
+	property boolean arcOn = false
+
+	@HideFromInspector
+	property boolean landed = false
+
+	@HideFromInspector
+	property number arcT = 0
+
+	@HideFromInspector
+	property number startX = 0
+
+	@HideFromInspector
+	property number startY = 0
+
+	@HideFromInspector
+	property number landX = 0
+
+	@HideFromInspector
+	property number landY = 0
 
 	@HideFromInspector
 	property number Age = 0
@@ -42,14 +83,99 @@ script MesoCoin extends Component
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
-		-- 살짝 튀어 발판 위로 떨어지게 한다.
+		-- 착지점을 정하고 포물선 비행을 시작한다. 발판을 못 찾으면 예전 물리(힘 낮춤)로.
+		local tr = self.Entity.TransformComponent
 		local body = self.Entity.RigidbodyComponent
-		if isvalid(body) then
-			local dir = 1
-			if _UtilLogic:RandomDouble() < 0.5 then
-				dir = -1
+		if not isvalid(tr) then
+			self.landed = true
+			return
+		end
+		local p = tr.WorldPosition
+		local dir = 1
+		if _UtilLogic:RandomDouble() < 0.5 then
+			dir = -1
+		end
+		local ownFloor = self:FloorYAt(p.x, p.y)
+		local wantX = p.x + dir * self.ArcSpread * _UtilLogic:RandomDouble()
+		local wantFloor = self:FloorYAt(wantX, p.y)
+		local lx = wantX
+		local ly = wantFloor
+		if ownFloor ~= nil and (wantFloor == nil or math.abs(wantFloor - ownFloor) > self.ArcSameFloorTolerance) then
+			-- 퍼진 자리가 절벽 밖이거나 다른 층 → 제자리에 떨군다
+			lx = p.x
+			ly = ownFloor
+		end
+		if ly == nil then
+			if isvalid(body) then
+				body:AddForce(Vector2(dir * self.PopPower * _UtilLogic:RandomDouble(), self.PopLift))
 			end
-			body:AddForce(Vector2(dir * self.PopPower * _UtilLogic:RandomDouble(), self.PopLift))
+			self.landed = true
+			log("[MesoCoin] no foothold below (" .. string.format("%.2f", p.x) .. "," .. string.format("%.2f", p.y) .. ") — physics fallback")
+			return
+		end
+		self.startX = p.x
+		self.startY = p.y
+		self.landX = lx
+		self.landY = ly + self.RestOffsetY
+		self.arcT = 0
+		self.arcOn = true
+		if isvalid(body) then
+			body.Enable = false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FloorYAt(number x, number fromY)
+		-- (x, fromY) 아래 ArcFloorSearch 안의 첫 발판 높이. 없으면 nil. 맵 FootholdComponent 레이(Monster.ReactToHit 넉백과 같은 방식).
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return nil
+		end
+		local fc = map.FootholdComponent
+		if not isvalid(fc) then
+			local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+			if found ~= nil then
+				for _, c in ipairs(found) do
+					if isvalid(c) then
+						fc = c
+						break
+					end
+				end
+			end
+		end
+		if not isvalid(fc) then
+			return nil
+		end
+		local fh = fc:Raycast(Vector2(x, fromY + 0.2), Vector2(0, -1), self.ArcFloorSearch + 0.2)
+		if fh == nil or fh:IsVertical() then
+			return nil
+		end
+		local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
+		local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
+		if x < lo - 0.02 or x > hi + 0.02 then
+			return nil
+		end
+		return fh:GetYByX(x)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StepArc(number delta)
+		-- 포물선 한 프레임: x 는 직선 · y 는 시작~착지 직선 + 위로 볼록(꼭대기 ArcHeight). 끝나면 착지점에 고정.
+		self.arcT = self.arcT + delta
+		local u = 1
+		if self.ArcSeconds > 0 then
+			u = math.min(1, self.arcT / self.ArcSeconds)
+		end
+		local x = self.startX + (self.landX - self.startX) * u
+		local y = self.startY + (self.landY - self.startY) * u + self.ArcHeight * 4 * u * (1 - u)
+		local tr = self.Entity.TransformComponent
+		if isvalid(tr) then
+			tr.WorldPosition = Vector3(x, y, tr.WorldPosition.z)
+		end
+		if u >= 1 then
+			self.arcOn = false
+			self.landed = true
+			log("[MesoCoin] landed (" .. string.format("%.2f", self.landX) .. "," .. string.format("%.2f", self.landY) .. ") from (" .. string.format("%.2f", self.startX) .. "," .. string.format("%.2f", self.startY) .. ")")
 		end
 	end
 
@@ -73,8 +199,14 @@ script MesoCoin extends Component
 			return
 		end
 		
+		-- 포물선 비행 중엔 옮기기만 한다(줍기 · 자석은 착지 뒤부터).
+		if self.arcOn then
+			self:StepArc(delta)
+			return
+		end
+
 		-- 스폰 직후 잠깐은 줍히지 않는다.
-		if self.Age < self.ArmDelay then
+		if not self.landed or self.Age < self.ArmDelay then
 			return
 		end
 
@@ -145,11 +277,11 @@ script MesoCoin extends Component
 	method void MoveToward(Vector3 from, number nx, number ny, number delta)
 		-- 동전을 주인 쪽으로 한 프레임 옮긴다.
 		-- 🔴 이 모델은 Rigidbody 를 쓴다 — TransformComponent 에 직접 대입하면 다음 프레임에 물리가 옛 좌표로 되돌린다(실측 이력).
-		--    Rigidbody 가 있으면 SetWorldPosition, 없을 때만 Transform 대입.
+		--    Rigidbody 가 켜져 있으면 SetWorldPosition, 꺼져 있거나(포물선 착지 뒤 · WO-035 D) 없을 때만 Transform 대입.
 		local step = self.MagnetSpeed * delta
 		local nextPos = Vector3(from.x + nx * step, from.y + ny * step, from.z)
 		local body = self.Entity.RigidbodyComponent
-		if isvalid(body) then
+		if isvalid(body) and body.Enable then
 			body:SetWorldPosition(Vector2(nextPos.x, nextPos.y))
 		else
 			self.Entity.TransformComponent.WorldPosition = nextPos
