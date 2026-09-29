@@ -16,4 +16,17 @@ base `main` e6fbbaa. WO-035 의 D · C 중 #122 에 못 넣었던 부분(그때 
 ## 검증
 
 - LSP 2파일 깨끗 · `check-integrity` 통과.
-- 🟡 Maker Play(개인 월드에 이 워크트리 · Reimport All) 예정: 위에 발판이 있는 자리에서 처치 → `[MesoCoin] landed (x,y)` 의 y = 죽은 층 · 줍기·자석 동작 · 미니언에 피해 0 타격 → `[MonsterHit]` 넉백 로그 없음 · 명중 시 넉백 그대로. 동전 모양·수치는 사용자 눈.
+- 추가(사용자 결정 2026-09-29 "바닥에 다 떨어지기 전까지 안 빨려들어가게"): 물리로 떨어지는 드랍도 `IsOnGround` 가 될 때까지 줍기·자석을 막는다(`FallArmTimeout` 3초). 착지 뒤 머무는 시간은 두지 않는다.
+- ✅ Maker Play 1판(2026-09-29 · 개인 월드에 이 워크트리 · 런타임 Error 0 · **실제 속도 영상 2편**). 보고서 = 허브 `handoff/검증보고서-2026-09-29-동전포물선125/`.
+
+| 항목 | 결과(로그) |
+|---|---|
+| 포물선 · 죽은 층 착지 | 위 0.71 에 발판이 있는 자리(아래층 −2.87 · 위 −2.16): 발판 위에서 생성한 동전 22개(시험 16 · 평타 처치 6) 전부 `[MesoCoin] landed (…,-2.87)` · 궤적 꼭대기 y=−2.12 |
+| 착지 전 줍기·자석 없음 | 비행 중 x 는 플레이어 반대쪽으로만(1.35 → 1.60) · 착지 뒤 1.48 → 0.56 → `picked` |
+| 공중 드랍 | `no foothold below … physics fallback` → `falling=true` 동안 그대로 → `landed by physics (0.48,-2.21) age=0.58` → `picked` |
+| 수비대 MISS | 피해 0: `staggerUntil=0.00 lastKnock=0.00` · 넉백 로그 없음 / 피해 5: `[MonsterHit] VerifyGuard knockback` |
+
+- 못 본 것: 픽파켓 동전 · 에너지볼트 처치 드랍(#123 미포함 브랜치) · 경사 발판 · 다인 세션 · 실제 전투에서 빗나간 공격으로 본 수비대 반응(피격 함수에 이벤트를 직접 넣어 확인).
+- 관찰: 레인 미니언은 `MonsterHit` 을 쓰지 않는다 — 미니언의 MISS 무반응은 #122 의 `Monster` 수정이 담당.
+- 빌드 콘솔: Info 196 · Warning 1(LWA-1111 기존) · **Error 1** = `LEA-1102` `PortalNetwork.PortalSpriteSpec`(#117 에서 main 에 들어온 코드 · 이 PR 과 무관).
+- 동전 모양·수치(`ArcSeconds` 0.45 · `ArcHeight` 0.6 · `ArcSpread` 0.5 · `RestOffsetY` 0)는 사용자가 영상을 보고 정한다.
