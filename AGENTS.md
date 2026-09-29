@@ -347,3 +347,14 @@ If none of the above resolves the issue, tell the user:
 - `ActionStateChangedEvent` 는 **body 엔티티**(`AvatarRendererComponent:GetBodyEntity()`)에 보내야 한다.
   루트에 보내면 에러 없이 아무 일도 일어나지 않는다
 - 액션 이름(`swingO1` `swingT1` `stabO1` `shoot1` …)은 **추측하지 말고** 문서의 검증 상태표를 확인한다
+
+## O-6. 🔴 PR 에는 보고서 페이지를 붙인다
+
+**작업이 끝나 사람에게 넘기기 전에 그 PR 의 보고서를 만든다** (사용자 지시 2026-09-29).
+정본은 `Docs/협업-규칙.md` §3-1-3 이다. 요약:
+
+- **PR 본문**은 지금까지 쓰던 대로 쓴다 — 무엇을 왜 바꿨나 · 건드리는 파일 · 검증 증거
+- **보고서 페이지**(Claude Artifact)를 따로 만들어 개발한 내용과 검증한 내용을 **캡처(사진·영상)와 함께** 싣고,
+  그 링크를 **PR 본문 맨 위**에 넣는다
+- 못 찍은 장면 · 확인하지 못한 항목은 **그대로 적는다.** O-4 와 같다 — 보지 않은 것을 봤다고 쓰지 않는다
+- 페이지 공유 설정 · Ready for review 전환 · 머지는 **사람**이 한다
