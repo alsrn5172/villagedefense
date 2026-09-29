@@ -8,6 +8,14 @@ script MesoCoin extends Component
 
 	property integer Value = 1
 
+	-- 금액별 그림(2026-09-29 WO-034 · 사용자 결정 = 원작 구간). "최소 메소:RUID" 를 쉼표로 · Value 이하에서 가장 큰 최소값이 이긴다.
+	-- 1~49 동 메소 · 50~99 금 메소 · 100~999 지폐 뭉치 · 1000~ 돈 주머니 — 원작 메소 드랍 그림(전부 4프레임 회전 animationclip).
+	-- 픽파켓 동전(B · 1~2메소)도 같은 모델이라 저절로 동 메소. 모델 기본 SpriteRUID 도 동 메소(스폰 첫 프레임에 보이는 그림).
+	property string TierSprites = "1:a724200c454c4fcf878b0a3cdbb706d6,50:5c78b56b91964dcaa83c1d30b8cd3cce,100:c3fe3ffa606f41069ce8b36278e9e7e8,1000:f0aa7764ff5344848d59accafa2dbf6e"
+
+	@HideFromInspector
+	property boolean tierApplied = false
+
 	property number PickupRadius = 0.8
 
 	-- 자석 반경. 화면 가로 12.8 유닛 기준 약 1/4 (사용자 확정).
@@ -49,7 +57,13 @@ script MesoCoin extends Component
 	method void OnUpdate(number delta)
 		-- 수명 관리 + 근접 플레이어 획득 판정.
 		self.Age = self.Age + delta
-		
+
+		-- Value 는 스폰 직후 대입된다(FarmReward.DropCoins · B 픽파켓) → OnBeginPlay 가 아니라 첫 틱에 그림을 고른다.
+		if not self.tierApplied then
+			self.tierApplied = true
+			self:ApplyTierSprite()
+		end
+
 		if self.Collected then
 			return
 		end
@@ -89,6 +103,33 @@ script MesoCoin extends Component
 		if dist <= self.MagnetRadius and self:AutoPickupOn(owner) then
 			self:MoveToward(myPos, dx / dist, dy / dist, delta)
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyTierSprite()
+		-- Value(메소)에 맞는 금액별 그림을 SpriteRUID 에 넣는다(TierSprites · 서버에서 바꾸면 클라에 동기화된다).
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(sr) then
+			return
+		end
+		local best = ""
+		local bestMin = -1
+		for entry in string.gmatch(self.TierSprites, "[^,]+") do
+			-- 캡처 하나짜리 match 두 번 — 여러 값을 한 번에 받으면 LWA-1111 경고가 난다.
+			local minText = string.match(entry, "(%d+)%s*:")
+			local ruid = string.match(entry, ":%s*(%x+)")
+			if minText ~= nil and ruid ~= nil then
+				local minValue = tonumber(minText)
+				if minValue ~= nil and self.Value >= minValue and minValue > bestMin then
+					bestMin = minValue
+					best = ruid
+				end
+			end
+		end
+		if best ~= "" and sr.SpriteRUID ~= best then
+			sr.SpriteRUID = best
+		end
+		log("[MesoCoin] value " .. tostring(self.Value) .. " -> tier " .. tostring(bestMin) .. " sprite " .. best)
 	end
 
 	@ExecSpace("ServerOnly")
