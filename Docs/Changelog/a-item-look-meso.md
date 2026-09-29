@@ -15,5 +15,9 @@
 - `Global/MesoCoin.model` 기본 SpriteRUID: 마일리지 알림 "M" 토큰 `3b88d8df…` → 동 메소(ModelBuilder · 스폰 첫 프레임에 보이는 그림 · CRLF 보존 · 한 줄만 바뀜).
 - 드랍 클립은 아이템 원점 규칙이라 pivot 이 그림 왼쪽 아래 쪽 — 동전 바닥이 발판에 닿는다(예전 40×40 중심 그림은 절반이 박혔다). 가로 약 0.1 치우침은 눈으로 확인.
 
-### 검증
-- (대기) Maker Play — 워크트리를 개인 월드에 물려 Reimport All(허브 CLAUDE §1-2). 활 섬광 · 동전 그림 · 발판 위치는 사용자 눈.
+### 검증 (2026-09-29 · Maker Play)
+- 환경: main `776ab4f` + #120 + #121 로컬 합본(`local/wo034-test` · push 안 함) · 개인 월드 · Orbis_Lobby_VictoriaStation(정적 룸) · 2026-09-29 Maker Play.
+- 빌드 경고 **1 → 1**(남은 1건 = 원래 있던 `ParseStatCsv` LWA-1111 · 에러 0) · 런타임 에러 0(경고 7 = 원래 있던 `[BossCatalog]` 4 · LWA-3047 3) · check-integrity 통과(경고 3 = main) · LSP 0.
+- 영상 · 로그 보고서: https://claude.ai/artifact/DJNmg2zK9xPjrfrHXDKtLH
+- **메소 4단계 PASS**: 값 20 · 60 · 150 · 1500 동전 → `[MesoCoin] value … -> tier 1/50/100/1000` · 동 · 금 · 지폐 · 주머니 그림이 회전하며 발판 위에 선다(지폐 · 금은 기준점 차이로 조금 겹침). 몹 처치 드랍 경로는 따로 안 봄.
+- **궁수 활 — 결정 필요**: 예전 보우마스터 활은 쏠 때 큰 파란 별 섬광(재현) · 지금 넣은 바람의 기사 활은 큰 섬광 없음 · 대신 초록 바람 줄기가 짧게. 후보 비교: 고구려 활 `4702d0b6ee494402a201f0b3492ea619` = 이펙트 없음(추천) · 아르칸시엘 = 활이 거의 안 보임 · 커스드 보우 = 보라색 큰 이펙트.
