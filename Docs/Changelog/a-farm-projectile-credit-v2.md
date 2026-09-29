@@ -35,6 +35,14 @@ B 파일은 읽기만(`SkillProjectile.CasterUserId` 속성). 계약서 변경 �
 | 사냥 — 근접(회귀) | 파워 스트라이크(SK_W11) `dealt … amount=168` → `[FarmReward] … lasthit=<uid> top=<uid> dmg=168 exp=8` · 아이언 바디 반사 처치도 같은 귀속 |
 | 보스 — 누적 피해 원장 | 마노(2220000)에 에너지볼트 → `BossSpawner.dmg[<uid>]` 123 → 246 → 369 → 492 |
 
-- 🟡 최신 main(#117 · #118 · #120 · #121 포함) 위에서는 아직 Play 로 안 봤다 — 사냥 처치 1회 재확인 예정.
-- 못 본 것: 보스를 투사체로 끝까지 잡았을 때의 최다 피해 보상(원장까지만) · 다인 세션.
+- ✅ 최신 main(#117 · #118 · #120 · #121 포함) 위 Play 1판(2026-09-29 · 개인 월드에 이 워크트리 · 런타임 Error 0 · 캡처 4장). 보고서 = 허브 `handoff/검증보고서-2026-09-29-투사체귀속123/`.
+
+| 무엇 | 결과(로그) |
+|---|---|
+| 사냥 — 에너지볼트 | 한 발에 2마리 · `[FarmReward] …SP001… lasthit=<uid> top=<uid> dmg=123 exp=8` · `…SP002…` 같음 · `dropped 3 meso in 3 coins for <uid>` ×2 · `[MesoCoin] value 1 -> tier 1 sprite a724200c…`(#121) · 도감 처치 수 1 → 3 |
+| 보스 — 누적 피해 | 마노 `ledger` 123 → 246 → 369 → 492 → 615 |
+| 보스 — 처치 보상 | `[BossReward] boss=2220000 … top=<uid> dmg=50977 … first=true`(투사체 615 + 반사 50362) · `[Tally] boss … n=1` · `[Coll] tier BOSS 발견` · `[Ach] complete ACH_BOSS_1` |
+| 회귀 — 반사 처치 | `[FarmReward] …SP003… lasthit=<uid> dmg=50362 exp=8` ×4 |
+
+- 못 본 것: 파워 스트라이크 직접 타격(대상이 반사 피해로 먼저 죽어 `candidates=0`) · 투사체가 보스 막타를 친 경우 · #122 와 합친 상태 · 다인 세션.
 - 검증 중 발견한 계정 저장 실패(`LEA-3001`)는 #122 에서 고친다.
