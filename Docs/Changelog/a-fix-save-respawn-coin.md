@@ -30,4 +30,14 @@ base `main` 776ab4f · 2026-09-29 검증(#119 포함)에서 나온 현상.
 ## 검증
 
 - LSP 4파일 깨끗 · `check-integrity` 통과.
-- 🟡 Maker Play(개인 월드에 이 워크트리 · Reimport All) 예정: A 기록 없는 계정 → 몬스터 1마리 → `FlushAll` → `[AcctRec] save AccountCollection bytes=…` · LEA-3001 0건 → 재Play `loaded mon≥1` · B 부활 뒤 `[Death] respawn check ok` · C `[Stat] MISS` 뒤 몬스터 x 불변 · E 외형 17칸 로그 대조.
+- ✅ Maker Play 4판(2026-09-29 · 개인 월드에 이 워크트리 · 기록 없는 새 계정 · 빌드 경고 이전 1 → 이후 1 · 런타임 Error 0 · 로그 판독 + 캡처 14장). 보고서 = 허브 `handoff/검증보고서-2026-09-29-버그픽스122/`.
+
+| 항목 | 결과(로그) |
+|---|---|
+| A 저장 | 저장 직전 `dirty coll=true ach=true … boss(empty)=0 achD(empty)=0` · 옛 경로 `raw JSONEncode … ok=false` · 새 경로 `StripEmpty JSONEncode ok=true` · `[AcctRec] save AccountCollection bytes=52` · `AccountAchievement bytes=32` → `dirty` 전부 false · 재접속 `[AcctRec] loaded … mon=1 boss=0 achDone=1 hist=2` · 프로필 `exp=50 titles=TTL_ROOKIE` · LEA-3001 0건 |
+| B 부활 | 무료 구간 · 2P 마을 없음 → 리스항구 · 3P 마을 있음 → 헤네시스 1레인 포탈 자리. 셋 다 `[Death] respawn check ok … try=1` |
+| C MISS | `[Stat] MISS` ×6 동안 `hp=17.0 lastHitAt=-1000.0 knocking=false` 그대로 · 대조(명중) `[Stat] dmg 10` → `hp=7.0 lastHitAt=100.32` |
+| E 외형 | 2회 시도 재현 안 됨 — 로비·룸·테스트 키트 뒤 모두 프리셋 그대로 · 시작 장비 4부위 덧씌우기도 빈 칸 없음 → 코드 변경 없음 |
+
+- 못 본 것: 부활 재시도·스폰 지점 폴백 경로(실제로 안 탐) · 300초 자동 저장 주기(강제 저장으로 대신) · 다인 · **최신 main(#117·#118·#120·#121 포함)과 합친 상태의 Play**.
+- 관찰: 내 마을 부활 지점이 1레인 포탈과 같은 좌표라 포탈 빛기둥(플레이어 앞 층)이 캐릭터를 덮어 반투명하게 보인다. "맨몸"으로 보였던 것이 이 경우였을 수 있다.
