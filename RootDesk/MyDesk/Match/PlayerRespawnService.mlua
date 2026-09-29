@@ -30,6 +30,16 @@ script PlayerRespawnService extends Logic
 
 	property integer MoveMaxTries = 2
 
+	-- 옮기기 전 자리에서 이 거리 안에 그대로 있으면 "이동이 안 먹었다" 로 본다(재시도 조건).
+	property number MoveStuckTolerance = 1.0
+
+	-- 예약된 이동 확인의 세대: moveEpoch = 매치 단위(시작·종료 때 +1) · moveSeq[uid] = 유저 단위(새 부활·이탈 때 +1)
+	@HideFromInspector
+	property integer moveEpoch = 0
+
+	@HideFromInspector
+	property any moveSeq = nil
+
 	@HideFromInspector
 	property any participants = nil
 
@@ -62,6 +72,8 @@ script PlayerRespawnService extends Logic
 		self.wasDead = {}
 		self.pending = {}
 		self.deaths = {}
+		self.moveEpoch = self.moveEpoch + 1
+		self.moveSeq = {}
 		for _, uid in ipairs(userIds or {}) do
 			table.insert(self.participants, uid)
 			local player = _UserService:GetUserEntityByUserId(uid)
@@ -84,6 +96,7 @@ script PlayerRespawnService extends Logic
 		end
 		self.participants = nil
 		self.pending = {}
+		self.moveEpoch = self.moveEpoch + 1
 	end
 
 	@ExecSpace("ServerOnly")
@@ -95,6 +108,7 @@ script PlayerRespawnService extends Logic
 		end
 		if self.pending ~= nil then self.pending[userId] = nil end
 		if self.wasDead ~= nil then self.wasDead[userId] = nil end
+		self:BumpMove(userId)
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if isvalid(player) and isvalid(player.PlayerComponent) then player.PlayerComponent.RespawnDuration = self.DefaultRespawnSeconds end
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
@@ -245,11 +259,36 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean IsParticipant(string userId)
+		-- 지금 매치의 감시 대상인가.
+		if self.participants == nil then return false end
+		for _, uid in ipairs(self.participants) do
+			if uid == userId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BumpMove(string userId)
+		-- 그 유저의 부활 이동 확인(예약된 타이머)을 무효로 만든다 — 이탈 · 새 부활.
+		if self.moveSeq == nil then self.moveSeq = {} end
+		self.moveSeq[userId] = (self.moveSeq[userId] or 0) + 1
+	end
+
+	@ExecSpace("ServerOnly")
 	method void MoveToRespawn(string userId, string destMap, Vector2 destPos, integer attempt)
 		-- 리스폰 위치로 옮기고 MoveCheckSeconds 뒤 실제로 갔는지 되읽는다(WO-035 B · 2026-09-29). 안 갔으면 한 번 더 · 그래도 아니면 에러 로그.
 		-- 목적지 맵이 이 룸에 없으면(맵 하나만 연 테스트 · 정적 룸) 엔진 이동이 조용히 실패해 죽은 자리에 남았다 → 지금 맵의 스폰 지점으로 보낸다.
+		-- 🔴 재시도는 **옮기기 전 자리에 그대로 남아 있을 때만** 한다. 목적지가 아니라는 이유만으로 다시 옮기면, 부활하자마자 포탈을 탔거나
+		--    매치가 끝나 다른 곳으로 간 사람을 끌고 온다. 예약된 확인은 매치 종료 · 다음 매치 · 이탈 · 새 부활에서 무효가 된다(Codex 리뷰 2026-09-29).
 		local player = _UserService:GetUserEntityByUserId(userId)
-		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		if not isvalid(player) or not isvalid(player.PlayerComponent) or not isvalid(player.TransformComponent) then return end
+		if self.moveSeq == nil then self.moveSeq = {} end
+		local epoch = self.moveEpoch
+		local seq = self.moveSeq[userId] or 0
+		local fromMap = ""
+		if isvalid(player.CurrentMap) then fromMap = player.CurrentMap.Name end
+		local fp = player.TransformComponent.WorldPosition
 		local map = destMap
 		local pos = destPos
 		if not isvalid(_EntityService:GetEntityByPath("/maps/" .. map)) then
@@ -265,6 +304,9 @@ script PlayerRespawnService extends Logic
 		end
 		player.PlayerComponent:MoveToMapPosition(map, pos)
 		_TimerService:SetTimerOnce(function()
+			-- 그사이 매치가 끝났거나 · 새 매치가 시작됐거나 · 이탈했거나 · 다시 부활했으면 이 확인은 버린다.
+			if self.moveEpoch ~= epoch or self.moveSeq == nil or (self.moveSeq[userId] or 0) ~= seq then return end
+			if not self:IsParticipant(userId) then return end
 			local pl = _UserService:GetUserEntityByUserId(userId)
 			if not isvalid(pl) or not isvalid(pl.TransformComponent) or not isvalid(pl.PlayerComponent) then return end
 			local nowMap = ""
@@ -277,6 +319,14 @@ script PlayerRespawnService extends Logic
 				.. " (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ")"
 			if nowMap == map and near then
 				log("[Death] respawn check ok " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				return
+			end
+			local sx = wp.x - fp.x
+			local sy = wp.y - fp.y
+			local stuck = nowMap == fromMap and (sx * sx + sy * sy) <= self.MoveStuckTolerance * self.MoveStuckTolerance
+			if not stuck then
+				-- 목적지는 아니지만 옮기기 전 자리도 아니다 = 스스로 움직였다(포탈 등). 건드리지 않는다.
+				log("[Death] respawn check moved on " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
 				return
 			end
 			if attempt < self.MoveMaxTries and not pl.PlayerComponent:IsDead() then
@@ -342,6 +392,7 @@ script PlayerRespawnService extends Logic
 			destPos = _MatchLobbyGateway.MatchStartSpawn
 		end
 		if destMap ~= "" and destPos ~= nil then
+			self:BumpMove(userId)
 			self:MoveToRespawn(userId, destMap, destPos, 1)
 		end
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end

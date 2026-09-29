@@ -119,7 +119,9 @@ script AccountRecordData extends Logic
 					savedGenerations[key] = u.gen[part]
 					log("[AcctRec] save " .. key .. " bytes=" .. tostring(#json) .. " (" .. userId .. ")")
 				else
-					log_error("[AcctRec] encode failed " .. key .. " (" .. userId .. ") — 이 키만 건너뛴다: " .. tostring(json))
+					-- 🔴 이 키는 이번 저장에서 빠진다. 룸 이동·이탈 저장도 막지 않는다 — 기록 한 칸 때문에 플레이어가 로비·매치에 갇히는 쪽이 더 나쁘다
+					--    (Codex 리뷰 2026-09-29 지적 · 판단). 빈 표는 StripEmpty 가 걸렀으므로 여기 오는 건 비정상 데이터뿐이다 → 에러 로그로 남긴다.
+					log_error("[AcctRec] encode failed " .. key .. " (" .. userId .. ") — 이 키만 건너뛴다(기록 유실 가능): " .. tostring(json))
 				end
 			end
 		end
@@ -129,13 +131,19 @@ script AccountRecordData extends Logic
 	method any StripEmpty(any t, integer depth)
 		-- 저장용 사본: 빈 표인 칸은 뺀다(안쪽까지). _HttpService:JSONEncode 는 빈 자식 표가 있으면 LEA-3001(LuaTableToJsonType.UnknownType) 예외를 던진다
 		-- (2026-09-29 실측 · { v = 1, r = {} } 실패 · { v = 1 } 성공 · {} 단독은 빈 문자열). 읽을 땐 Normalize 가 없는 칸을 빈 표로 채운다.
+		-- 🔴 빈 표만 뺀다. 깊이 한도(순환 방지)에 닿은 표는 **그대로 둔다** — 버리면 저장은 성공하고 내용만 조용히 잘린다(Codex 리뷰 2026-09-29).
+		--    그 안에 빈 표가 있으면 인코딩이 실패해 그 키만 건너뛴다(저장소의 옛 값은 그대로 남는다).
 		local out = {}
 		if type(t) ~= "table" then return out end
 		for k, v in pairs(t) do
 			if type(v) == "table" then
-				if depth < 6 and next(v) ~= nil then
-					local c = self:StripEmpty(v, depth + 1)
-					if next(c) ~= nil then out[k] = c end
+				if next(v) ~= nil then
+					if depth >= 8 then
+						out[k] = v
+					else
+						local c = self:StripEmpty(v, depth + 1)
+						if next(c) ~= nil then out[k] = c end
+					end
 				end
 			else
 				out[k] = v
