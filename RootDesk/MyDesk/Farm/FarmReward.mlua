@@ -143,12 +143,17 @@ script FarmReward extends Component
 
 	@ExecSpace("ServerOnly")
 	method string LastHitter()
-		-- 막타 친 **플레이어**의 userId. 마지막 공격자가 플레이어가 아니면(수비대·미니언·포탑) "".
-		local a = self.LastAttacker
-		if not isvalid(a) or not isvalid(a.PlayerComponent) then
-			return ""
-		end
-		local uid = a.PlayerComponent.UserId
+		-- 막타 친 **플레이어**의 userId. 플레이어 본인 또는 플레이어의 투사체(SkillProjectile.CasterUserId · PR #119).
+		-- 마지막 공격자가 그 둘이 아니면(수비대·미니언·포탑·오라) "".
+		return self:CreditOf(self.LastAttacker)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string CreditOf(Entity attacker)
+		-- 공격자 → 책임 유저. 규칙은 Farm/AttackCredit 한 곳(없으면 예전처럼 플레이어 엔티티만).
+		if _AttackCredit ~= nil then return _AttackCredit:UserIdOf(attacker) end
+		if not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then return "" end
+		local uid = attacker.PlayerComponent.UserId
 		if uid == nil then return "" end
 		return uid
 	end
@@ -175,18 +180,29 @@ script FarmReward extends Component
 		if _DifficultyService ~= nil then exp = math.floor(exp * _DifficultyService:GetMul("MATCH_EXP_MUL") + 0.5) end
 		if isvalid(owner) and isvalid(owner.PlayerComponent) and _SummonManager ~= nil then
 			_SummonManager:GrantKillReward(owner, exp)
+			-- 매치 집계 MonsterKillCount (WO-031 묶음 2 · GDD §4.12 "일반 사냥 몬스터 처치 **보상을 받은** 횟수" · 미니언 MonsterId 0 제외).
+			-- 🔴 보상이 실제로 나간 이 안에서만 센다(Codex 리뷰 2026-09-26 — 막타 뒤 나간 사람까지 세면 순위 처치 수가 부푼다). 도감·업적도 이 한 줄에서 이어진다.
+			if self.MonsterId > 0 and _MatchTallyService ~= nil then _MatchTallyService:OnMonsterKill(ownerId, self.MonsterId, self.EliteId) end
 		end
 		log("[FarmReward] " .. self.Entity.Name .. " lasthit=" .. ownerId .. " top=" .. self:TopDamager() .. " dmg=" .. tostring((self.dmg ~= nil and self.dmg[ownerId]) or 0) .. " exp=" .. tostring(exp) .. " elite=" .. self.EliteId)
 
 		self:DropCoins(ownerId)
 
+		-- 재료 · 엘리트 드랍은 **죽은 자리 바닥에 떨군다**(WO-035 · 사용자 결정 2026-09-29 — 예전엔 인벤토리 직접 지급). 주인 = 막타.
+		local dropMap = self.Entity.CurrentMap
+		local dropTr = self.Entity.TransformComponent
+		local dropPos = nil
+		if isvalid(dropTr) then dropPos = dropTr.WorldPosition end
 		-- 재료 드롭(보석 · 지역 재화 · 몬스터별 재화 — DropTable · B2). 미니언(MonsterId 0)은 재료가 없다(기획).
 		if self.MonsterId > 0 and _DropTableLogic ~= nil then
-			local map = self.Entity.CurrentMap
-			_DropTableLogic:GrantKillDrops(ownerId, isvalid(map) and map.Name or "", self.MonsterId)
+			if isvalid(dropMap) and dropPos ~= nil then
+				_DropTableLogic:DropKillItems(ownerId, dropMap, dropPos, self.MonsterId)
+			else
+				_DropTableLogic:GrantKillDrops(ownerId, isvalid(dropMap) and dropMap.Name or "", self.MonsterId)
+			end
 		end
 		-- 엘리트 확정 드랍 (B7 · 막타 귀속).
-		if self.EliteId ~= "" and _EliteSpawner ~= nil then _EliteSpawner:GrantEliteDrops(ownerId, self.EliteId) end
+		if self.EliteId ~= "" and _EliteSpawner ~= nil then _EliteSpawner:GrantEliteDrops(ownerId, self.EliteId, dropMap, dropPos) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -245,16 +261,14 @@ script FarmReward extends Component
 	handler HandleHitEvent(HitEvent event)
 		-- 마지막 공격자(막타 판정 · LastAttacker)를 기록하고 플레이어별 누적 피해를 쌓는다. HP 는 Monster 가 깎으므로 여기서 건드리지 않는다.
 		-- 플레이어가 아닌 공격자(수비대·미니언·포탑)도 LastAttacker 에는 남는다 → 그들이 막타면 LastHitter 가 "" 라 보상이 없다.
+		-- 플레이어의 투사체(에너지볼트 등)는 시전자에게 귀속한다(CreditOf · PR #119).
 		local attacker = event.AttackerEntity
 		if not isvalid(attacker) then
 			return
 		end
 		self.LastAttacker = attacker
-		if not isvalid(attacker.PlayerComponent) then
-			return
-		end
-		local uid = attacker.PlayerComponent.UserId
-		if uid == nil or uid == "" then
+		local uid = self:CreditOf(attacker)
+		if uid == "" then
 			return
 		end
 		if self.dmg == nil then
