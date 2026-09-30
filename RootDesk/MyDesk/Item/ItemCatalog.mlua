@@ -34,6 +34,15 @@ script ItemCatalog extends Logic
 
 	property string RepairTableName = "RepairConfig"
 
+	-- 장비 상인 공용 레시피(2026-10-01 · 사용자 "직업과 마을은 관련 없음"): ShopKey = EquipShopKey 인 행은 모든 마을(REGION_*) 장비 상인이 판다.
+	-- 재료 칸의 RegionLocalToken 은 "그 상인이 선 마을의 지역 재화"로 바뀐다(DropTable 의 REGION_LOCAL 과 같은 뜻).
+	property string EquipShopKey = "EQUIP"
+
+	property string RegionLocalToken = "REGION_LOCAL"
+
+	-- 마을 ShopKey → 지역 재화 ItemId (계약서 A-2-8c · DropTableLogic.RegionItems 와 같은 짝)
+	property string RegionCurrencies = "REGION_HENESYS=REGION_HENESYS_SPORE,REGION_KERNING=REGION_KERNING_THIEF_COIN,REGION_ELLINIA=REGION_ELLINIA_SPIRIT_DUST,REGION_NAUTILUS=REGION_NAUTILUS_PIRATE_COIN,REGION_PERION=REGION_PERION_WARRIOR_TOKEN"
+
 	@HideFromInspector
 	property any recipes = nil
 
@@ -84,6 +93,9 @@ script ItemCatalog extends Logic
 					type = t:GetCell(i, "ItemType") or "",
 					slot = t:GetCell(i, "EquipSlot") or "",
 					reqLevel = math.floor(num("ReqLevel")),
+					-- 강화 티어(EnhanceSlotBonus 의 ReqLevel 줄 고르기 · 2026-10-01 열 추가). 빈칸이면 요구 레벨과 같다.
+					-- 보스 장비처럼 요구 레벨은 0 인데 강화는 30제만큼 되는 장비가 쓴다.
+					enhanceTier = math.floor(tonumber(t:GetCell(i, "EnhanceTier")) or num("ReqLevel")),
 					reqJob = t:GetCell(i, "ReqJob") or "",
 					icon = t:GetCell(i, "IconRUID") or "",
 					-- 아이템 설명(인벤토리 툴팁에 나온다 · 2026-09-29 열 추가 · 빈칸이면 설명 없음).
@@ -254,9 +266,47 @@ script ItemCatalog extends Logic
 	end
 
 	method any GetRecipes(string shopKey)
-		-- ShopKey 의 레시피 목록(CSV 순서). 없으면 빈 테이블.
+		-- 그 상인이 파는 레시피 목록(CSV 순서). 마을(REGION_*) 상인이면 자기 ShopKey 행 + 공용(EquipShopKey) 행. 없으면 빈 테이블.
 		self:EnsureLoaded()
-		return self.recipesByShop[string.upper(shopKey or "")] or {}
+		local key = string.upper(shopKey or "")
+		local out = {}
+		for _, r in ipairs(self.recipesByShop[key] or {}) do table.insert(out, r) end
+		if self:IsRegionShop(key) and key ~= self.EquipShopKey then
+			for _, r in ipairs(self.recipesByShop[self.EquipShopKey] or {}) do table.insert(out, r) end
+		end
+		return out
+	end
+
+	method boolean IsRegionShop(string shopKey)
+		-- 마을 장비 상인(REGION_*)인가. 리스항구(NOVICE) · 모르는 맵("")은 아니다.
+		return string.sub(shopKey or "", 1, 7) == "REGION_"
+	end
+
+	method boolean RecipeAvailableAt(any recipe, string hereKey)
+		-- 이 레시피를 지금 선 곳(ShopKeyOfMap)의 상인이 파는가. 서버 검증(CraftService)과 공방 창이 같은 규칙을 쓴다.
+		if recipe == nil or hereKey == nil or hereKey == "" then return false end
+		if recipe.shopKey == hereKey then return true end
+		return recipe.shopKey == self.EquipShopKey and self:IsRegionShop(hereKey)
+	end
+
+	method string RegionCurrencyOf(string shopKey)
+		-- 마을 ShopKey → 지역 재화 ItemId. 모르면 "".
+		for k, v in string.gmatch(self.RegionCurrencies, "([^,=]+)=([^,]+)") do
+			if k == shopKey then return v end
+		end
+		return ""
+	end
+
+	method any RecipeMats(any recipe, string hereKey)
+		-- 레시피 재료를 그 상인 기준으로 푼다: RegionLocalToken → 그 마을 지역 재화. { {itemId, count}, ... }
+		local out = {}
+		if recipe == nil then return out end
+		for _, m in ipairs(recipe.mats) do
+			local id = m.itemId
+			if id == self.RegionLocalToken then id = self:RegionCurrencyOf(hereKey) end
+			table.insert(out, { itemId = id, count = m.count })
+		end
+		return out
 	end
 
 	method any GetShopItem(string shopItemId)
@@ -394,7 +444,7 @@ script ItemCatalog extends Logic
 	end
 
 	method any GetSlotBonus(string slot, integer reqLevel, integer level)
-		-- ⑫ 부위·요구레벨 티어·강화 단계의 고정 상승치. 티어 = 표의 ReqLevel 중 "아이템 요구레벨 이하 최대". 없으면 nil.
+		-- ⑫ 부위·요구레벨 티어·강화 단계의 고정 상승치. 티어 = 표의 ReqLevel 중 "아이템 강화 티어(EnhanceTier · 빈칸이면 요구레벨) 이하 최대". 없으면 nil.
 		self:EnsureLoaded()
 		if self.slotBonus == nil then
 			return nil
@@ -421,7 +471,7 @@ script ItemCatalog extends Logic
 			return 0
 		end
 		local gem = self:GetGem(gemId)
-		local row = self:GetSlotBonus(def.slot, def.reqLevel, level)
+		local row = self:GetSlotBonus(def.slot, def.enhanceTier, level)
 		if gem == nil or row == nil then
 			return 0
 		end
@@ -442,7 +492,7 @@ script ItemCatalog extends Logic
 		-- 한벌옷(2026-09-30 · 사용자 결정 "상의 + 하의를 합친 가격 · 능력치 · 방어력 등등"): 강화 상승치도 두 벌 몫(×2). 강화 비용도 EnhanceService 가 ×2 로 받는다.
 		local mul = self:PieceCount(def)
 		for lv = 1, (enh or 0) do
-			local row = self:GetSlotBonus(def.slot, def.reqLevel, lv)
+			local row = self:GetSlotBonus(def.slot, def.enhanceTier, lv)
 			local er = self:GetEnhanceRow(lv)
 			local cnt = (er ~= nil) and er.gemCount or 1
 			if row ~= nil and (row.defense or 0) ~= 0 then
