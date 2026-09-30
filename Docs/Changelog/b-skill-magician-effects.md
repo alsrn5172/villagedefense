@@ -137,3 +137,19 @@
 - 해석이 갈리는 것은 커밋하지 않았다(PR 본문 · 원장에 제안): 에너지볼트 "지정 위치 광역"(지금 = 앞으로 나는 투사체가 처음 닿은 적 자리에서 폭발 2.0 × 1.1 · 최대 6명) · 대마법 툴팁 "지속 2초"(= 충전 2초, 지속 아님 · `SkillWindowLogic.FormatEffect` — #102 의 `DurationIsDelayLabels` 에 한 줄 추가 제안) · 궁극기 영혼석 수 · 사용 제한(기획 답변 1 ↔ 지금 5개 고정 · 제한 없음 = #40 5813232188 A 결정).
 - 연성은 A 의 `Item/EnhanceService.mlua` 가 아직 안 쓴다(`:6` · `:69` `row.mesoCost` 그대로) — B 쪽 값(`JobPassiveLogic.GetJobCostMul`)은 준비됨.
 - Round 9 확인 항목(그룹 A 뒤): 대마법 — 달팽이 3마리 + 마노(보스)면 마노만 · 보스가 없으면 한 마리만 맞는다. 매직 가드 툴팁 마지막 줄.
+
+## #40 답 반영 (2026-10-01 · 사용자(강민구) 결정 2026-09-29)
+
+- **대마법(SK_M31) = 화면 전체 광역 — `1fdceb9` 되돌림(`797c52b`) + 화면 상자(`e239e5c`).** #40 5884706734 · 5885126414: 화면 안 적 전부 · 대상 상한 없음 · 대상마다 6000%(표 고정 배율) · 대상 고르기 없음.
+  - `SkillExecutors.ExecuteBlast`: 피해 = `ScreenBoxSize`(12.8 × 7.2 · 시전자 중심 · 다른 ORIGIN 의 "화면 전체" 와 같은 상자) `DealSkillDamage` 1회 · HitCount 1. 반지름(Range 3) 원형 피해와 보스 우선/최근접 대상 고르기는 없다.
+  - 폭발 그림(원작 hit `05ab65bf` × 2.0)은 시전자 앞 Range 지점(예전 "대상 없음" 자리). Range 는 연출 배치에만 쓴다.
+  - 로그 `SkillExecutors: BLAST SK_M31 screen-wide box=12.8x7.2 at (x,y) targets=N (no cap) hits=1 [이름,…]` + 대상마다 피격 로그.
+  - `git revert` 는 `SkillInfo.csv` 의 `merge=union` 때문에 SK_M22 · SK_M31 행을 두 줄씩 남겼다 → SK_M31 행만 `1fdceb9` 이전 줄로 직접 되돌려 중복 없음(integrity C3 통과).
+  - `SkillInfo.csv` SK_M31 Description "화면 안의 모든 적에게 초고피해를 입힌다." · #Note. `originSingleTarget` 이름은 그대로(#115 · #116 과 새 충돌 방지 · 주석에 "지금은 광역").
+  - 위 "마법사 표 전체 대조" 절의 대마법 단일 대상 줄은 이 결정으로 뒤집혔다(기록으로 둔다).
+- **텔레포트 강화(SK_M21) 도착 광역 최대 6명 — `f6373fc`.** #40 5884389647: 최대 6명(다른 스킬과 통일) · 상자 높이 = 발 ~ 위 1.6 그대로.
+  - 새 `SkillExecutors.BlinkArrivalMaxTargets = 6`(0 = 상한 없음). `ExecuteBlink` 가 상자(2.4 × 1.6)를 먼저 probe(`FindSkillTargets` · 피해 없음) → 6명 이하면 예전처럼 상자 한 번 · 7명 이상이면 도착 지점에서 가까운 순 6명만 한 명씩 `DealSkillDamageToTarget`(피해 · 표시 타수 같음 · hit 그림은 패스마다 다시 넣음).
+  - `SkillAttack` 은 안 건드렸다 — #116 이 같은 파일에 넣는 대상 상한(`PendingMaxTargets` · `CapTargetsByShape`)과 새 충돌을 만들지 않으려고. #116 이 들어온 뒤 그 장치로 옮길지는 그때 정한다.
+  - 로그 `BLINK SK_M21 arrival cap=6 inBox=N chosen=6 [이름,…]` / `… inBox=N (all hit)`. `SkillInfo.csv` SK_M21 #Note 한 구절.
+- **에너지볼트(SK_M11) 쿨타임 1.5 → 0 — `6bef717`.** #40 5884390599: 표에 없는 쿨타임은 0. `SkillInfo.csv` Cooldown 한 칸 + #Note.
+- 빌드 경고 · Play 는 아직(테스트 브랜치를 현재 main + #100 + #102 로 다시 만든 뒤). Play 확인 항목: 대마법 화면 안 전부(화면 밖 제외 · 대상마다 6000%) · 텔레포트 강화 7마리 이상 → 6마리만 · 에너지볼트 쿨 0.
