@@ -1,0 +1,193 @@
+@Logic
+script TitleService extends Logic
+
+	-- 칭호 (WO-031 묶음 5 · 계약서 A-2-24 TitleInfo · §0-5 account_titles / account_title · GDD §4.12).
+	--   보유·장착 원장 = AccountData(프로필 v4) · 얻는 곳 = 업적(AchievementService.Complete → Grant).
+	--   한 번에 하나 장착 · 목록·장착은 로비 계정 창(RequestEquip) · 표시 = 머리 위 이름표 "칭호 닉네임"(NameTagComponent.Name · @Sync 라 서버가 쓰면 모두에게 보인다)
+	--   · 생존자 통계 상세 · 매치 결과 화면(이름 = 칭호 닉네임).
+
+	-- defs[titleId] = { name, desc, order, enabled } · order = 정렬된 TitleId 목록
+	@HideFromInspector
+	property any defs = nil
+
+	@HideFromInspector
+	property any order = nil
+
+	-- 이름표를 못 붙였을 때(엔티티가 아직 없음) 다시 해 볼 유저: userId → 남은 횟수
+	@HideFromInspector
+	property any pendingTag = nil
+
+	@HideFromInspector
+	property integer tagTimerId = 0
+
+	method void OnBeginPlay()
+		-- 서버만 표를 읽는다.
+		if not self:IsServer() then return end
+		self.pendingTag = {}
+		self:Load()
+	end
+
+	method void OnEndPlay()
+		-- 재시도 타이머 해제.
+		if self.tagTimerId ~= 0 then
+			_TimerService:ClearTimer(self.tagTimerId)
+			self.tagTimerId = 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Load()
+		-- TitleInfo.csv. 🔴 DataSet 행은 1-based.
+		self.defs = {}
+		self.order = {}
+		local t = _DataService:GetTable("TitleInfo")
+		if t == nil then
+			log_warning("[Title] TitleInfo dataset not found — 칭호 없음")
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local id = tostring(t:GetCell(i, "TitleId") or "")
+			if id ~= "" then
+				local nm, _n = string.gsub(tostring(t:GetCell(i, "Name") or id), "[;|=]", " ")
+				local ds, _m = string.gsub(tostring(t:GetCell(i, "Desc") or ""), "[;|=]", " ")
+				self.defs[id] = { name = nm, desc = ds, order = math.floor(tonumber(t:GetCell(i, "SortOrder")) or 0),
+					enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false" }
+				table.insert(self.order, id)
+			end
+		end
+		table.sort(self.order, function(a, b)
+			local oa = self.defs[a].order
+			local ob = self.defs[b].order
+			if oa ~= ob then return oa < ob end
+			return a < b
+		end)
+		log("[Title] TitleInfo loaded: " .. tostring(#self.order) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method string NameOf(string titleId)
+		-- 표시 이름("" = 없음 · 꺼진 칭호도 "" — 목록·이름표에서 숨긴다).
+		if titleId == nil or titleId == "" or self.defs == nil then return "" end
+		local d = self.defs[titleId]
+		if d == nil or not d.enabled then return "" end
+		return d.name
+	end
+
+	@ExecSpace("ServerOnly")
+	method string EquippedNameOf(string userId)
+		-- 장착 칭호 이름(없으면 "").
+		if _AccountData == nil then return "" end
+		return self:NameOf(_AccountData:GetEquippedTitle(userId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean Grant(string userId, string titleId)
+		-- 칭호 보유 추가(업적 보상). 이미 있으면 false. 알림 한 줄.
+		if titleId == nil or titleId == "" or _AccountData == nil then return false end
+		if self.defs ~= nil and self.defs[titleId] == nil then
+			log_warning("[Title] unknown title " .. titleId .. " — TitleInfo 에 행이 없다")
+			return false
+		end
+		if not _AccountData:AddTitle(userId, titleId) then return false end
+		log("[Title] grant " .. titleId .. " (" .. userId .. ")")
+		local nm = self:NameOf(titleId)
+		if nm ~= "" and _UIToast ~= nil then _UIToast:ShowMessage("칭호 획득: " .. nm .. " — 로비 · 내 기록 · 칭호에서 장착", userId) end
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestEquip(string titleId)
+		-- 로비 계정 창에서 장착/해제(""). 가진 칭호 · 켜진 칭호만. 바꾸면 이름표를 다시 쓰고 칭호 탭을 다시 보낸다.
+		local uid = senderUserId
+		if _AccountData == nil or not _AccountData:IsLoaded(uid) then return end
+		-- 장착은 로비 계정 창에서만(결정 2026-09-25) — 매치가 도는 룸의 참가자는 거절한다.
+		if _MatchSessionLogic ~= nil and _MatchSessionLogic.Running and _MatchSessionLogic:IsParticipant(uid) then
+			if _UIToast ~= nil then _UIToast:ShowMessage("칭호는 로비의 내 기록 창에서 바꿀 수 있습니다", uid) end
+			return
+		end
+		local id = titleId or ""
+		local ok = false
+		if id == "" then
+			ok = _AccountData:SetEquippedTitle(uid, "")
+		elseif self:NameOf(id) ~= "" and _AccountData:HasTitle(uid, id) then
+			ok = _AccountData:SetEquippedTitle(uid, id)
+		end
+		if not ok then
+			if _UIToast ~= nil then _UIToast:ShowMessage("그 칭호는 장착할 수 없습니다", uid) end
+		else
+			log("[Title] equip " .. ((id ~= "") and id or "(none)") .. " (" .. uid .. ")")
+			self:ApplyNameTag(uid)
+		end
+		if _AccountRecordService ~= nil then _AccountRecordService:PushView(uid, "title") end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyNameTag(string userId)
+		-- 머리 위 이름표 = "칭호 닉네임"(칭호 없으면 닉네임). 플레이어 엔티티가 아직 없으면 1초마다 몇 번 더 해 본다.
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then
+			if self.pendingTag == nil then self.pendingTag = {} end
+			if self.pendingTag[userId] == nil then self.pendingTag[userId] = 5 end
+			self:EnsureTagTimer()
+			return
+		end
+		local tag = player.NameTagComponent
+		if not isvalid(tag) then
+			-- 이름표 컴포넌트가 아직 안 붙었다 → 엔티티 없음과 같이 재시도(Codex 리뷰 2026-09-26).
+			if self.pendingTag == nil then self.pendingTag = {} end
+			if self.pendingTag[userId] == nil then self.pendingTag[userId] = 5 end
+			self:EnsureTagTimer()
+			return
+		end
+		if self.pendingTag ~= nil then self.pendingTag[userId] = nil end
+		local nick = player.PlayerComponent.Nickname
+		if nick == nil or nick == "" then nick = player.Name end
+		if nick == nil or nick == "" then return end   -- 빈 이름표로 덮지 않는다
+		local title = self:EquippedNameOf(userId)
+		local text = (title ~= "") and (title .. " " .. nick) or nick
+		if tag.Name ~= text then
+			tag.Name = text
+			log("[Title] nametag " .. userId .. " = " .. text)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureTagTimer()
+		-- 이름표 재시도 타이머(대기 유저가 있을 때만).
+		if self.tagTimerId ~= 0 then return end
+		self.tagTimerId = _TimerService:SetTimerRepeat(function() self:RetryTags() end, 1.0, 1.0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RetryTags()
+		-- 대기 유저 이름표 다시 시도 · 횟수를 다 쓰면 포기.
+		local ids = {}
+		for uid, left in pairs(self.pendingTag or {}) do table.insert(ids, uid) end
+		for _, uid in ipairs(ids) do
+			local left = (self.pendingTag[uid] or 0) - 1
+			if left <= 0 then self.pendingTag[uid] = nil else self.pendingTag[uid] = left end
+			local player = _UserService:GetUserEntityByUserId(uid)
+			if isvalid(player) then self:ApplyNameTag(uid) end
+		end
+		if next(self.pendingTag or {}) == nil and self.tagTimerId ~= 0 then
+			_TimerService:ClearTimer(self.tagTimerId)
+			self.tagTimerId = 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildView(string userId)
+		-- 계정 창 칭호 탭: EQ|장착TitleId · TI|id|이름|얻는 법|보유(1/0) (켜진 칭호만 · SortOrder 순)
+		local rows = {}
+		table.insert(rows, "EQ|" .. ((_AccountData ~= nil) and _AccountData:GetEquippedTitle(userId) or ""))
+		for _, id in ipairs(self.order or {}) do
+			local d = self.defs[id]
+			if d.enabled then
+				local owned = (_AccountData ~= nil) and _AccountData:HasTitle(userId, id) or false
+				table.insert(rows, table.concat({ "TI", id, d.name, d.desc, owned and "1" or "0" }, "|"))
+			end
+		end
+		return table.concat(rows, ";")
+	end
+
+end

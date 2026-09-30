@@ -1,0 +1,240 @@
+@Logic
+script SkillHudController extends Logic
+
+	-- 우하단 스킬 HUD(SkillHudGroup) 클라이언트 컨트롤러 — WO-033 ② (2026-09-29 · A).
+	-- 칸 = Q · W · E · R · Shift. 어느 칸에 무슨 스킬이 뜨는지는 B 의 SkillHotbar.slots(키 배치 단일 출처)를 **읽기만** 한다.
+	--   배운(Lv>0) 액티브 스킬만 아이콘 · 안 배운 칸은 빈 틀 + 키 글자 · 패시브는 안 뜬다(사용자 2026-09-26).
+	--   텔레포트는 Shift 칸 — SkillHotbar 의 "TELEPORT" 가 배움 상태로 SK_M13/SK_M21 을 고르므로 강화를 배우면 같은 칸이 바뀐다.
+	--   Shift 매핑이 없는 직업(전사·도적·해적·초보자)은 Shift 칸을 숨긴다.
+	-- 쿨 = PlayerSkillState 미러(LocalCooldownRemaining) ÷ SkillDatabase.CooldownAt → 퀵슬롯(QuickSlotController)과 같은 7단계 오버레이.
+	-- 칸 클릭(PC)·탭(모바일) = SkillCaster:Cast — 키 입력(SkillHotbar)과 같은 시전 입구. 판정은 전부 B 쪽이 한다.
+	-- 🔴 SkillStateChangedEvent 는 B 내부 이벤트(계약서)라 구독하지 않고 PollSeconds 마다 다시 읽는다.
+	-- 칸 엔티티는 이름으로 찾는다(PC = Bar/Slot_<키> · 모바일 = Mobile/M_<키> · 자식 Icon/Cool/CoolText). UUID 는 UIBuilder write({bind}) 가 주입한다.
+
+	property Entity bar = "9e6213a2-4ed6-4056-8058-751dd2e9e064"
+
+	property Entity mobileRoot = "b7544061-20d8-4bf1-bba8-1f7e5c043ba2"
+
+	property number PollSeconds = 0.1
+
+	-- 쿨이 새로 시작되면 아래→위로 차오르는 연출 시간 (퀵슬롯과 같은 값)
+	property number RiseSeconds = 0.35
+
+	-- 칸 연타 시전 요청 간격 (판정 아님 — 쿨·MP 는 SkillCaster)
+	property number RepeatGuardSec = 0.2
+
+	@HideFromInspector
+	property any cells = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property number pollElapsed = 0
+
+	@HideFromInspector
+	property number lastCastAt = 0
+
+	@HideFromInspector
+	property string lastSummary = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 칸 5개를 이름으로 묶고 클릭을 연결한다. 그리기는 OnUpdate 폴링이 한다.
+		self.cells = {}
+		self.handlers = {}
+		local keys = { "Q", "W", "E", "R", "Shift" }
+		for i, keyName in ipairs(keys) do
+			local cell = { keyName = keyName, skillId = "", shownId = "", shownMapped = nil, wasCooling = false, coolTotal = 0, riseStart = 0, riseUntil = 0,
+				pc = self:FindCell(self.bar, "Slot_" .. keyName), mob = self:FindCell(self.mobileRoot, "M_" .. keyName) }
+			self.cells[i] = cell
+			self:BindClick(cell, cell.pc)
+			self:BindClick(cell, cell.mob)
+		end
+		self.pollElapsed = self.PollSeconds
+		log("[SkillHud] ready (client) pc=" .. tostring(isvalid(self.bar)) .. " mobile=" .. tostring(isvalid(self.mobileRoot)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method any FindCell(Entity root, string name)
+		-- 칸 하나의 엔티티 묶음 { root, icon, cool, coolText }. 없으면 nil.
+		if not isvalid(root) then return nil end
+		local e = root:GetChildByName(name)
+		if not isvalid(e) then
+			log_warning("[SkillHud] cell not found: " .. root.Name .. "/" .. name)
+			return nil
+		end
+		local icon = e:GetChildByName("Icon")
+		local cool = e:GetChildByName("Cool")
+		local coolText = e:GetChildByName("CoolText")
+		return {
+			root = e,
+			icon = isvalid(icon) and icon.SpriteGUIRendererComponent or nil,
+			cool = isvalid(cool) and cool.SpriteGUIRendererComponent or nil,
+			coolText = isvalid(coolText) and coolText.TextGUIRendererComponent or nil,
+		}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BindClick(any cell, any view)
+		-- 칸 버튼 클릭 → 시전. 핸들러는 OnEndPlay 에서 끊는다.
+		if view == nil or not isvalid(view.root) then return end
+		local h = view.root:ConnectEvent(ButtonClickEvent, function() self:CastCell(cell) end)
+		table.insert(self.handlers, { e = view.root, h = h })
+	end
+
+	-- ── 폴링: 칸마다 스킬 결정 ─────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		if self.cells == nil then return end
+		self.pollElapsed = self.pollElapsed + delta
+		if self.pollElapsed >= self.PollSeconds then
+			self.pollElapsed = 0
+			self:RefreshCells()
+		end
+		local now = _UtilLogic.ElapsedSeconds
+		for _, cell in ipairs(self.cells) do
+			self:UpdateCool(cell, now)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method any HotbarEntry(string keyName)
+		-- SkillHotbar.slots 에서 이 키의 항목 (없으면 nil). slots 는 B 가 OnBeginPlay 에서 채운다 — 비어 있으면 다음 폴링에 다시 본다.
+		if _SkillHotbar == nil or _SkillHotbar.slots == nil then return nil end
+		for _, entry in ipairs(_SkillHotbar.slots) do
+			if entry.keyName == keyName then return entry end
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCells()
+		-- 칸마다: 매핑된 스킬 id → 배운 액티브면 아이콘. 바뀐 칸만 다시 칠한다.
+		if _PlayerSkillState == nil or _SkillDatabase == nil or _SkillHotbar == nil then return end
+		_SkillDatabase:EnsureLoaded()
+		local summary = ""
+		for _, cell in ipairs(self.cells) do
+			local entry = self:HotbarEntry(cell.keyName)
+			local id = ""
+			if entry ~= nil then id = _SkillHotbar:ResolveSlotSkillId(entry) end
+			local mapped = (id ~= "")
+			local skill = mapped and _SkillDatabase:GetSkill(id) or nil
+			local learned = (skill ~= nil) and skill.behavior ~= "PASSIVE" and _PlayerSkillState:LocalSkillLevel(id) > 0
+			cell.skillId = learned and id or ""
+			if cell.shownId ~= cell.skillId or cell.shownMapped ~= mapped then
+				cell.shownId = cell.skillId
+				cell.shownMapped = mapped
+				local ruid = learned and (skill.icon or "") or ""
+				self:PaintCell(cell, cell.pc, ruid, mapped)
+				self:PaintCell(cell, cell.mob, ruid, mapped)
+			end
+			summary = summary .. cell.keyName .. "=" .. (cell.skillId ~= "" and cell.skillId or "-") .. " "
+		end
+		if summary ~= self.lastSummary then
+			self.lastSummary = summary
+			log("[SkillHud] job=" .. tostring(_PlayerSkillState:LocalJobId()) .. " cells: " .. summary)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintCell(any cell, any view, string ruid, boolean mapped)
+		-- 아이콘 칠하기 · Shift 칸은 매핑이 없으면 칸째 숨긴다(다른 칸은 빈 틀로 항상 보인다).
+		if view == nil then return end
+		if cell.keyName == "Shift" and isvalid(view.root) then
+			view.root.Enable = mapped
+		end
+		if isvalid(view.icon) then
+			if ruid ~= "" then view.icon.ImageRUID = DataRef(ruid) end
+			view.icon.Entity.Enable = (ruid ~= "")
+		end
+	end
+
+	-- ── 쿨 오버레이 ────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void UpdateCool(any cell, number now)
+		-- 남은 쿨 비율 → 7단계. 쿨이 새로 시작된 순간엔 RiseSeconds 동안 아래→위로 차오른다.
+		local remain = 0
+		if cell.skillId ~= "" then
+			remain = _PlayerSkillState:LocalCooldownRemaining(cell.skillId)
+		end
+		local cooling = remain > 0
+		if cooling and not cell.wasCooling then
+			-- 쿨이 새로 시작된 순간의 길이를 기억한다: 표 값(CooldownAt)보다 실제 쿨이 길면(서버가 늘려 준 쿨) 그 길이를 전체로 본다.
+			-- 매 프레임 max(표 값, 남은 시간)으로 잡으면 남은 시간이 표 값 밑으로 내려갈 때까지 오버레이가 꽉 찬 채 멈춘다.
+			local tableTotal = _SkillDatabase:CooldownAt(cell.skillId, _PlayerSkillState:LocalSkillLevel(cell.skillId))
+			cell.coolTotal = math.max(tableTotal, remain)
+			cell.riseStart = now
+			cell.riseUntil = now + self.RiseSeconds
+		end
+		cell.wasCooling = cooling
+		local total = cooling and (cell.coolTotal or 0) or 0
+		if remain > total then total = remain end
+		local level = 0
+		if cooling and total > 0 then
+			if now < cell.riseUntil then
+				level = self:StepLevel((now - cell.riseStart) / self.RiseSeconds)
+			else
+				level = self:StepLevel(remain / total)
+			end
+		end
+		local text = cooling and tostring(math.ceil(remain)) or ""
+		self:PaintCool(cell.pc, level, text)
+		self:PaintCool(cell.mob, level, text)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintCool(any view, number level, string text)
+		if view == nil then return end
+		if isvalid(view.cool) then
+			view.cool.FillAmount = level
+			view.cool.Entity.Enable = (level > 0)
+		end
+		if isvalid(view.coolText) and view.coolText.Text ~= text then
+			view.coolText.Text = text
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number StepLevel(number ratio)
+		-- 7단계 계단 (QuickSlotController.StepLevel 과 같은 표): 0 < r ≤ 0.10 → 10% … 0.85 < r → 100%. 0 이하는 0.
+		if ratio <= 0 then return 0 end
+		if ratio <= 0.10 then return 0.10 end
+		if ratio <= 0.25 then return 0.25 end
+		if ratio <= 0.40 then return 0.40 end
+		if ratio <= 0.55 then return 0.55 end
+		if ratio <= 0.70 then return 0.70 end
+		if ratio <= 0.85 then return 0.85 end
+		return 1.0
+	end
+
+	-- ── 시전 ───────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void CastCell(any cell)
+		-- 칸 클릭/탭 → 키를 누른 것과 같은 시전 입구(SkillCaster:Cast). 빈 칸이면 아무것도 안 한다.
+		if cell.skillId == "" or _SkillCaster == nil then
+			log("[SkillHud] tap " .. cell.keyName .. " empty")
+			return
+		end
+		local now = _UtilLogic.ElapsedSeconds
+		if now - self.lastCastAt < self.RepeatGuardSec then return end
+		self.lastCastAt = now
+		local result = _SkillCaster:Cast(cell.skillId)
+		local ok = (result ~= nil) and result.ok or false
+		log("[SkillHud] tap " .. cell.keyName .. " " .. cell.skillId .. " cast ok=" .. tostring(ok) .. ((not ok and result ~= nil) and (" reason='" .. tostring(result.reason) .. "'") or ""))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		if self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+		self.handlers = {}
+	end
+
+end

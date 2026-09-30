@@ -1,0 +1,279 @@
+@Component
+script ItemDrop extends Component
+
+	-- 바닥 아이템 드랍 (WO-035 · 사용자 결정 2026-09-29 "아이템도 바닥에 · 규칙은 동전과 똑같이").
+	-- 일반몹 재료 · 엘리트 확정 드랍 · 보스 보상이 인벤토리로 바로 들어가던 것을 바닥에 떨군다. 생성 = Farm/GroundDrop.SpawnItem.
+	--   · 주인(Farm/DropOwner)만 보이고 주인만 줍는다.
+	--   · 포물선으로 날아 죽은 층에 착지 → **착지한 뒤에만** 줍기 · 자석(자동획득이 켜져 있을 때).
+	--   · LifeTime(60초) 뒤 사라진다.
+	--   · 인벤토리에 다 못 들어가면 남은 만큼 바닥에 그대로 둔다(RetrySeconds 뒤 다시 시도).
+	-- 움직임·주인 찾기는 Farm/GroundDrop 공용 함수를 쓴다(동전 Farm/MesoCoin 과 같은 규칙).
+	-- 🔴 B 의 픽파켓 · 메소 익스플로전은 script.MesoCoin 만 센다 → 아이템 드랍은 거기 안 잡힌다(그래서 MesoCoin 을 늘리지 않고 따로 만들었다).
+
+	-- "ITEM" = 인벤토리 아이템(ItemInfo) · "COIN" = 빅토리아 주화(지갑 · SummonManager.GrantCoin)
+	property string Kind = "ITEM"
+
+	property string ItemId = ""
+
+	property integer Count = 1
+
+	-- 아이콘이 없는 아이템에 쓰는 임시 그림(선물상자 · item sprite 32×32). ItemInfo.IconRUID 가 채워지면 그 그림이 우선한다.
+	-- 2026-09-30 사용자가 후보에서 골라 ItemInfo 148행 전부 아이콘이 채워졌다 → 이 그림은 새 아이템이 아이콘 없이 들어왔을 때만 나온다.
+	property string FallbackSprite = "811c2843b9aa4eaa89b8ea2664235ad0"
+
+	-- 빅토리아 주화(Kind = "COIN") 그림. 지갑 재화라 ItemInfo 에 행이 없어 여기에 둔다(사용자 선택 2026-09-30 · 금빛 주화 28×28).
+	property string CoinSprite = "184093654538492ea60617c0e3dd5c51"
+
+	property number PickupRadius = 0.8
+
+	property number MagnetRadius = 3.0
+
+	property number MagnetSpeed = 1.5
+
+	property number LifeTime = 60
+
+	property number ArcSeconds = 0.45
+
+	property number ArcHeight = 0.6
+
+	property number ArcSpread = 0.5
+
+	property number ArcFloorSearch = 1.5
+
+	property number ArcSameFloorTolerance = 0.5
+
+	property number RestOffsetY = 0
+
+	property number PopPower = 1.6
+
+	property number PopLift = 1.2
+
+	property number FallArmTimeout = 3
+
+	-- 인벤토리에 못 넣었을 때 다시 시도하기까지의 시간(매 프레임 시도 · 토스트 연타 방지).
+	property number RetrySeconds = 2
+
+	@HideFromInspector
+	property boolean spriteApplied = false
+
+	@HideFromInspector
+	property boolean arcOn = false
+
+	@HideFromInspector
+	property boolean falling = false
+
+	@HideFromInspector
+	property boolean landed = false
+
+	@HideFromInspector
+	property number arcT = 0
+
+	@HideFromInspector
+	property number startX = 0
+
+	@HideFromInspector
+	property number startY = 0
+
+	@HideFromInspector
+	property number landX = 0
+
+	@HideFromInspector
+	property number landY = 0
+
+	@HideFromInspector
+	property number Age = 0
+
+	-- 착지한 순간의 Age. 그 뒤 GroundDrop.LandHoldSeconds 동안은 줍기 · 자석을 막는다.
+	@HideFromInspector
+	property number landedAt = 0
+
+	@HideFromInspector
+	property number retryAt = 0
+
+	@HideFromInspector
+	property boolean Collected = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 착지점을 정하고 포물선 비행을 시작한다. 아래에 발판이 없으면 물리로 떨어뜨린다.
+		_GroundDrop:ApplyLayer(self.Entity)
+		local body = self.Entity.RigidbodyComponent
+		local plan = _GroundDrop:PlanLanding(self.Entity, self.ArcSpread, self.ArcSameFloorTolerance, self.ArcFloorSearch)
+		if plan == nil then
+			if isvalid(body) then
+				local dir = 1
+				if _UtilLogic:RandomDouble() < 0.5 then
+					dir = -1
+				end
+				body:AddForce(Vector2(dir * self.PopPower * _UtilLogic:RandomDouble(), self.PopLift))
+				self.falling = true
+			else
+				self.landed = true
+			end
+			return
+		end
+		self.startX = plan.fromX
+		self.startY = plan.fromY
+		self.landX = plan.x
+		self.landY = plan.y + self.RestOffsetY
+		self.arcT = 0
+		self.arcOn = true
+		if isvalid(body) then
+			body.Enable = false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 수명 · 포물선 · 착지 뒤 줍기/자석.
+		self.Age = self.Age + delta
+
+		-- Kind · ItemId 는 스폰 직후 대입된다 → OnBeginPlay 가 아니라 첫 틱에 그림을 고른다.
+		-- ItemId 가 아직 비어 있으면(대입 전에 틱이 먼저 돈 경우 · 2026-09-29 Play 에서 임시 그림으로 굳었다) 다음 틱에 다시 본다.
+		if not self.spriteApplied and self.ItemId ~= "" then
+			self.spriteApplied = true
+			self:ApplySprite()
+		end
+
+		if self.Collected then
+			return
+		end
+
+		if self.Age >= self.LifeTime then
+			log("[ItemDrop] expired " .. self.ItemId .. " x" .. tostring(self.Count))
+			self.Entity:Destroy()
+			return
+		end
+
+		if self.arcOn then
+			self.arcT = self.arcT + delta
+			local u = 1
+			if self.ArcSeconds > 0 then
+				u = math.min(1, self.arcT / self.ArcSeconds)
+			end
+			local tr = self.Entity.TransformComponent
+			if isvalid(tr) then
+				local x = self.startX + (self.landX - self.startX) * u
+				tr.WorldPosition = Vector3(x, _GroundDrop:ArcY(self.startY, self.landY, self.ArcHeight, u), tr.WorldPosition.z)
+			end
+			if u >= 1 then
+				self.arcOn = false
+				self.landed = true
+				self.landedAt = self.Age
+				log("[ItemDrop] landed " .. self.ItemId .. " (" .. string.format("%.2f", self.landX) .. "," .. string.format("%.2f", self.landY) .. ") from (" .. string.format("%.2f", self.startX) .. "," .. string.format("%.2f", self.startY) .. ")")
+			end
+			return
+		end
+
+		if self.falling then
+			local body = self.Entity.RigidbodyComponent
+			if isvalid(body) and body.Enable and not body:IsOnGround() and self.Age < self.FallArmTimeout then
+				return
+			end
+			self.falling = false
+			self.landed = true
+			self.landedAt = self.Age
+			local fp = self.Entity.TransformComponent.WorldPosition
+			log("[ItemDrop] landed by physics " .. self.ItemId .. " (" .. string.format("%.2f", fp.x) .. "," .. string.format("%.2f", fp.y) .. ") age=" .. string.format("%.2f", self.Age))
+		end
+
+		-- 착지 전에는 줍기 · 자석 없음. 착지한 뒤에도 GroundDrop.LandHoldSeconds(0.3초) 동안은 그대로 둔다(사용자 결정 2026-09-29).
+		if not _GroundDrop:Settled(self.landed, self.Age, self.landedAt) then
+			return
+		end
+
+		local owner = _GroundDrop:OwnerOf(self.Entity)
+		if not isvalid(owner) then
+			return
+		end
+
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local oPos = owner.TransformComponent.WorldPosition
+		local dx = oPos.x - myPos.x
+		local dy = oPos.y - myPos.y
+		local dist = math.sqrt(dx * dx + dy * dy)
+
+		if dist <= self.PickupRadius then
+			if self.Age >= self.retryAt then
+				self:TryGive(owner)
+			end
+			return
+		end
+
+		if dist <= self.MagnetRadius and _GroundDrop:AutoPickupOn(owner) then
+			_GroundDrop:MoveToward(self.Entity, myPos, dx / dist, dy / dist, self.MagnetSpeed * delta)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplySprite()
+		-- 아이템 아이콘을 바닥 그림으로. 주화는 CoinSprite · 아이콘이 없는 아이템은 FallbackSprite.
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(sr) then
+			return
+		end
+		local ruid = ""
+		if self.Kind == "COIN" then
+			ruid = self.CoinSprite
+		elseif self.Kind == "ITEM" and _ItemCatalog ~= nil then
+			local def = _ItemCatalog:Get(self.ItemId)
+			if def ~= nil and def.icon ~= nil then
+				ruid = tostring(def.icon)
+			end
+		end
+		if ruid == "" then
+			ruid = self.FallbackSprite
+		end
+		if ruid ~= "" and sr.SpriteRUID ~= ruid then
+			sr.SpriteRUID = ruid
+		end
+		log("[ItemDrop] " .. self.Kind .. " " .. self.ItemId .. " x" .. tostring(self.Count) .. " sprite " .. ruid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string DisplayName()
+		-- 토스트에 쓸 이름.
+		if self.Kind == "COIN" then
+			return "빅토리아 주화"
+		end
+		if _ItemCatalog ~= nil then
+			local def = _ItemCatalog:Get(self.ItemId)
+			if def ~= nil and def.name ~= nil then
+				return tostring(def.name)
+			end
+		end
+		return self.ItemId
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TryGive(Entity owner)
+		-- 주인에게 지급. 다 들어가면 사라지고, 덜 들어가면 남은 만큼 바닥에 남는다.
+		local uid = owner.PlayerComponent.UserId
+		local given = 0
+		if self.Kind == "COIN" then
+			if _SummonManager ~= nil then
+				_SummonManager:GrantCoin(uid, self.Count)
+				given = self.Count
+			end
+		elseif _InventoryService ~= nil then
+			given = _InventoryService:GiveItem(uid, self.ItemId, self.Count)
+		end
+		local name = self:DisplayName()
+		if given > 0 and _UIToast ~= nil then
+			_UIToast:ShowMessage("획득: " .. name .. " x" .. tostring(given), uid)
+		end
+		if given >= self.Count then
+			self.Collected = true
+			log("[ItemDrop] picked " .. self.Kind .. " " .. self.ItemId .. " x" .. tostring(given) .. " by " .. tostring(uid) .. " after=" .. string.format("%.2f", self.Age - self.landedAt))
+			self.Entity:Destroy()
+			return
+		end
+		self.Count = self.Count - given
+		self.retryAt = self.Age + self.RetrySeconds
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage("인벤토리에 넣을 수 없습니다 — " .. name .. " x" .. tostring(self.Count) .. " 가 바닥에 남았습니다", uid)
+		end
+		log("[ItemDrop] partial " .. self.ItemId .. " given=" .. tostring(given) .. " left=" .. tostring(self.Count) .. " (" .. tostring(uid) .. ")")
+	end
+
+end
