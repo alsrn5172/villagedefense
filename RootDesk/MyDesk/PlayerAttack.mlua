@@ -8,9 +8,78 @@ script PlayerAttack extends AttackComponent
 
 	property table Candidates = {}
 
+	-- 기본 공격 무기별 소리(b/playerattack-weapon-sound · 2026-10-01 사용자 결정): 원작 sound/weapon.img/<sfx>/Attack.
+	--   키 = 장착 무기 종류(_PlayerMotion:WeaponTypeOf = ItemInfo WeaponType · 맨손 = ""). 값은 BuildWeaponAttackSounds 가 채운다.
+	--   소리는 서버가 그 맵의 유저마다 Client RPC 로 낸다(Monster.PlaySoundToMap 방식 · 듣는 사람 = 각자 자기 캐릭터).
+	property table WeaponAttackSounds = {}
+
+	@MinValue(0)
+	@MaxValue(1)
+	property number WeaponAttackSoundVolume = 1.0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
+		self:BuildWeaponAttackSounds()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuildWeaponAttackSounds()
+		-- 무기 종류 → 원작 공격 소리 RUID. 무기 종류마다 원작 무기의 info/sfx(maplestory.io KMS 389 Character/Weapon/<id>.img/info/sfx)를
+		-- 우리 ItemInfo 무기(아바타 이름으로 원작 아이템을 찾음)마다 확인해 다수를 골랐다. RUID 는 라이브러리 태그 path = sound/weapon.img 로 확인(2026-10-01).
+		self.WeaponAttackSounds = {
+			SWORD_1H = "59a1b76d6969408ea71bbc774de87f5d",   -- swordS/Attack · 한손검 8종 중 6종(사브르 = swordL · 몽둥이 = mace)
+			SWORD_2H = "b5660397dc22470494bc49ffea2e9759",   -- swordL/Attack · 두손검 5종 중 4종(목검 = swordS)
+			DAGGER = "59a1b76d6969408ea71bbc774de87f5d",     -- swordS/Attack · 단검 5종 중 3종(삼각 자마다르 · 신기타 = swordL)
+			WAND = "2ac47382f3ad45f09a0f429cb5aa71a0",       -- mace/Attack · 완드 전부
+			BOW = "4346b64f2d0a4cf683980bb0d318b14a",        -- bow/Attack · 활 전부
+			CLAW = "c295ef202d9d49c4a4b3ffe76aea7b88",       -- tGlove/Attack · 아대 전부
+			KNUCKLE = "4b8b139af562495d9c816fabe80c9a48",    -- knuckle/Attack · 너클 전부
+		}
+		-- 맨손(WeaponTypeOf = "") = barehands/Attack. 맨손이면 모션 표(WeaponMotion)는 아무것도 재생하지 않지만 공격 판정은 그대로라 소리는 낸다.
+		self.WeaponAttackSounds[""] = "69ef5a95bef247b8812f8432a5e3577a"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayWeaponAttackSound(Vector3 pos)
+		-- 기본 공격 한 번 = 장착 무기의 원작 공격 소리 한 번(맞았는지와 무관 · 휘두르는 순간). 그 맵의 유저마다 Client RPC.
+		if _PlayerMotion == nil or not isvalid(self.Entity.PlayerComponent) then
+			return
+		end
+		local uid = self.Entity.PlayerComponent.UserId
+		local wt = _PlayerMotion:WeaponTypeOf(uid)
+		local ruid = self.WeaponAttackSounds[wt]
+		if ruid == nil or ruid == "" then
+			log_warning("[PlayerAttack] no attack sound for weaponType=[" .. tostring(wt) .. "] (" .. uid .. ")")
+			return
+		end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return
+		end
+		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		if users == nil then
+			return
+		end
+		local n = 0
+		for _, u in ipairs(users) do
+			if isvalid(u) and isvalid(u.PlayerComponent) then
+				self:PlayWeaponAttackSoundLocal(ruid, self.WeaponAttackSoundVolume, pos.x, pos.y, pos.z, u.PlayerComponent.UserId)
+				n = n + 1
+			end
+		end
+		log("[PlayerAttack] attack sound weaponType=[" .. wt .. "] ruid=" .. string.sub(ruid, 1, 8) .. " -> " .. tostring(n) .. " user(s) (" .. uid .. ")")
+	end
+
+	@ExecSpace("Client")
+	method void PlayWeaponAttackSoundLocal(string ruid, number volume, number x, number y, number z)
+		-- 받는 유저의 클라에서 재생한다. 인자는 원시 타입만(ExecSpace 너머 · Monster.PlaySoundLocal 과 같은 이유). 듣는 사람 = 이 클라의 로컬 플레이어.
+		local listener = _UserService.LocalPlayer
+		if not isvalid(listener) then
+			_SoundService:PlaySound(ruid, volume)
+			return
+		end
+		_SoundService:PlaySoundAtPos(ruid, Vector3(x, y, z), listener, volume)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -41,6 +110,7 @@ script PlayerAttack extends AttackComponent
 		local transform = self.Entity.TransformComponent
 		if playerController and transform then
 			local worldPosition = transform.WorldPosition
+			self:PlayWeaponAttackSound(worldPosition)
 			local attackOffset = Vector2(worldPosition.x + 0.5 * playerController.LookDirectionX, worldPosition.y + 0.5)
 			self.Shape.Position = attackOffset
 		
