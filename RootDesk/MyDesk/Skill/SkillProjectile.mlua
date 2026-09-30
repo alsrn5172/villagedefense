@@ -103,9 +103,25 @@ script SkillProjectile extends AttackComponent
 
     property number FloorTolerance = 0.6
 
-    -- 발마다 1타 볼리(b/skill-archer-effects · 더블 샷 · SkillAttack.IsPerArrowVolley · #40 5884388966 (a)): 같은 볼리의 발들이 같은 테이블 { impactPlayed } 를 든다.
-    -- 발마다 보통 명중(피해 ×1 · 표시 1타 · 사운드)이고, 두 번째 명중 연출(impactFollow · 분홍 불꽃 → 폭발)만 볼리당 한 번 — 먼저 맞힌 발(OnAttack). nil = 볼리 아님.
+    -- 발마다 1타 볼리(b/skill-archer-effects · 더블 샷 · SkillAttack.IsPerArrowVolley · #40 5884388966 (a)): 같은 볼리의 발들이 같은 표
+    --   { members = 발 목록, firstHitAt = 첫 명중 시각, followDelay = 둘째부터 늦출 초 } 를 든다. nil = 볼리 아님.
+    --   2026-10-01 Play 뒤(영상 2009 더블 샷 · 사용자 결정): 두 발은 같이 날고, 먼저 맞힌 발이 명중하면 나머지 발은 그 자리에서 멈춰 숨고(HoldForFollow)
+    --   followDelay(0.10s) 뒤에 명중한다 → 숫자 · 명중 소리 · 폭발이 0.10s 간격으로 두 번. 폭발(분홍 불꽃 → 별)과 명중 소리는 발마다 한 번(대상마다 아님).
     property any Volley = nil
+
+    -- 맞는 순간 그림을 지운다(SpriteRUID = "" · @Sync) — 궁수 화살(SkillAttack.IsFrameCheckedProjectile). 파괴 지연(0.05s) 동안 지나쳐 보이지 않게.
+    property boolean HideOnHit = false
+
+    -- 볼리 후속 발이 첫 명중 뒤 명중을 기다리는 중(HoldForFollow) — 움직임 · 판정 · 수명 검사를 멈춘다.
+    @HideFromInspector
+    property boolean held = false
+
+    -- 이 발의 폭발 연출 · 명중 소리를 이미 냈는가(볼리 발은 대상 여럿에 겹쳐 맞아도 한 번).
+    @HideFromInspector
+    property boolean impactDone = false
+
+    @HideFromInspector
+    property boolean soundDone = false
 
     -- 단일 대상(b/skill-archer-effects · 스나이핑 · SkillAttack.IsSingleTargetProjectile): true 면 유도 대상(TargetEntity · 보스 우선)만 맞는다.
     -- 대상이 사라지면(죽음 · 제거) 화살도 사라진다(#40 5884388966 (b) · OnUpdate) — 다른 몬스터를 맞히지 않는다.
@@ -270,6 +286,8 @@ script SkillProjectile extends AttackComponent
 
     @ExecSpace("ServerOnly")
     method void OnUpdate(number delta)
+        -- 볼리 후속 발이 명중을 기다리는 동안(HoldForFollow)은 아무것도 안 한다 — 타이머가 ResolveHeldHit 를 부른다.
+        if self.held then return end
         self.lived = self.lived + delta
         if self.lived >= self.MaxLifetime then
             self.Entity:Destroy()
@@ -328,12 +346,21 @@ script SkillProjectile extends AttackComponent
     -- "spawn effect after N seconds" timer. This is the actual fix for the detonates-in-place
     -- bug: the effect now happens exactly where and when the bolt lands, because it lands.
     method void OnAttack(Entity defender)
-        -- 발마다 1타 볼리: 발마다 피해(×1)는 보통 명중으로 들어가고, 두 번째 명중 연출(분홍 불꽃 → 폭발)은 볼리에서 먼저 맞힌 발만.
+        -- 발마다 1타 볼리: 이 발이 볼리의 첫 명중이면 나머지 발을 멈춰 followDelay 뒤에 명중시킨다(HoldForFollow).
+        --   폭발 연출(분홍 불꽃 → 별)은 발마다 한 번 — 대상 여럿에 겹쳐 맞아도 한 번.
         if self.Volley ~= nil and isvalid(defender) then
-            local first = not self.Volley.impactPlayed
-            self.Volley.impactPlayed = true
-            log("[SkillProjectile] volley " .. self.SkillId .. " arrow hit x" .. tostring(self.DamageMul) .. " on " .. tostring(defender.Name) .. " followImpact=" .. tostring(first))
-            if first then self:PlayFollowImpact(defender) end
+            local lead = self.Volley.firstHitAt == nil
+            if lead then
+                self.Volley.firstHitAt = _UtilLogic.ServerElapsedSeconds
+                for _, m in ipairs(self.Volley.members or {}) do
+                    if m ~= self and isvalid(m) then m:HoldForFollow(self.Volley.followDelay or 0.1, defender) end
+                end
+            end
+            log("[SkillProjectile] volley " .. self.SkillId .. " arrow hit x" .. tostring(self.DamageMul) .. " on " .. tostring(defender.Name) .. " lead=" .. tostring(lead) .. " burst=" .. tostring(not self.impactDone))
+            if not self.impactDone then
+                self.impactDone = true
+                self:PlayFollowImpact(defender)
+            end
         end
         if isvalid(defender) then
             local t = defender.TransformComponent
@@ -344,8 +371,10 @@ script SkillProjectile extends AttackComponent
                     local aim = self:AimPointOf(defender)
                     self:PlayHitEffect(defender, aim)
                 end
-                if self.HitSoundRUID ~= "" then
+                -- 볼리 발은 명중 소리도 발마다 한 번(대상마다 아님 · 2026-10-01 사용자 결정). 다른 투사체는 예전 그대로.
+                if self.HitSoundRUID ~= "" and not (self.Volley ~= nil and self.soundDone) then
                     _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)
+                    self.soundDone = true
                 end
             end
             -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
@@ -356,7 +385,50 @@ script SkillProjectile extends AttackComponent
 
         if self.DestroyOnHit and not self.consumed then
             self.consumed = true
+            if self.HideOnHit then self:HideSprite() end
             self.Entity:Destroy(0.05)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void HideSprite()
+        -- 그림만 지운다(SpriteRUID 는 @Sync · 클라에 반영). 엔티티 · 이펙트 주체는 그대로 둔다.
+        local sr = self.Entity.SpriteRendererComponent
+        if isvalid(sr) then sr.SpriteRUID = "" end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void HoldForFollow(number delay, any leaderDefender)
+        -- 볼리 후속 발(2026-10-01 · 영상 2009 더블 샷): 먼저 맞힌 발과 같이 날아왔으니 그 순간 그림을 숨기고 멈춘 뒤,
+        --   delay 뒤에 유도 대상(없으면 먼저 맞은 대상)의 조준점에서 한 번 판정한다(ResolveHeldHit) → 숫자 · 소리 · 폭발이 delay 만큼 늦게.
+        if self.consumed or self.held then return end
+        self.held = true
+        self:HideSprite()
+        local tgt = self.TargetEntity
+        if tgt == nil or not isvalid(tgt) then tgt = leaderDefender end
+        log("[SkillProjectile] volley " .. self.SkillId .. " follower held " .. tostring(delay) .. "s — its hit comes after the first arrow")
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(self.Entity) then return end
+            self.held = false
+            self:ResolveHeldHit(tgt)
+        end, delay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ResolveHeldHit(any tgt)
+        -- 멈춰 있던 후속 발의 판정 한 번. 대상이 있으면 그 조준점, 없으면 제자리. 아무도 안 맞으면 조용히 지운다.
+        local transform = self.Entity.TransformComponent
+        if not isvalid(transform) then return end
+        local pos = transform.WorldPosition
+        if tgt ~= nil and isvalid(tgt) and isvalid(tgt.TransformComponent) then pos = self:AimPointOf(tgt) end
+        self.Shape.Position = Vector2(pos.x, pos.y)
+        self.Shape.Size = Vector2(self.RangeX, self.RangeY)
+        self.Shape.Angle = 0
+        self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        if not self.consumed then
+            log("[SkillProjectile] volley " .. self.SkillId .. " follower found no target after the hold — removed")
+            self.consumed = true
+            self.Entity:Destroy()
         end
     end
 
