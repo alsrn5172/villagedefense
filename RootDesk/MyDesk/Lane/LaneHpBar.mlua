@@ -1,8 +1,10 @@
 @Component
 script LaneHpBar extends Component
 
-	-- 시설 HP 바 (WO-012 · 2026-09-07). lanehpbar 모델(PixelRendererComponent 16×3) 엔티티에 LaneFacilityService 가 붙인다.
-	-- 서버는 Ratio/Shown 만 쓰고(@Sync), 클라가 픽셀을 칠한다 (PixelRenderer 메서드는 전부 ClientOnly · msw-combat hp-gauge 패턴 · 지연 초기화).
+	-- 시설 HP 바 (WO-012 · 2026-09-07 · 디자이너 시안 19-facility #16 으로 교체 2026-10-01).
+	-- lanehpbar 모델 = 틀(Track) + 채움(Fill) 스프라이트 자식 2개. LaneFacilityService 가 이 컴포넌트를 붙이고 Ratio/Shown 만 쓴다(@Sync).
+	-- 클라가 틀·채움의 크기와 위치를 잡고, 채움은 흰 그림에 색(초록 / 노랑 / 빨강)을 곱해 가로로 부드럽게 줄인다. 옛 픽셀 16×3 계단은 모델에서 껐다.
+	-- 🔴 부모 엔티티 배율은 서비스가 (HpBarWidth/0.16, HpBarHeight/0.03) 으로 키운다(옛 픽셀 버퍼용). 자식은 그 배율을 타므로 여기서 되돌려 계산한다.
 
 	@Sync
 	property number Ratio = 1.0
@@ -13,55 +15,161 @@ script LaneHpBar extends Component
 	@Sync
 	property string Layer = ""
 
+	-- 업로드한 그림의 원본 크기(px)와 유닛 환산 (ruid-map.json 의 size · 업로드 자산은 100px = 1유닛).
+	property number PixelsPerUnit = 100
+
+	property number TrackPxW = 138
+
+	property number TrackPxH = 17
+
+	property number FillPxW = 380
+
+	property number FillPxH = 24
+
+	-- 시안: 틀 200×20 안에 채움 190×12 (좌우 5 · 위아래 4). 바 크기에 대한 비율로 둔다.
+	property number FillInsetXRatio = 0.025
+
+	property number FillHeightRatio = 0.6
+
+	-- 채움이 목표 비율을 따라가는 속도(1초에 남은 차이의 몇 배).
+	property number SmoothSpeed = 8
+
+	property Color ColorHigh = Color(0.345, 0.824, 0.494, 1)
+
+	property Color ColorMid = Color(0.949, 0.788, 0.298, 1)
+
+	property Color ColorLow = Color(0.941, 0.337, 0.306, 1)
+
 	@HideFromInspector
 	property boolean inited = false
 
+	@HideFromInspector
+	property number shownRatio = 1.0
+
+	@HideFromInspector
+	property number lastScaleX = 0
+
+	@HideFromInspector
+	property number lastScaleY = 0
+
 	@ExecSpace("ClientOnly")
 	method void InitBar()
-		-- 픽셀 버퍼 16×3 준비 (동적 스폰이라 OnBeginPlay 때 컴포넌트가 없을 수 있어 OnUpdate 에서 반복 시도).
-		local pixel = self.Entity.PixelRendererComponent
-		if pixel == nil then return end
-		pixel:ResetWithColor(16, 3, Color(0.2, 0.2, 0.2, 0.85))
-		if self.Layer ~= "" then pixel.SortingLayer = self.Layer end
-		pixel.OrderInLayer = 160
+		-- 자식(Track / Fill)이 스폰돼 있으면 층을 맞추고 첫 배치를 한다. 동적 스폰이라 OnBeginPlay 때 자식이 없을 수 있어 OnUpdate 에서 반복 시도.
+		local track = self.Entity:GetChildByName("Track")
+		local fill = self.Entity:GetChildByName("Fill")
+		if not isvalid(track) or not isvalid(fill) then return end
+		if not isvalid(track.SpriteRendererComponent) or not isvalid(fill.SpriteRendererComponent) then return end
+		self:ApplyLayer()
+		self.shownRatio = math.max(0, math.min(1, self.Ratio))
 		self.inited = true
+		self:Layout()
 		self:Paint()
+		log("[LaneHpBar] init " .. self.Entity.Name .. " layer=" .. tostring(self.Layer))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyLayer()
+		-- 틀·채움을 서비스가 준 정렬 층(시설 발판의 층)에 맞춘다. 빈 값이면 모델 기본값.
+		if self.Layer == "" then return end
+		local track = self.Entity:GetChildByName("Track")
+		local fill = self.Entity:GetChildByName("Fill")
+		if isvalid(track) and isvalid(track.SpriteRendererComponent) then track.SpriteRendererComponent.SortingLayer = self.Layer end
+		if isvalid(fill) and isvalid(fill.SpriteRendererComponent) then fill.SpriteRendererComponent.SortingLayer = self.Layer end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Layout()
+		-- 바 전체 크기(월드 유닛)를 부모 배율에서 읽어 틀·채움의 배율과 위치를 정한다. 채움은 왼쪽 끝을 고정하고 shownRatio 만큼만 채운다.
+		local track = self.Entity:GetChildByName("Track")
+		local fill = self.Entity:GetChildByName("Fill")
+		if not isvalid(track) or not isvalid(fill) then return end
+		local ps = self.Entity.TransformComponent.Scale
+		local sx = math.abs(ps.x)
+		local sy = math.abs(ps.y)
+		if sx <= 0.0001 or sy <= 0.0001 then return end
+		self.lastScaleX = sx
+		self.lastScaleY = sy
+		local barW = sx * 0.16
+		local barH = sy * 0.03
+		local ppu = math.max(1, self.PixelsPerUnit)
+
+		-- 틀: 바 전체. 그림 원본 크기(px/ppu)에 맞춰 월드 배율 → 부모 배율로 나눠 로컬 배율.
+		local trackWorldSx = barW / (self.TrackPxW / ppu)
+		local trackWorldSy = barH / (self.TrackPxH / ppu)
+		track.TransformComponent.Scale = Vector3(trackWorldSx / sx, trackWorldSy / sy, 1)
+		track.TransformComponent.Position = Vector3(0, 0, 0)
+
+		-- 채움: 안쪽 상자(좌우 여백 · 높이 비율)에서 왼쪽 끝 고정.
+		local fullW = barW * (1 - 2 * self.FillInsetXRatio)
+		local fillH = barH * self.FillHeightRatio
+		local curW = fullW * math.max(0, math.min(1, self.shownRatio))
+		local fillWorldSx = math.max(0.0001, curW) / (self.FillPxW / ppu)
+		local fillWorldSy = fillH / (self.FillPxH / ppu)
+		fill.TransformComponent.Scale = Vector3(fillWorldSx / sx, fillWorldSy / sy, 1)
+		local left = -barW / 2 + barW * self.FillInsetXRatio
+		fill.TransformComponent.Position = Vector3((left + curW / 2) / sx, 0, 0)
 	end
 
 	@ExecSpace("ClientOnly")
 	method void Paint()
-		-- 비율만큼 초록/노랑/빨강, 나머지 어둡게. 숨김이면 알파 0.
-		local pixel = self.Entity.PixelRendererComponent
-		if pixel == nil or not self.inited then return end
+		-- 켜짐/꺼짐과 채움 색. 50% 이하 노랑 · 25% 이하 빨강(시안 s1~s5). 숨김이면 틀·채움 둘 다 끈다.
+		if not self.inited then return end
+		local track = self.Entity:GetChildByName("Track")
+		local fill = self.Entity:GetChildByName("Fill")
+		if not isvalid(track) or not isvalid(fill) then return end
+		local trackR = track.SpriteRendererComponent
+		local fillR = fill.SpriteRendererComponent
+		if not isvalid(trackR) or not isvalid(fillR) then return end
 		if not self.Shown then
-			pixel:SetAlpha(0)
+			trackR.Enable = false
+			fillR.Enable = false
 			return
 		end
-		pixel:SetAlpha(1)
+		trackR.Enable = true
 		local ratio = math.max(0, math.min(1, self.Ratio))
-		local fill = math.floor(ratio * 16 + 0.5)
-		local c = Color(0.35, 0.85, 0.40, 1)
-		if ratio <= 0.25 then c = Color(0.90, 0.30, 0.25, 1)
-		elseif ratio <= 0.5 then c = Color(0.95, 0.80, 0.25, 1) end
-		for x = 1, 16 do
-			for y = 1, 3 do
-				if x <= fill then pixel:SetPixel(x, y, c) else pixel:SetPixel(x, y, Color(0.2, 0.2, 0.2, 0.85)) end
-			end
-		end
+		fillR.Enable = (self.shownRatio > 0.001)
+		local c = self.ColorHigh
+		if ratio <= 0.25 then c = self.ColorLow
+		elseif ratio <= 0.5 then c = self.ColorMid end
+		fillR.Color = c
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnSyncProperty(string name, any value)
-		-- Ratio/Shown/Layer 가 바뀌면 다시 칠한다.
-		if name == "Layer" and self.inited and self.Entity.PixelRendererComponent ~= nil and self.Layer ~= "" then
-			self.Entity.PixelRendererComponent.SortingLayer = self.Layer
+		-- Ratio/Shown/Layer 가 바뀌면 다시 그린다. 숨겨진 동안은 채움을 바로 목표 비율로 둔다(다시 켜질 때 옛 값에서 미끄러지지 않게).
+		if not self.inited then return end
+		if name == "Layer" then self:ApplyLayer() end
+		if not self.Shown then
+			self.shownRatio = math.max(0, math.min(1, self.Ratio))
+			self:Layout()
 		end
 		self:Paint()
 	end
 
 	method void OnUpdate(number delta)
-		-- 클라: 지연 초기화.
-		if self:IsClient() and not self.inited then self:InitBar() end
+		-- 클라: 지연 초기화 → 채움을 목표 비율로 부드럽게 줄이고, 부모 배율이 (서비스가 나중에 키워서) 바뀌면 다시 배치한다.
+		if not self:IsClient() then return end
+		if not self.inited then
+			self:InitBar()
+			return
+		end
+		if not self.Shown then return end
+		local target = math.max(0, math.min(1, self.Ratio))
+		local diff = target - self.shownRatio
+		local ps = self.Entity.TransformComponent.Scale
+		local scaleChanged = (math.abs(math.abs(ps.x) - self.lastScaleX) > 0.0001) or (math.abs(math.abs(ps.y) - self.lastScaleY) > 0.0001)
+		if math.abs(diff) > 0.0005 then
+			self.shownRatio = self.shownRatio + diff * math.min(1, delta * self.SmoothSpeed)
+			if math.abs(target - self.shownRatio) <= 0.0005 then self.shownRatio = target end
+			self:Layout()
+			self:Paint()
+		elseif diff ~= 0 then
+			self.shownRatio = target
+			self:Layout()
+			self:Paint()
+		elseif scaleChanged then
+			self:Layout()
+		end
 	end
 
 end
