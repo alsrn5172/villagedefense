@@ -123,6 +123,12 @@ script WorkshopUIController extends Logic
 	@HideFromInspector
 	property string craftSel = ""
 
+	-- 장비 상인 직업 분류(2026-10-01 · 사용자 "전사 마법사 궁수 도적 해적 다 팔고 각 카테고리로"). Craft/Job_{직업} 버튼 · "" = 처음 열 때 내 직업.
+	@HideFromInspector
+	property string craftJob = ""
+
+	property string CraftJobs = "WARRIOR,MAGICIAN,ARCHER,THIEF,PIRATE"
+
 	@HideFromInspector
 	property any potionView = nil
 
@@ -196,6 +202,10 @@ script WorkshopUIController extends Logic
 			if isvalid(c) then
 				table.insert(self.tradeHandlers, { ent = c, h = c:ConnectEvent(ButtonClickEvent, fn) })
 			end
+		end
+		for j in string.gmatch(self.CraftJobs, "[^,]+") do
+			local job = j
+			bindChild(self.contentCraft, "Job_" .. job, function() self:SetCraftJob(job) end)
 		end
 		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
 		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
@@ -469,7 +479,7 @@ script WorkshopUIController extends Logic
 			local titleText = "상승 능력치"
 			if def ~= nil and row ~= nil then
 				local nextLv = (it.enh or 0) + 1
-				local fixed = _ItemCatalog:GetSlotBonus(def.slot, def.reqLevel, nextLv)
+				local fixed = _ItemCatalog:GetSlotBonus(def.slot, def.enhanceTier, nextLv)
 				if fixed ~= nil and (fixed.defense or 0) ~= 0 then
 					sum.defense = (sum.defense or 0) + fixed.defense
 					fixedSum.defense = fixed.defense
@@ -541,7 +551,8 @@ script WorkshopUIController extends Logic
 		local costText = "장비를 선택하세요"
 		if def ~= nil and row ~= nil then
 			local have = #self.chosenGems
-			costText = "메소 " .. tostring(row.mesoCost) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
+			-- 한벌옷은 두 벌 몫이라 메소가 두 배(EnhanceService 와 같은 식 · 2026-09-30).
+			costText = "메소 " .. tostring(row.mesoCost * _ItemCatalog:PieceCount(def)) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
 			ready = (have == row.gemCount)
 		elseif def ~= nil then
 			costText = "최대 강화 단계"
@@ -771,10 +782,49 @@ script WorkshopUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void SetCraftJob(string job)
+		-- 직업 분류 버튼 → 목록을 그 직업 장비로 거른다(선택은 풀림).
+		if self.craftJob ~= job then self.craftSel = "" end
+		self.craftJob = job
+		self:RefreshCraft()
+		log("[Workshop] craft job=" .. job)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string DefaultCraftJob()
+		-- 처음 열 때 분류: 내 직업(전직 후) · 초보자면 전사.
+		local mine = (_PlayerSkillState ~= nil) and _PlayerSkillState:LocalJobId() or ""
+		for j in string.gmatch(self.CraftJobs, "[^,]+") do
+			if j == mine then return j end
+		end
+		return "WARRIOR"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCraftJobTabs(boolean show)
+		-- 분류 버튼: 마을 장비 상인에서만 보이고, 고른 직업만 밝게.
+		if not isvalid(self.contentCraft) then return end
+		for j in string.gmatch(self.CraftJobs, "[^,]+") do
+			local b = self.contentCraft:GetChildByName("Job_" .. j)
+			if isvalid(b) then
+				b.Enable = show
+				-- 창 바탕이 노랑이라 고른 칸은 진한 주황 · 나머지는 회색(노랑으로 칠하면 바탕에 묻힌다 · 2026-10-01 캡처로 확인).
+				if b.SpriteGUIRendererComponent ~= nil then
+					if j == self.craftJob then
+						b.SpriteGUIRendererComponent.Color = Color(0.91, 0.45, 0.16, 1)
+					else
+						b.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
 	method string PriceText(any recipe)
-		-- "포자 5 · 메소 300" (재료명은 앞 2글자만 — 카드 폭)
+		-- "포자 5 · 메소 300" (재료명은 앞 2글자만 — 카드 폭) · 공용 행의 REGION_LOCAL 은 이 마을 재화로 푼다.
 		local parts = {}
-		for _, m in ipairs(recipe.mats) do
+		for _, m in ipairs(_ItemCatalog:RecipeMats(recipe, self:ShopKey())) do
 			local md = _ItemCatalog:Get(m.itemId)
 			local nm = (md ~= nil) and md.name or m.itemId
 			table.insert(parts, nm .. " " .. tostring(m.count))
@@ -787,13 +837,22 @@ script WorkshopUIController extends Logic
 	method void RefreshCraft()
 		-- 이 지역 레시피 목록 → 카드 그리드. 선택된 것이 있으면 상세·재료·Footer 갱신.
 		local key = self:ShopKey()
-		self.craftView = _ItemCatalog:GetRecipes(key)
+		-- 마을 장비 상인은 5직업 장비를 다 판다 → 직업 분류로 거른다. 리스항구(초보자 장비)는 분류 없음.
+		local byJob = _ItemCatalog:IsRegionShop(key)
+		if byJob and self.craftJob == "" then self.craftJob = self:DefaultCraftJob() end
+		self.craftView = {}
+		for _, r in ipairs(_ItemCatalog:GetRecipes(key)) do
+			local rd = _ItemCatalog:Get(r.resultItemId)
+			if not byJob or (rd ~= nil and rd.reqJob == self.craftJob) then table.insert(self.craftView, r) end
+		end
+		self:RefreshCraftJobTabs(byJob)
 		if isvalid(self.craftGrid) then
 			self.craftGrid.TotalCount = #self.craftView
 			self.craftGrid:Refresh(true, true)
 		end
 		local sel = (self.craftSel ~= "") and _ItemCatalog:GetRecipe(self.craftSel) or nil
-		if sel ~= nil and sel.shopKey ~= key then sel = nil self.craftSel = "" end
+		if sel ~= nil and not _ItemCatalog:RecipeAvailableAt(sel, key) then sel = nil self.craftSel = "" end
+		local selMats = _ItemCatalog:RecipeMats(sel, key)
 		local d = self.craftDetail
 		if isvalid(d) then
 			local empty = d:GetChildByName("Empty")
@@ -806,13 +865,13 @@ script WorkshopUIController extends Logic
 			if _InventoryUIController ~= nil then
 				local eq = nil
 				if def ~= nil then eq = { iid = "", itemId = def.id, enh = 0, dur = def.maxDurability, gems = "" } end
-				_InventoryUIController:FillItemView(eq, "", isvalid(icon) and icon.SpriteGUIRendererComponent or nil, isvalid(name) and name.TextGUIRendererComponent or nil, isvalid(req) and req.TextGUIRendererComponent or nil, statList, nil, nil, 0)
+				_InventoryUIController:FillItemView(eq, "", isvalid(icon) and icon.SpriteGUIRendererComponent or nil, isvalid(name) and name.TextGUIRendererComponent or nil, isvalid(req) and req.TextGUIRendererComponent or nil, statList)
 			end
 			local mt = d:GetChildByName("MatTitle")
 			if isvalid(mt) then mt.Enable = (sel ~= nil) end
 			local rows = {}
 			if sel ~= nil then
-				for _, m in ipairs(sel.mats) do
+				for _, m in ipairs(selMats) do
 					local md = _ItemCatalog:Get(m.itemId)
 					table.insert(rows, { label = (md ~= nil) and md.name or m.itemId, value = tostring(self:CountItem(m.itemId)) .. " / " .. tostring(m.count) })
 				end
@@ -837,7 +896,7 @@ script WorkshopUIController extends Logic
 		local cost = "장비를 고르세요"
 		if sel ~= nil then
 			ready = true
-			for _, m in ipairs(sel.mats) do
+			for _, m in ipairs(selMats) do
 				if self:CountItem(m.itemId) < m.count then ready = false end
 			end
 			cost = self:PriceText(sel)

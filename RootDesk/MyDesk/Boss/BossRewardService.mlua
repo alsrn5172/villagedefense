@@ -37,8 +37,20 @@ script BossRewardService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void OnBossKilled(string bossId, string mapName, any dmg, any order, integer ledgerDiff)
+	method boolean GiveOrDrop(string userId, string itemId, integer count, Entity map, any pos)
+		-- 보상 아이템 1종: 죽은 자리를 알면 바닥에 떨구고(true), 아니면 인벤토리에 직접 넣는다(false). (WO-035 · 사용자 결정 2026-09-29 "보스 보상도 바닥에")
+		if itemId == nil or itemId == "" or count <= 0 then return false end
+		if _GroundDrop ~= nil and isvalid(map) and pos ~= nil and _GroundDrop:SpawnItem(map, pos, userId, "ITEM", itemId, count) then
+			return true
+		end
+		if _InventoryService ~= nil then _InventoryService:GiveItem(userId, itemId, count) end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossKilled(string bossId, string mapName, any dmg, any order, integer ledgerDiff, Entity map, any pos)
 		-- 보스 1마리 사망 → 최다 피해자에게 보상. ledgerDiff = 원장이 쌓일 때의 ★ (종료 직전 처치는 Running 이 이미 꺼져 Current() 가 0 · Codex 리뷰 2026-09-23).
+		-- map · pos = 보스가 죽은 맵 · 자리. 아이템 보상(영혼석 · 최다 피해 아이템 · 선취 아이템)은 거기 바닥에 떨군다(주인 = 최다 피해자). 메소는 예전처럼 바로 준다.
 		local top = self:TopDamager(dmg, order)
 		local d = 0
 		if _DifficultyService ~= nil then d = _DifficultyService:Current() end
@@ -61,10 +73,17 @@ script BossRewardService extends Logic
 		local stones = -1
 		if row.soulstone ~= nil and row.soulstone[d] ~= nil then stones = math.floor(row.soulstone[d]) end
 		if stones < 0 then stones = math.floor(_DifficultyService:GetNumFor(d, "BOSS_SOULSTONE")) end
+		local onGround = 0
 		local given = 0
-		if stones > 0 and _InventoryService ~= nil then given = _InventoryService:GiveItem(top, self.SoulstoneItemId, stones) end
+		if stones > 0 then
+			given = stones
+			if self:GiveOrDrop(top, self.SoulstoneItemId, stones, map, pos) then onGround = onGround + 1 end
+		end
 		local itemGiven = 0
-		if row.topDamageItemId ~= "" and _InventoryService ~= nil then itemGiven = _InventoryService:GiveItem(top, row.topDamageItemId, 1) end
+		if row.topDamageItemId ~= "" then
+			itemGiven = 1
+			if self:GiveOrDrop(top, row.topDamageItemId, 1, map, pos) then onGround = onGround + 1 end
+		end
 		local player = _UserService:GetUserEntityByUserId(top)
 		if row.topDamageMeso > 0 and isvalid(player) and _SummonManager ~= nil then _SummonManager:GrantMeso(player, row.topDamageMeso) end
 		-- 선취 (매치당 1회)
@@ -73,7 +92,7 @@ script BossRewardService extends Logic
 		if (row.firstClaimItemId ~= "" or row.firstClaimMeso > 0) and not (row.firstClaimOnce and self.claimed[bossId]) then
 			self.claimed[bossId] = true
 			first = true
-			if row.firstClaimItemId ~= "" and _InventoryService ~= nil then _InventoryService:GiveItem(top, row.firstClaimItemId, 1) end
+			if row.firstClaimItemId ~= "" and self:GiveOrDrop(top, row.firstClaimItemId, 1, map, pos) then onGround = onGround + 1 end
 			if row.firstClaimMeso > 0 and isvalid(player) and _SummonManager ~= nil then _SummonManager:GrantMeso(player, row.firstClaimMeso) end
 		end
 		local info = (_BossCatalog ~= nil) and _BossCatalog:GetInfo(bossId) or nil
@@ -86,12 +105,13 @@ script BossRewardService extends Logic
 			if row.firstClaimItemId ~= "" then msg = msg .. " · 선취 " .. row.firstClaimItemId end
 			if row.firstClaimMeso > 0 then msg = msg .. " · 선취 " .. tostring(row.firstClaimMeso) .. "메소" end
 		end
+		if onGround > 0 then msg = msg .. " — 아이템은 보스가 쓰러진 자리에 떨어졌습니다" end
 		if _UIToast ~= nil then _UIToast:ShowMessage(msg, top) end
 		if _GuideService ~= nil then _GuideService:OnBossKilled(top) end
 		-- 매치 집계 BossKillCount (WO-031 묶음 2 · 최다 피해 판정 = top). dmg 는 도감 인정(묶음 4)용으로 같이 넘긴다.
 		if _MatchTallyService ~= nil then _MatchTallyService:OnBossKill(bossId, top, dmg) end
 		log("[BossReward] boss=" .. bossId .. " map=" .. mapName .. " top=" .. top .. " dmg=" .. tostring(dmg[top] or 0)
 			.. " star=" .. tostring(d) .. " soulstone=" .. tostring(given) .. "/" .. tostring(stones) .. " item=" .. row.topDamageItemId
-			.. " meso=" .. tostring(row.topDamageMeso) .. " first=" .. tostring(first))
+			.. " meso=" .. tostring(row.topDamageMeso) .. " first=" .. tostring(first) .. " ground=" .. tostring(onGround))
 	end
 end

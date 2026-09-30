@@ -30,26 +30,122 @@ script MesoCoin extends Component
 
 	property number ArmDelay = 0.35
 
+	-- ── 드랍 연출 (WO-035 D · 사용자 결정 2026-09-29 "원작식 포물선 연출로 교체") ──
+	-- 예전엔 생성 순간 물리 힘(AddForce) 한 번을 주고 엔진 물리에 맡겨서, 위에 발판이 있으면 동전이 그 위에 얹혔다.
+	-- 이제 서버가 포물선으로 직접 옮겨 **생성된 층의 발판**에 내려놓는다(위층 발판은 지나간다). 비행 중엔 Rigidbody 를 끈다.
+	-- 수치는 눈으로 맞추는 값 — ArcSeconds(비행 시간) · ArcHeight(꼭대기 높이) · ArcSpread(좌우로 퍼지는 최대 거리).
+	property number ArcSeconds = 0.45
+
+	property number ArcHeight = 0.6
+
+	property number ArcSpread = 0.5
+
+	-- 생성 위치에서 아래로 발판을 찾는 거리. 못 찾으면(공중 · 절벽 밖) 예전 물리로 떨어뜨린다.
+	property number ArcFloorSearch = 1.5
+
+	-- 착지 x 아래의 발판이 생성 위치 바로 아래 발판과 이만큼 넘게 차이 나면 다른 층으로 보고 제자리에 떨군다.
+	property number ArcSameFloorTolerance = 0.5
+
+	-- 착지 뒤 발판선에서 띄우는 높이(그림 피벗 보정).
+	property number RestOffsetY = 0
+
+	-- 발판을 못 찾았을 때 쓰는 예전 물리 힘(위로는 낮춰서).
 	property number PopPower = 1.6
 
-	property number PopLift = 2.5
+	property number PopLift = 1.2
+
+	-- 물리로 떨어지는 드랍이 이 시간 안에 바닥에 안 닿으면 그냥 줍게 푼다.
+	property number FallArmTimeout = 3
+
+	@HideFromInspector
+	property boolean arcOn = false
+
+	@HideFromInspector
+	property boolean falling = false
+
+	@HideFromInspector
+	property boolean landed = false
+
+	@HideFromInspector
+	property number arcT = 0
+
+	@HideFromInspector
+	property number startX = 0
+
+	@HideFromInspector
+	property number startY = 0
+
+	@HideFromInspector
+	property number landX = 0
+
+	@HideFromInspector
+	property number landY = 0
 
 	@HideFromInspector
 	property number Age = 0
+
+	-- 착지한 순간의 Age. 그 뒤 GroundDrop.LandHoldSeconds 동안은 줍기 · 자석을 막는다.
+	@HideFromInspector
+	property number landedAt = 0
 
 	@HideFromInspector
 	property boolean Collected = false
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
-		-- 살짝 튀어 발판 위로 떨어지게 한다.
+		-- 착지점을 정하고 포물선 비행을 시작한다. 발판을 못 찾으면 예전 물리(힘 낮춤)로. 착지 계산은 Farm/GroundDrop 공용(아이템 드랍과 같은 규칙).
+		_GroundDrop:ApplyLayer(self.Entity)
 		local body = self.Entity.RigidbodyComponent
-		if isvalid(body) then
-			local dir = 1
-			if _UtilLogic:RandomDouble() < 0.5 then
-				dir = -1
+		local plan = _GroundDrop:PlanLanding(self.Entity, self.ArcSpread, self.ArcSameFloorTolerance, self.ArcFloorSearch)
+		if plan == nil then
+			-- 물리로 떨어뜨린다. 줍기 · 자석은 바닥에 닿은 뒤부터(OnUpdate 가 IsOnGround 로 본다 · 사용자 결정 2026-09-29).
+			if isvalid(body) then
+				local dir = 1
+				if _UtilLogic:RandomDouble() < 0.5 then
+					dir = -1
+				end
+				body:AddForce(Vector2(dir * self.PopPower * _UtilLogic:RandomDouble(), self.PopLift))
+				self.falling = true
+			else
+				self.landed = true
 			end
-			body:AddForce(Vector2(dir * self.PopPower * _UtilLogic:RandomDouble(), self.PopLift))
+			local tr = self.Entity.TransformComponent
+			if isvalid(tr) then
+				local p = tr.WorldPosition
+				log("[MesoCoin] no foothold below (" .. string.format("%.2f", p.x) .. "," .. string.format("%.2f", p.y) .. ") — physics fallback")
+			end
+			return
+		end
+		self.startX = plan.fromX
+		self.startY = plan.fromY
+		self.landX = plan.x
+		self.landY = plan.y + self.RestOffsetY
+		self.arcT = 0
+		self.arcOn = true
+		if isvalid(body) then
+			body.Enable = false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StepArc(number delta)
+		-- 포물선 한 프레임: x 는 직선 · y 는 시작~착지 직선 + 위로 볼록(꼭대기 ArcHeight). 끝나면 착지점에 고정.
+		self.arcT = self.arcT + delta
+		local u = 1
+		if self.ArcSeconds > 0 then
+			u = math.min(1, self.arcT / self.ArcSeconds)
+		end
+		local x = self.startX + (self.landX - self.startX) * u
+		local y = _GroundDrop:ArcY(self.startY, self.landY, self.ArcHeight, u)
+		local tr = self.Entity.TransformComponent
+		if isvalid(tr) then
+			tr.WorldPosition = Vector3(x, y, tr.WorldPosition.z)
+		end
+		if u >= 1 then
+			self.arcOn = false
+			self.landed = true
+			self.landedAt = self.Age
+			log("[MesoCoin] landed (" .. string.format("%.2f", self.landX) .. "," .. string.format("%.2f", self.landY) .. ") from (" .. string.format("%.2f", self.startX) .. "," .. string.format("%.2f", self.startY) .. ")")
 		end
 	end
 
@@ -73,8 +169,28 @@ script MesoCoin extends Component
 			return
 		end
 		
-		-- 스폰 직후 잠깐은 줍히지 않는다.
-		if self.Age < self.ArmDelay then
+		-- 포물선 비행 중엔 옮기기만 한다(줍기 · 자석은 착지 뒤부터).
+		if self.arcOn then
+			self:StepArc(delta)
+			return
+		end
+
+		-- 물리로 떨어지는 중(발판을 못 찾은 드랍)이면 바닥에 닿을 때까지 기다린다. FallArmTimeout 이 지나면 닿지 않았어도 푼다(못 줍는 동전 방지).
+		if self.falling then
+			local body = self.Entity.RigidbodyComponent
+			if isvalid(body) and body.Enable and not body:IsOnGround() and self.Age < self.FallArmTimeout then
+				return
+			end
+			self.falling = false
+			self.landed = true
+			self.landedAt = self.Age
+			local fp = self.Entity.TransformComponent.WorldPosition
+			log("[MesoCoin] landed by physics (" .. string.format("%.2f", fp.x) .. "," .. string.format("%.2f", fp.y) .. ") age=" .. string.format("%.2f", self.Age))
+		end
+
+		-- 착지 전에는 줍히지도 끌려가지도 않는다(사용자 결정 2026-09-29 "바닥에 다 떨어지기 전까지 안 빨려들어가게").
+		-- 착지한 뒤에도 GroundDrop.LandHoldSeconds(0.3초) 동안은 그대로 둔다(사용자 결정 2026-09-29 밤 "바로 먹으니까 안 보인다").
+		if self.Age < self.ArmDelay or not _GroundDrop:Settled(self.landed, self.Age, self.landedAt) then
 			return
 		end
 
@@ -94,7 +210,7 @@ script MesoCoin extends Component
 			if _SummonManager ~= nil then
 				_SummonManager:GrantMeso(owner, self.Value)
 			end
-			log("[MesoCoin] picked +meso " .. tostring(self.Value) .. " by " .. tostring(owner.PlayerComponent.UserId))
+			log("[MesoCoin] picked +meso " .. tostring(self.Value) .. " by " .. tostring(owner.PlayerComponent.UserId) .. " after=" .. string.format("%.2f", self.Age - self.landedAt))
 			self.Entity:Destroy()
 			return
 		end
@@ -134,26 +250,14 @@ script MesoCoin extends Component
 
 	@ExecSpace("ServerOnly")
 	method boolean AutoPickupOn(Entity owner)
-		-- 주인의 자동획득 설정. 원장이 없으면 켜진 것으로 본다(기본 ON).
-		if _SummonManager == nil or not isvalid(owner.PlayerComponent) then
-			return true
-		end
-		return _SummonManager:IsAutoPickup(owner.PlayerComponent.UserId)
+		-- 주인의 자동획득 설정(Farm/GroundDrop 공용). 원장이 없으면 켜진 것으로 본다(기본 ON).
+		return _GroundDrop:AutoPickupOn(owner)
 	end
 
 	@ExecSpace("ServerOnly")
 	method void MoveToward(Vector3 from, number nx, number ny, number delta)
-		-- 동전을 주인 쪽으로 한 프레임 옮긴다.
-		-- 🔴 이 모델은 Rigidbody 를 쓴다 — TransformComponent 에 직접 대입하면 다음 프레임에 물리가 옛 좌표로 되돌린다(실측 이력).
-		--    Rigidbody 가 있으면 SetWorldPosition, 없을 때만 Transform 대입.
-		local step = self.MagnetSpeed * delta
-		local nextPos = Vector3(from.x + nx * step, from.y + ny * step, from.z)
-		local body = self.Entity.RigidbodyComponent
-		if isvalid(body) then
-			body:SetWorldPosition(Vector2(nextPos.x, nextPos.y))
-		else
-			self.Entity.TransformComponent.WorldPosition = nextPos
-		end
+		-- 동전을 주인 쪽으로 한 프레임 옮긴다(Farm/GroundDrop 공용 — Rigidbody 가 켜져 있으면 SetWorldPosition · 꺼져 있으면 Transform).
+		_GroundDrop:MoveToward(self.Entity, from, nx, ny, self.MagnetSpeed * delta)
 	end
 
 	@ExecSpace("ServerOnly")
