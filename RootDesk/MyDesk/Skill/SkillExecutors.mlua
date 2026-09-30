@@ -7,7 +7,7 @@ script SkillExecutors extends Logic
     -- b/skill-magician (추가기획1 마법사 표):
     --   BLINK     이동은 소유 클라가 이미 끝냈다(SkillMovement). 여기서는 출발/도착 이펙트 + 텔레포트 강화(SK_M21)의 도착 지점 광역 피해.
     --   BUFF_SELF 버프 원장(SkillBuffs.ApplyBuff)에 BuffTag 를 Duration 동안 켠다 — 매직 가드(SK_M22).
-    --   ORIGIN    originSingleTarget 에 있는 스킬(대마법 SK_M31)은 화면 안 단일 대상(보스 우선 · 없으면 최근접)에 HitCount 회. 나머지는 화면 전체 1회.
+    --   ORIGIN    originSingleTarget 에 있는 스킬(대마법 SK_M31)은 충전 뒤 화면 안 적 전부에 HitCount 회(ExecuteBlast · 상한 없음). 나머지는 화면 전체 1회.
     --   PASSIVE   시전 없음 — 값은 JobPassiveLogic(연성 SK_M12) 이 스킬 레벨에서 읽는다.
     -- b/skill-warrior (추가기획1 전사 표):
     --   MELEE_ARC meleeSingleTarget 에 있는 스킬(파워 스트라이크 SK_W11)은 앞쪽 상자 안 최근접 하나에 HitCount 회. 나머지(섬머솔트 킥)는 상자 전부.
@@ -400,7 +400,7 @@ script SkillExecutors extends Logic
             MELEE_ARC = function(skillId, skillData, casterEntity, level) self:ExecuteMeleeArc(skillId, skillData, casterEntity, level) end,
             TAUNT = function(skillId, skillData, casterEntity, level) self:ExecuteTaunt(skillId, skillData, casterEntity, level) end,
         }
-        -- 대마법(SK_M31): 추가기획1 "단일 대상 초고피해 (컷신)" — 화면 전체 광역에서 단일 대상으로 바뀐 행(기획 정리 ⚠️ 변경 · 발록전이 목표).
+        -- 대마법(SK_M31): 폭발형 오리진(ExecuteBlast · 충전 연출). 이름은 옛 "단일 대상" 기획에서 왔지만 지금은 화면 전체 광역이다(#40 5884706734 · 5885126414).
         self.originSingleTarget = {
             SK_M31 = true,
         }
@@ -1925,34 +1925,34 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ExecuteBlast(string skillId, table skillData, Entity casterEntity, number level, Vector3 finalPos, any skillAttack)
-        -- 대마법(SK_M31) 폭발 (2026-09-09 요청: "메소 익스플로전처럼 정해진 반지름 안에서 여러 폭발이 터지는 큰 한 방").
-        --   중심   = 화면 안 보스(우선) / 최근접 몬스터의 위치. 없으면 시전자 앞 Range 지점(그래도 터진다 — 소모는 이미 확정).
-        --   반지름 = CSV Range (0 이면 BlastDefaultRadius). 피해 = 첫 폭발 시점에 반지름 안 몬스터 전부(CircleShape) HitCount 회.
-        --   연출   = 중심 Nova(impact 단계 · RUID 오버라이드 가능) → BlastExplosionCount 개의 BigExplosion 을 간격을 두고 반지름 안에 흩뿌림 → 마무리 SparkRadialExplosion.
-        --   추가기획1 표의 "단일 대상" 문구와 다르다: 기획 변경 사유가 "발록전엔 광역이 쓸모없다" 였으니 보스가 반지름 안에 있으면 그대로 맞는다. 조각 파일에 표시.
+        -- 대마법(SK_M31) = 화면 전체 광역기 (사용자(강민구) 결정 #40 5884706734 · 5885126414 · 2026-09-29).
+        --   피해   = 화면 안 적 전부(ScreenBoxSize 상자 · 다른 ORIGIN 의 "화면 전체" 와 같은 상자) · 대상 상한 없음 · 대상마다 BaseEffect 6000% × HitCount(1).
+        --            대상 고르기(보스 우선 · 최근접) 없음 — 광역이라 필요 없다(5884706734). 예전 반지름(CircleShape) 피해도 없다.
+        --   연출   = 시전자 앞 Range 지점(0 이면 BlastDefaultRadius)에 impact(원작 hit 오버라이드 · 없으면 Nova) → 오버라이드가 없을 때만 반지름 안 BigExplosion 연쇄 + SparkRadialExplosion.
+        --            반지름은 연출 배치에만 쓴다.
         local radius = skillData.range
         if radius <= 0 then radius = self.BlastDefaultRadius end
         local hitCount = skillData.hitCount
         if hitCount <= 0 then hitCount = 1 end
 
-        local screen = { posX = finalPos.x, posY = finalPos.y, sizeX = self.ScreenBoxSize.x, sizeY = self.ScreenBoxSize.y }
-        local target = skillAttack:FindSkillTarget(skillId, screen, true)
         local cx = finalPos.x + self:GetFacingX(casterEntity) * radius
         local cy = finalPos.y + 0.3
         local cz = finalPos.z
-        local centerName = "front"
-        if isvalid(target) and isvalid(target.TransformComponent) then
-            local tp = target.TransformComponent.WorldPosition
-            cx = tp.x
-            cy = tp.y + 0.3
-            centerName = tostring(target.Name)
-        end
 
-        -- 첫 폭발 = 중심 + 피해 (같은 프레임 — 맞는 순간과 보이는 순간을 맞춘다)
+        -- 첫 폭발 = 연출 + 화면 전체 피해 (같은 프레임 — 맞는 순간과 보이는 순간을 맞춘다). 대상마다 SkillAttack 의 "dealt" 한 줄 + 피격 파이프라인 로그.
         self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(cx, cy, cz), BasicParticleType.Nova)
-        skillAttack:DealSkillDamageCircle(skillId, level, cx, cy, radius, hitCount)
-        log("SkillExecutors: BLAST " .. skillId .. " center=" .. centerName .. " (" .. tostring(cx) .. "," .. tostring(cy) .. ") r=" .. tostring(radius)
-            .. " explosions=" .. tostring(self.BlastExplosionCount) .. " hits=" .. tostring(hitCount))
+        local screen = {
+            posX = finalPos.x, posY = finalPos.y,
+            sizeX = self.ScreenBoxSize.x, sizeY = self.ScreenBoxSize.y,
+            hitCount = hitCount,
+        }
+        local inScreen = skillAttack:FindSkillTargets(skillId, screen)
+        local names = {}
+        for _, e in ipairs(inScreen) do table.insert(names, tostring(e.Name)) end
+        skillAttack:DealSkillDamage(skillId, level, screen)
+        log("SkillExecutors: BLAST " .. skillId .. " screen-wide box=" .. tostring(self.ScreenBoxSize.x) .. "x" .. tostring(self.ScreenBoxSize.y)
+            .. " at (" .. tostring(finalPos.x) .. "," .. tostring(finalPos.y) .. ") targets=" .. tostring(#inScreen) .. " (no cap) hits=" .. tostring(hitCount)
+            .. " [" .. table.concat(names, ",") .. "] art=(" .. tostring(cx) .. "," .. tostring(cy) .. ") r=" .. tostring(radius))
 
         -- 원작 RUID(effectOverrides.impact)가 있으면 그 한 클립이 폭발 연출 전부다 — 엔진 파티클 연쇄(BigExplosion·SparkRadialExplosion)는 겹쳐 재생하지 않는다 (2026-09-10 사용자 요청).
         local blastEntry = self.effectOverrides[skillId]
@@ -2054,7 +2054,7 @@ script SkillExecutors extends Logic
             }
 
             if self.originSingleTarget[skillId] then
-                -- 대마법(SK_M31): 폭발형 — 보스 우선/최근접 대상 위치(없으면 시전자 앞)를 중심으로 CSV Range 반지름 폭발 (ExecuteBlast).
+                -- 대마법(SK_M31): 폭발형 — 화면 안 적 전부(상한 없음) 피해 + 시전자 앞 폭발 연출 (ExecuteBlast).
                 self:ExecuteBlast(skillId, skillData, casterEntity, level, finalPos, skillAttack)
                 return
             end
