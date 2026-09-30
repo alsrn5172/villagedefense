@@ -16,6 +16,8 @@ script SkillProjectile extends AttackComponent
     --     두 번째 투사체의 피해는 어차피 무효). 나머지 투사체는 VisualOnly(피해 없음 · 연출만).
     --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 배율 2.0.
     --   · OnAttack: hit 사운드(HitSoundRUID) + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
+    -- b/skill-thief-effects: SingleTargetOnly(럭키 세븐 · #40 5884390073 7번) = 판정마다 상자 안 몬스터 하나만(조준 대상 우선 · 없으면 가장 가까운 것).
+    --   럭키 세븐은 발마다 1타(DamageMul 1 · 2발째도 진짜 투사체 · SkillAttack.SpawnProjectile perProjectileHit).
 
     property number DirectionX = 1
 
@@ -101,6 +103,19 @@ script SkillProjectile extends AttackComponent
     property number FloorY = 0
 
     property number FloorTolerance = 0.6
+
+    -- true = 판정 한 번에 몬스터 하나만 맞는다(b/skill-thief-effects · 럭키 세븐 1 대상). OnUpdate 가 probe 패스로 후보를 모으고
+    -- (조준 대상 TargetEntity 가 후보에 있으면 그것 · 없으면 투사체에 가장 가까운 것) 그 하나만 통과시켜 AttackFast 한다. false = 예전대로 상자 안 전부.
+    property boolean SingleTargetOnly = false
+
+    -- SingleTargetOnly 의 probe 패스 attackInfo(스킬 id 와 겹치지 않는 값 · SkillAttack.ProbeTag 와 같은 값).
+    property string ProbeTag = "probe"
+
+    @HideFromInspector
+    property table probeCandidates = {}
+
+    @HideFromInspector
+    property any passTarget = nil
 
     @HideFromInspector
     property any Shape = nil
@@ -240,7 +255,55 @@ script SkillProjectile extends AttackComponent
         self.Shape.Position = Vector2(pos.x, pos.y)
         self.Shape.Size = Vector2(self.RangeX, self.RangeY)
         self.Shape.Angle = 0
+        if self.SingleTargetOnly then
+            local pick = self:PickSingleTarget(pos)
+            if pick == nil then return end
+            self.passTarget = pick
+            self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+            self.passTarget = nil
+            return
+        end
         self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+    end
+
+    @ExecSpace("ServerOnly")
+    method any PickSingleTarget(Vector3 pos)
+        -- SingleTargetOnly: 지금 상자(Shape) 안 후보를 probe 패스로 모아(피해 없음 · IsAttackTarget 이 false) 하나를 고른다.
+        -- 조준 대상이 후보에 있으면 그것, 아니면 투사체 위치에 가장 가까운 것. 죽었거나 죽는 중인 몬스터는 뺀다. 없으면 nil.
+        self.probeCandidates = {}
+        self.passTarget = nil
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local best = nil
+        local bestD = math.huge
+        for _, cand in ipairs(self.probeCandidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) and not self:IsDeadOrDying(cand) then
+                if cand == self.TargetEntity then
+                    best = cand
+                    break
+                end
+                local cp = cand.TransformComponent.WorldPosition
+                local dx = cp.x - pos.x
+                local dy = cp.y - pos.y
+                local d = dx * dx + dy * dy
+                if d < bestD then
+                    best = cand
+                    bestD = d
+                end
+            end
+        end
+        self.probeCandidates = {}
+        return best
+    end
+
+    method boolean IsDeadOrDying(Entity defender)
+        -- 몬스터(script.Monster · A)가 죽었거나 HP 0 이하인가(SkillAttack.IsDeadOrDying 과 같은 규칙). Monster 가 없는 대상은 false. ExecSpace 없음 = 서버 판정 경로에서만 부른다.
+        if not isvalid(defender) then return true end
+        ---@type Monster
+        local mon = defender:GetComponent("script.Monster")
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return true end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return true end
+        return false
     end
 
     -- Impact effect fires here, from the normal AttackFast/HitEvent pipeline - not a
@@ -296,7 +359,14 @@ script SkillProjectile extends AttackComponent
                 return false
             end
         end
-        return __base:IsAttackTarget(defender, attackInfo)
+        if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        -- SingleTargetOnly(럭키 세븐): probe 패스는 후보만 모으고 아무도 안 맞는다 · 실제 패스는 고른 하나(passTarget)만.
+        if attackInfo == self.ProbeTag then
+            table.insert(self.probeCandidates, defender)
+            return false
+        end
+        if self.passTarget ~= nil then return defender == self.passTarget end
+        return true
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
