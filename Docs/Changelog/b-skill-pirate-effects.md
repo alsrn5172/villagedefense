@@ -1,5 +1,27 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 13차 (2026-10-01 · 사용자 결정 반영 · main 은 아직 안 합침)
+
+- **Round 4 결과**(사용자 메시지 · 이 PR `6de4a54` 합친 판 · 빌드 경고 1 → 1): 20 섬머솔트 킥 똑바로 서는 때 +0.63 ~ +0.67s — 통과.
+- **함포 사격 컷신 길이 1.0s**(A 답 #40 5897840056 · B 제안 5896351891):
+  - `SkillExecutors.GetCutsceneSeconds` 가 `cast.cutsceneLengthSeconds` 를 클립 실측보다 먼저 쓴다. SK_P31 에만 1.0 을 넣었다.
+  - 결과: 궁 무적 5.04s → **1.15s**(1.0 + `SkillCaster.CutsceneInvulnPad` 0.15). 시전 락 3.5s(`SkillCaster` castLockOverrides) · 표시 1.0s · 0.2s 페이드 · 파 시점은 그대로.
+  - 이 값을 읽는 다른 곳: 분신 숨김(도적만 · 해적엔 해당 없음) · 불굴의 진 버프 연장(`buffExtendsByCutscene` · 전사만). 다른 궁은 실측 그대로.
+  - 주석: `SkillExecutors` SK_P31 스펙 · `GetCutsceneDisplaySeconds` · `SkillCaster` SK_P31 락 줄.
+- **피스트인레인지 `PunchSequenceHits` 기본 false → true**(사용자 결정 2026-10-01): 폭발 1번 = 타격 1번(표 % × 1 · 10번 · 합계 = 표 30%x10 → 50%x10).
+  - 근거: 몬스터 피격 무적이 없어졌다(#120 · main `Faction/MonsterHit.mlua:29` · A 로컬 시험 10타 전부 명중 · #40 5886841184).
+  - ⚠ 이 브랜치엔 아직 옛 무적 0.4s 가 있다(main 을 안 합쳤다) → 이 판만으로 Play 하면 1·5·9번째만 들어간다. 10타 확인은 main 을 합친 판에서.
+  - 낡은 "A 의 무적 예외 뒤" 주석 3곳(`SkillExecutors` 속성 · SK_P21 스펙 · 연타 분기)과 `SkillInfo.csv` SK_P21 #Note 를 고쳤다(인계 T6).
+- **섬머솔트 킥 출처 주석 정정**(400004134 → 5001002): 라이브러리 태그(`msw_resource_api.cjs tags`)로 확인했다.
+  - effect `3c5e92e9…` · hit `66301df4…` · 시전 소리 `85398b7f…` · 명중 소리 `1b54e033…` 의 경로가 전부 `500.img/5001002`(모험가 해적 1차 써머솔트 킥)다.
+  - 아이콘 `16475656…` 만 5001002 와 400004134 써머솔트 킥 강화가 같이 쓴다. 예전 주석의 "5001002 는 색인에 없음" 은 틀렸다.
+  - 고친 곳: `SkillExecutors.mlua` 머리 주석 · SK_P11 스펙 · castSounds · extraSounds · `SkillInfo.csv` SK_P11 #Note. RUID · 동작은 그대로다. 1차의 "일부러 둔 것" 줄은 이력이라 그대로 둔다.
+
+### Play 체크리스트 (13차 추가 · 다음 세션)
+
+21. 함포 사격: 궁 무적 ≈1.15s — 서버 로그 켜짐/꺼짐 간격(예전 5.00 → 5.05). 시전 락은 3.5s 그대로(이동 · 다른 스킬 막힘). 표시 1.0s · 6파는 그대로.
+22. 피스트인레인지(main 을 합친 판): 대상마다 10타가 전부 들어간다 — 숫자 10개 · HP 감소 = 표 % × 10. 폭발 10번과 숫자가 같은 시각.
+
 ## 12차 (2026-09-28 · 섬머솔트 킥 시각 = 실제 시간 · 합동 확인 Round 3 · R-P9)
 
 - **Round 3 결과**(마법사 창 · `local/test-thief-pirate-2` 84b9244 = 이 PR `63ff5f1` 합침 · 빌드 경고 1 → 1):
