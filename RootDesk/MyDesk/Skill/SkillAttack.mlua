@@ -684,6 +684,70 @@ script SkillAttack extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
+    method void SpawnBasicProjectile(string weaponType, table spec)
+        -- 원거리 기본 공격(b/playerattack-ranged-basic · PlayerAttack.TryRangedBasic 이 부른다): spec.delay 뒤 FireBasicProjectile.
+        -- 서버 전용 — 기본 공격 자체가 서버(PlayerAttack.HandlePlayerActionEvent)에서 돈다.
+        local delay = spec.delay or 0
+        if delay > 0 then
+            _TimerService:SetTimerOnce(function() self:FireBasicProjectile(weaponType, spec) end, delay)
+        else
+            self:FireBasicProjectile(weaponType, spec)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FireBasicProjectile(string weaponType, table spec)
+        -- 기본 공격 투사체 한 발: 스킬 투사체와 같은 조준(앞쪽 range 상자 · 같은 층 · 최근접) · SpawnOneProjectile.
+        -- SkillId = "BASIC"(스킬 아님 · 스키마-계약 A-2-23 과 같은 값) · BasicAttack = true → 피해 · 크리는 시전자의 PlayerAttack 이 정한다(SkillProjectile.CalcDamage).
+        -- CasterUserId 가 들어가 처치 귀속(#123 AttackCredit)은 스킬 투사체와 같다.
+        local caster = self.Entity
+        if not isvalid(caster) or not isvalid(caster.PlayerComponent) then return end
+        local transform = caster.TransformComponent
+        local controller = caster.PlayerControllerComponent
+        local map = caster.CurrentMap
+        if not isvalid(transform) or not isvalid(controller) or not isvalid(map) then return end
+        if caster.PlayerComponent.Hp <= 0 or caster.PlayerComponent:IsDead() then return end
+        local dirX = controller.LookDirectionX
+        if dirX == 0 then dirX = 1 end
+        local range = spec.range or 4
+        if range <= 0 then range = 1 end
+        local speed = spec.speed or self.DefaultProjectileSpeed
+        if speed <= 0 then speed = self.DefaultProjectileSpeed end
+        local userId = caster.PlayerComponent.UserId
+        local tag = "BASIC_" .. weaponType
+        local pos = transform.WorldPosition
+        local target = nil
+        if self.AimProjectileAtTarget then
+            target = self:FindSkillTarget(tag, {
+                posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
+                sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
+            }, false)
+            if not isvalid(target) then target = nil end
+        end
+        local ox = spec.offsetX or self.ProjectileSpawnOffsetX
+        local spawnPos = Vector3(pos.x + dirX * ox, pos.y + (spec.offsetY or 0.5), pos.z)
+        local lifetime = range / speed
+        if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
+        local modelId = "skillprojectile"
+        if _SkillExecutors ~= nil and _SkillExecutors.ProjectileModelId ~= "" then modelId = _SkillExecutors.ProjectileModelId end
+        local mul = spec.damageMul or 1
+        if mul <= 0 then mul = 1 end
+        local mover = self:SpawnOneProjectile("BASIC", 1, modelId, spawnPos, map, dirX, target, speed, lifetime, spec.hitEffect or "", spec.sprite or "", spec.hitSound or "", userId, mul, false, spec.scale or 1)
+        if mover == nil then return end
+        mover.BasicAttack = true
+        mover.DisplayHits = 1
+        mover.SingleTargetOnly = spec.single ~= false
+        mover.SameFloorOnly = true
+        mover.FloorY = pos.y
+        mover.FloorTolerance = self.AimFloorTolerance
+        local targetName = "none"
+        if target ~= nil then targetName = tostring(target.Name) end
+        log("SkillAttack: basic projectile " .. weaponType .. " target=" .. targetName .. " range=" .. tostring(range) .. " speed=" .. tostring(speed)
+            .. " lifetime=" .. string.format("%.2f", lifetime) .. " single=" .. tostring(spec.single ~= false) .. " mul=" .. tostring(mul)
+            .. " spawn=(" .. string.format("%.2f", spawnPos.x) .. "," .. string.format("%.2f", spawnPos.y) .. ") dir=" .. tostring(dirX) .. " (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
     method boolean ProjectileSpawnFlag(string skillId, string key)
         -- effectOverrides[skillId].spawn[key] == true 인가(b/skill-thief-effects · singleTarget · perProjectileHit). 없으면 false = 예전 규칙(첫 발 ×N · 상자 안 전부).
         if _SkillExecutors == nil then return false end

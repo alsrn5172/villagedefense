@@ -17,10 +17,59 @@ script PlayerAttack extends AttackComponent
 	@MaxValue(1)
 	property number WeaponAttackSoundVolume = 1.0
 
+	-- 원거리 기본 공격(b/playerattack-ranged-basic · A #40 5884389166 "궁수(활) = 일반 화살, 도적(아대) = 수비 표창 투사체 · 사거리 · 속도는 B 기본값").
+	--   키 = 장착 무기 종류(_PlayerMotion:WeaponTypeOf). 여기 없는 무기(검 · 단검 · 완드 · 너클 · 맨손)는 예전 근접 상자 그대로.
+	--   값은 BuildRangedBasic 이 채운다 — A 의 답(#40 5917818479 Q1~Q5)이 오면 이 표의 값만 바꾼다.
+	property table RangedBasic = {}
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
 		self:BuildWeaponAttackSounds()
+		self:BuildRangedBasic()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuildRangedBasic()
+		-- 무기 종류 → 원거리 기본 공격 설정(전부 B 기본값 · PR 본문에 적는다 · 밸런싱은 나중).
+		--   sprite     날아가는 그림 = 원작 소비 아이템의 bullet 클립(라이브러리 태그 확인 2026-10-01 · 연출 규칙 "라이브러리에 있는 가장 새 공식 판")
+		--   range      사거리(world unit · 1 = 100 px) · 조준 상자 길이와 비행 수명(range / speed)
+		--   speed      비행 속도(unit/s)
+		--   delay      모션 시작 → 투사체가 나가는 순간(초 · 🟡 Play 실측 전 추정값)
+		--   offsetX/Y  발 기준 스폰 자리(앞 · 위)
+		--   single     true = 한 발에 1마리(SkillProjectile.SingleTargetOnly · #100 AllowedTargets) — Q2 기본값
+		--   damageMul  근접 공식(CalcPlayerDamage) 결과에 곱하는 배율 — Q1 기본값 1 = 같은 공식
+		--   탄약 소모 없음(Q3) · 분신은 동작 + 피해 배율만(Q4 · PlayShadowMimic 그대로) · 공격 속도 근접과 같음(Q5 · 이 파일은 공격 간격을 따로 두지 않는다)
+		self.RangedBasic = {
+			-- 활 = 활전용 화살 item/consume/0206.img 02060003/bullet(44×16 · 2프레임). 02060000(기본 화살)의 bullet 은 색인에 없다.
+			--   사거리 5(더블 샷 6 보다 짧게) · 속도 12(더블 샷 CSV Speed) · shoot1 1배속.
+			BOW = { sprite = "2ddccada5b02442897c557596d0cfdc6", range = 5, speed = 12, delay = 0.2, offsetX = 0.5, offsetY = 0.5, scale = 1, single = true, damageMul = 1 },
+			-- 아대 = 수비 표창 item/consume/0207.img 02070000/bullet(18×20 · 2프레임 회전 · 럭키 세븐 표창과 같은 그림).
+			--   사거리 4(럭키 세븐 5 보다 짧게) · 속도 6(럭키 세븐 영상 실측) · swingO3 1배속.
+			CLAW = { sprite = "551dec3dbf5e4a9f8eae6c9933f41bf2", range = 4, speed = 6, delay = 0.15, offsetX = 0.5, offsetY = 0.4, scale = 1, single = true, damageMul = 1 },
+		}
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean TryRangedBasic()
+		-- 장착 무기가 RangedBasic 에 있으면 투사체를 쏘고 true(근접 상자는 건너뛴다). 없거나 준비가 안 되면 false = 예전 근접.
+		-- 투사체는 스킬 투사체 경로(SkillAttack.SpawnBasicProjectile → SkillProjectile.BasicAttack)를 쓰고, 피해 · 크리 · MISS · 버프 · 픽파켓은
+		-- 이 컴포넌트의 CalcDamage / CalcCritical 이 그대로 정한다(투사체가 명중 순간 여기로 넘긴다).
+		if _PlayerMotion == nil or _SkillCaster == nil or not isvalid(self.Entity.PlayerComponent) then return false end
+		local uid = self.Entity.PlayerComponent.UserId
+		local wt = _PlayerMotion:WeaponTypeOf(uid)
+		local spec = self.RangedBasic[wt]
+		if spec == nil then return false end
+		-- 팀 월드 플레이어 모델엔 script.SkillAttack 이 없다 → 스킬 시전과 같은 방법으로 런타임에 붙인다.
+		_SkillCaster:EnsureSkillAttack(self.Entity)
+		---@type SkillAttack
+		local sa = self.Entity:GetComponent("script.SkillAttack")
+		if not isvalid(sa) then
+			log_warning("[PlayerAttack] ranged basic " .. wt .. ": no script.SkillAttack — melee instead (" .. uid .. ")")
+			return false
+		end
+		sa:SpawnBasicProjectile(wt, spec)
+		return true
 	end
 
 	@ExecSpace("ServerOnly")
@@ -111,6 +160,10 @@ script PlayerAttack extends AttackComponent
 		if playerController and transform then
 			local worldPosition = transform.WorldPosition
 			self:PlayWeaponAttackSound(worldPosition)
+			-- 원거리 기본 공격(b/playerattack-ranged-basic): 활 · 아대는 투사체. 무기 소리(위 한 줄 · #134) · 모션 · 분신 · 은신 훅은 근접과 같이 이미 났다.
+			if self:TryRangedBasic() then
+				return
+			end
 			local attackOffset = Vector2(worldPosition.x + 0.5 * playerController.LookDirectionX, worldPosition.y + 0.5)
 			self.Shape.Position = attackOffset
 		
