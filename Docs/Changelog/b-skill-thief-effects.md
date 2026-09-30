@@ -115,9 +115,42 @@
 - 검증: LSP 3개(`SkillExecutors` · `SkillBuffs` · `PlayerAttack`) 에러 0 · 경고 0 · `check-integrity` 통과(경고 4 = main · pre-push 통과) · 충돌 변화 없음(#83 `6952bdf` 1파일/1덩어리 SK_T22 블록 우리 16줄/그쪽 3줄 · #116 `db85dcf` · #100 `e6128f3` · #102 `b91a8fe` · #85 · #96 · #98 · #114 글자 충돌 0). Maker 런타임 🟡 BLOCKED(월드 확인은 마법사 창 · 체크리스트 1.17 · 2.x 동전 · 4.x 분신).
 
 ### 남은 것 / 후속
-- **#83 머지 뒤:** `PlayArmArc` → #83 `PlaySpriteFlash` 교체(세로 배율 인자 하나 추가 필요 · (5) 참고). ~~럭키 세븐 팔 잔상 가로 배율(scaleX 1.0 / 0.8 / 0.7)은 월드 확인 뒤 값 하나만 바꾼다~~ → **0.7 완료 `851dbd4`**((6)).
-- **보류(사용자 결정 2026-09-27) · #102 머지 + main 병합 뒤**(`git fetch origin && git merge origin/main` · rebase 금지 · `SkillInfo.csv` union 중복이 생기면 저장소 밖 `villagedefense-harness/thief-check/fix_skillinfo_union.cjs origin/main <병합 전 이 브랜치 끝> SK_T` → `check-integrity`)**:** `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → T 실행에서 본 두 증상을 같이 고친다: ① 2발째 표창이 맞은 뒤에도 남아 계속 날아간다(VisualOnly 는 명중·소멸이 없다 · `SkillProjectile.mlua:227-229`) ② 2발째 명중 폭발 `7368bd9b…` 이 없다(영상 = 별 폭발 두 번 0.13s 간격). 함수는 #102 `b91a8fe` `Skill/SkillAttack.mlua:522`. 이 브랜치는 #114 기반이라 코드 지금은 없음.
-- **보류 · 기획 답 대기(#40 5858689104):** 답이 "1마리"면 #102 머지 뒤 `SkillAttack.IsSingleTargetProjectile`(#102 `b91a8fe` `:528`)에 `SK_T11` 추가. 다른 답이면 넣지 않는다.
+- ~~**#83 머지 뒤:** `PlayArmArc` → #83 `PlaySpriteFlash` 교체(세로 배율 인자 하나 추가 필요 · (5) 참고).~~ → **완료 `90b96b0`**((7)). ~~럭키 세븐 팔 잔상 가로 배율(scaleX 1.0 / 0.8 / 0.7)은 월드 확인 뒤 값 하나만 바꾼다~~ → **0.7 완료 `851dbd4`**((6)).
+- ~~**보류(사용자 결정 2026-09-27) · #102 머지 + main 병합 뒤**(`git fetch origin && git merge origin/main` · rebase 금지 · `SkillInfo.csv` union 중복이 생기면 저장소 밖 `villagedefense-harness/thief-check/fix_skillinfo_union.cjs origin/main <병합 전 이 브랜치 끝> SK_T` → `check-integrity`)**:** `SkillAttack.IsSharedVolley` 에 `SK_T11` 한 줄 → T 실행에서 본 두 증상을 같이 고친다: ① 2발째 표창이 맞은 뒤에도 남아 계속 날아간다(VisualOnly 는 명중·소멸이 없다 · `SkillProjectile.mlua:227-229`) ② 2발째 명중 폭발 `7368bd9b…` 이 없다(영상 = 별 폭발 두 번 0.13s 간격). 함수는 #102 `b91a8fe` `Skill/SkillAttack.mlua:522`. 이 브랜치는 #114 기반이라 코드 지금은 없음.~~ → **#102 를 기다리지 않고 이 PR 안에서 완료 `90b96b0`**(사용자 결정 2026-10-01 · (7)).
+- ~~**보류 · 기획 답 대기(#40 5858689104):** 답이 "1마리"면 #102 머지 뒤 `SkillAttack.IsSingleTargetProjectile`(#102 `b91a8fe` `:528`)에 `SK_T11` 추가. 다른 답이면 넣지 않는다.~~ → 답 = 1 대상(#40 5884390073 7번) · **이 PR 안에서 완료 `90b96b0`**((7)).
 - ~~픽파켓 MISS 가드는 #114 몫이다~~ → **완료(2026-09-27 · 사용자 지시 · Round 9 H 재확인용)**: #114 브랜치 `b/playerattack-buff-hooks` 로컬 `615bcb9` 에 커밋(PlayerAttack.OnAttack → CalcDamage · 피해 > 0) · 이 브랜치를 그 위로 rebase — 이 브랜치의 `PlayerAttack.mlua` 변경은 다크 사이트 해제 훅(AttackNormal) 하나만 남았다. #114 · 이 브랜치 모두 push 전.
 - 메소 동전 그림(A 의 `Global/MesoCoin.model` `3b88d8df…`)은 메소가 아니라 마일리지 "M" 알림 그림이다(태그 API) — 아이템 외형이라 손대지 않았다. 후보 = 골드 메소 드랍 `5c78b56b…`(비교 시트 C).
 - 라이브러리 클립이 잘려 있다: 4211006 hit 는 15 중 6프레임 · 4211008 effect 는 16 중 9프레임(나머지는 팩 sprite).
+
+## 2026-10-01 (7) — main 병합 · A 답변 #40 5884390073 반영 · 럭키 세븐 1 대상/표창마다 1타 · 팔 잔상 PlaySpriteFlash
+
+**main 병합** `6935405` (`git fetch origin && git merge origin/main` · main `e2c28c7` · rebase 없음): 충돌 1곳 `Skill/SkillExecutors.mlua` `effectOverrides.SK_T22` — A 가이드 [5906002741](https://github.com/alsrn5172/villagedefense/pull/115#issuecomment-5906002741) 대로 **값은 이 PR 2차**(cast noFlip 없음 · `appear` effect0 `sortBehind` · loop `offsetX -0.33` · `delay 1.4`) + **behindPlayer 주석은 main 문구**("Default / 플레이어 순서값 − 1"). 옛 주석 "발판 SortingLayer + ShadowOrderInLayer" 는 지웠다. `ApplyShadowSorting` 본문은 main 판 그대로(자동 병합). SkillInfo 중복 0.
+
+| # | 항목 | 예전 | 지금 | 근거 · commit |
+|---|---|---|---|---|
+| 1 | 픽파켓 동전 | 공격 1번당 대상당 1~2개 · 같은 대상 0.3s 중복 방지 | **타격마다 동전 1개** · 표의 1~2 = **동전 값**(`MesoCoin.Value` · 내림 → Lv1~4 1 메소 · Lv5 2 메소 · 그림은 값대로 동 메소 #121) · 중복 방지 없음 | #40 5884390073 1번에 맞춰 변경, commit `76debf7` |
+| 2 | 메소 익스플로전 타격의 픽파켓 | 동전이 떨어졌다 | 안 떨어진다(`PickpocketExcludedSkillIds = "SK_T31"`) | #40 5884390073 2번에 맞춰 변경, commit `76debf7` |
+| 3 | 다크 사이트 툴팁 · 설명 | — | "은신 중엔 몬스터 · 포탑이 노리거나 쫓지 않는다(범위 공격 · 보스 패턴은 맞는다)"(A #120 `IsTargetable`) | #40 5884390073 3번에 맞춰 변경, commit `76debf7` |
+| 4 | 쉐도우 파트너 | 화력 2배(+100%) | 분신이 **+50/55/60/65/70%**(Lv1~5 · CSV BaseEffect 50 · EffectPerLevel 5) | #40 5884390073 4번에 맞춰 변경, commit `76debf7` |
+| 5a | 메소 익스플로전 재료 | 바닥 동전 전부(픽파켓 + 사냥 드랍) | **픽파켓 동전만**(`MesoPickpocketCoinsOnly = true`) | #40 5884390073 5번에 맞춰 변경, commit `67e6917` |
+| 5b | 메소 익스플로전 피해 | 컷신 뒤 시전자 반경 Range(6) 원 하나에 50% × N | **동전 하나 = 그 자리 폭발 1번** — 터지는 순간의 동전 자리 반지름 **1.0 u(B 기본값)** 원 안 몬스터에 50% 1타 · 모인 동전은 같은 적을 여러 번 | #40 5884390073 5번에 맞춰 변경, commit `67e6917` (툴팁 `76debf7`) |
+| 6 | 이름 · 해금 | 메소 익소플로전 · 쉐도우 파트너 Lv30 | **메소 익스플로전** · **Lv20** | #40 5884390073 6번에 맞춰 변경, commit `76debf7` |
+| 7 | 럭키 세븐 대상 | 표창 상자(0.8 × 0.8) 안 전부 | **1 대상**(조준 대상 우선 · 없으면 가장 가까운 것) | #40 5884390073 7번에 맞춰 변경, commit `90b96b0` |
+| — | 럭키 세븐 표창 2발 | 첫 표창 ×2 · 표시 2타 · 2발째 연출만(맞아도 남아 날아감 · 폭발 없음) | **표창마다 1타** — 2발째도 진짜 표창(피해 · 명중 폭발 · 소리 · 픽파켓 · 맞으면 사라짐) → 시전당 동전 2개(사용자 확인: 의도대로) | #40 5884388966 (a) · 5886841184 ①에 맞춰 변경, commit `90b96b0` |
+| — | 럭키 세븐 팔 잔상 | #115 전용 `PlayArmArc`(화면 밖 스폰 우회) | main `PlaySpriteFlash` 몸통 → `PlaySpriteFlashXY`(가로·세로 배율) · `PlaySpriteFlash` 는 같은 서명의 래퍼 · 앞끝 고정은 호출 쪽(`FireProjectile`) | #40 5874867817 ②, commit `90b96b0` |
+
+- **B 가 정한 것:** 메소 익스플로전 동전 폭발 반지름 **1.0 u**(`SkillExecutors.MesoCoinBlastRadius` — 픽파켓 동전은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다 → 동전을 떨군 몬스터가 조금 움직여도 맞고, ≈1 u 떨어진 옆 몬스터는 가장자리만 걸친다) · 날던 동전도 센다(`MesoLandedOnly = false` · 폭발 자리는 터지는 순간 위치) · 중심 폭발 그림(impact)은 피해 없이 연출로 남김 · 럭키 세븐 규칙은 스킬별 `effectOverrides.SK_T11.spawn` 플래그(`singleTarget` · `perProjectileHit`)로 — #102 의 `IsSingleTargetProjectile`/`IsSharedVolley` 에 기대지 않는다(#102 가 나중에 맞춘다 · 사용자 결정 2026-10-01) · 더블 샷 등 다른 볼리는 그대로 · 표창 한 발의 대상 고르기 = probe 패스(피해 없음)로 후보를 모아 조준 대상 우선 · 없으면 표창에 가장 가까운 것 · 죽는 중인 몬스터 제외.
+- **처치 귀속(#123 · A 가이드 5906002741):** 메소 폭발 = 시전자 `SkillAttack.DealSkillDamageCircleScaled` · 표창 = `SpawnOneProjectile`(`CasterUserId`) + 투사체 자신의 `AttackFast` — 이름·경로 그대로. 2발째 표창도 같은 `SpawnOneProjectile` 로 스폰.
+- 이름 바꾼 것: `SkillBuffs.PickpocketCount` → `PickpocketValue`(호출 = `SkillWindowLogic.FormatEffect` 한 곳) · 지운 것: `pickpocketLast` · `PickpocketDedupeSeconds` · `MesoDisplayHitsMax` · `PlayArmArc`. A 가 읽는 이름(5875058714 목록)은 안 건드렸다.
+- 검증(코드만 · 이 창): LSP 8개(`SkillExecutors` · `SkillAttack` · `SkillProjectile` · `SkillBuffs` · `SkillWindowLogic` · `SkillDatabase` · `JobPassiveLogic` · `PlayerAttack`) 에러 0 · 경고 0(info 2 = 예전부터 있던 것 `SkillBuffs` DealFlatDamageToTarget · `SkillWindowLogic` windowEntity) · `check-integrity` 통과. Maker 런타임 🟡 BLOCKED(Play 는 마법사 창).
+
+### Play 체크리스트 (7) — 한 판에
+1. SK_T22 층: 분신 루프 · `appear` 리본이 플레이어 뒤(`appear effect … layer=Default/<플레이어−1>` 로그) · 방향 바꿔도 등 뒤.
+2. 처치 귀속: 표창 막타 · 메소 익스플로전 막타 → `[FarmReward] … lasthit=<내 uid> top=<내 uid>` (`killed by non-player` 가 뜨면 실패).
+3. 픽파켓: 타격마다 `[Buff] PICKPOCKET +1 coin value=1`(Lv1~4) / `value=2`(Lv5) · 동 메소 그림(`[MesoCoin] value 1 -> tier 1`) · 메소 익스플로전 타격엔 이 줄이 없다 · 기본 공격 명중마다 1개.
+4. 쉐도우 파트너: Lv1 `[PlayerAttack] buff dmg … (shadowPartner x1.5` · Lv5 `x1.7` · 스킬도 같은 배율 · Lv20 에 배울 수 있다.
+5. 메소 익스플로전: 동전 모아 두기 vs 흩어 두기 → `MESO blast k/n at (x, y) r=1` 줄이 동전 수만큼 · 모인 곳의 몬스터가 여러 번 맞는다 · 사냥 드랍 동전("Meso")은 남는다 · `source floor=<픽파켓 수>`.
+6. 럭키 세븐: 몬스터 3마리 붙여 두고 → 표창마다 한 마리 · 두 발 다 피해(표시 1타씩) · 폭발 두 번 · 2발째 표창이 맞으면 사라진다 · 시전당 동전 2개.
+7. 툴팁: 다크 사이트 한 줄 · 이름 "메소 익스플로전"(툴팁 · HUD) · 쉐도우 파트너 "+50%".
+8. 팔 잔상: `sprite flash SK_T11_arc … scale=0.7x0.62` · 양쪽 방향 · 에너지볼트 공이 한 프레임도 안 보인다.
+9. 빌드 경고 N → N.
