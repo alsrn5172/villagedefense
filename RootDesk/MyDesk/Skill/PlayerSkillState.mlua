@@ -27,6 +27,18 @@ script PlayerSkillState extends Logic
     property integer MaxTier = 3
     property string NoviceJobId = "NOVICE"
 
+    -- 초보자 스킬 자동 습득(b/skill-novice-snails · A 요청 #40 5875058360 3번 "매치 시작·리셋 뒤 초보자면 Lv1"): 새 원장(EnsureUser · ResetMatchState 가 부른다)에서
+    -- 이 스킬을 Lv1 로 둔다 — SP 를 쓰지 않는다(레벨 1 에는 SP 가 0 이다). "" 면 끈다.
+    property string NoviceAutoSkillId = "SK_N01"
+
+    -- 차수별 SP(b/skill-novice-snails · A 답 #40 5891464912 "0차(초보자), 1차,2차,3차는 스킬포인트 독립적이고 모아놨다가 쓰는거 안됨").
+    --   SP 지갑은 A 의 SummonManager.econ.sp 하나다(SpendSp 로만 줄인다 · A 파일 편집 없음). B 는 차수마다 번 SP 와 쓴 SP(users[uid].spentByTier)를 따로 센다.
+    --   · 번 SP(t 차) = 레벨업 L→L+1 이 주는 LevelTable L 행 SP 중 새 레벨 L+1 이 t 차 구간 [JobTier.ReqLevel(t), ReqLevel(t+1)−1] 에 드는 것의 합(지금 레벨까지) — TierSpEarned
+    --   · 배우기(RequestLearn): 스킬 ReqTier = 지금 차수 · 그 차수 남은 SP(번 − 쓴) ≥ SpCost → 그다음 A 의 SpendSp
+    --   · 차수가 오르면(전직 · 2차 · 3차 · ChangeJob): 지갑에 새 차수 이후 구간 몫만 남기고 나머지를 SpendSp(uid, TierSpResetTag, n) 으로 없앤다 = 모아 두기 없음
+    property boolean TierSpEnabled = true
+    property string TierSpResetTag = "TIER_SP_RESET"
+
     -- ⚠ DEV 임시 (2026-09-09 · 테스트 편의): true 면 RequestChooseJob 이 초보자가 아니어도 직업을 바꿔 준다 — F10(SkillWindowLogic.OnDevChooseJob)
     -- 순환으로 5직업을 바로 시험하기 위한 것. 실제 규칙은 "전직은 초보자에서 1회"(추가기획1 §1-7). 협업-규칙 §10-1: 머지 전 false 로 되돌린다.
     -- 직업이 바뀌어도 이미 배운 스킬 레벨·쓴 SP 는 그대로다(다른 직업 스킬은 CanUse 의 직업 검사로 시전만 막힌다).
@@ -68,10 +80,89 @@ script PlayerSkillState extends Logic
         if userId == nil or userId == "" then return nil end
         local u = self.users[userId]
         if u == nil then
-            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0 }
+            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {} }
             self.users[userId] = u
+            self:AutoLearnNoviceSkill(u, userId)
         end
         return u
+    end
+
+    @ExecSpace("ServerOnly")
+    method void AutoLearnNoviceSkill(any u, string userId)
+        -- 새 원장의 초보자에게 NoviceAutoSkillId 를 Lv1 로(SP 안 씀 · spentByTier 에 안 넣는다). HUD 는 SkillHotbar byJob NOVICE 로 Q 에 띄운다(A 의 SkillHudController).
+        if self.NoviceAutoSkillId == "" or u == nil or u.jobId ~= self.NoviceJobId then return end
+        _SkillDatabase:EnsureLoaded()
+        if _SkillDatabase:GetSkill(self.NoviceAutoSkillId) == nil then return end
+        u.skillLevels[self.NoviceAutoSkillId] = 1
+        log("[Skill] auto-learn " .. self.NoviceAutoSkillId .. " Lv.1 (novice · no SP) (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method number TierStartLevel(string jobId, number tier)
+        -- t 차 구간이 시작하는 레벨(JobTier.ReqLevel). 0 차 = 1 · MaxTier 너머 = 끝 없음. 초보자는 직업이 없어 1차 레벨이 가장 낮은 직업 줄 값을 쓴다(지금 전 직업 10/20/30).
+        if tier <= 0 then return 1 end
+        if tier > self.MaxTier then return 100000 end
+        if jobId ~= nil and jobId ~= "" and jobId ~= self.NoviceJobId then
+            local req = _JobDatabase:GetRequiredLevel(jobId, tier)
+            if req > 0 then return req end
+        end
+        local best = 0
+        for _, line in ipairs(_JobDatabase:GetAllJobLines()) do
+            if line ~= self.NoviceJobId then
+                local r = _JobDatabase:GetRequiredLevel(line, tier)
+                if r > 0 and (best == 0 or r < best) then best = r end
+            end
+        end
+        if best <= 0 then return 100000 end
+        return best
+    end
+
+    @ExecSpace("ServerOnly")
+    method number TierSpEarned(string userId, number tier)
+        -- t 차 구간에서 지금 레벨까지 번 SP. 레벨업 L→L+1 이 LevelTable L 행 SP 를 준다(A 의 SummonManager.ApplyLevelUpRewards · 다른 SP 지급 경로는 없다 · GrantSp 호출 0곳).
+        if _MonsterCatalog == nil then return 0 end
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        local lo = self:TierStartLevel(u.jobId, tier)
+        local hi = self:TierStartLevel(u.jobId, tier + 1) - 1
+        local level = self:GetLevel(userId)
+        if hi > level then hi = level end
+        if lo < 2 then lo = 2 end
+        local sum = 0
+        for n = lo, hi do
+            local row = _MonsterCatalog:GetLevelRow(n - 1)
+            if row ~= nil and row.sp ~= nil then sum = sum + row.sp end
+        end
+        return math.floor(sum)
+    end
+
+    @ExecSpace("ServerOnly")
+    method number TierSpLeft(string userId, number tier)
+        -- t 차 남은 SP = 번 SP − 그 차수 스킬에 쓴 SP(RequestLearn 이 센다).
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        return self:TierSpEarned(userId, tier) - (u.spentByTier[tier] or 0)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ForfeitOldTierSp(string userId, number newTier)
+        -- 차수가 올랐다(ChangeJob): 지갑(A 의 econ.sp)에 새 차수 이후 구간 몫만 남기고 나머지는 없앤다 — "모아놨다가 쓰는거 안됨"(A 답 5891464912).
+        -- 새 차수 이후 몫 = 그 구간에서 이미 번 SP(예: 레벨 12 에 전직하면 레벨 10~12 에 번 SP 는 1차 몫으로 남는다). 줄이는 길은 A 의 SpendSp 하나다.
+        if _SummonManager == nil then return end
+        local e = _SummonManager:GetEcon(userId)
+        if e == nil then return end
+        local wallet = math.floor(e.sp or 0)
+        local keep = 0
+        for t = newTier, self.MaxTier do
+            local left = self:TierSpLeft(userId, t)
+            if left > 0 then keep = keep + left end
+        end
+        local forfeit = wallet - keep
+        if forfeit < 0 then forfeit = 0 end
+        log("[Skill] tier SP -> tier " .. tostring(newTier) .. " wallet=" .. tostring(wallet) .. " keep=" .. tostring(keep) .. " forfeit=" .. tostring(forfeit) .. " (" .. userId .. ")")
+        if forfeit > 0 then
+            _SummonManager:SpendSp(userId, self.TierSpResetTag, forfeit)
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -171,9 +262,14 @@ script PlayerSkillState extends Logic
         newTier = math.floor(newTier)
         if u.jobId == newJobId and u.tier == newTier then return end
         local prev = u.jobId
+        local prevTier = u.tier
         u.jobId = newJobId
         u.tier = newTier
         log("[Skill] JOB " .. prev .. " -> " .. newJobId .. "/" .. tostring(newTier) .. " (level " .. tostring(self:GetLevel(userId)) .. ") " .. userId)
+        -- 차수별 SP(b/skill-novice-snails): 차수가 오르면 이전 차수 SP 를 없앤다. DEV 전환(DevSetJobState)은 이 경로를 안 탄다.
+        if self.TierSpEnabled and newTier > prevTier then
+            self:ForfeitOldTierSp(userId, newTier)
+        end
 
         local evt = JobChangedEvent()
         evt.UserId = userId
@@ -248,13 +344,29 @@ script PlayerSkillState extends Logic
             self:LearnResult(skillId, false, "already at max level", uid)
             return
         end
-        if _SummonManager == nil or not _SummonManager:SpendSp(uid, skillId, math.floor(skill.spCost)) then
+        -- 차수별 SP(b/skill-novice-snails · A 답 5891464912): 지금 차수의 스킬만, 그 차수 남은 SP 로만 배운다.
+        local spCost = math.floor(skill.spCost)
+        local skillTier = math.floor(skill.requiredTier)
+        if self.TierSpEnabled then
+            if skillTier ~= u.tier then
+                self:LearnResult(skillId, false, "per-tier SP: only tier " .. tostring(u.tier) .. " skills now (this is tier " .. tostring(skillTier) .. ")", uid)
+                return
+            end
+            local left = self:TierSpLeft(uid, skillTier)
+            if left < spCost then
+                log("[Skill] learn " .. skillId .. " rejected: tier " .. tostring(skillTier) .. " SP left " .. tostring(left) .. " < " .. tostring(spCost) .. " (" .. uid .. ")")
+                self:LearnResult(skillId, false, "not enough tier " .. tostring(skillTier) .. " SP (" .. tostring(left) .. ")", uid)
+                return
+            end
+        end
+        if _SummonManager == nil or not _SummonManager:SpendSp(uid, skillId, spCost) then
             self:LearnResult(skillId, false, "not enough SP", uid)
             return
         end
+        u.spentByTier[skillTier] = (u.spentByTier[skillTier] or 0) + spCost
 
         u.skillLevels[skillId] = cur + 1
-        log("[Skill] learn " .. skillId .. " -> Lv." .. tostring(cur + 1) .. " (" .. uid .. ")")
+        log("[Skill] learn " .. skillId .. " -> Lv." .. tostring(cur + 1) .. " · tier " .. tostring(skillTier) .. " SP left " .. tostring(self:TierSpLeft(uid, skillTier)) .. " (" .. uid .. ")")
         -- 패시브(연성 SK_M12 등)는 시전이 없으므로 배운 직후 배율을 로그로 남긴다 — Play 검증 증거 (JobPassiveLogic · b/skill-magician).
         if skill.behavior == "PASSIVE" and _JobPassiveLogic ~= nil then
             _JobPassiveLogic:LogPassives(uid)
