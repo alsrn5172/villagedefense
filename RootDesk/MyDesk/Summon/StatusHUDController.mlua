@@ -19,6 +19,65 @@ script StatusHUDController extends Logic
 
 	property TextGUIRendererComponent apSpText = "f0971615-825a-44ec-aef8-8648353f640d"
 
+	-- 디자이너 시안(04-hud) 새 칸들 — UUID 는 apply-hud-status 가 write({bind}) 로 주입한다. 손으로 고치지 않는다.
+	property TextGUIRendererComponent hpLabel = "40267678-a9dd-4f3a-86c6-0ebc7b0a2e12"
+
+	property TextComponent jobText = "53265377-ad9c-4ead-acba-993f46b18acc"
+
+	property SpriteGUIRendererComponent apSpImage = "f0971615-825a-44ec-aef8-8648353f640d"
+
+	property Entity apAlert = "bbc8998c-f1f0-42ce-b4fa-3b4a1547eafb"
+
+	property ButtonComponent btnChar = "3ee2341c-0c81-4e38-b4fe-f5797c4ea0f0"
+
+	property ButtonComponent btnSkill = "fe0e5eeb-61ed-42ad-98f3-d0807a0a50db"
+
+	property Entity alertChar = "e2b385f8-d452-4589-8353-4d8790a24292"
+
+	property Entity alertSkill = "c4e07690-b89e-4695-9fe3-a223597034b3"
+
+	property Entity noticeRoot = "103c91b6-29a9-4600-af8e-ed80aa558899"
+
+	property TextGUIRendererComponent noticeLine = "b4d1016d-3145-45be-8e67-f801d79d2681"
+
+	-- AP/SP 칩 그림: 남으면 금 칩, 없으면 회색 칩 (ruid-map 의 chip_gold / chip_gray_dark)
+	property string ruidChipGold = "9e25a63681584e328f0c019ebf86dc19"
+
+	property string ruidChipGray = "59baa8df765f434b9ffeb0bd1c4906ef"
+
+	-- 레벨업 알림을 켜 두는 시간(초)
+	property number NoticeSeconds = 2
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property boolean statsReady = false
+
+	@HideFromInspector
+	property boolean hpLow = false
+
+	@HideFromInspector
+	property string shownJob = "?"
+
+	@HideFromInspector
+	property number noticeLeft = 0
+
+	@HideFromInspector
+	property integer noticeLevel = 0
+
+	@HideFromInspector
+	property integer gainFrom = 0
+
+	@HideFromInspector
+	property integer gainTo = 0
+
+	@HideFromInspector
+	property integer gainAp = 0
+
+	@HideFromInspector
+	property integer gainSp = 0
+
 	@HideFromInspector
 	property number hpFullWidth = 0
 
@@ -61,6 +120,16 @@ script StatusHUDController extends Logic
 			self.nameText.Text = lp.PlayerComponent.Nickname
 		end
 		
+		-- 오른쪽 위 바로가기: 캐릭터 창(C 키와 같은 토글) · 스킬 창(K 키와 같은 토글). 친구 · 메뉴는 게임에 기능이 없어 시안에서 뺐다.
+		self.handlers = {}
+		local function bind(btn, fn)
+			if isvalid(btn) then
+				table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+			end
+		end
+		bind(self.btnChar, function() if _StatUIController ~= nil then _StatUIController:Toggle() end end)
+		bind(self.btnSkill, function() if _SkillWindowLogic ~= nil then _SkillWindowLogic:Toggle() end end)
+
 		self:RefreshStats()
 		log("[Status] StatusHUDController ready (client) widths hp=" .. tostring(self.hpFullWidth)
 			.. " mp=" .. tostring(self.mpFullWidth) .. " exp=" .. tostring(self.expFullWidth))
@@ -69,6 +138,15 @@ script StatusHUDController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
 		-- HP 는 네이티브 값이라 여기서 직접 읽어 매 프레임 반영한다(피격 즉시 반응).
+		if self.noticeLeft > 0 then
+			self.noticeLeft = self.noticeLeft - delta
+			if self.noticeLeft <= 0 and isvalid(self.noticeRoot) then self.noticeRoot.Enable = false end
+		end
+		local jid = (_PlayerSkillState ~= nil) and _PlayerSkillState:LocalJobId() or ""
+		if jid ~= self.shownJob then
+			self.shownJob = jid
+			self:PaintJob(jid)
+		end
 		local lp = _UserService.LocalPlayer
 		if not isvalid(lp) then
 			return
@@ -78,11 +156,40 @@ script StatusHUDController extends Logic
 			return
 		end
 		self:SetBar(self.hpBar, self.hpText, pc.Hp, pc.MaxHp, self.hpFullWidth, false)
+		-- HP 가 30% 아래면 "HP" 라벨이 붉게 (시안 7번 · 바뀔 때만 색을 쓴다)
+		local low = (pc.MaxHp > 0) and (pc.Hp / pc.MaxHp < 0.3) or false
+		if low ~= self.hpLow then
+			self.hpLow = low
+			if isvalid(self.hpLabel) then
+				self.hpLabel.FontColor = low and Color(1, 0.702, 0.651, 1) or Color(0.682, 0.722, 0.812, 1)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintJob(string jobId)
+		-- 상태창 직업 칸: 직업 id(B 의 미러 LocalJobId) → 한글 이름. 이름은 JobInfo.csv 와 같다. 글자 수가 많으면 칸에 맞게 줄인다.
+		local names = { NOVICE = "초보자", WARRIOR = "전사", MAGICIAN = "마법사", ARCHER = "궁수", THIEF = "도적", PIRATE = "해적" }
+		local name = names[jobId] or ((jobId ~= "") and jobId or "초보자")
+		if isvalid(self.jobText) then
+			self.jobText.Text = name
+			local n = math.floor(#name / 3)
+			self.jobText.FontSize = (n <= 3) and 16 or ((n == 4) and 14 or 12)
+		end
 	end
 
 	@ExecSpace("Client")
 	method void PushStats(integer level, integer within, integer need, integer mp, integer maxMp, integer ap, integer sp)
 		-- 서버가 값이 바뀔 때마다 소유 클라이언트로만 보낸다(호출부 마지막 인자 = targetUserId).
+		-- 레벨이 오른 푸시면 바뀐 수치(레벨 · AP · SP)를 기억해 둔다 — 첫 푸시는 초기값이라 제외. 레벨업 알림 줄에 쓴다.
+		if self.statsReady and level > self.curLevel then
+			self.gainFrom = self.curLevel
+			self.gainTo = level
+			self.gainAp = math.max(0, ap - self.curAp)
+			self.gainSp = math.max(0, sp - self.curSp)
+			if self.noticeLeft > 0 then self:RenderNotice() end
+		end
+		self.statsReady = true
 		self.curLevel = level
 		self.curWithin = within
 		self.curNeed = need
@@ -103,8 +210,18 @@ script StatusHUDController extends Logic
 			self.levelText.Text = "Lv " .. tostring(self.curLevel)
 		end
 		if isvalid(self.apSpText) then
-			self.apSpText.Text = "AP " .. tostring(self.curAp) .. "  ·  SP " .. tostring(self.curSp)
+			self.apSpText.Text = "AP " .. tostring(self.curAp) .. " · SP " .. tostring(self.curSp)
+			-- 남으면 금 칩 + 어두운 글자, 없으면 회색 칩 + 흰 글자 (시안 8번)
+			local has = (self.curAp > 0 or self.curSp > 0)
+			self.apSpText.FontColor = has and Color(0.11, 0.078, 0.02, 1) or Color(1, 1, 1, 1)
+			if isvalid(self.apSpImage) then
+				self.apSpImage.ImageRUID = DataRef(has and self.ruidChipGold or self.ruidChipGray)
+			end
+			if isvalid(self.apAlert) then self.apAlert.Enable = has end
 		end
+		-- 바로가기 빨강 알림: 찍을 AP 가 있으면 캐릭터, SP 가 있으면 스킬
+		if isvalid(self.alertChar) then self.alertChar.Enable = (self.curAp > 0) end
+		if isvalid(self.alertSkill) then self.alertSkill.Enable = (self.curSp > 0) end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -123,7 +240,8 @@ script StatusHUDController extends Logic
 		
 		if isvalid(label) then
 			if asPercent then
-				label.Text = string.format("%d%%  (%d / %d)", math.floor(ratio * 100), math.floor(cur), math.floor(max))
+				-- 시안 14번: "62.4% (390/625)" — 소수 한 자리(내림 · 99.96% 가 100.0 으로 보이지 않게)
+				label.Text = string.format("%.1f%% (%d/%d)", math.floor(ratio * 1000) / 10, math.floor(cur), math.floor(max))
 			else
 				label.Text = string.format("%d / %d", math.floor(cur), math.floor(max))
 			end
@@ -143,7 +261,44 @@ script StatusHUDController extends Logic
 			_EffectService:PlayEffectAttached(effectRuid, lp, Vector3(0, 0.5, 0), 0, Vector3(1, 1, 1), false)
 		end
 		
+		self:ShowNotice(newLevel)
 		log("[Status] LEVEL UP 연출 Lv" .. tostring(newLevel))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowNotice(integer newLevel)
+		-- 화면 위쪽 가운데 "LEVEL UP!" 알림을 NoticeSeconds 동안 켠다(OnUpdate 가 끈다). 서버 값(PushStats)이 늦게 와도 줄을 다시 그린다.
+		self.noticeLevel = newLevel
+		self.noticeLeft = self.NoticeSeconds
+		self:RenderNotice()
+		if isvalid(self.noticeRoot) then self.noticeRoot.Enable = true end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderNotice()
+		-- "Lv 12 → Lv 13 · AP +5 · SP +3". 바뀐 수치를 아직 모르면 "Lv 12 → Lv 13" 만.
+		if not isvalid(self.noticeLine) then return end
+		local from = self.noticeLevel - 1
+		local line = ""
+		if self.gainTo == self.noticeLevel then
+			from = self.gainFrom
+		end
+		line = "Lv " .. tostring(from) .. " → Lv " .. tostring(self.noticeLevel)
+		if self.gainTo == self.noticeLevel then
+			if self.gainAp > 0 then line = line .. " · AP +" .. tostring(self.gainAp) end
+			if self.gainSp > 0 then line = line .. " · SP +" .. tostring(self.gainSp) end
+		end
+		self.noticeLine.Text = line
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		if self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+		self.handlers = {}
 	end
 
 end
