@@ -7,11 +7,12 @@ script SkillAttack extends AttackComponent
     --
     -- b/skill-archer-thief-pirate (2026-09-12):
     --   · N타(HitCount>1)는 AttackFast 를 N번 부르는 대신 1번 부르고 피해 ×N · 표시 N타(PendingDamageMul/PendingDisplayHits).
-    --     같은 프레임의 2번째 AttackFast 부터는 MonsterHit.ImmuneCooldown(0.4s) 에 걸려 전부 무효였다. HitCount 1 인 기존 스킬은 결과가 같다.
+    --     당시엔 같은 프레임의 2번째 AttackFast 부터 MonsterHit.ImmuneCooldown(0.4s) 에 걸려 전부 무효였다(#120 · 2026-09-29 에 몬스터 피격 무적은 없어졌다 —
+    --     지금은 피해 N배 1회가 무적 때문이 아니라 숫자 한 묶음 · 타격 한 번으로 보이게 하려는 것). HitCount 1 인 기존 스킬은 결과가 같다.
     --   · DealSkillDamageCircleScaled: 반지름 피해에 배율·표시 타수를 따로 준다(함포 사격 6파 · 메소 익스플로전 동전 개수).
     --   · OnAttack: 타격마다 impact 클립(PendingImpactRuid)·hit 사운드 + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
     --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리 · 배율 2.0.
-    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해).
+    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해 · 더블 샷은 발마다 ×1 = IsPerArrowVolley).
 
     @HideFromInspector
     property any Shape = nil
@@ -331,7 +332,7 @@ script SkillAttack extends AttackComponent
     @ExecSpace("ServerOnly")
     method void DealFlatDamageToTarget(Entity target, integer amount, string sourceSkillId)
         -- 평값 피해를 대상 하나에 1회 (아이언 바디 반사 · SkillBuffs.OnPlayerHitEvent). 피해 값은 CalcDamage 의 FlatTag 분기가 amount 를 그대로 쓴다.
-        -- 몬스터 쪽 무적 시간(MonsterHit.ImmuneCooldown 0.4s)에 걸리면 이번 반사는 조용히 빠진다 — 로그로만 남는다.
+        -- 몬스터 쪽 피격 무적은 #120(2026-09-29)에 없어졌다 — 반사는 매번 들어간다(넉백 · 경직만 0.4s 에 한 번 · MonsterHit.ImmuneCooldown 간격).
         if not isvalid(target) or not isvalid(target.TransformComponent) then return end
         if amount == nil or amount <= 0 then return end
         self:EnsureShape()
@@ -425,7 +426,7 @@ script SkillAttack extends AttackComponent
     -- the client for something the server can read itself off the same entity.
     --
     -- b/skill-archer-thief-pirate: spriteRuid(화살·표창 스프라이트 · "" = 모델 기본 에너지볼트) · hitSoundRuid · preferBoss(스나이핑 보스 우선) ·
-    -- hitCount > 1 = 볼리(첫 발 피해 ×N · 표시 N타, 이후 발은 VolleyInterval 간격으로 VisualOnly).
+    -- hitCount > 1 = 볼리(첫 발 피해 ×N · 표시 N타, 이후 발은 VolleyInterval 간격으로 VisualOnly · IsPerArrowVolley 스킬은 모든 발 실제 · 발마다 ×1).
     -- b/skill-thief-motion: spawnOffsetX(0 이면 ProjectileSpawnOffsetX) — 럭키 세븐은 시전 이펙트(초승달) 중심에서 표창이 나가야 해서 스킬별 앞쪽 거리를 받는다(effectOverrides.spawn).
     --   spriteScale(마지막 인자 · 0/1 이면 그대로) = 투사체 스프라이트 크기 배율(Transform.Scale · 판정 상자 RangeX/Y 는 월드 크기라 안 커진다) — 럭키 세븐 표창 1.3.
     @ExecSpace("Server")
@@ -476,7 +477,12 @@ script SkillAttack extends AttackComponent
         local lifetime = range / speed
         if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
 
-        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false, sc)
+        -- 발마다 1타(b/skill-archer-effects · 더블 샷 · #40 5884388966 (a) · #120 이 몬스터 피격 무적을 뺐다): 모든 발이 실제 투사체 · 피해 ×1 · 표시 1타.
+        -- 그 외 볼리(럭키 세븐 등)는 예전 그대로 — 첫 발 피해 ×hitCount · 표시 hitCount 타 · 2발째부터 VisualOnly.
+        local perArrow = hitCount > 1 and self:IsPerArrowVolley(skillId)
+        local firstMul = hitCount
+        if perArrow then firstMul = 1 end
+        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, firstMul, false, sc)
         if mover == nil then return end
         -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요.
         mover.SameFloorOnly = true
@@ -484,16 +490,14 @@ script SkillAttack extends AttackComponent
         mover.FloorTolerance = self.AimFloorTolerance
         -- 단일 대상(b/skill-archer-effects · 스나이핑): 유도 대상(보스 우선)만 맞는다 — 판정 상자에 겹친 다른 몬스터는 제외(SkillProjectile.IsAttackTarget).
         mover.SingleTargetOnly = self:IsSingleTargetProjectile(skillId)
-        -- 볼리 공유(b/skill-archer-effects · 더블 샷): 모든 발이 같은 Volley 를 들고 피해(×hitCount · 표시 hitCount 타)를 갖는다. 먼저 맞힌 발이 피해를 내고,
-        -- 나머지 발은 대상에 닿을 때 명중 이펙트만 보이고 사라진다(SkillProjectile.FinishVolleyFollower). 첫 발이 빗나가도 둘째 발이 피해를 낸다.
+        -- 발마다 1타 볼리: 모든 발이 같은 Volley 표({ impactPlayed })를 든다 — 두 번째 명중 연출(분홍 불꽃 → 폭발 · impactFollow)은 볼리당 한 번(먼저 맞힌 발 · SkillProjectile.OnAttack).
         local volley = nil
-        if hitCount > 1 and self:IsSharedVolley(skillId) then
-            volley = { dealt = false, aim = nil }
+        if perArrow then
+            volley = { impactPlayed = false }
             mover.Volley = volley
         end
 
-        -- 볼리: 2발째부터 VisualOnly. 첫 발이 이미 ×hitCount 피해를 지고 있다(무적시간 때문에 2발째 피해는 어차피 무효).
-        -- 볼리 공유 스킬은 2발째도 실제 투사체(같은 Volley · 같은 피해 배율 · 명중 이펙트/사운드 포함).
+        -- 볼리 2발째부터: 발마다 1타 스킬은 실제 투사체(피해 ×1 · 같은 Volley · 명중 이펙트/사운드 포함) · 그 외는 VisualOnly(첫 발이 ×hitCount 를 이미 졌다).
         local volleyDelay = self.VolleyInterval
         local volleyGapY = 0
         local vt = nil
@@ -511,7 +515,7 @@ script SkillAttack extends AttackComponent
                 local t2 = target
                 if not isvalid(t2) then t2 = nil end
                 if volley ~= nil then
-                    local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false, sc)
+                    local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, 1, false, sc)
                     if m2 ~= nil then
                         m2.Volley = volley
                         m2.SameFloorOnly = true
@@ -533,9 +537,9 @@ script SkillAttack extends AttackComponent
             .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * ox) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end
 
-    method boolean IsSharedVolley(string skillId)
-        -- 볼리 공유 스킬(b/skill-archer-effects · 2026-09-26 사용자 "더블 샷 피해를 두 화살 모두에"): 더블 샷 SK_A11 만.
-        -- 럭키 세븐(SK_T11)은 예전 그대로(둘째 발 VisualOnly).
+    method boolean IsPerArrowVolley(string skillId)
+        -- 발마다 1타 볼리(b/skill-archer-effects · #40 5884388966 (a) "무적이 빠지면 화살마다 1발 피해로"): 더블 샷 SK_A11 만.
+        -- 럭키 세븐(SK_T11)은 도적 창(#115) 몫 — 여기선 예전 그대로(첫 발 ×N · 둘째 발 VisualOnly). 넣으려면 이 목록에 한 줄.
         return skillId == "SK_A11"
     end
 
