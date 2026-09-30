@@ -129,6 +129,13 @@ script WorkshopUIController extends Logic
 
 	property string CraftJobs = "WARRIOR,MAGICIAN,ARCHER,THIEF,PIRATE"
 
+	-- 부위 분류(2026-10-01 · WO-038 · 사용자 "전체 · 무기 · 모자 · 옷 · 장갑 · 신발 · 특수(앱솔랩스) · 기본은 전체"). Craft/Slot_{키} 버튼 · 창을 열 때마다 전체로.
+	--   무기 = 무기 + 방패(보조무기) · 옷 = 상의 · 한벌옷 · 하의 · 특수 = 앱솔랩스(ABSOLAB_*) — 특수 외 분류에는 앱솔랩스를 넣지 않는다.
+	@HideFromInspector
+	property string craftSlot = "ALL"
+
+	property string CraftSlots = "ALL,WEAPON,HAT,CLOTH,GLOVES,SHOES,SPECIAL"
+
 	@HideFromInspector
 	property any potionView = nil
 
@@ -207,6 +214,10 @@ script WorkshopUIController extends Logic
 			local job = j
 			bindChild(self.contentCraft, "Job_" .. job, function() self:SetCraftJob(job) end)
 		end
+		for s in string.gmatch(self.CraftSlots, "[^,]+") do
+			local slot = s
+			bindChild(self.contentCraft, "Slot_" .. slot, function() self:SetCraftSlot(slot) end)
+		end
 		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
 		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
 		for _, r in ipairs({ "enhance", "craft", "potion", "repair" }) do
@@ -278,6 +289,7 @@ script WorkshopUIController extends Logic
 		self.targetIid = ""
 		self.chosenGems = {}
 		self.craftSel = ""
+		self.craftSlot = "ALL"
 		self.potionSel = ""
 		self.potionQty = 1
 		self.waiting = false
@@ -791,6 +803,49 @@ script WorkshopUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void SetCraftSlot(string slot)
+		-- 부위 분류 버튼 → 목록을 그 부위로 거른다(선택은 풀림). 직업 분류와 함께 걸린다.
+		if self.craftSlot ~= slot then self.craftSel = "" end
+		self.craftSlot = slot
+		self:RefreshCraft()
+		log("[Workshop] craft slot=" .. slot)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CraftSlotMatches(string itemId)
+		-- 지금 고른 부위 분류에 이 장비가 들어가나. 전체 = 모두 · 특수 = 앱솔랩스만 · 나머지는 앱솔랩스를 뺀 그 부위.
+		local slot = self.craftSlot
+		if slot == "" or slot == "ALL" then return true end
+		local special = string.sub(itemId, 1, 8) == "ABSOLAB_"
+		if slot == "SPECIAL" then return special end
+		if special then return false end
+		local d = _ItemCatalog:Get(itemId)
+		local s = (d ~= nil) and d.slot or ""
+		if slot == "WEAPON" then return s == "WEAPON" or s == "SUBWEAPON" end
+		if slot == "CLOTH" then return s == "TOP" or s == "BOTTOM" end
+		return s == slot
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCraftSlotTabs(boolean show)
+		-- 부위 분류 버튼: 직업 분류와 같이 마을 장비 상인에서만 보이고, 고른 칸만 진한 주황(나머지 회색).
+		if not isvalid(self.contentCraft) then return end
+		for s in string.gmatch(self.CraftSlots, "[^,]+") do
+			local b = self.contentCraft:GetChildByName("Slot_" .. s)
+			if isvalid(b) then
+				b.Enable = show
+				if b.SpriteGUIRendererComponent ~= nil then
+					if s == self.craftSlot then
+						b.SpriteGUIRendererComponent.Color = Color(0.91, 0.45, 0.16, 1)
+					else
+						b.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
 	method string DefaultCraftJob()
 		-- 처음 열 때 분류: 내 직업(전직 후) · 초보자면 전사.
 		local mine = (_PlayerSkillState ~= nil) and _PlayerSkillState:LocalJobId() or ""
@@ -843,7 +898,10 @@ script WorkshopUIController extends Logic
 		self.craftView = {}
 		for _, r in ipairs(_ItemCatalog:GetRecipes(key)) do
 			local rd = _ItemCatalog:Get(r.resultItemId)
-			if not byJob or (rd ~= nil and rd.reqJob == self.craftJob) then table.insert(self.craftView, r) end
+			local jobOk = not byJob or (rd ~= nil and rd.reqJob == self.craftJob)
+			-- 부위 분류는 직업 분류와 같이 마을 장비 상인에서만(리스항구 초보자 장비는 분류 없음).
+			local slotOk = not byJob or self:CraftSlotMatches(r.resultItemId)
+			if jobOk and slotOk then table.insert(self.craftView, r) end
 		end
 		-- 장비 등급 순(2026-10-01 · WO-038): 표는 등급을 나중에 끼워 넣어 15제 · 25제 행이 맨 뒤다 → 표 순서 그대로면 10 · 20 · 30 · 15 · 25.
 		--   등급 = 강화 티어(EnhanceTier · 빈칸이면 요구 레벨) — 앱솔랩스(요구 레벨 0 · 티어 30)가 맨 앞이 아니라 30제 뒤에 온다.
@@ -860,8 +918,9 @@ script WorkshopUIController extends Logic
 		end)
 		local lvs = {}
 		for _, r in ipairs(self.craftView) do table.insert(lvs, tostring(order[r].lv)) end
-		log("[Workshop] craft list shop=" .. tostring(key) .. " job=" .. tostring(self.craftJob) .. " n=" .. tostring(#self.craftView) .. " lv=" .. table.concat(lvs, ","))
+		log("[Workshop] craft list shop=" .. tostring(key) .. " job=" .. tostring(self.craftJob) .. " slot=" .. tostring(self.craftSlot) .. " n=" .. tostring(#self.craftView) .. " lv=" .. table.concat(lvs, ","))
 		self:RefreshCraftJobTabs(byJob)
+		self:RefreshCraftSlotTabs(byJob)
 		if isvalid(self.craftGrid) then
 			self.craftGrid.TotalCount = #self.craftView
 			self.craftGrid:Refresh(true, true)
