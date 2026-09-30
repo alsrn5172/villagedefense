@@ -4,7 +4,8 @@ script EnhanceService extends Logic
 	-- 장비 강화 (서버). 계획서 §2-3 · §5-3. 보석 = 인벤토리 MATERIAL(GEM_{GemId}) 스택, 비용 = 메소 카운터.
 	-- 성공: 인스턴스 enh+1 · 보석 기록 → 보석·메소 차감 → ItemEnhancedEvent → 장착 중이면 ENHANCE 레이어 재계산 → 클라 갱신.
 	-- 직업(연성 SK_M12) 할인: 메소 비용 × _JobPassiveLogic:GetJobCostMul(userId, "ENHANCE") · 내림 · 최소 1 · 보석 개수는 그대로(b/skill-enhance-discount · #40 5884390429 2번).
-	-- ⚠ 난이도 배율 적용점(Economy/CostResolver)은 아직 없다. 공방 창 표시(WorkshopUIController)는 할인 전 값을 보여 준다.
+	--   계산은 EnhanceMesoCost 한 곳 — 서버 차감(RequestEnhance)과 공방 창 표시(WorkshopUIController.RefreshEnhance)가 같이 부른다(어긋나지 않게).
+	-- ⚠ 난이도 배율 적용점(Economy/CostResolver)은 아직 없다.
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -68,15 +69,11 @@ script EnhanceService extends Logic
 			end
 		end
 		-- 한벌옷은 상 · 하의 두 벌 몫이라 강화 비용도 두 배(2026-09-30 · 상승치도 ItemCatalog.ComputeEnhance 가 ×2).
-		local cost = row.mesoCost * _ItemCatalog:PieceCount(def)
-		-- 연성(SK_M12) 메소 할인(b/skill-enhance-discount · #40 5884390429 2번 · B 가 넣고 A 가 리뷰): 배율 곱하고 내림 · 원래 1 이상이면 최소 1. 보석은 할인 없음.
-		local baseCost = cost
-		local costMul = 1
-		if _JobPassiveLogic ~= nil then costMul = _JobPassiveLogic:GetJobCostMul(userId, "ENHANCE") end
-		if costMul < 1 and baseCost > 0 then
-			cost = math.floor(baseCost * costMul + 0.000001)
-			if cost < 1 then cost = 1 end
-			log("[Item] enhance meso " .. tostring(baseCost) .. " -> " .. tostring(cost) .. " (연성 x" .. tostring(costMul) .. ") (" .. userId .. ")")
+		-- 연성(SK_M12) 메소 할인 포함(b/skill-enhance-discount · #40 5884390429 2번 · B 가 넣고 A 가 리뷰) — 공방 창과 같은 EnhanceMesoCost.
+		local baseCost = row.mesoCost * _ItemCatalog:PieceCount(def)
+		local cost = self:EnhanceMesoCost(userId, def, row)
+		if cost ~= baseCost then
+			log("[Item] enhance meso " .. tostring(baseCost) .. " -> " .. tostring(cost) .. " (연성 x" .. tostring(_JobPassiveLogic:GetJobCostMul(userId, "ENHANCE")) .. ") (" .. userId .. ")")
 		end
 		local econ = _SummonManager:GetEcon(userId)
 		if econ == nil or econ.meso < cost then
@@ -118,6 +115,20 @@ script EnhanceService extends Logic
 		self:Result(userId, instanceId, true, "강화 성공! +" .. tostring(cur + 1), cur + 1)
 		-- 업적 ENHANCE_ALL_MAX(장비 6칸 전부 최대 강화 · 매치당 1번 · WO-031 묶음 5).
 		if _AchievementService ~= nil then _AchievementService:CheckEnhanceAll(userId) end
+	end
+
+	method integer EnhanceMesoCost(string userId, table def, table row)
+		-- 강화 한 번의 메소 비용 — 서버 차감(RequestEnhance)과 공방 창 표시(WorkshopUIController.RefreshEnhance)의 **한 곳**(b/skill-enhance-discount).
+		-- = MesoCost × 부위 수(한벌옷 2) × 연성 배율(_JobPassiveLogic:GetJobCostMul(userId, "ENHANCE") · 없으면 1) · 내림 · 원래 1 이상이면 최소 1. 보석은 할인 없음.
+		-- ExecSpace 없음 = 양쪽에서 부른다. 클라의 GetJobCostMul 은 로컬 유저 미러(PlayerSkillState.LocalSkillLevel)로 같은 값을 낸다.
+		local base = row.mesoCost * _ItemCatalog:PieceCount(def)
+		if base <= 0 then return base end
+		local mul = 1
+		if _JobPassiveLogic ~= nil then mul = _JobPassiveLogic:GetJobCostMul(userId, "ENHANCE") end
+		if mul >= 1 then return base end
+		local cost = math.floor(base * mul + 0.000001)
+		if cost < 1 then cost = 1 end
+		return cost
 	end
 
 	@ExecSpace("ServerOnly")
