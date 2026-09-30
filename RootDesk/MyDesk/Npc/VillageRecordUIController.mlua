@@ -86,6 +86,23 @@ script VillageRecordUIController extends Logic
 	@HideFromInspector
 	property boolean waiting = false
 
+	-- 도감 눈금 그림(gauge_seg_on / gauge_seg_off) · 글자 색 (디자이너 시안 11-record)
+	property string segOnRuid = "1be216fb8f4448a2b7db975482b6d77a"
+
+	property string segOffRuid = "dfa779018aec41ab8f27fd2826d0ad11"
+
+	property Color cIvory = Color(0.953, 0.933, 0.886, 1)
+
+	property Color cSub = Color(0.682, 0.722, 0.812, 1)
+
+	property Color cOff = Color(0.337, 0.388, 0.498, 1)
+
+	property Color cInk = Color(0.11, 0.078, 0.02, 1)
+
+	property Color cPale = Color(0.894, 0.91, 0.937, 1)
+
+	property Color cCoral = Color(1, 0.541, 0.478, 1)
+
 	method void OnBeginPlay()
 		-- 클라만 배선.
 		if self:IsClient() then self:SetupClient() end
@@ -127,8 +144,8 @@ script VillageRecordUIController extends Logic
 		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6).
 		local r = _VillageNpcUIController
 		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "VillageRecordGroup" then
+			-- 제목은 GoRoute 가 "몬스터 도감" / "마을 통계" 로 쓴다(시안) — NPC 이름으로 덮어쓰지 않는다.
 			self:Open(r.PendingUiRoute)
-			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
 			r:ClearPendingRequest()
 		end
 	end
@@ -170,6 +187,15 @@ script VillageRecordUIController extends Logic
 		self.selColl = 0
 		self.waiting = false
 		if isvalid(self.footer) then self.footer.Enable = (route == "collection") end
+		-- 제목 띠 장식(아이콘 · 반짝이)은 라우트별로 하나만.
+		self:Show(self.window, "TitleBar/DecoCollection", route == "collection")
+		self:Show(self.window, "TitleBar/DecoStats", route == "stats")
+		if route == "stats" then
+			-- 뷰가 오기 전에는 상세 안내만(옛 상세가 남아 보이지 않게).
+			if isvalid(self.detailRoot) then self.detailRoot.Enable = false end
+			self:Show(self.contentStats, "DetailPanel/DetailEmpty", true)
+			self:Show(self.contentStats, "PlayerPanel/PlayerEmpty", false)
+		end
 		if route == "collection" then self:UpdateFooter() end
 		if _LaneStateService ~= nil then _LaneStateService:RequestView(route) end
 	end
@@ -188,11 +214,58 @@ script VillageRecordUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method Entity Child(Entity root, string path)
+		-- "A/B/C" 경로로 자식을 찾는다(없으면 nil).
+		local cur = root
+		for seg in string.gmatch(path, "[^/]+") do
+			if not isvalid(cur) then return nil end
+			cur = cur:GetChildByName(seg)
+		end
+		if not isvalid(cur) then return nil end
+		return cur
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(Entity root, string path, boolean on)
+		-- 자식 켜고 끄기.
+		local c = self:Child(root, path)
+		if c ~= nil then c.Enable = on end
+	end
+
+	@ExecSpace("ClientOnly")
 	method void SetText(Entity parent, string childName, string text)
-		-- 자식 텍스트 한 줄.
-		if not isvalid(parent) then return end
-		local c = parent:GetChildByName(childName)
-		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+		-- 자식 텍스트 한 줄(childName 은 "A/B" 경로도 된다).
+		local c = self:Child(parent, childName)
+		if c ~= nil and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetColor(Entity parent, string childName, Color col)
+		-- 자식 글자 색.
+		local c = self:Child(parent, childName)
+		if c ~= nil and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.FontColor = col end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetIcon(Entity parent, string childName, string ruid)
+		-- 자식 그림 넣기(같은 그림이면 다시 대입하지 않는다 · 빈 RUID 면 끈다).
+		local c = self:Child(parent, childName)
+		if c == nil or c.SpriteGUIRendererComponent == nil then return end
+		if ruid == nil or ruid == "" then
+			c.Enable = false
+			return
+		end
+		if c.SpriteGUIRendererComponent.ImageRUID ~= ruid then c.SpriteGUIRendererComponent.ImageRUID = ruid end
+		c.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ItemIcon(string itemId)
+		-- 아이템 아이콘 RUID(ItemInfo IconRUID). 없으면 "".
+		if _ItemCatalog == nil or itemId == nil or itemId == "" then return "" end
+		local d = _ItemCatalog:Get(itemId)
+		if d == nil then return "" end
+		return d.icon or ""
 	end
 
 	-- ── collection ─────────────────────────────────────────────
@@ -226,32 +299,58 @@ script VillageRecordUIController extends Logic
 				self:RepaintCells()
 			end
 		end
+		-- 해금 진행 칩(숫자 · 게이지) + 규칙 도움말 한 줄
+		local total = #self.collRows
+		self:SetText(self.contentCollection, "ProgressPlate/Count", tostring(unlocked))
+		self:SetText(self.contentCollection, "ProgressPlate/Total", "/ " .. tostring(total))
+		local fill = self:Child(self.contentCollection, "ProgressPlate/Track/Fill")
+		if fill ~= nil and fill.SpriteGUIRendererComponent ~= nil then
+			fill.SpriteGUIRendererComponent.FillAmount = (total > 0) and (unlocked / total) or 0
+		end
 		if isvalid(self.collStatus) then
-			local matName = (self.collMat ~= nil) and self.collMat.name or "지역재화"
-			self.collStatus.Text = "해금 " .. tostring(unlocked) .. " / " .. tostring(#self.collRows) .. " · 해금 = " .. matName .. " 8 → 모집 가능(Lv1) · Lv2~5 = 꿈의 조각 3/5/10/15 (배율 1.5/2.2/3.3/5.0)" .. (self.hasVillage and "" or " · 마을이 없어 해금 불가")
+			self.collStatus.Text = "해금 = 모집 가능(Lv1) · 조련으로 Lv5까지" .. (self.hasVillage and "" or " · 마을이 없어 해금 불가")
 		end
 		self:UpdateFooter()
 	end
 
 	@ExecSpace("ClientOnly")
 	method void FillCollCell(integer index, Entity cell)
-		-- 셀 = 썸네일 + 이름 + 도감 Lv. 미해금은 어둡게(썸네일은 보인다 · 사용자 지시). 클릭 = 선택. (OnRefresh 는 스크롤마다 불린다 — 서버 호출 금지)
+		-- 셀 = 썸네일 + 이름 + (해금: 도감 Lv 눈금 5칸 + 배율 / 잠김: 자물쇠 + Lv). 미해금은 그림을 어둡게만(사용자 지시 · 물음표로 가리지 않는다). 클릭 = 선택. (OnRefresh 는 스크롤마다 불린다 — 서버 호출 금지)
+		-- 고름 · 잠김 표시는 미리 깔아 둔 Sel / Locked 덮개를 켜고 끈다(그림 교체 없음).
 		local r = self.collRows[index + 1]
 		if r == nil or not isvalid(cell) then return end
+		local unlocked = (r.monLv >= 1)
 		self:SetText(cell, "Name", r.name)
-		self:SetText(cell, "Sub", (r.monLv >= 1) and ("도감 Lv" .. tostring(r.monLv) .. " ×" .. tostring(r.mul)) or ("미해금 · Lv " .. r.level))
+		self:SetColor(cell, "Name", unlocked and self.cIvory or self.cSub)
 		local icon = cell:GetChildByName("Icon")
 		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
 			-- 같은 그림이면 다시 대입하지 않는다(재로드 방지).
 			if icon.SpriteGUIRendererComponent.ImageRUID ~= r.icon then icon.SpriteGUIRendererComponent.ImageRUID = r.icon end
 			icon.Enable = (r.icon ~= "")
-			icon.SpriteGUIRendererComponent.Color = (r.monLv >= 1) and Color(1, 1, 1, 1) or Color(0.6, 0.6, 0.6, 1)
+			icon.SpriteGUIRendererComponent.Color = unlocked and Color(1, 1, 1, 1) or Color(0.6, 0.6, 0.6, 1)
 		end
-		if cell.SpriteGUIRendererComponent ~= nil then
-			local sel = (self.selColl == index + 1)
-			if sel then cell.SpriteGUIRendererComponent.Color = Color(0.99, 0.88, 0.42, 1)
-			elseif r.monLv >= 1 then cell.SpriteGUIRendererComponent.Color = Color(0.52, 0.55, 0.60, 1)
-			else cell.SpriteGUIRendererComponent.Color = Color(0.34, 0.36, 0.40, 1) end
+		self:Show(cell, "Sel", self.selColl == index + 1)
+		self:Show(cell, "Locked", not unlocked)
+		self:Show(cell, "Slot", unlocked)
+		self:Show(cell, "SlotLocked", not unlocked)
+		self:Show(cell, "LockBadge", not unlocked)
+		self:Show(cell, "LockIcon", not unlocked)
+		self:Show(cell, "Sub", not unlocked)
+		self:Show(cell, "Mul", unlocked)
+		if unlocked then
+			self:SetText(cell, "Mul", "×" .. tostring(r.mul))
+		else
+			self:SetText(cell, "Sub", "잠김 · Lv " .. tostring(r.level))
+		end
+		for k = 1, 5 do
+			local seg = cell:GetChildByName("Seg" .. tostring(k))
+			if isvalid(seg) then
+				seg.Enable = unlocked
+				if unlocked and seg.SpriteGUIRendererComponent ~= nil then
+					local want = (k <= r.monLv) and self.segOnRuid or self.segOffRuid
+					if seg.SpriteGUIRendererComponent.ImageRUID ~= want then seg.SpriteGUIRendererComponent.ImageRUID = want end
+				end
+			end
 		end
 		-- 클릭 배선은 셀 엔티티당 1회. 복제 셀은 스크롤마다 index 가 바뀌므로 boundCells[셀 Id] 에 {index, 엔티티} 를 갱신해 두고 클릭·재칠하기 때 읽는다.
 		local bound = self.boundCells[cell.Id]
@@ -290,28 +389,50 @@ script VillageRecordUIController extends Logic
 		local matName = (self.collMat ~= nil) and self.collMat.name or "지역재화"
 		local matHave = (self.collMat ~= nil) and self.collMat.have or 0
 		local matCost = (self.collMat ~= nil) and self.collMat.cost or 8
-		local label = ""
-		local btnText = "해금"
+		local f = self.footer
+		local locked = (r ~= nil and r.monLv < 1)
+		local owned = (r ~= nil and r.monLv >= 1)
 		local can = false
+		-- 세 모양: 안 골랐을 때(안내 + 보유 재화 칩) · 해금 안 된 몬스터(이름 + 해금 비용 칩) · 해금된 몬스터(이름 + 초록 요약 한 줄)
+		self:Show(f, "StateHint", r == nil)
+		self:Show(f, "SelName", r ~= nil)
+		self:Show(f, "StateLocked", locked)
+		if isvalid(self.costLabel) then self.costLabel.Entity.Enable = owned end
 		if r == nil then
-			label = "몬스터를 고르면 필요한 재료가 보입니다 (보유 " .. matName .. " " .. tostring(matHave) .. " · 꿈의 조각 " .. tostring(self.dream) .. ")"
-		elseif r.monLv < 1 then
-			-- 재료가 모자라도 버튼은 켜 둔다 — 서버가 거절 토스트로 알린다(잠긴 것처럼 보이지 않게).
-			label = r.name .. " 해금: " .. matName .. " " .. tostring(matCost) .. "개 (보유 " .. tostring(matHave) .. ")" .. ((matHave < matCost) and " — 부족" or "")
-			btnText = "해금"
-			can = true
+			self:SetText(f, "StateHint/HoldPlate/GemNum", tostring(matHave))
+			self:SetText(f, "StateHint/HoldPlate/DreamNum", tostring(self.dream))
+			local matItem = (self.collMat ~= nil) and self.collMat.itemId or ""
+			self:SetIcon(f, "StateHint/HoldPlate/GemIcon", self:ItemIcon(matItem))
+			self:SetIcon(f, "StateHint/HoldPlate/DreamIcon", self:ItemIcon("DREAM_PIECE"))
 		else
-			-- 도감 관리인은 해금만. 강화(Lv2~5)는 몬스터 조련사 (사용자 2026-09-07).
-			label = r.name .. " 해금됨 · Lv" .. tostring(r.monLv) .. " (HP·공격 ×" .. tostring(r.mul) .. ") — 모집 가능 · 강화는 몬스터 조련사에서"
-			btnText = "해금됨"
-			can = false
+			self:SetText(f, "SelName", r.name)
+			if locked then
+				-- 재료가 모자라도 버튼은 켜 둔다 — 서버가 거절 토스트로 알린다(잠긴 것처럼 보이지 않게). 모자라면 비용 칩만 붉게.
+				can = true
+				local short = (matHave < matCost)
+				self:SetIcon(f, "StateLocked/CostPlate/MatIcon", self:ItemIcon((self.collMat ~= nil) and self.collMat.itemId or ""))
+				self:SetText(f, "StateLocked/CostPlate/MatName", matName)
+				self:SetText(f, "StateLocked/CostPlate/MatNum", tostring(matCost))
+				self:SetText(f, "StateLocked/CostPlate/MatHave", "보유 " .. tostring(matHave) .. (short and " · 부족" or ""))
+				self:SetColor(f, "StateLocked/CostPlate/MatNum", short and self.cCoral or self.cIvory)
+				self:SetColor(f, "StateLocked/CostPlate/MatHave", short and self.cCoral or Color(0.486, 0.533, 0.643, 1))
+			elseif isvalid(self.costLabel) then
+				-- 도감 관리인은 해금만. 강화(Lv2~5)는 몬스터 조련사 (사용자 2026-09-07).
+				self.costLabel.Text = "해금됨 · 도감 Lv" .. tostring(r.monLv) .. " ×" .. tostring(r.mul) .. " · 모집 가능 - 강화는 몬스터 조련사에게"
+			end
 		end
 		if not self.hasVillage then can = false end
-		if isvalid(self.costLabel) then self.costLabel.Text = label end
 		if isvalid(self.btnPrimary) then
-			self.btnPrimary.Enable = (can and not self.waiting)
+			local on = (can and not self.waiting)
+			self.btnPrimary.Enable = on
 			local t = self.btnPrimary.Entity.TextGUIRendererComponent
-			if t ~= nil then t.Text = btnText end
+			if t ~= nil then
+				t.Text = owned and "" or "해금"
+				t.FontColor = on and self.cInk or self.cPale
+			end
+			-- 해금됨: 체크 + 글자(버튼 글자 대신 자식 글자)
+			self:Show(self.btnPrimary.Entity, "CheckIcon", owned)
+			self:Show(self.btnPrimary.Entity, "DoneLabel", owned)
 		end
 	end
 
@@ -323,7 +444,11 @@ script VillageRecordUIController extends Logic
 		if r == nil or _LaneStateService == nil then return end
 		if r.monLv >= 1 then return end
 		self.waiting = true
-		if isvalid(self.btnPrimary) then self.btnPrimary.Enable = false end
+		if isvalid(self.btnPrimary) then
+			self.btnPrimary.Enable = false
+			local t = self.btnPrimary.Entity.TextGUIRendererComponent
+			if t ~= nil then t.FontColor = self.cPale end
+		end
 		_LaneStateService:RequestUnlockCollection(r.id)
 	end
 
@@ -349,24 +474,54 @@ script VillageRecordUIController extends Logic
 				if isvalid(row) then
 					row.Enable = (p ~= nil)
 					if p ~= nil then
-						self:SetText(row, "Name", self:TitledName(p.title, p.name))
+						self:SetRowName(row, p.title, p.name)
 						self:SetText(row, "Level", "Lv " .. p.level)
-						if row.SpriteGUIRendererComponent ~= nil then
-							row.SpriteGUIRendererComponent.Color = (i == self.selPlayer) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
-						end
+						self:Show(row, "Sel", i == self.selPlayer)
 					end
 				end
 			end
 		end
-		if isvalid(self.statsStatus) then
-			local more = (#self.players > 5) and (" · 위 5명만 표시 (" .. tostring(#self.players) .. "명)") or ""
-			self.statsStatus.Text = (#self.players == 0) and "다른 생존자가 없습니다" or ("생존자 " .. tostring(#self.players) .. "명 (나 제외) · 이름을 누르면 공개 정보" .. more)
-		end
-		if #self.players == 0 then
+		-- 머리글 인원 칩 · 빈 목록 / 상세 안내(시안 s5). 아래 상태줄(StatsStatus)은 시안에 자리가 없어 끈다.
+		local n = #self.players
+		self:SetText(self.contentStats, "PlayerPanel/CountChip/Text", tostring(n) .. "명 · 나 제외")
+		self:Show(self.contentStats, "PlayerPanel/PlayerEmpty", n == 0)
+		self:Show(self.contentStats, "DetailPanel/DetailEmpty", n == 0)
+		if isvalid(self.detailRoot) then self.detailRoot.Enable = (n > 0) end
+		if n == 0 then
 			self.selUid = ""
-			self:ClearDetail("다른 생존자가 없습니다")
+			self:ClearDetail("-")
 		else
 			self:SelectPlayer(self.selPlayer)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRowName(Entity row, string title, string name)
+		-- 생존자 줄 이름: 칭호가 있으면 금빛 작은 줄 + 닉네임(두 줄), 없으면 닉네임 한 줄 가운데.
+		local titled = (title ~= nil and title ~= "")
+		self:Show(row, "Name", not titled)
+		self:Show(row, "NameT", titled)
+		self:Show(row, "TitleLine", titled)
+		if titled then
+			self:SetText(row, "NameT", name or "")
+			self:SetText(row, "TitleLine", title)
+		else
+			self:SetText(row, "Name", name or "")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDetailNick(Entity row, string title, string name)
+		-- 상세 닉네임 줄: 칭호가 있으면 칭호 줄 + 닉네임(CellT), 없으면 Cell 한 줄.
+		local titled = (title ~= nil and title ~= "")
+		self:Show(row, "Cell", not titled)
+		self:Show(row, "CellT", titled)
+		self:Show(row, "TitleLine", titled)
+		if titled then
+			self:SetText(row, "CellT", name or "")
+			self:SetText(row, "TitleLine", title)
+		else
+			self:SetText(row, "Cell", name or "")
 		end
 	end
 
@@ -386,7 +541,12 @@ script VillageRecordUIController extends Logic
 				local row = self.detailRoot:GetChildByName("DRow" .. tostring(i - 1))
 				if isvalid(row) then
 					self:SetText(row, "Chip", lb)
-					self:SetText(row, "Cell", (i == 1) and (msg or "-") or "-")
+					if i == 1 then
+						self:SetDetailNick(row, "", msg or "-")
+					else
+						self:SetText(row, "Cell", "-")
+						self:SetColor(row, "Cell", self.cIvory)
+					end
 				end
 			end
 		end
@@ -407,7 +567,7 @@ script VillageRecordUIController extends Logic
 		end
 		local stages = { ["0"] = "마을 없음", ["1"] = "포탑 방어 중", ["2"] = "억제기 방어 중", ["3"] = "넥서스 방어 중" }
 		local vals = {
-			{ "닉네임", self:TitledName(f[9] or "", f[3] or "") }, { "레벨", "Lv " .. (f[4] or "1") }, { "마을 성장도", f[5] or "0" },
+			{ "닉네임", f[3] or "" }, { "레벨", "Lv " .. (f[4] or "1") }, { "마을 성장도", f[5] or "0" },
 			{ "몬스터 처치", f[7] or "0" }, { "보스 처치", f[6] or "0" }, { "전선", stages[f[8] or "0"] or "-" },
 		}
 		if isvalid(self.detailRoot) then
@@ -415,8 +575,20 @@ script VillageRecordUIController extends Logic
 				local row = self.detailRoot:GetChildByName("DRow" .. tostring(i - 1))
 				if isvalid(row) then
 					self:SetText(row, "Chip", v[1])
-					self:SetText(row, "Cell", v[2])
+					if i == 1 then
+						-- 칭호는 닉네임 위 작은 금빛 줄로 따로(목록 줄과 같은 규칙)
+						self:SetDetailNick(row, f[9] or "", v[2])
+					else
+						self:SetText(row, "Cell", v[2])
+						self:SetColor(row, "Cell", self.cIvory)
+					end
 				end
+			end
+			-- 보스 처치가 아직 없으면 흐린 "-  아직 없음"
+			local bossRow = self.detailRoot:GetChildByName("DRow4")
+			if isvalid(bossRow) and (tonumber(f[6] or "0") or 0) <= 0 then
+				self:SetText(bossRow, "Cell", "-  아직 없음")
+				self:SetColor(bossRow, "Cell", self.cOff)
 			end
 		end
 		self:ApplyAvatar(f[2] or "", f[10] or "")
@@ -438,7 +610,8 @@ script VillageRecordUIController extends Logic
 				local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(itemId) or nil
 				local nm = (def ~= nil and def.name ~= nil) and def.name or itemId
 				local e = tonumber(fs[3]) or 0
-				table.insert(lines, (slotNames[slot] or slot) .. " " .. nm .. ((e > 0) and (" +" .. tostring(e)) or ""))
+				-- 부위 라벨만 회색(리치 텍스트 태그) · 강화 표시는 색 없음
+				table.insert(lines, "<color=#7C88A4>" .. (slotNames[slot] or slot) .. "</color> " .. nm .. ((e > 0) and (" +" .. tostring(e)) or ""))
 			end
 		end
 		if isvalid(self.detailGear) then self.detailGear.Text = (#lines > 0) and table.concat(lines, "\n") or "장착 장비 없음" end
@@ -482,9 +655,7 @@ script VillageRecordUIController extends Logic
 		if isvalid(self.playerRoot) then
 			for k = 0, 4 do
 				local row = self.playerRoot:GetChildByName("PlayerRow_" .. tostring(k))
-				if isvalid(row) and row.SpriteGUIRendererComponent ~= nil then
-					row.SpriteGUIRendererComponent.Color = (k == i) and Color(0.99, 0.88, 0.42, 1) or Color(0.46, 0.49, 0.54, 1)
-				end
+				if isvalid(row) then self:Show(row, "Sel", k == i) end
 			end
 		end
 		self:ClearDetail("불러오는 중…")
