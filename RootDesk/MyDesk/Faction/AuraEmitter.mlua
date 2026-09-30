@@ -11,6 +11,28 @@ script AuraEmitter extends Component
 
 	property integer AuraOrderInLayer = 3
 
+	-- 디자이너 시안 19-facility #17 (2026-10-01): 시설(LaneFacility 가 붙은 엔티티)의 오라는 띠 그림으로 그린다.
+	-- 시안은 흰 원본 1장 + 마을 특성별 색 입힌 3장(이동속도 하늘 · 공격력 주황 · 회복 초록). 특성은 컨트롤러 값(Lv 에 맞춰 나중에 들어온다)을 보고 고른다.
+	property string BandRUID = "21702628af4346c687d466cbb38ad646"
+
+	property string BandSpeedRUID = "fe6b6eca82e3405ba3cd2af7c77d7136"
+
+	property string BandAttackRUID = "886870a37e78437a82406581756f08ac"
+
+	property string BandHealRUID = "d375e4d2937a4dfa864f7c7a960d31c3"
+
+	property number BandAlpha = 0.9
+
+	-- 크기를 런타임 API 로 못 읽을 때(업로드 그림) 쓰는 원본 px 와 유닛 환산(100px = 1유닛). 시안 2x 1200×600.
+	property number BandPixelW = 1200
+
+	property number BandPixelH = 600
+
+	property number BandPixelsPerUnit = 100
+
+	@HideFromInspector
+	property string bandKind = ""
+
 	property Color TeamAColor = Color(0.3, 0.65, 1.0, 0.75)
 
 	property Color TeamBColor = Color(1.0, 0.35, 0.3, 0.75)
@@ -41,6 +63,11 @@ script AuraEmitter extends Component
 		end
 		
 		self.AuraEntity = aura
+
+		-- 시설 오라면 띠 그림(흰 원본)으로 바꾸고 나서 크기를 잰다.
+		if self:IsBandAura() then
+			self:ApplyBandSkin(aura, "")
+		end
 		self:ApplySize(aura)
 		self:ApplyColor(aura, team)
 	end
@@ -52,6 +79,50 @@ script AuraEmitter extends Component
 			self.AuraEntity:Destroy()
 		end
 		self.AuraEntity = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsBandAura()
+		-- 시설(LaneFacility 가 붙은 엔티티)의 오라인가. 시설은 LaneFacility 를 먼저 붙인 뒤 오라를 붙인다.
+		return isvalid(self.Entity:GetComponent("script.LaneFacility"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ResolveBandKind()
+		-- 컨트롤러 값으로 오라 특성을 읽는다: 이동속도 > 공격력 > 회복 순(서비스가 특성 하나만 켠다). 값이 아직 0 이면 "".
+		---@type FactionAuraController
+		local ctrl = self.Entity:GetComponent("script.FactionAuraController")
+		if not isvalid(ctrl) then return "" end
+		if ctrl.AllySpeedBonus > 0 then return "SPEED" end
+		if ctrl.AllyAtkBonus > 0 then return "ATTACK" end
+		if ctrl.AllyRegenPerSec > 0 then return "HEAL" end
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyBandSkin(Entity aura, string kind)
+		-- 띠 그림 RUID 를 특성에 맞게 바꾼다(kind 가 "" 이면 흰 원본). 크기 · 층은 그대로(같은 규격 그림).
+		local renderer = aura.SpriteRendererComponent
+		if not isvalid(renderer) then return end
+		local ruid = self.BandRUID
+		if kind == "SPEED" then ruid = self.BandSpeedRUID
+		elseif kind == "ATTACK" then ruid = self.BandAttackRUID
+		elseif kind == "HEAL" then ruid = self.BandHealRUID end
+		renderer.SpriteRUID = ruid
+		renderer.Color = Color(1, 1, 1, self.BandAlpha)
+		self.bandKind = kind
+		log("[AuraEmitter] band skin " .. self.Entity.Name .. " kind=" .. ((kind ~= "") and kind or "BASE"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 시설 오라: 특성 값은 스폰 뒤 Lv 에 맞춰 들어오므로 바뀌면(한 번) 띠 그림을 갈아 끼운다.
+		if not isvalid(self.AuraEntity) then return end
+		if not self:IsBandAura() then return end
+		local kind = self:ResolveBandKind()
+		if kind ~= "" and kind ~= self.bandKind then
+			self:ApplyBandSkin(self.AuraEntity, kind)
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -67,24 +138,31 @@ script AuraEmitter extends Component
 		local h = self:ResolveAuraHeight()
 		
 		local sprite = self:LoadSpriteMetrics(renderer.SpriteRUID)
-		if sprite == nil or sprite.PixelPerUnit <= 0 then
+		local nativeW = 0
+		local nativeH = 0
+		local ny = 0.5
+		if sprite ~= nil and sprite.PixelPerUnit > 0 and sprite.Width > 0 and sprite.Height > 0 then
+			-- 배율 1 일 때의 월드 크기 = 픽셀 크기 / PixelPerUnit
+			nativeW = sprite.Width / sprite.PixelPerUnit
+			nativeH = sprite.Height / sprite.PixelPerUnit
+			-- pivot 이 아래쪽(ny<0.5)이면 그림이 위로만 뻗으므로 아래에서 그만큼 내려서 중심을 맞춘다.
+			ny = sprite.PivotPixel:ToVector2().y / sprite.Height
+		elseif self:IsBandAura() then
+			-- 업로드한 띠 그림은 런타임 API 가 크기를 안 줄 수 있다 → 올린 원본 px 와 중심 피벗으로 계산(시안 띠는 가운데 피벗 · 바닥선은 그림 안에 있음).
+			nativeW = self.BandPixelW / self.BandPixelsPerUnit
+			nativeH = self.BandPixelH / self.BandPixelsPerUnit
+			log("[AuraEmitter] 띠 크기 API 없음 → 원본 px 로 계산 " .. string.format("%.0fx%.0f", self.BandPixelW, self.BandPixelH))
+		else
 			log_warning("[AuraEmitter] 스프라이트 정보를 못 읽어 크기 보정을 건너뜀 — ruid=" .. tostring(renderer.SpriteRUID))
 			return
 		end
-		
-		-- 배율 1 일 때의 월드 크기 = 픽셀 크기 / PixelPerUnit
-		local nativeW = sprite.Width / sprite.PixelPerUnit
-		local nativeH = sprite.Height / sprite.PixelPerUnit
 		if nativeW <= 0 or nativeH <= 0 then
 			return
 		end
-		
+
 		transform.Scale = Vector3(w / nativeW, h / nativeH, 1)
-		
+
 		-- 세로 위치 = 판정 사각형 중심(AuraOffsetY) + pivot 보정.
-		-- pivot 이 아래쪽(ny<0.5)이면 그림이 위로만 뻗으므로 그만큼 내려서 중심을 맞춘다.
-		local pivotY = sprite.PivotPixel:ToVector2().y
-		local ny = pivotY / sprite.Height
 		local offsetY = self:ResolveAuraOffsetY()
 		local localY = offsetY + h * (ny - 0.5)
 		transform.Position = Vector3(0, localY, 0)
@@ -135,6 +213,12 @@ script AuraEmitter extends Component
 			return
 		end
 		
+		-- 시설 오라는 팀 색이 아니라 띠 그림 자체의 색(특성별)이다 → 흰색 × 시안 투명도.
+		if self:IsBandAura() then
+			renderer.Color = Color(1, 1, 1, self.BandAlpha)
+			return
+		end
+
 		-- 미니언 진영(11~15)은 붉은색, 플레이어 진영(1~5)은 푸른색.
 		if _FactionLogic:IsMinionTeam(_FactionLogic:NormalizeTeam(team)) then
 			renderer.Color = self.TeamBColor
@@ -202,4 +286,4 @@ script AuraEmitter extends Component
 		return self.FallbackOffsetY
 	end
 
-end
+end
