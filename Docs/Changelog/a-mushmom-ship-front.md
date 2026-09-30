@@ -1,0 +1,41 @@
+# a/mushmom-ship-front (Draft PR #129 · base main eeeaa9a)
+
+사용자 지시(2026-10-01): "헤네시스 보스는 머쉬맘이고 좀비머쉬맘은 테스트용으로 따로 놓은 거라 머쉬맘으로 돌려놓긴 해야 함 · 좀비머쉬맘은 뛰는 속도가 너무 빨라서 고장 난 것 같음 · 테스트 스포너는 맵에서 지우기" / "`Orbis_Lobby_VictoriaShip` 의 `MapObject_2` 는 Player 보다 앞에 나와야 함".
+
+## 1. 헤네시스 보스 = 머쉬맘 복귀
+
+9/7 작업 트리 정리 커밋(ad094e4)에서 머쉬맘 `6130101` 이 `Enabled=false` 로 꺼지고, 테스트로 놓은 좀비머쉬맘 `2400572` 스포너가 헤네시스 보스로 돌고 있었다.
+
+| 파일 | 전 → 후 |
+|---|---|
+| `BossInfo.csv` | `6130101` Enabled false → **true** · `2400572` true → **false**(행은 테스트용으로 남김) |
+| `BossSkills.csv` | `2400572` S1 · S2 Enabled → **false**(보스가 꺼진 채 스킬만 켜 두면 `[BossCatalog] skill points to unknown/disabled` 경고) |
+| `BossReward.csv` | 단풍 봉인석 선취(`MAPLE_SEAL_STONE` · `FirstClaimOnce=true`)를 `6130101` 행으로 · `2400572` 행은 메모만 |
+| `map/Henesys_Boss_Mushmom` | 좀비머쉬맘 스포너 `BossSpawner_2400572` 삭제(MapBuilder) — 머쉬맘 스포너 `BossSpawner_6130101` 은 그대로 |
+| `Docs/스키마-계약.md` | BossReward 절 "좀비머쉬맘 = 헤네시스 실제 보스" 정정 + 복귀 기록(헤더 변경 없음) |
+
+- 3페이즈 미니언 좀비머쉬맘(`MinionWave` · `MinionComposition` · `DifficultyRule.ZOMBIE_MUL`)은 보스 표를 안 쓴다(미니언은 `BossSkillRunner` 를 끄고 `MonsterInfo` walk 0.5 × 레인 1.3 으로 걷는다) → 그대로.
+- 머쉬맘 능력치는 그대로(Lv21 · HP 54,000 · 좀비는 Lv42 · 108,000).
+
+## 2. 로비 배 앞쪽 선체(`MapObject_2`)를 플레이어 앞으로
+
+파일 값 `OrderInLayer 1111111`(9/26 #101 Maker 저장본)이 엔진 범위(±32767)를 넘어 실제로는 플레이어(`Default/4` · `PlayerFrontLayer`)보다 **뒤**에 그려졌다. 그룹 월드 Play 에서 런타임으로 10 을 넣자 선체가 플레이어 앞(다리가 가려지고 머리만 난간 위)으로 오는 것을 캡처로 확인 → 파일 값 **10**.
+
+- 빌더(`MapBuilder.patchComponent`)로 바꾼 결과와 JSON 이 같은지 대조한 뒤, Maker 저장 형식(CRLF · `1.0` 표기)을 지키려고 그 한 줄만 바꾼 원본을 저장했다(빌더는 숫자 표기를 다시 써 872줄 diff 를 냈다).
+- `MapObject_3`(오른쪽 위 돛 · `9999999`)도 같은 이유로 실제로는 플레이어 뒤였다 → 사용자 "앞으로 해 주면 고맙겠어" → **10**.
+- 이름표는 선체에 가려진다. `NameTagComponent` 에는 층 속성(`SortingLayer`/`OrderInLayer`)이 없어 따로 올릴 수 없다 — 사용자 "꼭 보일 필요는 없다".
+- 포털 규칙과의 관계: 배 맵 포탈은 노선 포탈이 아니라 `MapLayer7/2` 그대로라(항상 `Default` 아래) 선체 앞/뒤와 무관.
+
+## 검증 (2026-10-01 · 개인 월드 · 이 폴더 · Maker Play 1판)
+
+| 항목 | 결과 |
+|---|---|
+| 빌드 | Error 0 · Warning 1(`SummonManager` LWA-1111 · 9/23 부터) |
+| 런타임 경고 | 6건 전부 `SkillWindowLogic` LWA-3047(B 파일) — `[BossCatalog] skill points to unknown/disabled` · `[BossSpawner] ... not in BossInfo` 는 **0** |
+| 보스 표 | `_BossCatalog:GetInfo("6130101")` 있음 · `"2400572"` 없음 · 보스맵 스포너 = `BossSpawner_6130101` 하나 |
+| 머쉬맘 처치 1회차(★1 · 보스맵 안) | `[BossReward] boss=6130101 ... star=1 soulstone=20/20 ... first=true ground=2` → 영혼석 20 · 봉인석 1 **바닥 드랍** → 주움 → 가방 영혼석 0→20 · 봉인석 0→1 |
+| 2회차(같은 매치) | `first=false ground=1` → 영혼석만 · 봉인석 매치당 1번 확인 |
+| 로비 배 | 파일 값만으로 `MapObject_2 Default/10` · `MapObject_3 Default/10` · 선체가 플레이어 앞(난간 위로 머리만) |
+| 좀비머쉬맘 미니언 속도 | 노틸러스 레인에 직접 큐: 좀비 `InputSpeed 0.65` → 1.13 유닛/초 · 일반(좀비버섯) 0.845 → 1.46 유닛/초 — 미니언은 빠르지 않다(보스일 때만의 문제) |
+
+- 관찰: 머쉬맘 스폰 자리(x −6)가 버섯 집 맵 오브젝트 뒤라, 나오자마자는 집에 가려진다(쫓아 나오면 보인다). 맵 층 문제라 이번엔 손대지 않음.
