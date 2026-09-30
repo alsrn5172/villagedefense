@@ -202,7 +202,8 @@ S.font(b, E + '/RateRow/RateLabel', { font: 'Noto700', size: 18, color: C.sub, h
 img(E + '/RateRow/Gauge', 'gauge_track', [237.5, 615, 714.5, 20], RR);
 // 채움은 Filled 가로 · 왼쪽에서 시작. 트랙 안쪽 폭 682.5
 S.newImage(b, E + '/RateRow/Gauge/Fill', 'gauge_fill_gold', { anchor: 'middle-left', pivot: [0, 0.5], pos: [16, 0], size: [682.5, 8], type: 3 });
-ctr(E + '/RateRow/RateValue', [964, 604, 82, 42], RR);
+// 🔴 "100%" 는 게임 글꼴(Football 30)에선 폭 82 에 안 들어가 "%" 가 둘째 줄로 꺾인다(2차 묶음 실측) → 오른쪽 끝(1046)은 그대로 두고 왼쪽으로 넓힌다
+ctr(E + '/RateRow/RateValue', [926, 604, 120, 42], RR);
 S.font(b, E + '/RateRow/RateValue', { font: 'FootballB', size: 30, color: C.gold, h: 'right', v: 'middle', outline: false });
 S.back(b, E + '/RateRow/Plate');
 
@@ -235,7 +236,8 @@ S.button(b, P1 + '/PickTemplate', { normal: 'slot_frame', hover: 'slot_frame_hov
 S.font(b, P1 + '/PickTemplate', { text: '' });
 const PT = [0, 0, 110, 110];
 ctr(P1 + '/PickTemplate/Icon', [18, 18, 74, 74], PT);
-ctr(P1 + '/PickTemplate/Name', [-12, 112, 134, 26], PT);
+// 🔴 이름 상자가 칸(110)보다 넓으면 첫 열 칸의 이름이 그리드 왼쪽 경계에서 잘린다(2차 묶음 실측 · "갈색 고급 가죽 모자 +3") → 칸 폭 그대로(넘치면 말줄임)
+ctr(P1 + '/PickTemplate/Name', [0, 112, 110, 26], PT);
 S.font(b, P1 + '/PickTemplate/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 1, text: '' });
 for (let n = 1; n <= 3; n++) img(`${P1}/PickTemplate/EnhBadge_${n}`, `badge_enh_${n}`, [74, 2, 34, 34], PT, { enable: false });
 img(P1 + '/PickTemplate/EquipChip', 'chip_blue', [3, 4, 48, 22], PT, { enable: false });
@@ -259,7 +261,8 @@ const G = 'Window/Content/EnhanceGemPick';
 img(G + '/TitleIcon', 'ico_gem', [134, 220.5, 26, 26], CNT);
 ctr(G + '/PickTitle', [170, 219.5, 200, 28], CNT);
 S.font(b, G + '/PickTitle', { font: 'Maple', size: 20, color: C.title, h: 'left', v: 'middle', outline: false, text: '보석 선택' });
-txt(G + '/Legend1', '보유 0 = 흐리게', [740, 223.5, 138.5, 22], CNT, { font: 'Noto700', size: 14, color: C.faint, h: 'right' });
+// 🔴 게임 글꼴에선 Legend2 가 왼쪽으로 번져 Legend1 과 붙어 "흐리게이 장비에" 로 읽힌다(2차 묶음 실측) → Legend1 을 왼쪽으로 14 옮겨 사이를 벌린다
+txt(G + '/Legend1', '보유 0 = 흐리게', [726, 223.5, 138.5, 22], CNT, { font: 'Noto700', size: 14, color: C.faint, h: 'right' });
 txt(G + '/Legend2', '이 장비에 효과 없음 = 회색 칩', [880, 223.5, 186, 22], CNT, { font: 'Noto700', size: 14, color: C.faint, h: 'right' });
 backButton(G);
 const GEM_ORDER = [

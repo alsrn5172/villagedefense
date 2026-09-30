@@ -39,7 +39,8 @@ S.image(b, T, 'panel_inner');
 img(T + '/TitleIcon', 'ico_home', [150, 234.5, 26, 26], TP);
 ctr(T + '/Title', [186, 233.5, 160, 28], TP);
 S.font(b, T + '/Title', { font: 'Maple', size: 20, color: C.title, h: 'left', v: 'middle', outline: false, text: '대상 마을' });
-txt(T + '/TitleNote', '내 마을 제외 · 허브에서는 5곳', [411.5, 238.5, 164.5, 18], TP, { font: 'Noto700', size: 13, color: C.faint, h: 'right' });
+// 🔴 게임 글꼴은 시안 글꼴보다 10~15% 넓어 폭 164.5 에선 "5곳" 이 둘째 줄로 꺾인다(2차 묶음 실측) → 오른쪽 끝(576)은 그대로 두고 왼쪽으로 넓힌다
+txt(T + '/TitleNote', '내 마을 제외 · 허브에서는 5곳', [326, 238.5, 250, 18], TP, { font: 'Noto700', size: 13, color: C.faint, h: 'right' });
 
 ctr(T + '/TargetRoot', TR, TP);
 for (let i = 0; i < 5; i++) {
@@ -110,12 +111,13 @@ for (let i = 0; i < 4; i++) {
   b.patchComponent(p, S.BTN, { Transition: 0 });
   S.font(b, p, { text: '' });
   img(p + '/Emblem', 'emblem_kerning', [640, R[1] + 7, 26, 26], R);
-  ctr(p + '/Label', [676, R[1] + 10, 296, 20], R);
-  S.font(b, p + '/Label', { font: 'Noto700', size: 14, color: C.ivory, h: 'left', v: 'middle', outline: false });
+  // 🔴 "커닝시티 · 주황버섯 Orange Mushroom 5마리" 는 게임 글꼴에선 296 · 14px 안에 안 들어가 "5마리" 가 둘째 줄로 꺾인다(2차 묶음 실측) → 13px · 폭 308(취소 버튼을 50 폭으로 줄여 오른쪽으로)
+  ctr(p + '/Label', [676, R[1] + 10, 308, 20], R);
+  S.font(b, p + '/Label', { font: 'Noto700', size: 13, color: C.ivory, h: 'left', v: 'middle', outline: false });
   b.patchComponent(p + '/Label', S.TXT, { IsRichText: true });
   // 취소 버튼(전용): 지금까지 줄 전체를 눌러 취소하던 것을 이 버튼으로 옮긴다
-  const KB = [980, R[1] + 4, 56, 32];
-  b.button(p + '/BtnCancel', '취소', { anchor: 'middle-center', pos: S.at(...KB, R), rect_size: [56, 32], pivot: [0.5, 0.5] });
+  const KB = [986, R[1] + 4, 50, 32];
+  b.button(p + '/BtnCancel', '취소', { anchor: 'middle-center', pos: S.at(...KB, R), rect_size: [50, 32], pivot: [0.5, 0.5] });
   S.button(b, p + '/BtnCancel', { normal: 'btn_kick_default', pressed: 'btn_kick_pressed' });
   S.font(b, p + '/BtnCancel', { font: 'Noto700', size: 14, color: C.white, h: 'center', v: 'middle', outline: false, text: '취소' });
 }

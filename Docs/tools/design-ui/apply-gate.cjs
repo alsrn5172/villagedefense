@@ -32,9 +32,10 @@ gameIcon('Window/TitleBar/TitleIconCore', ENERGY_CORE_RUID, [518.5, 147, 34, 34]
 const CPLATE = [493, 218, 214, 52];
 img(G + '/CorePlate', 'plate_dark', CPLATE, GATE);
 gameIcon(G + '/CorePlate/Icon', ENERGY_CORE_RUID, [503, 225, 38, 38], CPLATE);
-ctr(G + '/CoreText', [551, 233, 112, 22.5], GATE);
+// 🔴 "에너지 코어 보유" 는 게임 글꼴에선 폭 112 에 안 들어가 "유" 가 둘째 줄로 꺾인다(2차 묶음 실측) → 폭 128 · 숫자는 그만큼 오른쪽으로
+ctr(G + '/CoreText', [551, 233, 128, 22.5], GATE);
 S.font(b, G + '/CoreText', { font: 'Noto700', size: 16, color: C.sub, h: 'left', v: 'middle', outline: false, text: '에너지 코어 보유' });
-txt(G + '/CoreCount', '0', [673, 227, 50, 33.5], GATE, { font: 'FootballB', size: 24, color: C.gold, h: 'left' });
+txt(G + '/CoreCount', '0', [681, 227, 50, 33.5], GATE, { font: 'FootballB', size: 24, color: C.gold, h: 'left' });
 S.before(b, G + '/CorePlate', G + '/CoreText');
 
 // ═══ 카드 받침 판 + 카드 5장 ═══
@@ -76,12 +77,13 @@ ctr(G + '/GateStatus', [164, 660, 902, 22], GATE);
 S.font(b, G + '/GateStatus', { font: 'Noto700', size: 14, color: C.faint, h: 'left', v: 'middle', outline: false });
 
 // ═══ 하단 띠: 고른 마을로 이동 + 비용 칩(에너지 코어 N · 보유 M) — 칩은 마을 고른 뒤에만 켠다 ═══
-const CP = [355, 746.5, 196, 48];
+// 🔴 "에너지 코어" 가 폭 68.5 에 안 들어가 "어" 가 둘째 줄로 꺾인다(2차 묶음 실측 · 게임 글꼴이 시안보다 넓다) → 칩 196 → 222 · 이름 폭 82 · 숫자 · 보유는 그만큼 오른쪽으로
+const CP = [355, 746.5, 222, 48];
 img('Window/Footer/CostPlate', 'plate_dark', CP, FOOT, { enable: false });
 gameIcon('Window/Footer/CostPlate/Icon', ENERGY_CORE_RUID, [363, 754.5, 32, 32], CP);
-txt('Window/Footer/CostPlate/Label', '에너지 코어', [403, 760.5, 68.5, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-txt('Window/Footer/CostPlate/Num', '1', [479.5, 756.5, 20, 28], CP, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
-txt('Window/Footer/CostPlate/Have', '', [502, 760.5, 50, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+txt('Window/Footer/CostPlate/Label', '에너지 코어', [403, 760.5, 84, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+txt('Window/Footer/CostPlate/Num', '1', [493, 756.5, 20, 28], CP, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
+txt('Window/Footer/CostPlate/Have', '', [518, 760.5, 54, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
 
 b.write(path.join(WORLD, 'ui', 'CommonNpcGroup.ui'), {
   bind: {

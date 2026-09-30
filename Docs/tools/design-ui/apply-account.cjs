@@ -188,7 +188,8 @@ status(HI + '/Status');
   const t = HI + '/Template';
   cellBase(t, R);
   for (const d of [1, 3, 5]) img(`${t}/Emblem_${d}`, `emblem_${d}`, [118, 291, 48, 48], R, { enable: false });
-  text(t + '/Line1', [184, 293, 80, 19.5], R, { font: 'FootballB', size: 14, color: C.faint, h: 'left' });
+  // 날짜 "09/26 21:14" 는 게임 글꼴(Football)이 시안 글꼴보다 넓어 14px 에선 80 안에 안 들어가 두 줄로 꺾인다(2차 묶음 실측) → 13px · 폭 90(순위 글자 274 앞까지)
+  text(t + '/Line1', [184, 293, 90, 19.5], R, { font: 'FootballB', size: 13, color: C.faint, h: 'left' });
   txt(t + '/Rank', '', [274, 289, 36, 28], R, { font: 'Maple', size: 20, color: C.ivory, h: 'left' });
   rich(t + '/Rank');
   txt(t + '/RankOf', '', [312, 295, 50, 20], R, { font: 'Maple', size: 14, color: C.faint, h: 'left' });

@@ -46,8 +46,11 @@ function font(b, p, o) {
   if (o.shadow) { u.Underlay = true; u.UnderlayColor = C('#070B16', 1); u.UnderlayOffsetX = 0; u.UnderlayOffsetY = -1; }
   b.patchComponent(p, TXT, u);
   // 말줄임/자름(overflow 1·2)은 상자 높이가 한 줄 높이(글자 크기 ×1.6)보다 작으면 글자가 통째로 사라진다 → 높이를 올려 준다.
-  if ((o.overflow === 1 || o.overflow === 2)) {
-    const t = b.getComponent(p, 'MOD.Core.UITransformComponent'); const fs0 = o.size || (b.getComponent(p, TXT) || {}).FontSize || 24; const need = Math.ceil(fs0 * 1.6);
+  // 🔴 o.overflow 를 안 줘도 기존 엔티티가 이미 말줄임(1)·자름(2)일 수 있다(2차 묶음 실측: 계정 창 도감 칸 이름 · 칭호 칸 설명이 통째로 안 보였다) → 지금 값으로 판단한다.
+  const cur = b.getComponent(p, TXT) || {};
+  const ov = (o.overflow != null) ? o.overflow : cur.Overflow;
+  if (ov === 1 || ov === 2) {
+    const t = b.getComponent(p, 'MOD.Core.UITransformComponent'); const fs0 = o.size || cur.FontSize || 24; const need = Math.ceil(fs0 * 1.6);
     if (t && t.RectSize && t.RectSize.y < need) b.patch(p, { rect_size: [t.RectSize.x, need] });
   }
   return b;
