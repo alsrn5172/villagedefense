@@ -4,6 +4,8 @@ script SpectateUIController extends Logic
 	-- 관전 HUD(SpectateGroup.ui) 클라 컨트롤러 — WO-011 ⑧ S1 뼈대 (계획서 §4-5). 탈락자용.
 	-- 카메라 사양(자율 이동 범위·전환)은 미결(`구현항목-결정.md` §5) — 카메라 로직은 `Match/` 가 소유.
 	-- 여기서는 탭 전환·자유 토글·나가기 버튼만. 대상 목록은 SetTargetsCsv 로 서버가 준다.
+	-- 디자이너 시안(2026-10-01): 탭은 고정 폭 칩(따라가는 사람 = 금 칩) · 바 폭은 탭 수에 맞춤 · 자유 켜짐 = 금 버튼 / 꺼짐 = 파랑 버튼.
+	--   따라가는 사람은 서버가 알려 주지 않아, 클라가 마지막으로 누른 탭의 이름을 기억해 칠한다(목록에 그 이름이 없으면 강조 없음).
 
 	property Entity topBar = "c5c65c63-e16a-45de-bff2-2ba84abeac29"
 
@@ -18,6 +20,18 @@ script SpectateUIController extends Logic
 	property ButtonComponent btnFreeCam = "a72be280-f898-41bb-be60-e95632eacba3"
 
 	property ButtonComponent btnLeave = "999058f4-0c35-4508-8623-86c51e0a76dd"
+
+	-- 자유 버튼 · 탭 칩 그림(런타임 교체용 · dui_chip_gold / dui_chip_blue_dark / dui_btn_gold_default / dui_btn_blue_default)
+	property string ruidChipGold = "9e25a63681584e328f0c019ebf86dc19"
+
+	property string ruidChipBlue = "5b94c1a8a500424cbaba2d4407471bfc"
+
+	property string ruidBtnGold = "399a785798074330ae4fd07422f32687"
+
+	property string ruidBtnBlue = "e4b784045ccc40679a7de368c63037b6"
+
+	@HideFromInspector
+	property string followName = ""
 
 	@HideFromInspector
 	property boolean isOpen = false
@@ -81,8 +95,45 @@ script SpectateUIController extends Logic
 				end
 			end
 		end
+		self:RefreshTabs()
 		self:SetOpen(self.active or #self.targets > 0)
 		log("[Spectate] targets=" .. tostring(#self.targets))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshTabs()
+		-- 탭 칩 칠하기(따라가는 사람 = 금 칩 + 어두운 글자, 나머지 = 짙은 파랑 칩) + 바 폭을 탭 수에 맞춘다.
+		local tabs = { self.tab0, self.tab1, self.tab2, self.tab3 }
+		for i = 1, 4 do
+			local t = tabs[i]
+			local name = self.targets[i]
+			if isvalid(t) and name ~= nil then
+				local follow = (not self.freeCam) and self.followName ~= "" and name == self.followName
+				local spr = t.Entity.SpriteGUIRendererComponent
+				if spr ~= nil then spr.ImageRUID = follow and self.ruidChipGold or self.ruidChipBlue end
+				local txt = t.Entity.TextGUIRendererComponent
+				if txt ~= nil then txt.FontColor = follow and Color(0.110, 0.078, 0.020, 1) or Color(0.953, 0.933, 0.886, 1) end
+			end
+		end
+		-- 바 폭 = 왼쪽 여백 125 + 탭(174 고정, 사이 10) + 간격 31 + 오른쪽 묶음 258 (탭 4개면 시안 1140).
+		local n = math.min(#self.targets, 4)
+		local width = 125 + n * 174 + math.max(n - 1, 0) * 10 + 31 + 258
+		if isvalid(self.topBar) then self.topBar.UITransformComponent.RectSize = Vector2(width, 76) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshFree()
+		-- 자유 버튼: 켜짐 = 금 버튼(어두운 글자) · 꺼짐 = 파랑 버튼(밝은 글자). 글자는 항상 "자유".
+		if not isvalid(self.btnFreeCam) then return end
+		local e = self.btnFreeCam.Entity
+		local spr = e.SpriteGUIRendererComponent
+		if spr ~= nil then spr.ImageRUID = self.freeCam and self.ruidBtnGold or self.ruidBtnBlue end
+		local txt = e.TextGUIRendererComponent
+		if txt ~= nil then
+			txt.Text = "자유"
+			txt.FontColor = self.freeCam and Color(0.110, 0.078, 0.020, 1) or Color(0.953, 0.933, 0.886, 1)
+		end
+		self:RefreshTabs()
 	end
 
 	@ExecSpace("Client")
@@ -90,9 +141,8 @@ script SpectateUIController extends Logic
 		-- 서버 → 클라: 관전 시작/끝. 시작은 자율 카메라 상태라 자유 버튼을 켜진 표시로.
 		self.active = on
 		self.freeCam = on
-		if isvalid(self.btnFreeCam) and self.btnFreeCam.Entity.TextGUIRendererComponent ~= nil then
-			self.btnFreeCam.Entity.TextGUIRendererComponent.Text = on and "자유 ●" or "자유"
-		end
+		if on then self.followName = "" end
+		self:RefreshFree()
 		self:SetOpen(on or #self.targets > 0)
 	end
 
@@ -101,9 +151,8 @@ script SpectateUIController extends Logic
 		-- 🔴 서버 → 클라: 카메라 모드가 서버에서 바뀌었다 (2026-09-09).
 		-- 탭으로 대상을 따라가면 서버는 mode="follow" 로 바꾸는데 클라에 안 알려줘서 자유 버튼이 계속 ● 였다(사용자 지적).
 		self.freeCam = on
-		if isvalid(self.btnFreeCam) and self.btnFreeCam.Entity.TextGUIRendererComponent ~= nil then
-			self.btnFreeCam.Entity.TextGUIRendererComponent.Text = on and "자유 ●" or "자유"
-		end
+		if on then self.followName = "" end
+		self:RefreshFree()
 	end
 
 	@ExecSpace("ClientOnly")
@@ -111,6 +160,8 @@ script SpectateUIController extends Logic
 		-- 관전 대상 전환.
 		local name = self.targets[idx]
 		if name == nil then return end
+		self.followName = name
+		self:RefreshTabs()
 		if _SpectateService ~= nil then
 			_SpectateService:SetSpectateTarget(name)
 		else
@@ -122,9 +173,8 @@ script SpectateUIController extends Logic
 	method void OnClickFreeCam()
 		-- 자율 카메라 토글.
 		self.freeCam = not self.freeCam
-		if isvalid(self.btnFreeCam) and self.btnFreeCam.Entity.TextGUIRendererComponent ~= nil then
-			self.btnFreeCam.Entity.TextGUIRendererComponent.Text = self.freeCam and "자유 ●" or "자유"
-		end
+		if self.freeCam then self.followName = "" end
+		self:RefreshFree()
 		if _SpectateService ~= nil then
 			_SpectateService:SetFreeCam(self.freeCam)
 		else
