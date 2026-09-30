@@ -71,6 +71,9 @@ script SkillExecutors extends Logic
     -- BLINK 도착 광역 피해 상자(world unit · 가로×세로). 발 위치 기준으로 세로 절반만큼 올려 놓는다. CSV Range 는 이동 거리라 여기서 안 쓴다.
     property Vector2 BlinkArrivalAoeSize = Vector2(2.4, 1.6)
 
+    -- BLINK 도착 광역 피해 최대 대상 수(사용자(강민구) 결정 #40 5884389647 · 다른 스킬과 통일). 상자 안이 이보다 많으면 시전자에게 가까운 순서로 이만큼만. 0 = 상한 없음.
+    property integer BlinkArrivalMaxTargets = 6
+
     -- ORIGIN 중 단일 대상으로 푸는 스킬 (skillId -> true). BuildHandlerTable 에서 채운다.
     property table originSingleTarget = {}
 
@@ -1695,13 +1698,45 @@ script SkillExecutors extends Logic
             local hitCount = skillData.hitCount
             if hitCount <= 0 then hitCount = 1 end
             -- 맞은 몬스터마다 hit 그림(effectOverrides[skill].hit · 몸 중심 · SkillAttack.OnAttack). 없으면 "" = 예전과 같다. 패스가 끝나면 SkillAttack.EndPass 가 지운다.
-            skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "hit")
-            skillAttack.PendingImpactAtBody = true
-            skillAttack:DealSkillDamage(skillId, level, {
+            local hitRuid = self:GetSpecRuid(skillId, "hit")
+            local box = {
                 posX = to.x, posY = to.y + self.BlinkArrivalAoeSize.y / 2,
                 sizeX = self.BlinkArrivalAoeSize.x, sizeY = self.BlinkArrivalAoeSize.y,
                 hitCount = hitCount,
-            })
+            }
+            -- 대상 상한(BlinkArrivalMaxTargets · #40 5884389647): 상자 안(probe · 피해 없음)이 상한 이하면 예전처럼 상자 한 번.
+            -- 넘으면 시전자에게 가까운 순서로 상한만큼 골라 한 명씩 DealSkillDamageToTarget(피해 · 표시 타수는 같다 · 패스마다 EndPass 가 hit 그림을 지우니 매번 다시 넣는다).
+            local cap = self.BlinkArrivalMaxTargets
+            local inBox = skillAttack:FindSkillTargets(skillId, box)
+            local picked = {}
+            for _, e in ipairs(inBox) do
+                if isvalid(e) and isvalid(e.TransformComponent) then
+                    local dup = false
+                    for _, row in ipairs(picked) do
+                        if row.e == e then dup = true end
+                    end
+                    if not dup then
+                        local p = e.TransformComponent.WorldPosition
+                        table.insert(picked, { e = e, d = (p.x - to.x) * (p.x - to.x) + (p.y - to.y) * (p.y - to.y) })
+                    end
+                end
+            end
+            if cap > 0 and #picked > cap then
+                table.sort(picked, function(a, b) return a.d < b.d end)
+                local names = {}
+                for i = 1, cap do
+                    skillAttack.PendingImpactRuid = hitRuid
+                    skillAttack.PendingImpactAtBody = true
+                    skillAttack:DealSkillDamageToTarget(skillId, level, picked[i].e, hitCount)
+                    table.insert(names, tostring(picked[i].e.Name))
+                end
+                log("SkillExecutors: BLINK " .. skillId .. " arrival cap=" .. tostring(cap) .. " inBox=" .. tostring(#picked) .. " chosen=" .. tostring(cap) .. " [" .. table.concat(names, ",") .. "]")
+            else
+                skillAttack.PendingImpactRuid = hitRuid
+                skillAttack.PendingImpactAtBody = true
+                skillAttack:DealSkillDamage(skillId, level, box)
+                log("SkillExecutors: BLINK " .. skillId .. " arrival cap=" .. tostring(cap) .. " inBox=" .. tostring(#picked) .. " (all hit)")
+            end
             -- 한 번 더 지운다(서버에서 바로 도는 호출이라 여기서 끝난다) — DealSkillDamage 가 어떤 경로로 빠져도 몸 중심 설정이 다음 패스로 새지 않게.
             skillAttack.PendingImpactRuid = ""
             skillAttack.PendingImpactAtBody = false
