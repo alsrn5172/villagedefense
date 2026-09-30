@@ -6,7 +6,8 @@ script SkillMovement extends Logic
     --   · 플레이어 위치의 소유자는 그 클라다. 소유 클라가 목적지를 풀고 MovementComponent:SetWorldPosition 으로 즉시 옮긴다(클라 우선).
     --     서버는 옮기지 않는다 — SkillCaster.RequestCast 가 MP·쿨다운·사용 횟수만 판정·기록하고, 출발/도착 이펙트와
     --     도착 광역 피해(SK_M21)는 동기화된 위치에서 재생한다(SkillExecutors.ExecuteBlink). 목적지·방향은 서버로 보내지 않는다.
-    --   · 방향 = 시전 순간 누른 방향키(4방향 · _InputService:IsKeyPressed). 없거나 상쇄되면 바라보는 방향(LookDirectionX).
+    --   · 방향 = 시전 순간 누른 방향키(4방향 · _InputService:IsKeyPressed). 없거나 상쇄되면 방향 입력 변수 RigidbodyComponent.MoveVelocity(모바일 조이스틱 ·
+    --     b/skill-teleport-mobile-dir · #40 5897840056) → 그것도 없으면 바라보는 방향(LookDirectionX).
     --     좌우·상하가 같이 눌리면 좌우 우선(레퍼런스는 거절이지만 핫바 Shift 한 키로도 나가야 해서 완화).
     --   · 키는 Shift 하나(SkillHotbar): 텔레포트 강화(SK_M21)를 배우면 같은 키가 SK_M13 대신 SK_M21 을 시전한다 — 이 파일은 받은 skill 행만 본다.
     --   · MapleTile 착지(발판 기반): 좌우 = 목적지 아래 발판(경로 벽 통과) → 경로 벽 앞 → 현재 발판의 진행 방향 끝 →
@@ -31,6 +32,10 @@ script SkillMovement extends Logic
 
     -- 상하 텔레포트: 현재 서 있는 발판 자체를 후보에서 빼기 위한 최소 이동량.
     property number VerticalMinTravel = 0.2
+
+    -- 방향 입력 변수(RigidbodyComponent.MoveVelocity) 데드존(b/skill-teleport-mobile-dir · #40 5897840056): 한 축의 절댓값이 이 값 이상이어야 방향으로 본다.
+    -- 조이스틱을 살짝 기울인 것 · 멈춘 뒤 남은 값은 무시한다. 🟡 모바일 조이스틱이 이 값을 채우는지는 런타임 미확인(A 도 미확인) — ResolveDirection 로그로 본다.
+    property number MoveInputDeadZone = 0.3
 
     -- 발판 체인 추적 상한(무한 루프 방지).
     property integer MaxChainSteps = 64
@@ -106,7 +111,7 @@ script SkillMovement extends Logic
         local distance = skill.range
         if distance == nil or distance <= 0 then distance = 1 end
 
-        local dir = self:ResolveDirection(controller)
+        local dir = self:ResolveDirection(controller, body)
         local origin = transform.WorldPosition
         local foothold = map.FootholdComponent
         local dest = nil
@@ -198,19 +203,51 @@ script SkillMovement extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method Vector2 ResolveDirection(any controller)
-        -- 시전 순간의 방향키 → 한 축만 1/-1 인 Vector2. 좌우 우선. 없으면 바라보는 방향(0 = 아직 안 움직임 → 오른쪽, SkillAttack.SpawnProjectile 과 같다).
+    method Vector2 ResolveDirection(any controller, any body)
+        -- 시전 순간의 방향 → 한 축만 1/-1 인 Vector2. 순서: ① 방향키(PC · 예전 그대로 · 좌우 우선) ② 방향 입력 변수 RigidbodyComponent.MoveVelocity
+        -- (모바일 조이스틱 · 사용자 의견 "PC · 모바일을 따로 다루지 말고 방향 입력이 들어오면 값이 바뀌는 변수를 읽는다" · #40 5897840056) — 큰 축 하나 · 같으면 좌우 ·
+        -- 데드존 MoveInputDeadZone ③ 바라보는 방향(0 = 아직 안 움직임 → 오른쪽, SkillAttack.SpawnProjectile 과 같다).
+        -- 로그 한 줄(시전마다): 어느 쪽으로 정했는지 + MoveVelocity 원값 — 모바일에서 조이스틱이 이 값을 채우는지 Play 로 확인하는 용도.
+        local mvx = 0
+        local mvy = 0
+        if isvalid(body) then
+            local mv = body.MoveVelocity
+            if mv ~= nil then
+                mvx = mv.x
+                mvy = mv.y
+            end
+        end
+        local mvText = "mv=(" .. string.format("%.2f", mvx) .. "," .. string.format("%.2f", mvy) .. ")"
         local left = _InputService:IsKeyPressed(KeyboardKey.LeftArrow)
         local right = _InputService:IsKeyPressed(KeyboardKey.RightArrow)
         local up = _InputService:IsKeyPressed(KeyboardKey.UpArrow)
         local down = _InputService:IsKeyPressed(KeyboardKey.DownArrow)
-        if left and not right then return Vector2(-1, 0) end
-        if right and not left then return Vector2(1, 0) end
-        if up and not down then return Vector2(0, 1) end
-        if down and not up then return Vector2(0, -1) end
+        local dir = nil
+        if left and not right then dir = Vector2(-1, 0)
+        elseif right and not left then dir = Vector2(1, 0)
+        elseif up and not down then dir = Vector2(0, 1)
+        elseif down and not up then dir = Vector2(0, -1) end
+        if dir ~= nil then
+            log("SkillMovement: dir " .. self:DirName(dir) .. " source=keys " .. mvText)
+            return dir
+        end
+        local ax = math.abs(mvx)
+        local ay = math.abs(mvy)
+        local dz = self.MoveInputDeadZone
+        if ax >= dz or ay >= dz then
+            if ax >= ay then
+                if mvx < 0 then dir = Vector2(-1, 0) else dir = Vector2(1, 0) end
+            else
+                if mvy < 0 then dir = Vector2(0, -1) else dir = Vector2(0, 1) end
+            end
+            log("SkillMovement: dir " .. self:DirName(dir) .. " source=moveVelocity " .. mvText .. " deadZone=" .. tostring(dz))
+            return dir
+        end
         local facing = 1
         if isvalid(controller) and controller.LookDirectionX < 0 then facing = -1 end
-        return Vector2(facing, 0)
+        dir = Vector2(facing, 0)
+        log("SkillMovement: dir " .. self:DirName(dir) .. " source=facing " .. mvText)
+        return dir
     end
 
     @ExecSpace("ClientOnly")
