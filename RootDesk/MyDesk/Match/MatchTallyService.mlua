@@ -1,0 +1,353 @@
+@Logic
+script MatchTallyService extends Logic
+
+	-- 매치 집계 (WO-031 묶음 2 · GDD §4.12 집계 정의 · 계약서 A-2-26 · A-4 PublicPlayerSummary).
+	--   MonsterKillCount = 일반 사냥 몹 처치 보상을 받은 횟수(FarmReward 막타 귀속 · 자이언트 포함 · 미니언 제외)
+	--   BossKillCount    = 보스 처치 판정(최다 누적 피해)을 받은 횟수(BossRewardService)
+	--   VillageGrowth    = GrowthPoint 액션 점수 합 — 같은 액션 키(유형:대상:단계)는 매치당 한 번만(같은 소비 반복으로 무한 획득 금지)
+	-- 서버 메모리 원장이다(저장 안 함 · 룸마다 따로 · StartMatch 가 ResetForMatch). 결과 화면 순위 ④ · 공개 통계(묶음 3)가 읽는다.
+	-- 🔴 처치·보스 처치 이벤트는 여기 한 곳으로 모인다 — 계정 기록(도감 · 업적 · 묶음 4·5)도 여기서 넘긴다(FarmReward·BossRewardService 에 줄을 늘리지 않는다).
+
+	-- userId → 처치 수
+	@HideFromInspector
+	property any kills = nil
+
+	-- userId → 보스 처치 판정 수
+	@HideFromInspector
+	property any bossKills = nil
+
+	-- userId → 성장도 점수
+	@HideFromInspector
+	property any growth = nil
+
+	-- userId → { [actionKey] = true } 이미 받은 성장 액션
+	@HideFromInspector
+	property any growthKeys = nil
+
+	-- ActionType → 점수 (GrowthPoint.csv · 없으면 기본값)
+	@HideFromInspector
+	property any growthDef = nil
+
+	-- userId → { [key] = true } 매치당 한 번만 세는 일(업적 ENHANCE_ALL_MAX 등 · 묶음 5)
+	@HideFromInspector
+	property any onceKeys = nil
+
+	-- 🧪 5레인 부하 계측 (WO-031 묶음 7 · Maker Play 전용): StartLoadProbe(초) 동안 LoadLogInterval 마다 프레임·개체 수 로그 "[Load]".
+	property number LoadLogInterval = 5.0
+
+	@HideFromInspector
+	property number probeLeft = 0
+
+	@HideFromInspector
+	property number probeAcc = 0
+
+	@HideFromInspector
+	property integer probeFrames = 0
+
+	@HideFromInspector
+	property number probeMaxDt = 0
+
+	method void OnBeginPlay()
+		-- 서버만 원장.
+		if not self:IsServer() then return end
+		self:ResetForMatch()
+		self:LoadGrowthDef()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartLoadProbe(number seconds)
+		-- 🧪 부하 계측 시작(Maker Play 전용 · execute_script 로 부른다). 5마을 점유·TEST 웨이브는 호출하는 쪽이 만든다(변경 기록 레시피).
+		if not Environment:IsMakerPlay() then return end
+		self.probeLeft = math.max(1, seconds)
+		self.probeAcc = 0
+		self.probeFrames = 0
+		self.probeMaxDt = 0
+		log("[Load] probe start " .. tostring(seconds) .. "s interval=" .. tostring(self.LoadLogInterval))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 부하 계측 중일 때만 프레임을 센다(평소엔 한 줄 비교뿐).
+		if self.probeLeft <= 0 then return end
+		self.probeLeft = self.probeLeft - delta
+		self.probeAcc = self.probeAcc + delta
+		self.probeFrames = self.probeFrames + 1
+		if delta > self.probeMaxDt then self.probeMaxDt = delta end
+		if self.probeAcc >= self.LoadLogInterval or self.probeLeft <= 0 then
+			self:LogLoad()
+			self.probeAcc = 0
+			self.probeFrames = 0
+			self.probeMaxDt = 0
+			if self.probeLeft <= 0 then log("[Load] probe end") end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogLoad()
+		-- 한 줄: 서버 fps · 가장 긴 프레임 · 마을별 레인 미니언/수비대/파병 개체 · 파병 대기 마릿수.
+		local fps = (self.probeAcc > 0) and (self.probeFrames / self.probeAcc) or 0
+		local parts = {}
+		local totalMin, totalDef = 0, 0
+		if _LaneStateService ~= nil and _LaneStateService.villages ~= nil and _LaneFacilityService ~= nil then
+			for _, vv in ipairs(_LaneStateService.villages) do
+				local minions, defenders, dispatched = 0, 0, 0
+				local seen = {}
+				for _, role in ipairs({ "LANE2", "LANE1", "VILLAGE" }) do
+					local row = _LaneFacilityService:LaneRow(vv.id, role)
+					if row ~= nil and not seen[row.mapName] then
+						seen[row.mapName] = true
+						local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
+						if isvalid(map) then
+							local mp = "Minion_" .. vv.id .. "_"
+							local dp = "Defender_" .. vv.id .. "_"
+							for _, child in pairs(map.Children) do
+								if isvalid(child) then
+									local nm = child.Name
+									if string.sub(nm, 1, #mp) == mp then
+										minions = minions + 1
+										if string.sub(nm, #mp + 1, #mp + 1) == "D" then dispatched = dispatched + 1 end
+									elseif string.sub(nm, 1, #dp) == dp then
+										defenders = defenders + 1
+									end
+								end
+							end
+						end
+					end
+				end
+				totalMin = totalMin + minions
+				totalDef = totalDef + defenders
+				local pending = (_DispatchService ~= nil) and _DispatchService:PendingUnits(vv.id) or 0
+				table.insert(parts, vv.id .. "=" .. tostring(minions) .. "m/" .. tostring(defenders) .. "d/" .. tostring(dispatched) .. "x/" .. tostring(pending) .. "q")
+			end
+		end
+		log(string.format("[Load] fps=%.1f maxDt=%.3f minions=%d defenders=%d ", fps, self.probeMaxDt, totalMin, totalDef) .. table.concat(parts, " "))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadGrowthDef()
+		-- GrowthPoint.csv (계약서 A-2-26). 🔴 DataSet 행은 1-based. 표가 없으면 WO-031 §6 초안값.
+		self.growthDef = { FACILITY_LEVEL = 3, TRAINING_LEVEL = 2, CRAFT_FIRST = 2, RECRUIT_FIRST = 1 }
+		local t = _DataService:GetTable("GrowthPoint")
+		if t == nil then
+			log_warning("[Tally] GrowthPoint dataset not found — 기본값 사용")
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local key = t:GetCell(i, "ActionType") or ""
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if key ~= "" then
+				self.growthDef[key] = enabled and math.max(0, math.floor(tonumber(t:GetCell(i, "Points")) or 0)) or 0
+				n = n + 1
+			end
+		end
+		log("[Tally] GrowthPoint loaded: " .. tostring(n) .. " rows")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch()
+		-- 새 판: 집계를 비운다.
+		self.kills = {}
+		self.bossKills = {}
+		self.growth = {}
+		self.growthKeys = {}
+		self.onceKeys = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean MarkOnce(string userId, string key)
+		-- 이번 판 처음이면 true(그리고 표시) · 이미 했으면 false.
+		if userId == nil or userId == "" then return false end
+		if self.onceKeys == nil then self.onceKeys = {} end
+		local seen = self.onceKeys[userId]
+		if seen == nil then
+			seen = {}
+			self.onceKeys[userId] = seen
+		end
+		if seen[key] then return false end
+		seen[key] = true
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMonsterKill(string userId, integer monsterId, string eliteId)
+		-- 일반 사냥 몹 처치 보상 1건(FarmReward.GiveRewards · 막타 플레이어). monsterId 0(미니언)은 부르는 쪽이 거른다.
+		if userId == nil or userId == "" or monsterId <= 0 then return end
+		if self.kills == nil then self:ResetForMatch() end
+		local n = (self.kills[userId] or 0) + 1
+		self.kills[userId] = n
+		-- 로그는 1 · 10 · 50 · 100 마다만(초당 수십 마리를 잡아도 콘솔이 안 넘친다).
+		if n == 1 or n == 10 or n == 50 or n % 100 == 0 then
+			log("[Tally] kill " .. userId .. " n=" .. tostring(n) .. " last=" .. tostring(monsterId) .. ((eliteId ~= nil and eliteId ~= "") and (" elite=" .. eliteId) or ""))
+		end
+		-- 계정 기록으로 넘긴다(여기 한 곳): 도감(묶음 4) · 업적 누적(묶음 5).
+		if _CollectionService ~= nil then _CollectionService:OnMonsterKill(userId, monsterId, eliteId) end
+		if _AchievementService ~= nil then
+			_AchievementService:Add(userId, "MONSTER_KILL", 0, 1)
+			if eliteId ~= nil and eliteId ~= "" then _AchievementService:Add(userId, "ELITE_KILL", 0, 1) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBossKill(string bossId, string topUserId, any dmg)
+		-- 보스 1마리 사망 · 처치 판정(최다 피해)을 받은 참가자(BossRewardService.OnBossKilled). dmg = userId → 누적 피해(도감 인정용 · 묶음 4).
+		if topUserId == nil or topUserId == "" then return end
+		if self.bossKills == nil then self:ResetForMatch() end
+		local n = (self.bossKills[topUserId] or 0) + 1
+		self.bossKills[topUserId] = n
+		log("[Tally] boss " .. tostring(bossId) .. " top=" .. topUserId .. " n=" .. tostring(n))
+		-- 계정 기록으로 넘긴다: 도감(묶음 4 · 인정 규칙은 CollectionService.BossCreditAllHitters) · 업적 BOSS_KILL(지역 보스 · 최다 피해 판정 · 묶음 5).
+		if _CollectionService ~= nil then _CollectionService:OnBossKill(bossId, topUserId, dmg) end
+		if _AchievementService ~= nil then _AchievementService:Add(topUserId, "BOSS_KILL", 0, 1) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBalrogKill(string userId, string bossId)
+		-- 주니어 발록 선취(BalrogRoomService.DeclareWinner · 1인 1방이라 승자가 곧 처치자). 보스 처치 판정 +1 · 도감.
+		if userId == nil or userId == "" then return end
+		if self.bossKills == nil then self:ResetForMatch() end
+		self.bossKills[userId] = (self.bossKills[userId] or 0) + 1
+		log("[Tally] balrog " .. tostring(bossId) .. " winner=" .. userId)
+		if _CollectionService ~= nil then _CollectionService:OnBossKill(bossId, userId, nil) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AddGrowth(string userId, string actionType, string target, integer level)
+		-- 성장 액션 1건. 키 = 유형:대상:단계 · 매치당 한 번. 더한 점수를 돌려준다(이미 받았거나 표에 없으면 0).
+		if userId == nil or userId == "" then return 0 end
+		if self.growth == nil then self:ResetForMatch() end
+		if self.growthDef == nil then self:LoadGrowthDef() end
+		local pts = self.growthDef[actionType] or 0
+		if pts <= 0 then return 0 end
+		local key = actionType .. ":" .. tostring(target) .. ":" .. tostring(level)
+		local seen = self.growthKeys[userId]
+		if seen == nil then
+			seen = {}
+			self.growthKeys[userId] = seen
+		end
+		if seen[key] then return 0 end
+		seen[key] = true
+		local total = (self.growth[userId] or 0) + pts
+		self.growth[userId] = total
+		log("[Tally] growth " .. userId .. " +" .. tostring(pts) .. " " .. key .. " total=" .. tostring(total))
+		return pts
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer KillsOf(string userId)
+		-- 이번 판 처치 수.
+		if self.kills == nil or userId == nil then return 0 end
+		return self.kills[userId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer BossKillsOf(string userId)
+		-- 이번 판 보스 처치 판정 수.
+		if self.bossKills == nil or userId == nil then return 0 end
+		return self.bossKills[userId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GrowthOf(string userId)
+		-- 이번 판 마을 성장도.
+		if self.growth == nil or userId == nil then return 0 end
+		return self.growth[userId] or 0
+	end
+
+	-- ── 공개 통계 PublicPlayerSummary (WO-031 묶음 3 · 계약 A-4 · GDD §4.12 통계 분석관) ──
+
+	@ExecSpace("ServerOnly")
+	method any SurvivorsFor(string viewerId)
+		-- 지금 매치의 생존자 전원(참가자 − 탈락 − 중도 이탈 − 보는 사람 자신) · 참가 순서. 인원 가변(고정 5인 아님).
+		local out = {}
+		local m = _MatchSessionLogic
+		if m == nil or m.participants == nil then return out end
+		-- 🔴 보는 사람도 **지금 매치의 생존자**여야 한다(Codex 리뷰 2026-09-26): 탈락·이탈·다른 매치 사람이 RPC 를 직접 불러도 빈 목록.
+		if not m:IsParticipant(viewerId) then return out end
+		if _VillageOwnership ~= nil and _VillageOwnership:IsEliminated(viewerId) then return out end
+		if m.leftUsers ~= nil and m.leftUsers[viewerId] == true then return out end
+		for i = 1, #m.participants do
+			local uid = m.participants[i]
+			local skip = (uid == viewerId)
+			if not skip and _VillageOwnership ~= nil and _VillageOwnership:IsEliminated(uid) then skip = true end
+			if not skip and m.leftUsers ~= nil and m.leftUsers[uid] == true then skip = true end
+			if not skip then table.insert(out, uid) end
+		end
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsSurvivorFor(string viewerId, string userId)
+		-- viewerId 의 통계 창이 userId 를 볼 수 있나(같은 매치 생존자 · 자신 아님).
+		for _, uid in ipairs(self:SurvivorsFor(viewerId)) do
+			if uid == userId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Clean(string s)
+		-- 뷰 CSV 구분자(";" 행 · "|" 칸 · "=")를 이름에서 지운다.
+		if s == nil then return "" end
+		local out, _n = string.gsub(s, "[;|=]", " ")
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PublicSummary(string userId)
+		-- 🔴 허용 필드만 복사한다(GDD §4.12 · 계약 A-4). 매치·계정 재화 · 창고 · 시설 레벨/HP/파괴 · 수비대 · 파병 편성 · 발록 피해는 넣지 않는다.
+		--   name · level(매치 레벨) · growth · bossKills · kills · lineStage(1 포탑 · 2 억제기 · 3 넥서스 · 0 마을 없음) · title(칭호 이름 · 묶음 5) · gear("슬롯:ItemId:강화,…")
+		local name = userId
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent.Nickname ~= nil and player.PlayerComponent.Nickname ~= "" then
+			name = player.PlayerComponent.Nickname
+		end
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		local level = (e ~= nil) and (e.level or 1) or 1
+		local lineStage = 0
+		if _LaneStateService ~= nil then
+			local vid = _LaneStateService:VillageOfUser(userId)
+			if vid ~= "" then
+				local v = _LaneStateService:EnsureVillage(vid)
+				if v ~= nil then
+					local front = _LaneStateService:FrontStage(v)
+					if front == "TOWER" then lineStage = 1 elseif front == "SUPPRESSOR" then lineStage = 2 else lineStage = 3 end
+				end
+			end
+		end
+		local gear = {}
+		if _EquipService ~= nil and _InventoryService ~= nil and _EquipService.slots ~= nil then
+			local eq = _EquipService:EnsureUser(userId)
+			if eq ~= nil then
+				for _, slot in ipairs(_EquipService.slots) do
+					local iid = eq[slot]
+					if iid ~= nil and iid ~= "" then
+						local it = _InventoryService:Find(userId, iid)
+						if it ~= nil then table.insert(gear, slot .. ":" .. tostring(it.itemId) .. ":" .. tostring(it.enh or 0)) end
+					end
+				end
+			end
+		end
+		return {
+			uid = userId, name = self:Clean(name), level = level,
+			growth = self:GrowthOf(userId), bossKills = self:BossKillsOf(userId), kills = self:KillsOf(userId),
+			lineStage = lineStage, title = self:Clean(self:TitleNameOf(userId)), gear = table.concat(gear, ","),
+		}
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TitleNameOf(string userId)
+		-- 장착 칭호 이름(TitleService · 없으면 "").
+		if _TitleService == nil then return "" end
+		return _TitleService:EquippedNameOf(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PublicSummaryCsv(string userId)
+		-- 상세 뷰 한 줄: SUM|uid|이름|레벨|성장도|보스처치|몬스터처치|전선단계|칭호|장비
+		local s = self:PublicSummary(userId)
+		return table.concat({ "SUM", s.uid, s.name, tostring(s.level), tostring(s.growth), tostring(s.bossKills),
+			tostring(s.kills), tostring(s.lineStage), s.title, s.gear }, "|")
+	end
+
+end

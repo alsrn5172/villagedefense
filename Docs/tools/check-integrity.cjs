@@ -94,7 +94,7 @@ const CANONICAL = {
     "CrouchBand,FireEffectRUID,FireEffectScale,FireEffectFloors,FireEffectTiles",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
-    "FirstClaimMeso,FirstClaimOnce,Enabled,SoulstoneStar1,SoulstoneStar3,SoulstoneStar5,#Note",
+    "FirstClaimMeso,FirstClaimOnce,Enabled,SoulstoneStar1,SoulstoneStar3,SoulstoneStar5,#Note,TopDamageItems",
 
   // 엘리트 — 구조만. 로스터는 미정(로드맵 미정 #4)
   EliteMonsterInfo:
@@ -105,7 +105,7 @@ const CANONICAL = {
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
-  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType",
+  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType,Description,EnhanceTier",
   WeaponMotion: "MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note",
   EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
@@ -139,6 +139,11 @@ const CANONICAL = {
   RankReward: "Rank,Difficulty,Hearts,AccountExp,Condition,Enabled,#Note",
   GuideStep: "StepKey,Kind,Text,MarkerMap,Once,Enabled,#Note",
 
+  // 기록·칭호 — 계약서 §1 등록서(2026-09-26 · a/m1-finish 묶음 0). 파일은 각 묶음 구현 PR 에서 생성(2 GrowthPoint · 4 CollectionReward · 5 AchievementConfig·TitleInfo).
+  AchievementConfig: "AchievementId,Name,Desc,CondType,CondParam,Target,AccountExp,TitleId,SortOrder,Enabled,#Note",
+  TitleInfo: "TitleId,Name,Desc,SortOrder,Enabled,#Note",
+  CollectionReward: "Kind,Tier,Kills,AccountExp,Name,Enabled,#Note",
+  GrowthPoint: "ActionType,Points,Enabled,#Note",
   // 접속 외형 선택 (2026-09-26 · a/avatar-look-select · WO-032 · A-2-27)
   AvatarLook: "LookId,Hair,Face,Body,Cap,Cape,Coat,Longcoat,Pants,Shoes,Glove,OneHandWeapon,TwoHandWeapon,SubWeapon,#Note",
 
@@ -150,6 +155,8 @@ const CANONICAL = {
     "TertiaryEffect,TertiaryPerLevel,RecastMpCostMul,#Note",
   JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
   JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
+  // 스킬 모션 세트 — B 등록서(계약서 §1 · A-2-23 · 2026-09-24 · PR #83). Skill/ 하위 폴더라 이름에 경로를 붙인다(readCsv 가 path.join).
+  "Skill/SkillMotionSet": "SkillId,WeaponType,Seq,Mode,CoreAction,PartsAction,PlayRate,HitTime,LockTime,Enabled,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -261,11 +268,16 @@ const PK = {
   MonsterRecruit: ["MonsterId"],
   RankReward: ["Rank", "Difficulty"],
   GuideStep: ["StepKey"],
+  AchievementConfig: ["AchievementId"],
+  TitleInfo: ["TitleId"],
+  CollectionReward: ["Kind", "Tier"],
+  GrowthPoint: ["ActionType"],
   AvatarLook: ["LookId"],
   FunctionalNpcCatalog: ["CatalogNpcId"],
   SkillInfo: ["SkillId"],
   JobInfo: ["JobId"],
   JobTier: ["JobId", "Tier"],
+  "Skill/SkillMotionSet": ["SkillId", "WeaponType", "Seq"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);

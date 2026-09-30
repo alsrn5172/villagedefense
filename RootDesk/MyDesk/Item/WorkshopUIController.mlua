@@ -123,6 +123,19 @@ script WorkshopUIController extends Logic
 	@HideFromInspector
 	property string craftSel = ""
 
+	-- 장비 상인 직업 분류(2026-10-01 · 사용자 "전사 마법사 궁수 도적 해적 다 팔고 각 카테고리로"). Craft/Job_{직업} 버튼 · "" = 처음 열 때 내 직업.
+	@HideFromInspector
+	property string craftJob = ""
+
+	property string CraftJobs = "WARRIOR,MAGICIAN,ARCHER,THIEF,PIRATE"
+
+	-- 부위 분류(2026-10-01 · WO-038 · 사용자 "전체 · 무기 · 모자 · 옷 · 장갑 · 신발 · 특수(앱솔랩스) · 기본은 전체"). Craft/Slot_{키} 버튼 · 창을 열 때마다 전체로.
+	--   무기 = 무기 + 방패(보조무기) · 옷 = 상의 · 한벌옷 · 하의 · 특수 = 앱솔랩스(ABSOLAB_*) — 특수 외 분류에는 앱솔랩스를 넣지 않는다.
+	@HideFromInspector
+	property string craftSlot = "ALL"
+
+	property string CraftSlots = "ALL,WEAPON,HAT,CLOTH,GLOVES,SHOES,SPECIAL"
+
 	@HideFromInspector
 	property any potionView = nil
 
@@ -197,6 +210,14 @@ script WorkshopUIController extends Logic
 				table.insert(self.tradeHandlers, { ent = c, h = c:ConnectEvent(ButtonClickEvent, fn) })
 			end
 		end
+		for j in string.gmatch(self.CraftJobs, "[^,]+") do
+			local job = j
+			bindChild(self.contentCraft, "Job_" .. job, function() self:SetCraftJob(job) end)
+		end
+		for s in string.gmatch(self.CraftSlots, "[^,]+") do
+			local slot = s
+			bindChild(self.contentCraft, "Slot_" .. slot, function() self:SetCraftSlot(slot) end)
+		end
 		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
 		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
 		for _, r in ipairs({ "enhance", "craft", "potion", "repair" }) do
@@ -268,6 +289,7 @@ script WorkshopUIController extends Logic
 		self.targetIid = ""
 		self.chosenGems = {}
 		self.craftSel = ""
+		self.craftSlot = "ALL"
 		self.potionSel = ""
 		self.potionQty = 1
 		self.waiting = false
@@ -469,7 +491,7 @@ script WorkshopUIController extends Logic
 			local titleText = "상승 능력치"
 			if def ~= nil and row ~= nil then
 				local nextLv = (it.enh or 0) + 1
-				local fixed = _ItemCatalog:GetSlotBonus(def.slot, def.reqLevel, nextLv)
+				local fixed = _ItemCatalog:GetSlotBonus(def.slot, def.enhanceTier, nextLv)
 				if fixed ~= nil and (fixed.defense or 0) ~= 0 then
 					sum.defense = (sum.defense or 0) + fixed.defense
 					fixedSum.defense = fixed.defense
@@ -541,7 +563,8 @@ script WorkshopUIController extends Logic
 		local costText = "장비를 선택하세요"
 		if def ~= nil and row ~= nil then
 			local have = #self.chosenGems
-			costText = "메소 " .. tostring(row.mesoCost) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
+			-- 한벌옷은 두 벌 몫이라 메소가 두 배(EnhanceService 와 같은 식 · 2026-09-30).
+			costText = "메소 " .. tostring(row.mesoCost * _ItemCatalog:PieceCount(def)) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
 			ready = (have == row.gemCount)
 		elseif def ~= nil then
 			costText = "최대 강화 단계"
@@ -771,10 +794,92 @@ script WorkshopUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void SetCraftJob(string job)
+		-- 직업 분류 버튼 → 목록을 그 직업 장비로 거른다(선택은 풀림).
+		if self.craftJob ~= job then self.craftSel = "" end
+		self.craftJob = job
+		self:RefreshCraft()
+		log("[Workshop] craft job=" .. job)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCraftSlot(string slot)
+		-- 부위 분류 버튼 → 목록을 그 부위로 거른다(선택은 풀림). 직업 분류와 함께 걸린다.
+		if self.craftSlot ~= slot then self.craftSel = "" end
+		self.craftSlot = slot
+		self:RefreshCraft()
+		log("[Workshop] craft slot=" .. slot)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CraftSlotMatches(string itemId)
+		-- 지금 고른 부위 분류에 이 장비가 들어가나. 전체 = 모두 · 특수 = 앱솔랩스만 · 나머지는 앱솔랩스를 뺀 그 부위.
+		local slot = self.craftSlot
+		if slot == "" or slot == "ALL" then return true end
+		local special = string.sub(itemId, 1, 8) == "ABSOLAB_"
+		if slot == "SPECIAL" then return special end
+		if special then return false end
+		local d = _ItemCatalog:Get(itemId)
+		local s = (d ~= nil) and d.slot or ""
+		if slot == "WEAPON" then return s == "WEAPON" or s == "SUBWEAPON" end
+		if slot == "CLOTH" then return s == "TOP" or s == "BOTTOM" end
+		return s == slot
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCraftSlotTabs(boolean show)
+		-- 부위 분류 버튼: 직업 분류와 같이 마을 장비 상인에서만 보이고, 고른 칸만 진한 주황(나머지 회색).
+		if not isvalid(self.contentCraft) then return end
+		for s in string.gmatch(self.CraftSlots, "[^,]+") do
+			local b = self.contentCraft:GetChildByName("Slot_" .. s)
+			if isvalid(b) then
+				b.Enable = show
+				if b.SpriteGUIRendererComponent ~= nil then
+					if s == self.craftSlot then
+						b.SpriteGUIRendererComponent.Color = Color(0.91, 0.45, 0.16, 1)
+					else
+						b.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string DefaultCraftJob()
+		-- 처음 열 때 분류: 내 직업(전직 후) · 초보자면 전사.
+		local mine = (_PlayerSkillState ~= nil) and _PlayerSkillState:LocalJobId() or ""
+		for j in string.gmatch(self.CraftJobs, "[^,]+") do
+			if j == mine then return j end
+		end
+		return "WARRIOR"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCraftJobTabs(boolean show)
+		-- 분류 버튼: 마을 장비 상인에서만 보이고, 고른 직업만 밝게.
+		if not isvalid(self.contentCraft) then return end
+		for j in string.gmatch(self.CraftJobs, "[^,]+") do
+			local b = self.contentCraft:GetChildByName("Job_" .. j)
+			if isvalid(b) then
+				b.Enable = show
+				-- 창 바탕이 노랑이라 고른 칸은 진한 주황 · 나머지는 회색(노랑으로 칠하면 바탕에 묻힌다 · 2026-10-01 캡처로 확인).
+				if b.SpriteGUIRendererComponent ~= nil then
+					if j == self.craftJob then
+						b.SpriteGUIRendererComponent.Color = Color(0.91, 0.45, 0.16, 1)
+					else
+						b.SpriteGUIRendererComponent.Color = Color(0.46, 0.49, 0.54, 1)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
 	method string PriceText(any recipe)
-		-- "포자 5 · 메소 300" (재료명은 앞 2글자만 — 카드 폭)
+		-- "포자 5 · 메소 300" (재료명은 앞 2글자만 — 카드 폭) · 공용 행의 REGION_LOCAL 은 이 마을 재화로 푼다.
 		local parts = {}
-		for _, m in ipairs(recipe.mats) do
+		for _, m in ipairs(_ItemCatalog:RecipeMats(recipe, self:ShopKey())) do
 			local md = _ItemCatalog:Get(m.itemId)
 			local nm = (md ~= nil) and md.name or m.itemId
 			table.insert(parts, nm .. " " .. tostring(m.count))
@@ -787,13 +892,42 @@ script WorkshopUIController extends Logic
 	method void RefreshCraft()
 		-- 이 지역 레시피 목록 → 카드 그리드. 선택된 것이 있으면 상세·재료·Footer 갱신.
 		local key = self:ShopKey()
-		self.craftView = _ItemCatalog:GetRecipes(key)
+		-- 마을 장비 상인은 5직업 장비를 다 판다 → 직업 분류로 거른다. 리스항구(초보자 장비)는 분류 없음.
+		local byJob = _ItemCatalog:IsRegionShop(key)
+		if byJob and self.craftJob == "" then self.craftJob = self:DefaultCraftJob() end
+		self.craftView = {}
+		for _, r in ipairs(_ItemCatalog:GetRecipes(key)) do
+			local rd = _ItemCatalog:Get(r.resultItemId)
+			local jobOk = not byJob or (rd ~= nil and rd.reqJob == self.craftJob)
+			-- 부위 분류는 직업 분류와 같이 마을 장비 상인에서만(리스항구 초보자 장비는 분류 없음).
+			local slotOk = not byJob or self:CraftSlotMatches(r.resultItemId)
+			if jobOk and slotOk then table.insert(self.craftView, r) end
+		end
+		-- 장비 등급 순(2026-10-01 · WO-038): 표는 등급을 나중에 끼워 넣어 15제 · 25제 행이 맨 뒤다 → 표 순서 그대로면 10 · 20 · 30 · 15 · 25.
+		--   등급 = 강화 티어(EnhanceTier · 빈칸이면 요구 레벨) — 앱솔랩스(요구 레벨 0 · 티어 30)가 맨 앞이 아니라 30제 뒤에 온다.
+		--   같은 등급 안에서는 표 순서를 지킨다(table.sort 는 안정 정렬이 아니라 원래 순번을 같이 비교).
+		local order = {}
+		for i, r in ipairs(self.craftView) do
+			local rd = _ItemCatalog:Get(r.resultItemId)
+			order[r] = { lv = (rd ~= nil) and (rd.enhanceTier or rd.reqLevel) or 0, i = i }
+		end
+		table.sort(self.craftView, function(a, b)
+			local oa, ob = order[a], order[b]
+			if oa.lv ~= ob.lv then return oa.lv < ob.lv end
+			return oa.i < ob.i
+		end)
+		local lvs = {}
+		for _, r in ipairs(self.craftView) do table.insert(lvs, tostring(order[r].lv)) end
+		log("[Workshop] craft list shop=" .. tostring(key) .. " job=" .. tostring(self.craftJob) .. " slot=" .. tostring(self.craftSlot) .. " n=" .. tostring(#self.craftView) .. " lv=" .. table.concat(lvs, ","))
+		self:RefreshCraftJobTabs(byJob)
+		self:RefreshCraftSlotTabs(byJob)
 		if isvalid(self.craftGrid) then
 			self.craftGrid.TotalCount = #self.craftView
 			self.craftGrid:Refresh(true, true)
 		end
 		local sel = (self.craftSel ~= "") and _ItemCatalog:GetRecipe(self.craftSel) or nil
-		if sel ~= nil and sel.shopKey ~= key then sel = nil self.craftSel = "" end
+		if sel ~= nil and not _ItemCatalog:RecipeAvailableAt(sel, key) then sel = nil self.craftSel = "" end
+		local selMats = _ItemCatalog:RecipeMats(sel, key)
 		local d = self.craftDetail
 		if isvalid(d) then
 			local empty = d:GetChildByName("Empty")
@@ -806,13 +940,13 @@ script WorkshopUIController extends Logic
 			if _InventoryUIController ~= nil then
 				local eq = nil
 				if def ~= nil then eq = { iid = "", itemId = def.id, enh = 0, dur = def.maxDurability, gems = "" } end
-				_InventoryUIController:FillItemView(eq, "", isvalid(icon) and icon.SpriteGUIRendererComponent or nil, isvalid(name) and name.TextGUIRendererComponent or nil, isvalid(req) and req.TextGUIRendererComponent or nil, statList, nil, nil, 0)
+				_InventoryUIController:FillItemView(eq, "", isvalid(icon) and icon.SpriteGUIRendererComponent or nil, isvalid(name) and name.TextGUIRendererComponent or nil, isvalid(req) and req.TextGUIRendererComponent or nil, statList)
 			end
 			local mt = d:GetChildByName("MatTitle")
 			if isvalid(mt) then mt.Enable = (sel ~= nil) end
 			local rows = {}
 			if sel ~= nil then
-				for _, m in ipairs(sel.mats) do
+				for _, m in ipairs(selMats) do
 					local md = _ItemCatalog:Get(m.itemId)
 					table.insert(rows, { label = (md ~= nil) and md.name or m.itemId, value = tostring(self:CountItem(m.itemId)) .. " / " .. tostring(m.count) })
 				end
@@ -837,7 +971,7 @@ script WorkshopUIController extends Logic
 		local cost = "장비를 고르세요"
 		if sel ~= nil then
 			ready = true
-			for _, m in ipairs(sel.mats) do
+			for _, m in ipairs(selMats) do
 				if self:CountItem(m.itemId) < m.count then ready = false end
 			end
 			cost = self:PriceText(sel)

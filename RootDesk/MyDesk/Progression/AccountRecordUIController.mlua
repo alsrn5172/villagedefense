@@ -1,0 +1,581 @@
+@Logic
+script AccountRecordUIController extends Logic
+
+	-- 로비 계정 창("내 기록" · AccountRecordGroup.ui · WO-031 묶음 4~6) 클라 컨트롤러. 탭 = 도감 / 업적 / 칭호 / 기록.
+	-- 로비 창(LobbyGroup)의 "내 기록" 버튼이 연다. 값은 서버 AccountRecordService.RequestView(tab) → SetView(tab, csv) — 열 때·탭 바꿀 때마다 다시 받는다.
+	-- 글자 폰트 = Default(Noto Sans KR · 새 창 규칙) · 색 = 디자이너 가이드 3색(#F6F1E4 · #D9E2FF · #AEB8D0). UUID 는 UIBuilder write({bind}) 주입.
+
+	property Entity dimmer = "69a5b8e1-5652-4374-aea4-e4541d6412ac"
+
+	property Entity window = "fa5c19fe-225f-4e79-956d-edce407bfffd"
+
+	property ButtonComponent btnClose = "7cf646d8-4ba7-4d60-923e-0e5ccff41934"
+
+	-- LobbyGroup 창의 "내 기록" 버튼
+	property ButtonComponent lobbyBtn = "e8caa3bb-cde4-48b4-8308-1e5d45bff2fc"
+
+	property ButtonComponent tabCollection = "c11acd0c-3bd2-4d2f-96d9-279e22b0ace2"
+
+	property ButtonComponent tabAchievement = "2a64dbb6-7527-4cff-a636-fcf624bd202b"
+
+	property ButtonComponent tabTitle = "3e326da3-c9c3-4aff-a8a0-8f2bd9bdf422"
+
+	property ButtonComponent tabHistory = "5677422a-2771-4978-b75c-478ca46e047b"
+
+	property Entity pageCollection = "fd5c7767-c163-4ff0-93d9-735e12aadf47"
+
+	property Entity pageAchievement = "ba0acad0-58c4-4ce2-af2f-adce6df312f1"
+
+	property Entity pageTitle = "1d11dcca-cad1-4246-b711-39dd23543ecd"
+
+	property Entity pageHistory = "b22fee05-2f64-48c7-b096-79fc22239f6d"
+
+	-- 도감 탭
+	property GridViewComponent collGrid = "7baab700-ecd5-4439-a270-c0ce99309d36"
+
+	property Entity collTemplate = "eea32312-f645-4628-802a-9f89805b0e19"
+
+	property TextGUIRendererComponent collStatus = "9482c635-b240-49b3-9b0e-d148578870dc"
+
+
+	-- 업적 탭 (묶음 5)
+	property GridViewComponent achGrid = "c7df5394-e290-4c3a-9635-7978f875c3f2"
+
+	property Entity achTemplate = "1653bfb6-43d2-4478-a4c2-86f4aa218b6b"
+
+	property TextGUIRendererComponent achStatus = "33a9f39d-b12a-46f9-877d-063127364508"
+
+	-- 칭호 탭 (묶음 5)
+	property GridViewComponent titleGrid = "8f60e1af-b2ad-4f6d-9920-adaa741b59a5"
+
+	property Entity titleTemplate = "b004ac77-6476-486f-b815-0b3bbe23bf9f"
+
+	property TextGUIRendererComponent titleStatus = "82ea61fe-aea8-47f4-9aaf-68e2cdb3c46a"
+
+	property ButtonComponent btnUnequip = "eaaf0e70-6873-4c61-9d50-647306b41c38"
+
+
+	-- 기록 탭 (묶음 6)
+	property GridViewComponent histGrid = "5a03dc55-b22a-4ee0-b239-e690b078d79a"
+
+	property Entity histTemplate = "2b5cde05-29cb-4aa6-af6f-d50cf6af2b54"
+
+	property TextGUIRendererComponent histStatus = "12690ebf-da13-4ee2-9893-8781bbd46ae3"
+
+	-- 기록 뷰 { {date, d, rk, n, o, h, x, k, lv, title} }
+	@HideFromInspector
+	property any hists = nil
+
+	-- 업적 뷰 { {id, name, desc, cur, target, exp, title, done} } · 칭호 뷰 { equipped, list = { {id, name, desc, owned} } }
+	@HideFromInspector
+	property any achs = nil
+
+	@HideFromInspector
+	property any titles = nil
+
+	-- 칭호 셀 클릭 배선(셀 Id → {index, cell})
+	@HideFromInspector
+	property any boundTitleCells = nil
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string tab = "collection"
+
+	@HideFromInspector
+	property any handlers = nil
+
+	-- 도감 뷰: entries = { {kind, id, name, level, icon, k, e, tm, te} } · tiers[kind] = { {tier, kills, exp, name} } · sum
+	@HideFromInspector
+	property any coll = nil
+
+	@HideFromInspector
+	property any boundCells = nil
+
+	@HideFromInspector
+	property integer selColl = 0
+
+	@HideFromInspector
+	property number retryAt = 0
+
+	-- LOADING 재요청 횟수(창을 열 때·탭을 바꿀 때 0 · 상한 넘으면 멈추고 안내 · Codex 리뷰 2026-09-26)
+	@HideFromInspector
+	property integer retries = 0
+
+	property integer MaxRetries = 10
+
+	method void OnBeginPlay()
+		-- 클라만 배선.
+		if self:IsClient() then self:SetupClient() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 버튼 · 탭 · 도감 그리드.
+		self.handlers = {}
+		self.boundCells = {}
+		self.boundTitleCells = {}
+		local function bind(btn, fn)
+			if isvalid(btn) then table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) }) end
+		end
+		bind(self.btnClose, function() self:Close() end)
+		bind(self.lobbyBtn, function() self:Open("collection") end)
+		bind(self.tabCollection, function() self:GoTab("collection") end)
+		bind(self.tabAchievement, function() self:GoTab("achievement") end)
+		bind(self.tabTitle, function() self:GoTab("title") end)
+		bind(self.tabHistory, function() self:GoTab("history") end)
+		bind(self.btnUnequip, function() self:RequestEquip("") end)
+		if isvalid(self.collGrid) then
+			if isvalid(self.collTemplate) then self.collGrid.ItemEntity = self.collTemplate end
+			self.collGrid.OnRefresh = function(index, entity) self:FillCell(index, entity) end
+			self.collGrid.TotalCount = 0
+			self.collGrid:Refresh(true, true)
+		end
+		if isvalid(self.achGrid) then
+			if isvalid(self.achTemplate) then self.achGrid.ItemEntity = self.achTemplate end
+			self.achGrid.OnRefresh = function(index, entity) self:FillAchCell(index, entity) end
+			self.achGrid.TotalCount = 0
+			self.achGrid:Refresh(true, true)
+		end
+		if isvalid(self.histGrid) then
+			if isvalid(self.histTemplate) then self.histGrid.ItemEntity = self.histTemplate end
+			self.histGrid.OnRefresh = function(index, entity) self:FillHistCell(index, entity) end
+			self.histGrid.TotalCount = 0
+			self.histGrid:Refresh(true, true)
+		end
+		if isvalid(self.titleGrid) then
+			if isvalid(self.titleTemplate) then self.titleGrid.ItemEntity = self.titleTemplate end
+			self.titleGrid.OnRefresh = function(index, entity) self:FillTitleCell(index, entity) end
+			self.titleGrid.TotalCount = 0
+			self.titleGrid:Refresh(true, true)
+		end
+		self:SetOpen(false)
+		log("[AcctUI] ready (client) handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- LOADING 을 받았으면 잠시 뒤 한 번 더 묻는다(접속 직후 계정 기록 로드 대기).
+		if self.retryAt > 0 and _UtilLogic.ElapsedSeconds >= self.retryAt then
+			self.retryAt = 0
+			if self.isOpen then self:Request() end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string tabName)
+		-- 창 열기.
+		self:SetOpen(true)
+		self:GoTab(tabName)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 창 닫기.
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- Dimmer + Window.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[AcctUI] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoTab(string tabName)
+		-- 탭 하나만 켜고 서버에 그 탭 뷰를 묻는다.
+		if tabName ~= "collection" and tabName ~= "achievement" and tabName ~= "title" and tabName ~= "history" then tabName = "collection" end
+		self.tab = tabName
+		local pages = { collection = self.pageCollection, achievement = self.pageAchievement, title = self.pageTitle, history = self.pageHistory }
+		for name, page in pairs(pages) do
+			if isvalid(page) then page.Enable = (name == tabName) end
+		end
+		local tabs = { collection = self.tabCollection, achievement = self.tabAchievement, title = self.tabTitle, history = self.tabHistory }
+		for name, btn in pairs(tabs) do
+			if isvalid(btn) and btn.Entity.SpriteGUIRendererComponent ~= nil then
+				btn.Entity.SpriteGUIRendererComponent.Color = (name == tabName) and Color(0.72, 0.57, 0.23, 1) or Color(0.17, 0.25, 0.42, 1)
+			end
+		end
+		self.selColl = 0
+		self.retries = 0
+		self:Request()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Request()
+		-- 지금 탭 뷰 요청.
+		if _AccountRecordService ~= nil then _AccountRecordService:RequestView(self.tab) end
+	end
+
+	@ExecSpace("Client")
+	method void SetView(string tabName, string csv)
+		-- 서버 → 요청한 클라. 지금 보고 있는 탭이면 그린다.
+		if not self.isOpen or tabName ~= self.tab then return end
+		if csv == "LOADING" then
+			self.retries = self.retries + 1
+			if self.retries <= self.MaxRetries then
+				self.retryAt = _UtilLogic.ElapsedSeconds + 1.0
+				if tabName == "collection" and isvalid(self.collStatus) then self.collStatus.Text = "기록을 불러오는 중…" end
+			else
+				self.retryAt = 0
+				if tabName == "collection" and isvalid(self.collStatus) then self.collStatus.Text = "기록을 불러오지 못했습니다 — 창을 닫았다 다시 열어 주세요" end
+				log_warning("[AcctUI] LOADING retry limit " .. tabName)
+			end
+			return
+		end
+		self.retries = 0
+		local rows = self:SplitRows(csv)
+		if tabName == "collection" then self:RenderCollection(rows)
+		elseif tabName == "achievement" then self:RenderAchievements(rows)
+		elseif tabName == "title" then self:RenderTitles(rows)
+		elseif tabName == "history" then self:RenderHistory(rows) end
+		log("[AcctUI] view " .. tabName .. " rows=" .. tostring(#rows))
+	end
+
+	@ExecSpace("ClientOnly")
+	method any SplitRows(string csv)
+		-- "a|b;c|d" → { {"a","b"}, {"c","d"} } (빈 칸도 자리를 지킨다).
+		local rows = {}
+		for r in string.gmatch(csv or "", "([^;]+)") do
+			local f = {}
+			for part in string.gmatch(r .. "|", "([^|]*)|") do table.insert(f, part) end
+			table.insert(rows, f)
+		end
+		return rows
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		-- 자식 텍스트 한 줄.
+		if not isvalid(parent) then return end
+		local c = parent:GetChildByName(childName)
+		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	-- ── 도감 탭 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderCollection(any rows)
+		-- SUM|발견종|전체종|발견보스|전체보스|총처치 · T|종류|단계|처치|경험치|이름 · E|M/B|id|이름|레벨|아이콘|처치|자이언트|받은단계|받은자이언트단계
+		local c = { entries = {}, tiers = {}, sum = { found = 0, total = 0, fb = 0, tb = 0, kills = 0 } }
+		for _, f in ipairs(rows) do
+			if f[1] == "SUM" then
+				c.sum = { found = tonumber(f[2]) or 0, total = tonumber(f[3]) or 0, fb = tonumber(f[4]) or 0, tb = tonumber(f[5]) or 0, kills = tonumber(f[6]) or 0 }
+			elseif f[1] == "T" then
+				local kind = f[2]
+				if c.tiers[kind] == nil then c.tiers[kind] = {} end
+				table.insert(c.tiers[kind], { tier = tonumber(f[3]) or 0, kills = tonumber(f[4]) or 0, exp = tonumber(f[5]) or 0, name = f[6] or "" })
+			elseif f[1] == "E" then
+				table.insert(c.entries, { kind = f[2], id = f[3], name = f[4], level = f[5], icon = f[6] or "", k = tonumber(f[7]) or 0, e = tonumber(f[8]) or 0, tm = tonumber(f[9]) or 0, te = tonumber(f[10]) or 0 })
+			end
+		end
+		for _, list in pairs(c.tiers) do table.sort(list, function(a, b) return a.tier < b.tier end) end
+		self.coll = c
+		if isvalid(self.collGrid) then
+			if self.collGrid.TotalCount ~= #c.entries then
+				self.collGrid.TotalCount = #c.entries
+				self.collGrid:Refresh(true, true)
+			else
+				self:RepaintCells()
+			end
+		end
+		self:UpdateCollStatus()
+	end
+
+	@ExecSpace("ClientOnly")
+	method any TierName(string kind, integer tier)
+		-- 받은 단계의 이름(0 = "").
+		local list = (self.coll ~= nil) and self.coll.tiers[kind] or nil
+		if list == nil then return "" end
+		for _, t in ipairs(list) do
+			if t.tier == tier then return t.name end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method any NextTier(string kind, integer tier)
+		-- 아직 안 받은 다음 단계(없으면 nil).
+		local list = (self.coll ~= nil) and self.coll.tiers[kind] or nil
+		if list == nil then return nil end
+		for _, t in ipairs(list) do
+			if t.tier > tier then return t end
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillCell(integer index, Entity cell)
+		-- 셀 = 아이콘 + 이름 + 한 줄 요약. 미발견은 이름 "???" · 아이콘 어둡게. 클릭 = 선택(아래 상태 줄에 단계 보상).
+		local c = self.coll
+		local r = (c ~= nil) and c.entries[index + 1] or nil
+		if r == nil or not isvalid(cell) then return end
+		local found = (r.k >= 1)
+		local kind = (r.kind == "B") and "BOSS" or "MONSTER"
+		self:SetText(cell, "Name", found and r.name or "???")
+		local sub = "Lv " .. tostring(r.level) .. ((r.kind == "B") and " 보스" or "")
+		if found then
+			local tn = self:TierName(kind, r.tm)
+			sub = "처치 " .. tostring(r.k) .. ((tn ~= "") and (" · " .. tn) or "")
+			if r.e > 0 then sub = sub .. "\n자이언트 " .. tostring(r.e) end
+		end
+		self:SetText(cell, "Sub", sub)
+		local icon = cell:GetChildByName("Icon")
+		if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
+			if icon.SpriteGUIRendererComponent.ImageRUID ~= r.icon then icon.SpriteGUIRendererComponent.ImageRUID = r.icon end
+			icon.Enable = (r.icon ~= "")
+			icon.SpriteGUIRendererComponent.Color = found and Color(1, 1, 1, 1) or Color(0.12, 0.12, 0.15, 1)
+		end
+		if cell.SpriteGUIRendererComponent ~= nil then
+			local sel = (self.selColl == index + 1)
+			if sel then cell.SpriteGUIRendererComponent.Color = Color(0.72, 0.57, 0.23, 1)
+			elseif found then cell.SpriteGUIRendererComponent.Color = Color(0.17, 0.25, 0.42, 1)
+			else cell.SpriteGUIRendererComponent.Color = Color(0.10, 0.14, 0.24, 1) end
+		end
+		-- 클릭 배선은 셀 엔티티당 1회 · 복제 셀은 스크롤마다 index 가 바뀌어 boundCells[셀 Id] 로 읽는다.
+		local bound = self.boundCells[cell.Id]
+		self.boundCells[cell.Id] = { index = index, cell = cell }
+		if bound == nil then
+			local id = cell.Id
+			local h = cell:ConnectEvent(ButtonClickEvent, function()
+				local rec = self.boundCells[id]
+				if rec ~= nil then self:OnCellSelect(rec.index + 1) end
+			end)
+			table.insert(self.handlers, { e = cell, h = h })
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RepaintCells()
+		-- 살아 있는 셀만 제자리에서 다시 채운다(그리드 재생성 없이 · 썸네일 재로드 방지).
+		if self.boundCells == nil then return end
+		for _, rec in pairs(self.boundCells) do
+			if rec ~= nil and isvalid(rec.cell) then self:FillCell(rec.index, rec.cell) end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCellSelect(integer idx)
+		-- 셀 선택 → 상태 줄에 그 칸의 단계 보상.
+		self.selColl = idx
+		self:RepaintCells()
+		self:UpdateCollStatus()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateCollStatus()
+		-- 아래 한 줄: 선택 없으면 전체 요약, 있으면 그 칸의 다음 단계.
+		if not isvalid(self.collStatus) or self.coll == nil then return end
+		local s = self.coll.sum
+		local r = self.coll.entries[self.selColl]
+		if r == nil then
+			self.collStatus.Text = "발견 " .. tostring(s.found) .. " / " .. tostring(s.total) .. " · 보스 " .. tostring(s.fb) .. " / " .. tostring(s.tb)
+				.. " · 총 처치 " .. tostring(s.kills) .. " · 칸을 누르면 단계 보상이 보입니다"
+			return
+		end
+		local kind = (r.kind == "B") and "BOSS" or "MONSTER"
+		local nm = (r.k >= 1) and r.name or "???"
+		local nx = self:NextTier(kind, r.tm)
+		local txt = nm .. " — 처치 " .. tostring(r.k)
+		if nx ~= nil then
+			txt = txt .. " · 다음 " .. nx.name .. " (" .. tostring(nx.kills) .. ") → 계정 경험치 +" .. tostring(nx.exp)
+		else
+			txt = txt .. " · 모든 단계 달성"
+		end
+		if r.kind == "M" then
+			local ex = self:NextTier("ELITE", r.te)
+			txt = txt .. " · 자이언트 " .. tostring(r.e) .. ((ex ~= nil) and (" (다음 +" .. tostring(ex.exp) .. ")") or "")
+		end
+		self.collStatus.Text = txt
+	end
+
+	-- ── 업적 탭 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderAchievements(any rows)
+		-- SUM|달성|전체 · A|id|이름|설명|진행|목표|경험치|칭호이름|받음
+		self.achs = {}
+		local done = 0
+		local total = 0
+		for _, f in ipairs(rows) do
+			if f[1] == "SUM" then
+				done = tonumber(f[2]) or 0
+				total = tonumber(f[3]) or 0
+			elseif f[1] == "A" then
+				table.insert(self.achs, { id = f[2], name = f[3], desc = f[4], cur = tonumber(f[5]) or 0, target = tonumber(f[6]) or 1,
+					exp = f[7] or "0", title = f[8] or "", done = (f[9] == "1") })
+			end
+		end
+		if isvalid(self.achGrid) then
+			self.achGrid.TotalCount = #self.achs
+			self.achGrid:Refresh(true, true)
+		end
+		if isvalid(self.achStatus) then
+			self.achStatus.Text = "달성 " .. tostring(done) .. " / " .. tostring(total) .. " · 달성하면 계정 경험치와 칭호를 바로 받습니다"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillAchCell(integer index, Entity cell)
+		-- 업적 한 줄: 이름 · 설명 · 진행 · 보상 · 상태.
+		local a = (self.achs ~= nil) and self.achs[index + 1] or nil
+		if a == nil or not isvalid(cell) then return end
+		self:SetText(cell, "Name", a.name)
+		self:SetText(cell, "Desc", a.desc)
+		self:SetText(cell, "Progress", tostring(a.cur) .. " / " .. tostring(a.target))
+		self:SetText(cell, "Reward", "계정 경험치 +" .. a.exp .. ((a.title ~= "") and (" · 칭호 " .. a.title) or ""))
+		self:SetText(cell, "State", a.done and "달성 · 받음" or "진행 중")
+		if cell.SpriteGUIRendererComponent ~= nil then
+			cell.SpriteGUIRendererComponent.Color = a.done and Color(0.30, 0.26, 0.12, 1) or Color(0.17, 0.25, 0.42, 1)
+		end
+	end
+
+	-- ── 기록 탭 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderHistory(any rows)
+		-- H|날짜|★|순위|인원|결과|심장|경험치|처치|레벨|칭호 (최신이 앞) · NONE = 아직 없음
+		self.hists = {}
+		for _, f in ipairs(rows) do
+			if f[1] == "H" then
+				table.insert(self.hists, { date = f[2], d = f[3], rk = tonumber(f[4]) or 0, n = f[5], o = f[6], h = f[7], x = f[8], k = f[9], lv = f[10], title = f[11] or "" })
+			end
+		end
+		if isvalid(self.histGrid) then
+			self.histGrid.TotalCount = #self.hists
+			self.histGrid:Refresh(true, true)
+		end
+		if isvalid(self.histStatus) then
+			self.histStatus.Text = (#self.hists == 0) and "아직 기록이 없습니다 — 매치를 끝까지 치르면 여기에 남습니다" or ("최근 " .. tostring(#self.hists) .. "판 (최대 20판)")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillHistCell(integer index, Entity cell)
+		-- 한 판 두 줄: 날짜 · ★ · 순위 · 결과 / 심장 · 계정 경험치 · 처치 · 레벨 · 칭호.
+		local h = (self.hists ~= nil) and self.hists[index + 1] or nil
+		if h == nil or not isvalid(cell) then return end
+		local outcomes = { BALROG = "발록 처치로 끝남", TIMEOUT = "시간 종료", ALL_OUT = "전원 탈락", LEFT = "중도 이탈" }
+		local rank = (h.rk > 0) and (tostring(h.rk) .. "위 / " .. tostring(h.n) .. "명") or ("- / " .. tostring(h.n) .. "명")
+		self:SetText(cell, "Line1", h.date .. "   ★" .. tostring(h.d) .. "   " .. rank .. "   " .. (outcomes[h.o] or tostring(h.o)))
+		local line2 = "발록의 심장 +" .. tostring(h.h) .. " · 계정 경험치 +" .. tostring(h.x) .. " · 처치 " .. tostring(h.k) .. " · Lv " .. tostring(h.lv)
+		if h.title ~= "" then line2 = line2 .. " · 칭호 " .. h.title end
+		self:SetText(cell, "Line2", line2)
+		if cell.SpriteGUIRendererComponent ~= nil then
+			cell.SpriteGUIRendererComponent.Color = (h.rk == 1) and Color(0.30, 0.26, 0.12, 1) or Color(0.17, 0.25, 0.42, 1)
+		end
+	end
+
+	-- ── 칭호 탭 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderTitles(any rows)
+		-- EQ|장착TitleId · TI|id|이름|얻는 법|보유
+		self.titles = { equipped = "", list = {} }
+		local owned = 0
+		for _, f in ipairs(rows) do
+			if f[1] == "EQ" then
+				self.titles.equipped = f[2] or ""
+			elseif f[1] == "TI" then
+				local own = (f[5] == "1")
+				if own then owned = owned + 1 end
+				table.insert(self.titles.list, { id = f[2], name = f[3], desc = f[4], owned = own })
+			end
+		end
+		if isvalid(self.titleGrid) then
+			if self.titleGrid.TotalCount ~= #self.titles.list then
+				self.titleGrid.TotalCount = #self.titles.list
+				self.titleGrid:Refresh(true, true)
+			else
+				self:RepaintTitleCells()
+			end
+		end
+		self:UpdateTitleStatus(owned)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string EquippedName()
+		-- 장착 칭호 이름(없으면 "").
+		if self.titles == nil then return "" end
+		for _, t in ipairs(self.titles.list) do
+			if t.id == self.titles.equipped then return t.name end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateTitleStatus(integer owned)
+		-- 아래 줄: 장착 · 보유 수.
+		if not isvalid(self.titleStatus) or self.titles == nil then return end
+		local eq = self:EquippedName()
+		self.titleStatus.Text = "장착: " .. ((eq ~= "") and eq or "없음") .. " · 보유 " .. tostring(owned) .. " / " .. tostring(#self.titles.list)
+			.. " · 가진 칭호를 누르면 머리 위 이름표에 붙습니다"
+		if isvalid(self.btnUnequip) then self.btnUnequip.Enable = (self.titles.equipped ~= "") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillTitleCell(integer index, Entity cell)
+		-- 칭호 칸: 이름 + (장착 중 / 보유 · 누르면 장착 / 얻는 법). 없는 칭호는 어둡게.
+		local t = (self.titles ~= nil) and self.titles.list[index + 1] or nil
+		if t == nil or not isvalid(cell) then return end
+		local equipped = (self.titles.equipped == t.id)
+		self:SetText(cell, "Name", t.owned and t.name or "???")
+		self:SetText(cell, "Sub", equipped and "장착 중" or (t.owned and "보유 · 누르면 장착" or t.desc))
+		if cell.SpriteGUIRendererComponent ~= nil then
+			if equipped then
+				cell.SpriteGUIRendererComponent.Color = Color(0.72, 0.57, 0.23, 1)
+			elseif t.owned then
+				cell.SpriteGUIRendererComponent.Color = Color(0.17, 0.25, 0.42, 1)
+			else
+				cell.SpriteGUIRendererComponent.Color = Color(0.10, 0.14, 0.24, 1)
+			end
+		end
+		local bound = self.boundTitleCells[cell.Id]
+		self.boundTitleCells[cell.Id] = { index = index, cell = cell }
+		if bound == nil then
+			local id = cell.Id
+			local h = cell:ConnectEvent(ButtonClickEvent, function()
+				local rec = self.boundTitleCells[id]
+				if rec ~= nil then self:OnTitleClick(rec.index + 1) end
+			end)
+			table.insert(self.handlers, { e = cell, h = h })
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RepaintTitleCells()
+		-- 살아 있는 칭호 셀만 다시 칠한다.
+		if self.boundTitleCells == nil then return end
+		for _, rec in pairs(self.boundTitleCells) do
+			if rec ~= nil and isvalid(rec.cell) then self:FillTitleCell(rec.index, rec.cell) end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnTitleClick(integer idx)
+		-- 가진 칭호면 장착 요청(이미 장착이면 그대로). 없는 칭호는 얻는 법만 보인다.
+		local t = (self.titles ~= nil) and self.titles.list[idx] or nil
+		if t == nil or not t.owned or self.titles.equipped == t.id then return end
+		self:RequestEquip(t.id)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestEquip(string titleId)
+		-- 서버에 장착/해제 요청 → 서버가 칭호 탭을 다시 보낸다.
+		if _TitleService ~= nil then _TitleService:RequestEquip(titleId) end
+	end
+
+	method void OnEndPlay()
+		-- 핸들러 해제.
+		if self:IsClient() and self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+	end
+
+end

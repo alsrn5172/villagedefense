@@ -47,6 +47,10 @@ script Monster extends Component
 
 	property number HitStunSeconds = 0.5
 
+	-- 넉백 · 경직 간격(초). 몬스터 피격 무적이 없어져(2026-09-29 WO-034 · MonsterHit) 타격마다 피해가 들어가므로,
+	-- 밀림 · 경직은 이 간격으로만 건다(사용자 결정 "넉백·경직만 0.4초 간격"). 피해 · 플래시 · 돌아보기는 매 타격 그대로.
+	property number KnockbackInterval = 0.4
+
 	-- 피격 판정 상자를 런타임에 stand 클립으로 다시 잴지. 기본 false — 모델에 미리 계산해 넣었다(Docs/tools/monster-hitbox/harvest.cjs → apply.cjs · 사용자 지시: 매번 계산하지 말 것). 새 몬스터를 추가하면 그 두 스크립트로 값을 박거나 이 값을 켠다.
 	property boolean FitHitbox = false
 
@@ -77,6 +81,18 @@ script Monster extends Component
 	-- 발판 이음매 올라타기(FootholdSwitch R1) 직후 쉬는 시간
 	@HideFromInspector
 	property number stepCool = 0
+
+	-- 마지막으로 살아서 맞은 시각(_UtilLogic.ElapsedSeconds · ReactToHit). StateTypeChase.OnEnter 가 RecentlyHit 로 읽어
+	-- HIT → IDLE → CHASE 로 돌아올 때 1~3초 "서 있기" 를 다시 걸지 않는다(#40 5813661726 3번 · B 가 넣고 A 가 리뷰 승인 · 2026-09-25 #83).
+	@HideFromInspector
+	property number lastHitAt = -1000
+
+	-- 마지막으로 넉백 · 경직을 건 시각(KnockbackInterval 게이트 · WO-034).
+	@HideFromInspector
+	property number lastKnockAt = -1000
+
+	-- 위 "방금 맞았다" 창(초). HIT 0.5s(StateSet NCHasTimePassed) + IDLE → CHASE 전이 한두 틱을 덮는다.
+	property number HitResumeWindowSeconds = 1.2
 
 	method void OnBeginPlay()
 		-- DamageSkinId is a DataRef, not a plain string.
@@ -303,7 +319,14 @@ script Monster extends Component
 		-- ChangeState here would collide with the StateSet (LEA-3002);
 		-- ConditionIsDead drives the DEAD transition on the next tick.
 		self.IsDead = true
-		
+		-- 사망 즉시 피격 판정을 끈다(#40 5813661726 4번 · B 가 넣고 A 가 리뷰 승인 · 2026-09-25 #83). 예전엔 숨김 타이머(아래 delayHide)까지
+		-- HitComponent 가 켜져 있어 시체가 기본 공격 · 스킬을 또 맞았다(피해 숫자 · HIT 전이 · FarmReward 의 LastAttacker/피해 원장이 지급 전에 바뀜).
+		-- 보상은 FarmReward 가 IsDead 상승엣지에서 1회만 지급한다(Rewarded 플래그) — 여기서 끄면 지급 전에 원장이 바뀌는 틈도 닫힌다. Respawn 이 다시 켠다.
+		local hit = self.Entity.HitComponent
+		if isvalid(hit) then
+			hit.Enable = false
+		end
+
 		local delayHide = function()
 			self.Entity:SetVisible(false)
 			self.Entity:SetEnable(false)
@@ -332,7 +355,13 @@ script Monster extends Component
 		self.IsDead = false
 		self.Entity:SetVisible(true)
 		self.Entity:SetEnable(true)
-		
+		-- Dead() 가 끈 피격 판정을 되살린다(안 켜면 부활한 몹은 영영 안 맞는다).
+		local hit = self.Entity.HitComponent
+		if isvalid(hit) then
+			hit.Enable = true
+		end
+		self.lastHitAt = -1000
+
 		self.Hp = self.MaxHp
 	end
 
@@ -378,7 +407,12 @@ script Monster extends Component
 	handler HandleHitEvent(HitEvent event)
 		-- Skip re-Dead if already dead when this hit landed (originalHp <= 0).
 		local TotalDamage = event.TotalDamage
-		
+		-- MISS(피해 0)는 아무 반응 없음 (사용자 결정 2026-09-29 · WO-035 C): HP · 피격음 · 넉백 · 경직 · 돌아보기 · lastHitAt 모두 건드리지 않는다.
+		-- 예전엔 피해 0 도 "살아서 맞음" 으로 ReactToHit 에 들어가 0.2 밀렸다.
+		if TotalDamage == nil or TotalDamage <= 0 then
+			return
+		end
+
 		local originalHp = self.Hp
 		self.Hp = self.Hp - TotalDamage
 		
@@ -391,6 +425,11 @@ script Monster extends Component
 		end
 
 		self:PlaySoundToMap(self.DieSoundRUID, self.SoundVolume)
+		-- 죽이는 타격도 공격자 쪽으로 돌아본다(A 점검 #83 comment 5831420893 2번 · 사용자 강민구 결정 2026-09-25). 살아 있는 피격(ReactToHit)과 같은 규칙 —
+		-- 보스(BossSkillRunner) 제외 · 레인 미니언 · 수비대는 FaceAttacker 안에서 빠진다. Dead() 보다 먼저 돌려 die 클립이 돌아본 쪽으로 재생된다.
+		if not isvalid(self.Entity.BossSkillRunner) then
+			self:FaceAttacker(event.AttackerEntity, true)
+		end
 		self:Dead()
 		local timerFunc = function() self:Respawn() end
 
@@ -446,10 +485,62 @@ script Monster extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method void FaceAttacker(Entity attacker, boolean holdAi)
+		-- 공격자 쪽을 보게 스프라이트를 뒤집는다(#40 5813661726 2번). 걷는 AI 와 같은 식 — FlipX = (왼쪽을 향하나) ~= SpriteFacesLeftByDefault
+		-- (StateTypeChase:94 · StateTypeWander:43). 켜진 StateChaseMonster / StateMoveMonster 가 있는 몹만 — 레인 미니언 · 수비대(FactionAI 가
+		-- Scale.x 로 방향을 잡는다)와 보스(BossSkillRunner)는 건드리지 않는다. HIT 동안은 걷는 AI 가 돌지 않아 이 방향이 유지되고, CHASE 로 돌아오면 AI 가 다시 잡는다.
+		-- 부르는 곳: 살아 있는 피격(ReactToHit · holdAi false) · 죽이는 타격(HandleHitEvent 사망 분기 · holdAi true · 2026-09-26 #83). 보스 제외는 두 곳 다 부르는 쪽에서.
+		-- holdAi: 죽이는 타격은 HIT 를 거치지 않고 다음 틱에 DEAD 로 넘어간다. 그 사이 배회 AI(StateTypeWander.OnUpdate 는 매 프레임 FlipX 를 쓴다) ·
+		-- 추적 AI(flipTimeLeft 가 0 이면 목표 쪽으로 쓴다)가 방향을 되돌리지 않게 AI 쪽 값도 같은 방향으로 맞춘다. 부활하면 각 AI 의 OnEnter 가 새로 잡는다
+		-- (StateTypeChase.OnEnter flipTimeLeft = 0 · StateTypeWander.OnEnter 방향 뒤집기).
+		if not isvalid(attacker) or not isvalid(attacker.TransformComponent) then return end
+		local tr = self.Entity.TransformComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(tr) or not isvalid(sr) then return end
+		local facesLeft = nil
+		local chase = self.Entity.StateChaseMonster
+		local wander = nil
+		if isvalid(chase) and chase.Enable then
+			facesLeft = chase.SpriteFacesLeftByDefault
+		else
+			chase = nil
+			wander = self.Entity.StateMoveMonster
+			if isvalid(wander) and wander.Enable then
+				facesLeft = wander.SpriteFacesLeftByDefault
+			else
+				wander = nil
+			end
+		end
+		if facesLeft == nil then return end
+		local goingLeft = attacker.TransformComponent.WorldPosition.x < tr.WorldPosition.x
+		sr.FlipX = goingLeft ~= facesLeft
+		if holdAi then
+			if chase ~= nil and chase.flipTimeLeft < 1 then
+				chase.flipTimeLeft = 1
+			end
+			if wander ~= nil then
+				wander.wanderDirLeft = goingLeft
+			end
+			log("[Monster] lethal hit — " .. self.Entity.Name .. " faces attacker " .. attacker.Name .. " (left=" .. tostring(goingLeft) .. " flipX=" .. tostring(sr.FlipX) .. ")")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RecentlyHit()
+		-- HitResumeWindowSeconds 안에 살아서 맞았는가(StateTypeChase.OnEnter 가 부른다 · #40 5813661726 3번).
+		return _UtilLogic.ElapsedSeconds - self.lastHitAt <= self.HitResumeWindowSeconds
+	end
+
+	@ExecSpace("ServerOnly")
 	method void ReactToHit(Entity attacker, number damage)
 		-- 살아 있는 피격에만 부른다 (HandleHitEvent). 넉백 + 경직 + 플래시.
+		-- 2026-09-25 (#40 5813661726 · B 가 넣고 A 가 리뷰 승인 · #83): ② 공격자 쪽으로 돌아보기(보스 제외) · ③ 맞은 시각 기록(StateTypeChase 서 있기 생략).
+		self.lastHitAt = _UtilLogic.ElapsedSeconds
 		local runner = self.Entity.BossSkillRunner
 		local isBoss = isvalid(runner)
+		if not isBoss then
+			self:FaceAttacker(attacker, false)
+		end
 		if isBoss then
 			-- 패턴 중엔 아무 반응 없음 (모션도 안 바뀐다)
 			if runner.pendingSkill ~= nil then
@@ -463,6 +554,13 @@ script Monster extends Component
 		-- 고정형(피아누스 등)은 안 밀리고 안 멈춘다. 플래시(+HIT 상태의 hit 클립)만.
 		local isStatic = self:IsStaticMonster()
 
+		-- 넉백 · 경직은 KnockbackInterval(0.4초) 간격으로만 — 무적이 없어 다단 히트가 전부 들어가도 계속 밀리고 굳지 않게(WO-034).
+		local now = _UtilLogic.ElapsedSeconds
+		local knockReady = now - self.lastKnockAt >= self.KnockbackInterval
+		if knockReady then
+			self.lastKnockAt = now
+		end
+
 		-- 방향: 공격자에게서 멀어지는 쪽. 공격자를 모르면 바라보는 방향의 반대.
 		local tr = self.Entity.TransformComponent
 		local dir = 0
@@ -475,7 +573,7 @@ script Monster extends Component
 
 		-- 경직: StateChaseMonster 의 시전 정지 게이트를 빌린다 (StateTypeChase 가 이동을 건너뜀 → 힘이 덮어써지지 않는다)
 		local chase = self.Entity.StateChaseMonster
-		if not isStatic and isvalid(chase) and chase.CastFreezeLeft < self.HitStunSeconds then
+		if knockReady and not isStatic and isvalid(chase) and chase.CastFreezeLeft < self.HitStunSeconds then
 			chase.CastFreezeLeft = self.HitStunSeconds
 		end
 
@@ -484,7 +582,7 @@ script Monster extends Component
 		--    → 지금 밟은 발판의 GetYByX 로 y 를 표면에 맞추고, 발판 범위 밖으로는 안 민다(절벽 밖으로 떨어뜨리지 않음). 공중이면 안 옮긴다.
 		local body = self.Entity.RigidbodyComponent
 		-- 이미 밀리는 중이면 겹쳐 밀지 않는다 (연타·다단히트로 0.2 씩 누적돼 "여러 번 미끄러지는" 것 방지 · 플래시는 그대로)
-		if not isStatic and isvalid(body) and dir ~= 0 and self.KnockbackSteps > 0 and not self.knocking then
+		if knockReady and not isStatic and isvalid(body) and dir ~= 0 and self.KnockbackSteps > 0 and not self.knocking then
 			local stepDx = dir * self.KnockbackDistance / self.KnockbackSteps
 			local interval = self.KnockbackSeconds / self.KnockbackSteps
 			local n = 0
