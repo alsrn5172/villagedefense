@@ -171,8 +171,10 @@ script DropTableLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method integer RollRows(any list, string userId, string mapName, any granted)
-		-- 행마다 독립 확률로 굴려 지급. granted[itemId] += count. 지급 건수 반환.
+	method integer RollRows(any list, string userId, string mapName, any granted, any ground)
+		-- 행마다 독립 확률로 굴려 지급. 지급 건수 반환.
+		-- ground = { map = 맵 엔티티, pos = 죽은 자리, dropped = {} } 이면 **바닥에 떨군다**(Farm/GroundDrop · WO-035) — 떨군 것은 ground.dropped[itemId] 에 센다.
+		-- ground 가 nil 이거나 떨구지 못하면 예전처럼 인벤토리에 직접 넣고 granted[itemId] 에 센다.
 		if list == nil then return 0 end
 		local hits = 0
 		for _, r in ipairs(list) do
@@ -184,10 +186,19 @@ script DropTableLogic extends Logic
 					cnt = math.floor(cnt * self:RegionMul(mapName, userId) + 0.5)
 				end
 				if item ~= "" and cnt > 0 then
-					local given = _InventoryService:GiveItem(userId, item, cnt)
-					if given > 0 then
-						granted[item] = (granted[item] or 0) + given
+					local onGround = false
+					if ground ~= nil and _GroundDrop ~= nil then
+						onGround = _GroundDrop:SpawnItem(ground.map, ground.pos, userId, "ITEM", item, cnt)
+					end
+					if onGround then
+						ground.dropped[item] = (ground.dropped[item] or 0) + cnt
 						hits = hits + 1
+					else
+						local given = _InventoryService:GiveItem(userId, item, cnt)
+						if given > 0 then
+							granted[item] = (granted[item] or 0) + given
+							hits = hits + 1
+						end
 					end
 				end
 			end
@@ -196,27 +207,52 @@ script DropTableLogic extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method string ItemList(any counts)
+		-- { itemId = count } → "이름 x수 · 이름 x수". 비면 "".
+		local parts = {}
+		for item, cnt in pairs(counts) do
+			local def = _ItemCatalog:Get(item)
+			table.insert(parts, ((def ~= nil) and def.name or item) .. " x" .. tostring(cnt))
+		end
+		return table.concat(parts, " · ")
+	end
+
+	@ExecSpace("ServerOnly")
 	method void GrantKillDrops(string userId, string mapName, integer monsterId)
-		-- 일반몹 처치 드롭 본체. FarmReward.GiveRewards 가 막타 확정 뒤 부른다.
+		-- 일반몹 처치 드롭 — 인벤토리 직접 지급(예전 방식). 죽은 자리를 모를 때 쓴다.
+		self:RollKillDrops(userId, mapName, monsterId, nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DropKillItems(string userId, Entity map, Vector3 pos, integer monsterId)
+		-- 일반몹 처치 드롭 — **죽은 자리 바닥에 떨군다**(WO-035 · 사용자 결정 2026-09-29). FarmReward.GiveRewards 가 막타 확정 뒤 부른다.
+		-- 주인(막타)만 보이고 주인만 줍는다 · 포물선 착지 뒤 자석 · 60초 뒤 소멸(Farm/ItemDrop). 떨구지 못한 것은 인벤토리에 직접 넣는다.
+		local mapName = ""
+		if isvalid(map) then mapName = map.Name end
+		local ground = nil
+		if isvalid(map) and pos ~= nil then ground = { map = map, pos = pos, dropped = {} } end
+		self:RollKillDrops(userId, mapName, monsterId, ground)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RollKillDrops(string userId, string mapName, integer monsterId, any ground)
+		-- 일반몹 처치 드롭 본체(GROUND 행 + MONSTER 행). 인벤토리에 직접 들어간 것만 토스트 1줄 — 바닥에 떨군 것은 주울 때 알린다.
 		self:EnsureLoaded()
 		if userId == nil or userId == "" then return end
 		local granted = {}
 		local hits = 0
 		local tier = self:TierOfMap(mapName)
 		if tier > 0 and self.rows["GROUND"] ~= nil then
-			hits = hits + self:RollRows(self.rows["GROUND"][tostring(tier)], userId, mapName, granted)
+			hits = hits + self:RollRows(self.rows["GROUND"][tostring(tier)], userId, mapName, granted, ground)
 		end
 		if self.rows["MONSTER"] ~= nil then
-			hits = hits + self:RollRows(self.rows["MONSTER"][tostring(monsterId)], userId, mapName, granted)
+			hits = hits + self:RollRows(self.rows["MONSTER"][tostring(monsterId)], userId, mapName, granted, ground)
 		end
 		if hits == 0 then return end
-		local parts = {}
-		for item, cnt in pairs(granted) do
-			local def = _ItemCatalog:Get(item)
-			table.insert(parts, ((def ~= nil) and def.name or item) .. " x" .. tostring(cnt))
-		end
-		local msg = table.concat(parts, " · ")
-		log("[Drop] " .. mapName .. " tier=" .. tostring(tier) .. " mob=" .. tostring(monsterId) .. " -> " .. msg .. " (" .. userId .. ")")
-		if _UIToast ~= nil then _UIToast:ShowMessage("획득: " .. msg, userId) end
+		local msg = self:ItemList(granted)
+		local onGround = ""
+		if ground ~= nil then onGround = self:ItemList(ground.dropped) end
+		log("[Drop] " .. mapName .. " tier=" .. tostring(tier) .. " mob=" .. tostring(monsterId) .. " -> inventory[" .. msg .. "] ground[" .. onGround .. "] (" .. userId .. ")")
+		if msg ~= "" and _UIToast ~= nil then _UIToast:ShowMessage("획득: " .. msg, userId) end
 	end
 end

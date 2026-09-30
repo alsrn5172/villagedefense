@@ -22,6 +22,24 @@ script PlayerRespawnService extends Logic
 
 	property number PollInterval = 0.25
 
+	-- 부활 이동 확인(WO-035 B): 옮긴 뒤 MoveCheckSeconds 에 되읽어 목적지 맵 · MoveCheckTolerance 안이 아니면 MoveMaxTries 까지 다시 옮긴다.
+	-- 허용 거리는 부활 직후 걸어서 벗어나는 폭보다 넉넉하게 — 죽은 자리에 남은 경우만 잡으면 된다.
+	property number MoveCheckSeconds = 0.5
+
+	property number MoveCheckTolerance = 3.0
+
+	property integer MoveMaxTries = 2
+
+	-- 옮기기 전 자리에서 이 거리 안에 그대로 있으면 "이동이 안 먹었다" 로 본다(재시도 조건).
+	property number MoveStuckTolerance = 1.0
+
+	-- 예약된 이동 확인의 세대: moveEpoch = 매치 단위(시작·종료 때 +1) · moveSeq[uid] = 유저 단위(새 부활·이탈 때 +1)
+	@HideFromInspector
+	property integer moveEpoch = 0
+
+	@HideFromInspector
+	property any moveSeq = nil
+
 	@HideFromInspector
 	property any participants = nil
 
@@ -54,6 +72,8 @@ script PlayerRespawnService extends Logic
 		self.wasDead = {}
 		self.pending = {}
 		self.deaths = {}
+		self.moveEpoch = self.moveEpoch + 1
+		self.moveSeq = {}
 		for _, uid in ipairs(userIds or {}) do
 			table.insert(self.participants, uid)
 			local player = _UserService:GetUserEntityByUserId(uid)
@@ -76,6 +96,7 @@ script PlayerRespawnService extends Logic
 		end
 		self.participants = nil
 		self.pending = {}
+		self.moveEpoch = self.moveEpoch + 1
 	end
 
 	@ExecSpace("ServerOnly")
@@ -87,6 +108,7 @@ script PlayerRespawnService extends Logic
 		end
 		if self.pending ~= nil then self.pending[userId] = nil end
 		if self.wasDead ~= nil then self.wasDead[userId] = nil end
+		self:BumpMove(userId)
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if isvalid(player) and isvalid(player.PlayerComponent) then player.PlayerComponent.RespawnDuration = self.DefaultRespawnSeconds end
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
@@ -124,12 +146,26 @@ script PlayerRespawnService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer ExpCutOf(string userId)
-		-- 지금 죽으면 깎일 경험치 (팝업 표시용 · 실제 차감은 SummonManager.DeductExpInLevel).
+		-- 지금 죽으면 깎일 경험치 (팝업 표시용). 실제 차감(SummonManager.DeductExpInLevel)과 **같은 식**으로 센다 — 레벨 시작 경험치부터 쌓인 구간 안
+		-- 경험치와 (구간 필요치 × ExpPenaltyRatio) 중 작은 값. 예전엔 ExpProgress(표시용 · 만렙이면 바를 가득 채워 within = need)를 써서 만렙 팝업이
+		-- 실제와 달랐다. 만렙에서도 경험치는 계속 쌓이므로(FarmReward → GrantKillReward 에 만렙 상한 없음) 실제 차감이 0 이 아닐 수 있다 —
+		-- 2026-09-26 Play: Lv30 · 구간 안 25405 → 실제 1250 (B · #40 comment 5831420626 · PR #98). 레벨 시작 경험치 그대로면 0.
 		if _SummonManager == nil then return 0 end
 		local e = _SummonManager:EnsureUser(userId)
 		if e == nil then return 0 end
-		local p = _SummonManager:ExpProgress(e.exp)
-		return math.min(math.max(0, math.floor(p.within)), math.floor(p.need * self.ExpPenaltyRatio))
+		local level = e.level
+		local levelStart = 0
+		local span = 0
+		if _MonsterCatalog ~= nil then
+			for lv = 1, level - 1 do levelStart = levelStart + _MonsterCatalog:GetNeedExp(lv) end
+			span = _MonsterCatalog:GetNeedExp(level)
+			if span <= 0 then span = _MonsterCatalog:GetNeedExp(math.max(1, level - 1)) end
+		else
+			levelStart = (level - 1) * _SummonManager.ExpPerLevel
+			span = _SummonManager.ExpPerLevel
+		end
+		local within = math.max(0, e.exp - levelStart)
+		return math.max(0, math.min(within, math.floor(span * self.ExpPenaltyRatio)))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -174,8 +210,23 @@ script PlayerRespawnService extends Logic
 		log("[Death] user=" .. userId .. " chose " .. kind)
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent:IsDead() then
-			player.PlayerComponent:ProcessRevive(userId)
+			local pc = player.PlayerComponent
+			pc:ProcessRevive(userId)
+			-- ProcessRevive 는 HP 를 채우지 않아 HP 0 인 채 살아 있었다(2026-09-25 Play · #40 comment 5830769756).
+			-- 시간 부활(엔진 자동 부활 = HP 최대치)과 같게 바로 채운다 — 폴링 OnRevive 까지 기다리면 그 사이(최대 PollInterval) HP 0 으로 맞는다.
+			-- MP 는 엔진에 없고 SummonManager econ 이 진상이다. MP 는 두 부활이 모두 지나가는 OnRevive 에서 최대치로 채운다(#40 comment 5844239483 A 결정).
+			pc.Hp = pc.MaxHp
+			log("[Death] user=" .. userId .. " revive=choice hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MpText(string userId)
+		-- 로그용 "mp/maxMp" (SummonManager econ · 없으면 "?"). 선택 부활 · 시간 부활의 MP 를 같은 꼴로 비교하려고 쓴다.
+		if _SummonManager == nil then return "?" end
+		local e = _SummonManager:EnsureUser(userId)
+		if e == nil then return "?" end
+		return tostring(e.mp) .. "/" .. tostring(e.maxMp)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -189,6 +240,102 @@ script PlayerRespawnService extends Logic
 			end
 		end
 		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method any SpawnPointOf(Entity map)
+		-- 그 맵의 첫 SpawnLocation 위치(Vector2). 없으면 nil. (조회 방식은 Skill/SkillMovement.FindSpawnLocation 과 같다)
+		if not isvalid(map) then return nil end
+		local comps = map:GetChildComponentsByTypeName("SpawnLocationComponent", true)
+		if comps == nil then return nil end
+		for _, c in ipairs(comps) do
+			local e = c.Entity
+			if isvalid(e) and isvalid(e.TransformComponent) then
+				local sp = e.TransformComponent.WorldPosition
+				return Vector2(sp.x, sp.y)
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsParticipant(string userId)
+		-- 지금 매치의 감시 대상인가.
+		if self.participants == nil then return false end
+		for _, uid in ipairs(self.participants) do
+			if uid == userId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BumpMove(string userId)
+		-- 그 유저의 부활 이동 확인(예약된 타이머)을 무효로 만든다 — 이탈 · 새 부활.
+		if self.moveSeq == nil then self.moveSeq = {} end
+		self.moveSeq[userId] = (self.moveSeq[userId] or 0) + 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MoveToRespawn(string userId, string destMap, Vector2 destPos, integer attempt)
+		-- 리스폰 위치로 옮기고 MoveCheckSeconds 뒤 실제로 갔는지 되읽는다(WO-035 B · 2026-09-29). 안 갔으면 한 번 더 · 그래도 아니면 에러 로그.
+		-- 목적지 맵이 이 룸에 없으면(맵 하나만 연 테스트 · 정적 룸) 엔진 이동이 조용히 실패해 죽은 자리에 남았다 → 지금 맵의 스폰 지점으로 보낸다.
+		-- 🔴 재시도는 **옮기기 전 자리에 그대로 남아 있을 때만** 한다. 목적지가 아니라는 이유만으로 다시 옮기면, 부활하자마자 포탈을 탔거나
+		--    매치가 끝나 다른 곳으로 간 사람을 끌고 온다. 예약된 확인은 매치 종료 · 다음 매치 · 이탈 · 새 부활에서 무효가 된다(Codex 리뷰 2026-09-29).
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) or not isvalid(player.TransformComponent) then return end
+		if self.moveSeq == nil then self.moveSeq = {} end
+		local epoch = self.moveEpoch
+		local seq = self.moveSeq[userId] or 0
+		local fromMap = ""
+		if isvalid(player.CurrentMap) then fromMap = player.CurrentMap.Name end
+		local fp = player.TransformComponent.WorldPosition
+		local map = destMap
+		local pos = destPos
+		if not isvalid(_EntityService:GetEntityByPath("/maps/" .. map)) then
+			local here = player.CurrentMap
+			local sp = self:SpawnPointOf(here)
+			if sp == nil then
+				log_warning("[Death] respawn map " .. map .. " is not in this room · 스폰 지점도 없음 → 제자리 (" .. userId .. ")")
+				return
+			end
+			log_warning("[Death] respawn map " .. map .. " is not in this room → " .. tostring(here.Name) .. " 스폰 지점 (" .. userId .. ")")
+			map = here.Name
+			pos = sp
+		end
+		player.PlayerComponent:MoveToMapPosition(map, pos)
+		_TimerService:SetTimerOnce(function()
+			-- 그사이 매치가 끝났거나 · 새 매치가 시작됐거나 · 이탈했거나 · 다시 부활했으면 이 확인은 버린다.
+			if self.moveEpoch ~= epoch or self.moveSeq == nil or (self.moveSeq[userId] or 0) ~= seq then return end
+			if not self:IsParticipant(userId) then return end
+			local pl = _UserService:GetUserEntityByUserId(userId)
+			if not isvalid(pl) or not isvalid(pl.TransformComponent) or not isvalid(pl.PlayerComponent) then return end
+			local nowMap = ""
+			if isvalid(pl.CurrentMap) then nowMap = pl.CurrentMap.Name end
+			local wp = pl.TransformComponent.WorldPosition
+			local dx = wp.x - pos.x
+			local dy = wp.y - pos.y
+			local near = (dx * dx + dy * dy) <= self.MoveCheckTolerance * self.MoveCheckTolerance
+			local where = "map=" .. nowMap .. " pos=(" .. string.format("%.2f", wp.x) .. "," .. string.format("%.2f", wp.y) .. ") want=" .. map
+				.. " (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ")"
+			if nowMap == map and near then
+				log("[Death] respawn check ok " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				return
+			end
+			local sx = wp.x - fp.x
+			local sy = wp.y - fp.y
+			local stuck = nowMap == fromMap and (sx * sx + sy * sy) <= self.MoveStuckTolerance * self.MoveStuckTolerance
+			if not stuck then
+				-- 목적지는 아니지만 옮기기 전 자리도 아니다 = 스스로 움직였다(포탈 등). 건드리지 않는다.
+				log("[Death] respawn check moved on " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				return
+			end
+			if attempt < self.MoveMaxTries and not pl.PlayerComponent:IsDead() then
+				log_warning("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " → retry (" .. userId .. ")")
+				self:MoveToRespawn(userId, map, pos, attempt + 1)
+			else
+				log_error("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+			end
+		end, self.MoveCheckSeconds)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -217,6 +364,8 @@ script PlayerRespawnService extends Logic
 			end
 		end
 		local target = ""
+		local destMap = ""
+		local destPos = nil
 		local pc = player.PlayerComponent
 		if p.penalty then
 			local vid = ""
@@ -224,19 +373,44 @@ script PlayerRespawnService extends Logic
 			local row = nil
 			if vid ~= "" then row = self:VillageRowOf(vid) end
 			if row ~= nil and row.map ~= "" and row.lane1 ~= "" then
-				target = "/maps/" .. row.map .. "/P_To_" .. row.lane1
-				pc:MoveToEntityByPath(target)
+				-- 내 마을의 1레인 쪽 포탈 자리. 포탈을 못 찾으면(이 룸에 그 맵이 없음 등) 아래 리스항구 경로로 넘어간다.
+				local path = "/maps/" .. row.map .. "/P_To_" .. row.lane1
+				local portal = _EntityService:GetEntityByPath(path)
+				if isvalid(portal) and isvalid(portal.TransformComponent) then
+					local pp = portal.TransformComponent.WorldPosition
+					target = path
+					destMap = row.map
+					destPos = Vector2(pp.x, pp.y)
+				else
+					log_warning("[Death] village respawn portal not found " .. path .. " (" .. userId .. ")")
+				end
 			end
 		end
 		if target == "" and _MatchLobbyGateway ~= nil then
 			target = _MatchLobbyGateway.MatchStartMapId
-			_MatchLobbyGateway:MoveTo(userId, _MatchLobbyGateway.MatchStartMapId, _MatchLobbyGateway.MatchStartSpawn)
+			destMap = _MatchLobbyGateway.MatchStartMapId
+			destPos = _MatchLobbyGateway.MatchStartSpawn
+		end
+		if destMap ~= "" and destPos ~= nil then
+			self:BumpMove(userId)
+			self:MoveToRespawn(userId, destMap, destPos, 1)
 		end
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
 		if p.penalty and _UIToast ~= nil then
 			if applied == "MESO" then _UIToast:ShowMessage("내 마을에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
 			else _UIToast:ShowMessage("내 마을에서 부활 — 경험치 " .. tostring(amount) .. " 차감 (레벨 유지)", userId) end
 		end
-		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0))
+		-- MP 도 최대치로 — 시간 부활 · 선택 부활 모두 여기를 지난다(#40 comment 5844239483 · 사용자 강민구 2026-09-26 A 결정). econ.mp 원장은 SummonManager(GrantMp 가 maxMp clamp · HUD Push).
+		if _SummonManager ~= nil then
+			local e = _SummonManager:EnsureUser(userId)
+			if e ~= nil then
+				local refill = math.floor((e.maxMp or 0) - (e.mp or 0))
+				if refill > 0 then _SummonManager:GrantMp(userId, refill) end
+			end
+		end
+		local how = "timed"
+		if p.choice ~= "" then how = "choice" end
+		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0)
+			.. " revive=" .. how .. " hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 	end
 end
