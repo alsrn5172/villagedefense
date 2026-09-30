@@ -41,10 +41,16 @@ function font(b, p, o) {
   if (o.h) u.HorizontalAlignment = H[o.h];
   if (o.v) u.VerticalAlignment = V[o.v];
   if (o.text != null) u.Text = o.text;
-  if (o.overflow != null) u.Overflow = o.overflow; // 0 넘침 · 1 자름 · 2 말줄임
+  if (o.overflow != null) u.Overflow = o.overflow; // 0 넘침 · 1 말줄임 · 2 자름 · 3 페이지 (TextOverflowMode)
   if (o.outline === false) u.OutlineWidth = 0;
   if (o.shadow) { u.Underlay = true; u.UnderlayColor = C('#070B16', 1); u.UnderlayOffsetX = 0; u.UnderlayOffsetY = -1; }
-  b.patchComponent(p, TXT, u); return b;
+  b.patchComponent(p, TXT, u);
+  // 말줄임/자름(overflow 1·2)은 상자 높이가 한 줄 높이(글자 크기 ×1.6)보다 작으면 글자가 통째로 사라진다 → 높이를 올려 준다.
+  if ((o.overflow === 1 || o.overflow === 2)) {
+    const t = b.getComponent(p, 'MOD.Core.UITransformComponent'); const fs0 = o.size || (b.getComponent(p, TXT) || {}).FontSize || 24; const need = Math.ceil(fs0 * 1.6);
+    if (t && t.RectSize && t.RectSize.y < need) b.patch(p, { rect_size: [t.RectSize.x, need] });
+  }
+  return b;
 }
 // 버튼: 기본 그림 + 상태 그림(올림 · 누름 · 비활성)을 ButtonComponent 전환으로.
 function button(b, p, s) {
@@ -62,6 +68,9 @@ function newImage(b, p, key, o) {
   return b;
 }
 function newText(b, p, text, o) {
+  // 🔴 말줄임/자름(overflow 1·2)은 상자 높이가 한 줄 높이(글자 크기 ×1.6)보다 작으면 글자가 통째로 사라진다(실측 · 18px 글자 + 높이 25) → 높이를 올려 준다.
+  const rect0 = o.rect || o.rectSize || o.size_wh;
+  if (rect0 && (o.overflow === 1 || o.overflow === 2) && rect0[1] < Math.ceil((o.size || 24) * 1.6)) o = Object.assign({}, o, { rect: [rect0[0], Math.ceil((o.size || 24) * 1.6)] });
   const al = { left: 0, center: 1, right: 2 }[o.h || 'center'] + { top: 0, middle: 3, bottom: 6 }[o.v || 'middle'];
   b.text(p, text, { size: o.size, color: o.color || COLOR.ivory, alignment: al, anchor: o.anchor || 'middle-center', pos: o.pos || [0, 0], rect_size: o.rect || o.rectSize || o.size_wh, pivot: o.pivot || [0.5, 0.5], enable: o.enable !== false });
   font(b, p, { font: o.font, overflow: o.overflow, shadow: o.shadow });
