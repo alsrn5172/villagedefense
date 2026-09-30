@@ -19,6 +19,9 @@ script MatchResultUIController extends Logic
 
 	property ButtonComponent btnPrimary = "0e9bee2a-e293-41da-9294-cac941be332a"
 
+	-- 결과 사유 줄(칩 + 문장)의 세로 위치 = 창 중심 기준 위로 230 (디자이너 시안 17-result #4 · apply-result.cjs 의 CHIPY 와 같은 값).
+	property number ReasonRowY = 230
+
 	@HideFromInspector
 	property boolean isOpen = false
 
@@ -47,48 +50,242 @@ script MatchResultUIController extends Logic
 	@ExecSpace("Client")
 	method void SetResultCsv(string csv)
 		-- 서버 → 클라(전원). "title=매치 결과;reason=30분 만료;reward=발록의 심장 +2 (계정 누적 5);me=1;r0=1|이름|12345|800|15|0;r1=..."
-		-- r{i} = 순위|이름|발록피해|넥서스HP|레벨|탈락(1/0)|처치(WO-031 묶음 2 · 순위 ④)|칭호(묶음 5 · 이름 칸에 "칭호 닉네임"). 창을 연다.
+		-- r{i} = 순위|이름|발록피해|넥서스HP|레벨|탈락(1/0)|처치(WO-031 묶음 2 · 순위 ④)|칭호(묶음 5 · 8번째 칸 · 이름 위 줄). 창을 연다.
+		-- 🔴 디자이너 시안 17-result: 서버 문자열 형식은 그대로(보상은 한 줄 글 그대로 보여 준다). 줄 상태 그림은 .ui 에 깔린 그림을 켜고 끈다.
 		local kv = {}
 		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
 		if isvalid(self.titleText) then self.titleText.Text = kv.title or "매치 결과" end
-		if isvalid(self.reasonText) then self.reasonText.Text = kv.reason or "" end
-		if isvalid(self.rewardText) then self.rewardText.Text = kv.reward or "" end
+		self:ApplyReason(kv.reason or "")
+		local rewardLine = kv.reward or ""
+		if isvalid(self.rewardText) then
+			self.rewardText.Text = rewardLine
+			-- 심장 · 경험치 아이콘 칸은 받은 보상이 있을 때만(서버 글에 "발록의 심장" 이 있을 때 — "보상 없음" 류에는 숨긴다).
+			local hasReward = string.find(rewardLine, "발록의 심장", 1, true) ~= nil
+			local holder = self.rewardText.Entity.Parent
+			self:SetNodeEnable(holder, "Slot1", hasReward)
+			self:SetNodeEnable(holder, "Slot2", hasReward)
+		end
 		local me = tonumber(kv.me) or -1
 		if isvalid(self.rankRoot) then
 			for i = 0, 4 do
 				local row = self.rankRoot:GetChildByName("RankRow_" .. tostring(i))
 				if isvalid(row) then
+					-- 자리 없는 줄도 끄지 않고 "빈 자리" 그림으로 채운다(시안).
+					row.Enable = true
 					local v = kv["r" .. tostring(i)]
-					row.Enable = (v ~= nil and v ~= "")
 					if v ~= nil and v ~= "" then
-						local f = self:Split(v, "|")
-						local cols = { "Rank", "Name", "Damage", "CoreHp", "Level" }
-						for c = 1, 5 do
-							local cell = row:GetChildByName(cols[c])
-							if isvalid(cell) and cell.TextGUIRendererComponent ~= nil then
-								cell.TextGUIRendererComponent.Text = f[c] or ""
-							end
-						end
-						local elim = row:GetChildByName("EliminatedMark")
-						if isvalid(elim) then elim.Enable = (f[6] == "1") end
-						-- 처치 수 열 (7번째 칸 · 없으면 빈칸 — 옛 서버 CSV 와도 안 깨진다)
-						local kills = row:GetChildByName("Kills")
-						if isvalid(kills) and kills.TextGUIRendererComponent ~= nil then
-							kills.TextGUIRendererComponent.Text = f[7] or ""
-						end
-						-- 내 행 강조: 이름에 ▶
-						-- 이름 칸 = "칭호 닉네임"(칭호 없으면 닉네임) · 내 행은 ▶
-						local name = row:GetChildByName("Name")
-						if isvalid(name) and name.TextGUIRendererComponent ~= nil then
-							local shown = ((f[8] ~= nil and f[8] ~= "") and (f[8] .. " ") or "") .. (f[2] or "")
-							name.TextGUIRendererComponent.Text = (i == me) and ("▶ " .. shown) or shown
-						end
+						self:ApplyRow(row, i, self:Split(v, "|"), i == me)
+					else
+						self:ApplyRow(row, i, nil, false)
 					end
 				end
 			end
 		end
 		self:SetOpen(true)
 		log("[Result] csv applied reason=" .. tostring(kv.reason))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyReason(string reason)
+		-- 결과 사유 칩(승리 금 · 시간 종료 회 · 전원 탈락 빨강) + 문장을 한 묶음으로 가운데에 놓는다(사이 12).
+		-- 서버 reason 은 "승리 — 이름" · "시간 종료" · "전원 탈락" — 앞부분으로 종류를 가른다. 모르는 사유는 회색 칩에 사유 글을 그대로 쓴다.
+		local chipName = "ReasonChipTime"
+		local label = reason
+		local sentence = ""
+		if string.find(reason, "승리", 1, true) == 1 then
+			chipName = "ReasonChipWin"
+			label = "승리"
+			local who = string.match(reason, "^승리%s*—%s*(.+)$")
+			if who ~= nil and who ~= "" then
+				sentence = who .. "님이 발록을 쓰러뜨렸습니다"
+			else
+				sentence = "발록을 쓰러뜨렸습니다"
+			end
+		elseif reason == "전원 탈락" then
+			chipName = "ReasonChipOut"
+			label = "전원 탈락"
+			sentence = "모든 넥서스가 부서졌습니다"
+		elseif reason == "시간 종료" then
+			label = "시간 종료"
+			sentence = "제한 시간이 끝나 기록으로 순위를 정했습니다"
+		end
+
+		if not isvalid(self.window) then return end
+		self:SetNodeEnable(self.window, "ReasonChipWin", chipName == "ReasonChipWin")
+		self:SetNodeEnable(self.window, "ReasonChipTime", chipName == "ReasonChipTime")
+		self:SetNodeEnable(self.window, "ReasonChipOut", chipName == "ReasonChipOut")
+		local chip = self.window:GetChildByName(chipName)
+		if not isvalid(chip) then return end
+		local chipLabel = chip:GetChildByName("Text")
+		local chipWidth = 51.5
+		if isvalid(chipLabel) then
+			chipLabel.TextGUIRendererComponent.Text = label
+			chipWidth = chipLabel.TextGUIRendererComponent:GetPreferredWidth(label) + 22
+			if chipWidth < 51.5 then chipWidth = 51.5 end
+			chipLabel.UITransformComponent.RectSize = Vector2(chipWidth, 28)
+		end
+
+		local sentenceWidth = 0
+		local gap = 0
+		if isvalid(self.reasonText) then
+			self.reasonText.Text = sentence
+			if sentence ~= "" then
+				sentenceWidth = self.reasonText:GetPreferredWidth(sentence) + 4
+				gap = 12
+			end
+		end
+		local left = -(chipWidth + gap + sentenceWidth) / 2
+		self:PlaceNode(chip, left + chipWidth / 2, self.ReasonRowY, chipWidth, 28)
+		if isvalid(self.reasonText) then
+			self:PlaceNode(self.reasonText.Entity, left + chipWidth + gap + sentenceWidth / 2, self.ReasonRowY, sentenceWidth + 2, 30)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyRow(any row, integer index, any f, boolean isMe)
+		-- 순위 한 줄을 그린다(디자이너 시안 17-result #6~#13). f = 서버 r{i} 를 "|" 로 나눈 칸(없으면 빈 자리).
+		-- 줄 바탕은 .ui 에 깔린 네 그림(BgRow 기본 · BgSel 내 줄 · BgLock 탈락 · BgEmpty 빈 자리)을 켜고 끈다.
+		local cells = { "Rank", "Name", "Damage", "CoreHp", "Level", "Kills" }
+		local extras = { "BgRow", "BgSel", "BgLock", "RankChipGold", "RankChipGray", "RankChipDark", "ElimChip", "EliminatedMark", "Crown", "MeChip", "TitleLine", "CoreHpBroken" }
+
+		if f == nil then
+			for _, name in ipairs(cells) do self:SetNodeEnable(row, name, false) end
+			for _, name in ipairs(extras) do self:SetNodeEnable(row, name, false) end
+			self:SetNodeEnable(row, "BgEmpty", true)
+			self:SetNodeEnable(row, "EmptyText", true)
+			return
+		end
+		for _, name in ipairs(cells) do self:SetNodeEnable(row, name, true) end
+		self:SetNodeEnable(row, "BgEmpty", false)
+		self:SetNodeEnable(row, "EmptyText", false)
+
+		local elim = (f[6] == "1")
+		local rankNumber = tonumber(f[1]) or (index + 1)
+		local ivory = Color(0.953, 0.933, 0.886, 1)
+		local dim = Color(0.682, 0.722, 0.812, 1)
+
+		-- 줄 바탕: 내 줄(금테 · 탈락해도 유지) > 탈락 > 기본
+		self:SetNodeEnable(row, "BgSel", isMe)
+		self:SetNodeEnable(row, "BgLock", elim and not isMe)
+		self:SetNodeEnable(row, "BgRow", (not isMe) and (not elim))
+
+		-- 순위: 1~3위는 칩(금 · 은 · 동) 안 글자, 4위부터는 칩 없이 회색 숫자
+		self:SetNodeEnable(row, "RankChipGold", rankNumber == 1)
+		self:SetNodeEnable(row, "RankChipGray", rankNumber == 2)
+		self:SetNodeEnable(row, "RankChipDark", rankNumber == 3)
+		local rankEntity = row:GetChildByName("Rank")
+		if isvalid(rankEntity) then
+			local rankText = rankEntity.TextGUIRendererComponent
+			rankText.Text = f[1] or ""
+			if rankNumber == 1 then
+				rankText.FontSize = 18
+				rankText.FontColor = Color(0.110, 0.078, 0.020, 1)
+			elseif rankNumber == 2 then
+				rankText.FontSize = 18
+				rankText.FontColor = Color(0.165, 0.188, 0.251, 1)
+			elseif rankNumber == 3 then
+				rankText.FontSize = 18
+				rankText.FontColor = Color(1, 1, 1, 1)
+			else
+				rankText.FontSize = 20
+				rankText.FontColor = dim
+			end
+		end
+
+		-- 수치 칸(천 단위 쉼표 · 넥서스 HP 0 이면 "파괴")
+		self:SetCellText(row, "Damage", self:FormatNumber(f[3] or ""))
+		self:SetCellText(row, "CoreHp", self:FormatNumber(f[4] or ""))
+		local coreHp = tonumber(f[4])
+		local broken = (coreHp ~= nil and coreHp <= 0)
+		self:SetNodeEnable(row, "CoreHp", not broken)
+		self:SetNodeEnable(row, "CoreHpBroken", broken)
+		self:SetCellText(row, "Level", f[5] or "")
+		self:SetCellText(row, "Kills", self:FormatNumber(f[7] or ""))
+		self:SetNodeEnable(row, "EliminatedMark", elim)
+		self:SetNodeEnable(row, "ElimChip", elim)
+
+		-- 이름 · 칭호 · 왕관 · "나" 칩: 1위(탈락 아님)는 왕관이 있어 이름이 오른쪽으로 34 밀린다. 칭호가 있으면 이름이 아래 줄.
+		local shownName = f[2] or ""
+		local shownTitle = f[8] or ""
+		local hasCrown = (rankNumber == 1) and (not elim)
+		local left = 82
+		local boxWidth = 326
+		if hasCrown then
+			left = 118
+			boxWidth = 290
+		end
+		self:SetNodeEnable(row, "Crown", hasCrown)
+		local nameY = 0
+		if shownTitle ~= "" then nameY = -8.25 end
+		local nameEntity = row:GetChildByName("Name")
+		if isvalid(nameEntity) then
+			local nameComp = nameEntity.TextGUIRendererComponent
+			nameComp.Text = shownName
+			if elim then nameComp.FontColor = dim else nameComp.FontColor = ivory end
+			local maxWidth = boxWidth
+			if isMe then maxWidth = boxWidth - 39 end
+			local nameWidth = nameComp:GetPreferredWidth(shownName) + 4
+			if nameWidth > maxWidth then nameWidth = maxWidth end
+			self:PlaceNode(nameEntity, left, nameY, nameWidth, 30)
+			-- "나" 칩은 이름 글자 끝 + 8(내 줄만)
+			self:SetNodeEnable(row, "MeChip", isMe)
+			local meChip = row:GetChildByName("MeChip")
+			if isMe and isvalid(meChip) then self:PlaceNode(meChip, left + nameWidth + 8, 0, 31, 21) end
+		end
+		local titleEntity = row:GetChildByName("TitleLine")
+		if isvalid(titleEntity) then
+			titleEntity:SetEnable(shownTitle ~= "")
+			if shownTitle ~= "" then
+				local titleComp = titleEntity.TextGUIRendererComponent
+				titleComp.Text = shownTitle
+				if elim then
+					titleComp.FontColor = Color(0.663, 0.702, 0.788, 1)
+				else
+					titleComp.FontColor = Color(0.910, 0.780, 0.478, 1)
+				end
+				self:PlaceNode(titleEntity, left, 10.5, boxWidth, 23)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCellText(any row, string name, string text)
+		-- 줄 안 글자 칸 하나에 글을 넣는다(없으면 조용히 넘어간다 — 옛 .ui 와도 안 깨진다).
+		local cell = row:GetChildByName(name)
+		if isvalid(cell) and cell.TextGUIRendererComponent ~= nil then cell.TextGUIRendererComponent.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetNodeEnable(any parent, string name, boolean enable)
+		-- 이름으로 찾은 자식 하나를 켜고 끈다. 없으면 조용히 넘어간다.
+		if not isvalid(parent) then return end
+		local child = parent:GetChildByName(name)
+		if isvalid(child) then child:SetEnable(enable) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceNode(any entity, number x, number y, number w, number h)
+		-- 노드의 위치를 바꾼다. anchoredPosition 을 대입하면 크기가 옛 값으로 되돌아가는 일이 있어(UIToast 와 같은 현상)
+		-- RectSize 를 같이 다시 준다. 앵커는 .ui 가 이미 잡아 두었다(사유 칩 · 문장 = 가운데 · 줄 안 이름 · 칭호 · 나 칩 = 왼쪽 가운데).
+		if not isvalid(entity) then return end
+		local t = entity.UITransformComponent
+		if t == nil then return end
+		t.anchoredPosition = Vector2(x, y)
+		t.RectSize = Vector2(w, h)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FormatNumber(string s)
+		-- 서버가 보낸 정수 문자열에 천 단위 쉼표를 넣는다(숫자가 아니면 그대로).
+		local n = tonumber(s)
+		if n == nil then return s end
+		local formatted = tostring(math.floor(n))
+		while true do
+			local replaced, count = string.gsub(formatted, "^(-?%d+)(%d%d%d)", "%1,%2")
+			formatted = replaced
+			if count == 0 then break end
+		end
+		return formatted
 	end
 
 	@ExecSpace("ClientOnly")
