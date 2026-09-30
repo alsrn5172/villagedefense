@@ -18,7 +18,7 @@ const COLOR = {
   green: '#7FD6A4', blue: '#86B3F2', gem: '#C3A6FF', heart: '#E9566F', veil: '#060A14', white: '#FFFFFF',
 };
 // 시안 글꼴 → MSW 내장 글꼴 (굵기는 FontStyle 1)
-const FONT = { Maple: ['Maple', 0], FootballB: ['Football', 1], FootballL: ['Football', 0], Noto700: ['Default', 1], Noto500: ['Default', 0], Noto400: ['Default', 0], Bazzi: ['Bazzi', 0] };
+const FONT = { Maple: ['Maple', 1], FootballB: ['Football', 1], FootballL: ['Football', 0], Noto700: ['Default', 1], Noto500: ['Default', 0], Noto400: ['Default', 0], Bazzi: ['Bazzi', 0] };
 const H = { left: 1, center: 2, right: 4 };
 const V = { top: 256, middle: 512, bottom: 1024 };
 
@@ -70,7 +70,30 @@ function newText(b, p, text, o) {
 }
 function newBox(b, p, o) { b.empty(p, { anchor: o.anchor || 'middle-center', pos: o.pos || [0, 0], rect_size: o.size, pivot: o.pivot || [0.5, 0.5], enable: o.enable !== false }); if (o.order != null) b.patch(p, { display_order: o.order }); return b; }
 
+// ── 형제 그리기 순서 ──
+// 🔴 Maker 는 형제를 "파일 안 배열 순서"대로 그린다(뒤에 있을수록 앞에 보인다). displayOrder 값만 바꿔서는 안 움직인다
+//    (2026-10-01 부활 팝업에서 실측: 새 띠가 기존 제목 글자를 덮음). 그래서 배열에서 블록째 옮기고 displayOrder 도 맞춰 적는다.
+function absPath(b, p) { const e = b.find(p); if (!e) throw new Error('없는 엔티티: ' + p); return e.path; }
+function blockOf(b, abs) { return b.entities.filter((e) => e.path === abs || e.path.startsWith(abs + '/')); }
+function renumber(b, parentAbs) {
+  let n = 0;
+  for (const e of b.entities) { const pp = e.path.slice(0, e.path.lastIndexOf('/')); if (pp === parentAbs) b._entityJson(e).displayOrder = n++; }
+}
+function moveBlock(b, abs, index) {
+  const block = blockOf(b, abs); const rest = b.entities.filter((e) => !block.includes(e));
+  const anchor = index(rest);
+  rest.splice(anchor, 0, ...block);
+  b.entities.length = 0; b.entities.push(...rest);
+  renumber(b, abs.slice(0, abs.lastIndexOf('/')));
+}
+// p 를 ref 바로 뒤(=ref 보다 먼저 그려짐)로
+function before(b, p, ref) { const a = absPath(b, p), r = absPath(b, ref); moveBlock(b, a, (rest) => rest.findIndex((e) => e.path === r)); return b; }
+// p 를 형제 중 맨 뒤(가장 먼저 그려짐)로
+function back(b, p) { const a = absPath(b, p); const parent = a.slice(0, a.lastIndexOf('/')); moveBlock(b, a, (rest) => { const i = rest.findIndex((e) => e.path.startsWith(parent + '/')); return i < 0 ? rest.length : i; }); return b; }
+// p 를 형제 중 맨 앞(가장 나중에 그려짐)으로
+function front(b, p) { const a = absPath(b, p); moveBlock(b, a, (rest) => rest.length); return b; }
+
 // 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h) → 부모 상자(같은 좌표계 px,py,pw,ph) 중심 기준 위치
 function at(x, y, w, h, parent) { return [Math.round((x + w / 2 - (parent[0] + parent[2] / 2)) * 2) / 2, Math.round(-((y + h / 2) - (parent[1] + parent[3] / 2)) * 2) / 2]; }
 
-module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced };
+module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front };
