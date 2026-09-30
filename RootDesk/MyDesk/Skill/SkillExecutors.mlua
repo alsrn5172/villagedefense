@@ -29,7 +29,7 @@ script SkillExecutors extends Logic
     -- b/skill-thief-motion (2026-09-13 · 사용자의 도적 표 이미지 재대조 · CSV 값 변경 0):
     --   캐릭터 모션(아대 CLAW 행): 럭키 세븐 = 표창 던지기 swingT3(→ b/skill-thief-effects 5차 swingO3) · 다크 사이트/쉐도우 파트너 = 비공격 버프 순서(heal 왕복 → alert → stand1) · 메소 익스플로전 = alert → CSV Duration 에 swingT3 → stand1.
     --   분신 따라하기(원작 쉐도우 파트너 = 분신이 시전자의 공격을 그대로 따라 한다): 쉐도우 파트너가 켜져 있으면 PlayMotion 이 재생한 동작을 분신이 시전자 뒤에서 한 번 따라 하고
-    --   (effectOverrides.SK_T22.mimic 의 팩 special/<action> 클립 · PlayShadowMimic) 서 있기 루프로 돌아온다. 피해 2배는 그대로 SkillBuffs.GetOutgoingDamageMul 한 줄.
+    --   (effectOverrides.SK_T22.mimic 의 팩 special/<action> 클립 · PlayShadowMimic) 서 있기 루프로 돌아온다. 분신 몫 피해(+50~70% · #40 5884390073 4번)는 그대로 SkillBuffs.GetOutgoingDamageMul 한 줄.
     -- b/skill-pirate-motion (2026-09-13 · 사용자의 해적 표 이미지 재대조 · CSV 값 변경 0 · SK_P11 IconRUID/#Note 만):
     --   캐릭터 모션(너클 KNUCKLE 행): 섬머솔트 킥 = swingPF(뛰어오르는 피니시) · 슈퍼 트랜스폼 변신/에너지 쉴드 = 비공격 버프 순서(heal 왕복 → alert → stand1) ·
     --   변신 중 재시전(주먹) = swingP2 훅(순서 없음 · Execute 가 IsRecastCast 로 `_RECAST` 순서 id 를 쓴다) · 함포 사격 = alert → 폭격 파마다 잽/훅(BarrageInterval 간격) → 마지막 파 swingPF → stand1.
@@ -159,23 +159,29 @@ script SkillExecutors extends Logic
 
     property integer LineHitEffects = 4
 
-    -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초) · 표시 타수 상한(피해 배율은 동전 개수 그대로).
+    -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초).
     property number MesoExplodeInterval = 0.06
 
-    property integer MesoDisplayHitsMax = 15
+    -- 동전 하나의 폭발 반지름(world unit · B 기본값 · #40 5884390073 5번 "동전마다 그 자리에서 터져 그 주변 적만 때린다 · 반경은 B 기본값"):
+    --   1.0 u = 100 px. 픽파켓 동전은 맞은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다(MesoCoin.ArcSpread) → 1.0 이면 동전을 떨군 몬스터가
+    --   조금 움직여도 맞고, 옆 몬스터(≈1 u 떨어짐)는 가장자리만 걸친다. 모인 동전은 같은 적을 여러 번 때린다(동전 하나 = 50% 1타).
+    property number MesoCoinBlastRadius = 1.0
 
-    -- 메소 익소플로전 "주변 메소 개수" 의 출처(b/skill-thief-effects · #40 질문 5 답이 오면 이 값들만 바꾼다):
+    -- true = 착지한 동전(MesoCoin.landed · #125)만 센다. false(기본) = 날아가는 중인 동전도 센다 — 폭발 위치는 터지는 순간의 동전 자리라
+    --   (포물선 0.45s < 컷신 뒤 폭발) 날던 동전도 바닥에서 터진다. A 가이드 5906002741 "엄격히는 mc.landed · B 판단".
+    property boolean MesoLandedOnly = false
+
+    -- 메소 익스플로전 "주변 메소" 의 출처(b/skill-thief-effects):
     --   MesoUseFloorCoins   true = 반경 안 바닥 동전(시전자가 주울 수 있는 것)을 센다 — 기획 답 2026-09-24 6번 "바닥에 떨어진 메소를 소모".
-    --   MesoPickpocketCoinsOnly  false = 반경 안 바닥 동전 **전부**(픽파켓 동전 + 사냥 드랍 "Meso" · 둘 다 시전자 소유만) — **표(답변 6 "바닥에 떨어진 메소를 소모")에 맞춰 변경**
-    --                       (2026-09-27 사용자 규칙 "게임 로직은 기획 표 · 원작은 연출만"). 사냥 드랍 동전은 처치 메소 몫(MesoCoin.Value)이 담겨 있어 터뜨리면 그 메소를 못 줍는다.
-    --                       true = 픽파켓 동전만(SkillBuffs.PickpocketCoinName · 원작 최신 KMS = 자기 픽파킷 동전만 · 예전 기본값).
+    --   MesoPickpocketCoinsOnly  true = 픽파켓 동전만(SkillBuffs.PickpocketCoinName · 사냥 드랍 "Meso" 는 세지도 터뜨리지도 않는다) — #40 5884390073 5번에 맞춰 변경.
+    --                       예전 false(2026-09-27 표 답변 6 · 바닥 동전 전부)는 사냥 드랍 동전(처치 메소 몫)까지 터뜨렸다.
     --   MesoSummonCount     시전 순간 반경 안에 "소환" 해서 같이 터뜨리는 동전 수(연출용 · 줍지 못함 · 재화 아님). 0 = 소환 없음 — 기획 답 6번 "소환은 연출" · 원작에 메소를 스스로 만드는 판 없음.
     --                       1 이상이면 바닥 동전이 0 개여도 시전된다(PreCheck).
     --   MesoMaxCoins        한 번에 세는 동전 상한(바닥 + 소환). 0 = 상한 없음 — 기획 답 6번 "상한은 없습니다"(원작 최신 15 · 고전 20). 넘치는 바닥 동전은 남는다.
     -- 반경 = CSV Range(6 · 원작 최신 range 640 px ≈ 6.4).
     property boolean MesoUseFloorCoins = true
 
-    property boolean MesoPickpocketCoinsOnly = false
+    property boolean MesoPickpocketCoinsOnly = true
 
     property integer MesoSummonCount = 0
 
@@ -690,7 +696,7 @@ script SkillExecutors extends Logic
                 --   appear = effect0 6db426f9…(검은 먹 리본이 위·뒤로 돌며 오른다 = 영상의 "용처럼 도는" 연출 · 11프레임 × 85ms · WZ z −1 = 캐릭터 뒤) — 시전 순간 (0, 0) 에 붙이고
                 --            바라보는 쪽으로 뒤집고, 층은 플레이어 뒤(sortBehind → ApplyShadowSorting). offsetX 0 을 적어야 loop.offsetX(분신 자리)로 가지 않는다.
                 --   loop.delay 1.4 = 영상 "초기 2004" 구간(1.0s 시전 → 2.4s 분신이 서 있음 · 소환 폭발 없음). 그동안 분신·따라하기는 숨긴다(HideShadowFor 재사용).
-                --   ⚠ 연출만 바꿨다 — 버프(화력 ×2)는 예전대로 시전 순간부터 걸린다(SkillBuffs · 시전 락 0.6s 뒤 공격하면 분신이 보이기 전에도 ×2).
+                --   ⚠ 연출만 바꿨다 — 버프(분신 몫 +50~70%)는 예전대로 시전 순간부터 걸린다(SkillBuffs · 시전 락 0.6s 뒤 공격하면 분신이 보이기 전에도 붙는다).
                 --   loop offsetX −0.33 = 영상 실측 분신 중심이 몸 중심보다 ≈80 video px(≈0.38 unit · 2004·2022 두 구간 같음) 뒤 − 우리 몸 중심이 원점보다 0.05 앞. 예전 −0.45.
                 --   분신 몸(special/stand1 f4aba8c3…)은 그대로. 투명도는 그림에 들어 있다.
                 cast = { ruid = "8ef08d990aeb452bad114479f6bc76fd" },
@@ -2343,7 +2349,7 @@ script SkillExecutors extends Logic
         local comps = map:GetChildComponentsByTypeName("script.MesoCoin", true)
         if comps == nil then return found end
         local r2 = radius * radius
-        -- b/skill-thief-effects: MesoPickpocketCoinsOnly 면 픽파켓 동전(이름 = SkillBuffs.PickpocketCoinName)만 — 기본은 false(표 답변 6 · 사냥 드랍 "Meso" 도 센다). PreCheck · ExecuteMesoOrigin 둘 다 여기서 거른다.
+        -- b/skill-thief-effects: MesoPickpocketCoinsOnly(기본 true · #40 5884390073 5번)면 픽파켓 동전(이름 = SkillBuffs.PickpocketCoinName)만. MesoLandedOnly 면 착지한 동전만. PreCheck · ExecuteMesoOrigin 둘 다 여기서 거른다.
         local pickName = "PickpocketMeso"
         if _SkillBuffs ~= nil and _SkillBuffs.PickpocketCoinName ~= "" then pickName = _SkillBuffs.PickpocketCoinName end
         for _, mc in ipairs(comps) do
@@ -2352,6 +2358,7 @@ script SkillExecutors extends Logic
             if isvalid(coin) and self.MesoPickpocketCoinsOnly and coin.Name ~= pickName then coin = nil end
             if isvalid(coin) and isvalid(coin.TransformComponent) then
                 local collected = mc.Collected
+                if self.MesoLandedOnly and not mc.landed then collected = true end
                 if not collected then
                     local pickable = true
                     local own = coin:GetComponent("script.DropOwner")
@@ -2372,16 +2379,19 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ExecuteMesoOrigin(string skillId, table skillData, Entity casterEntity, number level)
-        -- 메소 익스플로전(SK_T31 · 추가기획1 도적 궁 "메소를 소환해서 주변 지역을 다 폭발 · 50% × 주변 메소 갯수"):
-        --   반경 Range(6) 안의 메소 동전 N 개(FindMesoCoins · PreCheck 가 N ≥ 1 을 보장)를 MesoExplodeInterval 간격으로 하나씩 터뜨리고(coinHits 순환 · 동전 소멸),
-        --   CSV Duration(0.6) 시점에 반지름 안 몬스터 전부에 atk × BaseEffect 50% × N (DealSkillDamageCircleScaled · 표시 타수는 min(N, MesoDisplayHitsMax)).
+        -- 메소 익스플로전(SK_T31 · 추가기획1 도적 궁 · #40 5884390073 5번 "동전 하나 = 공격 한 번"):
+        --   반경 Range(6) 안의 픽파켓 동전 N 개(FindMesoCoins · PreCheck 가 N ≥ 1 을 보장)를 MesoExplodeInterval 간격으로 하나씩 터뜨린다(coinHits 순환 · 동전 소멸).
+        --   동전마다 **그 자리**(터지는 순간의 동전 위치)에서 반지름 MesoCoinBlastRadius 원 안 몬스터에 atk × BaseEffect 50% 1타(DealSkillDamageCircleScaled · 배율 1 · 표시 1타).
+        --   모인 동전은 같은 적을 여러 번 때린다. 예전 = CSV Duration 시점에 시전자 반경 Range 원 하나로 50% × N.
+        --   마지막 동전은 CSV Duration(컷신 뒤 피해 시점) 0.15s 전에 터진다. 중심 폭발 그림(impact)은 그 시점에 연출로만 남긴다(피해 없음).
         --   동전은 Collected 로 먼저 잠가 자석·줍기가 같은 프레임에 가져가지 않게 한다. 픽파켓으로 떨어뜨린 동전이 재료다(자동획득을 끄면 남는다).
+        --   피해는 시전자의 SkillAttack 으로 낸다 → 처치 귀속 = 시전자(#123 AttackCredit · A 가이드 5906002741 4번 (a)).
         if not isvalid(casterEntity.PlayerComponent) then return end
         local uid = casterEntity.PlayerComponent.UserId
         local radius = skillData.range
         if radius <= 0 then radius = 3 end
         -- b/skill-thief-effects: 동전 출처 = 바닥 동전(MesoUseFloorCoins · MesoPickpocketCoinsOnly 면 픽파켓 동전만) + 소환 동전(MesoSummonCount · 연출용 점) · 상한 MesoMaxCoins(0 = 없음).
-        --   기본값 = 바닥 동전 전부(표 답변 6 "바닥에 떨어진 메소를 소모" · 시전자 소유만) · 소환 0 · 상한 없음(기획 답 2026-09-24 6번).
+        --   기본값 = 픽파켓 동전만(#40 5884390073 5번 · 시전자 소유만) · 소환 0 · 상한 없음(기획 답 2026-09-24 6번).
         local coins = {}
         if self.MesoUseFloorCoins then coins = self:FindMesoCoins(casterEntity, radius, uid) end
         local cap = self.MesoMaxCoins
@@ -2428,11 +2438,19 @@ script SkillExecutors extends Logic
             local ez = cp.z
             local ruid = nil
             if #hits > 0 then ruid = hits[((order - 1) % #hits) + 1] end
+            local k = order
             _TimerService:SetTimerOnce(function()
+                -- 터지는 순간의 동전 자리(날던 동전은 그사이 앉았다). 동전이 이미 사라졌으면 시전 순간 자리.
+                if isvalid(coin) and isvalid(coin.TransformComponent) then
+                    local now = coin.TransformComponent.WorldPosition
+                    ex = now.x
+                    ey = now.y
+                end
                 if ruid ~= nil and isvalid(casterEntity) then
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(ex, ey + 0.3, ez), 0, Vector3(1, 1, 1), false)
                 end
                 if isvalid(coin) then coin:Destroy() end
+                self:MesoCoinBlast(skillId, casterEntity, level, ex, ey + 0.3, k, n)
             end, detonateStart + (order - 1) * self.MesoExplodeInterval)
         end
         for j, sp in ipairs(summonPoints) do
@@ -2440,31 +2458,41 @@ script SkillExecutors extends Logic
             local ruid = nil
             if #hits > 0 then ruid = hits[((order - 1) % #hits) + 1] end
             local serial = summonSerials[j]
+            local k = order
             _TimerService:SetTimerOnce(function()
                 if serial ~= nil and serial ~= 0 then _EffectService:RemoveEffect(serial) end
                 if ruid ~= nil and isvalid(casterEntity) then
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(sp.x, sp.y + 0.3, sp.z), 0, Vector3(1, 1, 1), false)
                 end
+                self:MesoCoinBlast(skillId, casterEntity, level, sp.x, sp.y + 0.3, k, n)
             end, detonateStart + (order - 1) * self.MesoExplodeInterval)
         end
         log("SkillExecutors: MESO " .. skillId .. " source floor=" .. tostring(#coins) .. " summoned=" .. tostring(#summonPoints)
             .. " (useFloor=" .. tostring(self.MesoUseFloorCoins) .. " pickpocketOnly=" .. tostring(self.MesoPickpocketCoinsOnly)
-            .. " summonCount=" .. tostring(self.MesoSummonCount) .. " cap=" .. tostring(cap) .. ")")
+            .. " summonCount=" .. tostring(self.MesoSummonCount) .. " cap=" .. tostring(cap) .. " landedOnly=" .. tostring(self.MesoLandedOnly) .. ")")
         _TimerService:SetTimerOnce(function()
-            if not isvalid(casterEntity) then return end
-            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
-            if not isvalid(skillAttack) then
-                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping meso damage for " .. skillId)
-                return
-            end
+            if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
             local p = casterEntity.TransformComponent.WorldPosition
             self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(p.x, p.y + 0.5, p.z), nil)
-            local display = n
-            if display > self.MesoDisplayHitsMax then display = self.MesoDisplayHitsMax end
-            skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, n, display)
-            log("SkillExecutors: MESO " .. skillId .. " coins=" .. tostring(n) .. " r=" .. tostring(radius) .. " -> " .. tostring(_SkillDatabase:RatioAt(skillId, level) * n) .. "% (" .. uid .. ")")
         end, delay)
-        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins over " .. tostring(n * self.MesoExplodeInterval) .. "s, damage at +" .. tostring(delay) .. "s")
+        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval)
+            .. "s · each blast r=" .. tostring(self.MesoCoinBlastRadius) .. " x " .. tostring(_SkillDatabase:RatioAt(skillId, level)) .. "% · center fx at +" .. tostring(delay) .. "s (" .. uid .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void MesoCoinBlast(string skillId, Entity casterEntity, number level, number x, number y, integer k, integer n)
+        -- 메소 익스플로전 동전 하나의 폭발(#40 5884390073 5번): (x, y) 중심 반지름 MesoCoinBlastRadius 원 안 몬스터에 atk × BaseEffect 1타.
+        -- 시전자의 SkillAttack 으로 때린다(처치 귀속 = 시전자 · #123). 이 타격은 픽파켓 동전을 떨구지 않는다(SkillBuffs.PickpocketExcludedSkillIds = "SK_T31").
+        if not isvalid(casterEntity) then return end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping meso blast for " .. skillId)
+            return
+        end
+        local r = self.MesoCoinBlastRadius
+        if r <= 0 then r = 1 end
+        skillAttack:DealSkillDamageCircleScaled(skillId, level, x, y, r, 1, 1)
+        log("SkillExecutors: MESO blast " .. tostring(k) .. "/" .. tostring(n) .. " at (" .. string.format("%.2f", x) .. ", " .. string.format("%.2f", y) .. ") r=" .. tostring(r))
     end
 
     @ExecSpace("ServerOnly")
