@@ -192,5 +192,8 @@ S.before(b, BD + '/TitleBand', BD + '/Title');
 S.before(b, BD + '/TitleIcon', BD + '/Title');
 S.before(b, BD + '/HereChip', BD + '/SelectedMarker');
 
+// 칩 글자 대비(디자이너 시안 갱신 2026-10-02): 보석 칩(지금 위치 = chip_blue · 보스 = chip_red → 흰 글자 + 어두운 외곽선). 글자를 다 맞춘 뒤에 부른다.
+console.log('chipText', JSON.stringify(S.chipText(b).map((x) => x.path.split('/').slice(-3).join('/') + ':' + x.kind)));
+
 b.write(path.join(WORLD, 'ui', 'WorldMapGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`WorldMapGroup(월드맵) 적용 끝 — 점 ${dots}개 · 새 엔티티 ${b.listEntities().length - before}개`);
