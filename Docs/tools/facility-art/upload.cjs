@@ -122,14 +122,36 @@ async function updateOne(f) {
   if (mode === '--props') {
     const rest = process.argv.slice(4);
     const kv = rest.filter((a) => a.includes('=')); const names = rest.filter((a) => !a.includes('='));
-    const props = kv.map((a) => { const i = a.indexOf('='); return { key: a.slice(0, i), value: a.slice(i + 1) }; });
+    const given = Object.fromEntries(kv.map((a) => { const i = a.indexOf('='); return [a.slice(0, i), a.slice(i + 1)]; }));
     await init();
     for (const n of names) {
       const ent = map.frames[n]; if (!ent) { console.log('표에 없음', n); process.exitCode = 1; continue; }
+      // 🔴 asset_update_resource_storage_info 는 속성 목록을 **통째로 바꾼다**(안 적은 키는 사라짐 · 2026-10-02 실측) → 기록해 둔 속성에 합쳐서 전부 보낸다.
+      const merged = Object.assign({}, ent.props, given);
+      const props = Object.entries(merged).map(([key, value]) => ({ key, value }));
       await tool('asset_update_resource_storage_info', { guid: ent.ruid, properties: props });
-      Object.assign(ent.props, Object.fromEntries(props.map((p) => [p.key, p.value]))); save();
+      ent.props = merged; save();
       console.log('속성 변경', n, JSON.stringify(props));
     }
+    return;
+  }
+  if (mode === '--probe') {
+    // 시험용 복제: manifest 의 그림 하나를 다른 이름 · 다른 피벗으로 새로 올린다. 사용: --probe <원본이름> <새이름> key=값 ...  (표의 _probe 칸에 기록)
+    const src = entryOf(process.argv[4]); const nm = process.argv[5];
+    const given = Object.fromEntries(process.argv.slice(6).map((a) => { const i = a.indexOf('='); return [a.slice(0, i), a.slice(i + 1)]; }));
+    if (!src || !nm) throw new Error('--probe <원본이름> <새이름> key=값 ...');
+    await init();
+    const buf = fs.readFileSync(path.join(SRC, src.file));
+    const base = { groupCode: GROUP, category: 'sprite', subcategory: 'object', name: PREFIX + 'probe_' + nm, description: 'WO-040 피벗 시험용 복제(' + src.name + ') · 쓰지 않음', contentLength: buf.length };
+    const s1 = await tool('asset_create_group_resource_storage_item', base);
+    const put = await fetch(s1.presignedUrl, { method: 'PUT', body: buf }); if (!put.ok) throw new Error('PUT ' + put.status);
+    const s2 = await tool('asset_create_group_resource_storage_item', Object.assign({}, base, { fileUrl: s1.presignedUrl }));
+    const ruid = findRuid(s2); if (!ruid) throw new Error('RUID 없음');
+    const merged = Object.assign({ filter_mode: 'Bilinear', wrap_mode: 'Clamp' }, given);
+    await tool('asset_update_resource_storage_info', { guid: ruid, properties: Object.entries(merged).map(([key, value]) => ({ key, value })) });
+    if (!map._probe) map._probe = {};
+    map._probe[nm] = { ruid, name: base.name, props: merged }; save();
+    console.log('시험 복제', nm, ruid, JSON.stringify(merged));
     return;
   }
   const items = mf.frames.filter((f) => !map.frames[f.name]);
