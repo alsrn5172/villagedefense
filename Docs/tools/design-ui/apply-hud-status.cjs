@@ -1,9 +1,9 @@
 // 상시 HUD 중 상태창(StatusHUD)에 디자이너 시안(04-hud)을 입힌다: 상태창 판 · 레벨 · 이름판 · 직업 · AP/SP 칩 · HP/MP/EXP 게이지 ·
-// 오른쪽 위 바로가기(캐릭터 · 스킬) · 레벨업 알림.
+// 오른쪽 위 바로가기(캐릭터 · 스킬 · 친구 · 메뉴) · 레벨업 알림 · 레벨업 금빛 테두리.
 // 실행(월드 루트에서): node Docs/tools/design-ui/apply-hud-status.cjs
 // 다시 돌려도 같은 결과가 나온다. 기존 엔티티는 지우지 않고 값만 바꾼다.
 // 글자를 채우는 쪽은 Summon/StatusHUDController.mlua (UUID 로 잡는다 · 기존 노드의 이름 · 구조를 바꾸면 안 된다).
-// 🔴 바로가기 친구(F) · 메뉴는 게임에 기능이 없어 만들지 않는다. 월드맵 버튼(WorldMapGroup)은 월드맵 조각 몫이라 건드리지 않는다.
+// 바로가기 4칸(캐릭터 · 스킬 · 친구 · 메뉴): 친구 · 메뉴는 게임에 기능이 없어 누르면 "준비 중" 토스트(StatusHUDController). 월드맵 버튼(WorldMapGroup)은 apply-worldmap.cjs.
 const path = require('path');
 const S = require('./skin.cjs');
 const WORLD = path.resolve(__dirname, '..', '..', '..');
@@ -81,26 +81,32 @@ for (const k of ['Hp', 'Mp', 'Exp']) {
   S.newText(b, 'UIMyInfo/info_bottom/' + k + 'Label', lbl, { font: 'Maple', size: 14, color: C.sub, h: 'left', pos: S.at(818, LABEL_Y[k], 44, 19.5, BOX), rect: [44, 20] });
 }
 
-// ═══ 오른쪽 위 바로가기: 캐릭터(C) · 스킬(K) ═══
-const CONT = [1756, 20, 140, 85];
-// 🔴 오른쪽 끝 자리는 MSW 엔진 기본 버튼(친구 · 메뉴 · 캔버스 x 1725~1897)이 차지한다 → 두 칸은 그 왼쪽(오른쪽 끝 1717)에 붙인다.
-//    시안은 4칸 한 줄(캐릭터 · 스킬 · 친구 · 메뉴)이라 -24 에 뒀더니 엔진 버튼 위에 겹쳤다(Play 확인 2026-10-01).
+// ═══ 오른쪽 위 바로가기: 캐릭터(C) · 스킬(K) · 친구(F) · 메뉴 — 시안 4칸 292 폭 ═══
+const CONT = [1604, 20, 292, 85];
+// 🔴 오른쪽 끝 자리는 MSW 엔진 기본 버튼(친구 · 더보기 · 캔버스 x 1725~1897)이 차지한다(스크립트로 못 숨기고 못 바꾼다) → 시안 좌표(오른쪽 여백 24)를 그대로 쓰면 그 위에 겹친다.
+//    그래서 4칸 묶음 전체를 엔진 버튼 왼쪽(오른쪽 끝 1717 = 오른쪽 여백 203)으로 옮긴다. 칸 사이 간격 · 칩 · 이름 위치는 시안 그대로.
 S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-203, -20], size: [CONT[2], CONT[3]] });
 const SHORT = [
-  { id: 'BtnCharacter', x: 1756, icon: 'ico_user', key: 'C', label: '캐릭터' },
-  { id: 'BtnSkill', x: 1832, icon: 'ico_star', key: 'K', label: '스킬' },
+  { id: 'BtnCharacter', x: 1604, icon: 'ico_user', key: 'C', label: '캐릭터', alert: true },
+  { id: 'BtnSkill', x: 1680, icon: 'ico_star', key: 'K', label: '스킬', alert: true },
+  { id: 'BtnFriend', x: 1756, icon: 'ico_party', key: 'F', label: '친구' },          // 기능 없음 → 누르면 "준비 중" 토스트
+  { id: 'BtnMenu', x: 1832, icon: null, key: null, label: '메뉴' },                    // 틀 없이 btn_icon_more 그림 하나 · 기능 없음 → "준비 중" 토스트
 ];
 for (const s of SHORT) {
   const BTN = [s.x, 20, 64, 64];
   const P = 'Shortcuts/' + s.id;
-  b.button(P, '', { anchor: 'middle-center', pos: S.at(...BTN, CONT), rect_size: [64, 64], pivot: [0.5, 0.5], image_ruid: S.R('slot_frame') });
-  S.button(b, P, { normal: 'slot_frame', hover: 'slot_frame_hover', pressed: 'slot_frame_hover' });
+  const frame = s.icon ? 'slot_frame' : 'btn_icon_more';
+  b.button(P, '', { anchor: 'middle-center', pos: S.at(...BTN, CONT), rect_size: [64, 64], pivot: [0.5, 0.5], image_ruid: S.R(frame) });
+  if (s.icon) S.button(b, P, { normal: 'slot_frame', hover: 'slot_frame_hover', pressed: 'slot_frame_hover' });
+  else S.button(b, P, { normal: 'btn_icon_more' }); // 그림 자체가 칸 — 올림/누름 그림이 시안에 없다
   S.font(b, P, { text: '' });
-  S.newImage(b, P + '/Icon', s.icon, { pos: S.at(s.x + 14, 34, 36, 36, BTN), size: [36, 36] });
-  S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 48, 68, 22, 22, BTN), size: [22, 22] });
-  S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [22, 22] });
+  if (s.icon) S.newImage(b, P + '/Icon', s.icon, { pos: S.at(s.x + 14, 34, 36, 36, BTN), size: [36, 36] });
+  if (s.key) {
+    S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 48, 68, 22, 22, BTN), size: [22, 22] });
+    S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [22, 22] });
+  }
   S.newText(b, P + '/Label', s.label, { font: 'Noto700', size: 13, color: C.ivory, shadow: true, pos: S.at(s.x - 4, 87, 72, 18, BTN), rect: [72, 18] }); // 칸 아래 글자는 구름 같은 밝은 배경 위에서 안 보여 그림자를 깐다(Play 확인 2026-10-01)
-  S.newImage(b, P + '/Alert', 'badge_alert', { pos: S.at(s.x + 49, 10, 24, 24, BTN), size: [24, 24], enable: false });
+  if (s.alert) S.newImage(b, P + '/Alert', 'badge_alert', { pos: S.at(s.x + 49, 10, 24, 24, BTN), size: [24, 24], enable: false });
 }
 
 // ═══ 레벨업 알림 (평소 꺼둠 · 스크립트가 2초 켠다) ═══
@@ -115,8 +121,12 @@ S.newImage(b, 'LevelUpNotice/Sparkle1', 'deco_sparkle', { pos: S.at(700, 400, 34
 S.newImage(b, 'LevelUpNotice/Sparkle2', 'deco_sparkle_2', { pos: S.at(1180, 390, 30, 30, NOTICE), size: [30, 30] });
 
 // ═══ 그리기 순서: 판은 맨 뒤 · 클릭 버튼은 맨 앞(판 전체를 덮는 투명 버튼) ═══
+// 레벨업 때 상태창이 한 번 금빛으로 빛난다(시안 s4): 대응 에셋이 없어 금빛 칸 테두리(slot_frame_hover · 가운데 비움)를 판 크기로 얹는다. 평소 꺼둠 · 스크립트가 알림과 같이 켠다.
+S.newImage(b, 'UIMyInfo/LevelUpGlow', 'slot_frame_hover', { size: [BOX[2], BOX[3]], enable: false });
+b.patchComponent('UIMyInfo/LevelUpGlow', S.SPR, { FillCenter: false });
 S.back(b, 'UIMyInfo/Bg');
 S.front(b, 'UIMyInfo/BtnOpenCharacter');
+S.before(b, 'UIMyInfo/LevelUpGlow', 'UIMyInfo/BtnOpenCharacter');
 
 b.write(path.join(WORLD, 'ui', 'StatusHUD.ui'), {
   bind: {
@@ -130,6 +140,9 @@ b.write(path.join(WORLD, 'ui', 'StatusHUD.ui'), {
       btnSkill: 'Shortcuts/BtnSkill',
       alertChar: 'Shortcuts/BtnCharacter/Alert',
       alertSkill: 'Shortcuts/BtnSkill/Alert',
+      btnFriend: 'Shortcuts/BtnFriend',
+      btnMenu: 'Shortcuts/BtnMenu',
+      levelGlow: 'UIMyInfo/LevelUpGlow',
       noticeRoot: 'LevelUpNotice',
       noticeLine: 'LevelUpNotice/Line',
     },

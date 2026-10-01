@@ -175,8 +175,12 @@ const OB = 'Toolbar/OpenBtn';
 S.place(b, OB, { size: [230, 72] });
 S.button(b, OB, { normal: 'btn_gold_default', pressed: 'btn_gold_pressed' });
 S.font(b, OB, { text: '' }); // 글자는 자식 OpenLabel 로(지도 아이콘 때문에 오른쪽으로 치우친다)
-S.newImage(b, OB + '/Icon', 'ico_map', { pos: [-38, 0], size: [34, 34] });
-S.newText(b, OB + '/OpenLabel', '월드맵', { font: 'Maple', size: 24, color: C.goldInk, pos: [23, 0], rect: [100, 34] });
+// 시안 s0: [지도 아이콘] 월드맵 [M 키 칩]. 게임 글꼴이 시안보다 넓어(글자 폭 약 80) 칩과 안 겹치게 아이콘 -58 · 글자 +5 · 칩 +62 로 모은다(시안은 -55 · +3 · +60).
+S.newImage(b, OB + '/Icon', 'ico_map', { pos: [-58, 0], size: [34, 34] });
+S.newText(b, OB + '/OpenLabel', '월드맵', { font: 'Maple', size: 24, color: C.goldInk, pos: [5, 0], rect: [84, 34] });
+// M 키 칩: 시안은 #1C1405 알파 0.75 24x24 둥근 칩 + 글자 "M" Maple 13 #F7E4B5(에셋 없음 → 흰 둥근사각 틴트 · 모서리 반경 5 는 생략)
+round(OB + '/KeyChip', { pos: [62, 0], size: [24, 24], color: C.goldInk, alpha: 0.75 });
+S.newText(b, OB + '/KeyChip/Text', 'M', { font: 'Maple', size: 13, color: C.title, pos: [0, 0], rect: [24, 24] });
 
 // ═══ 그리기 순서(Board 자식): 테두리 < 범례 < 문장 < 제목 띠 < 지도 아이콘 < 제목 글자 < 지도 밖 칩 < 선택 링 < 노드 … ═══
 S.before(b, BD + '/Frame', BD + '/Title');
