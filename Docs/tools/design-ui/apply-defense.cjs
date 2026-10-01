@@ -83,8 +83,8 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
   lab(N + '/Label', [70, 0, 50, 22.5], NL, { font: 'Maple', size: 16, color: C.ivory, h: 'left' });
   img(N + '/LvChip', 'chip_blue_dark_sm', [chipX, 1, 46, 19.5], NL);
   txt(N + '/LvChip/Text', 'Lv1', [0, 0, 46, 19.5], [0, 0, 46, 19.5], { font: 'FootballB', size: 13, color: C.white });
-  img(N + '/MaxChip', 'chip_gold', [chipX, -2, 51, 26], NL, { enable: false });
-  txt(N + '/MaxChip/Text', 'MAX', [0, 0, 51, 26], [0, 0, 51, 26], { font: 'Maple', size: 14, color: C.goldInk });
+  img(N + '/MaxChip', 'chip_gold', [chipX, -2, 53, 26], NL, { enable: false });
+  txt(N + '/MaxChip/Text', 'MAX', [0, 0, 53, 26], [0, 0, 51, 26], { font: 'Maple', size: 14, color: C.goldInk });
   lab(N + '/Place', [170, 2, 60, 18], NL, { font: 'Noto700', size: 13, color: C.faint, h: 'right' });
   // 체력 게이지: 트랙 + 채움(스크립트가 폭 · 그림 교체 · 안쪽 폭 138)
   ctr(N + '/HpBar', [70, 25, 160, 16], NL);
@@ -146,8 +146,8 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
     txt(B + '/Label', label, [42, 5.75, 60, 22.5], BL, { font: 'Noto700', size: 16, color: C.goldInk, h: 'left' });
     img(B + '/CoinIcon', 'icon_victoria_coin', [212, 7, 20, 20], BL);
     txt(B + '/Cost', '0', [236, 5.75, 30, 22.5], BL, { font: 'FootballB', size: 16, color: C.goldInk, h: 'left' });
-    img(B + '/MaxChip', 'chip_gold', [203.5, 4.5, 51, 25], BL, { enable: false });
-    txt(B + '/MaxChip/Text', 'MAX', [0, 0, 51, 25], [0, 0, 51, 25], { font: 'Maple', size: 14, color: C.goldInk });
+    img(B + '/MaxChip', 'chip_gold', [201.5, 4.5, 53, 25], BL, { enable: false });
+    txt(B + '/MaxChip/Text', 'MAX', [0, 0, 53, 25], [0, 0, 51, 25], { font: 'Maple', size: 14, color: C.goldInk });
     if (n === 'BtnRepair') txt(B + '/NoNeed', '필요 없음', [203, 8, 60, 18], BL, { font: 'Noto700', size: 13, color: '#9AA6C0', enable: false });
   });
   // 그리기 순서: 덮개(Dead · Sel)는 카드 맨 뒤
@@ -209,6 +209,9 @@ S.place(b, F + '/CostLabel', { enable: false });
 // 그리기 순서: 문장은 제목 띠보다 뒤(띠가 문장 밑자락을 덮는다)
 // ═══════════════════════════════════════════════════════════
 S.before(b, 'Window/Crest', 'Window/TitleBar');
+
+// 칩 글자 대비(디자이너 시안 갱신 2026-10-02): 밝은 칩(MAX = chip_gold → 잉크) · 보석 칩(최전방 = chip_blue → 흰 글자 + 어두운 외곽선). 글자를 다 맞춘 뒤에 부른다.
+console.log('chipText', JSON.stringify(S.chipText(b).map((x) => x.path.split('/').slice(-3).join('/') + ':' + x.kind)));
 
 b.write(path.join(WORLD, 'ui', 'VillageDefenseGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`VillageDefenseGroup(방어 시설 관리) 적용 끝 — 새 엔티티 ${b.listEntities().length - before}개`);

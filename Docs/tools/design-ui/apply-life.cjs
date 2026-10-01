@@ -347,5 +347,8 @@ backAll([F + '/Bg', F + '/Line']);
 S.before(b, 'Window/TitleBand', 'Window/TitleBar');
 S.before(b, 'Window/Crest', 'Window/TitleBand');
 
+// 칩 글자 대비(디자이너 시안 갱신 2026-10-02): 밝은 칩(MAX = chip_gold → 잉크) · 보석 칩(재료 부족 = chip_red → 흰 글자 + 어두운 외곽선). 글자를 다 맞춘 뒤에 부른다.
+console.log('chipText', JSON.stringify(S.chipText(b).map((x) => x.path.split('/').slice(-3).join('/') + ':' + x.kind)));
+
 b.write(path.join(WORLD, 'ui', 'VillageLifeGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`VillageLifeGroup(생활) 적용 끝 — 새 엔티티 ${b.listEntities().length - before}개`);
