@@ -47,6 +47,9 @@ script LaneFacilityService extends Logic
 	-- 시설 스프라이트 OrderInLayer (사용자 2026-09-15 · 타일보다 앞에).
 	property integer FacilityOrderInLayer = 150
 
+	-- 🧪 WO-040 조각 0 시험: 새 그림 재생기(LaneFacilityArt · 3상태 + 공격 프레임)를 붙일 시설 키(마을:단계). 빈 값 = 아무 데도 안 붙임. 조각 2 에서 표(FacilityArt)로 대체.
+	property string ArtSpikeKey = "HENESYS:TOWER"
+
 	-- UseTestLanes 가 켠다: 주인 없는 마을도 주인 있는 것처럼 그린다(HP 바 표시).
 	@HideFromInspector
 	property boolean testLanes = false
@@ -253,6 +256,10 @@ script LaneFacilityService extends Logic
 		if isvalid(ai) then
 			ai.AttackRange = range
 			ai.AttackCooldown = cooldown
+			-- 🧪 WO-040 조각 0: 그림 한 번 재생이 쿨 안에 끝나도록 프레임 시간을 맞춘다.
+			---@type LaneFacilityArt
+			local artCd = ent:GetComponent("script.LaneFacilityArt")
+			if isvalid(artCd) then artCd:SetCooldown(cooldown) end
 			ai.PreferMinions = true
 			-- 사거리도 바닥에서 잰다(트랜스폼 높이가 세로 거리로 들어가 수평 사거리를 깎던 것).
 			ai.RangeOffsetY = -self:GroundOffset(villageId, stage)
@@ -277,7 +284,13 @@ script LaneFacilityService extends Logic
 		-- 공격 연출 (WO-025): 마을×시설×Lv 행을 LaneAttackFx 에 넣는다. 레벨이 오르면 Changed → 여기로 다시 와서 연출이 진화한다.
 		---@type LaneAttackFx
 		local fx = ent.LaneAttackFx
-		if isvalid(fx) then self:ApplyAttackFx(fx, villageId, stage, lv) end
+		if isvalid(fx) then
+			self:ApplyAttackFx(fx, villageId, stage, lv)
+			-- 🧪 WO-040 조각 0: 새 그림이 붙은 시설은 화살을 그림의 발사 프레임 시각 · 포구 위치에서 내보낸다(ApplyAttackFx 가 덮은 직후라야 한다).
+			---@type LaneFacilityArt
+			local artFx = ent:GetComponent("script.LaneFacilityArt")
+			if isvalid(artFx) then artFx:ApplyToFx(fx) end
+		end
 		if attacks or isvalid(aura) then
 			log(string.format("[Facility] combat %s:%s lv=%d alive=%s attacks=%s dmg=%d range=%.1f cd=%.2f maxTargets=%d playerMul=%.1f auraSpeed=%.2f splash=%.1f fx=%s",
 				villageId, stage, lv, tostring(alive), tostring(attacks), math.floor(baseDamage), range, cooldown, math.max(0, maxTargets), _LaneStateService.PlayerDamageMul, auraSpd, splashRadius, tostring(isvalid(fx) and fx.Mode or "-")))
@@ -557,6 +570,11 @@ script LaneFacilityService extends Logic
 			local fx = ent:AddComponent("script.LaneAttackFx")
 			if not isvalid(fx) then log_warning("[Facility] LaneAttackFx add failed") end
 		end
+		-- 🧪 WO-040 조각 0: 새 그림 재생기(헤네시스 포탑 시험). ApplyVisual · ApplyCombat 이 이 컴포넌트에 상태 · 쿨 · 발사 위치를 넣는다.
+		if self.ArtSpikeKey ~= "" and key == self.ArtSpikeKey then
+			local art = ent:AddComponent("script.LaneFacilityArt")
+			if not isvalid(art) then log_warning("[Facility] LaneFacilityArt add failed " .. key) end
+		end
 		self.entities[key] = ent
 		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(villageId, stage) + self:BarOffset(villageId, stage))
 		log("[Facility] spawned " .. key .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.slotY) .. ") team=" .. tostring(faction and faction.Team or "?"))
@@ -580,18 +598,29 @@ script LaneFacilityService extends Logic
 			if bar == nil or not isvalid(bar.comp) then return end
 			bar.comp.Shown = on
 		end
+		-- 🧪 WO-040 조각 0: 새 그림 재생기가 붙은 시설은 손상 · 파괴를 그림(Tier)으로 나타낸다 → 손상 · 파괴 틴트를 끈다(주인 없는 회색은 그대로).
+		---@type LaneFacilityArt
+		local art = ent:GetComponent("script.LaneFacilityArt")
 		if not owned or t == nil then
 			sr.Color = Color(0.6, 0.6, 0.6, 1)
 			showBar(false)
 			return
 		end
 		if not t.alive then
-			sr.Color = Color(0.5, 0.5, 0.5, 0.5)
+			if isvalid(art) then
+				art:ApplyState(false, 0)
+				sr.Color = Color(1, 1, 1, 1)
+			else
+				sr.Color = Color(0.5, 0.5, 0.5, 0.5)
+			end
 			showBar(false)
 			return
 		end
 		local ratio = math.max(0, math.min(1, t.hp / math.max(1, t.max)))
-		if stage == "CORE" then
+		if isvalid(art) then
+			art:ApplyState(true, ratio)
+			sr.Color = Color(1, 1, 1, 1)
+		elseif stage == "CORE" then
 			local v = 0.15 + 0.85 * ratio   -- HP 0 → 거의 검정
 			sr.Color = Color(v, v, v, 1)
 		else
