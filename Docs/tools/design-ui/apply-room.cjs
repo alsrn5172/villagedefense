@@ -26,8 +26,9 @@ S.image(b, R, 'panel_tooltip');
 img(R + '/Emblem', 'emblem_3', [44, 194, 48, 48], ROOM);
 ctr(R + '/RoomTitle', [104, 201, 230, 33.5], ROOM);
 S.font(b, R + '/RoomTitle', { font: 'Maple', size: 24, color: C.ivory, h: 'left', v: 'middle', outline: false });
-txt(R + '/CountNum', '1', [393, 197, 30, 42], ROOM, { font: 'FootballB', size: 30, color: C.ivory, h: 'left' });
-txt(R + '/CountMax', '/ 5', [419, 208, 26, 29], ROOM, { font: 'FootballB', size: 20, color: C.faint, h: 'left' });
+// 게임 글꼴이 시안보다 넓어 "/ 5" 가 26 폭에서 줄바꿈됐다(캡처 A11) → 폭을 40 으로 늘리고 묶음 전체를 왼쪽으로 14 옮겨 오른쪽 끝(445)을 지킨다.
+txt(R + '/CountNum', '1', [379, 197, 30, 42], ROOM, { font: 'FootballB', size: 30, color: C.ivory, h: 'left' });
+txt(R + '/CountMax', '/ 5', [405, 208, 40, 29], ROOM, { font: 'FootballB', size: 20, color: C.faint, h: 'left' });
 
 // 안내 줄: 받침 · 아이콘을 평상 / 경고 / 카운트다운 3벌 미리 깔고 스크립트가 하나만 켠다. 글(RoomSub)은 받침보다 앞.
 // (경고 = 붉은 칩 그림 · 카운트다운 = 금색 어두운 칩 그림을 늘려 받침으로 쓴다 — 시안의 전용 받침 그림이 없어 대체)
