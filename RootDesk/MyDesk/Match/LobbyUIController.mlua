@@ -346,7 +346,8 @@ script LobbyUIController extends Logic
 		local sp = e.SpriteGUIRendererComponent
 		if sp ~= nil then
 			local c = sp.Color
-			sp.Color = Color(c.r, c.g, c.b, a)
+			-- 🔴 완전 투명한 칸(글자 칸 뒤 투명 그림 등)은 건드리지 않는다 — a 로 올리면 글자 뒤에 검은 띠가 생겼다(캡처 A08 · 주인 이름 · 인원 칸).
+			if c.a > 0.001 then sp.Color = Color(c.r, c.g, c.b, a) end
 		end
 		local t = e.TextGUIRendererComponent
 		if t ~= nil then
@@ -356,6 +357,14 @@ script LobbyUIController extends Logic
 		for _, ch in ipairs(e.Children:ToTable()) do
 			self:SetAlphaDeep(ch, a)
 		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSize(Entity e, number w, number h)
+		-- 칸 크기만 바꾼다 (위치를 코드로 움직이는 칸이 옛 크기로 돌아가는 걸 막는다).
+		if not isvalid(e) then return end
+		local tf = e.UITransformComponent
+		if tf ~= nil then tf.RectSize = Vector2(w, h) end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -556,6 +565,12 @@ script LobbyUIController extends Logic
 		self:SetOn(chip, (shown + more) > 0)
 		self:SetText(self:Pick(chip, "Text"), tostring(shown + more))
 		self:SetText(self:Pick(self.matchesRoot, "HintText"), (more > 0) and ("외 " .. tostring(more) .. "개 더 있음") or "")
+		-- 스크롤 막대(표시용): 6줄을 넘는 매치가 있을 때만. 막대 길이 = 보이는 줄 / 전체 줄 (시안: 510 칸 중 6/8). 실제 스크롤은 안 된다.
+		local hasMore = (more > 0)
+		self:SetOn(self:Pick(self.matchesRoot, "ScrollTrack"), hasMore)
+		local thumb = self:Pick(self.matchesRoot, "ScrollThumb")
+		self:SetOn(thumb, hasMore)
+		if hasMore then self:SetSize(thumb, 12, math.max(40, 510 * shown / (shown + more))) end
 		if isvalid(self.matchEmpty) then self.matchEmpty.Entity.Enable = (shown == 0) end
 
 		-- 진행 중인 매치가 있으면 알린다 (지금은 월드에 하나만 돈다).
@@ -653,16 +668,12 @@ script LobbyUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void PaintDescNew(Entity d, integer diff, any info)
-		-- 새 매치 설명: 엠블럼 · 제목 · 난이도 칩 · 소개 · 장점/단점 줄 · 보상 칩 · 권장 (시안 12번). 서버 문구를 줄 단위로 나눠 넣고 넘치는 줄은 자른다.
+		-- 새 매치 설명: 엠블럼 · 제목 · 소개 · 장점/단점 줄 · 보상 칩 · 권장 (시안 12번). 서버 문구를 줄 단위로 나눠 넣고 넘치는 줄은 자른다. (난이도 칩은 없앴다 — 사용자 결정 2026-10-01)
 		if not isvalid(d) then return end
 		self:SetImage(self:Pick(d, "Emblem"), self:EmblemRuidOf(diff))
 		local title = "★" .. tostring(diff)
 		if info ~= nil and info.title ~= "" then title = title .. " " .. info.title end
 		self:SetText(self:Pick(d, "Title"), title)
-		local hard = ""
-		if info ~= nil then hard = info.hard end
-		self:SetOn(self:Pick(d, "HardChip"), hard ~= "")
-		self:SetText(self:Pick(d, "HardChip/Text"), "난이도 " .. hard)
 		self:SetText(self:Pick(d, "Intro"), (info ~= nil) and info.intro or "")
 
 		-- 장점(+) 먼저, 단점(−) 다음. 5줄을 넘으면 같은 부호끼리 이어 붙여 줄을 줄이고, 그래도 넘으면 자른다.
@@ -719,6 +730,9 @@ script LobbyUIController extends Logic
 		self:SetPosY(label, self.DescTopY - top)
 		self:SetPosY(chip0, self.DescTopY - (top - 2))
 		self:SetPosY(chip1, self.DescTopY - (top - 2))
+		-- 위치를 대입하면 옛 크기로 되돌아가는 일이 있어(공통 지침 13) 칩 폭을 다시 준다.
+		self:SetSize(chip0, 196, 26.5)
+		self:SetSize(chip1, 190, 26.5)
 		local tipIcon = self:Pick(d, "TipIcon")
 		local tipText = self:Pick(d, "TipText")
 		self:SetOn(tipIcon, tip ~= "")
@@ -726,6 +740,10 @@ script LobbyUIController extends Logic
 		self:SetText(tipText, tip)
 		self:SetPosY(tipIcon, self.DescTopY - (top + 48.5))
 		self:SetPosY(tipText, self.DescTopY - (top + 45.5))
+		-- 권장 줄 테두리(1px 선 상자)는 보상 줄 + 34 아래에 같이 내린다.
+		local tipBox = self:Pick(d, "TipBox")
+		self:SetOn(tipBox, tip ~= "")
+		self:SetPosY(tipBox, self.DescTopY - (top + 34))
 	end
 
 	@ExecSpace("ClientOnly")
@@ -742,6 +760,7 @@ script LobbyUIController extends Logic
 		if hasCost then self:SetText(self:Pick(d, "CostText"), "참여 비용 발록의 심장 " .. tostring(info.cost) .. "개") end
 		local tip = ""
 		if info ~= nil then tip = "★" .. tostring(diff) .. " " .. info.title .. " - " .. info.intro end
+		self:SetOn(self:Pick(d, "TipBox"), tip ~= "")
 		self:SetOn(self:Pick(d, "TipIcon"), tip ~= "")
 		self:SetOn(self:Pick(d, "TipText"), tip ~= "")
 		self:SetText(self:Pick(d, "TipText"), tip)

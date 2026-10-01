@@ -36,6 +36,15 @@ function flat(p, r, parent, color, alpha) {
   b.sprite(p, { anchor: 'middle-center', pos: S.at(r[0], r[1], r[2], r[3], parent), rect_size: [r[2], r[3]], pivot: [0.5, 0.5], color, alpha: alpha == null ? 1 : alpha, sprite_type: 0, raycast: false });
 }
 
+// 가는 테두리(시안 border=1px): 부모 상자 안(왼쪽 위 기준 w x h)에 단색 선 4개. 둥근 모서리(radius)는 못 한다.
+function border(parentPath, w, h, color, alpha) {
+  const line = (n, x, y, lw, lh) => b.sprite(`${parentPath}/${n}`, { anchor: 'top-left', pivot: [0, 1], pos: [x, -y], rect_size: [lw, lh], color, alpha: alpha == null ? 1 : alpha, sprite_type: 0, raycast: false });
+  line('Top', 0, 0, w, 1);
+  line('Bottom', 0, h - 1, w, 1);
+  line('Left', 0, 0, 1, h);
+  line('Right', w - 1, 0, 1, h);
+}
+
 // ═══ 창 판 · 문장 · 제목 띠 · 닫기 · 내 기록 ═══
 ctr(W, WIN, WIN);
 S.image(b, W, 'panel_window');
@@ -72,9 +81,12 @@ img(M + '/CountChip', 'chip_gray_dark', [270, 189, 34, 25], MATCH, { enable: fal
 txt(M + '/CountChip/Text', '0', [0, 0, 34, 25], [0, 0, 34, 25], { font: 'FootballB', size: 14, color: C.white });
 txt(M + '/HintText', '', [344, 190.5, 172, 22.5], MATCH, { font: 'Noto400', size: 16, color: C.faint, h: 'right' });
 
-// 빈 목록 글 (시안의 일러스트는 게임 그림 자리라 적용 대상이 아니다 → 글만)
+// 빈 목록: 일러스트(액자 380x140 · 시안 s0 #7) + 제목 + 안내 글. 모두 MatchEmpty 아래라 목록이 비었을 때만 같이 켜진다.
+// 일러스트 그림은 시안의 CSS cover 대로 가운데를 같은 비율로 잘라 올린 것(empty_match_illust · 760x280) · 액자는 slot_frame 을 위에 얹는다.
 const MEB = [199, 560, 200, 54];
 ctr(M + '/MatchEmpty', MEB, MATCH);
+img(M + '/MatchEmpty/Illu', 'empty_match_illust', [109, 360, 380, 140], MEB);
+img(M + '/MatchEmpty/IlluFrame', 'slot_frame', [109, 360, 380, 140], MEB);
 S.font(b, M + '/MatchEmpty', { font: 'Noto400', size: 18, color: C.faint, h: 'center', v: 'top', outline: false, text: '<color=#E8B64C>★</color> 로 난이도를 골라\n새로 만들 수 있습니다' });
 b.patchComponent(M + '/MatchEmpty', S.TXT, { IsRichText: true });
 txt(M + '/MatchEmpty/Title', '대기 중인 매치가 없습니다', [149, 516, 300, 33.5], MEB, { font: 'Maple', size: 24, color: C.ivory });
@@ -96,9 +108,15 @@ for (let i = 0; i < 6; i++) {
   S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [54, 21], enable: false });
   S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, rect: [54, 21] });
   txt(P + '/CountNum', '0', [420, R[1] + 14, 30, 33.5], R, { font: 'FootballB', size: 24, color: C.ivory, h: 'right' });
-  txt(P + '/CountMax', '/ 5', [449, R[1] + 22, 26, 24], R, { font: 'FootballB', size: 16, color: C.faint, h: 'left' });
+  txt(P + '/CountMax', '/ 5', [449, R[1] + 22, 34, 24], R, { font: 'FootballB', size: 16, color: C.faint, h: 'left' });
   S.back(b, P + '/Sel');
 }
+
+// 스크롤 막대(시안 s5 #9): 줄이 6개를 넘을 때만 스크립트가 켜고, 막대 길이 = 보이는 줄 / 전체 줄. 진짜 스크롤은 안 된다(표시용 · 2단계).
+// 위쪽 왼쪽 기준(트랙 x512 y242 16x510 · 막대 x514 y242 12x377.5).
+const sbTrack = tl(512 - MATCH[0], 242 - MATCH[1], 16, 510, [0, 0]);
+S.newImage(b, M + '/ScrollTrack', 'scroll_track', Object.assign({}, sbTrack, { enable: false }));
+S.newImage(b, M + '/ScrollThumb', 'scroll_thumb', Object.assign({}, tl(514 - MATCH[0], 242 - MATCH[1], 12, 377.5, [0, 0]), { enable: false }));
 
 // ═══ 오른쪽 판: 난이도 ═══
 const D = W + '/Difficulty';
@@ -152,9 +170,9 @@ const O0 = [572, 394]; // 설명 판 왼쪽 위
 const DN = D + '/DescNew';
 img(DN, 'panel_inner', DESC, DIFF, { enable: false });
 tlImg(DN + '/Emblem', 'emblem_1', 590, 410, 48, 48, O0);
-tlTxt(DN + '/Title', '', 648, 417, 148, 33.5, O0, { font: 'Maple', size: 24, color: C.ivory, h: 'left' });
-tlImg(DN + '/HardChip', 'chip_gray_dark', 798, 421.5, 133, 25, O0);
-S.newText(b, DN + '/HardChip/Text', '난이도', { font: 'Noto700', size: 14, color: C.white, rect: [133, 25] });
+// 제목은 왼쪽 정렬(시안 x 648). 난이도 칩(쉬움/보통/매우 어려움)은 사용자 결정(2026-10-01)으로 아예 없앴다 → 이전 판에 있던 노드도 지운다.
+tlTxt(DN + '/Title', '', 648, 417, 520, 33.5, O0, { font: 'Maple', size: 24, color: C.ivory, h: 'left' });
+if (S.has(b, DN + '/HardChip')) b.remove(DN + '/HardChip');
 tlTxt(DN + '/Intro', '', 590, 468, 570, 25, O0, { font: 'Noto400', size: 18, color: C.ivory, h: 'left', overflow: 2 });
 [507, 537.5, 567.5, 598, 628].forEach((y, i) => {
   tlImg(`${DN}/BulletIcon_${i}`, 'icon_plus', 590, y, 18, 18, O0, { enable: false });
@@ -162,12 +180,18 @@ tlTxt(DN + '/Intro', '', 590, 468, 570, 25, O0, { font: 'Noto400', size: 18, col
 });
 // 보상 · 권장: 줄 수에 따라 스크립트가 y 를 내린다(처음 자리는 2줄 기준)
 tlTxt(DN + '/RewardLabel', '보상', 590, 571, 40, 22.5, O0, { font: 'Noto700', size: 16, color: C.faint, h: 'left' });
-tlImg(DN + '/RewardChip_0', 'plate_dark', 627.5, 569, 152, 26.5, O0);
-S.newText(b, DN + '/RewardChip_0/Text', '', { font: 'Noto700', size: 16, color: C.ivory, rect: [152, 26.5] });
-tlImg(DN + '/RewardChip_1', 'plate_dark', 787.5, 569, 184, 26.5, O0);
-S.newText(b, DN + '/RewardChip_1/Text', '', { font: 'Noto700', size: 16, color: C.ivory, rect: [184, 26.5] });
+// 보상 칩 문구 = DifficultyRule.csv REWARD ("발록의 심장 최대 N개 · 계정 경험치 최대 M") — 게임 글꼴이 시안보다 넓어 칩 폭을 196 / 190 으로 넉넉히.
+tlImg(DN + '/RewardChip_0', 'plate_dark', 627.5, 569, 196, 26.5, O0);
+S.newText(b, DN + '/RewardChip_0/Text', '', { font: 'Noto700', size: 16, color: C.ivory, rect: [196, 26.5] });
+tlImg(DN + '/RewardChip_1', 'plate_dark', 831.5, 569, 190, 26.5, O0);
+S.newText(b, DN + '/RewardChip_1/Text', '', { font: 'Noto700', size: 16, color: C.ivory, rect: [190, 26.5] });
+// 권장 줄 테두리(시안: 1px #2E3F63 · 570x33.5). 줄 수에 따라 스크립트가 y 를 내린다(보상 줄 + 34).
+const TB = DN + '/TipBox';
+S.newBox(b, TB, Object.assign(tl(590, 605, 570, 33.5, O0), {}));
+border(TB, 570, 33.5, '#2E3F63', 1);
 tlImg(DN + '/TipIcon', 'icon_info', 590, 619.5, 18, 18, O0);
 tlTxt(DN + '/TipText', '', 616, 616.5, 544, 44, O0, { font: 'Noto400', size: 16, color: C.faint, h: 'left', v: 'top' });
+S.back(b, TB);
 
 const DM = D + '/DescMatch';
 img(DM, 'panel_inner', DESC, DIFF, { enable: false });
@@ -179,13 +203,23 @@ tlImg(DM + '/CountIcon', 'icon_users', 590, 491.5, 20, 20, O0);
 tlTxt(DM + '/CountText', '', 616, 489, 540, 25, O0, { font: 'Noto400', size: 18, color: C.ivory, h: 'left' });
 tlImg(DM + '/CostIcon', 'icon_balrog_heart', 590, 522.5, 24, 24, O0);
 tlTxt(DM + '/CostText', '', 618, 522, 540, 25, O0, { font: 'Noto700', size: 18, color: C.ivory, h: 'left' });
+// 권장 줄 테두리: 고른 매치 판은 높이가 358 이라 시안(y729)보다 위(703)에 둔다. 글이 있을 때만 스크립트가 켠다.
+S.newBox(b, DM + '/TipBox', tl(590, 703, 570, 33.5, O0));
+border(DM + '/TipBox', 570, 33.5, '#2E3F63', 1);
 tlImg(DM + '/TipIcon', 'icon_info', 590, 717, 18, 18, O0);
 tlTxt(DM + '/TipText', '', 616, 714, 544, 25, O0, { font: 'Noto400', size: 16, color: C.faint, h: 'left', overflow: 2 });
+S.back(b, DM + '/TipBox');
 
 // ═══ 바닥 띠 ═══
 const F = W + '/Footer';
 ctr(F, FOOT, WIN);
-// (시안의 그라데이션 + 금 1px 테두리 배경은 생략 — 창 판 위에 그대로 얹는다)
+// 시안 배경은 그라데이션 + 금 1px 테두리(#E9B24A 35%). 그라데이션은 못 해서 단색 반투명 판(#0E1628) + 가는 금선 4개로.
+flat(F + '/BgPlate', FOOT, FOOT, C.navy900, 0.5);
+flat(F + '/LineTop', [44, 786, 1172, 1], FOOT, '#E9B24A', 0.35);
+flat(F + '/LineBottom', [44, 901, 1172, 1], FOOT, '#E9B24A', 0.35);
+flat(F + '/LineLeft', [44, 786, 1, 116], FOOT, '#E9B24A', 0.35);
+flat(F + '/LineRight', [1215, 786, 1, 116], FOOT, '#E9B24A', 0.35);
+['LineRight', 'LineLeft', 'LineBottom', 'LineTop', 'BgPlate'].forEach((n) => S.back(b, F + '/' + n)); // 판 → 선 순서로 맨 뒤
 const HP = [70, 818.5, 52, 52];
 img(F + '/HeartPlate', 'plate_dark', HP, FOOT);
 img(F + '/HeartPlate/Icon', 'icon_balrog_heart', [78, 826.5, 36, 36], HP);
