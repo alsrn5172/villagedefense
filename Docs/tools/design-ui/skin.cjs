@@ -113,7 +113,88 @@ function front(b, p) { const a = absPath(b, p); moveBlock(b, a, (rest) => rest.l
 const FOOTBALL_NUM_DROP = 6;
 function dropNum(y) { return y + FOOTBALL_NUM_DROP; } // 시안 캔버스 y(위가 작다) → 내린 y
 
+
+// ── 칩 위 글자 대비 규칙 (디자이너 시안 1790844637-7b1e · 2026-10-02) ──
+// 밝은 칩(chip_gold · chip_gray)은 어두운 잉크 글자, 보석 칩(chip_green · chip_blue · chip_red)은 흰 글자 + 짙은 외곽선.
+// 키에서 _sm/_lg 를 떼고 판정한다. chip_*_dark · plate_* 는 규칙 대상이 아니다.
+// 🔴 이 규칙은 글자를 "다시 쓰는" 것이므로 각 apply 스크립트에서 S.font 로 글자를 다 맞춘 "뒤에" 부른다(안 그러면 덮어써진다).
+const CHIP_INK = '#1C1405';      // 시안 chip-ink 글자색
+const CHIP_OUTLINE = '#050A16';  // 시안 chip-glow 외곽선색
+// 시안 외곽선 = 상하좌우 1px + 0 0 2px. TextGUIRenderer.OutlineWidth 는 TMP 식 상대값이라(기존 글자 0.2 · 기본값 0.2) 1px 에 해당하는 0.25 로 두고, Maker 에서 눈으로 확인해 조정한다.
+const CHIP_OUTLINE_WIDTH = 0.25;
+const INK_SHADOW = { color: '#FFFFFF', alpha: 0.45, ox: 0, oy: -1, soft: 0 };   // 시안 0 1px 0 rgba(255,255,255,.45)
+const GLOW_SHADOW = { color: '#000000', alpha: 0.6, ox: 0, oy: -2, soft: 0.1 }; // 시안 0 2px 2px rgba(0,0,0,.6)
+const UIT = 'MOD.Core.UITransformComponent';
+
+// 그림 키 → 'ink' | 'glow' | null
+function chipKind(key) {
+  if (!key || /_dark/.test(key)) return null;
+  const base = key.replace(/_(sm|lg)$/, '');
+  if (base === 'chip_gold' || base === 'chip_gray') return 'ink';
+  if (base === 'chip_green' || base === 'chip_blue' || base === 'chip_red') return 'glow';
+  return null;
+}
+const RUID_KEY = {}; Object.keys(MAP).forEach((k) => { RUID_KEY[MAP[k].ruid] = k; });
+function chipKeyOf(b, abs) {
+  const c = b.getComponent(abs, SPR); if (!c || !c.ImageRUID) return null;
+  const id = c.ImageRUID.DataId || c.ImageRUID; return RUID_KEY[id] || null;
+}
+function isChipKey(key) { return !!key && /^(chip_|plate_)/.test(key); }
+function applyChipRule(b, abs, kind, chipKey, chipAbs) {
+  const sh = kind === 'ink' ? INK_SHADOW : GLOW_SHADOW;
+  const u = { Underlay: true, UnderlayColor: C(sh.color, sh.alpha), UnderlayOffsetX: sh.ox, UnderlayOffsetY: sh.oy, UnderlaySoftness: sh.soft, UnderlayDilate: 0 };
+  if (kind === 'ink') { u.FontColor = C(CHIP_INK); u.OutlineWidth = 0; }
+  else { u.FontColor = C('#FFFFFF'); u.OutlineColor = C(CHIP_OUTLINE); u.OutlineWidth = CHIP_OUTLINE_WIDTH; }
+  // 좌우 여백 ≥ 테두리 두께 + 1px: 글자 상자가 칩 안쪽 폭을 넘으면 줄이고, 칩 자신이 글자를 들고 있으면 Padding 으로 민다.
+  const mk = MAP[(chipKey || '')];
+  const bd = mk && mk.border_trbl ? Math.max(mk.border_trbl[1], mk.border_trbl[3]) : 0;
+  const need = bd + 1;
+  const chipT = b.getComponent(chipAbs, UIT);
+  const chipW = chipT && chipT.RectSize ? chipT.RectSize.x : 0;
+  if (need > 0 && chipW > 0) {
+    if (abs === chipAbs) {
+      const cur = (b.getComponent(abs, TXT) || {}).Padding || {};
+      u.Padding = { left: Math.max(cur.left || 0, need), right: Math.max(cur.right || 0, need), top: cur.top || 0, bottom: cur.bottom || 0 };
+    } else {
+      const t = b.getComponent(abs, UIT);
+      if (t && t.RectSize && t.AnchorsMin && t.AnchorsMax && Math.abs(t.AnchorsMin.x - t.AnchorsMax.x) < 1e-6 && t.RectSize.x > chipW - 2 * need && chipW - 2 * need > 0) {
+        b.patchComponent(abs, UIT, { RectSize: { x: chipW - 2 * need, y: t.RectSize.y } });
+      }
+    }
+  }
+  b.patchComponent(abs, TXT, u);
+}
+// b 의 모든 엔티티를 훑어 칩(밝은/보석) 위 글자에 규칙을 건다. 두 번 돌려도 같은 결과.
+// - 칩 = SpriteGUIRenderer.ImageRUID 가 ruid-map 의 chip_* 인 엔티티. 글자는 "가장 가까운 칩 조상(또는 자신)"에 속한 TextGUIRenderer 엔티티 전부(자손 글자 포함 · 아이콘은 손대지 않음).
+// - opts.skip: 건너뛸 경로 정규식(절대경로 '/ui/<그룹>/...' 에 적용)
+// - opts.extra: { '<칩 경로>': ['<글자 경로>', ...] } 글자가 칩의 형제인 경우(칩 그림 엔티티와 글자 엔티티가 따로 있을 때) 칩 규칙을 그 글자에도 건다
+// - opts.dry: true 면 patch 없이 목록만
+// 반환: [{ path, kind: 'ink'|'glow', chip: 그림 키 }]  (스크립트가 길이/목록을 로그로 찍는다)
+function chipText(b, opts) {
+  const quiet = console.log; console.log = () => {}; // 빌더의 "Patched component" 줄을 숨긴다(칩이 많으면 수백 줄)
+  try { return chipTextInner(b, opts || {}); } finally { console.log = quiet; }
+}
+function chipTextInner(b, opts) {
+  const skip = opts.skip || null;
+  const ents = b.entities.map((e) => e.path);
+  const chips = []; // [abs, key, kind]
+  for (const abs of ents) { const k = chipKeyOf(b, abs); if (isChipKey(k)) chips.push([abs, k, chipKind(k)]); }
+  chips.sort((x, y) => y[0].length - x[0].length); // 깊은 칩이 먼저 = 가장 가까운 칩 조상 판정용
+  const owner = (abs) => { for (const c of chips) { if (abs === c[0] || abs.startsWith(c[0] + '/')) return c; } return null; };
+  const out = []; const done = new Set();
+  const doText = (abs, c) => {
+    if (done.has(abs) || !c[2] || (skip && skip.test(abs)) || !b.hasComponent(abs, TXT)) return;
+    done.add(abs); if (!opts.dry) applyChipRule(b, abs, c[2], c[1], c[0]); out.push({ path: abs, kind: c[2], chip: c[1] });
+  };
+  for (const abs of ents) { const c = owner(abs); if (c) doText(abs, c); }
+  for (const chipPath of Object.keys(opts.extra || {})) {
+    const cAbs = absPath(b, chipPath); const key = chipKeyOf(b, cAbs); const kind = chipKind(key);
+    for (const tp of opts.extra[chipPath]) doText(absPath(b, tp), [cAbs, key, kind]);
+  }
+  return out;
+}
+
 // 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h) → 부모 상자(같은 좌표계 px,py,pw,ph) 중심 기준 위치
 function at(x, y, w, h, parent) { return [Math.round((x + w / 2 - (parent[0] + parent[2] / 2)) * 2) / 2, Math.round(-((y + h / 2) - (parent[1] + parent[3] / 2)) * 2) / 2]; }
 
-module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum };
+module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum, chipText, chipKind, CHIP_INK, CHIP_OUTLINE, CHIP_OUTLINE_WIDTH };

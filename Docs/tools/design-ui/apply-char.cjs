@@ -300,6 +300,9 @@ S.front(b, T);
 S.front(b, W + '/Crest');
 
 // ═══ 스크립트가 새 칸을 잡게 묶는다 ═══
+// 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 기본 상태에서 고른 분류(전체)의 금 칩 글자. 나머지 분류(짙은 파랑 칩)는 대상 아님 — 고르면 InventoryUIController.UpdateFilterChips 가 건다. 맨 끝에 건다.
+const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'CharacterGroup.ui'), {
   bind: {
     mlua: path.join(WORLD, 'RootDesk/MyDesk/Stat/StatUIController.mlua'),

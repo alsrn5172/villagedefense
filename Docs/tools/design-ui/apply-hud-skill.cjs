@@ -30,8 +30,10 @@ for (const [key, x] of CELLS) {
   S.place(b, P + '/CoolText', { pos: [0, 0], size: [72, 72] });
   S.font(b, P + '/CoolText', { font: 'FootballB', size: 24, color: C.gold, h: 'center', v: 'middle', outline: false });
   // 키 글자 배지: 왼쪽 위 금 칩 22x22 (Shift 는 가로로 40.5)
+  // 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자 좌우 여백 ≥ 테두리 7 + 1 → 한 글자 22 → 28(W 는 32) · Shift 40.5 → 54(게임 글꼴이 시안보다 넓다). 왼쪽 끝(-41)은 그대로.
   const wide = key === 'Shift';
-  S.place(b, P + '/Key', { pos: wide ? [-21, 32] : [-30, 32], size: [wide ? 40.5 : 22, 22] });
+  const kw = wide ? 54 : (key === 'W' ? 32 : 28);
+  S.place(b, P + '/Key', { pos: [-41 + kw / 2, 32], size: [kw, 22] });
   S.image(b, P + '/Key', 'chip_gold_sm');
   b.patchComponent(P + '/Key', S.SPR, { RaycastTarget: false });
   S.font(b, P + '/Key', { font: 'Maple', size: 13, color: C.goldInk, h: 'center', v: 'middle', outline: false });
@@ -45,6 +47,10 @@ for (const key of ['Q', 'W', 'E', 'R', 'Shift']) {
   S.tint(b, P + '/Cool', C.veil, 0.70);
   S.font(b, P + '/CoolText', { font: 'FootballB', size: 28, color: C.gold, h: 'center', v: 'middle', outline: false });
 }
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 키 칩(금 · 잉크 글자)
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'SkillHudGroup.ui'), {
   lint_verbose: !!process.env.LINT_V,

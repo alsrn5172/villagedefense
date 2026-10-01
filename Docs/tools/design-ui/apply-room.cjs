@@ -58,8 +58,9 @@ for (let i = 0; i < 5; i++) {
   img(P + '/Crown', 'icon_crown', [56, Y + 15, 22, 22], RW, { enable: false });
   ctr(P + '/Name', [88, Y + 13.5, 206, 25], RW);
   S.font(b, P + '/Name', { font: 'Noto700', size: 18, color: C.ivory, h: 'left', v: 'middle', outline: false, overflow: 2 });
-  img(P + '/MeChip', 'chip_blue', [345, Y + 15.5, 31, 21], RW, { enable: false });
-  S.newText(b, P + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, rect: [31, 21] });
+  // 🔴 칩 글자 대비: 시안 31 → 37(글자 + 2 × (테두리 11 + 1)). 게임 글꼴이 넓어 42(안쪽 18) · 오른쪽 끝(376)은 그대로.
+  img(P + '/MeChip', 'chip_blue', [334, Y + 15.5, 42, 21], RW, { enable: false });
+  S.newText(b, P + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, rect: [18, 21] });
   // 심장: 강퇴 버튼이 없는 줄 자리(아이콘 154 · 수 185). 강퇴 버튼이 있는 줄은 스크립트가 72 · 103 으로 옮긴다.
   img(P + '/HeartIcon', 'icon_balrog_heart', [386, Y + 12.5, 24, 24], RW, { enable: false });
   txt(P + '/HeartNum', '0', [414, Y + 13.5, 30, 25], RW, { font: 'FootballB', size: 18, color: C.ivory, h: 'left', enable: false });
@@ -89,6 +90,10 @@ S.newText(b, CD + '/Text', '초 뒤 출발합니다', { font: 'Maple', size: 20,
 S.newImage(b, CD + '/Gauge', 'gauge_track', { pos: [0, -51], size: [300, 20] });
 // 채움은 Filled 가로 · 트랙 안쪽 폭 268 (시안 300 은 100% 에서 트랙 밖으로 32 넘친다)
 S.newImage(b, CD + '/Gauge/Fill', 'gauge_fill_gold', { anchor: 'middle-left', pivot: [0, 0.5], pos: [16, 0], size: [268, 8], type: 3 });
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자를 다 맞춘 뒤에 건다(두 번 돌려도 같은 결과 · apply-lobby 와 같은 파일이라 로비 칩도 같은 값으로 다시 맞는다).
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'LobbyGroup.ui'), {
   bind: {

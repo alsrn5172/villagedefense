@@ -37,7 +37,8 @@ for (const [name, x] of Object.entries(SLOTS)) {
   S.place(b, P + '/Count', { pos: [9, -25], size: [44, 18] });
   S.font(b, P + '/Count', { font: 'FootballB', size: 16, color: C.white, h: 'right', v: 'bottom' });
   // 키 번호: 왼쪽 위 금 칩 키캡 22x22 (스크립트가 안 잡는 노드)
-  S.place(b, P + '/Key', { pos: [-32, 34], size: [22, 22] });
+  // 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자 좌우 여백 ≥ 테두리 7 + 1 → 숫자 한 자리 칩 22 → 26(왼쪽 끝은 그대로)
+  S.place(b, P + '/Key', { pos: [-30, 34], size: [26, 22] });
   S.image(b, P + '/Key', 'chip_gold_sm');
   b.patchComponent(P + '/Key', S.SPR, { RaycastTarget: false }); // 키캡이 칸 클릭을 가로채지 않게
   S.font(b, P + '/Key', { font: 'FootballB', size: 13, color: C.goldInk, h: 'center', v: 'middle', outline: false });
@@ -51,6 +52,10 @@ const HINT = [710, 96, 364, 50];
 S.newImage(b, 'EmptyHint', 'panel_tooltip', { anchor: 'top-center', pivot: [0.5, 1], pos: [-68, -96], size: [HINT[2], HINT[3]], enable: false });
 S.newImage(b, 'EmptyHint/Icon', 'icon_info', { pos: S.at(732, 108, 28, 26, HINT), size: [28, 26] });
 S.newText(b, 'EmptyHint/Text', '인벤토리에서 물약을 끌어다 놓으세요', { font: 'Noto700', size: 18, color: C.ivory, pos: [18, 0], rect: [300, 26] });
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 키 칩(금 · 잉크 글자)
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'QuickSlotGroup.ui'), {
   bind: {

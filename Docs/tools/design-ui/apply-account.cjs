@@ -198,7 +198,7 @@ status(HI + '/Status');
   txt(t + '/RankOf', '', [312, 295, 50, 20], R, { font: 'Maple', size: 14, color: C.faint, h: 'left' });
   // 결과 칩 4종(하나만 켠다)
   const CHIP = [350.5, 291, 77.5, 24];
-  [['ChipBalrog', 'chip_gold', C.goldInk, '발록 처치'], ['ChipTimeout', 'chip_gray', '#2A3040', '시간 종료'], ['ChipAllOut', 'chip_red', C.white, '전원 탈락'], ['ChipLeft', 'chip_gray_dark', '#C9D2E3', '중도 이탈']].forEach(([n, key, col, label]) => {
+  [['ChipBalrog', 'chip_gold', C.goldInk, '발록 처치'], ['ChipTimeout', 'chip_gray', S.CHIP_INK, '시간 종료'], ['ChipAllOut', 'chip_red', C.white, '전원 탈락'], ['ChipLeft', 'chip_gray_dark', '#C9D2E3', '중도 이탈']].forEach(([n, key, col, label]) => {
     img(`${t}/${n}`, key, CHIP, R, { enable: false });
     txt(`${t}/${n}/Text`, label, [0, 0, CHIP[2], CHIP[3]], [0, 0, CHIP[2], CHIP[3]], { font: 'Noto700', size: 13, color: col });
   });
@@ -218,5 +218,8 @@ S.back(b, W + '/Band');
 S.back(b, W + '/Crest'); // 문장 → 띠 → 제목 글자
 S.before(b, W + '/Foot', W + '/Pages'); // 아래 띠가 페이지 안내 글자보다 뒤
 
+// 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 달성 · 발록 처치(금) · 시간 종료(회색) = 잉크색 / 전원 탈락(빨강) = 흰 글자 + 짙은 외곽선. 중도 이탈 · 자이언트(어두운 칩)는 대상 아님. 맨 끝에 건다.
+const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'AccountRecordGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`AccountRecordGroup(계정 창) 적용 끝 — 새 엔티티 ${b.listEntities().length - before}개`);

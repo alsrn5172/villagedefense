@@ -107,8 +107,9 @@ for (let i = 0; i < 6; i++) {
   // 상태 칩: 줄 오른쪽에서 67 안쪽. 가득 참 / 잠김 중 하나만 켠다.
   S.newImage(b, P + '/ChipFull', 'chip_gray_dark', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [60, 21], enable: false });
   S.newText(b, P + '/ChipFull/Text', '가득 참', { font: 'Noto700', size: 14, color: C.white, rect: [60, 21] });
-  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [54, 21], enable: false });
-  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, rect: [54, 21] });
+  // 🔴 칩 글자 대비(시안 1790844637-7b1e): 보석 칩 글자는 좌우 여백 ≥ 테두리(11)+1. 시안 폭은 Lv 5 = 51.5 · Lv 13 = 60 → 게임 글꼴이 10~15% 넓어 66(안쪽 42)으로.
+  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [66, 21], enable: false });
+  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, rect: [42, 21] });
   txt(P + '/CountNum', '0', [420, R[1] + 14, 30, 33.5], R, { font: 'FootballB', size: 24, color: C.ivory, h: 'right' });
   txt(P + '/CountMax', '/ 5', [449, R[1] + 22, 34, 24], R, { font: 'FootballB', size: 16, color: C.faint, h: 'left' });
   S.back(b, P + '/Sel');
@@ -153,11 +154,12 @@ ctr(D + '/Select', SEL, DIFF);
   img(P + '/CostIcon', 'icon_balrog_heart', [x0 + 138.5, 341, 24, 24], CARD);
   img(P + '/Check', 'check_on', [x0 + 175.5, 234, 28, 28], CARD, { enable: false });
   // 오른쪽 위 칩: 추천 / 잠김 중 하나만
-  S.newImage(b, P + '/ChipRec', 'chip_gold', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [48, 25], enable: false });
-  S.newText(b, P + '/ChipRec/Text', '추천', { font: 'Noto700', size: 14, color: C.goldInk, rect: [48, 25] });
-  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [72, 25], enable: false });
-  S.newImage(b, P + '/ChipLock/Lock', 'icon_lock', { pos: [-20, 0], size: [18, 18] });
-  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, pos: [11, 0], rect: [38, 25] });
+  // 🔴 칩 글자 대비: 시안 폭 추천 50 · 잠김 Lv 5 69.5 / Lv 13 78 (글자 폭 + 2 × (테두리 + 1)). 게임 글꼴이 10~15% 넓어 추천 54(안쪽 32) · 잠김 84(안쪽 60: 자물쇠 18 + 틈 3 + 글자 39)로.
+  S.newImage(b, P + '/ChipRec', 'chip_gold', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [54, 25], enable: false });
+  S.newText(b, P + '/ChipRec/Text', '추천', { font: 'Noto700', size: 14, color: C.goldInk, rect: [32, 25] });
+  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [84, 25], enable: false });
+  S.newImage(b, P + '/ChipLock/Lock', 'icon_lock', { pos: [-21, 0], size: [18, 18] });
+  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, pos: [10.5, 0], rect: [39, 25] });
   S.back(b, P + '/Sel');
 });
 
@@ -232,7 +234,8 @@ flat(F + '/Div1', [232, 818.5, 1, 52], FOOT, '#2E3F63', 1);
 img(F + '/AccBadge', 'badge_account', [255, 811.5, 84, 66], FOOT);
 const LVC = [314, 857.5, 30, 24];
 img(F + '/AccLvChip', 'chip_gold_sm', LVC, FOOT);
-S.newText(b, F + '/AccLvChip/Text', '1', { font: 'FootballB', size: 16, color: C.goldInk, rect: [30, 24] });
+// 🔴 칩 글자 대비: chip_gold_sm 테두리 7 → 안쪽 폭 14. 두 자리 레벨은 스크립트(PaintAccount)가 칩 37 · 안쪽 21 로 넓힌다(시안 1 → 28 · 13 → 37).
+S.newText(b, F + '/AccLvChip/Text', '1', { font: 'FootballB', size: 16, color: C.goldInk, rect: [14, 24] });
 txt(F + '/AccXpLabel', '계정 경험치', [351, 820.5, 100, 22.5], FOOT, { font: 'Noto700', size: 16, color: C.faint, h: 'left' });
 txt(F + '/AccXpText', '0 / 80', [451, 820.5, 100, 22.5], FOOT, { font: 'FootballB', size: 16, color: C.sub, h: 'right' });
 img(F + '/AccGauge', 'gauge_track', [351, 848.5, 200, 20], FOOT);
@@ -260,6 +263,10 @@ S.newImage(b, BP + '/IconLock', 'icon_lock', { pos: [-27, -3], size: [30, 30], e
 
 // ═══ 그리기 순서: 문장은 제목 띠보다 뒤(시안도 띠가 문장 밑자락을 덮는다) ═══
 S.before(b, W + '/Crest', W + '/TitleBar');
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 밝은 칩 = 잉크 글자 · 보석 칩 = 흰 글자 + 외곽선. 글자를 다 맞춘 뒤에 건다(두 번 돌려도 같은 결과).
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'LobbyGroup.ui'), {
   bind: {
