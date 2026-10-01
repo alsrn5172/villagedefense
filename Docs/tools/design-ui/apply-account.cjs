@@ -201,10 +201,12 @@ status(HI + '/Status');
   txt(t + '/RankOf', '', [312, 295, 50, 20], R, { font: 'Maple', size: 14, color: C.faint, h: 'left' });
   // 결과 칩 4종(하나만 켠다)
   // 결과 칩 4종은 같은 자리 · 같은 글자 수 → 같은 폭. 가장 넓은 전원 탈락(빨강 테두리 11)의 규칙 폭 88 로 통일(5차 · 왼쪽 끝 350.5 고정).
-  const CHIP = [350.5, 291, S.chipWidth('chip_red', 24, S.textW('Noto700', 13, '전원 탈락')), 24];
+  // 🔴 5차 통일: 같은 글자("시간 종료" · "전원 탈락")를 결과 창 사유 칩과 같은 글꼴(Maple 16) · 높이 28 · 같은 규칙 폭(시간 종료 94 · 전원 탈락 98)으로 — 한 줄에 칩이 하나만 켜지므로 글자별 폭이 그대로 통일이다. 왼쪽 끝 350.5 · 세로 가운데(303) 고정.
   [['ChipBalrog', 'chip_gold', C.goldInk, '발록 처치'], ['ChipTimeout', 'chip_gray', S.CHIP_INK, '시간 종료'], ['ChipAllOut', 'chip_red', C.white, '전원 탈락'], ['ChipLeft', 'chip_gray_dark', '#C9D2E3', '중도 이탈']].forEach(([n, key, col, label]) => {
+    const CW = S.chipWidth(key, 28, S.textW('Maple', 16, label));
+    const CHIP = [350.5, 303 - 14, CW, 28];
     img(`${t}/${n}`, key, CHIP, R, { enable: false });
-    txt(`${t}/${n}/Text`, label, [0, 0, CHIP[2], CHIP[3]], [0, 0, CHIP[2], CHIP[3]], { font: 'Noto700', size: 13, color: col });
+    txt(`${t}/${n}/Text`, label, [0, 0, CW, 28], [0, 0, CW, 28], { font: 'Maple', size: 16, color: col });
   });
   // 둘째 줄: 심장 · 계정 경험치 · 처치/레벨 · 칭호(고정 칸)
   img(t + '/HeartIcon', 'icon_balrog_heart', [184, 321, 20, 20], R);

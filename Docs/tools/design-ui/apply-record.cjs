@@ -203,7 +203,7 @@ for (let k = 0; k < 5; k++) {
   lab(P + '/Name', [28, 22, 300, 21.5], L, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', overflow: 1 });
   txt(P + '/TitleLine', '', [28, 14.5, 300, 15.5], L, { font: 'Noto700', size: 13, color: '#E8C77A', h: 'left', overflow: 1, enable: false });
   txt(P + '/NameT', '', [28, 30, 300, 21.5], L, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', overflow: 1, enable: false });
-  const LVB = S.roleBox('lvBadge2'); // 5차: 레벨 배지 = 역할표 lvBadge2(62×21 · 월드맵과 같은 크기) · 오른쪽 끝 398 고정
+  const LVB = S.roleBox('lvBadge'); // 5차: 레벨 배지 = 역할표 lvBadge2(62×21 · 월드맵과 같은 크기) · 오른쪽 끝 398 고정
   ctr(P + '/Level', [398 - LVB[0], 22.5, LVB[0], LVB[1]], L);
   S.image(b, P + '/Level', 'chip_blue_dark_sm');
   S.font(b, P + '/Level', { font: 'FootballB', size: 14, color: C.white, h: 'center', v: 'middle', outline: false });

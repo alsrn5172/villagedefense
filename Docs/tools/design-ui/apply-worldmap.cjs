@@ -169,7 +169,7 @@ for (let i = 1; i <= 5; i++) {
   b.patchComponent(R + '/Icon', S.SPR, { PreserveSprite: 0 });
   ctr(R + '/Name', -98, 0, 300, 34);
   S.font(b, R + '/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'left', v: 'middle', outline: false, overflow: 0 });
-  const LVB = S.roleBox('lvBadge2'); // 레벨 배지 = 어두운 작은 칩 · Football 14 · 21 높이 · 두 자리("Lv 99") → 62×21 (오른쪽 끝 290 고정 · 방어 · 마을 기록과 같은 글꼴 · 높이)
+  const LVB = S.roleBox('lvBadge'); // 레벨 배지 = 어두운 작은 칩 · Football 14 · 21 높이 · 두 자리("Lv 99") → 62×21 (오른쪽 끝 290 고정 · 방어 · 마을 기록과 같은 글꼴 · 높이)
   S.newImage(b, R + '/LvChip', 'chip_blue_dark_sm', { pos: [290 - LVB[0] / 2, 0], size: [LVB[0], LVB[1]] });
   S.newText(b, R + '/LvChip/Text', 'Lv 1', { font: 'FootballB', size: 14, color: C.white, rect: [LVB[0], LVB[1]] });
 }

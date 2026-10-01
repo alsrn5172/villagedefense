@@ -236,9 +236,8 @@ const CHIP = {
   keyShift: { key: 'chip_gold_sm', font: 'Maple',  size: 13, h: 22, text: 'Shift' },                      // 스킬 HUD Shift
   job:      { key: 'chip_blue',  font: 'Noto700',  size: 13, h: 22, text: '마법사 30' },                 // 공방 카드 직업 태그("전사 10") — 직업 6색 칩 그림 전부 이 크기
   jobName:  { key: 'chip_blue',  font: 'Noto700',  size: 13, h: 22, text: '마법사' },                    // 공방 상세 요구 칩(직업 이름만 · "전사" · "마법사" · "전직업") — 직업 6색 칩 그림 전부 이 크기
-  // 레벨 배지(어두운 작은 칩) — 방어 시설은 Lv 최대 3(한 자리) · 월드맵 몬스터 · 마을 기록 플레이어는 두 자리
-  lvBadge1: { key: 'chip_blue_dark_sm', font: 'FootballB', size: 14, h: 21, text: 'Lv 5' },
-  lvBadge2: { key: 'chip_blue_dark_sm', font: 'FootballB', size: 14, h: 21, text: 'Lv 99' },
+  // 레벨 배지(어두운 작은 칩) — 방어 시설 · 월드맵 몬스터 · 마을 기록 플레이어 전부 같은 크기(두 자리 "Lv 99"까지 · 방어 시설은 한 자리뿐이지만 같은 칩이라 같게)
+  lvBadge:  { key: 'chip_blue_dark_sm', font: 'FootballB', size: 14, h: 21, text: 'Lv 99' },
 };
 function roleBox(role, extra) { const r = CHIP[role]; if (!r) throw new Error('없는 칩 역할: ' + role); const tw = textW(r.font, r.size, r.text); return [chipWidth(r.key, r.h, tw, extra), r.h]; }
 

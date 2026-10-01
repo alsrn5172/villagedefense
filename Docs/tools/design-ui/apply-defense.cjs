@@ -82,7 +82,7 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
   S.before(b, N + '/IconFrame', N + '/Icon');
   lab(N + '/Label', [70, 0, 50, 22.5], NL, { font: 'Maple', size: 16, color: C.ivory, h: 'left' });
   // 🔴 칩 크기 규칙(5차 · skin.cjs CHIP 역할표): 레벨 배지 = Football 14 · 21 높이(카드 LvText 와 같은 크기) · MAX = Maple 16 · 30 높이(카드 · 버튼 · 조련 · 공방과 같은 크기). 위 가운데 y(10.75 · 11)는 그대로.
-  const LVB = S.roleBox('lvBadge1'); const MXB = S.roleBox('max');
+  const LVB = S.roleBox('lvBadge'); const MXB = S.roleBox('max');
   img(N + '/LvChip', 'chip_blue_dark_sm', [chipX, 10.75 - LVB[1] / 2, LVB[0], LVB[1]], NL);
   txt(N + '/LvChip/Text', 'Lv 1', [0, 0, LVB[0], LVB[1]], [0, 0, LVB[0], LVB[1]], { font: 'FootballB', size: 14, color: C.white });
   img(N + '/MaxChip', 'chip_gold', [chipX, 11 - MXB[1] / 2, MXB[0], MXB[1]], NL, { enable: false });
@@ -107,7 +107,7 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
 // ═══════════════════════════════════════════════════════════
 [['TOWER', 134, 35, 103, 148], ['SUPPRESSOR', 448.5, 26, 94, 157.5], ['CORE', 763.5, 26, 94, 157.5]].forEach(([stage, x, frontX0, nameX0, lvX0]) => {
   // 🔴 칩 크기 규칙(5차): 이름 줄 [최전방] 이름 [레벨 / MAX] 의 칩이 넓어졌으니 묶음을 원래 가운데(카드 왼쪽에서 121.4)에 다시 맞춘다. 칩 사이 간격 8 · 이름 상자와 오른쪽 칩 사이 2 는 그대로.
-  const FRB = S.roleBox('front'), MXB = S.roleBox('max'), LVB = S.roleBox('lvBadge1');
+  const FRB = S.roleBox('front'), MXB = S.roleBox('max'), LVB = S.roleBox('lvBadge');
   const NAMEW = lvX0 - nameX0 - 2;
   const GROUP_C = 121.4;
   const frontX = GROUP_C - (FRB[0] + 8 + NAMEW + 2 + MXB[0]) / 2;
