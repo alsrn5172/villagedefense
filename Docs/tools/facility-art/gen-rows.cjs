@@ -41,15 +41,23 @@ const SPRITE_FIT = {
   'KERNING:TOWER':       { scale: 0.509, status: 'M1' },
   'KERNING:SUPPRESSOR':  { scale: 0.501, status: 'M1' },
   'KERNING:CORE':        { scale: 0.507, status: 'M1' },
-  'PERION:TOWER':        { scale: 0.5,   status: 'M2' },
-  'PERION:SUPPRESSOR':   { scale: 0.5,   status: 'M2' },
-  'PERION:CORE':         { scale: 0.5,   status: 'M2' },
-  'ELLINIA:TOWER':       { scale: 0.5,   status: 'M2' },
-  'ELLINIA:SUPPRESSOR':  { scale: 0.5,   status: 'M2' },
-  'ELLINIA:CORE':        { scale: 0.5,   status: 'M2' },
-  'NAUTILUS:TOWER':      { scale: 0.5,   status: 'M2' },
-  'NAUTILUS:SUPPRESSOR': { scale: 0.5,   status: 'M2' },
+  // M2 — 옛 그림의 "전체 불투명 높이"(묻힌 부분 포함)에 새 그림의 바닥선 위 높이를 맞춘 값. 옛 크기는 Maker 의 LoadSpriteAndWait 실측 + 옛 시안 PNG 의 불투명 위/아래 비율.
+  // 페리온 = 실제 레인 맵 3곳(NorthernRidge · WildBoarLand · 마을)에서 미니언이 오른쪽에서 왼쪽으로 걷는 것을 확인(LaneConfig 와 같다) → 오른쪽을 봐야 하므로 flipX true (새 그림 = 왼쪽을 봄).
+  'PERION:TOWER':        { scale: 0.511, flipX: true, status: 'M2' },
+  'PERION:SUPPRESSOR':   { scale: 0.518, flipX: true, status: 'M2' },
+  'PERION:CORE':         { scale: 0.537, flipX: true, status: 'M2' },
+  'ELLINIA:TOWER':       { scale: 0.362, status: 'M2' },
+  'ELLINIA:SUPPRESSOR':  { scale: 0.32,  status: 'M2' },
+  'ELLINIA:CORE':        { scale: 0.649, status: 'M2' },
+  'NAUTILUS:TOWER':      { scale: 0.55,  status: 'M2' },
+  'NAUTILUS:SUPPRESSOR': { scale: 0.575, status: 'M2' },
   // NAUTILUS:CORE 는 그림 없음(노틸러스호 자체가 넥서스 · 투명 + 체력 바) — FacilitySprite 행을 건드리지 않는다.
+};
+
+// 그림 없는 넥서스(노틸러스호 자체가 넥서스 · 투명 + 체력 바): 그림이 없어 manifest 에 없다 → 피격 상자 · 클릭 영역(세로 = 2 × GroundOffset) · 체력 바 높이만 여기서 정한다.
+// Nautilus_Village_MinimiMain 에서 잰 배(잠수함) 몸통: 세로 −3.6 ~ 2.8 · 가로 18.5 ~ 27.3(넥서스 슬롯 x 20.8 · y −3.05) → 슬롯 바닥에서 위로 5.8(덱 위쪽까지) 덮고(Ground 2.9), 체력 바는 슬롯 y +1.05(배 위쪽 · 갑판 NPC 아래).
+const HIDDEN_FIT = {
+  'NAUTILUS:CORE': { ground: 2.9, bar: 1.15 },
 };
 
 // 옛 그림(교체 전) — 되돌릴 때 쓰는 기록. RUID 앞 8자 · 이름 · 옛 GroundOffset / BarOffset(옛 Scale 은 전부 모델 기본 0.25).
@@ -71,7 +79,8 @@ const OLD_SPRITE = {
 };
 
 // 종류(E18-x-y) → 표 키. manifest 의 village/facility 를 그대로 쓴다(마을 영문 이름 KERNING 등).
-const FRAME_SEC = 0.12; // 프레임 한 장 시간 기본값(공격형은 런타임이 쿨 × 0.9 안에 끝나게 줄인다)
+const HIDDEN_ENABLED = true; // 노틸러스 넥서스 HIDDEN 3행을 켠다(M2 확인 뒤). 끄려면 false 로 하고 다시 돌린다 — 이미 켜진 행은 직접 Enabled=false 로.
+const FRAME_SEC = 0.12; //프레임 한 장 시간 기본값(공격형은 런타임이 쿨 × 0.9 안에 끝나게 줄인다)
 
 // ───────────────────────────── CSV 도우미 ─────────────────────────────
 function readCsv(file) {
@@ -138,7 +147,15 @@ let artFilled = 0;
 for (const row of art.rows) {
   const key = `${row.VillageId}:${row.Stage}`;
   const it = info[key];
-  if (!it) continue; // 노틸러스 넥서스(HIDDEN) 등 그림 없는 행
+  if (!it) {
+    // 노틸러스 넥서스(HIDDEN · 그림 없음 — 노틸러스호 자체가 넥서스): 그림은 안 채우고 켜기만 한다(M2 가 알파 0 + 체력 바 + 클릭을 확인한 뒤 켬).
+    if (row.Mode === 'HIDDEN' && HIDDEN_ENABLED) {
+      const b = JSON.stringify(row);
+      row.Enabled = 'true';
+      if (JSON.stringify(row) !== b) artChanged.push(`${key}:${row.State}`);
+    }
+    continue;
+  }
   const { kind, m } = it;
   const hasDamageAttack = !!m.has_damage_attack; // 7-1~7-5 만 손상 공격 애니메이션
   const before = JSON.stringify(row);
@@ -221,6 +238,16 @@ for (const row of spr.rows) {
   const key = `${row.VillageId}:${row.Stage}`;
   const it = info[key];
   const fit = SPRITE_FIT[key];
+  const hid = HIDDEN_FIT[key];
+  if (hid) {
+    const b = JSON.stringify(row);
+    row.GroundOffset = fmt(hid.ground);
+    row.BarOffset = fmt(hid.bar);
+    if (!/WO-040 M2/.test(row['#Note'] || '')) row['#Note'] = `${row['#Note'] || ''} · WO-040 M2: 그림은 알파 0(HIDDEN) · Ground ${row.GroundOffset} / Bar ${row.BarOffset} 는 노틸러스호 크기에 맞춘 피격 · 클릭 상자 높이(옛 1.112 / 1.213)`;
+    if (JSON.stringify(row) !== b) sprChanged.push(key);
+    fitReport.push(`${key.padEnd(20)} (그림 없음 · HIDDEN) ground=${row.GroundOffset} bar=${row.BarOffset}`);
+    continue;
+  }
   if (!it || !fit) continue;
   const { kind, m } = it;
   const before = JSON.stringify(row);
@@ -237,7 +264,7 @@ for (const row of spr.rows) {
   if (fit.flipX !== undefined) row.FlipX = String(fit.flipX);
   if (key !== 'HENESYS:TOWER') {
     const o = OLD_SPRITE[key];
-    row['#Note'] = `WO-040 새 그림 fac_${kind}_${idleName} (${m.canvas[0]}x${m.canvas[1]} · 50% 축소) · 옛 ${o.ruid} ${o.name} (Scale 0.25 · Ground ${o.ground} · Bar ${o.bar}) · ${fit.status === 'M1' ? 'M1 이 옛 그림과 나란히 놓고 맞춤' : '계산값 · M2 가 맞춤'} · 아이콘은 옛 그림 그대로`;
+    row['#Note'] = `WO-040 새 그림 fac_${kind}_${idleName} (${m.canvas[0]}x${m.canvas[1]} · 50% 축소) · 옛 ${o.ruid} ${o.name} (Scale 0.25 · Ground ${o.ground} · Bar ${o.bar}) · ${fit.status === 'M1' ? 'M1 이 옛 그림과 나란히 놓고 맞춤' : fit.status === 'M2' ? 'M2 가 옛 그림 전체 높이에 맞춤' : '계산값'} · 아이콘은 옛 그림 그대로`;
   }
   fitReport.push(`${key.padEnd(20)} scale=${row.Scale} ground=${row.GroundOffset} bar=${row.BarOffset} flipX=${row.FlipX} [${fit.status}]`);
   if (JSON.stringify(row) !== before) sprChanged.push(key);
