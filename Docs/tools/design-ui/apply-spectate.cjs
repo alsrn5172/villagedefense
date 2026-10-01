@@ -22,7 +22,8 @@ for (let i = 0; i < 4; i++) {
   S.place(b, p, { anchor: 'middle-left', pivot: [0, 0.5], pos: [125 + 184 * i, 0], size: [174, 46] });
   S.image(b, p, 'chip_blue_dark');
   S.font(b, p, { font: 'Noto700', size: 16, color: S.COLOR.ivory, h: 'center', v: 'middle', outline: false, overflow: 1 });
-  b.patchComponent(p, S.TXT, { Padding: { left: 10, right: 10, top: 0, bottom: 0 } });
+  // 🔴 칩 글자 대비(시안 1790844637-7b1e): 따라가는 탭이 금 칩(테두리 10)일 때 글자 좌우 여백 ≥ 11 → 12
+  b.patchComponent(p, S.TXT, { Padding: { left: 12, right: 12, top: 0, bottom: 0 } });
 }
 
 // 자유 카메라(켜짐 = 금 버튼 · 꺼짐 = 파랑 버튼은 스크립트가 그림을 바꾼다) · 나가기(빨강 칩)
@@ -32,6 +33,10 @@ S.font(b, B + '/BtnFreeCam', { font: 'Noto400', size: 16, color: S.COLOR.goldInk
 S.place(b, B + '/BtnLeave', { pos: [-16, 0], size: [112, 46] });
 S.button(b, B + '/BtnLeave', { normal: 'btn_kick_default', pressed: 'btn_kick_pressed' });
 S.font(b, B + '/BtnLeave', { font: 'Noto700', size: 16, color: S.COLOR.white, h: 'center', v: 'middle', outline: false, text: '나가기' });
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 탭 기본 그림은 어두운 칩(규칙 밖)이라 여기선 건드릴 게 없다(목록이 비어야 정상). '따라가는 사람' 탭이 금 칩으로 바뀔 때는 SpectateUIController 가 _UiChipText 로 건다.
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'SpectateGroup.ui'));
 console.log('SpectateGroup 적용 끝');

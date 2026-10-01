@@ -15,8 +15,9 @@ const PANEL = [680, 14, 560, 64];
 S.place(b, 'Panel', { pos: [0, -14], size: [PANEL[2], PANEL[3]] });
 S.image(b, 'Panel', 'panel_title_bar');
 
-// 페이즈 칩: 왼쪽에서 64 · 폭 136 · 높이 30. 그림 · 글자는 스크립트가 페이즈별로 바꾼다(기본 = 개척 초록).
-S.place(b, 'Panel/PhaseText', { pos: [64, 0], size: [136, 30] });
+// 페이즈 칩: 왼쪽에서 64 · 폭 152 · 높이 34(시안 1790844637-7b1e: height 34 · 좌우 여백 14). 그림 · 글자는 스크립트가 페이즈별로 바꾼다(기본 = 개척 초록).
+// 폭: 가장 긴 문구 "0.5페이즈 전직"이 게임 글꼴(시안보다 10~15% 넓음)에서 안쪽(폭 − 2 × 14 = 124)에 한 줄로 들어가게 136 → 152. 시간 글자(왼쪽 237)와는 21 떨어진다.
+S.place(b, 'Panel/PhaseText', { pos: [64, 0], size: [152, 34] });
 S.image(b, 'Panel/PhaseText', 'chip_green');
 S.font(b, 'Panel/PhaseText', { font: 'Maple', size: 16, color: C.white, h: 'center', v: 'middle', outline: false });
 
@@ -39,6 +40,12 @@ S.newImage(b, 'Panel/DispatchBadge/Flag', 'icon_flag_warn', { pos: S.at(846, 92,
 [1042.5, 1055.5, 1068.5].forEach((x, i) => {
   b.sprite(`Panel/DispatchBadge/Tick${i + 1}`, { anchor: 'middle-center', pos: S.at(x, 97, 13, 14, BADGE), rect_size: [13, 14], pivot: [0.5, 0.5], color: '#FFE2A8', alpha: 1, sprite_type: 1, raycast: false });
 });
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 칩 위 글자 규칙. 페이즈 칩은 그림이 런타임에 바뀌므로 여기선 기본(개척 초록 = 보석 규칙)만 박히고, 페이즈마다 MatchClockUIController 가 _UiChipText 로 다시 건다.
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
+// 페이즈 칩 글자 좌우 여백은 시안 그대로 14(chipText 가 건 테두리+1 = 12 보다 크다)
+b.patchComponent('Panel/PhaseText', S.TXT, { Padding: { left: 14, right: 14, top: 0, bottom: 0 } });
 
 b.write(path.join(WORLD, 'ui', 'MatchClockGroup.ui'), {
   lint_verbose: !!process.env.LINT_V,
