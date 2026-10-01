@@ -23,7 +23,8 @@ const ctr = (p, r, parent, extra) => S.place(b, p, Object.assign({ anchor: 'midd
 const img = (p, key, r, parent, o) => S.newImage(b, p, key, Object.assign({ pos: S.at(r[0], r[1], r[2], r[3], parent), size: [r[2], r[3]] }, o || {}));
 const txt = (p, text, r, parent, o) => S.newText(b, p, text, Object.assign({ pos: S.at(r[0], r[1], r[2], r[3], parent), rect: [r[2], r[3]] }, o || {}));
 // 게임 그림(원작 아이콘) 자리: 그림 이름표가 없어 RUID 를 직접 준다
-const gameIcon = (p, ruid, r, parent, o) => b.sprite(p, Object.assign({ anchor: 'middle-center', pos: S.at(r[0], r[1], r[2], r[3], parent), rect_size: [r[2], r[3]], pivot: [0.5, 0.5], image_ruid: ruid, sprite_type: 0, raycast: false }, o || {}));
+// 🔴 color/alpha 를 안 주면 빌더 기본 틴트(어두운 회색 · 알파 0.24)가 그림에 곱해져 에너지 코어가 거의 안 보였다(사용자 지적 2026-10-01 E12 · 원인 = probe 로 Color 확인) → 흰색 알파 1.
+const gameIcon = (p, ruid, r, parent, o) => b.sprite(p, Object.assign({ anchor: 'middle-center', pos: S.at(r[0], r[1], r[2], r[3], parent), rect_size: [r[2], r[3]], pivot: [0.5, 0.5], image_ruid: ruid, sprite_type: 0, raycast: false, color: '#FFFFFF', alpha: 1 }, o || {}));
 
 // 차원 관문 창에서만 보이는 제목 아이콘(에너지 코어 · 게임 그림 자리)
 gameIcon('Window/TitleBar/TitleIconCore', ENERGY_CORE_RUID, [518.5, 147, 34, 34], F.TITLE, { enable: false });

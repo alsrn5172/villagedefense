@@ -252,7 +252,8 @@ for (let i = 0; i < 5; i++) {
   b.patchComponent(c + '/Name', S.TXT, { IsRichText: true });
   ctr(c + '/Info', [49, 150, 126, 18], L); // 100 폭에서 "도감 Lv5 · / ×5.0" 으로 꺾였다
   S.font(b, c + '/Info', { font: 'Noto700', size: 13, color: C.sub, h: 'left', v: 'middle', outline: false });
-  img(c + '/StageIcon', 'stage_3', [32.5, 151, 16, 16], L); // 도감 Lv 1~5 ↔ stage_1~3 대응은 기획 결정 — 시안 그대로 전부 stage_3
+  // 단계 아이콘(StageIcon · stage_1~3)은 넣지 않는다(사용자 결정 2026-10-01 "stage123 같은 거 안 넣는다") — 이미 있으면 지운다. 글자 x(Info)는 시안 자리 그대로.
+  if (S.has(b, c + '/StageIcon')) b.remove(c + '/StageIcon');
   const MC = [48, 174, 82.5, 32];
   box(c + '/MatChip', MC, L);
   const ML = [0, 0, 82.5, 32];

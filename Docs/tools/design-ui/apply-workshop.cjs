@@ -14,6 +14,8 @@ const b = S.open(WORLD, 'VillageWorkshopGroup');
 const before = b.listEntities().length;
 const C = S.COLOR;
 const GRID = 'MOD.Core.GridViewComponent';
+// 긴 이름 한 줄 자동 축소: BestFit(MinSize 11 ~ MaxSize 시안 크기) + Overflow 0. 컨트롤러는 글자를 자르거나 크기를 어림하지 않는다(사용자 결정 2026-10-01).
+const bestFit = (p, max) => b.patchComponent(p, S.TXT, { BestFit: true, MinSize: 11, MaxSize: max, Overflow: 0, FontSize: max });
 
 // ── 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h · 1200x900 캔버스) ──
 const WIN = [110, 110, 980, 720];
@@ -238,7 +240,8 @@ const PT = [0, 0, 110, 110];
 ctr(P1 + '/PickTemplate/Icon', [18, 18, 74, 74], PT);
 // 🔴 이름 상자가 칸(110)보다 넓으면 첫 열 칸의 이름이 그리드 왼쪽 경계에서 잘린다(2차 묶음 실측 · "갈색 고급 가죽 모자 +3") → 칸 폭 그대로(넘치면 말줄임)
 ctr(P1 + '/PickTemplate/Name', [0, 112, 110, 26], PT);
-S.font(b, P1 + '/PickTemplate/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 1, text: '' });
+S.font(b, P1 + '/PickTemplate/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0, text: '' });
+bestFit(P1 + '/PickTemplate/Name', 14);
 for (let n = 1; n <= 3; n++) img(`${P1}/PickTemplate/EnhBadge_${n}`, `badge_enh_${n}`, [74, 2, 34, 34], PT, { enable: false });
 img(P1 + '/PickTemplate/EquipChip', 'chip_blue', [3, 4, 48, 22], PT, { enable: false });
 txt(P1 + '/PickTemplate/EquipChip/Text', '착용', [0, 0, 48, 22], [0, 0, 48, 22], { font: 'Noto700', size: 13, color: C.white });
@@ -278,7 +281,8 @@ GEM_ORDER.forEach((names, row) => names.forEach((id, col) => {
   const L = [0, 0, 147, 176];
   ctr(P + '/Icon', [42.5, 16, 62, 62], L);
   ctr(P + '/Name', [3.5, 82, 140, 26], L);
-  S.font(b, P + '/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 1 });
+  S.font(b, P + '/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0 });
+  bestFit(P + '/Name', 14);
   ctr(P + '/StatLabel', [8.5, 104.5, 130, 26], L);
   S.font(b, P + '/StatLabel', { font: 'Noto700', size: 14, color: C.green, h: 'center', v: 'middle', outline: false, overflow: 1 });
   ctr(P + '/Count', [23.5, 128, 100, 26], L);
@@ -335,7 +339,8 @@ const CB = [0, 0, CW, CH];
 img(CR + '/CardTemplate/Sel', 'panel_row_selected', CB, CB, { enable: false });
 ctr(CR + '/CardTemplate/Icon', [65, 20, 44, 44], CB);
 ctr(CR + '/CardTemplate/Name', [3, 65, 168, 26], CB);
-S.font(b, CR + '/CardTemplate/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 1 });
+S.font(b, CR + '/CardTemplate/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0 });
+bestFit(CR + '/CardTemplate/Name', 16);
 // 직업 태그: 직업별 색 칩 6장 중 하나만 켠다 · 글자(Job)는 그 위
 const JR2 = [86, 10, 72, 22];
 box(CR + '/CardTemplate/JobChip', JR2, CB);
@@ -374,8 +379,9 @@ function detailEmpty(root, title, sub) {
 }
 img(CR + '/Detail/Frame', 'slot_frame', [754, 238.5, 84, 84], DT, { enable: false });
 ctr(CR + '/Detail/Icon', [765, 249.5, 62, 62], DT);
-ctr(CR + '/Detail/Name', [852, 234, 196, 67], DT);
-S.font(b, CR + '/Detail/Name', { font: 'Maple', size: 24, color: C.ivory, h: 'left', v: 'bottom', outline: false });
+ctr(CR + '/Detail/Name', [852, 267, 196, 34], DT);
+S.font(b, CR + '/Detail/Name', { font: 'Maple', size: 24, color: C.ivory, h: 'left', v: 'bottom', outline: false, overflow: 0 });
+bestFit(CR + '/Detail/Name', 24);
 S.place(b, CR + '/Detail/Req', { enable: false }); // 요구 조건은 칩(ReqChip) + 글(ReqText) 두 조각으로 — FillItemView 에는 reqT 를 안 넘긴다
 const RC = [852, 305, 54, 22];
 box(CR + '/Detail/ReqChip', RC, DT, { enable: false });
@@ -436,7 +442,8 @@ const PB = [0, 0, 180, 150];
 img(PO + '/CardTemplate/Sel', 'panel_row_selected', PB, PB, { enable: false });
 ctr(PO + '/CardTemplate/Icon', [61, 18, 58, 58], PB);
 ctr(PO + '/CardTemplate/Name', [4, 80, 172, 26], PB);
-S.font(b, PO + '/CardTemplate/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 1 });
+S.font(b, PO + '/CardTemplate/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0 });
+bestFit(PO + '/CardTemplate/Name', 16);
 S.place(b, PO + '/CardTemplate/Price', { enable: false });
 S.place(b, PO + '/CardTemplate/Job', { enable: false }); // 물약 카드에는 직업 태그가 없다
 img(PO + '/CardTemplate/MesoIcon', 'icon_meso', [58, 106.5, 20, 20], PB);
@@ -449,7 +456,8 @@ detailEmpty(PO + '/Detail', '왼쪽에서 물약을 고르세요', '고르면 �
 img(PO + '/Detail/Frame', 'slot_frame', [855, 236, 92, 92], DT, { enable: false });
 ctr(PO + '/Detail/Icon', [868, 249, 66, 66], DT);
 ctr(PO + '/Detail/Name', [751, 342, 300, 34], DT);
-S.font(b, PO + '/Detail/Name', { font: 'Maple', size: 24, color: C.ivory, h: 'center', v: 'middle', outline: false });
+S.font(b, PO + '/Detail/Name', { font: 'Maple', size: 24, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0 });
+bestFit(PO + '/Detail/Name', 24);
 ctr(PO + '/Detail/Desc', [751, 377.5, 300, 24], DT);
 S.font(b, PO + '/Detail/Desc', { font: 'FootballB', size: 16, color: C.green, h: 'center', v: 'middle', outline: false });
 [['BtnMinus', 772, 'icon_minus'], ['BtnPlus', 966, 'icon_plus']].forEach(([n, x, icon]) => {

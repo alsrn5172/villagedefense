@@ -161,7 +161,9 @@ for (let i = 1; i <= 5; i++) {
   S.font(b, R + '/Badge', { text: '' });
   // 얼굴: 런타임이 MonsterCatalog 아이콘을 넣는다(비어 있으면 끔)
   b.sprite(R + '/Icon', { anchor: 'middle-center', pos: [-274, 0], rect_size: [22, 22], pivot: [0.5, 0.5], image_ruid: ROUND, sprite_type: 0, color: '#FFFFFF', alpha: 1, raycast: false, enable: false });
-  b.patchComponent(R + '/Icon', S.SPR, { PreserveSprite: 1 });
+  // 🔴 PreserveSprite 1(비율 유지)이면 MonsterInfo.IconRUID(stand 클립 · 피벗 = 발 ny 0)가 발을 칸 중심에 두고 위로 그려져 얼굴이 칸 위로 치우친다(사용자 지적 2026-10-01 · F02 · 클립 메타 실측).
+  // 다른 몬스터 썸네일 칸(마을 도감 · 계정 도감 · 모집/조련 카드)은 전부 PreserveSprite 0(칸에 맞춰 채움)이고 캡처에서 가운데에 맞는다 → 같은 규칙.
+  b.patchComponent(R + '/Icon', S.SPR, { PreserveSprite: 0 });
   ctr(R + '/Name', -98, 0, 300, 34);
   S.font(b, R + '/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'left', v: 'middle', outline: false, overflow: 0 });
   S.newImage(b, R + '/LvChip', 'chip_blue_dark_sm', { pos: [261.5, 0], size: [57, 19.5] });
