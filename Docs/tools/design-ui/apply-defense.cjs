@@ -92,10 +92,10 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
   S.place(b, N + '/HpBar/Fill', { pos: [11, 0], size: [138, 6] });
   S.image(b, N + '/HpBar/Fill', 'gauge_fill_green');
   // 수비대 표식(최전방 노드만 · 스크립트가 켠다): 깃발 + 글자, 받침 그림은 끈다
-  const MK = [91, 45, 139, 18];
+  const MK = [91, 45, 175, 18];
   ctr(N + '/Mark', MK, NL);
   S.tint(b, N + '/Mark', C.white, 0);
-  S.font(b, N + '/Mark', { font: 'Noto700', size: 13, color: C.blue, h: 'left', v: 'middle', outline: false });
+  S.font(b, N + '/Mark', { font: 'Noto700', size: 12, color: C.blue, h: 'left', v: 'middle', outline: false }); // 13 · 139 폭에서 "… · 0마리" 가 둘째 줄로 꺾였다(Play 확인 2026-10-01)
   img(N + '/Mark/Flag', 'flag_guard', [70, 44, 17, 20], MK);
 });
 
@@ -129,7 +129,7 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
   S.place(b, K + '/HpBar/Fill', { pos: [16, 0], size: [234.5, 12] });
   S.image(b, K + '/HpBar/Fill', 'gauge_fill_green');
   ctr(K + '/HpText', [18, 116, 266.5, 26], CL);
-  S.font(b, K + '/HpText', { font: 'FootballB', size: 14, color: C.white, h: 'center', v: 'middle' });
+  S.font(b, K + '/HpText', { font: 'FootballB', size: 14, color: C.white, h: 'center', v: 'middle', shadow: true }); // 금색 채움 위 흰 글자가 안 읽혀("21,000" 앞 두 글자) 어두운 그림자를 깐다(Play 확인 2026-10-01)
   txt(K + '/DeadText', '파괴됨', [18, 116, 266.5, 26], CL, { font: 'Maple', size: 14, color: C.coral, enable: false });
   // 설명 줄(넥서스만 붉게)
   lab(K + '/StatText', [18, 147, 266.5, 22], CL, { font: 'Noto700', size: 14, color: stage === 'CORE' ? C.coral : C.sub, h: 'center' });
@@ -167,7 +167,7 @@ S.place(b, T + '/StatusText', { enable: false });
   img(NV + '/Pane', 'panel_inner', [134, 218, 932, 480], CNT);
   [['IconA', 'fac_tower', 498], ['IconB', 'fac_inhibitor', 572], ['IconC', 'fac_nexus', 646]].forEach(([n, key, x]) =>
     img(`${NV}/${n}`, key, [x, 377, 56, 56], CNT, { color: '#9AA0AA', alpha: 0.55 }));
-  txt(NV + '/Title', '아직 연결한 마을이 없어요', [468.5, 445, 263, 33.5], CNT, { font: 'Maple', size: 24, color: C.title });
+  txt(NV + '/Title', '아직 연결한 마을이 없어요', [435, 445, 330, 33.5], CNT, { font: 'Maple', size: 24, color: C.title });
   txt(NV + '/Line1', '빈 마을의 넥서스를 눌러 마을을 연결하세요', [440, 491, 320, 24], CNT, { font: 'Noto700', size: 16, color: C.sub });
   txt(NV + '/Line2', '10레벨부터 연결할 수 있어요', [440, 515, 320, 24], CNT, { font: 'Noto700', size: 16, color: C.faint });
   S.back(b, NV + '/Pane');
@@ -184,21 +184,21 @@ S.place(b, F + '/CostLabel', { enable: false });
 {
   const CH = F + '/Chips';
   box(CH, FOOT, FOOT);
-  const c1 = [140, 746.5, 160, 48];
+  const c1 = [140, 746.5, 172, 48]; // 칩 폭 · 글자 칸은 게임 글꼴에 맞춰 넓힘: "최전방" · "수비대" · "빅토리아 주화" 가 40 · 85 폭에서 꺾였다(Play 확인 2026-10-01)
   img(CH + '/ChipFront', 'plate_dark', c1, FOOT);
   img(CH + '/ChipFront/Icon', 'flag_guard', [148, 756.5, 28, 28], c1);
-  txt(CH + '/ChipFront/Label', '최전방', [184, 760.5, 40, 19.5], c1, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-  txt(CH + '/ChipFront/Name', '포탑', [230.5, 758, 66, 25], c1, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
-  const c2 = [310, 746.5, 186.5, 48];
+  txt(CH + '/ChipFront/Label', '최전방', [184, 760.5, 52, 19.5], c1, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+  txt(CH + '/ChipFront/Name', '포탑', [242, 758, 66, 25], c1, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
+  const c2 = [322, 746.5, 202, 48];
   img(CH + '/ChipGuard', 'plate_dark', c2, FOOT);
-  img(CH + '/ChipGuard/Icon', 'ico_party', [318, 756.5, 28, 28], c2);
-  txt(CH + '/ChipGuard/Label', '수비대', [354, 760.5, 40, 19.5], c2, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-  txt(CH + '/ChipGuard/Val', '0 / 10묶음', [400.5, 758, 90, 25], c2, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
-  const c3 = [506.5, 746.5, 190, 48];
+  img(CH + '/ChipGuard/Icon', 'ico_party', [330, 756.5, 28, 28], c2);
+  txt(CH + '/ChipGuard/Label', '수비대', [366, 760.5, 52, 19.5], c2, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+  txt(CH + '/ChipGuard/Val', '0 / 10묶음', [424, 758, 100, 25], c2, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
+  const c3 = [534, 746.5, 222, 48];
   img(CH + '/ChipCoin', 'plate_dark', c3, FOOT);
-  img(CH + '/ChipCoin/Icon', 'icon_victoria_coin', [514.5, 756.5, 28, 28], c3);
-  txt(CH + '/ChipCoin/Label', '빅토리아 주화', [550.5, 760.5, 85, 19.5], c3, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-  txt(CH + '/ChipCoin/Num', '0', [639.5, 758, 50, 25], c3, { font: 'FootballB', size: 18, color: C.gold, h: 'left' });
+  img(CH + '/ChipCoin/Icon', 'icon_victoria_coin', [542, 756.5, 28, 28], c3);
+  txt(CH + '/ChipCoin/Label', '빅토리아 주화', [578, 760.5, 104, 19.5], c3, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+  txt(CH + '/ChipCoin/Num', '0', [688, 758, 60, 25], c3, { font: 'FootballB', size: 18, color: C.gold, h: 'left' });
   const NVF = F + '/NoVillage';
   box(NVF, FOOT, FOOT, { enable: false });
   img(NVF + '/Icon', 'icon_info', [140, 758.5, 24, 24], FOOT);

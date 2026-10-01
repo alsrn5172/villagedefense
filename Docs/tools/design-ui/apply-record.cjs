@@ -107,8 +107,8 @@ b.patchComponent(CO + '/CollGrid', GRID, {
   // 그리기 순서: 덮개 · 틀은 그림 · 글자 뒤(맨 뒤) — Locked 보다 Sel 이 앞
   S.before(b, T + '/Slot', T + '/Icon');
   S.before(b, T + '/SlotLocked', T + '/Icon');
-  S.back(b, T + '/Locked');
   S.back(b, T + '/Sel');
+  S.back(b, T + '/Locked'); // 순서 주의: 나중에 보낸 것이 더 뒤 → Locked 가 맨 뒤, Sel 이 그 앞(잠긴 칸을 골라도 금테가 보이게)
 }
 
 // 해금 진행: 받침 + "해금" + 숫자 + "/ 24" + 게이지 + 도움말
@@ -116,7 +116,7 @@ b.patchComponent(CO + '/CollGrid', GRID, {
   const PP = [134, 672, 265.5, 42];
   const P = CO + '/ProgressPlate';
   img(P, 'plate_dark', PP, CNT);
-  txt(P + '/Label', '해금', [148, 683, 26, 20], PP, { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
+  txt(P + '/Label', '해금', [148, 683, 34, 20], PP, { font: 'Noto700', size: 13, color: C.sub, h: 'left' }); // 26 폭 14 글자에서 "해 / 금" 으로 꺾였다(Play 확인 2026-10-01)
   txt(P + '/Count', '0', [174, 680.5, 26, 25], PP, { font: 'FootballB', size: 18, color: C.gold, h: 'right' });
   txt(P + '/Total', '/ 24', [204, 684.5, 34, 20], PP, { font: 'FootballB', size: 14, color: C.faint, h: 'left' });
   const TR = [235.5, 684, 150, 18];
@@ -165,9 +165,9 @@ txt(F + '/SelName', '', [140, 748.5, 180, 26], FOOT, { font: 'Maple', size: 20, 
   const CP = [325, 746.5, 233.5, 48];
   img(K + '/CostPlate', 'plate_dark', CP, FOOT);
   img(K + '/CostPlate/MatIcon', 'icon_info_exp', [333, 754.5, 32, 32], CP, { enable: false });
-  txt(K + '/CostPlate/MatName', '재료', [373, 760.5, 72, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left', overflow: 1 });
-  txt(K + '/CostPlate/MatNum', '8', [449, 756.5, 24, 28], CP, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
-  txt(K + '/CostPlate/MatHave', '보유 0', [477, 760.5, 80, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+  txt(K + '/CostPlate/MatName', '재료', [373, 760.5, 82, 19.5], CP, { font: 'Noto700', size: 13, color: C.faint, h: 'left', overflow: 1 }); // "다이아몬드" 가 72 폭에서 "다이아몬…" 로 잘렸다
+  txt(K + '/CostPlate/MatNum', '8', [459, 756.5, 24, 28], CP, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
+  txt(K + '/CostPlate/MatHave', '보유 0', [487, 760.5, 70, 19.5], CP, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -210,7 +210,7 @@ for (let k = 0; k < 5; k++) {
   const PE = [150, 280, 426, 520];
   box(PP1 + '/PlayerEmpty', PE, P1, { enable: false });
   img(PP1 + '/PlayerEmpty/Icon', 'ico_party', [345, 491.5, 36, 36], PE, { alpha: 0.6 });
-  txt(PP1 + '/PlayerEmpty/Text1', '살아 있는 다른 참가자가 없어요', [245.5, 535.5, 235.5, 25], PE, { font: 'Noto700', size: 18, color: C.sub });
+  txt(PP1 + '/PlayerEmpty/Text1', '살아 있는 다른 참가자가 없어요', [218.25, 535.5, 290, 25], PE, { font: 'Noto700', size: 18, color: C.sub });
   txt(PP1 + '/PlayerEmpty/Text2', '혼자 남았거나 혼자 참가한 매치예요', [258.5, 569, 209, 19.5], PE, { font: 'Noto400', size: 14, color: C.faint });
 }
 
@@ -262,7 +262,7 @@ img(PD + '/HeaderIcon', 'ico_user', [624, 234.5, 26, 26], P2);
   // 안 골랐을 때 · 생존자 없음 안내(DetailRoot 는 이때 끈다)
   box(PD + '/DetailEmpty', P2, P2, { enable: false });
   img(PD + '/DetailEmpty/Icon', 'icon_arrow_left', [813, 484.5, 48, 48], P2, { alpha: 0.8 });
-  txt(PD + '/DetailEmpty/Text', '왼쪽에서 이름을 누르면\n모습 · 장비 · 기록이 나와요', [743.5, 542.5, 187, 45], P2, { font: 'Noto700', size: 16, color: C.sub });
+  txt(PD + '/DetailEmpty/Text', '왼쪽에서 이름을 누르면\n모습 · 장비 · 기록이 나와요', [707, 542.5, 260, 45], P2, { font: 'Noto700', size: 16, color: C.sub });
   // 아바타 액자는 아바타 뒤 · 받침은 Gear 뒤
   S.before(b, D + '/AvatarFrame', D + '/Avatar');
   S.before(b, D + '/GearPlate', D + '/Gear');

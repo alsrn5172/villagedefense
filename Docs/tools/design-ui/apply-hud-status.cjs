@@ -17,8 +17,9 @@ const LV = [818, 894, 62, 33.5];           // 레벨 글자 (시안은 글자 �
 const NAME = [888, 895, 176, 32];          // 이름판 (시안은 남는 폭을 다 씀 · 직업 칸을 넓히려고 176 으로 고정)
 const JOB_ICON = [1072, 898, 26, 26];
 const JOB_TXT = [1102, 898, 60, 26];       // 직업 이름: 글자 수에 따라 스크립트가 크기를 줄인다(16 / 14 / 12)
-const APSP = [941, 934.5, 98, 25];
-const ALERT = [1031, 920.5, 24, 24];
+// AP/SP 칩: 시안 98 폭은 "AP 30 · SP 18" 처럼 두 자리만 돼도 게임 글꼴(시안보다 넓음)에서 둘째 줄로 꺾였다(Play 확인 2026-10-01) → 130 폭(가운데 그대로)
+const APSP = [925, 934.5, 130, 25];
+const ALERT = [1047, 920.5, 24, 24];
 const ROWS = { Hp: 966.5, Mp: 999.5, Exp: 1032.5 };
 const LABEL_Y = { Hp: 970, Mp: 1003, Exp: 1036 };
 
@@ -82,7 +83,9 @@ for (const k of ['Hp', 'Mp', 'Exp']) {
 
 // ═══ 오른쪽 위 바로가기: 캐릭터(C) · 스킬(K) ═══
 const CONT = [1756, 20, 140, 85];
-S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-24, -20], size: [CONT[2], CONT[3]] });
+// 🔴 오른쪽 끝 자리는 MSW 엔진 기본 버튼(친구 · 메뉴 · 캔버스 x 1725~1897)이 차지한다 → 두 칸은 그 왼쪽(오른쪽 끝 1717)에 붙인다.
+//    시안은 4칸 한 줄(캐릭터 · 스킬 · 친구 · 메뉴)이라 -24 에 뒀더니 엔진 버튼 위에 겹쳤다(Play 확인 2026-10-01).
+S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-203, -20], size: [CONT[2], CONT[3]] });
 const SHORT = [
   { id: 'BtnCharacter', x: 1756, icon: 'ico_user', key: 'C', label: '캐릭터' },
   { id: 'BtnSkill', x: 1832, icon: 'ico_star', key: 'K', label: '스킬' },
@@ -96,7 +99,7 @@ for (const s of SHORT) {
   S.newImage(b, P + '/Icon', s.icon, { pos: S.at(s.x + 14, 34, 36, 36, BTN), size: [36, 36] });
   S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 48, 68, 22, 22, BTN), size: [22, 22] });
   S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [22, 22] });
-  S.newText(b, P + '/Label', s.label, { font: 'Noto700', size: 13, color: C.ivory, pos: S.at(s.x - 4, 87, 72, 18, BTN), rect: [72, 18] });
+  S.newText(b, P + '/Label', s.label, { font: 'Noto700', size: 13, color: C.ivory, shadow: true, pos: S.at(s.x - 4, 87, 72, 18, BTN), rect: [72, 18] }); // 칸 아래 글자는 구름 같은 밝은 배경 위에서 안 보여 그림자를 깐다(Play 확인 2026-10-01)
   S.newImage(b, P + '/Alert', 'badge_alert', { pos: S.at(s.x + 49, 10, 24, 24, BTN), size: [24, 24], enable: false });
 }
 
@@ -107,7 +110,7 @@ S.newImage(b, 'LevelUpNotice/Crest', 'deco_crest', { pos: S.at(810, 330, 300, 88
 const BARBOX = [660, 392, 600, 84];
 S.newImage(b, 'LevelUpNotice/Bar', 'bar_goal', { pos: S.at(...BARBOX, NOTICE), size: [600, 84] });
 S.newText(b, 'LevelUpNotice/Bar/Title', 'LEVEL UP!', { font: 'Bazzi', size: 44, color: '#FFF3C4', pos: [0, 0], rect: [260, 62] });
-S.newText(b, 'LevelUpNotice/Line', 'Lv 1 → Lv 2', { font: 'Maple', size: 24, color: C.white, pos: S.at(680, 486, 560, 34, NOTICE), rect: [560, 34] });
+S.newText(b, 'LevelUpNotice/Line', 'Lv 1 → Lv 2', { font: 'Maple', size: 24, color: C.white, shadow: true, pos: S.at(680, 486, 560, 34, NOTICE), rect: [560, 34] }); // 시안은 어두운 배경 위 · 게임은 밝은 맵 위에서 흰 글자가 묻혀 그림자를 깐다(Play 확인 2026-10-01)
 S.newImage(b, 'LevelUpNotice/Sparkle1', 'deco_sparkle', { pos: S.at(700, 400, 34, 34, NOTICE), size: [34, 34] });
 S.newImage(b, 'LevelUpNotice/Sparkle2', 'deco_sparkle_2', { pos: S.at(1180, 390, 30, 30, NOTICE), size: [30, 30] });
 

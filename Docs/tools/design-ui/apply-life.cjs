@@ -106,9 +106,9 @@ const CC = RSP + '/CostChip';
 box(CC, CCR, RS);
 S.newImage(b, CC + '/Plate', 'plate_dark', { anchor: 'middle-left', pivot: [0, 0.5], pos: [0, 0], size: [162, 48] });
 img(CC + '/MatIcon', 'icon_meso', [292.5, 754.5, 32, 32], CCR); // 그림은 런타임에 ItemCatalog 재료 아이콘
-txt(CC + '/Label', '재료', [332.5, 760.5, 26, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-txt(CC + '/Need', '', [366.5, 756.5, 19.5, 28], CCR, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
-txt(CC + '/Have', '', [386, 760.5, 92, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+txt(CC + '/Label', '재료', [332.5, 760.5, 36, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' }); // 26 폭에서 "재 / 료" 로 꺾였다
+txt(CC + '/Need', '', [374.5, 756.5, 19.5, 28], CCR, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
+txt(CC + '/Have', '', [394, 760.5, 100, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' }); // "보유 0 · 부족" 이 84 폭에서 둘째 줄로 꺾였다(받침은 스크립트가 210 으로)
 
 // 창고 사용량 칩 + 도움말
 const SB = [140, 746.5, 920, 48];
@@ -116,9 +116,10 @@ const SBP = F + '/StorageBar';
 box(SBP, SB, FOOT, { enable: false });
 const UP = [140, 748.5, 245, 44];
 img(SBP + '/UsagePlate', 'plate_dark', UP, SB);
-txt(SBP + '/UsagePlate/Label', '창고', [156, 760.5, 26, 19.5], UP, { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
-txt(SBP + '/UsagePlate/Used', '0', [156, 756.5, 48, 28], UP, { font: 'FootballB', size: 20, color: C.gold, h: 'right' });
-txt(SBP + '/UsagePlate/Cap', '/ 20', [209, 759.5, 36, 24], UP, { font: 'FootballB', size: 16, color: C.faint, h: 'left' });
+// 글자 칸 폭은 게임 글꼴(시안보다 10~15% 넓음)에 맞춰 넉넉히: "창고" 가 26 폭에서 "창 / 고" 로 꺾였다(Play 확인 2026-10-01)
+txt(SBP + '/UsagePlate/Label', '창고', [156, 760.5, 34, 19.5], UP, { font: 'Noto700', size: 13, color: C.sub, h: 'left' });
+txt(SBP + '/UsagePlate/Used', '0', [162, 756.5, 48, 28], UP, { font: 'FootballB', size: 20, color: C.gold, h: 'right' });
+txt(SBP + '/UsagePlate/Cap', '/ 20', [214, 759.5, 36, 24], UP, { font: 'FootballB', size: 16, color: C.faint, h: 'left' });
 img(SBP + '/UsagePlate/Gauge', 'gauge_track', [249, 761.5, 120, 18], UP);
 // 채움은 Filled 가로 · 왼쪽에서 시작(스크립트가 FillAmount). 트랙 안쪽 폭 88
 S.newImage(b, SBP + '/UsagePlate/Gauge/Fill', 'gauge_fill_gold', { anchor: 'middle-left', pivot: [0, 0.5], pos: [16, 0], size: [88, 6], type: 3 });
@@ -176,7 +177,7 @@ const PBP = ST + '/PickBar';
 box(PBP, PB, CNT);
 round(PBP + '/PlateOff', PB, PB, '#AEB8CF', 0.10); // 점선 · 1px 테두리는 에셋이 없어 옅은 판으로
 img(PBP + '/PlateOn', 'plate_dark', PB, PB, { enable: false });
-txt(PBP + '/Hint', '칸을 고르면 이름 · 설명 · 옮길 수량이 여기 나와요', [158, 611, 700, 40], PB, { font: 'Noto700', size: 16, color: C.faint, h: 'left' });
+txt(PBP + '/Hint', '칸을 고르면 이름 · 설명 · 옮길 수량이 여기 나와요', [134, 611, 932, 40], PB, { font: 'Noto700', size: 16, color: C.faint, h: 'center' }); // 시안은 가운데 정렬
 img(PBP + '/Icon', 'icon_info', [144, 609, 44, 44], PB, { enable: false }); // 그림은 런타임에 원작 아이콘
 txt(PBP + '/Name', '', [202, 607, 400, 30], PB, { font: 'Maple', size: 18, color: C.ivory, h: 'left', overflow: 1, enable: false });
 txt(PBP + '/Desc', '', [202, 631, 400, 23], PB, { font: 'Noto700', size: 14, color: C.faint, h: 'left', overflow: 1, enable: false });
@@ -245,9 +246,11 @@ for (let i = 0; i < 5; i++) {
   S.place(b, c + '/Price', { enable: false }); // 재료 글자 한 줄 — 재료 칩으로 갈렸다(스크립트가 이름으로 잡던 것 · 이제 안 쓴다)
   img(c + '/Frame', 'slot_frame', [51, 22, 76, 76], L);
   ctr(c + '/Icon', [63, 34, 52, 52], L);
-  ctr(c + '/Name', [4, 101.5, 170.5, 24], L);
+  // 이름: 한글 한 줄 + 영문 작은 줄(시안) — 서버 이름 "한글 (English)" 를 스크립트가 "한글\n<size=12>영문</size>" 로 나눈다(한 줄로 두면 "(Orange / Mushroom)" 으로 꺾였다 · Play 확인 2026-10-01)
+  ctr(c + '/Name', [4, 98, 170.5, 46], L);
   S.font(b, c + '/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'center', v: 'middle', outline: false });
-  ctr(c + '/Info', [49, 150, 100, 18], L);
+  b.patchComponent(c + '/Name', S.TXT, { IsRichText: true });
+  ctr(c + '/Info', [49, 150, 126, 18], L); // 100 폭에서 "도감 Lv5 · / ×5.0" 으로 꺾였다
   S.font(b, c + '/Info', { font: 'Noto700', size: 13, color: C.sub, h: 'left', v: 'middle', outline: false });
   img(c + '/StageIcon', 'stage_3', [32.5, 151, 16, 16], L); // 도감 Lv 1~5 ↔ stage_1~3 대응은 기획 결정 — 시안 그대로 전부 stage_3
   const MC = [48, 174, 82.5, 32];
@@ -263,14 +266,14 @@ for (let i = 0; i < 5; i++) {
   img(c + '/Sel', 'panel_row_selected', L, L, { enable: false });
   img(c + '/Lock', 'panel_row_locked', L, L, { enable: false });
   S.before(b, c + '/Frame', c + '/Icon');
-  backAll([c + '/Sel', c + '/Lock']);
+  backAll([c + '/Lock', c + '/Sel']); // 첫 번째가 가장 뒤: 재료 부족 카드를 골라도 금테(Sel)가 잠김 덮개(Lock) 위에 보이게(시안 s6)
 }
 
 // 모집 빈 상태(해금한 몬스터 없음) — 점선 빈 카드 윤곽 5장은 에셋이 없어 생략
 const EP = RC + '/Empty';
 box(EP, CR0, CNT, { enable: false });
 img(EP + '/Icon', 'mon_unknown', [568, 420.5, 64, 64], CR0);
-txt(EP + '/Title', '아직 해금한 몬스터가 없어요', [493, 492.5, 214, 25], CR0, { font: 'Noto700', size: 18, color: C.sub });
+txt(EP + '/Title', '아직 해금한 몬스터가 없어요', [463, 492.5, 274, 25], CR0, { font: 'Noto700', size: 18, color: C.sub });
 txt(EP + '/Sub', '마을 기록의 <color=#E8B64C>도감 관리인</color>에게서 몬스터를 먼저 해금하세요', [400, 524, 400, 24], CR0, { font: 'Noto400', size: 14, color: C.faint });
 
 // 도움말 줄 (글자는 기존 RecruitStatus — 이제 고정 문구)
@@ -305,8 +308,9 @@ for (let i = 0; i < 8; i++) {
   round(R0 + '/MaxGlow', [5, 5, 922, 44], L, '#F7C948', 0.22, 1, false); // 다 키운 줄: 금빛 안쪽 테 + 번지는 금색 → 옅은 금 판으로 대체
   img(R0 + '/Frame', 'slot_frame', [12, 5, 44, 44], L);
   ctr(R0 + '/Icon', [19, 12, 30, 30], L);
-  ctr(R0 + '/Name', [68, 14, 210, 26], L); // 영문 이름 줄은 생략 → 이름 한 줄이 가운데
+  ctr(R0 + '/Name', [68, 6, 210, 42], L); // 한글 한 줄 + 영문 작은 줄(스크립트가 나눈다)
   S.font(b, R0 + '/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'left', v: 'middle', outline: false });
+  b.patchComponent(R0 + '/Name', S.TXT, { IsRichText: true });
   for (let k = 0; k < 5; k++) img(`${R0}/Seg_${k}`, 'gauge_seg_off', [290 + 21 * k, 7.5, 18, 18], L);
   ctr(R0 + '/LvText', [290, 28.5, 170, 18], L);
   S.font(b, R0 + '/LvText', { font: 'Noto700', size: 13, color: C.sub, h: 'left', v: 'middle', outline: false });
@@ -332,7 +336,7 @@ for (let i = 0; i < 8; i++) {
 const TE = [134, 270, 932, 482];
 box(TR + '/Empty', TE, CNT, { enable: false });
 img(TR + '/Empty/Icon', 'mon_unknown', [568, 448.5, 64, 64], TE);
-txt(TR + '/Empty/Title', '아직 해금한 몬스터가 없어요', [493, 520.5, 214, 25], TE, { font: 'Noto700', size: 18, color: C.sub });
+txt(TR + '/Empty/Title', '아직 해금한 몬스터가 없어요', [463, 520.5, 274, 25], TE, { font: 'Noto700', size: 18, color: C.sub });
 txt(TR + '/Empty/Sub', '마을 기록의 <color=#E8B64C>도감 관리인</color>에게서 먼저 해금하세요', [420, 553, 360, 24], TE, { font: 'Noto400', size: 14, color: C.faint });
 
 // ═══════════════════════════════════════════════════════════

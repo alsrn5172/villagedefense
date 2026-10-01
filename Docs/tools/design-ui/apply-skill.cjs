@@ -71,7 +71,8 @@ for (const [name, r, label] of TABS) {
 ctr('Window/ListArea', LIST, WIN);
 noBg('Window/ListArea'); // Mask 컴포넌트는 그대로 둔다
 // 첫 행 위 14 · 행 간격 10 · 왼쪽 20 · 오른쪽 16
-b.patchComponent('Window/ListArea', 'MOD.Core.ScrollLayoutGroupComponent', { Spacing: 10, Padding: { left: 20, right: 16, top: 14, bottom: 14 } });
+// 스크롤바: 시안에 없다. 기본 회색 막대가 창 오른쪽 · 아래에 그려졌다(Play 확인 2026-10-01 · DEV 세팅 행 때문에 넘칠 때) → 숨김(2). 휠 · 끌기로는 그대로 스크롤된다.
+b.patchComponent('Window/ListArea', 'MOD.Core.ScrollLayoutGroupComponent', { Spacing: 10, Padding: { left: 20, right: 16, top: 14, bottom: 14 }, ScrollBarVisible: 2 });
 
 S.place(b, RT, { size: [444, 112] }); // 앵커(0,1)·피벗(0.5,1)은 스크롤 레이아웃이 다루니 그대로
 S.image(b, RT, 'panel_row_slot');

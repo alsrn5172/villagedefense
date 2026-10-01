@@ -32,10 +32,11 @@ S.font(b, 'Panel/NextText', { font: 'Noto700', size: 16, color: '#9CC8FF', h: 'r
 const BADGE = [820, 84, 280, 40];
 S.place(b, 'Panel/DispatchBadge', { pos: S.at(...BADGE, PANEL), size: [BADGE[2], BADGE[3]] });
 S.image(b, 'Panel/DispatchBadge', 'chip_red');
-S.font(b, 'Panel/DispatchBadge', { font: 'Maple', size: 18, color: C.white, h: 'center', v: 'middle', outline: false });
+// 글자 16(시안 18): 게임 글꼴이 시안보다 10~15% 넓어 18 이면 "총량 중" 끝이 눈금에 닿았다(Play 확인 2026-10-01).
+S.font(b, 'Panel/DispatchBadge', { font: 'Maple', size: 16, color: C.white, h: 'center', v: 'middle', outline: false });
 S.newImage(b, 'Panel/DispatchBadge/Flag', 'icon_flag_warn', { pos: S.at(846, 92, 24, 24, BADGE), size: [24, 24] });
-// 눈금 3칸(13x14): 켜짐 #FFE2A8 · 꺼짐 검정 35%. 시안의 둥근 모서리(2px)는 생략.
-[1036.5, 1049.5, 1062.5].forEach((x, i) => {
+// 눈금 3칸(13x14): 켜짐 #FFE2A8 · 꺼짐 검정 35%. 시안의 둥근 모서리(2px)는 생략. 글자와 띄우려고 시안보다 6 오른쪽.
+[1042.5, 1055.5, 1068.5].forEach((x, i) => {
   b.sprite(`Panel/DispatchBadge/Tick${i + 1}`, { anchor: 'middle-center', pos: S.at(x, 97, 13, 14, BADGE), rect_size: [13, 14], pivot: [0.5, 0.5], color: '#FFE2A8', alpha: 1, sprite_type: 1, raycast: false });
 });
 
