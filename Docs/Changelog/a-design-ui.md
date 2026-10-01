@@ -187,3 +187,21 @@ UI 5개 갱신: `AccountRecordGroup` · `CommonNpcGroup` · `VillageLifeGroup` �
 - 계정 도감(N02 · N03)은 서버 응답 위에 칸 3개 수치만 덮어 찍었다(해금 칸 모양 확인용). 모집 카드(E14)는 서버 응답이 비어(해금 몬스터 없음) 실제 몬스터 이름 · 아이콘으로 만든 카드 5장을 주입했다. 마을 도감(E16)은 실제 서버 행 24개 위에 도감 Lv 만 주입.
 - 안 찍은 것: 모집 카드 이름 영문 줄 · 공방 제작 카드 목록의 긴 이름(스크롤 아래) · 마우스 올림/누름 그림 · 모바일 레이아웃 · NPC 클릭으로 실제 창이 열리는 경로(레시피가 컨트롤러 `Open` 직접 호출) · 헤네시스 외 마을의 NPC 이름표.
 - 캡처 A02~A04 는 위 "빈 목록 액자" 수정을 클라에서 먼저 적용한 상태로 찍었다(왼쪽 빈 목록 판만 해당 · 파일 수정 뒤 `A01` 을 다시 찍어 확인).
+
+### 오라 띠 5마을 확인(10/1 저녁)
+
+질문: "오라 띠가 다른 일반 맵에서도 안 보이나?" — 테스트맵(바닥 그림을 MapLayer0 으로 바꾼 뒤)과 5마을 억제기 레인 맵(LaneConfig LANE1)을 개인 월드 Play 로 하나씩 열어 확인했다. 억제기는 `SpawnFacility` 를 서버에서 직접 불러 놓았고(`EnsureVillage` 먼저), 플레이어는 `SetWorldPosition` 으로 띠 안에 세웠다. 층 값은 하나도 안 바꿨다.
+
+| 맵 | 억제기 오라 | 화면 | 층(클라 실측) | 캡처 |
+|---|---|---|---|---|
+| 시설 테스트맵 `Test_Lane_Fx` | 커닝 속도(하늘색) | **보인다** — 바닥 그림이 MapLayer0/2 로 내려가 띠(Default/2)가 위에 그려짐. 세로 줄무늬 · 반짝이 · 바닥선이 은은하게 | 띠 Default/2 · 바닥 MapLayer0/2 · 플레이어 Default/4 | `W02e_facility_aura_testmap` |
+| 커닝 `KerningCity_Hunt_ConstructionSite` | 속도(하늘색) | **보인다** · 플레이어가 띠 안에 서면 띠 앞 | 띠 Default/2 · 시설 MapLayer7/150 · 플레이어 Default/4 | `W02_aura_kerning` |
+| 엘리니아 `Ellinia_Hunt_GreenTreeTrunk` | 공격(주황) | **보인다** — 바닥과 분수 주변에 주황 안개 + 반짝이. 맵 오른쪽 끝이라 화면 오른쪽에 붙고 오른쪽 아래 스킬칸이 일부 가림 | 띠 Default/2 · 시설 MapLayer7/150 · 플레이어 Default/4 | `W02_aura_ellinia` |
+| 노틸러스 `Nautilus_Hunt_PigPasture` | 회복(초록) | **보인다** — 초록 띠 + 반짝이 + 바닥선. 억제기(잠수함 그림)는 물결 그림 뒤에 잠겨 흐리게 보임(띠 문제 아님) | 띠 Default/2 · 시설 MapLayer7/150 · 플레이어 Default/4 | `W02_aura_nautilus` |
+| 헤네시스 `Henesys_Hunt_HillNorth` | **없음(설계)** | 띠가 없는 게 맞다 — 헤네시스 억제기 특성은 `SUPPRESSOR_ATTACK` · `MAX_TARGETS`(`VillageFacilityTrait`)라 오라 부품이 안 붙는다(`AuraEmitter` · `AuraRect` 둘 다 없음 확인) | 시설 **Default/150** · 플레이어 Default/4 | `W02_aura_henesys` |
+| 페리온 `Perion_Hunt_WildBoarLand` | **없음(설계)** | 위와 같음 — 페리온 억제기 특성은 `REFLECT` | 시설 MapLayer7/150 · 플레이어 Default/4 | `W02_aura_perion` |
+
+- 결론: 오라가 있는 3마을(커닝 · 엘리니아 · 노틸러스)은 실제 레인 맵 3곳 모두에서 띠가 보이고 플레이어 뒤다. "안 보임"이 아니라 **은은한 연출**이라 배경이 밝거나 복잡하면 흐리다(디자이너 시안의 투명도). 헤네시스 · 페리온은 오라 자체가 없다.
+- 🔴 **발견(오라와 별개 · 층 규칙)**: 헤네시스 `Henesys_Hunt_HillNorth` 의 억제기가 `Default/150` 이라 플레이어(`Default/4`)가 시설 뒤에 가려진다(`W02_aura_henesys_player_hidden_by_facility`). 원인 = 시설 층이 슬롯 아래 발판의 SortingLayer 를 따라가는데(`LaneFacilityService.SortingLayerBelow`) 이 통로 발판이 `Default` 층이다(LaneConfig 메모 "층4 Default"). 5마을 레인 슬롯 15곳 중 이 한 곳만 `Default`(나머지 MapLayer0 · 1 · 6 · 7). 층 값은 안 바꿨다 — 고치려면 이 맵 통로 발판을 MapLayer 쪽으로 옮기거나 시설 층에 상한(플레이어 뒤)을 두는 결정이 필요하다.
+- 못 본 것: 시설 Lv 2~3 의 띠(특성 값만 변해 그림은 같음) · 시설 파괴 뒤 띠(코드상 남음) · 모바일 화면 · 억제기가 아닌 시설 · 노틸러스 물 그림이 시설을 덮는 정확한 엔티티(맵 자식 SpriteRenderer 가 아님 — 찾지 못함).
+- Play 로그: 본 범위(Play 시작 뒤 1분 안 · 맵마다 한두 번 읽음)에서 Error 는 커닝 · 노틸러스에서 `[Match] handoff 없음` 1줄(룸을 직접 만든 탓 · 무해 · 30초 뒤에 나와서 그 전에 끝낸 맵에는 안 보임)뿐. 스크립트 · 오라 쪽 Error 0. 캡처 7장 → `디자인인계/2026-09-23/applied/` · 합성 `_work/sheet_round2_9.png` · 목록 `_work/files_round2.json`(7줄 추가).
