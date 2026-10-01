@@ -82,7 +82,8 @@ function defaultProps() {
   ];
 }
 const entryOf = (name) => mf.frames.find((f) => f.name === name);
-const desc = (f) => `WO-040 시설 그림 ${KIND} ${f.state}${f.frame === null ? ' 정지' : ' ' + String(f.frame).padStart(4, '0')} · ${mf.canvas[0]}x${mf.canvas[1]} 50% 축소`;
+// 축소 배율은 종류마다 다르다(기본 0.5 · 7-5 새 그림은 원본이 작아 1.0 = 축소 없음). 같은 그림 복사 프레임(manifest.aliases)은 manifest.frames 에 없으므로 올라가지 않는다 — 표는 gen-rows.cjs 가 aliases 로 같은 RUID 를 가리킨다.
+const desc = (f) => `WO-040 시설 그림 ${KIND} ${f.state}${f.frame === null ? ' 정지' : ' ' + String(f.frame).padStart(4, '0')} · ${mf.canvas[0]}x${mf.canvas[1]} ${mf.reduce === 1 ? '축소 없음' : Math.round(mf.reduce * 100) + '% 축소'}`;
 
 async function one(f, verbose) {
   const buf = fs.readFileSync(path.join(SRC, f.file));

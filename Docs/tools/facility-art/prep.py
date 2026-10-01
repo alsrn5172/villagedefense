@@ -18,7 +18,17 @@
 - 손상(damage-1) · 완파(damage-2) 정지 원본은 캔버스가 달라 일반 캔버스에 맞춰 정렬한다(조사 §3-4).
   손상 정지 = 7-x 는 손상 공격 첫 프레임 · 그 밖은 일반 첫 프레임의 몸체와 IoU 로 맞춤(FFT 상관으로 훑고 원본 해상도로 다듬음).
   완파 정지 = 손상 정지의 스케일을 중심으로 일반 첫 프레임의 아래쪽(바닥 · 섬) 영역과 IoU 로 맞춤. 잔해 모양이 달라 전체 IoU 는 못 씀.
+
+WO-040 M3(2026-10-02) 확장 — 종류 설정에 선택 항목 5개(없으면 지금까지와 똑같이 돈다):
+- src       : 원본 파일 이름의 종류 ID. 새 이름으로 올리는 종류(E18-7-5b)는 id 와 다르다(그룹 리소스 이름 · 폴더 · 표 키는 id 를 쓴다 · 옛 RUID 는 그대로 남는다).
+- src_dirs  : {'normal': [하위 폴더 경로], 'damage': [...]} — 같은 이름 파일이 여러 폴더에 있을 때(구버전 · _backup) 이 폴더의 것을 먼저 쓴다.
+- reduce    : 축소 배율(기본 0.5). 원본이 이미 작은 7-5 는 1.0.
+- pad       : 원본 그림 둘레에 투명 여백을 이만큼 더한 뒤 처리한다(손상 · 완파 정지가 일반 캔버스보다 커서 잘리는 것을 막는다).
+- dedupe    : 같은 그림(픽셀이 같은 프레임)은 첫 번째만 올리고 나머지는 manifest 의 aliases 로 가리킨다(7-5 3연사 복제 프레임).
+- skip_d1_still : 손상 정지 그림은 올리지 않는다(손상 공격의 첫 프레임이 그 역할).
+- fit_d     : 정렬 탐색의 축소 단위(기본 4 · 캔버스가 작으면 2).
 """
+import hashlib
 import json
 import os
 import re
@@ -54,9 +64,14 @@ KINDS = [
     dict(id='E18-7-4', village='ELLINIA', fac='TOWER', n=10, dmg_attack=True, attacker=True, d1_scale=1.63,
          fire_n=(800, 420), fire_d=(808, 398), fire_frame_n=2, fire_frame_d=2,
          note='나무 새총 포탑 · 최신 10프레임 · 0003(A) 잎 분리 시작 · 0002(B) 발사 중간 = 좌표 기준 프레임'),
-    dict(id='E18-7-5', village='NAUTILUS', fac='TOWER', n=5, dmg_attack=True, attacker=False, d1_scale=0.94,
-         fire_n=(298, 504), fire_d=(290, 498), fire_frame_n=None, fire_frame_d=None,
-         note='해양 대포탑 · 발사 효과 없이 상하 움직임만(좌표는 0004 포구 · 발사 프레임 없음) · 공격할 때 한 번 재생(반동)'),
+    # 2026-10-02 사용자: 옛 5프레임(1254 캔버스 · 상하 움직임만)을 버리고 새 3연사 18프레임(362×362)으로 교체. 옛 RUID(E18-7-5)는 그룹 리소스에 그대로 남아 있다(ruid-map.json 의 E18-7-5 칸 · 지우지 않음).
+    #   일반 = 노틸러스포탑공격수정/E18-7-5__0000~0017 · 손상 = damage-1_attack/E18-7-5 · 완파 = 부서진 포탑들/E18-7-5_damage-2(1254 캔버스 → 새 캔버스에 다시 정렬).
+    #   18프레임 안에 같은 그림이 복사돼 있다(설명서 [9] 대응표) → dedupe. 포구(발사) = 0011 / 0008 / 0005 진입 때 한 발씩 · 일반 (85,131) · 손상 (76,123).
+    dict(id='E18-7-5b', src='E18-7-5', village='NAUTILUS', fac='TOWER', n=18, dmg_attack=True, attacker=True, d1_scale=0.32,
+         src_dirs={'normal': ['노틸러스포탑공격수정'], 'damage': ['damage-1_attack', 'E18-7-5']},
+         reduce=1.0, pad=40, dedupe=True, skip_d1_still=True, fit_d=2,
+         fire_n=(85, 131), fire_d=(76, 123), fire_frame_n=11, fire_frame_d=11, fire_frames_n=[11, 8, 5], fire_frames_d=[11, 8, 5],
+         note='해양 대포탑 3연사 18프레임(362×362 · 축소 없음) · 0011/0008/0005 진입 때 한 발씩 · 0011~0003 은 50ms 나머지 100ms(설명서 [9]) · 같은 그림 복사 프레임은 한 장만 올림'),
     dict(id='E18-8-1', village='HENESYS', fac='SUPPRESSOR', n=12, dmg_attack=False, attacker=True, d1_scale=1.045, d1_region=0.70,
          fire_n=(236, 408), fire_d=None, fire_frame_n=10, fire_frame_d=None,
          note='버섯 지붕 석궁·수정 탑 · 0011 → 0010 에서 화살 발사 · 손상되면 석궁이 떨어져 공격 불가(손상 정지 = 석궁 없음)'),
@@ -79,17 +94,29 @@ KINDS = [
 ]
 
 
+# 시설 그림이 아닌 발사체 그림(그룹 리소스로 올려 FacilityAttackFx.BallRuid 에 쓴다) — WO-040 M3.
+#   엘리니아 포탑 = 포탑들_gif_png/새총알.png (2048 캔버스 · 7-4 프레임과 같은 축척이라 시설 Scale 을 그대로 곱하면 그림 속 잎과 같은 크기).
+#   불투명(알파 > 0 · 꼬리 빛줄기 포함)상자로 크롭 + 여백 · 50% 축소(7-4 와 같게) · 피벗 가운데(발사체는 중심이 위치 · 진행 방향으로 돎).
+PROJECTILES = [
+    # 새총알.png 의 잎은 그림 속(7-4 프레임) 잎보다 크다(잎 몸통 길이 425px · 그림 속 0002 215 → 0001 262 → 다음 약 320) → 몸통 길이 비 0.75(= 320/425)로 줄인다:
+    #   reduce = 7-4 의 0.5 × 0.75 = 0.375 → 엔티티 Scale 을 시설 Scale 과 같게 두면 그림 속 잎이 이어서 날아가는 크기가 된다(코드 · 표에 배율 상수 없음).
+    dict(id='E18-7-4-proj', src='새총알.png', village='ELLINIA', fac='TOWER', reduce=0.375, name='leaf075', margin=4,
+         note='엘리니아 포탑 발사체(잎) · 새총알.png 2048 캔버스(7-4 프레임과 같은 축척) · 알파>0 상자 크롭 · 0.375 배(= 7-4 의 50% × 잎 크기 보정 0.75) · 피벗 가운데 · 그림은 왼쪽을 봄(FaceDeg 180) · 엔티티 Scale = 시설 Scale 그대로'),
+]
+
+
 # ---------------------------------------------------------------- 파일 찾기
 _IDX = None
+_LOC = {}   # 종류 설정의 src_dirs 폴더 안 파일(이름 → 경로) — 같은 이름이 다른 폴더(구버전 · 백업)에도 있을 때 이쪽이 먼저
 
 
 def index():
-    """폴더명이 NFD 라 정규화 비교로 찾는다. {NFC 파일명: 전체 경로}"""
+    """폴더명이 NFD 라 정규화 비교로 찾는다. {NFC 파일명: 전체 경로} (백업 폴더는 건너뛴다)"""
     global _IDX
     if _IDX is None:
         _IDX = {}
         for r, _d, fs in os.walk(SRC):
-            if '_upload' in r or 'review' in r:
+            if '_upload' in r or 'review' in r or '_backup' in r:
                 continue
             for f in fs:
                 if f.lower().endswith('.png'):
@@ -97,8 +124,28 @@ def index():
     return _IDX
 
 
+def all_names():
+    d = dict(index())
+    d.update(_LOC)
+    return d
+
+
+def find_dir(parts):
+    """SRC 아래 하위 폴더를 NFC 비교로 찾는다."""
+    cur = SRC
+    for p in parts:
+        hit = None
+        for n in os.listdir(cur):
+            if unicodedata.normalize('NFC', n) == unicodedata.normalize('NFC', p):
+                hit = n
+                break
+        assert hit, ('폴더 없음', cur, p)
+        cur = os.path.join(cur, hit)
+    return cur
+
+
 def find(name):
-    p = index().get(name)
+    p = _LOC.get(name) or index().get(name)
     if not p:
         raise FileNotFoundError(name)
     return p
@@ -112,7 +159,7 @@ def frames_of(pattern):
     """정규식에 맞는 파일 → {프레임 번호: 파일명}. 번호가 겹치면 오류."""
     rx = re.compile(pattern)
     out = {}
-    for nm in index():
+    for nm in all_names():
         m = rx.match(nm)
         if m:
             i = int(m.group(1))
@@ -241,9 +288,9 @@ def fine_fit(still, ref_mask, size, s0, dx0, dy0, region=None, ds=0.01, dstep=0.
     return best
 
 
-def fit_still(still, ref_mask, size, s_center, s_half, region=None):
-    v, (s, dx, dy) = coarse_fit(still, ref_mask, size, s_center, s_half, 0.005, region)
-    return fine_fit(still, ref_mask, size, s, dx, dy, region)
+def fit_still(still, ref_mask, size, s_center, s_half, region=None, D=4):
+    v, (s, dx, dy) = coarse_fit(still, ref_mask, size, s_center, s_half, 0.005, region, D)
+    return fine_fit(still, ref_mask, size, s, dx, dy, region, dpos=max(5, D + 1))
 
 
 def measure_fit(still, fit, ref_mask, size, region=None):
@@ -272,12 +319,29 @@ def frame_diffs(ims, step=4):
 # ---------------------------------------------------------------- 한 종류 가공
 def process(K, want_sheet):
     kid = K['id']
+    sid = K.get('src', kid)                 # 원본 파일 이름의 종류 ID
+    REDUCE = K.get('reduce', globals()['REDUCE'])   # 이 종류의 축소 배율(기본 0.5)
+    pad = K.get('pad', 0)
+    fitD = K.get('fit_d', 4)
     out_dir = '%s/%s' % (UP, kid)
     os.makedirs(out_dir, exist_ok=True)
+    _LOC.clear()
+    for _key, _parts in K.get('src_dirs', {}).items():
+        _d = find_dir(_parts)
+        for f in os.listdir(_d):
+            if f.lower().endswith('.png'):
+                _LOC[unicodedata.normalize('NFC', f)] = os.path.join(_d, f)
+
+    def padim(im):
+        if not pad:
+            return im
+        cv = Image.new('RGBA', (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+        cv.paste(im, (pad, pad))
+        return cv
     # 일반 프레임 — 7-3 은 _fire 만 · 8-4/9-4 는 뒤 레이어 번호 무시 · 9-1 은 밑줄 1개 · contact 모음은 번호가 없어 안 걸린다
-    nf = frames_of(r'^%s(?:_fire)?__?(\d{4})(?:_레이어-\d+)?\.png$' % re.escape(kid))
+    nf = frames_of(r'^%s(?:_fire)?__?(\d{4})(?:_레이어-\d+)?\.png$' % re.escape(sid))
     assert sorted(nf) == list(range(K['n'])), ('일반 프레임 번호', kid, sorted(nf))
-    normal = {i: load(nf[i]) for i in nf}
+    normal = {i: padim(load(nf[i])) for i in nf}
     n = K['n']
     play = list(range(n - 1, -1, -1))       # 재생 순서(높은 번호 → 낮은 번호)
     size = normal[0].size
@@ -285,11 +349,11 @@ def process(K, want_sheet):
 
     damage = {}
     if K['dmg_attack']:
-        df = frames_of(r'^%s_damage-1__(\d{4})\.png$' % re.escape(kid))
+        df = frames_of(r'^%s_damage-1__(\d{4})\.png$' % re.escape(sid))
         assert sorted(df) == list(range(n)), ('손상 공격 프레임 번호', kid, sorted(df))
-        damage = {i: load(df[i]) for i in df}
+        damage = {i: padim(load(df[i])) for i in df}
         assert all(damage[i].size == size for i in damage), ('손상 공격 프레임 크기가 다름', kid)
-    d1_name, d2_name = '%s_damage-1.png' % kid, '%s_damage-2.png' % kid
+    d1_name, d2_name = '%s_damage-1.png' % sid, '%s_damage-2.png' % sid
     d1_still, d2_still = load(d1_name), load(d2_name)
 
     # 기준 피벗 = 대기 프레임(첫 프레임 = 가장 높은 번호)의 바닥선 · 기둥 중심. 다른 프레임과의 흔들림은 manifest 에 적는다.
@@ -313,14 +377,14 @@ def process(K, want_sheet):
     if 'd1' in pin:
         d1_fit = pin['d1']
     else:
-        d1_fit = fit_still(d1_still, d1_ref, size, K['d1_scale'], 0.08, d1_region)[1]
+        d1_fit = fit_still(d1_still, d1_ref, size, K['d1_scale'], 0.08, d1_region, fitD)[1]
     d1_mask, d1_iou = measure_fit(d1_still, d1_fit, d1_ref, size, d1_region)
     d1_iou_full = iou(d1_mask, d1_ref)
     # 완파 정지 정렬 — 손상 스케일 중심 · 아래쪽 영역
     if 'd2' in pin:
         d2_fit = pin['d2']
     else:
-        d2_fit = fit_still(d2_still, idle_mask, size, d1_fit[0], 0.06, base_region)[1]
+        d2_fit = fit_still(d2_still, idle_mask, size, d1_fit[0], 0.06, base_region, fitD)[1]
     d2_mask, d2_iou = measure_fit(d2_still, d2_fit, idle_mask, size, base_region)
     # 규칙 후보(손상 스케일 그대로 + 바닥선 · 기둥 중심 맞춤) 와의 차이 — 어긋남 점검용
     s1 = d1_fit[0]
@@ -338,7 +402,7 @@ def process(K, want_sheet):
         items.append(('normal_%04d' % i, 'normal', i, nf[i], normal[i], None))
     if K['dmg_attack']:
         for i in play:
-            items.append(('damage1_%04d' % i, 'damage1', i, '%s_damage-1__%04d.png' % (kid, i), damage[i], None))
+            items.append(('damage1_%04d' % i, 'damage1', i, '%s_damage-1__%04d.png' % (sid, i), damage[i], None))
     d1_img = place(d1_still, *d1_fit[:1], d1_fit[1], d1_fit[2], size)
     d2_img = place(d2_still, d2_fit[0], d2_fit[1], d2_fit[2], size)
     d1_al = {'iou_vs_ref': round(d1_iou, 4), 'ref': d1_ref_name, 'scale': d1_fit[0], 'dx': d1_fit[1], 'dy': d1_fit[2],
@@ -352,8 +416,24 @@ def process(K, want_sheet):
              'rule_candidate': {'scale': d2_rule[0], 'dx': d2_rule[1], 'dy': d2_rule[2]},
              'diff_vs_rule_px': [round((d2_fit[1] - d2_rule[1]) * REDUCE, 1), round((d2_fit[2] - d2_rule[2]) * REDUCE, 1)],
              'iou_full_vs_idle': round(iou(d2_mask, idle_mask), 4)}
-    items.append(('damage1_still', 'damage1', None, d1_name, d1_img, d1_al))
+    if not K.get('skip_d1_still'):
+        items.append(('damage1_still', 'damage1', None, d1_name, d1_img, d1_al))
     items.append(('damage2_still', 'damage2', None, d2_name, d2_img, d2_al))
+    # 같은 그림(픽셀이 같은 프레임)은 첫 번째(재생 순서상 앞) 한 장만 올리고 나머지는 aliases 로 가리킨다(7-5 3연사 복제 프레임).
+    aliases = {}
+    if K.get('dedupe'):
+        seen, uniq = {}, []
+        for it in items:
+            nm_, st_, ix_, sr_, im_, al_ = it
+            if ix_ is not None:
+                key = (st_, hashlib.md5(im_.tobytes()).hexdigest())
+                if key in seen:
+                    aliases[nm_] = seen[key]
+                    continue
+                seen[key] = nm_
+            uniq.append(it)
+        items = uniq
+        print('[%s] 같은 그림 %d장을 건너뜀 → 올릴 고유 프레임 %d장 · aliases %s' % (kid, len(aliases), len(items), aliases))
 
     # 공통 캔버스: 모든 그림의 불투명 경계 합집합 + 여백, 기둥 중심 기준 좌우 대칭 · 8 의 배수
     boxes = [bbox(amask(im)) for _n, _s, _i, _f, im, _a in items]
@@ -376,10 +456,10 @@ def process(K, want_sheet):
     def fire_of(xy):
         if not xy:
             return None
-        fx, fy = xy
+        fx, fy = xy[0] + pad, xy[1] + pad     # pad 로 둘레를 넓혔으면 같이 민다(기록하는 orig_xy 는 원본 좌표)
         cx, cy = (fx - x0) * REDUCE, (fy - y0) * REDUCE
         return {
-            'orig_xy': [fx, fy],
+            'orig_xy': [fx - pad, fy - pad],
             'canvas_px': [cx, cy],                                            # 축소 뒤 캔버스(왼쪽 위 원점)
             'from_pillar_floor_px': [cx - pivot_px[0], pivot_px[1] - cy],     # 기둥 중심 · 바닥선 기준 · + 오른쪽 · + 위
             'from_center_px': [cx - rw / 2.0, rh / 2.0 - cy],                 # 캔버스 중심 기준(= 가운데 피벗 엔티티 y 기준 · x 는 기둥 중심과 같음)
@@ -436,6 +516,8 @@ def process(K, want_sheet):
         'damage_attack_allowed': False if kid == 'E18-8-1' else (True if (K['attacker'] or K['dmg_attack']) else None),
         'fire_frame': K.get('fire_frame_n'), 'fire_frame_index_in_play': (idle - K['fire_frame_n']) if K.get('fire_frame_n') is not None else None,
         'fire_frame_damage1': K.get('fire_frame_d'),
+        'fire_frames_normal': K.get('fire_frames_n'), 'fire_frames_damage1': K.get('fire_frames_d'),
+        'aliases': aliases, 'pad_orig_px': pad, 'dedupe': bool(K.get('dedupe')),
         'fire': fire,
         'motion': {
             'normal_step_diff': [round(x, 2) for x in nd[:-1]], 'normal_max_step_diff': round(maxstep, 2), 'normal_loop_seam_diff': round(seam, 2),
@@ -455,14 +537,54 @@ def process(K, want_sheet):
     return mf
 
 
+def process_proj(P):
+    """발사체 그림 한 장: 알파>0 상자 + 여백으로 크롭(상자 가운데 기준 · 8 의 배수) → 축소 → manifest(upload.cjs 가 읽는 모양)."""
+    pid = P['id']
+    out_dir = '%s/%s' % (UP, pid)
+    os.makedirs(out_dir, exist_ok=True)
+    im = load(P['src'])
+    m = np.array(im)[:, :, 3] > 0
+    x0, y0, x1, y1 = bbox(m)
+    cx, cy = (x0 + x1 + 1) / 2.0, (y0 + y1 + 1) / 2.0
+    red = P['reduce']
+    # 축소 뒤 크기를 4 의 배수로(업로드 최적화) — 원본 크롭 크기는 거기서 거꾸로(소수 오차는 resize 가 흡수 · 0.3% 미만)
+    rw = int(np.ceil((x1 - x0 + 1 + 2 * P['margin']) * red / 4.0) * 4)
+    rh = int(np.ceil((y1 - y0 + 1 + 2 * P['margin']) * red / 4.0) * 4)
+    w, h = int(round(rw / red)), int(round(rh / red))
+    bx, by = int(round(cx - w / 2.0)), int(round(cy - h / 2.0))
+    box = (bx, by, bx + w, by + h)
+    assert rw % 4 == 0 and rh % 4 == 0
+    o = im.crop(box).convert('RGBa').resize((rw, rh), Image.LANCZOS).convert('RGBA')
+    path = '%s/%s.png' % (out_dir, P['name'])
+    o.save(path, optimize=True)
+    a = np.array(o)[:, :, 3] > 0
+    assert a[0].sum() == 0 and a[-1].sum() == 0 and a[:, 0].sum() == 0 and a[:, -1].sum() == 0, ('그림이 캔버스 가장자리에 닿음', pid)
+    sz = os.path.getsize(path)
+    mf = {
+        'kind': pid, 'village': P['village'], 'facility': P['fac'], 'note': P['note'], 'projectile': True,
+        'reduce': red, 'alpha_threshold': 0, 'margin_px': P['margin'], 'source': rel(P['src']), 'source_canvas': list(im.size),
+        'opaque_box_orig': [x0, y0, x1, y1], 'crop_box_orig': list(box), 'canvas_orig': [w, h], 'canvas': [rw, rh],
+        'pivot_norm_x': 0.5, 'pivot_norm_y_from_bottom': 0.5,
+        'pivot_used_for_upload': {'x': 0.5, 'y': 0.5, 'meaning': '가운데'},
+        'frames': [{'name': P['name'], 'state': 'projectile', 'frame': None, 'source': rel(P['src']), 'file': P['name'] + '.png', 'bytes': sz, 'align': None}],
+        'total_bytes': sz,
+    }
+    with open(out_dir + '/manifest.json', 'w', encoding='utf-8') as f:
+        json.dump(mf, f, ensure_ascii=False, indent=1)
+    print('[%s] 발사체 크롭(원본 px) %s = %dx%d → 축소 %dx%d · %d bytes' % (pid, box, w, h, rw, rh, sz))
+    return mf
+
+
 # ---------------------------------------------------------------- 접촉 시트
 def sheet(kid, mf, pngs, play, has_dmg, floor_y, pivot_x):
     """일반 프레임 전부 + 손상 공격 첫 프레임 + 손상 정지 + 완파 정지를 같은 배율 · 같은 바닥선으로 나란히. 바닥선(하늘색) · 피벗 x(자홍) 표시."""
     rw, rh = mf['canvas']
+    al = mf.get('aliases', {})
     names = ['normal_%04d' % i for i in play]
+    names = [al.get(nm, nm) for nm in names]
     if has_dmg:
-        names.append('damage1_%04d' % play[0])
-    names += ['damage1_still', 'damage2_still']
+        names.append(al.get('damage1_%04d' % play[0], 'damage1_%04d' % play[0]))
+    names += [nm for nm in ('damage1_still', 'damage2_still') if nm in pngs]
     tw = 300                                     # 칸 너비(화면 px)
     sc = tw / float(rw)
     th = int(round(rh * sc))
@@ -489,15 +611,21 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     want_sheet = '--no-sheet' not in sys.argv
     ks = [k for k in KINDS if not args or k['id'] in args]
-    assert ks, '종류 없음'
+    ps = [q for q in PROJECTILES if not args or q['id'] in args]
+    assert ks or ps, '종류 없음'
     result = {}
+    projs = {}
     if os.path.exists(REPO_MANIFEST):
         try:
-            result = json.load(open(REPO_MANIFEST, encoding='utf-8')).get('kinds', {})
+            old = json.load(open(REPO_MANIFEST, encoding='utf-8'))
+            result = old.get('kinds', {})
+            projs = old.get('projectiles', {})
         except Exception:
             result = {}
     for K in ks:
         result[K['id']] = process(K, want_sheet)
+    for P in ps:
+        projs[P['id']] = process_proj(P)
     order = [k['id'] for k in KINDS]
     kinds = {k: result[k] for k in order if k in result}
     # 저장소 manifest 는 프레임 목록의 원본 경로 · 변화량 배열 등을 그대로 담는다(용량 작음)
@@ -506,11 +634,12 @@ def main():
         'reduce': REDUCE, 'alpha_threshold': ALPHA, 'static_diff_threshold': STATIC_DIFF,
         'total_bytes': sum(v['total_bytes'] for v in kinds.values()), 'total_frames': sum(len(v['frames']) for v in kinds.values()),
         'kinds': kinds,
+        'projectiles': {q['id']: projs[q['id']] for q in PROJECTILES if q['id'] in projs},
     }
     with open(REPO_MANIFEST, 'w', encoding='utf-8') as f:
         json.dump(combined, f, ensure_ascii=False, indent=1)
         f.write('\n')
-    print('끝 — %d종 · 저장소 manifest %s' % (len(ks), REPO_MANIFEST))
+    print('끝 — %d종 + 발사체 %d · 저장소 manifest %s' % (len(ks), len(ps), REPO_MANIFEST))
 
 
 if __name__ == '__main__':

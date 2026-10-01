@@ -9,6 +9,9 @@ script LaneAttackFx extends Component
 	--   SHOT     : CountMin~CountMax 개 발사체(LaneShot · 시설 머리 위 → 표적 포물선 유도)를 IntervalSec 간격으로(0 = 동시 · 살짝 흩어짐) 표적에 나눠 쏜다.
 	--              hit 이펙트는 LaneShot 이 도착 지점에 띄운다. Ball2Ruid 가 있으면 짝수 번째는 그 그림(페리온 Lv3).
 	--   CAST_HIT : 발사체 없음. 시전(CastRuid · 마법진 · 시설 위치) 지금 → FlightSec 뒤 표적 위치에 적중(HitRuid · 번개) + 피해 (엘리니아 마법).
+	--   SHOT_CAST: (WO-040 M3 · 2026-10-02 · 엘리니아) 발사체(BallRuid · 시설 그림 속 잎과 같은 크기 = 시설 Scale)가 가장 가까운 표적까지 날아가(FlightSec · ArcHeight) **도착한 그 자리에**
+	--              마법진(CastRuid · Scale 배율 · CastOffset = 착탄 지점 기준 · 아래 층)과 번개(HitRuid · HitOffset · HitStartFrame · 위 층)를 같이 띄우고 그 순간 피해(Land · 광역 · 표적 선별은 지금과 같다).
+	--              포탑 위 마법진은 없다. 발사 위치는 LaneFacilityArt.ApplyToFx(표 ReleaseOffset) · 발사 시각은 표 ReleaseIndex.
 
 	property string Mode = ""
 
@@ -72,6 +75,9 @@ script LaneAttackFx extends Component
 	-- LaneFacilityArt.ApplyToFx 가 넣는다. 0 = 지금까지처럼 즉시.
 	property number ReleaseSec = 0
 
+	-- 확인용(WO-040 M3): true 면 마법진 · 번개 · 발사체가 만들어질 때마다 한 줄씩 로그([AttackFx] fx / hitfx / shot) — 공격 1회당 몇 번 만들어지는지 센다. 평소 false.
+	property boolean ShotLog = false
+
 	@HideFromInspector
 	property integer seq = 0
 
@@ -105,6 +111,7 @@ script LaneAttackFx extends Component
 		if ruid == nil or ruid == "" then return end
 		local sx = scale
 		if flipX then sx = -scale end
+		if self.ShotLog then log(string.format("[AttackFx] fx %s ruid=%s @(%.2f,%.2f) scale=%.2f sT=%.3f", self.Entity.Name, string.sub(ruid, 1, 8), pos.x, pos.y, scale, _UtilLogic.ServerElapsedSeconds)) end
 		_EffectService:PlayEffect(ruid, self.Entity, pos, 0, Vector3(sx, scale, 1))
 	end
 
@@ -113,6 +120,7 @@ script LaneAttackFx extends Component
 		-- 적중 이펙트: 위치 = 표적 몸통 + HitOffset. HitStartFrame > 0 이면 그 프레임부터만(LaneFxLogic.PlayClip · 시설과 같은 SortingLayer), 아니면 PlayEffect.
 		if self.HitRuid == "" then return end
 		local pos = Vector3(aim.x + self.HitOffsetX, aim.y + self.HitOffsetY, 0)
+		if self.ShotLog then log(string.format("[AttackFx] hitfx %s ruid=%s @(%.2f,%.2f) startFrame=%d sT=%.3f", self.Entity.Name, string.sub(self.HitRuid, 1, 8), pos.x, pos.y, self.HitStartFrame, _UtilLogic.ServerElapsedSeconds)) end
 		if self.HitStartFrame > 0 and _LaneFxLogic ~= nil then
 			local fsr = self.Entity.SpriteRendererComponent
 			_LaneFxLogic:PlayClip(self.Entity.CurrentMap, self.HitRuid, pos, self.HitScale, self.HitStartFrame, isvalid(fsr) and fsr.SortingLayer or "", self.HitFlipX)
@@ -130,8 +138,8 @@ script LaneAttackFx extends Component
 
 	@ExecSpace("ServerOnly")
 	method boolean IsDelayed()
-		-- 이 시설의 피해가 연출 도착 시점으로 미뤄지는가 (Mode 가 SHOT / CAST_HIT 이면 true). TurretAI 가 Fire 와 DoAttack 을 가른다.
-		return self.Mode == "SHOT" or self.Mode == "CAST_HIT"
+		-- 이 시설의 피해가 연출 도착 시점으로 미뤄지는가 (Mode 가 SHOT / CAST_HIT / SHOT_CAST 이면 true). TurretAI 가 Fire 와 DoAttack 을 가른다.
+		return self.Mode == "SHOT" or self.Mode == "CAST_HIT" or self.Mode == "SHOT_CAST"
 	end
 
 	@ExecSpace("ServerOnly")
@@ -158,13 +166,25 @@ script LaneAttackFx extends Component
 		local targets = attack:SelectTargets()
 		if targets == nil or #targets == 0 then return end
 		local origin = self.Entity.TransformComponent.WorldPosition
-		if self.CastRuid ~= "" then
+		local castShot = (self.Mode == "SHOT_CAST")
+		-- 포탑 위 마법진은 CAST_HIT 만 · SHOT_CAST 는 착탄 때 LaneShot 이 띄운다.
+		if self.CastRuid ~= "" and not castShot then
 			self:PlayFx(self.CastRuid, Vector3(origin.x + self.CastOffsetX, origin.y + self.CastOffsetY, 0), self.Scale, self.CastFlipX)
 		end
 		local n = 0
 		local flight = math.max(0.05, self.FlightSec)
 		local split = (self.Mode == "SHOT" and self.SplitHits)
-		if self.Mode == "SHOT" and self.BallRuid ~= "" then
+		if castShot and self.BallRuid ~= "" then
+			-- 광역 연출은 볼리당 1번(가장 가까운 표적 자리) — 사용자 2026-09-15 "표적마다 띄우면 여러 번 터진 것처럼 보인다". 발사체 1개 · 크기 = 시설 Scale(그림 속 잎과 같은 배율 기준) · 흩뿌림 없음.
+			local launch = Vector3(origin.x + self.LaunchOffsetX, origin.y + self.LaunchOffsetY, 0)
+			local fsr = self.Entity.SpriteRendererComponent
+			local shotScale = math.abs(self.Entity.TransformComponent.Scale.x)
+			local spec = { scale = shotScale, hit = self.HitRuid, hitScale = self.HitScale, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX,
+				cast = self.CastRuid, castScale = self.Scale, castOffX = self.CastOffsetX, castOffY = self.CastOffsetY, castFlip = self.CastFlipX, hitStart = self.HitStartFrame,
+				layer = isvalid(fsr) and fsr.SortingLayer or "", exact = true }
+			self:SpawnShot(targets[1], self.BallRuid, launch, spec)
+			n = 1
+		elseif self.Mode == "SHOT" and self.BallRuid ~= "" then
 			n = math.max(1, self.CountMin)
 			if self.CountMax > self.CountMin then n = _UtilLogic:RandomIntegerRange(self.CountMin, self.CountMax) end
 			local launch = Vector3(origin.x + self.LaunchOffsetX, origin.y + self.LaunchOffsetY, 0)
@@ -251,7 +271,7 @@ script LaneAttackFx extends Component
 			end
 		end
 		if self.Mode == "CAST_HIT" and fxAim ~= nil then self:PlayHit(fxAim) end
-		log("[AttackFx] " .. self.Entity.Name .. " land hits=" .. tostring(hitN) .. "/" .. tostring(#targets) .. " part=" .. tostring(part) .. "/" .. tostring(parts))
+		log(string.format("[AttackFx] %s land hits=%d/%d part=%d/%d sT=%.3f", self.Entity.Name, hitN, #targets, part, parts, _UtilLogic.ServerElapsedSeconds))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -262,8 +282,14 @@ script LaneAttackFx extends Component
 		local map = self.Entity.CurrentMap
 		if not isvalid(map) then return end
 		self.seq = self.seq + 1
+		if self.ShotLog then log(string.format("[AttackFx] shot %s #%d ruid=%s @(%.2f,%.2f) sT=%.3f", self.Entity.Name, self.seq, string.sub(ruid, 1, 8), launch.x, launch.y, _UtilLogic.ServerElapsedSeconds)) end
 		local jx = (_UtilLogic:RandomDouble() - 0.5) * 0.3
 		local jy = (_UtilLogic:RandomDouble() - 0.5) * 0.3
+		-- 흩뿌림 없음(spec.exact · SHOT_CAST): 발사 위치 · 포물선이 그림 속 잎의 이어짐이라 그대로.
+		if spec.exact == true then
+			jx = 0
+			jy = 0
+		end
 		local ent = _SpawnService:SpawnByModelId(self.ShotModelId, "Shot_" .. self.Entity.Name .. "_" .. tostring(self.seq), Vector3(launch.x + jx, launch.y + jy, 0), map)
 		if not isvalid(ent) then
 			log_warning("[AttackFx] shot spawn failed model=" .. self.ShotModelId)
@@ -289,12 +315,26 @@ script LaneAttackFx extends Component
 		shot.HitRuid = spec.hit
 		shot.HitScale = spec.hitScale
 		shot.FlightSec = spec.flight
-		shot.ArcHeight = spec.arc * (0.75 + _UtilLogic:RandomDouble() * 0.5)
+		if spec.exact == true then
+			shot.ArcHeight = spec.arc
+		else
+			shot.ArcHeight = spec.arc * (0.75 + _UtilLogic:RandomDouble() * 0.5)
+		end
 		shot.StickSec = spec.stick
 		shot.FaceDeg = spec.face
 		shot.HitOffsetX = spec.hitOffX or 0
 		shot.HitOffsetY = spec.hitOffY or 0
 		shot.HitFlipX = (spec.hitFlip == true)
+		-- 착탄 연출(SHOT_CAST): 도착 지점에 마법진 + 번개(LaneShot.PlayArrival).
+		if spec.cast ~= nil and spec.cast ~= "" then
+			shot.CastRuid = spec.cast
+			shot.CastScale = spec.castScale or 1.0
+			shot.CastOffsetX = spec.castOffX or 0
+			shot.CastOffsetY = spec.castOffY or 0
+			shot.CastFlipX = (spec.castFlip == true)
+			shot.HitStartFrame = math.floor(spec.hitStart or 0)
+			shot.FxLayer = spec.layer or ""
+		end
 		shot:Launch()
 	end
 
