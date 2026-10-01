@@ -47,9 +47,6 @@ script LaneFacilityService extends Logic
 	-- 시설 스프라이트 OrderInLayer (사용자 2026-09-15 · 타일보다 앞에).
 	property integer FacilityOrderInLayer = 150
 
-	-- 🧪 WO-040 조각 0 시험: 새 그림 재생기(LaneFacilityArt · 3상태 + 공격 프레임)를 붙일 시설 키(마을:단계). 빈 값 = 아무 데도 안 붙임. 조각 2 에서 표(FacilityArt)로 대체.
-	property string ArtSpikeKey = "HENESYS:TOWER"
-
 	-- UseTestLanes 가 켠다: 주인 없는 마을도 주인 있는 것처럼 그린다(HP 바 표시).
 	@HideFromInspector
 	property boolean testLanes = false
@@ -256,7 +253,7 @@ script LaneFacilityService extends Logic
 		if isvalid(ai) then
 			ai.AttackRange = range
 			ai.AttackCooldown = cooldown
-			-- 🧪 WO-040 조각 0: 그림 한 번 재생이 쿨 안에 끝나도록 프레임 시간을 맞춘다.
+			-- 새 그림(WO-040): 한 번 재생이 쿨 × 0.9 안에 끝나도록 프레임 시간을 맞춘다.
 			---@type LaneFacilityArt
 			local artCd = ent:GetComponent("script.LaneFacilityArt")
 			if isvalid(artCd) then artCd:SetCooldown(cooldown) end
@@ -286,7 +283,7 @@ script LaneFacilityService extends Logic
 		local fx = ent.LaneAttackFx
 		if isvalid(fx) then
 			self:ApplyAttackFx(fx, villageId, stage, lv)
-			-- 🧪 WO-040 조각 0: 새 그림이 붙은 시설은 화살을 그림의 발사 프레임 시각 · 포구 위치에서 내보낸다(ApplyAttackFx 가 덮은 직후라야 한다).
+			-- 새 그림(WO-040): 발사체를 표의 발사 프레임 시각 · 발사 위치에서 내보낸다(ApplyAttackFx 가 덮은 직후라야 한다).
 			---@type LaneFacilityArt
 			local artFx = ent:GetComponent("script.LaneFacilityArt")
 			if isvalid(artFx) then artFx:ApplyToFx(fx) end
@@ -570,10 +567,15 @@ script LaneFacilityService extends Logic
 			local fx = ent:AddComponent("script.LaneAttackFx")
 			if not isvalid(fx) then log_warning("[Facility] LaneAttackFx add failed") end
 		end
-		-- 🧪 WO-040 조각 0: 새 그림 재생기(헤네시스 포탑 시험). ApplyVisual · ApplyCombat 이 이 컴포넌트에 상태 · 쿨 · 발사 위치를 넣는다.
-		if self.ArtSpikeKey ~= "" and key == self.ArtSpikeKey then
+		-- 새 그림 재생기(WO-040 · FacilityArt 표): NORMAL 행이 켜진 시설에만 붙인다 — 없으면 정지 그림 + 틴트(지금 방식)로 돈다. ApplyVisual · ApplyCombat 이 상태 · 쿨 · 발사 위치를 넣는다.
+		if _LaneStateService ~= nil and _LaneStateService:FacilityArtEnabled(villageId, stage) then
+			---@type LaneFacilityArt
 			local art = ent:AddComponent("script.LaneFacilityArt")
-			if not isvalid(art) then log_warning("[Facility] LaneFacilityArt add failed " .. key) end
+			if isvalid(art) then
+				art.Key = key
+			else
+				log_warning("[Facility] LaneFacilityArt add failed " .. key)
+			end
 		end
 		self.entities[key] = ent
 		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(villageId, stage) + self:BarOffset(villageId, stage))
@@ -598,36 +600,49 @@ script LaneFacilityService extends Logic
 			if bar == nil or not isvalid(bar.comp) then return end
 			bar.comp.Shown = on
 		end
-		-- 🧪 WO-040 조각 0: 새 그림 재생기가 붙은 시설은 손상 · 파괴를 그림(Tier)으로 나타낸다 → 손상 · 파괴 틴트를 끈다(주인 없는 회색은 그대로).
+		-- 새 그림 재생기(WO-040 · FacilityArt)가 붙은 시설은 손상 · 파괴를 그림(Tier)으로 나타낸다 → 그 상태 행이 켜져 있으면 틴트를 끈다(HasTierArt). 꺼져 있으면 옛 틴트(안전망).
+		-- 주인 없는 마을의 회색 틴트는 그대로(노틸러스호 넥서스처럼 그림 없는(HIDDEN) 시설은 회색이어도 알파 0).
 		---@type LaneFacilityArt
 		local art = ent:GetComponent("script.LaneFacilityArt")
+		local artOn = isvalid(art)
+		local function artColor()
+			-- 그림이 이 상태를 직접 그리는 중: 흰색(HIDDEN 이면 투명). 클라 재생기가 SpriteRUID 를 바꾼다.
+			if art:IsHidden() then return Color(1, 1, 1, 0) end
+			return Color(1, 1, 1, 1)
+		end
 		if not owned or t == nil then
-			sr.Color = Color(0.6, 0.6, 0.6, 1)
+			if artOn and art:IsHiddenAny() then sr.Color = Color(0.6, 0.6, 0.6, 0) else sr.Color = Color(0.6, 0.6, 0.6, 1) end
 			showBar(false)
 			return
 		end
+		-- 상태가 바뀌면(Tier 변경) 발사 위치 · 프레임 시간 · 공격 가능 여부가 달라지므로 전투 부품도 다시 맞춘다(피격마다가 아니라 임계를 넘을 때만).
+		local tierChanged = false
 		if not t.alive then
-			if isvalid(art) then
-				art:ApplyState(false, 0)
-				sr.Color = Color(1, 1, 1, 1)
+			if artOn then tierChanged = art:ApplyState(false, 0) end
+			if artOn and art:HasTierArt() then
+				sr.Color = artColor()
 			else
 				sr.Color = Color(0.5, 0.5, 0.5, 0.5)
 			end
+			if artOn and art:IsHiddenAny() then sr.Color = Color(1, 1, 1, 0) end
 			showBar(false)
+			if tierChanged then self:ApplyCombat(villageId, stage) end
 			return
 		end
 		local ratio = math.max(0, math.min(1, t.hp / math.max(1, t.max)))
-		if isvalid(art) then
-			art:ApplyState(true, ratio)
-			sr.Color = Color(1, 1, 1, 1)
+		if artOn then tierChanged = art:ApplyState(true, ratio) end
+		if artOn and art:HasTierArt() then
+			sr.Color = artColor()
 		elseif stage == "CORE" then
 			local v = 0.15 + 0.85 * ratio   -- HP 0 → 거의 검정
 			sr.Color = Color(v, v, v, 1)
 		else
 			sr.Color = Color(1, 1, 1, 1)
 		end
+		if artOn and art:IsHiddenAny() then sr.Color = Color(1, 1, 1, 0) end
 		showBar(true)
 		if bar ~= nil and isvalid(bar.comp) then bar.comp.Ratio = ratio end
+		if tierChanged then self:ApplyCombat(villageId, stage) end
 	end
 
 	@ExecSpace("ServerOnly")

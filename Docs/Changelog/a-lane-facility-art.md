@@ -85,3 +85,71 @@
 
 - 사용자 결정: ① 대기 프레임(0007 / 0000) ② 그림 속 포탄 vs 화살(지시서 ⑩⑫) ③ 7-1 갓 무늬 초록 프레임(디자이너 재작업 요청 여부 · 지시서 ⑱) ④ 프레임 시간(쿨의 75% · 0.06~0.12 상한) ⑤ 피벗(가운데 vs 바닥 · 위 절) ⑥ 화살을 클라 연출로 옮길지(네트워크 지연 대비 · 서버는 피해만 시각 지연).
 - 다른 종류(7-2~7-5 · 8-x · 9-x): 같은 도구로 가공 · 업로드(`prep.py` 에 종류 인자 추가) → 표(`FacilityArt`)로 상수 옮기기.
+
+
+## 2026-10-02 — WO-040 조각 2~4 (코드 · 표): 시설 그림 일반화 · 3상태 · 공격 시점
+
+브랜치 `a/lane-facility-art` (Draft PR #154). Maker 없이 만든 구조 — **Play 확인은 뒤 단계**(아래 "Maker 로 확인할 것").
+조각 0 의 시험 구현(헤네시스 포탑에만 걸리는 임시 상수 `ArtSpikeKey` · `BuildSets`)을 **표 기반**으로 바꿨다. 14종 전부를 표 값만 채우면 돈다.
+
+### 새 표 `FacilityArt` (계약서 A-2-4c · `RootDesk/MyDesk/FacilityArt.csv` + `.userdataset` · BOM + CRLF)
+
+한 행 = 마을 × 시설 × 상태. 45행(5 × 3 × 3).
+
+`VillageId,Stage,State,Frames,FrameSec,Mode,IdleIndex,ReleaseIndex,ReleaseOffsetX,ReleaseOffsetY,CanAttack,Enabled,#Note`
+
+| 열 | 뜻 |
+|---|---|
+| `Stage` | 기존 표 표기 그대로 `TOWER`/`SUPPRESSOR`/`CORE`(넥서스) — 브리프 예시의 `FacilityType` 대신 `FacilitySprite` 와 키를 맞췄다 |
+| `State` | `NORMAL`/`DAMAGE1`/`DAMAGE2` (브리프의 `Tier` 열은 두지 않았다 — 코드가 0/1/2 로 매긴다) |
+| `Frames` | 재생 순서 RUID 를 `\|` 로 이은 한 칸 |
+| `FrameSec` · `Mode` | 프레임 시간 · `ATTACK`(공격 때 한 번 재생) / `LOOP`(상시) / `STILL`(정지) / `HIDDEN`(그림 없음) |
+| `IdleIndex` · `ReleaseIndex` | 대기 프레임(0 = 첫 프레임) · 발사체가 나가는 프레임(-1 = 지연 없음) |
+| `ReleaseOffsetX/Y` | 발사 위치(유닛 = 그림 px ÷ 100 · 반전 전 · 시설 `Scale` 은 코드가 곱함). 둘 다 있으면 `FacilityAttackFx.LaunchOffset` 을 덮는다 |
+| `CanAttack` | `false` = 이 상태에선 공격 안 함(헤네시스 억제기 손상) |
+| `Enabled` | 꺼진 행은 무시 · `NORMAL` 이 꺼진 시설엔 재생기가 안 붙어 **지금 방식(정지 그림 + 틴트)** 그대로 |
+
+- **프레임을 한 칸에 넣은 이유**: 한 행 = 한 클립이라 읽고 고치기 쉽고, 최대 15프레임(약 500자)이라 칸 길이 문제가 없을 것으로 봤다. 별도 `FacilityArtFrame` 표로 나누면 조인 · 순서 열이 더 필요하다. **(Maker 가 긴 칸을 되쓰는지는 Maker 로 확인)**
+- **행**: 헤네시스 포탑(7-1) 3상태 = 조각 0 의 RUID(`ruid-map.json`)로 `Enabled=true`. 나머지 13종 × 3 = **틀 행**(`Enabled=false` · 종류별 기본 `Mode` · `CanAttack` 만 채움 · `Frames` 비어 있음). 노틸러스 넥서스(9-5 없음) = `Mode=HIDDEN` 3행(`Enabled=false` — 클릭 영역을 확인한 뒤 켠다).
+- 기본 모드: 7-1~7-5 포탑 `NORMAL`/`DAMAGE1` = `ATTACK`(7-5 도 한 번 재생 · 반동) · 8-1 `NORMAL` = `ATTACK` · 8-2~8-5 · 9-1~9-4 `NORMAL` = `LOOP` · 손상(8-x · 9-x)/완파 = `STILL` · 8-1 `DAMAGE1` = `STILL` + `CanAttack=false`.
+- 등록: `Docs/스키마-계약.md`(A-2-4c · 변경 이력) · `Docs/tools/check-integrity.cjs`(CANONICAL · 키 `VillageId`+`Stage`+`State`) — 통과(45행). 사용자 직접 지시라 #40 공지 생략. 기존 표 헤더 변경 없음.
+
+### 코드
+
+| 파일 | 한 것 |
+|---|---|
+| `Lane/LaneStateService` | `LoadArtDef`(표 로드 · 행 수 로그 `[Lane] FacilityArt loaded: N rows · enabled+valid M` · 1-based) · `FacilityArtDef(마을, 시설, 상태)` · `FacilityArtEnabled` · 테스트용 `TestSetFacilityHpPct` |
+| `Lane/LaneFacilityArt` | 임시 상수 제거. 서버가 `@Sync` `Key`(마을:시설) · `Tier` · `AttackSeq` · `FrameSec` 만 쓰고, **클라가 표를 직접 읽어**(`_DataService` — LaneStateService 는 서버 전용) 프레임을 넘긴다. `Mode` 별 동작 · `Tier` 가 바뀌면 그 세트로 즉시 교체(공격 중이면 끊음) · 쓸 프레임 미리 불러오기 · 행이 없으면(`DAMAGE*` 만 꺼짐) 일반 그림 정지 + 서버 틴트 |
+| `Lane/LaneFacilityService` | `ArtSpikeKey` 제거 → `FacilityArtEnabled` 인 시설에 재생기 부착(`Key` 지정) · `ApplyVisual`: 모든 시설에 Tier 판정(체력 ≤ 50% → 1 · 55% 초과 → 0 · 파괴 → 2) · 그 상태 행이 켜져 있으면 틴트 대신 그림(`HasTierArt`) · 주인 없는 마을 회색 틴트 유지 · `HIDDEN`(노틸러스 넥서스)은 알파 0 · **Tier 가 바뀌면 `ApplyCombat` 을 다시**(피격마다가 아니라 임계를 넘을 때만 — 발사 위치 · 프레임 시간 갱신) |
+| `Faction/TurretAI` | 재생기가 있으면 `CanAttackNow()` 가 `false` 인 상태에선 쏘지 않는다(쿨 · 사거리 · 오라 등 다른 기능은 그대로 · 수리하면 재개) · 옛 "헤네시스 포탑만" 문구 정리 |
+| `Lane/LaneAttackFx` | 바꾼 것 없음 — 조각 0 의 `ReleaseSec`/`LaunchOffset` 구조를 표 값으로 채운다(`LaneFacilityArt.ApplyToFx`: 표에 발사 위치가 있으면 그것 · 없으면 `FacilityAttackFx` 값 · `ReleaseIndex ≥ 0` 이면 `ReleaseIndex × FrameSec + 0.05`) |
+| `Lane/LaneTestDriver` · `LaneTestRemoteUI` · `ui/LaneTestRemoteGroup` | "체력 N%" 명령 `HP50`/`HP30`/`HP100`(키보드 `-` = 50 · `=` = 100) + 리모콘 패널 맨 아래에 버튼 3개(체력 50% · 30% · 100%). 기존 요소 좌표는 그대로 · 패널 높이만 560 → 660(가운데 기준으로 자람) · 버튼 UUID 는 `write({bind})` 가 주입 |
+
+- **프레임 시간 규칙 변경**: 조각 0 은 쿨의 75% · 0.06~0.12 상한 · 새 규칙은 **재생 길이 ≤ 쿨 × 0.9** → `min(표 FrameSec, 쿨 × 0.9 ÷ 프레임 수)` · 하한 0.03(`CooldownFit` · `MinFrameSec`). 7-1 Lv3(쿨 1.1) = 0.124 → 표 상한 0.12 가 걸려 **0.12**(조각 0 은 0.103).
+- 공격하지 않는 상태(`STILL`/`LOOP`)는 `AttackSeq` 를 올리지 않는다(`NotifyAttack` 은 `ATTACK` 모드에서만).
+- 손상 정지 `damage1_still`(7-1) 은 안 쓴다 — 손상 `ATTACK` 의 `IdleIndex 0`(= `damage1_0007`)이 같은 그림.
+- `.codeblock` 은 건드리지 않았다(`LaneFacilityArt` 의 property 가 바뀌어 Maker 가 refresh 로 다시 만든다).
+
+### 뒤 단계가 채울 것 (종류별 · `FacilityArt.csv` 행 값 + `FacilitySprite.csv`)
+
+공통: 가공 · 업로드가 끝나면 `ruid-map.json` 의 프레임 RUID 를 `Frames`(재생 순서 = 번호 높은 것 → 낮은 것)에 넣고 `Enabled=true`. `FacilitySprite` 는 새 `WorldRuid`(대기 프레임) · `Scale` · `GroundOffset` · `BarOffset` · 아이콘.
+
+| 종류 | 채울 것 |
+|---|---|
+| 7-2 · 7-3 · 7-4 | `NORMAL` 프레임(8 · 15 · 10) + `DAMAGE1` 손상 공격 프레임 + `DAMAGE2` 완파 정지 · `ReleaseIndex` · `ReleaseOffsetX/Y`(`발사체좌표.txt` 일반 · 손상 따로) · `FrameSec`(7-3 15프레임은 쿨에 맞춰 런타임이 줄임) |
+| 7-5 | `NORMAL`/`DAMAGE1` 5프레임(상하 움직임 · `ReleaseIndex -1` · 발사 위치는 `FacilityAttackFx` 그대로 둘지 결정) + 완파 |
+| 8-1 | `NORMAL` 12프레임(`ATTACK` · 발사 = 석궁 화살 프레임) · `DAMAGE1` = 석궁이 떨어진 정지 1장(`CanAttack=false` 는 이미 채워 둠) · `DAMAGE2` |
+| 8-2~8-5 · 9-1~9-4 | `NORMAL` `LOOP` 프레임(`FrameSec` 기본 0.12 — 거의 정지인 8-2 · 8-3 · 9-1 · 9-3 · 9-4 는 `Mode=STILL` 로 바꿀지 사용자 결정 ⑭) · `DAMAGE1`/`DAMAGE2` 정지 |
+| 9-5 노틸러스 넥서스 | 그림 없음 — `HIDDEN` 3행은 이미 있음. 클릭 · 위치 확인 뒤 `Enabled=true` · 위치/크기는 `FacilitySprite` |
+
+### Maker 로 확인할 것 (이 조각에선 못 했다 — Maker 도구를 안 썼다)
+
+1. `Reimport All`/refresh 2회(새 `FacilityArt` 데이터셋 · `LaneFacilityArt`/`LaneStateService`/`TurretAI`/`LaneTestRemoteUI` 의 `.codeblock` 재생성) · 빌드 경고 0.
+2. 로그: `[Lane] FacilityArt loaded: 45 rows · enabled+valid 3` · 클라 `[FacArt] first paint HENESYS:TOWER …` (프레임 `Frames` 칸이 한 칸에 270자 안팎인데 정상으로 읽히는지).
+3. **7-1 회귀**: 조각 0 과 같은 장면(공격 사이클 ≈ 0.96초 · 발사 위치 · Lv3 프레임 시간 0.12 · 연타 재시작 · 반전 · 층).
+4. **체력 N% 버튼/키**: 50% → `tier 0 -> 1` + `[Facility] combat` 한 줄(임계에서만) + 손상 공격 8프레임 · 56%/100% → 일반 복귀 · 45% 다시 손상(겹침 구간) · 파괴 → 완파 · 재건 → 일반.
+5. `ReleaseOffsetX/Y` 가 `FacilityAttackFx.LaunchOffset` 을 덮는지(7-1 화살 출발점이 조각 0 과 같은지) · 손상 상태에서 발사 위치가 손상 값으로 바뀌는지.
+6. 헤네시스 억제기 8-1 행을 채운 뒤: 손상 → 공격 멈춤 · 수리 → 재개(`CanAttack`).
+7. 노틸러스 넥서스 `HIDDEN`: 알파 0 인데 클릭(소유권 연결) · 체력 바가 되는지 · 파괴 시 회색 반투명이 안 비치는지.
+8. 리모콘 패널 높이 660 · 새 버튼 3개 배치(눈 확인 — 이 조각에선 못 봤다).
+9. 빈 틀 행만 있는 시설(예: 커닝 포탑)이 **지금과 똑같이**(정지 그림 + 틴트) 도는지.

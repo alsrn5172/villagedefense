@@ -27,6 +27,11 @@ script LaneStateService extends Logic
 	@HideFromInspector
 	property any spriteDef = nil
 
+	-- 마을 × 시설 × 상태 그림 재생 정의 (FacilityArt.csv · 계약서 A-2-4c · WO-040). artDef[villageId][stage][state] = { frames, frameSec, mode, idleIndex, releaseIndex, relX, relY, canAttack }
+	-- Enabled=true 인 행만 들어 있다. 클라는 이 Logic 이 서버 전용이라 LaneFacilityArt 가 같은 표를 직접 읽는다.
+	@HideFromInspector
+	property any artDef = nil
+
 	-- 해금·모집 재화를 마을 지역재화(REGION_*)로 쓸지. false = 다이아몬드 임시 (사용자 2026-09-07).
 	property boolean UseRegionalMaterial = false
 
@@ -97,6 +102,7 @@ script LaneStateService extends Logic
 		self:LoadTrainDef()
 		self:LoadRecruitDef()
 		self:LoadSpriteDef()
+		self:LoadArtDef()
 		self:LoadTraitDef()
 		self:LoadFxDef()
 		log("[Lane] LaneStateService ready (server · village ledger)")
@@ -349,6 +355,67 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void LoadArtDef()
+		-- FacilityArt.csv(계약서 A-2-4c · 마을 × Stage × State). 표가 없거나 켜진 행이 없으면 artDef 는 비어 있고 시설은 지금처럼(정지 그림 + 틴트) 돈다.
+		-- 🔴 표 행은 1-based (GetRowCount 까지). 읽은 행 수 · 켜진 행 수를 로그로 센다.
+		self.artDef = {}
+		local t = _DataService:GetTable("FacilityArt")
+		if t == nil then
+			log_warning("[Lane] FacilityArt dataset not found — 시설 그림 재생 없음(정지 그림 + 틴트)")
+			return
+		end
+		local total = t:GetRowCount()
+		local applied = 0
+		for i = 1, total do
+			local villageId = t:GetCell(i, "VillageId") or ""
+			local stage = t:GetCell(i, "Stage") or ""
+			local state = t:GetCell(i, "State") or ""
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if enabled and villageId ~= "" and stage ~= "" and state ~= "" then
+				local frames = {}
+				for ruid in string.gmatch(t:GetCell(i, "Frames") or "", "[^|]+") do
+					local r = string.match(ruid, "^%s*(.-)%s*$") or ""
+					if r ~= "" then table.insert(frames, r) end
+				end
+				local mode = string.upper(tostring(t:GetCell(i, "Mode") or "STILL"))
+				if mode == "" then mode = "STILL" end
+				-- 그림이 있어야 켜진 행이다(HIDDEN 은 그림 없음이 정상).
+				if mode == "HIDDEN" or #frames >= 1 then
+					if self.artDef[villageId] == nil then self.artDef[villageId] = {} end
+					if self.artDef[villageId][stage] == nil then self.artDef[villageId][stage] = {} end
+					self.artDef[villageId][stage][state] = {
+						frames = frames,
+						frameSec = math.max(0.01, tonumber(t:GetCell(i, "FrameSec")) or 0.12),
+						mode = mode,
+						idleIndex = math.max(0, math.floor(tonumber(t:GetCell(i, "IdleIndex")) or 0)),
+						releaseIndex = math.floor(tonumber(t:GetCell(i, "ReleaseIndex")) or -1),
+						relX = tonumber(t:GetCell(i, "ReleaseOffsetX")),
+						relY = tonumber(t:GetCell(i, "ReleaseOffsetY")),
+						canAttack = string.lower(tostring(t:GetCell(i, "CanAttack") or "true")) ~= "false",
+					}
+					applied = applied + 1
+				else
+					log_warning("[Lane] FacilityArt " .. villageId .. ":" .. stage .. ":" .. state .. " Enabled 인데 Frames 가 비어 있다 — 무시")
+				end
+			end
+		end
+		log("[Lane] FacilityArt loaded: " .. tostring(total) .. " rows · enabled+valid " .. tostring(applied))
+	end
+
+	method any FacilityArtDef(string villageId, string stage, string state)
+		-- 마을×시설×상태의 재생 정의. 없거나 꺼져 있으면 nil.
+		if self.artDef == nil then return nil end
+		local v = self.artDef[villageId]
+		if v == nil or v[stage] == nil then return nil end
+		return v[stage][state]
+	end
+
+	method boolean FacilityArtEnabled(string villageId, string stage)
+		-- 이 시설에 그림 재생기를 붙일지 = NORMAL 행이 켜져 있는가.
+		return self:FacilityArtDef(villageId, stage, "NORMAL") ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
 	method void LoadTrainDef()
 		-- MonsterTraining.csv (기획 정리 §2-3). 없으면 기본값.
 		self.trainDef = { MELEE = {}, RANGED = {}, TANK = {} }
@@ -447,6 +514,20 @@ script LaneStateService extends Logic
 		t.alive = true
 		self:Changed(villageId, stage)
 		return t.lv
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean TestSetFacilityHpPct(string villageId, string stage, integer pct)
+		-- 🧪 테스트 리모콘(WO-040 · Maker Play 전용): 살아 있는 시설의 체력을 최대의 pct% 로 맞춘다(손상 · 복귀 그림 확인용 · 1 미만이면 1). Lv 는 그대로 · Changed 로 그림 · 전투 갱신. 파괴된 시설은 건드리지 않는다(재건 버튼).
+		if not Environment:IsMakerPlay() then return false end
+		local v = self:EnsureVillage(villageId)
+		if v == nil or v.towers[stage] == nil then return false end
+		local t = v.towers[stage]
+		if not t.alive then return false end
+		local max = self:MaxHp(stage, t.lv)
+		t.hp = math.max(1, math.min(max, math.floor(max * pct / 100)))
+		self:Changed(villageId, stage)
+		return true
 	end
 
 	@ExecSpace("ServerOnly")
