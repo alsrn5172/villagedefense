@@ -9,7 +9,15 @@ script AuraEmitter extends Component
 
 	property number FallbackOffsetY = 1.5
 
-	property integer AuraOrderInLayer = 3
+	-- 오라 띠의 렌더 층. 시설(MapLayerN)을 그대로 따라가면 맵 그림 뒤에 숨어 안 보였다(2026-10-01 검증 W02).
+	-- → Default 층(MapLayer0~7 보다 위)으로 올리되 플레이어(Default/4 · Map/PlayerFrontLayer) 보다는 뒤인 2 로 둔다(바닥 드랍 3 · 포탈 5).
+	-- SortingLayer 는 @Sync 라 서버가 쓰고, OrderInLayer 는 동기화되지 않아 각 클라이언트가 OnUpdate 에서 맞춘다.
+	property string AuraSortingLayer = "Default"
+
+	property integer AuraOrderInLayer = 2
+
+	@HideFromInspector
+	property number clientLayerCheckAt = 0
 
 	-- 디자이너 시안 19-facility #17 (2026-10-01): 시설(LaneFacility 가 붙은 엔티티)의 오라는 띠 그림으로 그린다.
 	-- 시안은 흰 원본 1장 + 마을 특성별 색 입힌 3장(이동속도 하늘 · 공격력 주황 · 회복 초록). 특성은 컨트롤러 값(Lv 에 맞춰 나중에 들어온다)을 보고 고른다.
@@ -114,14 +122,33 @@ script AuraEmitter extends Component
 		log("[AuraEmitter] band skin " .. self.Entity.Name .. " kind=" .. ((kind ~= "") and kind or "BASE"))
 	end
 
-	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
-		-- 시설 오라: 특성 값은 스폰 뒤 Lv 에 맞춰 들어오므로 바뀌면(한 번) 띠 그림을 갈아 끼운다.
+		-- 서버: 시설 오라의 특성 값은 스폰 뒤 Lv 에 맞춰 들어오므로 바뀌면(한 번) 띠 그림을 갈아 끼운다.
+		-- 클라: OrderInLayer 는 동기화되지 않으므로 자식 "AuraRect" 의 층 순서를 1초마다 확인해 맞춘다.
+		if self:IsClient() then
+			self.clientLayerCheckAt = self.clientLayerCheckAt + delta
+			if self.clientLayerCheckAt < 1.0 then return end
+			self.clientLayerCheckAt = 0
+			self:ApplyClientLayer()
+			return
+		end
 		if not isvalid(self.AuraEntity) then return end
 		if not self:IsBandAura() then return end
 		local kind = self:ResolveBandKind()
 		if kind ~= "" and kind ~= self.bandKind then
 			self:ApplyBandSkin(self.AuraEntity, kind)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyClientLayer()
+		-- 자식 오라 그림의 OrderInLayer 를 AuraOrderInLayer 로 맞춘다(엔진이 동기화하지 않는 값).
+		local child = self.Entity:GetChildByName("AuraRect", false)
+		if not isvalid(child) then return end
+		local renderer = child.SpriteRendererComponent
+		if isvalid(renderer) and renderer.OrderInLayer ~= self.AuraOrderInLayer then
+			renderer.OrderInLayer = self.AuraOrderInLayer
+			log("[AuraEmitter] client layer " .. self.Entity.Name .. " -> " .. tostring(renderer.SortingLayer) .. "/" .. tostring(self.AuraOrderInLayer))
 		end
 	end
 
@@ -167,7 +194,9 @@ script AuraEmitter extends Component
 		local localY = offsetY + h * (ny - 0.5)
 		transform.Position = Vector3(0, localY, 0)
 		
-		-- 지형 타일보다 위에 그려야 띠가 보인다. 반투명이라 몬스터를 가리지 않는다.
+		-- 맵 그림(MapLayerN)보다 위 층에 그려야 띠가 보인다. 반투명이라 몬스터를 가리지 않는다.
+		-- SortingLayer 는 @Sync(서버 → 모든 클라) · OrderInLayer 는 클라마다 ApplyClientLayer 가 맞춘다.
+		renderer.SortingLayer = self.AuraSortingLayer
 		renderer.OrderInLayer = self.AuraOrderInLayer
 		
 		log("[AuraEmitter] " .. self.Entity.Name
