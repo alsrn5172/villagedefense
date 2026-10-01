@@ -350,3 +350,28 @@ UI 5개 갱신: `AccountRecordGroup` · `CommonNpcGroup` · `VillageLifeGroup` �
 - 맵이 달라 승강장 컷(A00 · 로비 · N23 · N24)과 리스 항구 컷(B · N · G)의 배경이 다르다(의도). 로그: 리스 항구 Play 의 Error 는 알려진 `[Match] handoff 없음`(`TestPlayInstance`) 1건뿐 · 승강장 Play 는 0 · 빌드 Error 0(경고 4 · `LWA-1111` 기존).
 - 리스 항구 판은 서버 스크립트 반응이 10~15초 늦어(모든 맵 로드) 서버 값에 의존하는 컷(B01 · B03 · B05)은 반영을 기다린 뒤 찍었다. 첫 스크린샷이 이전 프레임으로 나오는 일이 있어(B04 첫 장 · A12 첫 장의 채팅 안내문 가림) 다시 찍은 장만 남겼다.
 - 시험 중 계정 · 서버 상태 변화(개인 월드 · 메모리): 솔로 매치 1건 생성 → 해산 · 장비 · 물약 · 레벨 · 직업(마법사)은 인스턴스 룸 메모리뿐 · 계정 저장 없음. 맵은 `Orbis_Lobby_VictoriaStation` 으로 되돌림 · Play 는 끔.
+
+### 4차 검증 — (TEST) 꼬리표 제거 · 관전 "자유" 그림자 확인 + 재촬영(모험가 · 2026-10-02)
+
+기준: HEAD `b92e244` · Play 시작 시 추적 변경 0(추적 안 된 것은 `.claude/` · `.codex/` · `CLAUDE.md` 뿐) · 끝난 뒤에도 0 · 코드 · UI 는 안 고침(이 소절 · 캡처 · 캡처 목록만 변경) · refresh 2회 → 빌드 Error 0(경고 4 · `LWA-1111` 기존) → `LithHarbor_Village_MinimiMain` 을 열고 Play(`server_instance_TestPlayInstance`).
+
+**아바타**: 서버 `_AvatarLookService.awaiting[uid] = true` → 클라 `_AvatarSelectUIController:SetOpen(true)` · `Pick("EXPLORER_M")` → 로그 `[LookUI] pick EXPLORER_M` · `[Look] applied EXPLORER_M gear=true` · `[Look] chose EXPLORER_M` · `[LookUI] open=false` 확인. 매치는 서버 `StartMatch`(TEST 프로필 · `MatchDuration = 0`) 뒤 전사 T10 한손검 · 방패 · 모자 · 상의 · 하의 · 신발 6부위를 지급 + 장착(`_EquipService:Apply`).
+
+**읽은 수치 (클라 `TextGUIRendererComponent`)**
+- 시계 페이즈 칩 5종(`Apply` 에 프로필 `"TEST"` 를 넘긴 상태): 칩 `152×34` · 글자 크기 16 · 좌우 여백 14/14 · 글자에 "(TEST)" 없음 · 전부 한 줄.
+  - `0페이즈 개척` · `1페이즈 성장` · `3페이즈 결전` · `0.5페이즈 전직`(가장 긴 이름): FontColor `(1, 1, 1)` · OutlineWidth 0.25 · OutlineColor `(0.02, 0.04, 0.09)` · Underlay 켜짐.
+  - `2페이즈 견제`(금 칩): `(0.11, 0.08, 0.02)` · 외곽선 0 · Underlay 켜짐.
+  - `0.5페이즈 전직` 도 칩 안 좌우에 여백이 남아 칩 폭은 넓히지 않았다(캡처 N30e 로 눈 확인).
+- 관전 "자유" 버튼(켜짐 ↔ 꺼짐을 꺼짐 · 켬 · 꺼짐 · 켬 · 꺼짐 · 켬 순서로 6번 바꿔 매번 읽음): 켜짐 = FontColor `(0.110, 0.078, 0.020)` · OutlineWidth 0 · Underlay 켜짐(흰 0.45) · 금 버튼 그림자(`399a7857…`) / 꺼짐 = `(0.953, 0.933, 0.886)` · 외곽선 0 · Underlay 꺼짐 · 파랑 버튼(`e4b78404…`). 6번 모두 같은 값 — 잔상 없음.
+- 관전 탭(2개 · 따라가기): 따라가는 탭 = 금 칩 `9e25a636…` · `(0.110, 0.078, 0.020)` · Underlay 켜짐 / 나머지 탭 = 파랑 칩 · `(0.953, 0.933, 0.886)` · Underlay 꺼짐. 자유 꺼짐 = 밝은 글자.
+- 부활 "15초 뒤 자동" 칩: `(1, 1, 1)` · 0.25 · `(0.02, 0.04, 0.09)` · Underlay 켜짐. 파병 배지 "대": `(1, 1, 1)` · 0.25 · Underlay 켜짐.
+
+**재촬영(18장 · `applied/` 에 같은 이름으로 덮어씀 · 1568×882)**: `B01` · `B03` · `B04` · `B05` · `B07` · `N08` · `N15` · `N16` · `N26` · `G01` · `G02` · `G05` · `G06` · `N30a` ~ `N30e`. 시계에 "(TEST)" 가 찍혀 있던 것은 `B01` · `B03` · `B04` · `B05` · `B07` · `N26`(과 참고용 `N30e_..._TEST`) 였고, 나머지는 같은 판의 시계 · 관전 바를 새 코드로 다시 찍은 것이다. 참고용 `N30e_clock_phase_cyan_전직_TEST` 는 지웠다(캡처 목록에서도 제거). 목록 `_work/files_round4.json` 는 109줄(해당 18줄 note 갱신).
+- 그 밖의 캡처(승강장 컷 A · N · E · C · D · SK · F)는 시계 부분만 훑어 "(TEST)" 가 없음을 확인했다(승강장 · 정적 룸은 처음부터 꼬리표가 안 붙었다). `N07` · `G03` · `G04`(결과 · 어둡게 가린 시계)도 꼬리표 없음이라 다시 찍지 않았다.
+
+**눈에 띈 것**
+- 매치 시계는 서버가 1초마다 방송한다 — 페이즈가 바뀌는 순간(`SetPhase`)에도 방송이 한 번 나가서 클라에 주입한 시계 값을 덮는다(B07 첫 장이 그렇게 `02:22` 로 나왔다). 그래서 서버에서 `Running = false` · `clockTimer = 1000000` 으로 시계를 얼린 뒤 `Apply` 를 주입해 찍었다. 매치 상태는 룸 메모리뿐이고 Stop 하면 사라진다.
+- 부활 팝업의 "15초 뒤 자동" 은 열려 있는 동안 줄어서, 열린 뒤 `isOpen = false · remain = 15` 로 고정해 15초 장면을 찍었다(창 배경은 켜진 채).
+- 퀵슬롯 쿨타임(B04)은 실시간으로 줄어 `16 · 9` 가 되는 순간(주입 후 약 2초)에 찍었다.
+- 마법사 컷(N16)은 `DevSwitchJob` + `DevLearnAll` + `DevSetMp` — 스킬 상태 · HUD 는 "마법사"인데 `_StatService` 의 직업은 NOVICE 그대로다(개발용 전직이 `ChangeJob` 을 안 거침 · 지난 확인과 같음).
+- 맵은 `Orbis_Lobby_VictoriaStation` 으로 되돌림 · Play 는 끔. 시험 중 계정 상태 변화 없음(룸 메모리뿐 · 계정 저장 안 함).
