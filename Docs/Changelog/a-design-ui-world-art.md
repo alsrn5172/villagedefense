@@ -19,3 +19,36 @@
 - **데미지 숫자(#1 · #3)** — 엔진 데미지 스킨은 아바타 아이템 종류 리소스(`Monster.DamageSkinRUID` = `02c22d93…` · 문서상 기본 스킨 `3271c3e7…` 이 아바타 카탈로그에 있음)라 스프라이트 교체로 안 된다. 시안 숫자 22장으로 스킨을 만드는 Maker 경로는 확인 못 해 만들지 않았다. 스킨 슬롯(치명타 · MISS · 폭발) 규격도 미확인.
 - **플레이어 이름표 판 · 글자** — `NameTagRUID` 가 `@Sync` 가 아니라 서버(`TitleService.ApplyNameTag`)에서 써도 다른 클라에 안 간다 → `Global/Player.model` 값을 바꿔야 한다. 판이 9-slice 로 늘어나는지도 미확인. **칭호 띠**(이름표 위 금 띠)는 컴포넌트 하나로 못 그려 별 엔티티가 필요한 기능이라 2단계.
 - **오라 주황 · 초록 hex** — 시안 텍스트에 없지만 색 입힌 그림 3장을 그대로 써서 필요 없어졌다.
+
+## 2차 — 이름표 (2026-10-01 저녁 · 브랜치 a/design-ui-fix-nametag)
+
+사용자 지적("이름표는 디자이너가 준 게 있는데 왜 안 했냐")에 따라 1차에서 미룬 이름표를 전부 적용했다. 🔴 Maker 를 쓰지 않아 **Play 로 본 것은 없다**(아래 "검증 때 볼 것").
+
+### 한 것
+
+| 항목 | 내용 | 파일 |
+|---|---|---|
+| 플레이어 이름표 판 · 글꼴 | `NameTagRUID` = `plate_dark_sm`(9-slice 테두리 10 · 시안 9 · `plate_dark` 는 11 이라 더 가까운 `_sm`) · `Bold` = true. 글자색은 엔진 기본 흰색 그대로. `NameTagRUID` 는 `@Sync` 가 아니라 서버가 못 쓰므로 모델 값으로 둠 | `Global/Player`(기존 파일 제자리 · ModelBuilder) |
+| 칭호 띠 | 새 모델 `titlechip` = `NameTagComponent` 하나뿐인 빈 엔티티(판 `chip_gold_dark` · 글자 #FFE7A0 굵게). 서버(`TitleService.ApplyTitleChip`)가 칭호가 있는 플레이어에게 **자식으로 스폰**(칭호 바꾸면 글자만 갱신 · 해제하면 Destroy · 재접속 때는 `ApplyNameTag` 경로로 다시 붙음). 이름표 글자는 **닉네임만**, 칭호가 있으면 이름표 `OffsetY` 를 `NameShiftY`(-0.235)로 내려 띠 아래에 놓는다(시안: 띠 위 · 이름 아래) | `Models/Progression/TitleChip` · `Progression/TitleService.mlua` |
+| NPC 이름표 | `apply-damage.cjs` 를 기본 적용으로 바꿔 NPC 21개 전부 `NameTagRUID` = `chip_green_dark`(테두리 10 · 시안 9) · `Bold` | `Models/Npcs/*` · `Docs/tools/design-ui/apply-damage.cjs` |
+
+도구: `node Docs/tools/design-ui/apply-damage.cjs`(다시 돌려도 같은 결과 · diff 동일 확인) · `--status` 로 현황.
+
+### 브리프와 달라진 것 (이유)
+
+- 칭호 띠를 브리프의 "SpriteRenderer 9-slice + TextComponent" 가 아니라 **`NameTagComponent` 만 가진 엔티티**로 만들었다. 이유: (1) `TextComponent.Text` 가 `@Sync` 가 아니라 모든 클라에 글자를 보내려면 새 스크립트 컴포넌트 + RPC/동기화 + 런타임 `AddComponent` 가 필요한데 Maker 로 못 돌려 본다 (2) 월드 `SpriteRenderer` 의 9-slice 가 크기를 어떻게 받는지 1차에서도 확인 못 했고, 글자 폭에 맞춘 판 폭 계산이 글꼴마다 어긋난다 (3) 엔진 이름표는 판 · 글자 맞춤 · 그리는 층(플레이어 앞뒤 규칙과 무관)을 엔진이 다룬다. 새 스크립트도 없다. 안 되면(엔티티 이름표가 스프라이트 없는 엔티티에서 안 뜨면) 브리프 구조로 되돌린다.
+- `FontSize` 는 안 건드렸다 — 속성이 `float`(기본 1)인데 px 인지 배율인지 d.mlua 에 없어 시안 14 를 옮길 근거가 없다. 기본값 그대로.
+
+### 안 한 것 · 못 한 것
+
+- 데미지 숫자 스킨은 사용자 결정으로 손대지 않음. 몬스터 이름표도 대상 아님.
+- 이름표 글꼴이 Noto(Default)인지는 NameTagComponent 에 글꼴 속성이 없어 엔진 기본 그대로(시안의 Noto 700 굵게는 `Bold` 로만 근사).
+
+### 검증 때 볼 것
+
+1. 플레이어 이름표 판이 9-slice 로 늘어나는지 — **긴 닉네임 · 짧은 닉네임** 둘 다(모서리가 안 뭉개지고 글자가 판 안에 들어오는지).
+2. 칭호 띠가 **보이는지**(스프라이트 없는 자식 엔티티의 이름표) · 닉네임 이름표 **위**에 뜨는지. `OffsetY` 부호가 반대면(이름이 띠 위로 가면) `TitleService.NameShiftY` 부호를 바꾼다. 띠와 이름 사이 간격은 값으로 조정.
+3. 칭호 장착 → 해제 → 재장착, 재접속, 맵 이동(자식 엔티티가 따라오는지) · 다른 플레이어 화면에서도 띠가 보이는지(`Name` · `OffsetY` 동기화).
+4. 띠가 플레이어(Default/4)를 가리지 않는지(이름표는 엔티티 층과 별개라 겹칠 일 없다고 추정).
+5. NPC 이름표 초록 칩 판 · 흰 글자(21개 중 몇 곳) · 숨김 NPC(차원 관문)는 이름표가 꺼진 그대로인지.
+6. `titlechip` 모델은 새 폴더(`Models/Progression`)라 Maker 가 `.directory` 를 만들도록 Reimport All 한 번 더. 모델 id 가 `titlechip` 으로 잡히는지(스폰 로그 `[Title] chip spawn failed` 가 없는지).
