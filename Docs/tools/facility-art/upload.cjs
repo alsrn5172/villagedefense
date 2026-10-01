@@ -9,6 +9,8 @@
 //   node Docs/tools/facility-art/upload.cjs E18-7-1 --update <이름..>  # 같은 RUID 의 그림만 교체 + 속성 다시 적음
 //   node Docs/tools/facility-art/upload.cjs E18-7-1 --props <이름..> pivot_x=0.5 pivot_y=0.5   # 속성만 바꿈(여러 장 · 키=값)
 //   node Docs/tools/facility-art/upload.cjs E18-7-1 --list           # 표 출력(RUID 앞 8자리)
+//   node Docs/tools/facility-art/upload.cjs E18-7-1 --fixprops       # 속성 등록에 실패한(propsOk=false) 장만 속성 다시 적음
+// 종류마다 따로 돌린다(종류별 manifest = _upload/<종류>/manifest.json · 같은 ruid-map.json 에 합치므로 한 번에 하나씩만).
 // 이름 = manifest 의 name (예: normal_0007) · 그룹 리소스 이름은 `fac_<종류>_<이름>`.
 const fs = require('fs');
 const path = require('path');
@@ -27,6 +29,7 @@ const map = maps[KIND];
 map.group = GROUP;
 map.canvas = mf.canvas;
 map.pivot_norm = [mf.pivot_norm_x, mf.pivot_norm_y_from_bottom];
+map.village = mf.village; map.facility = mf.facility;
 const save = () => fs.writeFileSync(MAP, JSON.stringify(maps, null, 1) + '\n');
 
 let sid = null; let rpcId = 0;
@@ -59,6 +62,14 @@ function findRuid(o) {
   for (const k of Object.keys(o)) { const r = findRuid(o[k]); if (r) return r; }
   return null;
 }
+// 일시 오류(네트워크 · 5xx)는 단계마다 3번까지 다시 시도한다(만들기 단계가 끝난 뒤 실패해도 중복 항목이 안 생기게 단계별로).
+async function retry(label, fn) {
+  let last;
+  for (let t = 1; t <= 3; t++) {
+    try { return await fn(); } catch (e) { last = e; await new Promise((r) => setTimeout(r, 800 * t)); }
+  }
+  throw new Error(label + ': ' + String(last && last.message).slice(0, 200));
+}
 async function init() {
   await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'vd-facility-art-upload', version: '1.0' } });
   await rpc('notifications/initialized', {}, true);
@@ -76,17 +87,16 @@ const desc = (f) => `WO-040 시설 그림 ${KIND} ${f.state}${f.frame === null ?
 async function one(f, verbose) {
   const buf = fs.readFileSync(path.join(SRC, f.file));
   const base = { groupCode: GROUP, category: 'sprite', subcategory: 'object', name: PREFIX + f.name, description: desc(f), contentLength: buf.length };
-  const s1 = await tool('asset_create_group_resource_storage_item', base);
+  const s1 = await retry('create1', () => tool('asset_create_group_resource_storage_item', base));
   if (!s1.presignedUrl) throw new Error('presignedUrl 없음: ' + JSON.stringify(s1).slice(0, 200));
-  const put = await fetch(s1.presignedUrl, { method: 'PUT', body: buf });
-  if (!put.ok) throw new Error(`PUT ${put.status}`);
-  const s2 = await tool('asset_create_group_resource_storage_item', Object.assign({}, base, { fileUrl: s1.presignedUrl }));
+  await retry('put', async () => { const put = await fetch(s1.presignedUrl, { method: 'PUT', body: buf }); if (!put.ok) throw new Error(`PUT ${put.status}`); });
+  const s2 = await retry('create2', () => tool('asset_create_group_resource_storage_item', Object.assign({}, base, { fileUrl: s1.presignedUrl })));
   if (verbose) console.log('step2 응답 모양:', JSON.stringify(s2).replace(/https?:\/\/[^"\\]+/g, '<url>').slice(0, 400));
   const ruid = findRuid(s2);
   if (!ruid) throw new Error('RUID 없음: ' + JSON.stringify(s2).slice(0, 200));
   const props = defaultProps();
   let propsOk = true;
-  try { await tool('asset_update_resource_storage_info', { guid: ruid, properties: props }); } catch (e) { propsOk = false; console.log('  속성 등록 실패', f.name, String(e.message).slice(0, 160)); }
+  try { await retry('props', () => tool('asset_update_resource_storage_info', { guid: ruid, properties: props })); } catch (e) { propsOk = false; console.log('  속성 등록 실패', f.name, String(e.message).slice(0, 160)); }
   map.frames[f.name] = { ruid, name: base.name, bytes: buf.length, props: Object.fromEntries(props.map((p) => [p.key, p.value])), propsOk };
   save();
   return ruid;
@@ -132,6 +142,15 @@ async function updateOne(f) {
       await tool('asset_update_resource_storage_info', { guid: ent.ruid, properties: props });
       ent.props = merged; save();
       console.log('속성 변경', n, JSON.stringify(props));
+    }
+    return;
+  }
+  if (mode === '--fixprops') {
+    // propsOk 가 false 인 장의 속성만 다시 적는다
+    await init();
+    for (const [n, ent] of Object.entries(map.frames)) {
+      if (ent.propsOk !== false) continue;
+      try { await retry('props', () => tool('asset_update_resource_storage_info', { guid: ent.ruid, properties: Object.entries(ent.props).map(([key, value]) => ({ key, value })) })); ent.propsOk = true; save(); console.log('속성 다시 적음', n); } catch (e) { console.log('실패', n, String(e.message).slice(0, 160)); process.exitCode = 1; }
     }
     return;
   }
