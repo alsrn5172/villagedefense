@@ -352,7 +352,7 @@ S.font(b, CR + '/CardTemplate/Job', { font: 'Noto700', size: 13, color: C.white,
 S.before(b, CR + '/CardTemplate/JobChip', CR + '/CardTemplate/Job');
 // 교환 배지
 img(CR + '/CardTemplate/ExchBadge', 'chip_gold', [18, 10, 44, 22], CB, { enable: false });
-txt(CR + '/CardTemplate/ExchBadge/Text', '교환', [0, 0, 44, 22], [0, 0, 44, 22], { font: 'Maple', size: 13, color: '#1B1030' });
+txt(CR + '/CardTemplate/ExchBadge/Text', '교환', [0, 0, 44, 22], [0, 0, 44, 22], { font: 'Maple', size: 13, color: S.CHIP_INK });
 // 값 줄: 재료 아이콘 · 수 · 점 · 메소 아이콘 · 수 (스크립트가 1개/2개 모양으로 자리를 바꾼다 · 기존 Price 글자는 끈다)
 S.place(b, CR + '/CardTemplate/Price', { enable: false });
 priceRow(CR + '/CardTemplate', CB);
@@ -490,5 +490,9 @@ backAll([PO + '/ListPane']);
 S.before(b, 'Window/TitleBand', 'Window/TitleBar');
 S.before(b, 'Window/Crest', 'Window/TitleBand');
 
+// 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 착용(파랑) · MAX · 교환(금) 칩 글자. 맨 끝에 건다.
+// 🔴 제작 탭(Job_x · Slot_x 의 On + Label) · 직업 칩(JobChip/Bg_x + Job) · 요구 칩(ReqChip/Bg_x + Label)은 칩 그림과 글자가 형제이고 기본 상태가 꺼짐(어두운 칩 + 밝은 글자)이라 파일에 규칙을 박지 않는다 — WorkshopUIController.ChipLabelStyle 이 켤 때 건다.
+const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'VillageWorkshopGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`VillageWorkshopGroup(공방) 적용 끝 — 새 엔티티 ${b.listEntities().length - before}개`);

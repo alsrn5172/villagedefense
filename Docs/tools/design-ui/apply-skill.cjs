@@ -91,8 +91,8 @@ S.newText(b, RT + '/LevelMax', '/ 5', { font: 'FootballB', size: 16, color: C.fa
 
 // 종류 칩(액티브 파랑 · 패시브 초록) — 둘 다 깔아 두고 스크립트가 하나만 켠다
 for (const [name, key, label] of [['ChipAct', 'chip_blue', '액티브'], ['ChipPas', 'chip_green', '패시브']]) {
-  S.newImage(b, RT + '/' + name, key, { anchor: 'middle-left', pivot: [0, 0.5], pos: [leftOf(300), rowY(309)], size: [60.5, 25] });
-  S.newText(b, RT + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [60.5, 25] });
+  S.newImage(b, RT + '/' + name, key, { anchor: 'middle-left', pivot: [0, 0.5], pos: [leftOf(300), rowY(309)], size: [62.5, 25] });
+  S.newText(b, RT + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [62.5, 25] });
 }
 
 // 진행 막대: 받침 190x20 · 채움 최대 158x8(=190-32 · 시안 실측) · FillAmount = 레벨/최대
@@ -137,8 +137,8 @@ S.font(b, D + '/DescText', { font: 'Noto400', size: 18, color: C.ivory, h: 'left
 const TL = { anchor: 'top-left', pivot: [0, 1] };
 S.newText(b, D + '/TipTitle', '', Object.assign({ font: 'Maple', size: 24, color: C.ivory, h: 'left', pos: [22, -18], rect: [330, 36] }, TL));
 for (const [name, key, label] of [['TipChipAct', 'chip_blue', '액티브'], ['TipChipPas', 'chip_green', '패시브']]) {
-  S.newImage(b, D + '/' + name, key, Object.assign({ pos: [120, -22.5], size: [84, 25] }, TL));
-  S.newText(b, D + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [84, 25] });
+  S.newImage(b, D + '/' + name, key, Object.assign({ pos: [120, -22.5], size: [86, 25] }, TL));
+  S.newText(b, D + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [86, 25] });
 }
 S.newImage(b, D + '/TipSlot', 'slot_frame', Object.assign({ pos: [22, -78.5], size: [78, 78] }, TL));
 S.newImage(b, D + '/TipIcon', 'deco_sparkle', Object.assign({ pos: [34, -90.5], size: [54, 54], alpha: 0 }, TL)); // 런타임이 스킬 아이콘 RUID · 색을 넣는다
@@ -148,5 +148,8 @@ S.newText(b, D + '/TipBottom', '', Object.assign({ font: 'Noto400', size: 18, co
 // 그리기 순서: 문장은 제목 띠보다 뒤(시안에서 띠가 문장 아래 14px 를 덮는다)
 S.back(b, 'Window/Crest');
 
+// 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 액티브(파랑) · 패시브(초록) 칩 + 툴팁 칩 글자 = 흰 글자 + 짙은 외곽선. 맨 끝에 건다(위에서 글자를 다 맞춘 뒤).
+const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'SkillWindow.ui'));
 console.log('SkillWindow 적용 끝');
