@@ -250,3 +250,12 @@ UI 5개 갱신: `AccountRecordGroup` · `CommonNpcGroup` · `VillageLifeGroup` �
 - 공방 Play 때 `maker_screenshot` 이 화면 갱신보다 먼저 찍히는 일이 잦았다(UI 가 5~8초 뒤에 바뀜 · 푸터 칩은 상세 판보다 늦게 갱신). 모든 캡처는 5초 이상 기다리거나 두 번 찍어 확인했다.
 - 공방 Play 때 제작 목록 로그가 한 번 `n=76` 으로 두 배 찍힌 일이 있었다(`Open` 직후 `RefreshCraft` 를 곧바로 불렀을 때 한 번 · 이후 `n=38`). 화면 카드는 정상이고 재현은 안 했다 — 눈에 띈 것으로만 적는다.
 - Play 중 Maker 가 `ui/` 파일을 되써서(공방 UI 에 런타임 배치값이 섞임) 공방 UI 는 HEAD 로 되돌린 뒤 스크립트를 다시 돌려 만들었다. 처음 캡처는 되써진 상태의 파일로 찍었다. → **같은 날 커밋된 최종 파일(`266031e` · 추적 파일 변경 0)로 다시 Play 해 10장(공방 9 + `W03`)을 재촬영**했다: 공방 칩 숫자 `anchoredPosition.y` = −3(라벨 −2) 9장 모두 · 직전 캡처와 숫자 세로 위치 일치 · 헤네시스 억제기 `MapLayer7/150`(서버 · 클라) · 플레이어 `Default/4` · 통로 이동 뒤 y −6.22 유지. 저장(`maker_save`)은 안 했고 끝난 뒤 추적 파일 변경 0.
+
+## 2026-10-02 — 4차: 디자이너 시안 갱신 반영(칩 글자 대비)
+
+- 시안 사이트 버전 `1790779133-4234` → `1790844637-7b1e`. 디자이너가 "칩 위 흰 글자가 안 보인다"는 요청에 맞춰 고쳤다. 실제 차이는 ① 칩 그림 3장(`chip_blue` · `chip_green` · `chip_red`)이 어두워짐 ② 칩 위 글자 규칙(밝은 칩 `chip_gold` · `chip_gray` = 잉크 `#1C1405` + 밝은 그림자 · 보석 칩 `chip_green` · `chip_blue` · `chip_red` = 흰 글자 + 짙은 외곽선 `#050A16` + 어두운 그림자 · `_dark` 칩은 그대로) ③ 칩 안 글자 좌우 여백(테두리 + 1px) ④ 매치 시계 페이즈 칩 높이 34 · 패딩 14. 토큰(`design_tokens.json`)은 그대로.
+- 칩 그림 3장은 **같은 RUID 로 그림만 교체**했다(`asset_update_resource_storage_data` · 이름 · 9-slice 속성 유지 · 그룹 리소스 버전이 바뀌고 썸네일이 새 그림으로 나오는 것을 확인). `ruid-map.json` 은 변함없다.
+- 실측을 다시 뽑았다(`spec/NN-*/`). 칩과 무관하게 달라진 행은 없고, 칩 클래스가 붙은 요소가 창 기준 G1 38 · G2 21 · G3 6개다(대응 표 = `spec/_plan/_chip-contrast.md`).
+- 공용 헬퍼: 파일 쪽 `Docs/tools/design-ui/skin.cjs` `S.chipText(b, opts)` · 런타임 쪽 `RootDesk/MyDesk/Match/UiChipText.mlua`(`_UiChipText:Apply` · `ApplyText` · `Kind`). 사용법은 `_IMPL-GUIDE.md` 5절.
+- 1단계(이 조각)에서는 도구 · 헬퍼 · 대응 표까지만 했고 `.ui` 와 컨트롤러는 바꾸지 않았다. 창 적용은 2단계(G1 · G2 · G3).
+- 눈으로 볼 것(2단계 이후): 외곽선 굵기 `CHIP_OUTLINE_WIDTH = 0.25` 가 시안의 1px 와 같은 굵기인지(Maker 에서 조정) · 밝은 그림자(Underlay 흰색 45%)가 잉크 글자에서 거슬리지 않는지.
