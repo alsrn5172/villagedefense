@@ -48,8 +48,9 @@ S.font(b, P + '/BtnExp', { text: '' });
 S.newImage(b, P + '/BtnExp/Icon', 'icon_info_exp', { pos: S.at(664, 468, 34, 32, BTN_E), size: [34, 32] });
 S.newText(b, P + '/BtnExp/Title', '경험치로 부활', { font: 'Maple', size: 24, color: S.COLOR.goldInk, pos: S.at(705, 467, 140, 33.5, BTN_E), rect: [170, 34] });
 S.newText(b, P + '/BtnExp/Sub', '경험치 -375 · 레벨 유지', { font: 'Noto700', size: 16, color: '#5A3A08', pos: S.at(609, 502.5, 291, 22.5, BTN_E), rect: [270, 24] });
-S.newImage(b, P + '/BtnExp/AutoChip', 'chip_red', { pos: S.at(792, 432, 98, 25, BTN_E), size: [98, 25] });
-S.newText(b, P + '/BtnExp/AutoChip/Text', '15초 뒤 자동', { font: 'Maple', size: 14, color: S.COLOR.white, pos: [0, 0], rect: [98, 25] });
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 시안 98 → 100 이지만 게임 글꼴이 넓어 '15초 뒤 자동'이 안쪽(폭 − 2 × (테두리 11 + 1))에 한 줄로 들어가게 112(안쪽 88 · 오른쪽 끝 890 은 그대로).
+S.newImage(b, P + '/BtnExp/AutoChip', 'chip_red', { pos: S.at(778, 432, 112, 25, BTN_E), size: [112, 25] });
+S.newText(b, P + '/BtnExp/AutoChip/Text', '15초 뒤 자동', { font: 'Maple', size: 14, color: S.COLOR.white, pos: [0, 0], rect: [88, 25] });
 
 // 창 위 문장(맨 앞)
 S.newImage(b, P + '/Crest', 'deco_crest', { pos: S.at(450, 168, 300, 88, PANEL), size: [300, 88] });
@@ -57,6 +58,10 @@ S.newImage(b, P + '/Crest', 'deco_crest', { pos: S.at(450, 168, 300, 88, PANEL),
 // 그리기 순서: 제목 띠는 제목 글자보다 뒤, 문장은 맨 앞
 S.before(b, P + '/TitleBand', P + '/Title');
 S.front(b, P + '/Crest');
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자를 다 맞춘 뒤에 건다
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'RevivePopupGroup.ui'), {
   bind: {

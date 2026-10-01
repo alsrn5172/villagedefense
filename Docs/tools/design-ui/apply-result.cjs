@@ -43,10 +43,10 @@ S.newImage(b, W + '/Crest', 'deco_crest', { pos: at([450, 48, 300, 88], WIN), si
 
 // ═══════════════════════════════════════════════════════════
 // 결과 사유: 칩(승리 금 · 시간 종료 회 · 전원 탈락 빨강) + 문장. 칩 셋을 깔아 두고 컨트롤러가 하나만 켜고
-// 칩 폭 + 12 + 문장 폭을 재서 가운데로 놓는다(세로는 같은 줄: 창 중심 위로 230).
+// 칩 폭(글자 폭 + 24 · 최소 53.5 · 시안 1790844637-7b1e 로 +2) + 12 + 문장 폭을 재서 가운데로 놓는다(세로는 같은 줄: 창 중심 위로 230).
 // ═══════════════════════════════════════════════════════════
 const CHIPY = at([439, 206, 51.5, 28], WIN)[1];
-for (const [name, key, label, ink, w] of [['ReasonChipWin', 'chip_gold', '승리', C.goldInk, 51.5], ['ReasonChipTime', 'chip_gray', '시간 종료', '#2A3040', 85.5], ['ReasonChipOut', 'chip_red', '전원 탈락', C.white, 85.5]]) {
+for (const [name, key, label, ink, w] of [['ReasonChipWin', 'chip_gold', '승리', C.goldInk, 53.5], ['ReasonChipTime', 'chip_gray', '시간 종료', C.goldInk, 87.5], ['ReasonChipOut', 'chip_red', '전원 탈락', C.white, 87.5]]) {
   S.newImage(b, W + '/' + name, key, { pos: [0, CHIPY], size: [w, 28], enable: name === 'ReasonChipTime' });
   S.newText(b, W + '/' + name + '/Text', label, { font: 'Maple', size: 16, color: ink, pos: [0, 0], rect: [w, 28] });
 }
@@ -97,15 +97,17 @@ for (let i = 0; i < 5; i++) {
   S.font(b, R + '/Level', { font: 'FootballB', size: 18, color: C.ivory, h: 'right', v: 'middle', outline: false });
   ctr(R + '/Kills', [878, 313.5, 84, 25], ROWBOX);
   S.font(b, R + '/Kills', { font: 'FootballB', size: 18, color: C.ivory, h: 'right', v: 'middle', outline: false });
-  ctr(R + '/EliminatedMark', [990, 313.5, 48, 25], ROWBOX);
+  // 🔴 칩 글자 대비: 탈락 칩 48 → 58(글자 28~31 + 2 × (테두리 11 + 1) · 오른쪽 끝 1038 은 그대로). 글자는 칩의 자식이 아니라 형제(EliminatedMark) → chipText extra.
+  ctr(R + '/EliminatedMark', [980, 313.5, 58, 25], ROWBOX);
   S.font(b, R + '/EliminatedMark', { font: 'Noto700', size: 14, color: C.white, h: 'center', v: 'middle', outline: false });
 
   // 새 글자 · 그림(컨트롤러가 켜고 끈다 · 기본은 꺼 둠)
   S.newText(b, R + '/CoreHpBroken', '파괴', { font: 'Maple', size: 18, color: '#FF8A7A', h: 'right', pos: at([690, 313.5, 116, 25], ROWBOX), rect: [116, 25], enable: false });
   S.newText(b, R + '/TitleLine', '', { font: 'Noto700', size: 14, color: '#E8C77A', h: 'left', overflow: 1, anchor: 'middle-left', pivot: [0, 0.5], pos: [82, 10.5], rect: [326, 23], enable: false });
   S.newImage(b, R + '/Crown', 'icon_crown', { anchor: 'middle-left', pivot: [0, 0.5], pos: [82, 0], size: [28, 26], enable: false });
-  S.newImage(b, R + '/MeChip', 'chip_blue', { anchor: 'middle-left', pivot: [0, 0.5], pos: [200, 0], size: [31, 21], enable: false });
-  S.newText(b, R + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [31, 21] });
+  // 🔴 칩 글자 대비: 시안 31 → 37(글자 + 2 × (테두리 11 + 1)) · 게임 글꼴이 넓어 42(안쪽 18). 스크립트(PlaceNode)도 42 로 놓는다.
+  S.newImage(b, R + '/MeChip', 'chip_blue', { anchor: 'middle-left', pivot: [0, 0.5], pos: [200, 0], size: [42, 21], enable: false });
+  S.newText(b, R + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [18, 21] });
   S.newText(b, R + '/EmptyText', '빈 자리', { font: 'Noto700', size: 14, color: C.off, pos: [0, 0], rect: [908, 30], enable: false });
 
   // 깔아 두는 그림: 순위 칩 셋 · 탈락 칩 · 줄 바탕 넷(맨 뒤 → 글자 밑)
@@ -113,7 +115,7 @@ for (let i = 0; i < 5; i++) {
   S.newImage(b, R + '/RankChipGold', 'chip_gold', { pos: chipPos, size: [44, 31], enable: false });
   S.newImage(b, R + '/RankChipGray', 'chip_gray', { pos: chipPos, size: [44, 31], enable: false });
   S.newImage(b, R + '/RankChipDark', 'chip_gold_dark', { pos: chipPos, size: [44, 31], enable: false });
-  S.newImage(b, R + '/ElimChip', 'chip_red', { pos: at([990, 313.5, 48, 25], ROWBOX), size: [48, 25], enable: false });
+  S.newImage(b, R + '/ElimChip', 'chip_red', { pos: at([980, 313.5, 58, 25], ROWBOX), size: [58, 25], enable: false });
   S.newImage(b, R + '/BgRow', 'panel_row', { pos: [0, 0], size: [908, 64], enable: true });
   S.newImage(b, R + '/BgSel', 'panel_row_selected', { pos: [0, 0], size: [908, 64], enable: false });
   S.newImage(b, R + '/BgLock', 'panel_row_locked', { pos: [0, 0], size: [908, 64], alpha: 0.75, enable: false });
@@ -143,6 +145,16 @@ S.font(b, W + '/Footer/BtnPrimary', { font: 'Maple', size: 24, color: C.goldInk,
 // 그리기 순서: 내 보상 판이 로비로 버튼(Footer)을 덮지 않게 판을 Footer 앞(= 더 먼저 그림)으로 · 문장은 제목 띠보다 뒤
 S.before(b, W + '/MyReward', W + '/Footer');
 S.back(b, W + '/Crest');
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자가 칩의 형제인 곳 = 순위 글자(Rank · 금/은 칩 위 잉크 · 동메달은 어두운 칩이라 스크립트가 흰색으로) · 탈락 표시(EliminatedMark).
+const extra = {};
+for (let i = 0; i < 5; i++) {
+  const R = W + '/RankRows/RankRow_' + i;
+  extra[R + '/RankChipGold'] = [R + '/Rank'];
+  extra[R + '/ElimChip'] = [R + '/EliminatedMark'];
+}
+const touched = S.chipText(b, { extra });
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'MatchResultGroup.ui'));
 console.log('MatchResultGroup 적용 끝');

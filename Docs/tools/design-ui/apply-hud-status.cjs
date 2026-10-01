@@ -18,7 +18,8 @@ const NAME = [888, 895, 176, 32];          // 이름판 (시안은 남는 폭을
 const JOB_ICON = [1072, 898, 26, 26];
 const JOB_TXT = [1102, 898, 60, 26];       // 직업 이름: 글자 수에 따라 스크립트가 크기를 줄인다(16 / 14 / 12)
 // AP/SP 칩: 시안 98 폭은 "AP 30 · SP 18" 처럼 두 자리만 돼도 게임 글꼴(시안보다 넓음)에서 둘째 줄로 꺾였다(Play 확인 2026-10-01) → 130 폭(가운데 그대로)
-const APSP = [925, 934.5, 130, 25];
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 남을 때의 금 칩은 글자 좌우 여백이 테두리 10 + 1 = 11 이라 안쪽이 130 → 108 로 줄어 "AP 30 · SP 18" 이 꺾일 수 있다 → 140 폭(안쪽 118 · 가운데 그대로)
+const APSP = [920, 934.5, 140, 25];
 const ALERT = [1047, 920.5, 24, 24];
 const ROWS = { Hp: 966.5, Mp: 999.5, Exp: 1032.5 };
 const LABEL_Y = { Hp: 970, Mp: 1003, Exp: 1036 };
@@ -102,8 +103,9 @@ for (const s of SHORT) {
   S.font(b, P, { text: '' });
   if (s.icon) S.newImage(b, P + '/Icon', s.icon, { pos: S.at(s.x + 14, 34, 36, 36, BTN), size: [36, 36] });
   if (s.key) {
-    S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 48, 68, 22, 22, BTN), size: [22, 22] });
-    S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [22, 22] });
+    // 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자 좌우 여백 ≥ 테두리 7 + 1 → 시안 22 → 28(안쪽 12 · 오른쪽 끝은 그대로)
+    S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 42, 68, 28, 22, BTN), size: [28, 22] });
+    S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [12, 22] });
   }
   S.newText(b, P + '/Label', s.label, { font: 'Noto700', size: 13, color: C.ivory, shadow: true, pos: S.at(s.x - 4, 87, 72, 18, BTN), rect: [72, 18] }); // 칸 아래 글자는 구름 같은 밝은 배경 위에서 안 보여 그림자를 깐다(Play 확인 2026-10-01)
   if (s.alert) S.newImage(b, P + '/Alert', 'badge_alert', { pos: S.at(s.x + 49, 10, 24, 24, BTN), size: [24, 24], enable: false });
@@ -128,6 +130,10 @@ b.patchComponent('UIMyInfo/LevelUpGlow', S.SPR, { FillCenter: false });
 S.back(b, 'UIMyInfo/Bg');
 S.front(b, 'UIMyInfo/BtnOpenCharacter');
 S.before(b, 'UIMyInfo/LevelUpGlow', 'UIMyInfo/BtnOpenCharacter');
+
+// 🔴 칩 글자 대비(시안 1790844637-7b1e): 바로가기 키 칩(금 · 잉크 글자). AP/SP 칩은 기본이 어두운 칩(규칙 밖)이고, 남을 때 금 칩으로 바뀌는 건 StatusHUDController 가 _UiChipText 로 건다.
+const touched = S.chipText(b);
+console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 
 b.write(path.join(WORLD, 'ui', 'StatusHUD.ui'), {
   bind: {
