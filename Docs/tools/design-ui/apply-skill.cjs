@@ -149,7 +149,7 @@ S.newText(b, D + '/TipBottom', '', Object.assign({ font: 'Noto400', size: 18, co
 S.back(b, 'Window/Crest');
 
 // 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 액티브(파랑) · 패시브(초록) 칩 + 툴팁 칩 글자 = 흰 글자 + 짙은 외곽선. 맨 끝에 건다(위에서 글자를 다 맞춘 뒤).
-const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+const touched = S.chipText(b);
 console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'SkillWindow.ui'));
 console.log('SkillWindow 적용 끝');

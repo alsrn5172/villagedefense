@@ -140,7 +140,7 @@ function chipKeyOf(b, abs) {
   const id = c.ImageRUID.DataId || c.ImageRUID; return RUID_KEY[id] || null;
 }
 function isChipKey(key) { return !!key && /^(chip_|plate_)/.test(key); }
-function applyChipRule(b, abs, kind, chipKey, chipAbs) {
+function applyChipRule(b, abs, kind, chipKey, chipAbs, fit) {
   const sh = kind === 'ink' ? INK_SHADOW : GLOW_SHADOW;
   const u = { Underlay: true, UnderlayColor: C(sh.color, sh.alpha), UnderlayOffsetX: sh.ox, UnderlayOffsetY: sh.oy, UnderlaySoftness: sh.soft, UnderlayDilate: 0 };
   if (kind === 'ink') { u.FontColor = C(CHIP_INK); u.OutlineWidth = 0; }
@@ -157,7 +157,7 @@ function applyChipRule(b, abs, kind, chipKey, chipAbs) {
       u.Padding = { left: Math.max(cur.left || 0, need), right: Math.max(cur.right || 0, need), top: cur.top || 0, bottom: cur.bottom || 0 };
     } else {
       const t = b.getComponent(abs, UIT);
-      if (t && t.RectSize && t.AnchorsMin && t.AnchorsMax && Math.abs(t.AnchorsMin.x - t.AnchorsMax.x) < 1e-6 && t.RectSize.x > chipW - 2 * need && chipW - 2 * need > 0) {
+      if (fit && t && t.RectSize && t.AnchorsMin && t.AnchorsMax && Math.abs(t.AnchorsMin.x - t.AnchorsMax.x) < 1e-6 && t.RectSize.x > chipW - 2 * need && chipW - 2 * need > 0) {
         b.patchComponent(abs, UIT, { RectSize: { x: chipW - 2 * need, y: t.RectSize.y } });
       }
     }
@@ -168,6 +168,7 @@ function applyChipRule(b, abs, kind, chipKey, chipAbs) {
 // - 칩 = SpriteGUIRenderer.ImageRUID 가 ruid-map 의 chip_* 인 엔티티. 글자는 "가장 가까운 칩 조상(또는 자신)"에 속한 TextGUIRenderer 엔티티 전부(자손 글자 포함 · 아이콘은 손대지 않음).
 // - opts.skip: 건너뛸 경로 정규식(절대경로 '/ui/<그룹>/...' 에 적용)
 // - opts.extra: { '<칩 경로>': ['<글자 경로>', ...] } 글자가 칩의 형제인 경우(칩 그림 엔티티와 글자 엔티티가 따로 있을 때) 칩 규칙을 그 글자에도 건다
+// - opts.fit: true 면 칩 안 글자 상자를 칩 폭 − 2×(테두리+1) 로 줄인다(기본 꺼짐 · 게임 글꼴이 시안보다 10~15% 넓어 줄이면 꺾이거나 잘림 → 여백은 칩 폭을 늘려서 맞춘다)
 // - opts.dry: true 면 patch 없이 목록만
 // 반환: [{ path, kind: 'ink'|'glow', chip: 그림 키 }]  (스크립트가 길이/목록을 로그로 찍는다)
 function chipText(b, opts) {
@@ -184,7 +185,7 @@ function chipTextInner(b, opts) {
   const out = []; const done = new Set();
   const doText = (abs, c) => {
     if (done.has(abs) || !c[2] || (skip && skip.test(abs)) || !b.hasComponent(abs, TXT)) return;
-    done.add(abs); if (!opts.dry) applyChipRule(b, abs, c[2], c[1], c[0]); out.push({ path: abs, kind: c[2], chip: c[1] });
+    done.add(abs); if (!opts.dry) applyChipRule(b, abs, c[2], c[1], c[0], !!opts.fit); out.push({ path: abs, kind: c[2], chip: c[1] });
   };
   for (const abs of ents) { const c = owner(abs); if (c) doText(abs, c); }
   for (const chipPath of Object.keys(opts.extra || {})) {

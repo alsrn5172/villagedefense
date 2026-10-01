@@ -219,7 +219,7 @@ S.back(b, W + '/Crest'); // 문장 → 띠 → 제목 글자
 S.before(b, W + '/Foot', W + '/Pages'); // 아래 띠가 페이지 안내 글자보다 뒤
 
 // 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 달성 · 발록 처치(금) · 시간 종료(회색) = 잉크색 / 전원 탈락(빨강) = 흰 글자 + 짙은 외곽선. 중도 이탈 · 자이언트(어두운 칩)는 대상 아님. 맨 끝에 건다.
-const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+const touched = S.chipText(b);
 console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'AccountRecordGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`AccountRecordGroup(계정 창) 적용 끝 — 새 엔티티 ${b.listEntities().length - before}개`);

@@ -492,7 +492,7 @@ S.before(b, 'Window/Crest', 'Window/TitleBand');
 
 // 칩 위 글자 대비 규칙(시안 1790844637-7b1e): 착용(파랑) · MAX · 교환(금) 칩 글자. 맨 끝에 건다.
 // 🔴 제작 탭(Job_x · Slot_x 의 On + Label) · 직업 칩(JobChip/Bg_x + Job) · 요구 칩(ReqChip/Bg_x + Label)은 칩 그림과 글자가 형제이고 기본 상태가 꺼짐(어두운 칩 + 밝은 글자)이라 파일에 규칙을 박지 않는다 — WorkshopUIController.ChipLabelStyle 이 켤 때 건다.
-const touched = require('./chiptext-keeprect.cjs')(S, b); // S.chipText + 글자 상자 크기 유지(게임 글꼴이 넓어 줄이면 꺾인다)
+const touched = S.chipText(b);
 console.log('chipText', touched.length, touched.map((t) => t.kind + ':' + t.path.replace('/ui/', '')).join(' '));
 b.write(path.join(WORLD, 'ui', 'VillageWorkshopGroup.ui'), { lint_verbose: !!process.env.LINT_V });
 console.log(`VillageWorkshopGroup(공방) 적용 끝 — 새 엔티티 ${b.listEntities().length - before}개`);
