@@ -93,7 +93,7 @@ S.font(b, F + '/CostLabel', { font: 'Noto700', size: 18, color: C.sub, h: 'left'
   img(P, 'plate_dark', R, FOOT, { enable: false });
   img(P + '/Icon', 'icon_meso', [x + 8, 754.5, 32, 32], R);
   txt(P + '/Label', '메소', [x + 48, 758.5, 96, 28], R, { font: 'Noto700', size: 14, color: C.faint, h: 'left', overflow: 1 });
-  txt(P + '/Num', '0', [x + 148, 753.5, 60, 28], R, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
+  txt(P + '/Num', '0', [x + 148, S.dropNum(753.5), 60, 28], R, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' }); // 시안보다 6px 아래(skin.cjs FOOTBALL_NUM_DROP)
   txt(P + '/Hold', '', [x + 212, 758.5, 86, 28], R, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
 });
 

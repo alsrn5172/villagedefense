@@ -205,3 +205,48 @@ UI 5개 갱신: `AccountRecordGroup` · `CommonNpcGroup` · `VillageLifeGroup` �
 - 🔴 **발견(오라와 별개 · 층 규칙)**: 헤네시스 `Henesys_Hunt_HillNorth` 의 억제기가 `Default/150` 이라 플레이어(`Default/4`)가 시설 뒤에 가려진다(`W02_aura_henesys_player_hidden_by_facility`). 원인 = 시설 층이 슬롯 아래 발판의 SortingLayer 를 따라가는데(`LaneFacilityService.SortingLayerBelow`) 이 통로 발판이 `Default` 층이다(LaneConfig 메모 "층4 Default"). 5마을 레인 슬롯 15곳 중 이 한 곳만 `Default`(나머지 MapLayer0 · 1 · 6 · 7). 층 값은 안 바꿨다 — 고치려면 이 맵 통로 발판을 MapLayer 쪽으로 옮기거나 시설 층에 상한(플레이어 뒤)을 두는 결정이 필요하다.
 - 못 본 것: 시설 Lv 2~3 의 띠(특성 값만 변해 그림은 같음) · 시설 파괴 뒤 띠(코드상 남음) · 모바일 화면 · 억제기가 아닌 시설 · 노틸러스 물 그림이 시설을 덮는 정확한 엔티티(맵 자식 SpriteRenderer 가 아님 — 찾지 못함).
 - Play 로그: 본 범위(Play 시작 뒤 1분 안 · 맵마다 한두 번 읽음)에서 Error 는 커닝 · 노틸러스에서 `[Match] handoff 없음` 1줄(룸을 직접 만든 탓 · 무해 · 30초 뒤에 나와서 그 전에 끝낸 맵에는 안 보임)뿐. 스크립트 · 오라 쪽 Error 0. 캡처 7장 → `디자인인계/2026-09-23/applied/` · 합성 `_work/sheet_round2_9.png` · 목록 `_work/files_round2.json`(7줄 추가).
+
+## 2026-10-02 — 3차 수정(헤네시스 통로 발판 층 · 상점 숫자 기준선)
+
+### 1. 헤네시스 레인 맵 — 억제기가 플레이어를 가리던 것(`map/Henesys_Hunt_HillNorth`)
+
+현상(10/1 확인 `16687de` · `W02_aura_henesys_player_hidden_by_facility`): 억제기가 `Default/150` 으로 그려져 플레이어(`Default/4`)가 시설 뒤에 숨었다. 원인 = 억제기 층이 슬롯 아래 발판의 SortingLayer 를 따라가는데(`LaneFacilityService.SortingLayerBelow`) 이 통로 발판 `LaneGround_0`(오브젝트의 `CustomFootholdComponent` · 구운 발판 id 123)이 `Default` 층이었다.
+
+| 한 것 | 값 |
+|---|---|
+| 통로 바닥 그림 조각 `LaneGround_0~3` 의 `SpriteRendererComponent.SortingLayer` | `Default` → **`MapLayer7`** (OrderInLayer 2 그대로 · 다른 레인 맵 커닝 · 골렘 신전 통로와 같은 값) |
+| `LaneGround_4` | 그대로 `MapLayer2`(사용자가 Maker 에서 이미 둔 값 · 아래 이유) |
+| 구운 발판(`FootholdsByLayer` 의 id 123 · x −5.79~17.71 · y −6.22) | layer 4 `Default` → layer 3 **`MapLayer7`** (`maker_move_map` → `refresh` → `maker_save` 로 다시 구움) |
+| 억제기(Play 실측) | `Default/150` → **`MapLayer7/150`** · 슬롯 아래 발판 층 `MapLayer7` |
+
+- 맵 파일 변경 = 엔티티 5개(`LaneGround_0~3` 의 SpriteRenderer · 맵 루트의 FootholdComponent) 뿐. 발판은 123개 그대로이고 id 123 하나만 층이 바뀌었다(다른 발판 재배열 없음). 저장이 다시 쓴 `ui/` 파일과 `WorldNameTag` 모델은 되돌렸다(`git checkout`).
+- 🔴 조각 4 를 `MapLayer7` 로 같이 올리면 안 된다: 그림 조각 끝에 어두운 마감(검은 틀)이 있어, 같은 층 · 같은 순서(7/2)끼리는 조각 4 의 마감이 조각 0 을 덮어 바닥 중간(x −1.6~0.7)에 검은 상자가 생긴다(캡처로 확인 · 지금처럼 조각 4 가 아래 층이면 조각 0 이 그 마감을 덮어 깨끗). 오른쪽 끝의 어두운 띠는 옛 `Default` 층에서도 있던 그림 끝 마감이다(안 고침).
+- 확인(Play · 개인 월드 · 헤네시스 사냥터1): 억제기 `SpawnFacility` → 층 `MapLayer7/150` · 플레이어를 억제기 자리에 세우면 **플레이어가 시설 앞**(캡처 `W03_henesys_player_in_front_of_facility` · 전 `_work/before_W03_henesys_player_hidden.png` · 비교 `_work/sheet_round3_henesys.png`) · 플레이어가 통로에서 좌우로 걸어도 y −6.22 유지(추락 없음) · 시험 미니언(주황버섯 모델 `1210102` · `MinionFlowService:SpawnMinion` 직접 호출)이 오른쪽 끝(17.1)에서 출발해 억제기 앞(8.78)까지 y −6.22 로 걷고 층 `MapLayer7/3`.
+- 이 맵의 다른 시설: 억제기 하나뿐(포탑은 골렘 신전 · 넥서스는 마을 맵에 선다 — 두 맵 통로는 각각 `MapLayer7` · `MapLayer1` 로 이미 MapLayer).
+- Play 로그 Error 는 알려진 `[Match] handoff 없음` 뿐.
+
+### 2. 상점 비용 칩 숫자가 위로 솟아 보이던 것(공방 `VillageWorkshopGroup`)
+
+- 원인: 시안이 비용 칩의 큰 숫자 상자(Football 20)를 라벨(Noto 14)보다 5px 위에 놓았다(숫자 y 753.5 · 라벨 758.5). 게임 글꼴은 같은 가운데 정렬이면 숫자 바닥선이 옆 글자 바닥선과 같아서(재료 · 비용 줄 "89,050 / 300" 은 실측 0px) 그 5px 가 그대로 솟음이 됐다. 런타임 배치(`ShowFootChips`)도 같은 값(+3 / −2)을 썼다.
+- 실측(캡처 1568×882 · 전): 숫자 "300" 바닥 y 688 · 옆 "보유 89,050" 숫자 바닥 y 693 → 5px(1920 기준 약 6px). 고친 뒤: 숫자 바닥 693 = 693.
+- 보정: 숫자 상자 y **+3 → −3(6px 아래)**. 글꼴 · 크기는 안 바꿨다. 정본 상수 = `skin.cjs` `FOOTBALL_NUM_DROP = 6`(+ `dropNum()` 헬퍼) · 컨트롤러 `numY = −3` 이 같은 값.
+- 같은 모양의 다른 창 — 측정한 곳(캡처에서 라벨 · 숫자 · 보유 글자의 바닥선): 모집 푸터 칩(`E14` · 라벨 690 = 숫자 690) · 차원 관문 비용 칩(`E29` · 707 = 707) → 이미 맞아서 **안 고침**. 방어 시설 푸터 칩 · 도감 해금 비용 칩 · 로비 하단 띠는 시안 좌표가 라벨과 같은 가운데(`apply-defense` · `apply-record` · `apply-lobby`)이고 캡처 육안으로 맞아 안 고침(이 셋은 숫자로 재지는 않았다). 공방 오른쪽 "재료 · 비용" 줄(`8 / 3` · `89,050 / 300`)도 맞아서 안 고침.
+
+| 고친 파일 | 내용 |
+|---|---|
+| `RootDesk/MyDesk/Item/WorkshopUIController.mlua` | `ShowFootChips` 의 숫자 y `3` → `numY`(−3) |
+| `Docs/tools/design-ui/skin.cjs` | `FOOTBALL_NUM_DROP` · `dropNum()` 추가 |
+| `Docs/tools/design-ui/apply-workshop.cjs` | `ChipA/Num` · `ChipB/Num` 정적 y `753.5` → `dropNum(753.5)` |
+| `ui/VillageWorkshopGroup` | 위 스크립트를 다시 돌린 결과 — HEAD 와 비교해 엔티티 2개(`Footer/ChipA/Num` · `Footer/ChipB/Num`)만 바뀜 |
+| `map/Henesys_Hunt_HillNorth` | 위 1번 |
+
+- 다시 찍은 캡처(`디자인인계/2026-09-23/applied/` 같은 이름으로 덮어씀 · 1568×882): `D05_workshop_potion` · `D06_workshop_enhance_ready` · `D07_workshop_craft_selected` · `D08_workshop_potion_selected` · `D10_workshop_enhance_gems_partial` · `D12_workshop_craft_lacking` · `N13_workshop_job_tabs_exchange` · `N14_workshop_job_tab_archer` · `N28_workshop_craft_long_name`. 칩이 안 보이는 `D01` · `D02` · `D03` · `D04` · `D09` · `D11` · `N17` · `N18` 은 안 찍었다. 전 / 후 확대 비교 = `_work/sheet_round3_baseline.png`(전 = `_work/before_D07.png`).
+- 새 캡처의 보유 수치는 시험 값이다(메소 90,100 · 100,000 · 100,150 등 · 옛 캡처는 89,050 · 100,000) — 숫자 모양만 같은 상태.
+
+### 못 본 것 · 눈에 띈 것
+
+- 억제기가 실제로 공격하는 장면 · 파괴된 억제기 · Lv 2~3 · 다른 마을(오라가 있는 3곳은 10/1 에 확인)의 Play 재확인은 안 했다. 이 맵은 `FootholdSwitch` · 몬스터 이동이 일반 발판(layer 1 · 2)이라 영향이 없을 것으로 보지만 몬스터가 통로 발판을 밟는 경우는 만들어 보지 않았다.
+- 시험용 억제기는 `SpawnFacility` 를 서버에서 직접 불렀고 공격 부품(`TurretAI` · `FactionAttack`)을 껐다(플레이어를 때리지 않게). 소유권 · 매치 흐름은 거치지 않았다.
+- 공방 Play 때 `maker_screenshot` 이 화면 갱신보다 먼저 찍히는 일이 잦았다(UI 가 5~8초 뒤에 바뀜 · 푸터 칩은 상세 판보다 늦게 갱신). 모든 캡처는 5초 이상 기다리거나 두 번 찍어 확인했다.
+- 공방 Play 때 제작 목록 로그가 한 번 `n=76` 으로 두 배 찍힌 일이 있었다(`Open` 직후 `RefreshCraft` 를 곧바로 불렀을 때 한 번 · 이후 `n=38`). 화면 카드는 정상이고 재현은 안 했다 — 눈에 띈 것으로만 적는다.
+- Play 중 Maker 가 `ui/` 파일을 되써서(공방 UI 에 런타임 배치값이 섞임) 공방 UI 는 HEAD 로 되돌린 뒤 스크립트를 다시 돌려 만들었다. 캡처는 되써진 상태의 파일로 찍었다(런타임 배치값은 어차피 컨트롤러가 다시 쓰므로 화면은 같다고 판단 · 최종 파일로 다시 Play 하지는 않았다).

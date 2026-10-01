@@ -105,7 +105,15 @@ function back(b, p) { const a = absPath(b, p); const parent = a.slice(0, a.lastI
 // p 를 형제 중 맨 앞(가장 나중에 그려짐)으로
 function front(b, p) { const a = absPath(b, p); moveBlock(b, a, (rest) => rest.length); return b; }
 
+// ── Football 큰 숫자 기준선 ──
+// 🔴 비용 칩의 "라벨(Noto 14) + 큰 숫자(Football 20) + 보유 N(Noto 14)": 시안은 숫자 상자를 라벨 상자보다 5px 위에 둔다(숫자 y 753.5 · 라벨 758.5).
+//    게임 글꼴은 가운데 정렬이면 숫자 바닥선이 옆 글자 바닥선과 같아서(실측 · 공방 "89,050 / 300" 줄은 0px) 그 5px 가 그대로 솟음이 됐다(캡처 실측 6px · 사용자 2026-10-02).
+//    → 숫자 상자를 아래로 FOOTBALL_NUM_DROP 내린다. 라벨과 같은 가운데에 두는 창(모집 · 관문 · 방어 · 도감 칩)은 이미 맞아서 안 쓴다.
+//    런타임에 칩을 다시 배치하는 Item/WorkshopUIController.mlua ShowFootChips 의 numY(-3)와 같은 값이다.
+const FOOTBALL_NUM_DROP = 6;
+function dropNum(y) { return y + FOOTBALL_NUM_DROP; } // 시안 캔버스 y(위가 작다) → 내린 y
+
 // 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h) → 부모 상자(같은 좌표계 px,py,pw,ph) 중심 기준 위치
 function at(x, y, w, h, parent) { return [Math.round((x + w / 2 - (parent[0] + parent[2] / 2)) * 2) / 2, Math.round(-((y + h / 2) - (parent[1] + parent[3] / 2)) * 2) / 2]; }
 
-module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front };
+module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum };
