@@ -124,8 +124,10 @@ status(CO + '/Status');
   rich(t + '/Sub');
   // 단계 아이콘(TierIcon_1~3 · stage_1~3)은 넣지 않는다(사용자 결정 2026-10-01) — 이미 있으면 지운다. Sub 글자 x 는 시안 자리 그대로.
   for (let i = 1; i <= 3; i++) if (S.has(b, `${t}/TierIcon_${i}`)) b.remove(`${t}/TierIcon_${i}`);
-  img(t + '/EliteChip', 'chip_red_dark', [124.5, 392.5, 83, 19.5], R, { enable: false });
-  txt(t + '/EliteChip/Text', '자이언트 1', [0, 0, 83, 19.5], [0, 0, 83, 19.5], { font: 'Noto700', size: 13, color: C.white });
+  // 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측 + 2 × (테두리 10 + 여백 4). "자이언트 1"(한 자리) 기준 92 · 왼쪽 끝 124.5 고정. 처치 수가 커지면 컨트롤러가 같은 식으로 다시 잰다.
+  const ELW = S.chipWidth('chip_red_dark', 19.5, S.textW('Noto700', 13, '자이언트 1'));
+  img(t + '/EliteChip', 'chip_red_dark', [124.5, 392.5, ELW, 19.5], R, { enable: false });
+  txt(t + '/EliteChip/Text', '자이언트 1', [0, 0, ELW, 19.5], [0, 0, ELW, 19.5], { font: 'Noto700', size: 13, color: C.white });
   S.before(b, t + '/Slot', t + '/Icon');
   S.before(b, t + '/SlotLocked', t + '/Icon');
   cellBack(t, true);
@@ -157,8 +159,9 @@ status(AC + '/Status');
   txt(t + '/RewardTitle', '', [944, 298.5, 112, 20], R, { font: 'Noto700', size: 14, color: C.sub, h: 'left', overflow: 1 });
   // 상태: 진행 중 = 파랑 글자 · 달성 = 금색 칩
   text(t + '/State', [966, 322, 90, 19.5], R, { font: 'Noto700', size: 14, color: C.blue, h: 'right' });
-  img(t + '/DoneChip', 'chip_gold', [970, 322.5, 86, 19.5], R, { enable: false });
-  txt(t + '/DoneChip/Text', '달성 · 받음', [0, 0, 86, 19.5], [0, 0, 86, 19.5], { font: 'Noto700', size: 13, color: C.goldInk });
+  const DNW = S.chipWidth('chip_gold', 19.5, S.textW('Noto700', 13, '달성 · 받음')); // 96 (오른쪽 끝 1056 고정)
+  img(t + '/DoneChip', 'chip_gold', [1056 - DNW, 322.5, DNW, 19.5], R, { enable: false });
+  txt(t + '/DoneChip/Text', '달성 · 받음', [0, 0, DNW, 19.5], [0, 0, DNW, 19.5], { font: 'Noto700', size: 13, color: C.goldInk });
   cellBack(t, false);
 }
 
@@ -197,7 +200,8 @@ status(HI + '/Status');
   rich(t + '/Rank');
   txt(t + '/RankOf', '', [312, 295, 50, 20], R, { font: 'Maple', size: 14, color: C.faint, h: 'left' });
   // 결과 칩 4종(하나만 켠다)
-  const CHIP = [350.5, 291, 77.5, 24];
+  // 결과 칩 4종은 같은 자리 · 같은 글자 수 → 같은 폭. 가장 넓은 전원 탈락(빨강 테두리 11)의 규칙 폭 88 로 통일(5차 · 왼쪽 끝 350.5 고정).
+  const CHIP = [350.5, 291, S.chipWidth('chip_red', 24, S.textW('Noto700', 13, '전원 탈락')), 24];
   [['ChipBalrog', 'chip_gold', C.goldInk, '발록 처치'], ['ChipTimeout', 'chip_gray', S.CHIP_INK, '시간 종료'], ['ChipAllOut', 'chip_red', C.white, '전원 탈락'], ['ChipLeft', 'chip_gray_dark', '#C9D2E3', '중도 이탈']].forEach(([n, key, col, label]) => {
     img(`${t}/${n}`, key, CHIP, R, { enable: false });
     txt(`${t}/${n}/Text`, label, [0, 0, CHIP[2], CHIP[3]], [0, 0, CHIP[2], CHIP[3]], { font: 'Noto700', size: 13, color: col });

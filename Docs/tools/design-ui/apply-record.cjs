@@ -146,14 +146,16 @@ txt(F + '/BtnPrimary/DoneLabel', '해금됨', [915, 756, 100, 34], BTN, { font: 
   const H = F + '/StateHint';
   box(H, FOOT, FOOT);
   img(H + '/HintIcon', 'icon_info', [140, 758.5, 24, 24], FOOT);
-  txt(H + '/HintText', '몬스터를 고르면 필요한 재료가 나와요', [172, 758, 440, 25], FOOT, { font: 'Noto700', size: 18, color: C.sub, h: 'left' });
-  const HP = [628, 746.5, 156.5, 48];
+  txt(H + '/HintText', '몬스터를 고르면 필요한 재료가 나와요', [172, 758, 410, 25], FOOT, { font: 'Noto700', size: 18, color: C.sub, h: 'left' });
+  // 🔴 칩 크기 규칙(5차 · skin.cjs): 재화 숫자는 네 자리("9,999" Football 18 · 49 → 칸 48)까지. 판 폭 = 8 + 아이콘 30 + 4 + 숫자 칸 + 8 + 아이콘 30 + 4 + 숫자 칸 + 14 = 190 (오른쪽 끝 784.5 고정).
+  const HW = 8 + 30 + 4 + 48 + 8 + 30 + 4 + 48 + 14;
+  const HP = [784.5 - HW, 746.5, HW, 48];
   img(H + '/HoldPlate', 'plate_dark', HP, FOOT);
   // 재화 그림 칸(지역재화 · 꿈의 조각)은 런타임에 원작 아이콘을 넣는다 — 칸 크기만 잡는다
-  img(H + '/HoldPlate/GemIcon', 'icon_info_exp', [636, 755.5, 30, 30], HP, { enable: false });
-  txt(H + '/HoldPlate/GemNum', '0', [670, 758, 34, 25], HP, { font: 'FootballB', size: 18, color: C.ivory, h: 'left' });
-  img(H + '/HoldPlate/DreamIcon', 'icon_info_exp', [708, 755.5, 30, 30], HP, { enable: false });
-  txt(H + '/HoldPlate/DreamNum', '0', [742, 758, 34, 25], HP, { font: 'FootballB', size: 18, color: C.ivory, h: 'left' });
+  img(H + '/HoldPlate/GemIcon', 'icon_info_exp', [HP[0] + 8, 755.5, 30, 30], HP, { enable: false });
+  txt(H + '/HoldPlate/GemNum', '0', [HP[0] + 42, 758, 48, 25], HP, { font: 'FootballB', size: 18, color: C.ivory, h: 'left' });
+  img(H + '/HoldPlate/DreamIcon', 'icon_info_exp', [HP[0] + 98, 755.5, 30, 30], HP, { enable: false });
+  txt(H + '/HoldPlate/DreamNum', '0', [HP[0] + 132, 758, 48, 25], HP, { font: 'FootballB', size: 18, color: C.ivory, h: 'left' });
 }
 // 고른 몬스터: 이름(한글만 · 영문 줄 없음) + 해금된 것 = 초록 요약(기존 CostLabel) / 안 된 것 = 해금 비용 칩
 lab(F + '/CostLabel', [140, 774.5, 644, 18], FOOT, { font: 'Noto700', size: 14, color: C.green, h: 'left' });
@@ -184,8 +186,9 @@ ctr(PP1 + '/PlayerRoot', P1, P1);
 ctr(PP1 + '/Title', [186, 233.5, 200, 28], P1);
 S.font(b, PP1 + '/Title', { font: 'Maple', size: 20, color: C.title, h: 'left', v: 'middle', outline: false });
 img(PP1 + '/HeaderIcon', 'ico_party', [150, 234.5, 26, 26], P1);
-img(PP1 + '/CountChip', 'chip_gray_dark', [478.5, 238, 97.5, 19.5], P1);
-txt(PP1 + '/CountChip/Text', '0명 · 나 제외', [0, 0, 97.5, 19.5], [0, 0, 97.5, 19.5], { font: 'Noto700', size: 13, color: C.white });
+const CNB = S.chipWidth('chip_gray_dark', 19.5, S.textW('Noto700', 13, '0명 · 나 제외')); // 5차: 글자 실측 78.77 + 2 × (테두리 9 + 여백 4) = 106 · 오른쪽 끝 576 고정
+img(PP1 + '/CountChip', 'chip_gray_dark', [576 - CNB, 238, CNB, 19.5], P1);
+txt(PP1 + '/CountChip/Text', '0명 · 나 제외', [0, 0, CNB, 19.5], [0, 0, CNB, 19.5], { font: 'Noto700', size: 13, color: C.white });
 
 // 생존자 줄(5개 미리 깔림 · 스크립트가 Enable): 기본 판 + 호버(ButtonComponent 전환) + 고름 덮개(Sel · 맨 뒤) · 이름 · 칭호 · 레벨 칩
 for (let k = 0; k < 5; k++) {
@@ -200,7 +203,8 @@ for (let k = 0; k < 5; k++) {
   lab(P + '/Name', [28, 22, 300, 21.5], L, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', overflow: 1 });
   txt(P + '/TitleLine', '', [28, 14.5, 300, 15.5], L, { font: 'Noto700', size: 13, color: '#E8C77A', h: 'left', overflow: 1, enable: false });
   txt(P + '/NameT', '', [28, 30, 300, 21.5], L, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', overflow: 1, enable: false });
-  ctr(P + '/Level', [338, 22.5, 60, 21], L);
+  const LVB = S.roleBox('lvBadge2'); // 5차: 레벨 배지 = 역할표 lvBadge2(62×21 · 월드맵과 같은 크기) · 오른쪽 끝 398 고정
+  ctr(P + '/Level', [398 - LVB[0], 22.5, LVB[0], LVB[1]], L);
   S.image(b, P + '/Level', 'chip_blue_dark_sm');
   S.font(b, P + '/Level', { font: 'FootballB', size: 14, color: C.white, h: 'center', v: 'middle', outline: false });
   S.back(b, P + '/Sel');

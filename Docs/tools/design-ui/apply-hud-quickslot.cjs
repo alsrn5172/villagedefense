@@ -38,7 +38,9 @@ for (const [name, x] of Object.entries(SLOTS)) {
   S.font(b, P + '/Count', { font: 'FootballB', size: 16, color: C.white, h: 'right', v: 'bottom' });
   // 키 번호: 왼쪽 위 금 칩 키캡 22x22 (스크립트가 안 잡는 노드)
   // 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자 좌우 여백 ≥ 테두리 7 + 1 → 숫자 한 자리 칩 22 → 26(왼쪽 끝은 그대로)
-  S.place(b, P + '/Key', { pos: [-30, 34], size: [26, 22] });
+  // 🔴 5차: 키 칩 한 글자 = 역할표 key1(34×22 · 스킬 HUD · 상태 HUD 와 같은 크기). 왼쪽 끝(-43)은 그대로.
+  const KB = S.roleBox('key1');
+  S.place(b, P + '/Key', { pos: [-43 + KB[0] / 2, 34], size: [KB[0], KB[1]] });
   S.image(b, P + '/Key', 'chip_gold_sm');
   b.patchComponent(P + '/Key', S.SPR, { RaycastTarget: false }); // 키캡이 칸 클릭을 가로채지 않게
   S.font(b, P + '/Key', { font: 'FootballB', size: 13, color: C.goldInk, h: 'center', v: 'middle', outline: false });

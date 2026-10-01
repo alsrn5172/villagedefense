@@ -134,8 +134,10 @@ img(E + '/ResultSlot/MaxFrame', 'slot_frame', RS, RS, { enable: false });
 img(E + '/ResultSlot/MaxShade', 'plate_dark', [371, 248.5, 128, 128], RS, { color: '#080C16', alpha: 0.45, enable: false });
 img(E + '/ResultSlot/UpBadge', 'act_upgrade', [355, 232.5, 30, 30], RS, { enable: false });
 for (let n = 1; n <= 3; n++) img(`${E}/ResultSlot/EnhBadge_${n}`, `badge_enh_${n}`, [459, 246.5, 42, 42], RS, { enable: false });
-img(E + '/ResultSlot/MaxChip', 'chip_gold', [463.5, 228.5, 59.5, 30], RS, { enable: false });
-txt(E + '/ResultSlot/MaxChip/Text', 'MAX', [0, 0, 59.5, 30], [0, 0, 59.5, 30], { font: 'Maple', size: 16, color: C.goldInk });
+// 🔴 칩 크기 규칙(5차 · skin.cjs CHIP 역할표): MAX = Maple 16 · 30 높이 → 방어 · 조련과 같은 크기. 가운데(493.25 · 243.5)는 그대로.
+const MXB = S.roleBox('max');
+img(E + '/ResultSlot/MaxChip', 'chip_gold', [493.25 - MXB[0] / 2, 243.5 - MXB[1] / 2, MXB[0], MXB[1]], RS, { enable: false });
+txt(E + '/ResultSlot/MaxChip/Text', 'MAX', [0, 0, MXB[0], MXB[1]], [0, 0, MXB[0], MXB[1]], { font: 'Maple', size: 16, color: C.goldInk });
 backAll([E + '/ResultSlot/EmptyFrame', E + '/ResultSlot/MaxFrame']);
 txt(E + '/ResultName', '-', [335, 390.5, 200, 30], CNT, { font: 'Maple', size: 18, color: C.faint, overflow: 1 });
 
@@ -163,8 +165,8 @@ for (let i = 0; i < 4; i++) {
   S.back(b, P + '/Plate');
 }
 txt(E + '/StatPreview/PreviewEmpty', '장비를 고르면 오를 능력치가 나와요', [558, 296, 484, 118], SP, { font: 'Noto700', size: 16, color: C.faint });
-img(E + '/StatPreview/PreviewMaxChip', 'chip_gold', [770.5, 326, 59.5, 30], SP, { enable: false });
-txt(E + '/StatPreview/PreviewMaxChip/Text', 'MAX', [0, 0, 59.5, 30], [0, 0, 59.5, 30], { font: 'Maple', size: 16, color: C.goldInk });
+img(E + '/StatPreview/PreviewMaxChip', 'chip_gold', [800.25 - MXB[0] / 2, 341 - MXB[1] / 2, MXB[0], MXB[1]], SP, { enable: false });
+txt(E + '/StatPreview/PreviewMaxChip/Text', 'MAX', [0, 0, MXB[0], MXB[1]], [0, 0, MXB[0], MXB[1]], { font: 'Maple', size: 16, color: C.goldInk });
 txt(E + '/StatPreview/PreviewMaxText', '더 오를 능력치가 없어요', [558, 366, 484, 28], SP, { font: 'Noto700', size: 16, color: C.faint, enable: false });
 
 // 보석 넣는 곳
@@ -224,8 +226,9 @@ img(P1 + '/ListPane', 'panel_inner', [134, 274, 932, 460], CNT);
 img(P1 + '/TitleIcon', 'ico_shield', [134, 220.5, 26, 26], CNT);
 ctr(P1 + '/PickTitle', [170, 219.5, 200, 28], CNT);
 S.font(b, P1 + '/PickTitle', { font: 'Maple', size: 20, color: C.title, h: 'left', v: 'middle', outline: false, text: '강화할 장비 선택' });
-img(P1 + '/LegendChip', 'chip_blue', [957.5, 223, 48, 22], CNT);
-txt(P1 + '/LegendChip/Text', '착용', [0, 0, 48, 22], [0, 0, 48, 22], { font: 'Noto700', size: 13, color: C.white });
+const EQB = S.roleBox('equip'); // 착용 = 보석 칩 · Noto 13 · 22 높이 → 56×22
+img(P1 + '/LegendChip', 'chip_blue', [1005.5 - EQB[0], 223, EQB[0], EQB[1]], CNT);
+txt(P1 + '/LegendChip/Text', '착용', [0, 0, EQB[0], EQB[1]], [0, 0, EQB[0], EQB[1]], { font: 'Noto700', size: 13, color: C.white });
 txt(P1 + '/LegendText', '= 착용 중', [1010, 223, 76, 22], CNT, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
 img(P1 + '/NoteIcon', 'icon_info', [156, 692, 22, 22], CNT);
 txt(P1 + '/NoteText', '착용 중인 장비도 강화할 수 있어요 · 인벤토리에 있는 장비가 모두 나와요', [182, 692, 862, 24], CNT, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
@@ -244,8 +247,8 @@ ctr(P1 + '/PickTemplate/Name', [0, 115, 110, 20], PT);
 S.font(b, P1 + '/PickTemplate/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0, text: '' });
 bestFit(P1 + '/PickTemplate/Name', 14, 9);
 for (let n = 1; n <= 3; n++) img(`${P1}/PickTemplate/EnhBadge_${n}`, `badge_enh_${n}`, [74, 2, 34, 34], PT, { enable: false });
-img(P1 + '/PickTemplate/EquipChip', 'chip_blue', [3, 4, 48, 22], PT, { enable: false });
-txt(P1 + '/PickTemplate/EquipChip/Text', '착용', [0, 0, 48, 22], [0, 0, 48, 22], { font: 'Noto700', size: 13, color: C.white });
+img(P1 + '/PickTemplate/EquipChip', 'chip_blue', [3, 4, EQB[0], EQB[1]], PT, { enable: false });
+txt(P1 + '/PickTemplate/EquipChip/Text', '착용', [0, 0, EQB[0], EQB[1]], [0, 0, EQB[0], EQB[1]], { font: 'Noto700', size: 13, color: C.white });
 // 뒤로 버튼: 글자 "뒤로" 는 아이콘 오른쪽으로 치우쳐서 자식 Label 이 쓴다
 function backButton(root) {
   ctr(root + '/BtnBack', [490, 750, 220, 62], CNT);
@@ -310,8 +313,8 @@ JOBS.forEach(([id, label, x, icon]) => {
   S.font(b, P, { text: '' });
   const L = [0, 0, 111, 40];
   img(P + '/On', 'chip_gold', L, L, { enable: false });
-  img(P + '/Icon', icon, [26.5, 9, 22, 22], L);
-  txt(P + '/Label', label, [48, 0, 60, 40], L, { font: 'Noto700', size: 16, color: C.ivory });
+  img(P + '/Icon', icon, [18, 9, 22, 22], L); // 🔴 5차: 아이콘 왼쪽 18(= 테두리 12 + 6) · 글자 칸 [46~93] 가운데 정렬 → "마법사" 46.4 가 칸을 꽉 채워도 오른쪽 18 이 남는다
+  txt(P + '/Label', label, [46, 0, 47, 40], L, { font: 'Noto700', size: 16, color: C.ivory });
   S.back(b, P + '/On');
 });
 // 부위 분류: 시안에 없다 → 직업 분류 바로 아래 한 줄(26 높이)에 두고 목록 판을 그만큼 낮춘다.
@@ -343,16 +346,18 @@ ctr(CR + '/CardTemplate/Name', [3, 65, 168, 26], CB);
 S.font(b, CR + '/CardTemplate/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0 });
 bestFit(CR + '/CardTemplate/Name', 16);
 // 직업 태그: 직업별 색 칩 6장 중 하나만 켠다 · 글자(Job)는 그 위
-const JR2 = [86, 10, 72, 22];
+const JBB = S.roleBox('job'); // 직업 태그 = 보석 칩 b11 · Noto 13 · 22 높이 · "마법사 30" → 90×22 (카드 오른쪽 끝 158 고정). 칩 그림 6장은 테두리가 달라도(11 · 10 · 8 · 9) 같은 폭.
+const JR2 = [158 - JBB[0], 10, JBB[0], JBB[1]];
 box(CR + '/CardTemplate/JobChip', JR2, CB);
 const JOB_CHIP = [['WARRIOR', 'chip_red'], ['MAGICIAN', 'chip_blue'], ['ARCHER', 'chip_green'], ['THIEF', 'chip_gold_dark'], ['PIRATE', 'chip_blue_dark_sm'], ['ALL', 'chip_gray_dark']];
-JOB_CHIP.forEach(([id, key]) => img(`${CR}/CardTemplate/JobChip/Bg_${id}`, key, [0, 0, 72, 22], [0, 0, 72, 22], { enable: false }));
+JOB_CHIP.forEach(([id, key]) => img(`${CR}/CardTemplate/JobChip/Bg_${id}`, key, [0, 0, JBB[0], JBB[1]], [0, 0, JBB[0], JBB[1]], { enable: false }));
 ctr(CR + '/CardTemplate/Job', JR2, CB);
 S.font(b, CR + '/CardTemplate/Job', { font: 'Noto700', size: 13, color: C.white, h: 'center', v: 'middle', outline: false, text: '' });
 S.before(b, CR + '/CardTemplate/JobChip', CR + '/CardTemplate/Job');
 // 교환 배지
-img(CR + '/CardTemplate/ExchBadge', 'chip_gold', [18, 10, 44, 22], CB, { enable: false });
-txt(CR + '/CardTemplate/ExchBadge/Text', '교환', [0, 0, 44, 22], [0, 0, 44, 22], { font: 'Maple', size: 13, color: S.CHIP_INK });
+const EXB = S.roleBox('exch'); // 교환 = 금 칩 · Maple 13 · 22 높이 → 52×22 (왼쪽 끝 18 고정)
+img(CR + '/CardTemplate/ExchBadge', 'chip_gold', [18, 10, EXB[0], EXB[1]], CB, { enable: false });
+txt(CR + '/CardTemplate/ExchBadge/Text', '교환', [0, 0, EXB[0], EXB[1]], [0, 0, EXB[0], EXB[1]], { font: 'Maple', size: 13, color: S.CHIP_INK });
 // 값 줄: 재료 아이콘 · 수 · 점 · 메소 아이콘 · 수 (스크립트가 1개/2개 모양으로 자리를 바꾼다 · 기존 Price 글자는 끈다)
 S.place(b, CR + '/CardTemplate/Price', { enable: false });
 priceRow(CR + '/CardTemplate', CB);
@@ -384,11 +389,12 @@ ctr(CR + '/Detail/Name', [852, 267, 196, 34], DT);
 S.font(b, CR + '/Detail/Name', { font: 'Maple', size: 24, color: C.ivory, h: 'left', v: 'bottom', outline: false, overflow: 0 });
 bestFit(CR + '/Detail/Name', 24);
 S.place(b, CR + '/Detail/Req', { enable: false }); // 요구 조건은 칩(ReqChip) + 글(ReqText) 두 조각으로 — FillItemView 에는 reqT 를 안 넘긴다
-const RC = [852, 305, 54, 22];
+const JNB = S.roleBox('jobName'); // 요구 칩 = 직업 이름만("전사" · "마법사" · "전직업" · Noto 13 · 37.7) → 68×22 (5차 · 54 → 68). 카드 태그("마법사 30")와는 글이 달라 크기가 다르다. 오른쪽 글(ReqText)은 칩 오른쪽 + 8.
+const RC = [852, 305, JNB[0], JNB[1]];
 box(CR + '/Detail/ReqChip', RC, DT, { enable: false });
-JOB_CHIP.forEach(([id, key]) => img(`${CR}/Detail/ReqChip/Bg_${id}`, key, [0, 0, 54, 22], [0, 0, 54, 22], { enable: false }));
-txt(CR + '/Detail/ReqChip/Label', '', [0, 0, 54, 22], [0, 0, 54, 22], { font: 'Noto700', size: 13, color: C.white });
-txt(CR + '/Detail/ReqText', '', [912, 305, 140, 22], DT, { font: 'Noto700', size: 14, color: C.faint, h: 'left', enable: false });
+JOB_CHIP.forEach(([id, key]) => img(`${CR}/Detail/ReqChip/Bg_${id}`, key, [0, 0, JNB[0], JNB[1]], [0, 0, JNB[0], JNB[1]], { enable: false }));
+txt(CR + '/Detail/ReqChip/Label', '', [0, 0, JNB[0], JNB[1]], [0, 0, JNB[0], JNB[1]], { font: 'Noto700', size: 13, color: C.white });
+txt(CR + '/Detail/ReqText', '', [852 + JNB[0] + 8, 305, 1048 - (852 + JNB[0] + 8), 22], DT, { font: 'Noto700', size: 14, color: C.faint, h: 'left', enable: false });
 // 능력치 줄 5개(인벤토리 툴팁과 같은 FillItemView 가 Chip · Cell 글자를 쓴다)
 const SL = [754, 336.5, 294, 210];
 ctr(CR + '/Detail/StatList', SL, DT);

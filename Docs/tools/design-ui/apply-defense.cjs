@@ -81,11 +81,14 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
   ctr(N + '/Icon', [8, 10, 44, 44], NL); // 그림은 마을별 RUID(스크립트가 대입) — 칸 크기만
   S.before(b, N + '/IconFrame', N + '/Icon');
   lab(N + '/Label', [70, 0, 50, 22.5], NL, { font: 'Maple', size: 16, color: C.ivory, h: 'left' });
-  img(N + '/LvChip', 'chip_blue_dark_sm', [chipX, 1, 46, 19.5], NL);
-  txt(N + '/LvChip/Text', 'Lv1', [0, 0, 46, 19.5], [0, 0, 46, 19.5], { font: 'FootballB', size: 13, color: C.white });
-  img(N + '/MaxChip', 'chip_gold', [chipX, -2, 53, 26], NL, { enable: false });
-  txt(N + '/MaxChip/Text', 'MAX', [0, 0, 53, 26], [0, 0, 51, 26], { font: 'Maple', size: 14, color: C.goldInk });
-  lab(N + '/Place', [170, 2, 60, 18], NL, { font: 'Noto700', size: 13, color: C.faint, h: 'right' });
+  // 🔴 칩 크기 규칙(5차 · skin.cjs CHIP 역할표): 레벨 배지 = Football 14 · 21 높이(카드 LvText 와 같은 크기) · MAX = Maple 16 · 30 높이(카드 · 버튼 · 조련 · 공방과 같은 크기). 위 가운데 y(10.75 · 11)는 그대로.
+  const LVB = S.roleBox('lvBadge1'); const MXB = S.roleBox('max');
+  img(N + '/LvChip', 'chip_blue_dark_sm', [chipX, 10.75 - LVB[1] / 2, LVB[0], LVB[1]], NL);
+  txt(N + '/LvChip/Text', 'Lv 1', [0, 0, LVB[0], LVB[1]], [0, 0, LVB[0], LVB[1]], { font: 'FootballB', size: 14, color: C.white });
+  img(N + '/MaxChip', 'chip_gold', [chipX, 11 - MXB[1] / 2, MXB[0], MXB[1]], NL, { enable: false });
+  txt(N + '/MaxChip/Text', 'MAX', [0, 0, MXB[0], MXB[1]], [0, 0, MXB[0], MXB[1]], { font: 'Maple', size: 16, color: C.goldInk });
+  // 5차: 억제기 노드는 MAX 칩(70)이 사냥터 글자("사냥터1" 45.9 · 오른쪽 끝 230)에 닿는다 → 이 노드만 장소 상자를 오른쪽으로 12 밀어 칩과 6 띄운다(오른쪽 화살표까지는 2.5 남음). 포탑(칩 끝 175.5) · 넥서스(MAX 없음)는 그대로.
+  lab(N + '/Place', [stage === 'SUPPRESSOR' ? 182 : 170, 2, 60, 18], NL, { font: 'Noto700', size: 13, color: C.faint, h: 'right' });
   // 체력 게이지: 트랙 + 채움(스크립트가 폭 · 그림 교체 · 안쪽 폭 138)
   ctr(N + '/HpBar', [70, 25, 160, 16], NL);
   S.image(b, N + '/HpBar', 'gauge_track_sm');
@@ -102,7 +105,14 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
 // ═══════════════════════════════════════════════════════════
 // 시설 카드 3장 (Tower/Cards): 302.5x342 · 그림 · 이름 + 레벨 칩 · 체력 게이지 · 설명 · 버튼 3개
 // ═══════════════════════════════════════════════════════════
-[['TOWER', 134, 35, 103, 148], ['SUPPRESSOR', 448.5, 26, 94, 157.5], ['CORE', 763.5, 26, 94, 157.5]].forEach(([stage, x, frontX, nameX, lvX]) => {
+[['TOWER', 134, 35, 103, 148], ['SUPPRESSOR', 448.5, 26, 94, 157.5], ['CORE', 763.5, 26, 94, 157.5]].forEach(([stage, x, frontX0, nameX0, lvX0]) => {
+  // 🔴 칩 크기 규칙(5차): 이름 줄 [최전방] 이름 [레벨 / MAX] 의 칩이 넓어졌으니 묶음을 원래 가운데(카드 왼쪽에서 121.4)에 다시 맞춘다. 칩 사이 간격 8 · 이름 상자와 오른쪽 칩 사이 2 는 그대로.
+  const FRB = S.roleBox('front'), MXB = S.roleBox('max'), LVB = S.roleBox('lvBadge1');
+  const NAMEW = lvX0 - nameX0 - 2;
+  const GROUP_C = 121.4;
+  const frontX = GROUP_C - (FRB[0] + 8 + NAMEW + 2 + MXB[0]) / 2;
+  const nameX = frontX + FRB[0] + 8;
+  const lvX = nameX + NAMEW + 2;
   const CR = [x, 360, 302.5, 342];
   const CL = [0, 0, 302.5, 342];
   const K = `${T}/Cards/Card_${stage}`;
@@ -115,14 +125,14 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
   ctr(K + '/Icon', [118.25, 12, 66, 66], CL);
   img(K + '/Rubble', 'fx_rubble', [91.5, 30, 120, 48], CL, { enable: false });
   // 이름 줄: [최전방 칩] 이름 [레벨 칩 / MAX]
-  img(K + '/FrontChip', 'chip_blue', [frontX, 86, 60, 22], CL, { enable: false });
-  txt(K + '/FrontChip/Text', '최전방', [0, 0, 60, 22], [0, 0, 60, 22], { font: 'Noto700', size: 13, color: C.white });
-  lab(K + '/Name', [nameX, 83, lvX - nameX - 2, 28], CL, { font: 'Maple', size: 20, color: C.ivory, h: 'left' });
-  ctr(K + '/LvText', [lvX, 86.5, 51.5, 21], CL);
+  img(K + '/FrontChip', 'chip_blue', [frontX, 86, FRB[0], FRB[1]], CL, { enable: false });
+  txt(K + '/FrontChip/Text', '최전방', [0, 0, FRB[0], FRB[1]], [0, 0, FRB[0], FRB[1]], { font: 'Noto700', size: 13, color: C.white });
+  lab(K + '/Name', [nameX, 83, NAMEW, 28], CL, { font: 'Maple', size: 20, color: C.ivory, h: 'left' });
+  ctr(K + '/LvText', [lvX, 86.5, LVB[0], LVB[1]], CL);
   S.image(b, K + '/LvText', 'chip_blue_dark_sm');
   S.font(b, K + '/LvText', { font: 'FootballB', size: 14, color: C.white, h: 'center', v: 'middle', outline: false });
-  img(K + '/MaxChip', 'chip_gold', [lvX, 83, 59.5, 30], CL, { enable: false });
-  txt(K + '/MaxChip/Text', 'MAX', [0, 0, 59.5, 30], [0, 0, 59.5, 30], { font: 'Maple', size: 16, color: C.goldInk });
+  img(K + '/MaxChip', 'chip_gold', [lvX, 83, MXB[0], MXB[1]], CL, { enable: false });
+  txt(K + '/MaxChip/Text', 'MAX', [0, 0, MXB[0], MXB[1]], [0, 0, MXB[0], MXB[1]], { font: 'Maple', size: 16, color: C.goldInk });
   // 체력 게이지(트랙 + 채움 · 안쪽 폭 234.5) · 숫자 · 파괴됨
   ctr(K + '/HpBar', [18, 116, 266.5, 26], CL);
   S.image(b, K + '/HpBar', 'gauge_track');
@@ -146,8 +156,8 @@ img(LS + '/HelpIcon', 'icon_help', [154, 228, 20, 20], STRIP);
     txt(B + '/Label', label, [42, 5.75, 60, 22.5], BL, { font: 'Noto700', size: 16, color: C.goldInk, h: 'left' });
     img(B + '/CoinIcon', 'icon_victoria_coin', [212, 7, 20, 20], BL);
     txt(B + '/Cost', '0', [236, 5.75, 30, 22.5], BL, { font: 'FootballB', size: 16, color: C.goldInk, h: 'left' });
-    img(B + '/MaxChip', 'chip_gold', [201.5, 4.5, 53, 25], BL, { enable: false });
-    txt(B + '/MaxChip/Text', 'MAX', [0, 0, 53, 25], [0, 0, 51, 25], { font: 'Maple', size: 14, color: C.goldInk });
+    img(B + '/MaxChip', 'chip_gold', [254.5 - MXB[0], 17 - MXB[1] / 2, MXB[0], MXB[1]], BL, { enable: false });
+    txt(B + '/MaxChip/Text', 'MAX', [0, 0, MXB[0], MXB[1]], [0, 0, MXB[0], MXB[1]], { font: 'Maple', size: 16, color: C.goldInk });
     if (n === 'BtnRepair') txt(B + '/NoNeed', '필요 없음', [203, 8, 60, 18], BL, { font: 'Noto700', size: 13, color: '#9AA6C0', enable: false });
   });
   // 그리기 순서: 덮개(Dead · Sel)는 카드 맨 뒤
@@ -189,16 +199,17 @@ S.place(b, F + '/CostLabel', { enable: false });
   img(CH + '/ChipFront/Icon', 'flag_guard', [148, 756.5, 28, 28], c1);
   txt(CH + '/ChipFront/Label', '최전방', [184, 760.5, 52, 19.5], c1, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
   txt(CH + '/ChipFront/Name', '포탑', [242, 758, 66, 25], c1, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
-  const c2 = [322, 746.5, 202, 48];
+  // 🔴 칩 크기 규칙(5차): 수비대 값 "10 / 10묶음"(Maple 18 · 94.04)이 202 폭에서 오른쪽 테두리에 닿는다 → 값 왼쪽 102 + 94.04 + 여백 14 = 212. 주화 칩은 숫자 "999,999"(Football 18 · 71.32) 기준 240 · 앞 칩 오른쪽 + 10 에서 시작.
+  const c2 = [322, 746.5, 212, 48];
   img(CH + '/ChipGuard', 'plate_dark', c2, FOOT);
   img(CH + '/ChipGuard/Icon', 'ico_party', [330, 756.5, 28, 28], c2);
   txt(CH + '/ChipGuard/Label', '수비대', [366, 760.5, 52, 19.5], c2, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-  txt(CH + '/ChipGuard/Val', '0 / 10묶음', [424, 758, 100, 25], c2, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
-  const c3 = [534, 746.5, 222, 48];
+  txt(CH + '/ChipGuard/Val', '0 / 10묶음', [424, 758, 98, 25], c2, { font: 'Maple', size: 18, color: C.ivory, h: 'left' });
+  const c3 = [544, 746.5, 240, 48];
   img(CH + '/ChipCoin', 'plate_dark', c3, FOOT);
-  img(CH + '/ChipCoin/Icon', 'icon_victoria_coin', [542, 756.5, 28, 28], c3);
-  txt(CH + '/ChipCoin/Label', '빅토리아 주화', [578, 760.5, 104, 19.5], c3, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
-  txt(CH + '/ChipCoin/Num', '0', [688, 758, 60, 25], c3, { font: 'FootballB', size: 18, color: C.gold, h: 'left' });
+  img(CH + '/ChipCoin/Icon', 'icon_victoria_coin', [552, 756.5, 28, 28], c3);
+  txt(CH + '/ChipCoin/Label', '빅토리아 주화', [588, 760.5, 104, 19.5], c3, { font: 'Noto700', size: 14, color: C.faint, h: 'left' });
+  txt(CH + '/ChipCoin/Num', '0', [698, 758, 72, 25], c3, { font: 'FootballB', size: 18, color: C.gold, h: 'left' });
   const NVF = F + '/NoVillage';
   box(NVF, FOOT, FOOT, { enable: false });
   img(NVF + '/Icon', 'icon_info', [140, 758.5, 24, 24], FOOT);

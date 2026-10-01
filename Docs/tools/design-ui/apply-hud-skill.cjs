@@ -31,8 +31,9 @@ for (const [key, x] of CELLS) {
   S.font(b, P + '/CoolText', { font: 'FootballB', size: 24, color: C.gold, h: 'center', v: 'middle', outline: false });
   // 키 글자 배지: 왼쪽 위 금 칩 22x22 (Shift 는 가로로 40.5)
   // 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자 좌우 여백 ≥ 테두리 7 + 1 → 한 글자 22 → 28(W 는 32) · Shift 40.5 → 54(게임 글꼴이 시안보다 넓다). 왼쪽 끝(-41)은 그대로.
+  // 🔴 칩 크기 규칙(5차 · skin.cjs 역할표 key1 · keyShift): 한 글자 키 칩은 가장 넓은 글자("W")에 맞춘 34 로 전부 같게(Q · W · E · R · C · K · F · 숫자), Shift 는 58. 왼쪽 끝(-41)은 그대로.
   const wide = key === 'Shift';
-  const kw = wide ? 54 : (key === 'W' ? 32 : 28);
+  const kw = S.roleBox(wide ? 'keyShift' : 'key1')[0];
   S.place(b, P + '/Key', { pos: [-41 + kw / 2, 32], size: [kw, 22] });
   S.image(b, P + '/Key', 'chip_gold_sm');
   b.patchComponent(P + '/Key', S.SPR, { RaycastTarget: false });

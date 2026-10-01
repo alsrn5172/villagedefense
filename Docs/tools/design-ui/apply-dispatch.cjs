@@ -55,8 +55,10 @@ for (let i = 0; i < 5; i++) {
   img(p + '/Emblem', 'emblem_kerning', [172, R[1] + 12, 40, 40], R);
   ctr(p + '/Name', [228, R[1] + 18, 230, 28], R);
   S.font(b, p + '/Name', { font: 'Maple', size: 20, color: C.ivory, h: 'left', v: 'middle', outline: false });
-  img(p + '/OwnerChip', 'chip_gray_dark', [464.5, R[1] + 22, 75.5, 19.5], R, { enable: false });
-  txt(p + '/OwnerChip/Text', '주인 없음', [0, 0, 75.5, 19.5], [0, 0, 75.5, 19.5], { font: 'Noto700', size: 13, color: '#C9D2E3' });
+  // 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측(Noto 13 "주인 없음" 54.41) + 2 × (테두리 9 + 여백 4) = 82 · 오른쪽 끝 540 고정.
+  const OWB = S.chipWidth('chip_gray_dark', 19.5, S.textW('Noto700', 13, '주인 없음'));
+  img(p + '/OwnerChip', 'chip_gray_dark', [540 - OWB, R[1] + 22, OWB, 19.5], R, { enable: false });
+  txt(p + '/OwnerChip/Text', '주인 없음', [0, 0, OWB, 19.5], [0, 0, OWB, 19.5], { font: 'Noto700', size: 13, color: '#C9D2E3' });
   S.back(b, p + '/Locked');
   S.back(b, p + '/Sel'); // Sel 이 맨 뒤 · Locked 는 그 다음(겹치지 않는다)
 }

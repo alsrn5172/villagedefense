@@ -101,14 +101,15 @@ const RSP = F + '/RecruitSel';
 box(RSP, RS, FOOT, { enable: false });
 txt(RSP + '/SelName', '', [140, 746, 144, 32], RS, { font: 'Maple', size: 20, color: C.ivory, h: 'left', overflow: 1 });
 txt(RSP + '/SelBundle', '', [140, 772, 144, 22], RS, { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
-const CCR = [284.5, 746.5, 194.5, 48]; // 칩 최대 폭(재료가 모자라면 194.5 · 아니면 162 — 판만 폭을 바꾼다)
+// 🔴 칩 크기 규칙(5차): 칩 폭 = 왼쪽 부분(아이콘 · 재료 · 필요 숫자 118) + 보유 글자 실측 + 오른쪽 여백 14. "보유 999 · 부족"(Noto 14 · 102.75) 최대 → 236. 정상("보유 999" 57.75)은 190. 판 폭은 컨트롤러가 글자 폭으로 계산한다.
+const CCR = [284.5, 746.5, 236, 48];
 const CC = RSP + '/CostChip';
 box(CC, CCR, RS);
-S.newImage(b, CC + '/Plate', 'plate_dark', { anchor: 'middle-left', pivot: [0, 0.5], pos: [0, 0], size: [162, 48] });
+S.newImage(b, CC + '/Plate', 'plate_dark', { anchor: 'middle-left', pivot: [0, 0.5], pos: [0, 0], size: [190, 48] });
 img(CC + '/MatIcon', 'icon_meso', [292.5, 754.5, 32, 32], CCR); // 그림은 런타임에 ItemCatalog 재료 아이콘
-txt(CC + '/Label', '재료', [332.5, 760.5, 36, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' }); // 26 폭에서 "재 / 료" 로 꺾였다
-txt(CC + '/Need', '', [374.5, 756.5, 19.5, 28], CCR, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' });
-txt(CC + '/Have', '', [394, 760.5, 100, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' }); // "보유 0 · 부족" 이 84 폭에서 둘째 줄로 꺾였다(받침은 스크립트가 210 으로)
+txt(CC + '/Label', '재료', [332.5, 760.5, 34, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' }); // 26 폭에서 "재 / 료" 로 꺾였다
+txt(CC + '/Need', '', [370.5, 756.5, 26, 28], CCR, { font: 'FootballB', size: 20, color: C.ivory, h: 'left' }); // 두 자리("99" 23.41)까지
+txt(CC + '/Have', '', [402.5, 760.5, 106, 19.5], CCR, { font: 'Noto700', size: 14, color: C.faint, h: 'left' }); // "보유 999 · 부족" 102.75 · 컨트롤러가 글자 폭에 맞춘다
 
 // 창고 사용량 칩 + 도움말
 const SB = [140, 746.5, 920, 48];
@@ -254,16 +255,19 @@ for (let i = 0; i < 5; i++) {
   S.font(b, c + '/Info', { font: 'Noto700', size: 13, color: C.sub, h: 'left', v: 'middle', outline: false });
   // 단계 아이콘(StageIcon · stage_1~3)은 넣지 않는다(사용자 결정 2026-10-01 "stage123 같은 거 안 넣는다") — 이미 있으면 지운다. 글자 x(Info)는 시안 자리 그대로.
   if (S.has(b, c + '/StageIcon')) b.remove(c + '/StageIcon');
-  const MC = [48, 174, 82.5, 32];
+  // 🔴 칩 크기 규칙(5차): 재료 칩 = 아이콘 24 + 필요 "99"(Football 14 · 16.39) + 보유 "/ 999"(Football 13 · ≈34.5) + 양쪽 여백. 카드 가운데(89.25)에 맞춘다.
+  const MCW = 102;
+  const MC = [89.25 - MCW / 2, 174, MCW, 32];
   box(c + '/MatChip', MC, L);
-  const ML = [0, 0, 82.5, 32];
+  const ML = [0, 0, MCW, 32];
   img(c + '/MatChip/Plate', 'plate_dark', ML, ML);
   img(c + '/MatChip/MatIcon', 'icon_meso', [4, 4, 24, 24], ML); // 그림은 런타임에 원작 재료 아이콘
-  txt(c + '/MatChip/Need', '', [34, 6, 14, 20], ML, { font: 'FootballB', size: 14, color: C.ivory, h: 'left' });
-  txt(c + '/MatChip/Have', '', [48, 7, 34, 18], ML, { font: 'FootballB', size: 13, color: C.faint, h: 'left' });
+  txt(c + '/MatChip/Need', '', [32, 6, 18, 20], ML, { font: 'FootballB', size: 14, color: C.ivory, h: 'left' });
+  txt(c + '/MatChip/Have', '', [52, 7, 38, 18], ML, { font: 'FootballB', size: 13, color: C.faint, h: 'left' });
   txt(c + '/Bundle', '', [4, 211, 170.5, 20], L, { font: 'Noto700', size: 13, color: C.faint, h: 'center' });
-  img(c + '/LockChip', 'chip_red', [51.5, 211, 75.5, 22], L, { enable: false });
-  txt(c + '/LockChip/Label', '재료 부족', [0, 0, 75.5, 22], [0, 0, 75.5, 22], { font: 'Noto700', size: 13, color: C.white });
+  const LKB = S.roleBox('lack'); // 재료 부족 = 보석 칩 · Noto 13 · 22 높이 → 86×22 (카드 가운데 89.25 고정)
+  img(c + '/LockChip', 'chip_red', [89.25 - LKB[0] / 2, 211, LKB[0], LKB[1]], L, { enable: false });
+  txt(c + '/LockChip/Label', '재료 부족', [0, 0, LKB[0], LKB[1]], [0, 0, LKB[0], LKB[1]], { font: 'Noto700', size: 13, color: C.white });
   img(c + '/Sel', 'panel_row_selected', L, L, { enable: false });
   img(c + '/Lock', 'panel_row_locked', L, L, { enable: false });
   S.before(b, c + '/Frame', c + '/Icon');
@@ -290,13 +294,14 @@ img(TR + '/HeadIcon', 'flag_guard', [136, 220.5, 23, 26], CNT);
 txt(TR + '/HeadLabel', '해금한 몬스터', [170, 218, 200, 32], CNT, { font: 'Maple', size: 20, color: C.title, h: 'left' });
 txt(TR + '/HeadHint', '강화 = 모집한 수비 몬스터의 HP·공격 배율', [766.5, 223, 299.5, 22], CNT, { font: 'Noto700', size: 14, color: C.faint, h: 'right' });
 // 꿈의 조각 보유 칩 + 도움말 (글자는 기존 TrainHave — 고정 문구)
-const HP = [134, 764, 147.5, 48];
+// 🔴 칩 크기 규칙(5차): 판 폭 = 왼쪽 8 + 아이콘 34 + 10 + 라벨(꿈의 조각 Noto 14 · 58.59 → 60) + 6 + 숫자(최대 "9,999" Football 24 · 65.33 → 66) + 오른쪽 14 = 198. 147.5 에서는 두 자리 숫자("14")가 판 밖으로 넘쳤다.
+const HP = [134, 764, 198, 48];
 img(TR + '/HavePlate', 'plate_dark', HP, CNT);
 img(TR + '/HavePlate/Icon', 'icon_gem', [142, 771, 34, 34], HP); // 그림은 런타임에 ItemCatalog 의 꿈의 조각 아이콘
 txt(TR + '/HavePlate/Label', '꿈의 조각', [186, 778, 60, 19.5], HP, { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
-txt(TR + '/HavePlate/Num', '0', [251.5, 771, 40, 33.5], HP, { font: 'FootballB', size: 24, color: C.gold, h: 'left' });
-img(TR + '/HelpIcon', 'icon_help', [295.5, 776, 24, 24], CNT);
-ctr(TR + '/TrainHave', [327.5, 776, 738, 24], CNT);
+txt(TR + '/HavePlate/Num', '0', [252, 771, 66, 33.5], HP, { font: 'FootballB', size: 24, color: C.gold, h: 'left' });
+img(TR + '/HelpIcon', 'icon_help', [345.5, 776, 24, 24], CNT); // 판이 50.5 넓어진 만큼 오른쪽으로
+ctr(TR + '/TrainHave', [377.5, 776, 688, 24], CNT);
 S.font(b, TR + '/TrainHave', { font: 'Noto700', size: 14, color: C.faint, h: 'left', v: 'middle', outline: false, text: 'Lv2 ×1.5 · Lv3 ×2.2 · Lv4 ×3.3 · Lv5 ×5.0 - 새로 모집하는 묶음부터 적용' });
 
 ctr(TR + '/TrainRoot', CNT, CNT);
@@ -327,8 +332,9 @@ for (let i = 0; i < 8; i++) {
   S.font(b, R0 + '/BtnTrain', { font: 'Maple', size: 16, color: C.goldInk, h: 'center', v: 'middle', outline: false, text: '강화' });
   img(R0 + '/BtnTrain/LackFace', 'btn_blue_disabled_sm', [0, 0, 150, 44], [0, 0, 150, 44], { enable: false });
   txt(R0 + '/BtnTrain/LackFace/Label', '재료 부족', [0, 0, 150, 44], [0, 0, 150, 44], { font: 'Maple', size: 16, color: '#E4E8EF' });
-  img(R0 + '/MaxChip', 'chip_gold', [811.5, 12, 59.5, 30], L, { enable: false });
-  txt(R0 + '/MaxChip/Label', 'MAX', [0, 0, 59.5, 30], [0, 0, 59.5, 30], { font: 'Maple', size: 16, color: C.goldInk });
+  const MXB = S.roleBox('max'); // MAX = Maple 16 · 30 높이(방어 · 공방과 같은 크기) · 가운데 x 841.25 · y 27 고정
+  img(R0 + '/MaxChip', 'chip_gold', [841.25 - MXB[0] / 2, 27 - MXB[1] / 2, MXB[0], MXB[1]], L, { enable: false });
+  txt(R0 + '/MaxChip/Label', 'MAX', [0, 0, MXB[0], MXB[1]], [0, 0, MXB[0], MXB[1]], { font: 'Maple', size: 16, color: C.goldInk });
   S.before(b, R0 + '/Frame', R0 + '/Icon');
   backAll([R0 + '/MaxGlow', R0 + '/Frame']);
 }

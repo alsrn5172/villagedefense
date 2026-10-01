@@ -122,6 +122,9 @@ const CHIP_INK = '#1C1405';      // 시안 chip-ink 글자색
 const CHIP_OUTLINE = '#050A16';  // 시안 chip-glow 외곽선색
 // 시안 외곽선 = 상하좌우 1px + 0 0 2px. TextGUIRenderer.OutlineWidth 는 TMP 식 상대값이라(기존 글자 0.2 · 기본값 0.2) 1px 에 해당하는 0.25 로 두고, Maker 에서 눈으로 확인해 조정한다.
 const CHIP_OUTLINE_WIDTH = 0.25;
+// 작은 글자(크기 ≤ 13)는 같은 외곽선이면 획이 뭉친다(확대 사진 · 방어 "최전방") → 얇게. 등급 기준 = 글자 크기 13 이하. Match/UiChipText.mlua 의 outlineWidthSm 과 같은 값.
+const CHIP_OUTLINE_WIDTH_SM = 0.15;
+const CHIP_OUTLINE_SMALL_MAX = 13;
 const INK_SHADOW = { color: '#FFFFFF', alpha: 0.45, ox: 0, oy: -1, soft: 0 };   // 시안 0 1px 0 rgba(255,255,255,.45)
 const GLOW_SHADOW = { color: '#000000', alpha: 0.6, ox: 0, oy: -2, soft: 0.1 }; // 시안 0 2px 2px rgba(0,0,0,.6)
 const UIT = 'MOD.Core.UITransformComponent';
@@ -144,7 +147,7 @@ function applyChipRule(b, abs, kind, chipKey, chipAbs, fit) {
   const sh = kind === 'ink' ? INK_SHADOW : GLOW_SHADOW;
   const u = { Underlay: true, UnderlayColor: C(sh.color, sh.alpha), UnderlayOffsetX: sh.ox, UnderlayOffsetY: sh.oy, UnderlaySoftness: sh.soft, UnderlayDilate: 0 };
   if (kind === 'ink') { u.FontColor = C(CHIP_INK); u.OutlineWidth = 0; }
-  else { u.FontColor = C('#FFFFFF'); u.OutlineColor = C(CHIP_OUTLINE); u.OutlineWidth = CHIP_OUTLINE_WIDTH; }
+  else { const fsz = (b.getComponent(abs, TXT) || {}).FontSize || 14; u.FontColor = C('#FFFFFF'); u.OutlineColor = C(CHIP_OUTLINE); u.OutlineWidth = fsz <= CHIP_OUTLINE_SMALL_MAX ? CHIP_OUTLINE_WIDTH_SM : CHIP_OUTLINE_WIDTH; }
   // 좌우 여백 ≥ 테두리 두께 + 1px: 글자 상자가 칩 안쪽 폭을 넘으면 줄이고, 칩 자신이 글자를 들고 있으면 Padding 으로 민다.
   const mk = MAP[(chipKey || '')];
   const bd = mk && mk.border_trbl ? Math.max(mk.border_trbl[1], mk.border_trbl[3]) : 0;
@@ -195,7 +198,93 @@ function chipTextInner(b, opts) {
   return out;
 }
 
+// ── 칩 크기 규칙 (사용자 지시 2026-10-02 · 5차: 칸 폭을 넓히고 전 창을 한 규칙으로 통일) ──
+// 게임 글꼴은 시안보다 10~15% 넓어 시안 폭을 그대로 쓰면 글자가 칩 테두리(장식)를 덮는다(최전방 · 재료 부족 · MAX · 꿈의 조각 14).
+// 칩 폭 = 글자 실측 폭 + 2 × (테두리 두께 + 안쪽 여백) → 짝수로 올림. 안쪽 여백은 칩 "높이 등급"별로 하나의 값이다(등급 안에서는 반드시 같다).
+//   높이 ≤ 22 → 4 · 23~28 → 5 · ≥ 29 → 6
+// 글자 폭 = Docs/tools/design-ui/chip-text-width.json (Play 중 TextGUIRendererComponent:GetPreferredWidth 로 잰 실측 · 굵게).
+// 런타임에 폭을 계산하는 칩은 Match/UiChipText.mlua 의 Width() 가 같은 식을 쓴다(한쪽을 바꾸면 다른 쪽도).
+const CWJSON = JSON.parse(fs.readFileSync(path.join(__dirname, 'chip-text-width.json'), 'utf8')).w;
+function textW(fontKey, size, text) {
+  const f = FONT[fontKey] ? FONT[fontKey][0] : fontKey;
+  const v = CWJSON[`${f}|${size}|${text}`];
+  if (v == null) throw new Error(`chip-text-width.json 에 실측 없음: ${f}|${size}|${text} (Play 에서 GetPreferredWidth 로 재서 추가)`);
+  return v;
+}
+function chipPad(h) { return h <= 22 ? 4 : (h <= 28 ? 5 : 6); }
+function chipBorder(key) { const m = MAP[key]; return m && m.border_trbl ? Math.max(m.border_trbl[1], m.border_trbl[3]) : 0; }
+function evenCeil(x) { return Math.ceil(x / 2 - 1e-9) * 2; }
+// 칩 폭: key = 칩 그림 키, h = 칩 높이, tw = 글자 실측 폭, extra = 글자 말고 칩 안에 넣는 것(아이콘 등)의 폭
+function chipWidth(key, h, tw, extra) { return evenCeil(tw + 2 * (chipBorder(key) + chipPad(h)) + (extra || 0)); }
+
+// 역할표: 같은 글자 · 같은 역할의 칩은 어느 창에서나 같은 글꼴 · 크기 · 높이 → 같은 w×h. 글자는 "가장 긴 값"(숫자는 최대 자릿수).
+// text 는 칩에 들어가는 글 중 가장 넓은 것(texts 가 있으면 그 중 최대). key 는 칩 그림.
+const CHIP = {
+  max:      { key: 'chip_gold',  font: 'Maple',    size: 16, h: 30, text: 'MAX' },                       // 방어 노드/카드/버튼 · 조련 줄 · 공방 강화 · 강화 미리보기
+  front:    { key: 'chip_blue',  font: 'Noto700',  size: 13, h: 22, text: '최전방' },                    // 방어 카드
+  lack:     { key: 'chip_red',   font: 'Noto700',  size: 13, h: 22, text: '재료 부족' },                 // 모집 카드
+  equip:    { key: 'chip_blue',  font: 'Noto700',  size: 13, h: 22, text: '착용' },                      // 공방 선택 · 범례
+  boss:     { key: 'chip_red',   font: 'Noto700',  size: 13, h: 22, text: '보스' },                      // 월드맵 툴팁
+  exch:     { key: 'chip_gold',  font: 'Maple',    size: 13, h: 22, text: '교환' },                      // 공방 제작 카드
+  rec:      { key: 'chip_gold',  font: 'Noto700',  size: 14, h: 25, text: '추천' },                      // 로비 난이도 카드
+  me:       { key: 'chip_blue',  font: 'Noto700',  size: 14, h: 21, text: '나' },                        // 방 · 결과 줄
+  elim:     { key: 'chip_red',   font: 'Noto700',  size: 14, h: 25, text: '탈락' },                      // 결과 줄
+  act:      { key: 'chip_blue',  font: 'Noto700',  size: 14, h: 25, text: '액티브' },                    // 스킬 줄
+  pas:      { key: 'chip_green', font: 'Noto700',  size: 14, h: 25, text: '패시브' },                    // 스킬 줄
+  full:     { key: 'chip_gray_dark', font: 'Noto700', size: 14, h: 21, text: '가득 참' },               // 로비 매치 줄
+  key1:     { key: 'chip_gold_sm', font: 'Maple',  size: 13, h: 22, text: 'W' },                          // HUD 키 칩 한 글자(스킬 Q W E R · 상태 C K F · 퀵슬롯 1 2) — 가장 넓은 글자 W 기준으로 전부 같은 폭
+  keyShift: { key: 'chip_gold_sm', font: 'Maple',  size: 13, h: 22, text: 'Shift' },                      // 스킬 HUD Shift
+  job:      { key: 'chip_blue',  font: 'Noto700',  size: 13, h: 22, text: '마법사 30' },                 // 공방 카드 직업 태그("전사 10") — 직업 6색 칩 그림 전부 이 크기
+  jobName:  { key: 'chip_blue',  font: 'Noto700',  size: 13, h: 22, text: '마법사' },                    // 공방 상세 요구 칩(직업 이름만 · "전사" · "마법사" · "전직업") — 직업 6색 칩 그림 전부 이 크기
+  // 레벨 배지(어두운 작은 칩) — 방어 시설은 Lv 최대 3(한 자리) · 월드맵 몬스터 · 마을 기록 플레이어는 두 자리
+  lvBadge1: { key: 'chip_blue_dark_sm', font: 'FootballB', size: 14, h: 21, text: 'Lv 5' },
+  lvBadge2: { key: 'chip_blue_dark_sm', font: 'FootballB', size: 14, h: 21, text: 'Lv 99' },
+};
+function roleBox(role, extra) { const r = CHIP[role]; if (!r) throw new Error('없는 칩 역할: ' + role); const tw = textW(r.font, r.size, r.text); return [chipWidth(r.key, r.h, tw, extra), r.h]; }
+
+// 칩 하나를 글자에 맞춰 키운다. 위치는 한쪽 끝(keep: 'left' | 'right' | 'center')을 고정하고 폭만 바꾼다(피벗 · 앵커 무관).
+// spec = { key?, font, size, text, h?, extra? } 또는 역할 이름. 글자 자식(칩 안을 꽉 채우는 것)도 새 폭으로 맞춘다. 돌려주는 값 = { w, h, dw }.
+function fitChip(b, chipPath, specOrRole, opts) {
+  opts = opts || {};
+  const spec = typeof specOrRole === 'string' ? CHIP[specOrRole] : specOrRole;
+  if (!spec) throw new Error('칩 규칙 없음: ' + specOrRole);
+  const abs = absPath(b, chipPath);
+  const t = b.getComponent(abs, UIT);
+  const key = spec.key || chipKeyOf(b, abs);
+  const h = spec.h != null ? spec.h : t.RectSize.y;
+  const tw = spec.tw != null ? spec.tw : textW(spec.font, spec.size, spec.text);
+  const w = chipWidth(key, h, tw, spec.extra || opts.extra);
+  const oldW = t.RectSize.x; const px = t.Pivot ? t.Pivot.x : 0.5;
+  const pos = t.anchoredPosition || { x: 0, y: 0 };
+  const keep = opts.keep || 'center';
+  let nx = pos.x;
+  if (keep === 'left') nx = (pos.x - px * oldW) + px * w;
+  else if (keep === 'right') nx = (pos.x + (1 - px) * oldW) - (1 - px) * w;
+  else nx = (pos.x + (0.5 - px) * oldW) - (0.5 - px) * w;
+  b.patch(abs, { pos: [nx, pos.y], rect_size: [w, h] });
+  // 글자 자식: 칩을 꽉 채우던 것(가운데 앵커 · 가운데 정렬)은 새 크기로
+  if (opts.kids !== false) {
+    for (const e of b.entities) {
+      if (!e.path.startsWith(abs + '/')) continue;
+      if (e.path.slice(abs.length + 1).includes('/')) continue;
+      const ct = b.getComponent(e.path, UIT); if (!ct || !b.hasComponent(e.path, TXT)) continue;
+      if (ct.AnchorsMin && ct.AnchorsMax && (Math.abs(ct.AnchorsMin.x - ct.AnchorsMax.x) > 1e-6)) continue;
+      if (Math.abs(ct.RectSize.x - oldW) < 0.51 || opts.forceKids) {
+        const cp = ct.anchoredPosition || { x: 0, y: 0 };
+        b.patch(e.path, { pos: [(opts.kidDx || 0), cp.y], rect_size: [w - (opts.kidInset || 0), h] });
+      }
+    }
+  }
+  return { w, h, dw: w - oldW, key, tw };
+}
+// 위치만 옮긴다(가로). 앵커 · 피벗 무관. dx 만큼.
+function nudgeX(b, p, dx) { const abs = absPath(b, p); const pos = b.getComponent(abs, UIT).anchoredPosition; b.patch(abs, { pos: [pos.x + dx, pos.y] }); }
+function setX(b, p, x) { const abs = absPath(b, p); const pos = b.getComponent(abs, UIT).anchoredPosition; b.patch(abs, { pos: [x, pos.y] }); }
+function setSize(b, p, w, h) { const abs = absPath(b, p); const t = b.getComponent(abs, UIT); b.patch(abs, { rect_size: [w, h != null ? h : t.RectSize.y] }); }
+function sizeOf(b, p) { const t = b.getComponent(absPath(b, p), UIT); return [t.RectSize.x, t.RectSize.y]; }
+function posOf(b, p) { const t = b.getComponent(absPath(b, p), UIT); return [t.anchoredPosition.x, t.anchoredPosition.y]; }
+
 // 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h) → 부모 상자(같은 좌표계 px,py,pw,ph) 중심 기준 위치
 function at(x, y, w, h, parent) { return [Math.round((x + w / 2 - (parent[0] + parent[2] / 2)) * 2) / 2, Math.round(-((y + h / 2) - (parent[1] + parent[3] / 2)) * 2) / 2]; }
 
-module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum, chipText, chipKind, CHIP_INK, CHIP_OUTLINE, CHIP_OUTLINE_WIDTH };
+module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum, chipText, chipKind, CHIP_INK, CHIP_OUTLINE, CHIP_OUTLINE_WIDTH, CHIP_OUTLINE_WIDTH_SM, textW, chipPad, chipBorder, evenCeil, chipWidth, CHIP, roleBox, fitChip, nudgeX, setX, setSize, sizeOf, posOf };

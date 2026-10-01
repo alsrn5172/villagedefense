@@ -58,9 +58,10 @@ for (let i = 0; i < 5; i++) {
   img(P + '/Crown', 'icon_crown', [56, Y + 15, 22, 22], RW, { enable: false });
   ctr(P + '/Name', [88, Y + 13.5, 206, 25], RW);
   S.font(b, P + '/Name', { font: 'Noto700', size: 18, color: C.ivory, h: 'left', v: 'middle', outline: false, overflow: 2 });
-  // 🔴 칩 글자 대비: 시안 31 → 37(글자 + 2 × (테두리 11 + 1)). 게임 글꼴이 넓어 42(안쪽 18) · 오른쪽 끝(376)은 그대로.
-  img(P + '/MeChip', 'chip_blue', [334, Y + 15.5, 42, 21], RW, { enable: false });
-  S.newText(b, P + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, rect: [18, 21] });
+  // 🔴 칩 크기 규칙(5차 · skin.cjs): "나" = 역할표 me(44×21 · 결과 줄과 같은 크기) · 오른쪽 끝(376)은 그대로.
+  const MEB = S.roleBox('me');
+  img(P + '/MeChip', 'chip_blue', [376 - MEB[0], Y + 15.5, MEB[0], MEB[1]], RW, { enable: false });
+  S.newText(b, P + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, rect: [MEB[0], MEB[1]] });
   // 심장: 강퇴 버튼이 없는 줄 자리(아이콘 154 · 수 185). 강퇴 버튼이 있는 줄은 스크립트가 72 · 103 으로 옮긴다.
   img(P + '/HeartIcon', 'icon_balrog_heart', [386, Y + 12.5, 24, 24], RW, { enable: false });
   txt(P + '/HeartNum', '0', [414, Y + 13.5, 30, 25], RW, { font: 'FootballB', size: 18, color: C.ivory, h: 'left', enable: false });

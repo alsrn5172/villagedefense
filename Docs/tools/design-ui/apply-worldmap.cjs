@@ -60,8 +60,10 @@ S.button(b, BD + '/CloseBtn', { normal: 'btn_close_default', hover: 'btn_close_h
 S.font(b, BD + '/CloseBtn', { text: '' });
 
 // 지도 밖(지금 위치: 로비) 칩: 스크립트가 글자 · 너비 · 켜고 끄기를 맡는다
-S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5, 25)], size: [113.5, 25], enable: false });
-S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: 14, color: C.white, rect: [113.5, 25], overflow: 0 });
+// 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측(Maple 14 "지금 위치: 로비" 90.61) + 2 × (테두리 11 + 여백 5 · 높이 25) = 124. 컨트롤러(ShowOutsideChip)가 맵 이름이 길면 같은 식으로 다시 잰다.
+const HEREW = S.chipWidth('chip_blue', 25, S.textW('Maple', 14, '지금 위치: 로비'));
+S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5, 25)], size: [HEREW, 25], enable: false });
+S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: 14, color: C.white, rect: [HEREW, 25], overflow: 0 });
 
 // ═══ 범례 (번호 없음 · 시안 s0~s5 전부에 있음) ═══
 const LG = [119, 908, 457, 34];
@@ -142,8 +144,9 @@ b.patchComponent(TIP + '/Title', S.TXT, { BestFit: false });
 S.newText(b, TIP + '/Caption', '', { font: 'Noto700', size: 14, color: C.faint, h: 'right', overflow: 0, anchor: 'top-center', pos: tip(360, 21, 240, 20).pos, rect: [240, 20] });
 // 보스 띠(그라데이션 → 단색 둥근 판) · 보스 칩
 round(TIP + '/BossBand', Object.assign(tip(12, 10, 596, 41.5), { color: '#FF46AA', alpha: 0.22, enable: false }));
-S.newImage(b, TIP + '/BossChip', 'chip_red', Object.assign(tip(550, 19.75, 48, 22), { enable: false }));
-S.newText(b, TIP + '/BossChip/Text', '보스', { font: 'Noto700', size: 13, color: C.white, rect: [48, 22] });
+const BSB = S.roleBox('boss'); // 보스 = 보석 칩 · Noto 13 · 22 높이 → 56×22 (오른쪽 끝 598 고정)
+S.newImage(b, TIP + '/BossChip', 'chip_red', Object.assign(tip(598 - BSB[0], 19.75, BSB[0], BSB[1]), { enable: false }));
+S.newText(b, TIP + '/BossChip/Text', '보스', { font: 'Noto700', size: 13, color: C.white, rect: [BSB[0], BSB[1]] });
 
 S.place(b, TIP + '/Divider', tip(20, 55.5, 580, 14));
 S.image(b, TIP + '/Divider', 'deco_divider');
@@ -166,8 +169,9 @@ for (let i = 1; i <= 5; i++) {
   b.patchComponent(R + '/Icon', S.SPR, { PreserveSprite: 0 });
   ctr(R + '/Name', -98, 0, 300, 34);
   S.font(b, R + '/Name', { font: 'Noto700', size: 16, color: C.ivory, h: 'left', v: 'middle', outline: false, overflow: 0 });
-  S.newImage(b, R + '/LvChip', 'chip_blue_dark_sm', { pos: [261.5, 0], size: [57, 19.5] });
-  S.newText(b, R + '/LvChip/Text', 'Lv 1', { font: 'FootballB', size: 13, color: C.white, rect: [57, 19.5] });
+  const LVB = S.roleBox('lvBadge2'); // 레벨 배지 = 어두운 작은 칩 · Football 14 · 21 높이 · 두 자리("Lv 99") → 62×21 (오른쪽 끝 290 고정 · 방어 · 마을 기록과 같은 글꼴 · 높이)
+  S.newImage(b, R + '/LvChip', 'chip_blue_dark_sm', { pos: [290 - LVB[0] / 2, 0], size: [LVB[0], LVB[1]] });
+  S.newText(b, R + '/LvChip/Text', 'Lv 1', { font: 'FootballB', size: 14, color: C.white, rect: [LVB[0], LVB[1]] });
 }
 // 그리기 순서: 보스 띠는 머리줄 글자보다 뒤
 S.back(b, TIP + '/BossBand');

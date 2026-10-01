@@ -77,8 +77,10 @@ S.image(b, M, 'panel_inner');
 img(M + '/HeadIcon', 'icon_users', [82, 190.5, 22, 22], MATCH);
 ctr(M + '/MatchTitle', [114, 184.5, 170, 33.5], MATCH);
 S.font(b, M + '/MatchTitle', { font: 'Maple', size: 24, color: C.title, h: 'left', v: 'middle', outline: false });
-img(M + '/CountChip', 'chip_gray_dark', [270, 189, 34, 25], MATCH, { enable: false });
-txt(M + '/CountChip/Text', '0', [0, 0, 34, 25], [0, 0, 34, 25], { font: 'FootballB', size: 14, color: C.white });
+// 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측 + 2 × (테두리 + 여백). 개수 칩은 두 자리("99")까지 고정 → 46 (왼쪽 끝 270 고정).
+const CNTB = [S.chipWidth('chip_gray_dark', 25, S.textW('FootballB', 14, '99')), 25];
+img(M + '/CountChip', 'chip_gray_dark', [270, 189, CNTB[0], CNTB[1]], MATCH, { enable: false });
+txt(M + '/CountChip/Text', '0', [0, 0, CNTB[0], CNTB[1]], [0, 0, CNTB[0], CNTB[1]], { font: 'FootballB', size: 14, color: C.white });
 txt(M + '/HintText', '', [344, 190.5, 172, 22.5], MATCH, { font: 'Noto400', size: 16, color: C.faint, h: 'right' });
 
 // 빈 목록: 일러스트(액자 380x140 · 시안 s0 #7) + 제목 + 안내 글. 모두 MatchEmpty 아래라 목록이 비었을 때만 같이 켜진다.
@@ -103,13 +105,14 @@ for (let i = 0; i < 6; i++) {
   S.font(b, P, { text: '' });
   img(P + '/Sel', 'panel_row_selected', [82, R[1], 410, 62], R, { enable: false });
   img(P + '/Emblem', 'emblem_1', [94, R[1] + 7, 48, 48], R);
-  txt(P + '/Host', '', [152, R[1] + 18.5, 210, 25], R, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', overflow: 2 });
+  txt(P + '/Host', '', [152, R[1] + 18.5, 200, 25], R, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', overflow: 2 }); // 5차: 상태 칩이 72 로 넓어져 이름 상자 210 → 200 (칩 왼쪽 끝에 안 닿게)
   // 상태 칩: 줄 오른쪽에서 67 안쪽. 가득 참 / 잠김 중 하나만 켠다.
-  S.newImage(b, P + '/ChipFull', 'chip_gray_dark', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [60, 21], enable: false });
-  S.newText(b, P + '/ChipFull/Text', '가득 참', { font: 'Noto700', size: 14, color: C.white, rect: [60, 21] });
+  const FULLB = S.roleBox('full'); // 가득 참 = 어두운 칩 · Noto 14 · 21 높이 → 72×21. 잠김 칩(Lv 13)도 같은 자리라 같은 폭.
+  S.newImage(b, P + '/ChipFull', 'chip_gray_dark', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [FULLB[0], FULLB[1]], enable: false });
+  S.newText(b, P + '/ChipFull/Text', '가득 참', { font: 'Noto700', size: 14, color: C.white, rect: [FULLB[0], FULLB[1]] });
   // 🔴 칩 글자 대비(시안 1790844637-7b1e): 보석 칩 글자는 좌우 여백 ≥ 테두리(11)+1. 시안 폭은 Lv 5 = 51.5 · Lv 13 = 60 → 게임 글꼴이 10~15% 넓어 66(안쪽 42)으로.
-  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [66, 21], enable: false });
-  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, rect: [42, 21] });
+  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'middle-right', pivot: [1, 0.5], pos: [-67, 0], size: [FULLB[0], FULLB[1]], enable: false });
+  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, rect: [FULLB[0], FULLB[1]] });
   txt(P + '/CountNum', '0', [420, R[1] + 14, 30, 33.5], R, { font: 'FootballB', size: 24, color: C.ivory, h: 'right' });
   txt(P + '/CountMax', '/ 5', [449, R[1] + 22, 34, 24], R, { font: 'FootballB', size: 16, color: C.faint, h: 'left' });
   S.back(b, P + '/Sel');
@@ -155,11 +158,15 @@ ctr(D + '/Select', SEL, DIFF);
   img(P + '/Check', 'check_on', [x0 + 175.5, 234, 28, 28], CARD, { enable: false });
   // 오른쪽 위 칩: 추천 / 잠김 중 하나만
   // 🔴 칩 글자 대비: 시안 폭 추천 50 · 잠김 Lv 5 69.5 / Lv 13 78 (글자 폭 + 2 × (테두리 + 1)). 게임 글꼴이 10~15% 넓어 추천 54(안쪽 32) · 잠김 84(안쪽 60: 자물쇠 18 + 틈 3 + 글자 39)로.
-  S.newImage(b, P + '/ChipRec', 'chip_gold', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [54, 25], enable: false });
-  S.newText(b, P + '/ChipRec/Text', '추천', { font: 'Noto700', size: 14, color: C.goldInk, rect: [32, 25] });
-  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [84, 25], enable: false });
-  S.newImage(b, P + '/ChipLock/Lock', 'icon_lock', { pos: [-21, 0], size: [18, 18] });
-  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, pos: [10.5, 0], rect: [39, 25] });
+  // 🔴 5차: 추천 = 역할표 rec(58×25) · 잠김 = 자물쇠 18 + 틈 4 + 글자("Lv 13" Football 14 · 36.27)를 담는 폭(92 · 오른쪽 끝 고정). 안쪽 여백 16(= 테두리 11 + 5)이 양쪽 같다.
+  const RECB = S.roleBox('rec');
+  const LKW = S.chipWidth('chip_red', 25, S.textW('FootballB', 14, 'Lv 13'), 22);
+  const LKT = Math.ceil(S.textW('FootballB', 14, 'Lv 13') + 2); // 글자 칸
+  S.newImage(b, P + '/ChipRec', 'chip_gold', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [RECB[0], RECB[1]], enable: false });
+  S.newText(b, P + '/ChipRec/Text', '추천', { font: 'Noto700', size: 14, color: C.goldInk, rect: [RECB[0], RECB[1]] });
+  S.newImage(b, P + '/ChipLock', 'chip_red', { anchor: 'top-right', pivot: [1, 1], pos: [-18, -12], size: [LKW, 25], enable: false });
+  S.newImage(b, P + '/ChipLock/Lock', 'icon_lock', { pos: [-LKW / 2 + (LKW - 22 - LKT) / 2 + 9, 0], size: [18, 18] });
+  S.newText(b, P + '/ChipLock/Text', 'Lv 5', { font: 'FootballB', size: 14, color: C.white, pos: [LKW / 2 - (LKW - 22 - LKT) / 2 - LKT / 2, 0], rect: [LKT, 25] });
   S.back(b, P + '/Sel');
 });
 
@@ -232,13 +239,16 @@ txt(F + '/HeartCount', '× 0', [132, 841, 100, 26.5], FOOT, { font: 'FootballB',
 flat(F + '/Div1', [232, 818.5, 1, 52], FOOT, '#2E3F63', 1);
 
 img(F + '/AccBadge', 'badge_account', [255, 811.5, 84, 66], FOOT);
-const LVC = [314, 857.5, 30, 24];
+// 🔴 5차: 칩 폭 고정 = 두 자리("99" Football 16 · 18.73) + 2 × (테두리 7 + 5) = 44. 계정 레벨이 10 이상이면 두 자리라 폭을 바꾸지 않는다(컨트롤러 PaintAccount 도 안 바꾼다). 경험치 묶음(글 · 숫자 · 막대)은 칩 오른쪽 끝 358 + 7 에서 시작.
+const LVW = S.chipWidth('chip_gold_sm', 24, S.textW('FootballB', 16, '99'));
+const XPX = 314 + LVW + 7;
+const LVC = [314, 857.5, LVW, 24];
 img(F + '/AccLvChip', 'chip_gold_sm', LVC, FOOT);
 // 🔴 칩 글자 대비: chip_gold_sm 테두리 7 → 안쪽 폭 14. 두 자리 레벨은 스크립트(PaintAccount)가 칩 37 · 안쪽 21 로 넓힌다(시안 1 → 28 · 13 → 37).
-S.newText(b, F + '/AccLvChip/Text', '1', { font: 'FootballB', size: 16, color: C.goldInk, rect: [14, 24] });
-txt(F + '/AccXpLabel', '계정 경험치', [351, 820.5, 100, 22.5], FOOT, { font: 'Noto700', size: 16, color: C.faint, h: 'left' });
-txt(F + '/AccXpText', '0 / 80', [451, 820.5, 100, 22.5], FOOT, { font: 'FootballB', size: 16, color: C.sub, h: 'right' });
-img(F + '/AccGauge', 'gauge_track', [351, 848.5, 200, 20], FOOT);
+S.newText(b, F + '/AccLvChip/Text', '1', { font: 'FootballB', size: 16, color: C.goldInk, rect: [LVW, 24] });
+txt(F + '/AccXpLabel', '계정 경험치', [XPX, 820.5, 100, 22.5], FOOT, { font: 'Noto700', size: 16, color: C.faint, h: 'left' });
+txt(F + '/AccXpText', '0 / 80', [XPX + 100, 820.5, 100, 22.5], FOOT, { font: 'FootballB', size: 16, color: C.sub, h: 'right' });
+img(F + '/AccGauge', 'gauge_track', [XPX, 848.5, 200, 20], FOOT);
 // 채움은 Filled 가로 · 왼쪽에서 시작. 트랙 안쪽 폭 168 (시안 200 은 100% 에서 트랙 밖으로 32 넘친다)
 S.newImage(b, F + '/AccGauge/Fill', 'gauge_fill_gold', { anchor: 'middle-left', pivot: [0, 0.5], pos: [16, 0], size: [168, 8], type: 3 });
 flat(F + '/Div2', [573, 818.5, 1, 52], FOOT, '#2E3F63', 1);

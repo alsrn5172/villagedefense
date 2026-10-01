@@ -71,7 +71,7 @@ for (const [name, r, label] of TABS) {
 ctr('Window/ListArea', LIST, WIN);
 noBg('Window/ListArea'); // Mask 컴포넌트는 그대로 둔다
 // 첫 행 위 14 · 행 간격 10 · 왼쪽 20 · 오른쪽 16
-// 스크롤바: 시안에 없다. 기본 회색 막대가 창 오른쪽 · 아래에 그려졌다(Play 확인 2026-10-01 · DEV 세팅 행 때문에 넘칠 때) → 숨김(2). 휠 · 끌기로는 그대로 스크롤된다.
+// 스크롤바: 시안에 없다. 기본 회색 막대가 창 오른쪽 · 아래에 그려졌다(Play 확인 2026-10-01 · 목록이 창 높이를 넘칠 때) → 숨김(2). (개발용 "DEV 세팅" 줄은 5차에 지웠다 — 막대 숨김은 시안에 막대가 없어서 그대로 둔다.) 휠 · 끌기로는 그대로 스크롤된다.
 b.patchComponent('Window/ListArea', 'MOD.Core.ScrollLayoutGroupComponent', { Spacing: 10, Padding: { left: 20, right: 16, top: 14, bottom: 14 }, ScrollBarVisible: 2 });
 
 S.place(b, RT, { size: [444, 112] }); // 앵커(0,1)·피벗(0.5,1)은 스크롤 레이아웃이 다루니 그대로
@@ -90,9 +90,11 @@ S.font(b, RT + '/LevelText', { font: 'FootballB', size: 20, color: C.gold, h: 'l
 S.newText(b, RT + '/LevelMax', '/ 5', { font: 'FootballB', size: 16, color: C.faint, h: 'left', anchor: 'middle-left', pivot: [0, 0.5], pos: [leftOf(256), rowY(310)], rect: [40, 24] });
 
 // 종류 칩(액티브 파랑 · 패시브 초록) — 둘 다 깔아 두고 스크립트가 하나만 켠다
-for (const [name, key, label] of [['ChipAct', 'chip_blue', '액티브'], ['ChipPas', 'chip_green', '패시브']]) {
-  S.newImage(b, RT + '/' + name, key, { anchor: 'middle-left', pivot: [0, 0.5], pos: [leftOf(300), rowY(309)], size: [62.5, 25] });
-  S.newText(b, RT + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [62.5, 25] });
+// 🔴 칩 크기 규칙(5차 · skin.cjs 역할표 act · pas): "액티브" · "패시브" 는 글자 폭이 같아(Noto 14 · 40.6) 같은 74×25 (왼쪽 끝 고정).
+const ACTB = S.roleBox('act'), PASB = S.roleBox('pas');
+for (const [name, key, label, bx] of [['ChipAct', 'chip_blue', '액티브', ACTB], ['ChipPas', 'chip_green', '패시브', PASB]]) {
+  S.newImage(b, RT + '/' + name, key, { anchor: 'middle-left', pivot: [0, 0.5], pos: [leftOf(300), rowY(309)], size: [bx[0], bx[1]] });
+  S.newText(b, RT + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [bx[0], bx[1]] });
 }
 
 // 진행 막대: 받침 190x20 · 채움 최대 158x8(=190-32 · 시안 실측) · FillAmount = 레벨/최대
@@ -136,9 +138,10 @@ S.image(b, D, 'panel_tooltip');
 S.font(b, D + '/DescText', { font: 'Noto400', size: 18, color: C.ivory, h: 'left', v: 'top', outline: false });
 const TL = { anchor: 'top-left', pivot: [0, 1] };
 S.newText(b, D + '/TipTitle', '', Object.assign({ font: 'Maple', size: 24, color: C.ivory, h: 'left', pos: [22, -18], rect: [330, 36] }, TL));
-for (const [name, key, label] of [['TipChipAct', 'chip_blue', '액티브'], ['TipChipPas', 'chip_green', '패시브']]) {
-  S.newImage(b, D + '/' + name, key, Object.assign({ pos: [120, -22.5], size: [86, 25] }, TL));
-  S.newText(b, D + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [86, 25] });
+// 툴팁 칩: 글자가 "액티브 · Q" · "액티브 · Shift" 처럼 달라지므로 폭은 SkillWindowLogic 이 글자 실측 + 2 × (테두리 11 + 여백 5)로 다시 잰다(최소 = 위 줄 칩과 같은 74). 파일 값은 최소 폭.
+for (const [name, key, label, bx] of [['TipChipAct', 'chip_blue', '액티브', ACTB], ['TipChipPas', 'chip_green', '패시브', PASB]]) {
+  S.newImage(b, D + '/' + name, key, Object.assign({ pos: [120, -22.5], size: [bx[0], bx[1]] }, TL));
+  S.newText(b, D + '/' + name + '/Text', label, { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [bx[0], bx[1]] });
 }
 S.newImage(b, D + '/TipSlot', 'slot_frame', Object.assign({ pos: [22, -78.5], size: [78, 78] }, TL));
 S.newImage(b, D + '/TipIcon', 'deco_sparkle', Object.assign({ pos: [34, -90.5], size: [54, 54], alpha: 0 }, TL)); // 런타임이 스킬 아이콘 RUID · 색을 넣는다

@@ -104,8 +104,10 @@ for (const s of SHORT) {
   if (s.icon) S.newImage(b, P + '/Icon', s.icon, { pos: S.at(s.x + 14, 34, 36, 36, BTN), size: [36, 36] });
   if (s.key) {
     // 🔴 칩 글자 대비(시안 1790844637-7b1e): 글자 좌우 여백 ≥ 테두리 7 + 1 → 시안 22 → 28(안쪽 12 · 오른쪽 끝은 그대로)
-    S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 42, 68, 28, 22, BTN), size: [28, 22] });
-    S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [12, 22] });
+    // 5차: 키 칩 한 글자 = 역할표 key1(34×22 · 스킬 HUD · 퀵슬롯과 같은 크기). 오른쪽 끝(s.x + 70)은 그대로.
+    const KB = S.roleBox('key1');
+    S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(s.x + 70 - KB[0], 68, KB[0], KB[1], BTN), size: [KB[0], KB[1]] });
+    S.newText(b, P + '/KeyChip/Text', s.key, { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [KB[0], KB[1]] });
   }
   S.newText(b, P + '/Label', s.label, { font: 'Noto700', size: 13, color: C.ivory, shadow: true, pos: S.at(s.x - 4, 87, 72, 18, BTN), rect: [72, 18] }); // 칸 아래 글자는 구름 같은 밝은 배경 위에서 안 보여 그림자를 깐다(Play 확인 2026-10-01)
   if (s.alert) S.newImage(b, P + '/Alert', 'badge_alert', { pos: S.at(s.x + 49, 10, 24, 24, BTN), size: [24, 24], enable: false });

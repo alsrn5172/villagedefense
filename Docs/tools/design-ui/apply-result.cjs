@@ -46,7 +46,9 @@ S.newImage(b, W + '/Crest', 'deco_crest', { pos: at([450, 48, 300, 88], WIN), si
 // 칩 폭(글자 폭 + 24 · 최소 53.5 · 시안 1790844637-7b1e 로 +2) + 12 + 문장 폭을 재서 가운데로 놓는다(세로는 같은 줄: 창 중심 위로 230).
 // ═══════════════════════════════════════════════════════════
 const CHIPY = at([439, 206, 51.5, 28], WIN)[1];
-for (const [name, key, label, ink, w] of [['ReasonChipWin', 'chip_gold', '승리', C.goldInk, 53.5], ['ReasonChipTime', 'chip_gray', '시간 종료', C.goldInk, 87.5], ['ReasonChipOut', 'chip_red', '전원 탈락', C.white, 87.5]]) {
+// 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측(Maple 16) + 2 × (테두리 + 여백 5 · 높이 28) → 승리 60 · 시간 종료 94 · 전원 탈락 98. 컨트롤러(ApplyReason)가 같은 식으로 다시 잰다.
+for (const [name, key, label, ink] of [['ReasonChipWin', 'chip_gold', '승리', C.goldInk], ['ReasonChipTime', 'chip_gray', '시간 종료', C.goldInk], ['ReasonChipOut', 'chip_red', '전원 탈락', C.white]]) {
+  const w = S.chipWidth(key, 28, S.textW('Maple', 16, label));
   S.newImage(b, W + '/' + name, key, { pos: [0, CHIPY], size: [w, 28], enable: name === 'ReasonChipTime' });
   S.newText(b, W + '/' + name + '/Text', label, { font: 'Maple', size: 16, color: ink, pos: [0, 0], rect: [w, 28] });
 }
@@ -97,17 +99,19 @@ for (let i = 0; i < 5; i++) {
   S.font(b, R + '/Level', { font: 'FootballB', size: 18, color: C.ivory, h: 'right', v: 'middle', outline: false });
   ctr(R + '/Kills', [878, 313.5, 84, 25], ROWBOX);
   S.font(b, R + '/Kills', { font: 'FootballB', size: 18, color: C.ivory, h: 'right', v: 'middle', outline: false });
-  // 🔴 칩 글자 대비: 탈락 칩 48 → 58(글자 28~31 + 2 × (테두리 11 + 1) · 오른쪽 끝 1038 은 그대로). 글자는 칩의 자식이 아니라 형제(EliminatedMark) → chipText extra.
-  ctr(R + '/EliminatedMark', [980, 313.5, 58, 25], ROWBOX);
+  // 🔴 칩 크기 규칙(5차): 탈락 칩 = 역할표 elim(60×25 · 오른쪽 끝 1038 고정). 글자는 칩의 자식이 아니라 형제(EliminatedMark) → chipText extra.
+  const ELB = S.roleBox('elim');
+  ctr(R + '/EliminatedMark', [1038 - ELB[0], 313.5, ELB[0], ELB[1]], ROWBOX);
   S.font(b, R + '/EliminatedMark', { font: 'Noto700', size: 14, color: C.white, h: 'center', v: 'middle', outline: false });
 
   // 새 글자 · 그림(컨트롤러가 켜고 끈다 · 기본은 꺼 둠)
   S.newText(b, R + '/CoreHpBroken', '파괴', { font: 'Maple', size: 18, color: '#FF8A7A', h: 'right', pos: at([690, 313.5, 116, 25], ROWBOX), rect: [116, 25], enable: false });
   S.newText(b, R + '/TitleLine', '', { font: 'Noto700', size: 14, color: '#E8C77A', h: 'left', overflow: 1, anchor: 'middle-left', pivot: [0, 0.5], pos: [82, 10.5], rect: [326, 23], enable: false });
   S.newImage(b, R + '/Crown', 'icon_crown', { anchor: 'middle-left', pivot: [0, 0.5], pos: [82, 0], size: [28, 26], enable: false });
-  // 🔴 칩 글자 대비: 시안 31 → 37(글자 + 2 × (테두리 11 + 1)) · 게임 글꼴이 넓어 42(안쪽 18). 스크립트(PlaceNode)도 42 로 놓는다.
-  S.newImage(b, R + '/MeChip', 'chip_blue', { anchor: 'middle-left', pivot: [0, 0.5], pos: [200, 0], size: [42, 21], enable: false });
-  S.newText(b, R + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [18, 21] });
+  // 🔴 칩 크기 규칙(5차): "나" = 역할표 me(44×21 · 방 줄과 같은 크기). 스크립트(PlaceNode)도 같은 폭으로 놓는다.
+  const MEB = S.roleBox('me');
+  S.newImage(b, R + '/MeChip', 'chip_blue', { anchor: 'middle-left', pivot: [0, 0.5], pos: [200, 0], size: [MEB[0], MEB[1]], enable: false });
+  S.newText(b, R + '/MeChip/Text', '나', { font: 'Noto700', size: 14, color: C.white, pos: [0, 0], rect: [MEB[0], MEB[1]] });
   S.newText(b, R + '/EmptyText', '빈 자리', { font: 'Noto700', size: 14, color: C.off, pos: [0, 0], rect: [908, 30], enable: false });
 
   // 깔아 두는 그림: 순위 칩 셋 · 탈락 칩 · 줄 바탕 넷(맨 뒤 → 글자 밑)
@@ -115,7 +119,7 @@ for (let i = 0; i < 5; i++) {
   S.newImage(b, R + '/RankChipGold', 'chip_gold', { pos: chipPos, size: [44, 31], enable: false });
   S.newImage(b, R + '/RankChipGray', 'chip_gray', { pos: chipPos, size: [44, 31], enable: false });
   S.newImage(b, R + '/RankChipDark', 'chip_gold_dark', { pos: chipPos, size: [44, 31], enable: false });
-  S.newImage(b, R + '/ElimChip', 'chip_red', { pos: at([980, 313.5, 58, 25], ROWBOX), size: [58, 25], enable: false });
+  S.newImage(b, R + '/ElimChip', 'chip_red', { pos: at([1038 - ELB[0], 313.5, ELB[0], ELB[1]], ROWBOX), size: [ELB[0], ELB[1]], enable: false });
   S.newImage(b, R + '/BgRow', 'panel_row', { pos: [0, 0], size: [908, 64], enable: true });
   S.newImage(b, R + '/BgSel', 'panel_row_selected', { pos: [0, 0], size: [908, 64], enable: false });
   S.newImage(b, R + '/BgLock', 'panel_row_locked', { pos: [0, 0], size: [908, 64], alpha: 0.75, enable: false });
