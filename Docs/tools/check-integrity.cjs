@@ -123,7 +123,7 @@ const CANONICAL = {
   FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,FlipX,Scale,#Note",
   FacilityArt: "VillageId,Stage,State,Frames,FrameSec,Mode,IdleIndex,ReleaseIndex,ReleaseOffsetX,ReleaseOffsetY,CanAttack,Enabled,#Note",
   VillageFacilityTrait: "VillageId,Stage,TraitKey,Lv1,Lv2,Lv3,Enabled,#Note",
-  FacilityAttackFx: "VillageId,Stage,Level,Mode,BallRuid,Ball2Ruid,HitRuid,CastRuid,CountMin,CountMax,IntervalSec,Scale,HitScale,FlightSec,ArcHeight,StickSec,LaunchOffsetX,LaunchOffsetY,CastOffsetX,CastOffsetY,CastFlipX,FaceDeg,Enabled,SplitHits,HitStartFrame,HitOffsetX,HitOffsetY,HitFlipX,#Note",
+  FacilityAttackFx: "VillageId,Stage,Level,Mode,BallRuid,Ball2Ruid,HitRuid,CastRuid,CountMin,CountMax,IntervalSec,Scale,HitScale,FlightSec,ArcHeight,StickSec,LaunchOffsetX,LaunchOffsetY,CastOffsetX,CastOffsetY,CastFlipX,FaceDeg,Enabled,SplitHits,HitStartFrame,HitOffsetX,HitOffsetY,HitFlipX,CastTrimSec,LaunchAdjX,LaunchAdjY,#Note",
   MinionPhaseConfig: "Phase,StartSeconds,SpawnIntervalSeconds,HpMul,AtkMul,ExpBase,MesoBase,Enabled,Profile,CoinDropChance,#Note",
   MinionComposition: "Phase,MonsterId,Weight,Level,Enabled,BaseHp,BaseAttack,VillageId,#Note",
   DispatchRule: "Phase,MesoCost,VillageCap,CancelDeadlineSeconds,Enabled,#Note",

@@ -100,13 +100,14 @@ script LaneFxLogic extends Logic
 			_EffectService:PlayEffect(ruid, map, pos, 0, Vector3(sx, scale, 1))
 			return
 		end
-		self:PlayClipOrdered(map, ruid, pos, scale, startFrame, sortingLayer, flipX, 156, 0)
+		self:PlayClipOrdered(map, ruid, pos, scale, startFrame, sortingLayer, flipX, 156, 0, 0, 0)
 	end
 
 	@ExecSpace("ServerOnly")
-	method void PlayClipOrdered(Entity map, string ruid, Vector3 pos, number scale, integer startFrame, string sortingLayer, boolean flipX, integer orderInLayer, number maxLife)
+	method void PlayClipOrdered(Entity map, string ruid, Vector3 pos, number scale, integer startFrame, string sortingLayer, boolean flipX, integer orderInLayer, number maxLife, number trimSec, number fadeSec)
 		-- 클립을 laneshot 엔티티로 그린다(startFrame 이 0 이어도) — 그리기 순서(OrderInLayer)와 층을 정할 수 있다. 클립이 한 번 재생되는 길이(ClipLife)에 지운다(루프로 두 번 도는 것을 막는다).
 		-- 길이를 못 읽으면 maxLife(0 이하 = MaxLifeOrderedSec) 뒤 지운다. (서버는 끝 프레임 이벤트를 못 받지만 받으면 그때 지운다.)
+		-- trimSec > 0 이면 클립이 끝나기 trimSec 초 전에 지운다(WO-040 M3 후속 · 엘리니아 Lv1·2 마법진 · FacilityAttackFx.CastTrimSec · 클립 길이를 읽었을 때만). fadeSec > 0 이면 지우기 전 그 시간 동안 점점 흐려진다(뚝 끊김 방지).
 		if ruid == nil or ruid == "" then return end
 		if not isvalid(map) then return end
 		self.seq = self.seq + 1
@@ -130,21 +131,32 @@ script LaneFxLogic extends Logic
 		if life <= 0 then
 			life = maxLife
 			if life == nil or life <= 0 then life = self.MaxLifeOrderedSec end
+		elseif trimSec ~= nil and trimSec > 0 then
+			life = math.max(0.1, clipLife - trimSec)
 		end
-		local born = _UtilLogic.ElapsedSeconds
-		log(string.format("[LaneFx] clip %s from frame %d @(%.2f,%.2f) scale=%.2f order=%d life=%.3f(%s) sT=%.3f", string.sub(ruid, 1, 8), startFrame or 0, pos.x, pos.y, scale, orderInLayer, life, clipLife > 0 and "clip" or "fallback", _UtilLogic.ServerElapsedSeconds))
+		local born = _UtilLogic.ServerElapsedSeconds
+		log(string.format("[LaneFx] clip %s from frame %d @(%.2f,%.2f) scale=%.2f order=%d life=%.3f(%s clip=%.3f trim=%.2f) sT=%.3f", string.sub(ruid, 1, 8), startFrame or 0, pos.x, pos.y, scale, orderInLayer, life, clipLife > 0 and "clip" or "fallback", clipLife, trimSec or 0, born))
 		-- 끝 프레임에 닿으면 지운다(루프로 다시 돌기 전에). 이벤트가 안 오면 안전 수명 뒤 삭제.
 		local done = false
 		ent:ConnectEvent(SpriteAnimPlayerEndFrameEvent, function()
 			if done then return end
 			done = true
-			log(string.format("[LaneFx] clip %s end(event) after %.3fs", string.sub(ruid, 1, 8), _UtilLogic.ElapsedSeconds - born))
+			log(string.format("[LaneFx] clip %s end(event) after %.3fs sT=%.3f", string.sub(ruid, 1, 8), _UtilLogic.ServerElapsedSeconds - born, _UtilLogic.ServerElapsedSeconds))
 			if isvalid(ent) then ent:Destroy() end
 		end)
+		-- 끝 fadeSec 동안 점점 흐려진다(지우기 전 · 서버가 알파를 쓰면 클라에 동기화).
+		if fadeSec ~= nil and fadeSec > 0 and life > fadeSec + 0.02 and isvalid(sr) then
+			_TimerService:SetTimerOnce(function()
+				if done or not isvalid(ent) or not isvalid(sr) then return end
+				_TweenLogic:PlayTween(1.0, 0.0, fadeSec, EaseType.Linear, function(v)
+					if not done and isvalid(ent) and isvalid(sr) then sr:SetAlpha(v) end
+				end)
+			end, life - fadeSec)
+		end
 		_TimerService:SetTimerOnce(function()
 			if done then return end
 			done = true
-			log(string.format("[LaneFx] clip %s end(timer) after %.3fs", string.sub(ruid, 1, 8), _UtilLogic.ElapsedSeconds - born))
+			log(string.format("[LaneFx] clip %s end(timer) after %.3fs sT=%.3f", string.sub(ruid, 1, 8), _UtilLogic.ServerElapsedSeconds - born, _UtilLogic.ServerElapsedSeconds))
 			if isvalid(ent) then ent:Destroy() end
 		end, life)
 	end

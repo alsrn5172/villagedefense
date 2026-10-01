@@ -75,6 +75,17 @@ script LaneAttackFx extends Component
 	-- LaneFacilityArt.ApplyToFx 가 넣는다. 0 = 지금까지처럼 즉시.
 	property number ReleaseSec = 0
 
+	-- 마법진을 클립 끝보다 이만큼(초) 일찍 지운다(SHOT_CAST · FacilityAttackFx.CastTrimSec · 0 = 끝까지) · 지우기 직전 CastFadeSec 동안 흐려진다.
+	property number CastTrimSec = 0
+
+	property number CastFadeSec = 0.1
+
+	-- 발사 위치 보정(유닛 · FacilityAttackFx.LaunchAdjX/Y · WO-040 M3 후속): LaunchOffset(또는 그림 표의 ReleaseOffset)에 더한다.
+	-- X = 포탑이 바라보는 쪽(앞)으로 + (그림은 왼쪽을 보고 FlipX true 가 오른쪽 → 반전해도 같은 쪽이 앞) · Y = 위로 +. 0/빈칸 = 보정 없음.
+	property number LaunchAdjX = 0
+
+	property number LaunchAdjY = 0
+
 	-- 확인용(WO-040 M3): true 면 마법진 · 번개 · 발사체가 만들어질 때마다 한 줄씩 로그([AttackFx] fx / hitfx / shot) — 공격 1회당 몇 번 만들어지는지 센다. 평소 false.
 	property boolean ShotLog = false
 
@@ -137,6 +148,14 @@ script LaneAttackFx extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method number ForwardSign()
+		-- 포탑이 바라보는 쪽의 월드 x 부호: 그림은 왼쪽을 본다(−1) · 시설 FlipX 가 true 면 오른쪽(+1). LaunchAdjX 에 곱한다.
+		local fsr = self.Entity.SpriteRendererComponent
+		if isvalid(fsr) and fsr.FlipX then return 1 end
+		return -1
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean IsDelayed()
 		-- 이 시설의 피해가 연출 도착 시점으로 미뤄지는가 (Mode 가 SHOT / CAST_HIT / SHOT_CAST 이면 true). TurretAI 가 Fire 와 DoAttack 을 가른다.
 		return self.Mode == "SHOT" or self.Mode == "CAST_HIT" or self.Mode == "SHOT_CAST"
@@ -176,18 +195,18 @@ script LaneAttackFx extends Component
 		local split = (self.Mode == "SHOT" and self.SplitHits)
 		if castShot and self.BallRuid ~= "" then
 			-- 광역 연출은 볼리당 1번(가장 가까운 표적 자리) — 사용자 2026-09-15 "표적마다 띄우면 여러 번 터진 것처럼 보인다". 발사체 1개 · 크기 = 시설 Scale(그림 속 잎과 같은 배율 기준) · 흩뿌림 없음.
-			local launch = Vector3(origin.x + self.LaunchOffsetX, origin.y + self.LaunchOffsetY, 0)
 			local fsr = self.Entity.SpriteRendererComponent
+			local launch = Vector3(origin.x + self.LaunchOffsetX + self:ForwardSign() * self.LaunchAdjX, origin.y + self.LaunchOffsetY + self.LaunchAdjY, 0)
 			local shotScale = math.abs(self.Entity.TransformComponent.Scale.x)
 			local spec = { scale = shotScale, hit = self.HitRuid, hitScale = self.HitScale, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX,
-				cast = self.CastRuid, castScale = self.Scale, castOffX = self.CastOffsetX, castOffY = self.CastOffsetY, castFlip = self.CastFlipX, hitStart = self.HitStartFrame,
+				cast = self.CastRuid, castScale = self.Scale, castOffX = self.CastOffsetX, castOffY = self.CastOffsetY, castFlip = self.CastFlipX, hitStart = self.HitStartFrame, castTrim = self.CastTrimSec, castFade = self.CastFadeSec,
 				layer = isvalid(fsr) and fsr.SortingLayer or "", exact = true }
 			self:SpawnShot(targets[1], self.BallRuid, launch, spec)
 			n = 1
 		elseif self.Mode == "SHOT" and self.BallRuid ~= "" then
 			n = math.max(1, self.CountMin)
 			if self.CountMax > self.CountMin then n = _UtilLogic:RandomIntegerRange(self.CountMin, self.CountMax) end
-			local launch = Vector3(origin.x + self.LaunchOffsetX, origin.y + self.LaunchOffsetY, 0)
+			local launch = Vector3(origin.x + self.LaunchOffsetX + self:ForwardSign() * self.LaunchAdjX, origin.y + self.LaunchOffsetY + self.LaunchAdjY, 0)
 			-- 🔴 발사체 사양은 **발사 순간** 값으로 고정한다 — 0.1초 간격 뒤 발이 나가기 전에 레벨업(ApplyAttackFx)이 끼면 옛 그림에 새 배율이 섞여
 			--    거대/초소형 포탄이 날아갔다(사용자 2026-09-14 "렙업했을 때 가끔 포탄이 이상하게 날아감").
 			local spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX }
@@ -332,6 +351,8 @@ script LaneAttackFx extends Component
 			shot.CastOffsetX = spec.castOffX or 0
 			shot.CastOffsetY = spec.castOffY or 0
 			shot.CastFlipX = (spec.castFlip == true)
+			shot.CastTrimSec = spec.castTrim or 0
+			shot.CastFadeSec = spec.castFade or 0
 			shot.HitStartFrame = math.floor(spec.hitStart or 0)
 			shot.FxLayer = spec.layer or ""
 		end

@@ -48,6 +48,13 @@ script FactionAI extends Component
 	-- 멈추라고 한 뒤 몸이 미끄러지는 거리(월드 단위 · Maker 실측 2026-10-02: 미니언이 ApproachX 에서 공격 상태가 된 뒤 약 0.13~0.15 더 가서 선다) — 이만큼 앞에서 멈춘다고 쳐서 실제로 ApproachX 에 선다.
 	property number ApproachSlide = 0.14
 
+	-- 멈춘 위치 맞춤(WO-040 M3 후속 · Maker 실측 2026-10-02): 서버 프레임이 끊기면(새 미니언 스폰이 0.3~1.1초 끊김을 만든다) 그 사이 이동이 몰려 ApproachX 를 한 번에 0.4~0.5 지나쳐 서 버렸다.
+	-- 넥서스를 때리려고 멈춰 선 미니언은 완전히 멈춘 뒤 한 번 ApproachX 로 x 를 맞춘다(±ApproachSnapMax 안에서 멈췄을 때만 · y 는 그대로). 지나친 양이 클수록 한 번 뒤로 물러나 보인다(드묾).
+	property number ApproachSnapMax = 1.0
+
+	@HideFromInspector
+	property boolean approachSnapped = false
+
 	@HideFromInspector
 	property number ResolvedDir = 0
 
@@ -245,6 +252,27 @@ script FactionAI extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method void ApproachSnap()
+		-- 접근 지점 근처에서 넥서스를 때리려고 멈춰 선 미니언의 x 를 ApproachX 로 맞춘다(미니언마다 한 번). 전진 중이거나 아직 미끄러지는 중(속도 ≠ 0)이면 하지 않는다.
+		if not self.ApproachActive or self.approachSnapped then return end
+		if self.CurrentAIState == "ADVANCE" then return end
+		local target = self.TargetEntity
+		if not isvalid(target) then return end
+		---@type LaneFacility
+		local lf = target:GetComponent("script.LaneFacility")
+		if not isvalid(lf) or lf.Stage ~= "CORE" then return end
+		local rb = self.Entity.RigidbodyComponent
+		if not isvalid(rb) or math.abs(rb.RealMoveVelocity.x) > 0.001 then return end
+		local pos = self.Entity.TransformComponent.WorldPosition
+		self.approachSnapped = true
+		local dx = pos.x - self.ApproachX
+		if math.abs(dx) > 0.005 and math.abs(dx) <= self.ApproachSnapMax then
+			rb:SetWorldPosition(Vector2(self.ApproachX, pos.y))
+			log(string.format("[Approach] %s snap x %.3f -> %.3f (dx %.3f)", self.Entity.Name, pos.x, self.ApproachX, dx))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean ApproachPending(Entity target, number myX)
 		-- 이 표적은 아직 접근 지점(ApproachX)에 못 닿았는가 — true 면 사거리 안이어도 공격하지 않고 전진을 이어 간다(넥서스만 · 진행 방향 기준).
 		if not self.ApproachActive then return false end
@@ -295,6 +323,9 @@ script FactionAI extends Component
 			return
 		end
 		
+		-- 2-1) 접근 지점에 멈춰 섰으면 x 를 맞춘다(넥서스 접근 지점이 있는 마을 미니언만 · 아니면 첫 줄에서 돌아간다).
+		self:ApproachSnap()
+
 		-- 3) 타이머 감소
 		if self.AttackTimer > 0 then
 			self.AttackTimer = self.AttackTimer - delta
