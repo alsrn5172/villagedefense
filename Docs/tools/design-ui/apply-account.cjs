@@ -118,9 +118,12 @@ status(CO + '/Status');
   S.tint(b, t + '/Icon', C.white, 1);
   img(t + '/IconUnknown', 'mon_unknown', [146, 300, 40, 40], R, { alpha: 0.55, enable: false });
   text(t + '/Name', [92, 356, 148, 20], R, { font: 'Noto700', size: 16, color: C.ivory, h: 'center' });
+  // 긴 이름은 한 줄에 자동 축소(BestFit · 사용자 결정 2026-10-01) — 글자를 자르지 않는다
+  b.patchComponent(t + '/Name', S.TXT, { BestFit: true, MinSize: 11, MaxSize: 16, Overflow: 0 });
   text(t + '/Sub', [128, 376, 104, 16.5], R, { font: 'Noto700', size: 13, color: C.sub, h: 'left' });
   rich(t + '/Sub');
-  for (let i = 1; i <= 3; i++) img(`${t}/TierIcon_${i}`, `stage_${i}`, [108, 376, 16, 16], R, { enable: false });
+  // 단계 아이콘(TierIcon_1~3 · stage_1~3)은 넣지 않는다(사용자 결정 2026-10-01) — 이미 있으면 지운다. Sub 글자 x 는 시안 자리 그대로.
+  for (let i = 1; i <= 3; i++) if (S.has(b, `${t}/TierIcon_${i}`)) b.remove(`${t}/TierIcon_${i}`);
   img(t + '/EliteChip', 'chip_red_dark', [124.5, 392.5, 83, 19.5], R, { enable: false });
   txt(t + '/EliteChip/Text', '자이언트 1', [0, 0, 83, 19.5], [0, 0, 83, 19.5], { font: 'Noto700', size: 13, color: C.white });
   S.before(b, t + '/Slot', t + '/Icon');

@@ -103,3 +103,37 @@
 - 🔴 **월드맵 파병 리모컨(F04)**: 판이 흰 바탕 · 옛 모양 그대로다(조각 체인지로그 대로 "열리지 않는 레거시 패널" · 시안 없음) — 디자인 대상에서 뺄지 결정 필요.
 - 🔴 **시설 오라 띠(W02)**: 억제기 오라가 **안 보인다**. 렌더 층이 `MapLayer0 / OrderInLayer 3`(시설 · 플레이어 뒤)이라 이 테스트맵 배경(`Default` 층 · 시설 위치와 같은 높이)에 가려진다. 층을 `Default/140` 으로 올리면 하늘색 띠가 발판 위로 은은하게 보인다(`W02b` 가 그 모양 · 파일만 저장 — 코드는 안 바꿈). 층을 올릴지는 기획 결정(`AuraEmitter.AuraOrderInLayer` 한 값 · 실제 레인 맵 배경에서는 원래 층으로도 보일 수 있다 — 테스트맵 한 곳만 본 것).
 - 시설 체력 바: 시안의 틀은 9-slice 인데 월드 SpriteRenderer 라 고정 그림을 늘린 것(조각 체인지로그 대로). 채움 색 전환은 초록(전체) · 노랑(40%) · 빨강(25% 이하 · 앞 일부만) 세 가지를 캡처했다 — 부드럽게 줄어드는 움직임과 파괴 때 숨김은 안 봤다.
+
+## 2026-10-01 저녁 — 작은 수정 묶음(fix-misc)
+
+브랜치 `a/design-ui-fix-misc`. Maker 는 쓰지 않았다(파일만 · 아래 "검증 때 볼 것" 은 통합 검증이 눈으로 확인).
+
+### 한 것
+
+| # | 항목 | 고침 | 파일 |
+|---|---|---|---|
+| 1 | 캐릭터 창 이름 칸 | 서버 CSV 가 name 을 안 보내 "플레이어" 로 보이던 것 → 클라가 `LocalPlayer.PlayerComponent.Nickname`(비면 `LocalPlayer.Name`)을 `nameText` 에 쓴다(`ApplyNickname` · 창 열 때 + `SetStatsCsv` 끝). 서버 · 이름 칸 글꼴 · 색은 그대로 | `Stat/StatUIController.mlua` |
+| 2 | 공방 긴 이름 | 이름 노드 6종(고르기 칸 · 보석 칸 · 제작 카드 · 물약 카드 · 제작 상세 · 물약 상세)에 `BestFit=true · MinSize 11 · MaxSize=시안 크기 · Overflow 0` 을 UI 에 저장. 컨트롤러의 글자 크기 어림(`EstW` 로 12/14 · 24→14 고르기) 2곳 제거(이름 전체를 쓴다). 제작 상세 이름 칸은 두 줄 높이(67)→한 줄(34 · 아래 끝 301 유지). 계정 도감 칸 이름(148 폭 · 16)도 같은 BestFit. 바닥 띠 비용 칩 폭 어림(칩 안쪽 3개 글자 폭)은 이름 노드가 아니라 칩 폭 계산이라 그대로 | `apply-workshop.cjs` · `apply-account.cjs` · `Item/WorkshopUIController.mlua` |
+| 3 | 차원 관문 에너지 코어 그림 | **원인 = 빌더 기본 틴트.** 제목 · 코어 칩 · 비용 칩 3곳의 `gameIcon()` 이 `b.sprite` 에 색을 안 줘 기본 어두운 회색(26,26,26 · 알파 0.24)이 RUID 그림에 곱해져 거의 안 보였다(`probe` 로 `Color` 확인 · `ItemCatalog` 의 `icon` 필드 · UUID 바인딩 · `ApplyCoreIcons` 호출은 정상이었다). 흰색 알파 1 로 | `apply-gate.cjs` |
+| 4 | 단계 아이콘 제거 | 모집 카드 `StageIcon`(5장) · 계정 도감 `TierIcon_1~3`(템플릿)을 UI 에서 지우고 적용 스크립트도 안 만든다(있으면 지움). 컨트롤러의 `TierIcon` 켜고 끄기 한 줄 삭제(`VillageLife` 는 원래 안 건드림). 아이콘 자리 글자 x 는 시안 줄 그대로(아이콘이 시안에 있던 자리라 당기지 않음). 마을 기록 도감 눈금 보석(Seg1~5)은 그대로 | `apply-life.cjs` · `apply-account.cjs` · `Progression/AccountRecordUIController.mlua` |
+| 5 | 월드맵 툴팁 몬스터 썸네일 | **원인 = `PreserveSprite 1`(비율 유지).** `MonsterInfo.IconRUID` 는 stand 애니메이션 클립(메타 실측: 달팽이 · 스포아 · 스텀프 전부 pivot ny=0 = 발)이라 비율 유지로 그리면 발이 칸 중심에 와서 얼굴이 위로 치우친다(F02 캡처 확대로 확인). 마을 도감 · 계정 도감 · 모집/조련 카드의 몬스터 칸은 전부 `PreserveSprite 0`(칸에 맞춰 채움)이고 캡처(E14 · E16 · N02)에서 가운데에 맞는다 → 툴팁도 같은 규칙으로 0. `thumbnail://` 접두는 서버가 보내는 RUID 를 클라 4곳에서 다 고쳐야 하고 눈 확인이 안 돼 쓰지 않았다 | `apply-worldmap.cjs` |
+
+UI 5개 갱신: `AccountRecordGroup` · `CommonNpcGroup` · `VillageLifeGroup` · `VillageWorkshopGroup` · `WorldMapGroup`. 적용 스크립트 5개(`account` · `gate` · `life` · `workshop` · `worldmap`)는 두 번 돌려도 같은 결과(새 엔티티 0 · lint 에러 없음).
+
+### 안 한 것
+
+- 인벤토리 툴팁 · 장비 칸 이름의 글자 줄이기는 건드리지 않았다(글자 크기를 코드로 줄이는 곳은 공방 2곳뿐이었고 다른 곳은 이미 말줄임 · 폭 확장).
+- 모집 카드 이름(두 줄: 한글 + 영문 작은 줄)은 BestFit 대상에서 뺐다(리치 텍스트 두 줄 구조).
+
+### 검증 때 볼 것
+
+1. 캐릭터 창(C) — 이름 칸이 내 닉네임(비면 엔티티 이름)으로 뜨는지 · 스탯 갱신 뒤에도 유지되는지.
+2. 공방 — "갈색 고급 가죽 모자 +3"(24자)이 고르기 칸에서 한 줄로 줄어드는지(최소 11 · 이보다 길면 아직 두 줄로 꺾이거나 넘칠 수 있다) · 제작 상세 이름 "앱솔랩스 나이트헬름" 한 줄 · BestFit 이 줄어든 크기가 칸 안에 들어오는지. 두 줄로 꺾이면 `UseConstraintY`/칸 높이 조정 필요.
+3. 차원 관문(E12 · E29) — 제목 · 코어 칩 · 비용 칩에 에너지 코어 그림이 제 색으로 보이는지(이 창은 `FunctionalNpcCatalog` 에서 Hidden 이라 `ReceiveNpcOpen` 직접 호출로 띄운다).
+4. 모집 카드 · 계정 도감 칸에 단계 아이콘이 없고 글자만 있는지(자리가 약간 비는 것은 의도).
+5. 월드맵 툴팁(F02 · F05 · F06) — 몬스터 썸네일이 칸(32) 가운데에 오는지. 도감 칸(마을 · 계정)은 원래 가운데라 변화 없어야 한다.
+
+### 알아낸 것
+
+- 빌더의 `b.sprite()` 는 색을 안 주면 어두운 반투명 틴트가 기본이라 "RUID 만 넣은 그림"이 거의 안 보인다 — 새로 만드는 그림 노드는 항상 `color`/`alpha` 를 준다.
+- 몬스터 `IconRUID` 는 stand 클립(발 피벗)이다. UI 에 비율 유지(`PreserveSprite 1`)로 넣으면 발이 칸 중심에 온다.
