@@ -15,7 +15,7 @@ const before = b.listEntities().length;
 const C = S.COLOR;
 const GRID = 'MOD.Core.GridViewComponent';
 // 긴 이름 한 줄 자동 축소: BestFit(MinSize 11 ~ MaxSize 시안 크기) + Overflow 0. 컨트롤러는 글자를 자르거나 크기를 어림하지 않는다(사용자 결정 2026-10-01).
-const bestFit = (p, max) => b.patchComponent(p, S.TXT, { BestFit: true, MinSize: 11, MaxSize: max, Overflow: 0, FontSize: max });
+const bestFit = (p, max, min) => b.patchComponent(p, S.TXT, { BestFit: true, MinSize: min || 11, MaxSize: max, Overflow: 0, FontSize: max });
 
 // ── 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h · 1200x900 캔버스) ──
 const WIN = [110, 110, 980, 720];
@@ -239,9 +239,10 @@ S.font(b, P1 + '/PickTemplate', { text: '' });
 const PT = [0, 0, 110, 110];
 ctr(P1 + '/PickTemplate/Icon', [18, 18, 74, 74], PT);
 // 🔴 이름 상자가 칸(110)보다 넓으면 첫 열 칸의 이름이 그리드 왼쪽 경계에서 잘린다(2차 묶음 실측 · "갈색 고급 가죽 모자 +3") → 칸 폭 그대로(넘치면 말줄임)
-ctr(P1 + '/PickTemplate/Name', [0, 112, 110, 26], PT);
+// 🔴 3차 확인(D02): 높이 26 · 최소 11 이면 "갈색 고급 가죽 모자 +3" 이 11 크기에서 두 줄("+3" 이 아래)로 꺾였다 → 높이를 한 줄(20)로 줄여 두 줄이 못 들어가게 하고 최소를 9 로 낮춰 한 줄로 줄어들게 한다(가운데 y 는 그대로 125).
+ctr(P1 + '/PickTemplate/Name', [0, 115, 110, 20], PT);
 S.font(b, P1 + '/PickTemplate/Name', { font: 'Noto700', size: 14, color: C.ivory, h: 'center', v: 'middle', outline: false, overflow: 0, text: '' });
-bestFit(P1 + '/PickTemplate/Name', 14);
+bestFit(P1 + '/PickTemplate/Name', 14, 9);
 for (let n = 1; n <= 3; n++) img(`${P1}/PickTemplate/EnhBadge_${n}`, `badge_enh_${n}`, [74, 2, 34, 34], PT, { enable: false });
 img(P1 + '/PickTemplate/EquipChip', 'chip_blue', [3, 4, 48, 22], PT, { enable: false });
 txt(P1 + '/PickTemplate/EquipChip/Text', '착용', [0, 0, 48, 22], [0, 0, 48, 22], { font: 'Noto700', size: 13, color: C.white });

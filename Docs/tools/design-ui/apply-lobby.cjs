@@ -87,6 +87,8 @@ const MEB = [199, 560, 200, 54];
 ctr(M + '/MatchEmpty', MEB, MATCH);
 img(M + '/MatchEmpty/Illu', 'empty_match_illust', [109, 360, 380, 140], MEB);
 img(M + '/MatchEmpty/IlluFrame', 'slot_frame', [109, 360, 380, 140], MEB);
+// 🔴 액자(slot_frame · 9-slice)는 가운데도 그리므로 뒤의 일러스트를 통째로 덮는다(3차 확인 · A01) → 가운데를 비운 테두리로.
+b.patchComponent(M + '/MatchEmpty/IlluFrame', S.SPR, { FillCenter: false });
 S.font(b, M + '/MatchEmpty', { font: 'Noto400', size: 18, color: C.faint, h: 'center', v: 'top', outline: false, text: '<color=#E8B64C>★</color> 로 난이도를 골라\n새로 만들 수 있습니다' });
 b.patchComponent(M + '/MatchEmpty', S.TXT, { IsRichText: true });
 txt(M + '/MatchEmpty/Title', '대기 중인 매치가 없습니다', [149, 516, 300, 33.5], MEB, { font: 'Maple', size: 24, color: C.ivory });

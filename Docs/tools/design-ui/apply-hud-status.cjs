@@ -122,7 +122,8 @@ S.newImage(b, 'LevelUpNotice/Sparkle2', 'deco_sparkle_2', { pos: S.at(1180, 390,
 
 // ═══ 그리기 순서: 판은 맨 뒤 · 클릭 버튼은 맨 앞(판 전체를 덮는 투명 버튼) ═══
 // 레벨업 때 상태창이 한 번 금빛으로 빛난다(시안 s4): 대응 에셋이 없어 금빛 칸 테두리(slot_frame_hover · 가운데 비움)를 판 크기로 얹는다. 평소 꺼둠 · 스크립트가 알림과 같이 켠다.
-S.newImage(b, 'UIMyInfo/LevelUpGlow', 'slot_frame_hover', { size: [BOX[2], BOX[3]], enable: false });
+// 🔴 테두리 두께 18 이 판 안쪽으로 번져 맨 아래 EXP 줄 · 왼쪽 위 레벨 글자를 잘랐다(3차 확인 · B05) → 판보다 한 둘레 크게(바깥 14 · 안쪽으로는 4만 겹침).
+S.newImage(b, 'UIMyInfo/LevelUpGlow', 'slot_frame_hover', { size: [BOX[2] + 28, BOX[3] + 28], enable: false });
 b.patchComponent('UIMyInfo/LevelUpGlow', S.SPR, { FillCenter: false });
 S.back(b, 'UIMyInfo/Bg');
 S.front(b, 'UIMyInfo/BtnOpenCharacter');
