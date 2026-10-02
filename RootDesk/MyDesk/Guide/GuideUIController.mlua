@@ -2,12 +2,13 @@
 script GuideUIController extends Logic
 	-- ★1 안내 UI 클라 컨트롤러 (GuideGroup · B10 · S1). 값은 서버(GuideService)가 문자열 RPC 로 준다 — 낙관적 UI 없음.
 	--   목표 바(클릭 → 체크리스트 펼침/접기) · "안내 끄기" 버튼 · 꺼져 있을 땐 "안내 켜기" 칩만. UUID 는 UIBuilder write({bind}) 가 주입한다.
+	--   디자이너 시안(2026-10-01): 깃발 + 목표 문구 + "Lv n/max" 게이지 + 펼침 표시, 체크리스트는 13줄 2열 체크박스(행은 이름으로 찾는다).
 
 	property Entity bar = "eff830a9-ff2c-4ff4-b128-11cd1375bbd8"
 
 	property ButtonComponent btnBar = "eff830a9-ff2c-4ff4-b128-11cd1375bbd8"
 
-	property TextGUIRendererComponent goalText = "eff830a9-ff2c-4ff4-b128-11cd1375bbd8"
+	property TextGUIRendererComponent goalText = "de5e3fd4-4570-4bce-9d53-82f88ffbc832"
 
 	property ButtonComponent btnOff = "01b77500-c6ce-4924-ab14-c8d707856137"
 
@@ -19,6 +20,30 @@ script GuideUIController extends Logic
 
 	property ButtonComponent btnChip = "ab3fd14c-0a02-4a49-92a9-455280d186db"
 
+	property Entity barWarn = "6723bc51-6112-41d9-a8fc-a82cbc0c7ea0"
+
+	property Entity flag = "ae93f49d-1dfc-4852-80d2-dc6be5d9832c"
+
+	property Entity flagWarn = "a427e589-7a4c-4e1a-8355-292f559220c9"
+
+	property Entity gaugePlate = "76dbae02-eede-4c9b-8f8c-e46820cc4473"
+
+	property TextGUIRendererComponent lvText = "214fc20f-ee99-46b6-ae2c-6a6a51be4006"
+
+	property Entity seg1On = "ff965609-4652-4ec7-869f-16a07f42fd77"
+
+	property Entity seg2On = "eb5c9a4f-5486-4c1d-bf76-be6ac7a91bba"
+
+	property Entity seg3On = "5cefb604-6cba-4696-8a19-391bb760d709"
+
+	property Entity seg4On = "12495ee1-bce1-416a-91bd-a7b5dd713b43"
+
+	property Entity chevDown = "c812d339-3fcf-4607-b69c-640b77f29e40"
+
+	property Entity chevUp = "35a4a304-9904-49bc-9ce7-a611c1f2c060"
+
+	property TextGUIRendererComponent countText = "f7e5082d-0e8a-47ab-aa75-2703697b4ec2"
+
 	@HideFromInspector
 	property any handlers = nil
 
@@ -27,6 +52,16 @@ script GuideUIController extends Logic
 
 	@HideFromInspector
 	property boolean checksOpen = false
+
+	-- "급한 목표" 붉은 상태. 서버가 아직 알려 주지 않아 지금은 항상 false (2단계: GuideStep 데이터 + SetGoal 인자).
+	@HideFromInspector
+	property boolean urgent = false
+
+	@HideFromInspector
+	property string goalRaw = ""
+
+	@HideFromInspector
+	property any rows = nil
 
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
@@ -53,6 +88,14 @@ script GuideUIController extends Logic
 		if isvalid(self.bar) then self.bar.Enable = on end
 		if isvalid(self.checkPanel) then self.checkPanel.Enable = on and self.checksOpen end
 		if isvalid(self.chip) then self.chip.Enable = showChip and not on end
+		self:RefreshChevron()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshChevron()
+		-- 펼침 표시: 접힘 ▼ / 펼침 ▲ (미리 깔아 둔 두 노드의 Enable 토글).
+		if isvalid(self.chevDown) then self.chevDown.Enable = not self.checksOpen end
+		if isvalid(self.chevUp) then self.chevUp.Enable = self.checksOpen end
 	end
 
 	@ExecSpace("Client")
@@ -63,14 +106,85 @@ script GuideUIController extends Logic
 
 	@ExecSpace("Client")
 	method void SetGoal(string text)
-		-- 서버 → 클라: 목표 바 문구.
-		if isvalid(self.goalText) then self.goalText.Text = "목표  ·  " .. tostring(text) end
+		-- 서버 → 클라: 목표 바 문구. 문장 끝 "(Lv n/max)" 는 떼어 게이지로 그린다.
+		self.goalRaw = tostring(text)
+		self:RenderGoal()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUrgent(boolean on)
+		-- 급한 목표 붉은 바(서버 연결은 2단계). 앞 구절(" — " 앞)만 붉은 글자.
+		self.urgent = on
+		self:RenderGoal()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderGoal()
+		-- 저장해 둔 목표 문장을 바에 그린다: 깃발 · 문구 · 게이지 · 급한 상태.
+		local body = self.goalRaw or ""
+		local cur = 0
+		local mx = 0
+		local hasGauge = false
+		local t1, _t2 = string.find(body, "%s*%(Lv %d+/%d+%)%s*$")
+		if t1 ~= nil then
+			local nums = {}
+			for n in string.gmatch(string.sub(body, t1), "%d+") do table.insert(nums, n) end
+			body = string.sub(body, 1, t1 - 1)
+			cur = math.floor(tonumber(nums[1]) or 0)
+			mx = math.floor(tonumber(nums[2]) or 0)
+			hasGauge = mx > 0
+		end
+		if self.urgent then hasGauge = false end
+		local shown = body
+		if self.urgent then
+			local p1, p2 = string.find(body, " — ", 1, true)
+			if p1 ~= nil then
+				shown = "<color=#FFB3A6>" .. string.sub(body, 1, p1 - 1) .. "</color> <color=#AEB8CF>·</color> " .. string.sub(body, p2 + 1)
+			end
+		end
+		if isvalid(self.goalText) then
+			self.goalText.Text = shown
+			self.goalText.Entity.UITransformComponent.RectSize = Vector2(hasGauge and 652 or 840, 28)
+		end
+		if isvalid(self.barWarn) then self.barWarn.Enable = self.urgent end
+		if isvalid(self.flag) then self.flag.Enable = not self.urgent end
+		if isvalid(self.flagWarn) then self.flagWarn.Enable = self.urgent end
+		if isvalid(self.gaugePlate) then self.gaugePlate.Enable = hasGauge end
+		if hasGauge then
+			if isvalid(self.lvText) then self.lvText.Text = "Lv " .. tostring(cur) .. "/" .. tostring(mx) end
+			local lit = math.floor(cur / mx * 4 + 0.5)
+			local segs = { self.seg1On, self.seg2On, self.seg3On, self.seg4On }
+			for i = 1, 4 do
+				if isvalid(segs[i]) then segs[i].Enable = (i <= lit) end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CacheRows()
+		-- 체크리스트 13행(Row01~Row13)의 자식 노드를 한 번 찾아 둔다.
+		if self.rows ~= nil then return end
+		if not isvalid(self.checkPanel) then return end
+		local rows = {}
+		for i = 1, 13 do
+			local row = self.checkPanel:GetChildByName(string.format("Row%02d", i))
+			if isvalid(row) then
+				local label = row:GetChildByName("Label")
+				rows[i] = {
+					row = row,
+					on = row:GetChildByName("CheckOn"),
+					off = row:GetChildByName("CheckOff"),
+					label = isvalid(label) and label.TextGUIRendererComponent or nil,
+				}
+			end
+		end
+		self.rows = rows
 	end
 
 	@ExecSpace("Client")
 	method void SetChecklist(string csv)
-		-- 서버 → 클라: "C1|레벨 10|1;…" → 줄 목록.
-		if not isvalid(self.checkText) then return end
+		-- 서버 → 클라: "C1|레벨 10|1;…" → 13줄 2열 체크박스. 지금 할 일 = 첫 미완료 항목(금색).
+		local items = {}
 		local lines = {}
 		for item in string.gmatch(csv or "", "[^;]+") do
 			-- "key|label|done" 을 손으로 나눈다.
@@ -82,11 +196,41 @@ script GuideUIController extends Logic
 			end
 			if p1 ~= nil and p2 ~= nil then
 				local label = string.sub(item, p1 + 1, p2 - 1)
-				local done = string.sub(item, p2 + 1)
-				table.insert(lines, ((done == "1") and "[V] " or "[  ] ") .. label)
+				local done = (string.sub(item, p2 + 1) == "1")
+				table.insert(items, { label = label, done = done })
+				table.insert(lines, (done and "[V] " or "[  ] ") .. label)
 			end
 		end
-		self.checkText.Text = table.concat(lines, "\n")
+		-- 예전 한 덩어리 글자(꺼 둠)에도 같은 내용을 남겨 둔다.
+		if isvalid(self.checkText) then self.checkText.Text = table.concat(lines, "\n") end
+		self:CacheRows()
+		local nextIdx = 0
+		local doneCount = 0
+		for i, it in ipairs(items) do
+			if it.done then doneCount = doneCount + 1 elseif nextIdx == 0 then nextIdx = i end
+		end
+		for i = 1, 13 do
+			local r = self.rows ~= nil and self.rows[i] or nil
+			if r ~= nil then
+				local it = items[i]
+				if isvalid(r.row) then r.row.Enable = (it ~= nil) end
+				if it ~= nil then
+					if isvalid(r.on) then r.on.Enable = it.done end
+					if isvalid(r.off) then r.off.Enable = not it.done end
+					if r.label ~= nil and isvalid(r.label) then
+						r.label.Text = it.label
+						if it.done then
+							r.label.FontColor = Color(0.486, 0.533, 0.643, 1)
+						elseif i == nextIdx then
+							r.label.FontColor = Color(0.910, 0.714, 0.298, 1)
+						else
+							r.label.FontColor = Color(0.953, 0.933, 0.886, 1)
+						end
+					end
+				end
+			end
+		end
+		if isvalid(self.countText) then self.countText.Text = tostring(doneCount) .. " / " .. tostring(#items) end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -94,6 +238,7 @@ script GuideUIController extends Logic
 		-- 목표 바 클릭 → 체크리스트 펼침/접기.
 		self.checksOpen = not self.checksOpen
 		if isvalid(self.checkPanel) then self.checkPanel.Enable = self.visible and self.checksOpen end
+		self:RefreshChevron()
 	end
 
 	@ExecSpace("ClientOnly")
