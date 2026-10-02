@@ -88,3 +88,9 @@ Play 재확인(다음 라운드 · 런시트 `villagedefense-harness/archer-chec
 | 무엇 | 어떻게 |
 |---|---|
 | **화살 하나는 몬스터 1마리만 맞는다**(몬스터 무적이 빠져 화살마다 1마리에 1타) | 새 `SkillAttack.IsOneTargetPerArrow`(SK_A11 만) → 두 발 모두 `SkillProjectile.OneTargetPerArrow`. `IsAttackTarget` 이 다른 판정을 다 통과한 뒤 `AcceptOneTarget` 으로 하나만 통과시킨다: 살아 있는 유도 대상이 있으면 그것만, 없으면(직선 · 대상이 죽음/사라짐) 처음 통과한 살아 있는 몬스터 하나(`pickedTarget` · 로그 `one target per arrow — no live homing target, picked <이름>`). 두 발은 같은 대상을 노리므로 보통 같은 몬스터에 1타씩 · 첫 발이 대상을 잡으면 둘째 발은 그 자리에 겹친 다른 몬스터 하나(없으면 조용히 사라짐). 스나이핑의 "대상이 사라지면 화살도" 규칙은 더블 샷에 넣지 않았다. 6차 Play 재확인 D6(겹친 2마리)의 기대값이 이걸로 바뀐다 |
+
+## 8차 — 맞은 화살 숨기기를 알파 0 으로 (2026-10-03 · 합동 Play 캡처)
+
+| 무엇 | 어떻게 |
+|---|---|
+| **화살마다 로딩 표시(점 고리)가 ≈0.15s 뜨던 것** (사용자 "Q 마다 화살 자리에 로딩 표시 두 개") | 원인 = 6차 `SkillProjectile.HideSprite` 가 맞은 화살(먼저 맞힌 발 · 0.10s 기다리는 둘째 발)을 `SpriteRUID = ""` 로 지웠다 — 살아 있는 엔티티에 빈 RUID 를 넣으면 MSW 가 로딩 표시를 그린다(30fps 캡처: 1프레임 화살 2발 → 2~5프레임 그 자리 점 고리 → 6프레임 사라짐). `HideSprite` 를 `SpriteRendererComponent.Color` 알파 0 으로 바꿨다(`SkillExecutors.PlaySpriteFlash` · `LaneFacilityService` 와 같은 방법). 그림 RUID · 이펙트 · 판정은 그대로 |
