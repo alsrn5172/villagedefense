@@ -18,7 +18,7 @@ B 가 정한 것: 그림 · 소리 = 라이브러리에서 가장 가까운 공�
 - `Skill/SkillHotbar.mlua` — 공중 점프 키: 마법사면 텔레포트(예전 길), 아니면 `TryAirDoubleJump` — SK_N02 배움 · 첫 점프 유예 0.2 s · 공중 1회 · 디바운스 0.25 s(텔레포트와 같은 판정) · MP 예측 → `SkillMovement.TryDoubleJump` → `SkillExecutors.RequestDoubleJump`. 새 속성 `DoubleJumpOnAirJump` · `DoubleJumpSkillId` · `DoubleJumpKeepAfterJob` · `AirTeleportJobId`.
 - `Skill/SkillMovement.mlua` — `TryDoubleJump(skillId, level)`(클라): 땅이면 안 함 · 방향 = 누른 좌우 키 → 없으면 바라보는 쪽 · `RigidbodyComponent:SetForce(Vector2(방향 × 거리값 × DoubleJumpForceScale 2.0, DoubleJumpLift 1.4))`. 위치의 소유자가 클라라서 클라가 민다(텔레포트와 같은 원칙).
 - `Skill/SkillExecutors.mlua` — `RequestDoubleJump(dirX)`(Server RPC): 관전자 차단 · 서버 레벨 확인 · 마법사 무시 · MP(0 이면 건너뜀) · 뛴 자리에 레벨별 그림 앞(`effect/k`) + 뒤(`effect0/k`) · 오른쪽이면 FlipX · Use 소리 `cdfecf84…` · 로그. `effectOverrides.SK_N02.levels` · `castSounds.SK_N02`.
-- `Skill/SkillWindowLogic.mlua` — 툴팁 효과 줄 "공중에서 한 번 더 점프 · 앞 거리 1.5"(`SkillIdEffectLabels` · BuffTag 없는 PASSIVE 용). 초보자 탭(#142 2차)에 저절로 한 줄 더 나온다.
+- `Skill/SkillWindowLogic.mlua` — 툴팁 효과 줄 "공중에서 한 번 더 점프 · 앞 거리 1.5"(`FormatEffect` 의 SK_N02 분기 · #142 의 고정 피해 분기 옆 — 라벨 표 자리는 #102 · #115 · #116 이 같이 고쳐서 피했다). 초보자 탭(#142 2차)에 저절로 한 줄 더 나온다.
 
 ### 숫자 (임시 · Play 로 맞춘다)
 
@@ -29,6 +29,11 @@ B 가 정한 것: 그림 · 소리 = 라이브러리에서 가장 가까운 공�
 
 - **모바일 점프 버튼**은 `KeyDownEvent` 를 안 줄 수 있다 → 모바일에선 더블 점프(와 마법사 공중 텔레포트)가 안 나갈 수 있다. 받아들임(사용자 2026-10-02).
 - 그림 층 순서(`effect` 앞 / `effect0` 뒤)와 크기는 Play 로 확인.
+
+### 충돌 (`git merge-tree` · 2026-10-02)
+
+- #100 · #115 · #116: `SkillExecutors.mlua` — #142 와 같은 그 줄(`FireProjectile` 의 `SpawnProjectile` 호출 · 이 브랜치가 늘린 곳 없음).
+- #102: 없음(속성 자리를 `MaxChainSteps` 뒤로 옮겨 `blinkOrigins` 와 안 겹치게). #134 · #135~#138 · #156: 없음.
 
 ### 점검
 
