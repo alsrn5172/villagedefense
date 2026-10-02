@@ -1040,7 +1040,7 @@ script LaneStateService extends Logic
 						local matDef = (_ItemCatalog ~= nil) and _ItemCatalog:Get(rr.materialItemId) or nil
 						local icon = (_MonsterCatalog ~= nil) and tostring(_MonsterCatalog:GetIconRuid(mid) or "") or ""
 						table.insert(list, { id = mid, name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(mid) or tostring(mid), level = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetLevel(mid) or 1, tier = rr.tier,
-							cost = rr.materialCount, matId = rr.materialItemId, matName = (matDef ~= nil and matDef.name) or rr.materialItemId,
+							cost = self:CrewCost(userId, "MONSTER_RECRUIT", rr.materialCount), matId = rr.materialItemId, matName = (matDef ~= nil and matDef.name) or rr.materialItemId,
 							have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, rr.materialItemId) or 0, bundle = rr.bundleSize, icon = icon })
 					end
 				end
@@ -1074,7 +1074,7 @@ script LaneStateService extends Logic
 				for _, r in ipairs(list) do
 					local cur = self:TrainRow("MELEE", r.lv)
 					local nxt = (r.lv < 5) and self:TrainRow("MELEE", r.lv + 1) or cur
-					add({ "TR", tostring(r.id), r.name, tostring(r.lv), string.format("%.1f", cur.mul), tostring((r.lv < 5) and nxt.cost or 0), string.format("%.1f", nxt.mul), "5", r.icon })
+					add({ "TR", tostring(r.id), r.name, tostring(r.lv), string.format("%.1f", cur.mul), tostring((r.lv < 5) and self:CrewCost(userId, "MONSTER_TRAIN", nxt.cost) or 0), string.format("%.1f", nxt.mul), "5", r.icon })
 				end
 			end
 			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "DREAM_PIECE") or 0
@@ -1221,6 +1221,14 @@ script LaneStateService extends Logic
 		self:Changed(v.id, stage)
 	end
 
+	@ExecSpace("ServerOnly")
+	method integer CrewCost(string userId, string sinkType, integer baseCount)
+		-- 모집 재료 · 훈련 꿈의 조각 개수에 직업 패시브(해적 선원 관리 SK_P12) 할인을 적용한 값. 표시(BuildView recruit · train)와 차감(RequestRecruit · RequestTrain)이
+		-- 이 한 곳을 불러 숫자가 늘 같다. 값 = B 의 JobPassiveLogic.ApplyJobCost(내림 · 최소 1) — B 배선(A #40 5884390248 · 범위 = 모집 + 훈련만, 도감 레벨업 · 해금 제외 5927315886).
+		if _JobPassiveLogic == nil then return baseCount end
+		return _JobPassiveLogic:ApplyJobCost(userId, sinkType, baseCount)
+	end
+
 	@ExecSpace("Server")
 	method void RequestRecruit(string unitKey)
 		-- 모집 (B5): MonsterRecruit 행이 있는 몹만 · 도감 해금(Lv1+) 게이트 유지 · 그 몹의 재료(MaterialItemId × MaterialCount) → 묶음(BundleSize)을 최전방 시설 앞에 즉시 스폰. 10묶음 상한.
@@ -1236,7 +1244,7 @@ script LaneStateService extends Logic
 		local rr = self:RecruitRow(monsterId)
 		if rr == nil then self:Toast(uid, name .. "은(는) 모집 대상이 아닙니다") self:Push(uid, "recruit") return end
 		local matDef = (_ItemCatalog ~= nil) and _ItemCatalog:Get(rr.materialItemId) or nil
-		local mat = { itemId = rr.materialItemId, name = (matDef ~= nil and matDef.name) or rr.materialItemId, count = rr.materialCount }
+		local mat = { itemId = rr.materialItemId, name = (matDef ~= nil and matDef.name) or rr.materialItemId, count = self:CrewCost(uid, "MONSTER_RECRUIT", rr.materialCount) }
 		if _InventoryService == nil or _InventoryService:CountItem(uid, mat.itemId) < mat.count then
 			self:Toast(uid, mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다")
 			self:Push(uid, "recruit")
@@ -1339,16 +1347,17 @@ script LaneStateService extends Logic
 		if monsterId <= 0 or lv < 1 then self:Toast(uid, "도감 관리인에서 먼저 해금하세요") self:Push(uid, "train") return end
 		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") self:Push(uid, "train") return end
 		local nxt = self:TrainRow("MELEE", lv + 1)
-		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < nxt.cost then
-			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(nxt.cost) .. " 필요 · 보유 " .. tostring(_InventoryService and _InventoryService:CountItem(uid, "DREAM_PIECE") or 0) .. ")")
+		local cost = self:CrewCost(uid, "MONSTER_TRAIN", nxt.cost)
+		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < cost then
+			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(cost) .. " 필요 · 보유 " .. tostring(_InventoryService and _InventoryService:CountItem(uid, "DREAM_PIECE") or 0) .. ")")
 			self:Push(uid, "train")
 			return
 		end
-		_InventoryService:RemoveItem(uid, "DREAM_PIECE", nxt.cost)
+		_InventoryService:RemoveItem(uid, "DREAM_PIECE", cost)
 		_InventoryService:PushInventory(uid)
 		v.mon[monsterId] = lv + 1
 		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
-		log("[Lane] " .. v.id .. " train " .. tostring(monsterId) .. " -> Lv" .. tostring(lv + 1) .. " dream-" .. tostring(nxt.cost) .. " (" .. uid .. ")")
+		log("[Lane] " .. v.id .. " train " .. tostring(monsterId) .. " -> Lv" .. tostring(lv + 1) .. " dream-" .. tostring(cost) .. " (" .. uid .. ")")
 		-- 마을 성장도: 훈련 한 단계 (WO-031 묶음 2 · GrowthPoint TRAINING_LEVEL).
 		if _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(uid, "TRAINING_LEVEL", tostring(monsterId), lv + 1) end
 		self:Toast(uid, tostring(name) .. " Lv" .. tostring(lv + 1) .. " — 수비 몬스터 HP·공격 ×" .. string.format("%.1f", nxt.mul) .. " (새 묶음부터)")
