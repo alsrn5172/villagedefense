@@ -1,5 +1,20 @@
 # b/skill-pirate-effects — 해적 스킬 정리 (기획 표 대조 · 원작 기준 기본값 · 참고 영상 실측)
 
+## 14차 (2026-10-03 · #115 위에 쌓기 · A 충돌 가이드 확인)
+
+- **#115 위에 다시 쌓았다**: `b/skill-thief-effects` `b6ef176`(#115 + #100 `8e785aa` + main `28edf31`)을 합침(`2848e34` · 충돌 없음 · `SkillInfo.csv` 중복 행 0). PR base = `b/skill-thief-effects` → 이 PR diff 는 해적 변경 8파일만.
+- **A 충돌 가이드 #116 5906003186** — 셋 다 반영돼 있음(지난 쌓기 `828d5a4` 때 푼 그대로):
+  1. 파일 머리 MELEE_ARC 줄 = main 설명(`ExecutePowerStrike`) + 섬머솔트 킥 `skillTargetCaps`(가까운 순 최대 6) 문장(`SkillExecutors.mlua:13`).
+  2. `OnEndPlay` = `prewarmEnterHandler` · `prewarmJobHandler` 해제 + `punchSkinDelayRestore` 되돌리기 둘 다.
+  3. `loopEnd.prewarm` 은 `PrewarmRuidsFor(jobId)` 루프 안(직업별 예열 구조 그대로 · 옛 전체 루프 없음).
+- **#123 처치 귀속**: 피해 투사체는 `SkillAttack.SpawnOneProjectile` 의 `mover.CasterUserId = userId` 한 길 · `SkillExecutors` 의 다른 스폰은 `VisualOnly = true` 연출뿐 · 해적 스킬 피해는 전부 시전자 `SkillAttack`(`AttackFast` · `DealSkillDamage…`) · `Skill/` 에 몬스터 `Hp` 직접 쓰기 · HitEvent 직접 보내기 없음. `SkillProjectile` · `CasterUserId` 이름 그대로.
+- 점검: mLua 진단(합치며 바뀐 `PlayerSkillState` · `SkillExecutors` · `SkillWindowLogic`) 0 errors · 0 warnings · `check-integrity` 통과(경고 3 = main).
+
+### Play 체크리스트 (14차 추가)
+
+1. **막타 귀속(A 가이드)**: 해적 스킬(섬머솔트 킥 · 피스트인레인지 · 함포 사격 각각)로 몬스터를 막타 → 서버 로그 `[FarmReward] <몬스터> lasthit=<내 uid> top=<내 uid> dmg=… exp=…` · `killed by non-player — 보상 없음` 이 뜨면 실패.
+2. 해적 컷신 · 에너지 쉴드 end 첫 터짐: 전직(해적) 뒤 `SkillExecutors: prewarm PIRATE x… [… 693d4c4e …]` 에 에너지 쉴드 end RUID 가 들어 있고, 첫 터짐에 빈틈 없음.
+
 ## 13차 (2026-10-01 · 사용자 결정 반영 · main 은 아직 안 합침)
 
 - **Round 4 결과**(사용자 메시지 · 이 PR `6de4a54` 합친 판 · 빌드 경고 1 → 1): 20 섬머솔트 킥 똑바로 서는 때 +0.63 ~ +0.67s — 통과.
