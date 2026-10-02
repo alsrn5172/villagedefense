@@ -1,0 +1,17 @@
+# b/monster-sounds — 몹마다 원작 피격 · 사망 소리
+
+> 🔴 **헤더 변경**: `MonsterInfo.csv` 맨 뒤에 `DamagedSoundRUID` · `DieSoundRUID` 2열 추가(A 파일 · 협업-규칙 §3-3 · §3-4 · A 리뷰 승인 필요). `check-integrity.cjs` CANONICAL · `Docs/스키마-계약.md` A-1-1 같이 고침.
+
+## 1차 — 구현 (2026-10-02 · #40 5927315317 · 정정 5927819993 · 사용자(강민구) 결정 2026-10-01 "몬스터에 넣는다 · 오디오는 B")
+
+| 무엇 | 어떻게 |
+|---|---|
+| 소리 고르기 | 행마다 그 몹 원작 팩의 `_audio/Damage` · `_audio/Die`. 팩 = `mob/<Id 7자리>.img` 중 `IconRUID`(그 팩의 stand 클립)가 들어 있는 것, 아니면 `IconRUID` 를 담은 팩(달팽이 100000 → 0100100 · 참새 → 2400202 · 아이언호그 → 4090000 · 시니컬한 주황버섯 → 2300102 · 분노한 뿔버섯 → 2300101 · 물버섯 → 2230101). 소리는 `effect` 또는 `voice` 타입. 결과 78행: Damage 78 · Die 75 · **빈칸 3**(콜드아이 4230100 · 레이스 4230102 · 스톤골렘 5130101 — 라이브러리 팩에 Die 가 없다 → 죽을 때 소리 없음). 도구(저장소 밖) `villagedefense-harness/monster-sounds/pick.cjs` |
+| 표 | `MonsterInfo.csv` 2열(BOM · CRLF 유지) · `MonsterCatalog` 가 읽고 `GetDamagedSoundRuid` · `GetDieSoundRuid` |
+| 적용 | `Monster.ResolveInfoSounds` — 모델 값이 비어 있고 보스가 아니면 이 몹의 `MonsterInfo.Id`(레인 미니언 `MinionUnit.MonsterId` → 수비대 `DefenderUnit.MonsterId` → 사냥터 `FarmReward.MonsterId` → 자이언트 `FarmReward.EliteId` 의 베이스 몹)로 채운다. 스폰 0.1s 뒤 + 피격 때 다시 시도. 스포너는 안 고침. 로그 `[Monster] sounds <이름> id=… damage=… die=…` |
+| 소리 내기 | 지금 있던 `HandleHitEvent` 길 그대로(살아 있는 피격 = Damage · 죽이는 타격 = Die · 맵 안 플레이어마다 그 위치에서). 새 규칙 2개: 몬스터끼리의 피격(수비대 ↔ 미니언)은 피격 소리 안 냄(`MonsterVsMonsterHitSound = false`) · 같은 몹은 0.08s 안에 한 번(`HitSoundMinInterval`). 사망 소리는 누가 죽였든 낸다 |
+| 안 바꾼 것 | 스킬 명중음(`SkillExecutors.extraSounds` 등) · 보스 소리(`BossInfo`) · 억제기 폭발 처치의 사망 소리 줄(`LaneStateService` — 이제 미니언에 값이 생겨 실제로 소리가 난다) |
+
+검사: 스크립트 검사 0 오류 / 0 경고(`Monster.mlua` info 2 = Maker Refresh 전 `MonsterCatalog` codeblock) · `check-integrity.cjs` 통과(경고 3 · main 과 같음).
+
+Play 확인(아직 안 함): 사냥터 몹 3종 피격/처치 소리 · 자이언트 · 레인 미니언(플레이어가 때릴 때만 피격 소리 · 수비대와 싸울 때는 안 남) · 수비대 · 억제기 폭발로 미니언 여럿이 죽을 때 겹침 · 보스 소리 그대로 · 빈칸 3종은 죽을 때 조용함 · 빌드 경고 N → N.

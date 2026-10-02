@@ -32,6 +32,22 @@ script Monster extends Component
 	@MaxValue(1)
 	property number SoundVolume = 1.0
 
+	-- ── 몹마다 원작 피격 · 사망 소리 (b/monster-sounds · #40 5927315317 · 정정 5927819993 · 사용자 강민구 2026-10-01) ──
+	-- 위 두 값이 비어 있으면 MonsterInfo 의 DamagedSoundRUID · DieSoundRUID 로 채운다(ResolveInfoSounds). 보스(BossInfo · BossSpawner 가 넣음)와
+	-- 모델에 값이 박힌 몹은 그대로. 이 몹의 MonsterInfo.Id = 레인 미니언 MinionUnit.MonsterId → 수비대 DefenderUnit.MonsterId → 사냥터 FarmReward.MonsterId
+	-- → 자이언트 FarmReward.EliteId 의 베이스 몹(EliteMonsterInfo.BaseMonsterId) 순서로 찾는다. 스포너는 손대지 않는다.
+	-- 몬스터끼리 때린 피격(수비대 ↔ 미니언)은 피격 소리를 안 낸다 — 레인 싸움이 끊임없이 겹치지 않게. 사망 소리는 누가 죽였든 낸다.
+	property boolean MonsterVsMonsterHitSound = false
+
+	-- 같은 몹의 피격 소리 최소 간격(초). 한 프레임에 여러 타격이 와도 한 번만(여러 줄 스킬 · 볼리).
+	property number HitSoundMinInterval = 0.08
+
+	@HideFromInspector
+	property boolean infoSoundsResolved = false
+
+	@HideFromInspector
+	property number lastHitSoundAt = -1000
+
 	-- ── 피격 반응 (WO-011 ⑨-1 · 사용자 요청 2026-09-05) ─────────────────────
 	-- 공격 반대 방향(공격자에게서 멀어지는 쪽)으로 아주 살짝 미끄러지고, 잠깐 AI 이동을 멈추고, 스프라이트를 잠깐 붉게.
 	-- 보스: 패턴(스킬 시전) 중엔 반응 없음 · 최대 HP 의 BossKnockbackHpRatio 이상 피해일 때만 밀림 · 고정형(AiType static, 피아누스) 은 절대 안 밀림.
@@ -110,7 +126,55 @@ script Monster extends Component
 			if self.FitHitbox then
 				self:FitHitboxToSprite()
 			end
+			-- 원작 피격 · 사망 소리: 스포너가 스폰 직후 MonsterId 를 넣으니 한 박자 뒤에 찾는다(피격 때도 다시 시도 · HandleHitEvent).
+			_TimerService:SetTimerOnce(function()
+				if isvalid(self.Entity) then self:ResolveInfoSounds() end
+			end, 0.1)
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResolveInfoSounds()
+		-- 비어 있는 DamagedSoundRUID · DieSoundRUID 를 이 몹의 MonsterInfo 행 값으로 채운다(한 번). Id 를 아직 모르면 다음에 다시 시도한다.
+		if self.infoSoundsResolved then return end
+		if self.DamagedSoundRUID ~= "" or self.DieSoundRUID ~= "" or isvalid(self.Entity.BossSkillRunner) then
+			self.infoSoundsResolved = true
+			return
+		end
+		local id = self:InfoMonsterId()
+		if id <= 0 or _MonsterCatalog == nil then return end
+		self.infoSoundsResolved = true
+		self.DamagedSoundRUID = _MonsterCatalog:GetDamagedSoundRuid(id)
+		self.DieSoundRUID = _MonsterCatalog:GetDieSoundRuid(id)
+		log("[Monster] sounds " .. tostring(self.Entity.Name) .. " id=" .. tostring(id) .. " damage=" .. self.DamagedSoundRUID .. " die=" .. self.DieSoundRUID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer InfoMonsterId()
+		-- 이 몹의 MonsterInfo.Id(모르면 0). 레인 미니언 → 수비대 → 사냥터 몹 → 자이언트(베이스 몹) 순서.
+		local minion = self.Entity.MinionUnit
+		if isvalid(minion) and minion.MonsterId > 0 then return minion.MonsterId end
+		local defender = self.Entity.DefenderUnit
+		if isvalid(defender) and defender.MonsterId > 0 then return defender.MonsterId end
+		local reward = self.Entity.FarmReward
+		if isvalid(reward) then
+			if reward.MonsterId > 0 then return reward.MonsterId end
+			if reward.EliteId ~= "" and _EliteCatalog ~= nil then
+				local info = _EliteCatalog:GetInfo(reward.EliteId)
+				if info ~= nil then return math.floor(tonumber(info.baseMonsterId) or 0) end
+			end
+		end
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ShouldPlayHitSound(Entity attacker)
+		-- 살아 있는 피격 소리를 낼지: 몬스터끼리 때린 타격은 끔(MonsterVsMonsterHitSound) · 같은 몹은 HitSoundMinInterval 안에 한 번.
+		if not self.MonsterVsMonsterHitSound and isvalid(attacker) and isvalid(attacker.Monster) then return false end
+		local now = _UtilLogic.ServerElapsedSeconds
+		if now - self.lastHitSoundAt < self.HitSoundMinInterval then return false end
+		self.lastHitSoundAt = now
+		return true
 	end
 
 	@ExecSpace("ServerOnly")
@@ -415,10 +479,13 @@ script Monster extends Component
 
 		local originalHp = self.Hp
 		self.Hp = self.Hp - TotalDamage
-		
+		self:ResolveInfoSounds()
+
 		if self.Hp > 0 or originalHp <= 0 then
 			if self.Hp > 0 and originalHp > 0 then
-				self:PlaySoundToMap(self.DamagedSoundRUID, self.SoundVolume)
+				if self:ShouldPlayHitSound(event.AttackerEntity) then
+					self:PlaySoundToMap(self.DamagedSoundRUID, self.SoundVolume)
+				end
 				self:ReactToHit(event.AttackerEntity, TotalDamage)
 			end
 			return
