@@ -87,3 +87,16 @@
 7. 아이콘: 버프 켜면 0.1 s 안에 HUD 슬롯이 새 아이콘(`[SkillHud] icon swap …` · `[Buff] icon swap … on`) · 만료 · 매치 리셋 때 원래 아이콘(`… off`). 죽은 동안은 원래 아이콘, 버프가 남은 채 부활하면 다시 새 아이콘.
 8. 매직 가드 추가 피해가 현재 MP 2.5 % 인지(에너지볼트 · 다른 스킬 · 툴팁 "2.5%").
 9. 버프 없이: 파워 스트라이크 · 에너지볼트가 예전 그대로(변형 로그 `variant=-`).
+
+## 2026-10-03 — 죽으면 버프 끝 스위치 (기본 꺼짐 · #40 5949256804 답 대기)
+
+- `SkillBuffs.EndBuffsOnDeath`(기본 **false** = 지금처럼 죽어도 버프가 남는다). A 가 "죽으면 끝" 이라고 답하면 이 값만 true 로 바꾼다.
+- 켜져 있으면 서버 타이머(`DeathCheckInterval` 0.25 s · 스위치는 틱마다 본다 → 서버 Lua 로 켜고 끄면 바로 따른다)가 버프가 남은 유저 중 죽은(HP 0 · `IsDead`) 유저의 **B 버프 전부**(불굴의 진 · 매직 가드 · 하이퍼 바디 · 다크 사이트 · 쉐도우 파트너 · 에너지 쉴드 · 에너지 차지 · 닷지 확정 크리 …)를 보통 끝내기(`EndBuffNow` · 만료와 같은 태그별 처리 · 루프 이펙트 제거 · 미러 갱신)로 끝내고 궁 시전 무적 창도 지운다 — `EndAllBuffsOnDeath` · 로그 `[Buff] death -> ended N buff(s) [태그…]` · 태그마다 `[Buff] OFF <태그> (death)`.
+- 레이징 블로우 · 플레임 헤이즈 변형과 슬롯 아이콘은 버프가 있을 때만 있으므로 같이 끝난다(변형의 "살아 있을 때만" 검사는 그대로 둔다 — 스위치가 꺼져 있을 때를 위해).
+- 에너지 차지 쿨다운은 만료와 같은 규칙(`EndChargeState`)을 따른다.
+- 점검: `SkillBuffs` 0 errors · 0 warnings(info 1 = 예전부터) · `check-integrity` 통과(경고 3).
+
+### Play 체크 (스위치 켜고)
+
+10. 서버 Lua `_SkillBuffs.EndBuffsOnDeath = true` → 전사 R(불굴의 진) · 마법사 E(매직 가드) 각각 켠 채 죽기(서버 Lua 로 HP 0 · 또는 몬스터) → `[Buff] OFF INVULNERABLE (death)` / `OFF MAGIC_GUARD (death)` · `[Buff] death -> ended 1 buff(s) [...]` · `[Buff] icon swap SK_W11 -> … (레이징 블로우 off)` / `SK_M11 … (플레임 헤이즈 off)` · HUD 아이콘 원래대로 · 부활 뒤 Q = 보통 파워 스트라이크 / 에너지볼트(`variant=-`) · 버프 루프 이펙트 사라짐.
+11. 스위치 끈 채(기본) 같은 것 → 버프가 남고(`death -> ended` 줄 없음) · 죽은 동안 변형 안 나감 · 버프가 남은 채 부활하면 변형 · 아이콘 다시 켜짐.

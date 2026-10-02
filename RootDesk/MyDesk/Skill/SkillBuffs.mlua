@@ -92,6 +92,18 @@ script SkillBuffs extends Logic
     -- (보호막 · MP 두 번 소모 · 하이퍼 바디 두 번 감소). 스위치는 PlayerHit 훅을 되돌릴 때만 쓴다.
     property boolean MagicGuardSelfWire = false
 
+    -- 죽으면 버프가 끝나는가(b/skill-raging-blow-flame-haze · #40 5949256804 답 대기 · 기본 꺼짐 = 지금처럼 죽어도 남는다).
+    --   켜면(서버 Lua: _SkillBuffs.EndBuffsOnDeath = true) DeathCheckInterval 마다 버프가 있는 유저 중 죽은(HP 0 · IsDead) 유저의 B 버프를 전부
+    --   보통 끝내기(EndBuffNow · 태그별 종료 처리 · 루프 이펙트 제거 · 미러 갱신)로 끝내고 궁 시전 무적 창도 지운다.
+    --   레이징 블로우 · 플레임 헤이즈 변형과 슬롯 아이콘은 버프가 있을 때만 있으므로 같이 끝난다(VariantOf · ApplyVariantIcon).
+    --   A 가 "죽으면 끝" 이라고 답하면 이 값만 true 로 바꾼다.
+    property boolean EndBuffsOnDeath = false
+
+    property number DeathCheckInterval = 0.25
+
+    @HideFromInspector
+    property integer deathCheckTimer = 0
+
     property boolean DarkSightSelfWire = false
 
     property boolean EnergyShieldSelfWire = false
@@ -205,7 +217,9 @@ script SkillBuffs extends Logic
                 self:AttachHitListener(user.PlayerComponent.UserId)
             end
         end
-        log("[Buff] SkillBuffs ready (hit listener for reflect)")
+        -- 죽음 → 버프 끝(EndBuffsOnDeath). 타이머는 늘 돌고 스위치는 틱마다 본다 — 서버 Lua 로 켜고 끄면 바로 따른다. 꺼져 있으면 아무것도 안 한다.
+        self.deathCheckTimer = _TimerService:SetTimerRepeat(function() self:CheckDeathEndsBuffs() end, self.DeathCheckInterval)
+        log("[Buff] SkillBuffs ready (hit listener for reflect · EndBuffsOnDeath=" .. tostring(self.EndBuffsOnDeath) .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -222,6 +236,10 @@ script SkillBuffs extends Logic
             end
         end
         self.hitHandlers = {}
+        if self.deathCheckTimer ~= 0 then
+            _TimerService:ClearTimer(self.deathCheckTimer)
+            self.deathCheckTimer = 0
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -494,6 +512,37 @@ script SkillBuffs extends Logic
         end
         self:OnBuffEnded(userId, buffTag)
         self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CheckDeathEndsBuffs()
+        -- 타이머(DeathCheckInterval): EndBuffsOnDeath 가 켜져 있으면 버프가 남은 유저 중 죽은 유저의 버프를 끝낸다(EndAllBuffsOnDeath).
+        if not self.EndBuffsOnDeath then return end
+        local dead = {}
+        for uid, u in pairs(self.buffs) do
+            local has = false
+            if u ~= nil then for _, _ in pairs(u) do has = true break end end
+            if has then
+                local player = _UserService:GetUserEntityByUserId(uid)
+                if isvalid(player) and isvalid(player.PlayerComponent) and (player.PlayerComponent.Hp <= 0 or player.PlayerComponent:IsDead()) then
+                    table.insert(dead, uid)
+                end
+            end
+        end
+        for _, uid in ipairs(dead) do self:EndAllBuffsOnDeath(uid) end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EndAllBuffsOnDeath(string userId)
+        -- 죽은 유저의 B 버프 전부를 보통 끝내기 길(EndBuffNow · 만료와 같은 태그별 처리)로 끝낸다 + 궁 시전 무적 창 지우기.
+        -- 에너지 차지 쿨다운은 만료 때와 같은 규칙(EndChargeState)을 따른다 — 죽음이라고 다르게 하지 않는다.
+        local u = self.buffs[userId]
+        if u == nil then return end
+        local tags = {}
+        for tag, _ in pairs(u) do table.insert(tags, tag) end
+        for _, tag in ipairs(tags) do self:EndBuffNow(userId, tag, "death") end
+        self.castInvulnUntil[userId] = nil
+        log("[Buff] death -> ended " .. tostring(#tags) .. " buff(s) [" .. table.concat(tags, ",") .. "] (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
