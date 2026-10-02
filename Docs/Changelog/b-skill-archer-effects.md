@@ -63,3 +63,22 @@
 | **스나이핑 쿨타임 8 → 0** (#40 5884390599 · 표에 없는 쿨타임은 0) · commit `62cb056` | `SkillInfo.csv` SK_A21 Cooldown · #Note. MP 18 은 그대로(같은 답 "MP 지금 그대로") |
 
 Play 확인(다음 라운드 · 테스트 브랜치 재구성 뒤): 더블 샷 달팽이 1마리 → `volley SK_A11 arrow hit x1 … followImpact=true` + `… followImpact=false` · 숫자 2개(각 1타) · HP 두 번 감소 · 분홍 폭발 1번 / 스나이핑 발사 직후 대상 제거 → `single target gone` · 뒤 몬스터 무피해 / 쿨 0.
+
+## 6차 — Play 뒤 수정 (2026-10-01 · `local/test-100-102` Play 결과 · 사용자 선택) · commit `c32610a`
+
+| 무엇 | 어떻게 |
+|---|---|
+| **더블 샷 간격 0.16** (영상 2009 더블 샷 · 사용자 "Gap 0.16 u is good") | `SkillAttack.VolleyTimingOverrides.SK_A11.gapY` -0.04 → -0.16. 두 발은 **같이 떠나 같이 난다**(delay 0 · 촉 맞춤 그대로). 영상의 간격은 13~15px(화살 길이의 0.17)인데 우리 화살 그림이 두 배 두꺼워 0.16 에서 두 발로 보인다 |
+| **둘째 화살 명중 = 첫 명중 0.10s 뒤** (영상: 숫자 19.600 / 19.700 · 명중 소리 19.725 / 19.825) | 새 `SkillAttack.FollowHitDelay = 0.1`. 볼리 표가 `{ members, firstHitAt, followDelay }` 로 바뀜. 먼저 맞힌 발(lead)이 명중하면 나머지 발이 그 자리에서 숨고 멈춘 뒤(`SkillProjectile.HoldForFollow` · `held`) 0.10s 뒤 대상 조준점에서 한 번 판정(`ResolveHeldHit`). 아무도 안 맞으면 조용히 지운다. 피해 · 표시는 5차 그대로(발마다 ×1 · 1타) |
+| **폭발 · 명중 소리 = 발마다 한 번** (사용자 결정) | 5차의 "폭발은 볼리당 한 번(`impactPlayed`)" 을 대체. 발마다 `impactDone` · `soundDone` — 대상 여럿에 겹쳐 맞아도 발마다 한 번. 다른 투사체의 명중 소리는 예전 그대로(대상마다) |
+| **궁수 화살 매 프레임 판정 · 맞는 순간 그림 숨김** (Play: 화살이 대상 앞에서 사라지거나 지나쳐 날아간 뒤 사라짐) | 원인: 판정 0.1s 간격 × 초속 12 = 1.2 유닛 걸음 > 상자 0.8, 거기에 파괴 지연 0.05s 동안 0.6 유닛 더. `SkillAttack.IsFrameCheckedProjectile`(SK_A11 · SK_A21 만) → `HitInterval = 0` · `HideOnHit = true`(`SkillProjectile.HideSprite` = `SpriteRUID ""`). 에너지볼트(#100) · 럭키 세븐(#115)은 안 바꿈 |
+| **스나이핑 Use 소리 +0.43s** (Play: 키 입력 순간에 나서 그림보다 0.43s 이름 · 사용자 선택 (a)) | `SkillExecutors.ExecuteProjectile` — `PlayCastSound` 를 aimDelay 타이머 안으로(조준 클립과 같이). 선딜 없는 투사체는 예전처럼 시전 순간 |
+| **닷지 이펙트 · 소리 = 리트리트 샷** (Play: "드릴 같다" · 제자리 미리보기 7개 비교 · 후보 4) | depart `4797106d`(백스텝샷) → `ba912795`(모험가 궁수 리트리트 샷 skill/310.img/skill/3101008/effect). castSounds SK_A22 `2e47b3c1` → `29101cbe`(3101008 Use). 뒤집기 · 앞 층 · 출발 자리는 그대로 — **뒤집는 방향은 다음 Play 에서 양쪽으로 확인** |
+| **폭풍의 화살 시전 소리 · 명중 소리** (Play 오디션 · 사용자 "pick 3" · "pick 8") | castSounds SK_A31 `62362802`(파이널 토스 Hit) → `f06e9bb7`(신궁 피어싱 3221001 Use). 새 `extraSounds.SK_A31.hit = e8eccd46`(트루 스나이핑 400031010 Hit) — 관통이라 대상마다 틀면 수십 겹 → `ExecuteLineOrigin` 이 시전 한 번에 한 번, 시전자에게 x 가 가장 가까운 첫 대상에서 튼다 |
+| `SkillInfo.csv` #Note | SK_A11 · SK_A21 · SK_A22 · SK_A31 에 위 내용 덧붙임(수치 열은 안 바뀜) |
+
+**안 바꾼 것**: 더블 샷 대상 수(화살마다 1명 vs 상자 안 전부) — #40 5917239248 A 답 대기.
+
+검사: 스크립트 검사 0 오류 / 0 경고 · `check-integrity.cjs` 통과(경고 3 · 기존과 같음).
+
+Play 재확인(다음 라운드 · 런시트 `villagedefense-harness/archer-check/RECHECK-c32610a.md`): 더블 샷 달팽이 1마리 → `lead=true` + `follower held 0.1s` · 숫자 · 소리 · 폭발 각 2번(0.10s 간격) · 지나침 없음 / 스나이핑 `aim clip + Use sound at +0.43s` / 닷지 양쪽 방향 / 폭풍의 화살 `LINE SK_A31 hit sound once … at first target` 한 줄.
