@@ -51,8 +51,11 @@ const SPRITE_FIT = {
   'ELLINIA:CORE':        { scale: 0.649, status: 'M2' },
   // M3(2026-10-02 사용자 "새 3연사 그림으로 · 지금 화면 크기 · 바닥선과 같게"): 새 그림(362×362 원본 · 축소 없음 → 크롭 376×352)의 바닥선 위 높이 317px 를
   //   옛 M2 그림(508×496 · 바닥선 위 471.5px × Scale 0.55 = 259.3px)과 같게: 259.3 ÷ 317 = 0.818. Ground / Bar 는 이 배율로 계산(옛 1.251 / 1.422 ↔ 새 1.276 / 1.397).
-  'NAUTILUS:TOWER':      { scale: 0.818, status: 'M3' },
-  'NAUTILUS:SUPPRESSOR': { scale: 0.575, status: 'M2' },
+  // WO-040 3차(사용자 2026-10-02 "포탑이 위로 떠 있는 것 같다"): 노틸러스 포탑 · 억제기는 물보라(물 받침) 위에 서 있어 바닥선(불투명 폭 25% 규칙)이 몸체(검은 포드) 바닥보다 아래다 —
+  //   확대 스샷(테스트맵 줌 250~300 · 발판 윗면 ↔ 포드 바닥 픽셀 실측)으로 몸체가 발판선보다 약 0.25(포탑) / 0.23(억제기) 떠 있었다 → Ground 를 0.246 / 0.25 줄여 몸체 바닥이 발판선에 닿게 한다(물보라는 발판 쪽으로 내려간다).
+  //   BarOffset 은 피벗 기준이라 그대로(그림과 같이 내려간다). 나머지 12종은 바닥선 = 그림 맨 아래라 같은 방식으로 재도 ±0.03 안(Docs/Changelog 조각 8 표).
+  'NAUTILUS:TOWER':      { scale: 0.818, ground: 1.03, status: 'M3', note: 'WO-040 3차 Ground 1.276 → 1.03(몸체 바닥을 발판선에 · 물보라는 발판 쪽)' },
+  'NAUTILUS:SUPPRESSOR': { scale: 0.575, ground: 1.17, status: 'M2', note: 'WO-040 3차 Ground 1.42 → 1.17(몸체 바닥을 발판선에 · 물보라는 발판 쪽)' },
   // NAUTILUS:CORE 는 그림 없음(노틸러스호 자체가 넥서스 · 투명 + 체력 바) — FacilitySprite 행을 건드리지 않는다.
 };
 
@@ -329,7 +332,7 @@ for (const row of spr.rows) {
   if (fit.flipX !== undefined) row.FlipX = String(fit.flipX);
   if (key !== 'HENESYS:TOWER') {
     const o = OLD_SPRITE[key];
-    row['#Note'] = `WO-040 새 그림 fac_${kind}_${idleName} (${m.canvas[0]}x${m.canvas[1]} · ${m.reduce === 1 ? '축소 없음' : Math.round(m.reduce * 100) + '% 축소'}) · 옛 ${o.ruid} ${o.name} (Scale 0.25 · Ground ${o.ground} · Bar ${o.bar}) · ${fit.status === 'M1' ? 'M1 이 옛 그림과 나란히 놓고 맞춤' : fit.status === 'M2' ? 'M2 가 옛 그림 전체 높이에 맞춤' : fit.status === 'M3' ? 'M3 가 새 3연사 그림을 지난 M2 그림의 높이 · 바닥선에 맞춤' : '계산값'} · 아이콘은 옛 그림 그대로`;
+    row['#Note'] = `WO-040 새 그림 fac_${kind}_${idleName} (${m.canvas[0]}x${m.canvas[1]} · ${m.reduce === 1 ? '축소 없음' : Math.round(m.reduce * 100) + '% 축소'}) · 옛 ${o.ruid} ${o.name} (Scale 0.25 · Ground ${o.ground} · Bar ${o.bar}) · ${fit.status === 'M1' ? 'M1 이 옛 그림과 나란히 놓고 맞춤' : fit.status === 'M2' ? 'M2 가 옛 그림 전체 높이에 맞춤' : fit.status === 'M3' ? 'M3 가 새 3연사 그림을 지난 M2 그림의 높이 · 바닥선에 맞춤' : '계산값'} · 아이콘은 옛 그림 그대로${fit.note ? ' · ' + fit.note : ''}`;
   }
   fitReport.push(`${key.padEnd(20)} scale=${row.Scale} ground=${row.GroundOffset} bar=${row.BarOffset} flipX=${row.FlipX} [${fit.status}]`);
   if (JSON.stringify(row) !== before) sprChanged.push(key);
