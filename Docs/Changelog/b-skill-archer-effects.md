@@ -94,3 +94,4 @@ Play 재확인(다음 라운드 · 런시트 `villagedefense-harness/archer-chec
 | 무엇 | 어떻게 |
 |---|---|
 | **화살마다 로딩 표시(점 고리)가 ≈0.15s 뜨던 것** (사용자 "Q 마다 화살 자리에 로딩 표시 두 개") | 원인 = 6차 `SkillProjectile.HideSprite` 가 맞은 화살(먼저 맞힌 발 · 0.10s 기다리는 둘째 발)을 `SpriteRUID = ""` 로 지웠다 — 살아 있는 엔티티에 빈 RUID 를 넣으면 MSW 가 로딩 표시를 그린다(30fps 캡처: 1프레임 화살 2발 → 2~5프레임 그 자리 점 고리 → 6프레임 사라짐). `HideSprite` 를 `SpriteRendererComponent.Color` 알파 0 으로 바꿨다(`SkillExecutors.PlaySpriteFlash` · `LaneFacilityService` 와 같은 방법). 그림 RUID · 이펙트 · 판정은 그대로 |
+| **화살 하나가 두 마리를 맞히던 것** (합동 Play D6b · 겹친 2마리 모두 HP 1) | 한 화살의 판정 한 번 안에서 대상(L2)이 죽자, 같은 판정의 다음 몬스터(L1)에서 `AcceptOneTarget` 이 "살아 있는 유도 대상 없음 → 처음 통과한 몬스터" 로 넘어가 L1 도 맞혔다(같은 투사체 `_26` 이 둘 다 처치 · 둘째 발은 남은 대상이 없어 사라짐). `AcceptOneTarget` 맨 앞에 `if self.consumed then return false end` — 이미 한 번 맞힌 화살은 아무도 더 안 맞는다(`consumed` 는 첫 명중 직후 `OnAttack` 이 켠다 · 로그상 다음 몬스터 판정보다 먼저) |
