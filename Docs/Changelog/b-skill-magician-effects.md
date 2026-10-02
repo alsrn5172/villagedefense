@@ -153,3 +153,10 @@
   - 로그 `BLINK SK_M21 arrival cap=6 inBox=N chosen=6 [이름,…]` / `… inBox=N (all hit)`. `SkillInfo.csv` SK_M21 #Note 한 구절.
 - **에너지볼트(SK_M11) 쿨타임 1.5 → 0 — `6bef717`.** #40 5884390599: 표에 없는 쿨타임은 0. `SkillInfo.csv` Cooldown 한 칸 + #Note.
 - 빌드 경고 · Play 는 아직(테스트 브랜치를 현재 main + #100 + #102 로 다시 만든 뒤). Play 확인 항목: 대마법 화면 안 전부(화면 밖 제외 · 대상마다 6000%) · 텔레포트 강화 7마리 이상 → 6마리만 · 에너지볼트 쿨 0.
+
+## 명중 사운드 (2026-10-01 · Play 뒤 · 사용자 선택)
+
+- **텔레포트 강화 도착 명중 = 썬더 볼트 `2201005/Hit` `e8e38d3a`** · **대마법 명중 = 썬더 스톰 `2211011/Hit` `5b59c860`** — Play 중 후보 보드(키 7/8/9/0/6 · 한 번 + 겹친 재생)로 비교해 고름. 원작 텔레포트 마스터리(2211007) · 프로즌 라이트닝(2241500) 사운드는 라이브러리에 없다.
+- 둘 다 **도착/시전 한 번에 한 번**, 맞은 대상이 있을 때만(`ExecuteBlink` · `ExecuteBlast` 가 `extraSounds[skill].hit` 를 직접 튼다). 대상마다 트는 `SkillAttack.PendingHitSound` 는 쓰지 않는다 — 도착 최대 6명 · 화면 전체라 겹침을 막으려고.
+- 로그 `BLINK SK_M21 hit sound once (…) for N targets` · `BLAST SK_M31 hit sound once (…) for N targets`.
+- Play 전 항목 통과(2026-10-01 · `9c934ae`) 뒤에 넣은 소리라 **#115 Play(스택 브랜치) 시작 때 소리 확인**.
