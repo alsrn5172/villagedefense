@@ -33,6 +33,9 @@ script LaneAttackFx extends Component
 
 	property number HitScale = 1.0
 
+	-- Ball2 로 쏘는 발의 적중 크기(FacilityAttackFx.HitScale 의 "a|b" 의 b · 0 = HitScale 과 같음 · WO-040 조각 9 · 페리온 Lv3).
+	property number HitScale2 = 0
+
 	property number FlightSec = 0.45
 
 	property number ArcHeight = 1.5
@@ -85,6 +88,10 @@ script LaneAttackFx extends Component
 	property number LaunchAdjX = 0
 
 	property number LaunchAdjY = 0
+
+	-- 발사체 클립을 이 프레임부터 재생(0 기준 · FacilityAttackFx.BallStartFrame · WO-040 조각 9 · 페리온 Lv2 빨간 창은 앞 프레임이 비어 있어 비행 내내 안 보였다).
+	-- "a" = 두 발 모두 a · "a|b" = Ball 은 a · Ball2 는 b · 빈칸/0 = 처음부터(지금과 같음). HitRuid · HitScale 도 같은 규칙(홀수 번째 발 = Ball · 짝수 번째 발 = Ball2).
+	property string BallStartFrame = ""
 
 	-- 확인용(WO-040 M3): true 면 마법진 · 번개 · 발사체가 만들어질 때마다 한 줄씩 로그([AttackFx] fx / hitfx / shot) — 공격 1회당 몇 번 만들어지는지 센다. 평소 false.
 	property boolean ShotLog = false
@@ -209,7 +216,7 @@ script LaneAttackFx extends Component
 			local launch = Vector3(origin.x + self.LaunchOffsetX + self:ForwardSign() * self.LaunchAdjX, origin.y + self.LaunchOffsetY + self.LaunchAdjY, 0)
 			-- 🔴 발사체 사양은 **발사 순간** 값으로 고정한다 — 0.1초 간격 뒤 발이 나가기 전에 레벨업(ApplyAttackFx)이 끼면 옛 그림에 새 배율이 섞여
 			--    거대/초소형 포탄이 날아갔다(사용자 2026-09-14 "렙업했을 때 가끔 포탄이 이상하게 날아감").
-			local spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX }
+			local spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, hitScale2 = self.HitScale2, ballStart = self.BallStartFrame, flight = flight, arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX }
 			if split then
 				-- 분할 타격(노틸러스 · 사용자 2026-09-14 "같은 데미지를 3분할로 3번"): **표적마다** CSV 개수(n)만큼 쏘고 발사체마다 도착 시각(delay + FlightSec)에 1/n 피해.
 				-- 표적마다 합은 온전한 한 방(광역 유지). k 번째 발은 모든 표적에 동시에 나간다(0.1초 간격 3파).
@@ -294,10 +301,20 @@ script LaneAttackFx extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method string PickPart(any cell, boolean second)
+		-- "a|b" 칸에서 홀수 번째 발(Ball)은 a · 짝수 번째 발(Ball2)은 b. "|" 가 없으면 한 값 = 두 발 모두. 빈칸 · nil = "".
+		local s = tostring(cell or "")
+		local p, _ = string.find(s, "|", 1, true)
+		if p == nil then return s end
+		if second then return string.sub(s, p + 1) end
+		return string.sub(s, 1, p - 1)
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SpawnShot(Entity target, string ruid, Vector3 launch, any spec)
 		-- 발사체 하나: laneshot 모델을 출발점(살짝 흩뿌림)에 스폰 → 그림·크기·층 → LaneShot 부착 → Launch. spec = Fire 가 발사 순간 고정한 사양(없으면 현재 property).
 		if not isvalid(target) or not isvalid(self.Entity) then return end
-		if spec == nil then spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, flight = math.max(0.05, self.FlightSec), arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX } end
+		if spec == nil then spec = { scale = self.Scale, hit = self.HitRuid, hitScale = self.HitScale, hitScale2 = self.HitScale2, ballStart = self.BallStartFrame, flight = math.max(0.05, self.FlightSec), arc = self.ArcHeight, stick = self.StickSec, face = self.FaceDeg, hitOffX = self.HitOffsetX, hitOffY = self.HitOffsetY, hitFlip = self.HitFlipX } end
 		local map = self.Entity.CurrentMap
 		if not isvalid(map) then return end
 		self.seq = self.seq + 1
@@ -314,15 +331,26 @@ script LaneAttackFx extends Component
 			log_warning("[AttackFx] shot spawn failed model=" .. self.ShotModelId)
 			return
 		end
+		-- Ball2 로 쏘는 발(페리온 Lv3 의 짝수 번째 발)은 "a|b" 칸(BallStartFrame · HitRuid · HitScale)의 b 를 쓴다. "|" 가 없는 한 값은 두 발 모두.
+		local second = (self.Ball2Ruid ~= "" and ruid == self.Ball2Ruid and ruid ~= self.BallRuid)
+		local startFrame = math.max(0, math.floor(tonumber(self:PickPart(spec.ballStart, second)) or 0))
+		local hitRuid = self:PickPart(spec.hit, second)
+		local hitScale = spec.hitScale
+		if second and (spec.hitScale2 or 0) > 0 then hitScale = spec.hitScale2 end
+		if self.ShotLog then log(string.format("[AttackFx] shotspec %s #%d second=%s ball=%s start=%d hit=%s hitScale=%.2f", self.Entity.Name, self.seq, tostring(second), string.sub(ruid, 1, 8), startFrame, string.sub(hitRuid, 1, 8), hitScale or 0)) end
+		-- 🔴 번쩍임 방지(WO-040 조각 9): laneshot 모델의 기본 그림은 비어 있다(아무것도 안 그린다). 배율 · 층을 **먼저** 넣고 그림(SpriteRUID)을 **맨 마지막**에 넣는다 —
+		--    그림이 클라에 먼저 가면 배율 1 · 기본 층으로 한 프레임 커다랗게 보였다(노틸러스 포탄이 모든 마을 포탑에서 번쩍 · 사용자 2026-10-02).
+		ent.TransformComponent.Scale = Vector3(spec.scale, spec.scale, 1)
 		local sr = ent.SpriteRendererComponent
 		if isvalid(sr) then
-			sr.SpriteRUID = ruid
 			-- 시설과 같은 SortingLayer · 몬스터(3) · 시설(2)보다 앞(155 — 발사체는 몬스터 위에 보인다).
 			local fsr = self.Entity.SpriteRendererComponent
 			if isvalid(fsr) then sr.SortingLayer = fsr.SortingLayer end
 			sr.OrderInLayer = 155
+			sr.SpriteRUID = ruid
+			-- 발사체 클립을 지정 프레임부터(BallStartFrame · 0 = 처음부터). 그림을 넣은 뒤에 시작 프레임(PlayClipOrdered 와 같은 순서).
+			if startFrame > 0 then sr.StartFrameIndex = startFrame end
 		end
-		ent.TransformComponent.Scale = Vector3(spec.scale, spec.scale, 1)
 		---@type LaneShot
 		local shot = ent:AddComponent("script.LaneShot")
 		if not isvalid(shot) then
@@ -331,8 +359,8 @@ script LaneAttackFx extends Component
 			return
 		end
 		shot.TargetEntity = target
-		shot.HitRuid = spec.hit
-		shot.HitScale = spec.hitScale
+		shot.HitRuid = hitRuid
+		shot.HitScale = hitScale
 		shot.FlightSec = spec.flight
 		if spec.exact == true then
 			shot.ArcHeight = spec.arc
@@ -344,6 +372,7 @@ script LaneAttackFx extends Component
 		shot.HitOffsetX = spec.hitOffX or 0
 		shot.HitOffsetY = spec.hitOffY or 0
 		shot.HitFlipX = (spec.hitFlip == true)
+		shot.ShotLog = self.ShotLog
 		-- 착탄 연출(SHOT_CAST): 도착 지점에 마법진 + 번개(LaneShot.PlayArrival).
 		if spec.cast ~= nil and spec.cast ~= "" then
 			shot.CastRuid = spec.cast
