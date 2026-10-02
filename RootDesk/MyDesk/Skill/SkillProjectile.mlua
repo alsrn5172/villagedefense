@@ -12,8 +12,9 @@ script SkillProjectile extends AttackComponent
     -- undo Translate (same reasoning as the ported source).
     --
     -- b/skill-archer-thief-pirate (2026-09-12):
-    --   · DamageMul / DisplayHits: "60x2%" 같은 N발 스킬은 첫 투사체 하나가 피해 ×N · 표시 N타를 진다(MonsterHit.ImmuneCooldown 0.4s 때문에
-    --     두 번째 투사체의 피해는 어차피 무효). 나머지 투사체는 VisualOnly(피해 없음 · 연출만).
+    --   · DamageMul / DisplayHits: "60x2%" 같은 N발 스킬은 첫 투사체 하나가 피해 ×N · 표시 N타를 지고 나머지는 VisualOnly(피해 없음 · 연출만).
+    --     당시엔 몬스터 피격 무적(MonsterHit.ImmuneCooldown 0.4s) 때문에 두 번째 투사체 피해가 무효였다. #120(2026-09-29)이 그 무적을 뺐다(IsHitTarget 항상 true)
+    --     → 더블 샷은 발마다 ×1(SkillAttack.IsPerArrowVolley · Volley). 다른 N발 스킬(럭키 세븐)은 아직 첫 발 ×N.
     --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 배율 2.0.
     --   · OnAttack: hit 사운드(HitSoundRUID) + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
 
@@ -55,7 +56,7 @@ script SkillProjectile extends AttackComponent
 
     property number HitCount = 1
 
-    -- 피해 배율(HitCount 발 스킬의 첫 투사체 = HitCount). CalcDamage 가 곱한다.
+    -- 피해 배율(HitCount 발 스킬의 첫 투사체 = HitCount · 발마다 1타 볼리(더블 샷)는 모든 발 1). CalcDamage 가 곱한다.
     property number DamageMul = 1
 
     -- 표시 타수(GetDisplayHitCount). 피해 배율과 같은 값으로 두면 "N타에 각 1발 피해" 로 보인다.
@@ -102,6 +103,41 @@ script SkillProjectile extends AttackComponent
 
     property number FloorTolerance = 0.6
 
+    -- 발마다 1타 볼리(b/skill-archer-effects · 더블 샷 · SkillAttack.IsPerArrowVolley · #40 5884388966 (a)): 같은 볼리의 발들이 같은 표
+    --   { members = 발 목록, firstHitAt = 첫 명중 시각, followDelay = 둘째부터 늦출 초 } 를 든다. nil = 볼리 아님.
+    --   2026-10-01 Play 뒤(영상 2009 더블 샷 · 사용자 결정): 두 발은 같이 날고, 먼저 맞힌 발이 명중하면 나머지 발은 그 자리에서 멈춰 숨고(HoldForFollow)
+    --   followDelay(0.10s) 뒤에 명중한다 → 숫자 · 명중 소리 · 폭발이 0.10s 간격으로 두 번. 폭발(분홍 불꽃 → 별)과 명중 소리는 발마다 한 번(대상마다 아님).
+    property any Volley = nil
+
+    -- 맞는 순간 그림을 숨긴다(HideSprite = 알파 0 · Color 동기) — 궁수 화살(SkillAttack.IsFrameCheckedProjectile). 파괴 지연(0.05s) 동안 지나쳐 보이지 않게.
+    property boolean HideOnHit = false
+
+    -- 볼리 후속 발이 첫 명중 뒤 명중을 기다리는 중(HoldForFollow) — 움직임 · 판정 · 수명 검사를 멈춘다.
+    @HideFromInspector
+    property boolean held = false
+
+    -- 이 발의 폭발 연출 · 명중 소리를 이미 냈는가(볼리 발은 대상 여럿에 겹쳐 맞아도 한 번).
+    @HideFromInspector
+    property boolean impactDone = false
+
+    @HideFromInspector
+    property boolean soundDone = false
+
+    -- 단일 대상(b/skill-archer-effects · 스나이핑 · SkillAttack.IsSingleTargetProjectile): true 면 유도 대상(TargetEntity · 보스 우선)만 맞는다.
+    -- 대상이 사라지면(죽음 · 제거) 화살도 사라진다(#40 5884388966 (b) · OnUpdate) — 다른 몬스터를 맞히지 않는다.
+    property boolean SingleTargetOnly = false
+
+    -- SetTarget 으로 유도 대상을 받은 적이 있는가(단일 대상 화살이 "대상이 사라졌다" 를 알려면 — TargetEntity 는 대상이 무효가 되면 nil 로 풀린다).
+    @HideFromInspector
+    property boolean hadTarget = false
+
+    -- 화살 하나 = 몬스터 1마리(b/skill-archer-effects · 더블 샷 · #40 5927314999 2번 · SkillAttack.IsOneTargetPerArrow): 판정 상자에 몬스터가 여럿 겹쳐도 하나만 맞는다.
+    -- 살아 있는 유도 대상이 있으면 그것만, 없으면(직선 · 대상이 죽음/사라짐) 처음 통과한 살아 있는 몬스터 하나(pickedTarget). 스나이핑의 SingleTargetOnly 와 달리 대상이 사라져도 화살은 남는다.
+    property boolean OneTargetPerArrow = false
+
+    @HideFromInspector
+    property any pickedTarget = nil
+
     @HideFromInspector
     property any Shape = nil
 
@@ -141,6 +177,7 @@ script SkillProjectile extends AttackComponent
     method void SetTarget(Entity target)
         -- 유도 대상 지정 + 즉시 첫 조준. SpawnProjectile 이 부른다.
         self.TargetEntity = target
+        if isvalid(target) then self.hadTarget = true end
         self:AimAtTarget()
     end
 
@@ -158,6 +195,19 @@ script SkillProjectile extends AttackComponent
         local aim = self:AimPointOf(target)
         self:SetDirection2D(aim.x - p.x, aim.y - p.y)
         return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsTargetGone(any target)
+        -- 대상이 사라졌거나(무효 · 파괴) 죽었는가(script.Monster 의 IsDead · HP 0 이하 = 죽는 동안에도 HitComponent 는 살아 있다).
+        -- main 의 SkillAttack.IsDeadOrDying 과 같은 기준. Monster 컴포넌트가 없는 대상은 살아 있다고 본다.
+        if target == nil or not isvalid(target) or not isvalid(target.TransformComponent) then return true end
+        ---@type Monster
+        local mon = target:GetComponent("script.Monster")
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return true end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return true end
+        return false
     end
 
     method Vector3 AimPointOf(Entity target)
@@ -180,6 +230,53 @@ script SkillProjectile extends AttackComponent
         return Vector3(t.x, t.y + self.TargetAimOffsetY, t.z)
     end
 
+    method void PlayHitEffect(Entity defender, Vector3 aim)
+        -- 명중 이펙트 한 번(OnAttack). 기본 = 조준점(콜라이더 중심) · 원본 크기(예전 그대로).
+        -- effectOverrides[SkillId].impact 에 배치 값이 있으면(b/skill-archer-effects · 스나이핑 VI hit): 높이 = 발 + 콜라이더 높이 × heightRatio(영상: 대상 몸 아래쪽) ·
+        --   단 발 + minAboveFeet 보다 낮지 않게(작은 몬스터에서 그림 아래쪽이 발판 밑으로 들어가지 않게) · 크기 = scale. ExecSpace 없음 = OnAttack(서버 피격 파이프라인)에서 부른다.
+        local pos = aim
+        local s = 1
+        local spec = nil
+        if _SkillExecutors ~= nil and _SkillExecutors.effectOverrides ~= nil then
+            local entry = _SkillExecutors.effectOverrides[self.SkillId]
+            if entry ~= nil then spec = entry.impact end
+        end
+        if spec ~= nil and isvalid(defender) and isvalid(defender.TransformComponent) then
+            if spec.scale ~= nil and spec.scale > 0 then s = spec.scale end
+            local feetY = defender.TransformComponent.WorldPosition.y
+            local y = aim.y
+            if spec.heightRatio ~= nil then
+                local hit = defender.HitComponent
+                if isvalid(hit) and hit.BoxSize ~= nil and hit.BoxSize.y > 0 then y = feetY + hit.BoxSize.y * spec.heightRatio end
+            end
+            if spec.minAboveFeet ~= nil and y < feetY + spec.minAboveFeet then y = feetY + spec.minAboveFeet end
+            pos = Vector3(aim.x, y, aim.z)
+        end
+        -- endFrame · holdSeconds · front(2026-09-29 사용자 눈 확인 W · 스나이핑 VI): 클립의 앞 프레임만(영상 = 0번 별 폭발) · 반복 재생으로 hold 초 동안 보인 뒤 지움 ·
+        --   대상 발판 층 + FrontEffectOrderInLayer(표식 위). 셋 다 없으면 예전 그대로(옵션 없음 · 한 번 재생).
+        local opt = nil
+        local hold = 0
+        if spec ~= nil and (spec.endFrame ~= nil or spec.holdSeconds ~= nil or spec.front) then
+            opt = {}
+            if spec.endFrame ~= nil then
+                opt["StartFrameIndex"] = spec.startFrame or 0
+                opt["EndFrameIndex"] = spec.endFrame
+            end
+            if spec.front and isvalid(defender) then _SkillExecutors:ApplyOrderAt(opt, defender, pos, _SkillExecutors.FrontEffectOrderInLayer) end
+            if spec.holdSeconds ~= nil and spec.holdSeconds > 0 then hold = spec.holdSeconds end
+        end
+        local serial = _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, pos, 0, Vector3(s, s, 1), hold > 0, opt)
+        if opt ~= nil then
+            if hold > 0 then _SkillExecutors:RemoveEffectLater(serial, hold) end
+            log("[SkillProjectile] hit effect " .. self.SkillId .. " frames " .. tostring(opt["StartFrameIndex"]) .. ".." .. tostring(opt["EndFrameIndex"]) .. " hold=" .. tostring(hold) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]))
+        end
+        -- 표식(mob.onHit · b/skill-archer-effects · 스나이핑 VI): 원작 · 영상처럼 **맞을 때** 대상 머리에 새긴다(SkillExecutors.PlayMobEffect · atHead). 선딜 중에는 PlayAimMarker 가 건너뛴다.
+        if _SkillExecutors ~= nil and _SkillExecutors.effectOverrides ~= nil and isvalid(defender) then
+            local e2 = _SkillExecutors.effectOverrides[self.SkillId]
+            if e2 ~= nil and e2.mob ~= nil and e2.mob.onHit then _SkillExecutors:PlayMobEffect(self.SkillId, defender) end
+        end
+    end
+
     @ExecSpace("ServerOnly")
     method void ApplyFacing()
         -- Sign-only flip via Scale.x (writing, not reading, facing - reading Scale.x to
@@ -196,6 +293,8 @@ script SkillProjectile extends AttackComponent
 
     @ExecSpace("ServerOnly")
     method void OnUpdate(number delta)
+        -- 볼리 후속 발이 명중을 기다리는 동안(HoldForFollow)은 아무것도 안 한다 — 타이머가 ResolveHeldHit 를 부른다.
+        if self.held then return end
         self.lived = self.lived + delta
         if self.lived >= self.MaxLifetime then
             self.Entity:Destroy()
@@ -215,6 +314,13 @@ script SkillProjectile extends AttackComponent
             end
             local tp = target.TransformComponent.WorldPosition
             transform.WorldPosition = Vector3(tp.x + self.FollowOffsetX, tp.y + self.FollowOffsetY, tp.z)
+            return
+        end
+        -- 단일 대상(스나이핑 · #40 5884388966 (b) 2번): 대상이 사라지거나 죽으면 화살도 사라진다 — 마지막 방향으로 날아가 다른 몬스터를 맞히지 않는다.
+        if self.SingleTargetOnly and self.hadTarget and not self.consumed and self:IsTargetGone(self.TargetEntity) then
+            log("[SkillProjectile] " .. self.SkillId .. " single target gone — arrow removed (lived " .. tostring(self.lived) .. "s)")
+            self.consumed = true
+            self.Entity:Destroy()
             return
         end
         -- 유도: 대상이 살아 있는 동안 매 프레임 다시 조준한다(원작 에너지볼트는 지정한 적에게 반드시 맞는다). 대상 소멸 시 마지막 방향 유지.
@@ -247,6 +353,22 @@ script SkillProjectile extends AttackComponent
     -- "spawn effect after N seconds" timer. This is the actual fix for the detonates-in-place
     -- bug: the effect now happens exactly where and when the bolt lands, because it lands.
     method void OnAttack(Entity defender)
+        -- 발마다 1타 볼리: 이 발이 볼리의 첫 명중이면 나머지 발을 멈춰 followDelay 뒤에 명중시킨다(HoldForFollow).
+        --   폭발 연출(분홍 불꽃 → 별)은 발마다 한 번 — 대상 여럿에 겹쳐 맞아도 한 번.
+        if self.Volley ~= nil and isvalid(defender) then
+            local lead = self.Volley.firstHitAt == nil
+            if lead then
+                self.Volley.firstHitAt = _UtilLogic.ServerElapsedSeconds
+                for _, m in ipairs(self.Volley.members or {}) do
+                    if m ~= self and isvalid(m) then m:HoldForFollow(self.Volley.followDelay or 0.1, defender) end
+                end
+            end
+            log("[SkillProjectile] volley " .. self.SkillId .. " arrow hit x" .. tostring(self.DamageMul) .. " on " .. tostring(defender.Name) .. " lead=" .. tostring(lead) .. " burst=" .. tostring(not self.impactDone))
+            if not self.impactDone then
+                self.impactDone = true
+                self:PlayFollowImpact(defender)
+            end
+        end
         if isvalid(defender) then
             local t = defender.TransformComponent
             if isvalid(t) then
@@ -254,10 +376,12 @@ script SkillProjectile extends AttackComponent
                 if self.HitEffectRUID ~= "" then
                     -- 명중 이펙트는 조준점(콜라이더 중심)에 — 예전 발 + 0.5 는 작은 몬스터 머리 위에 떴다(b/skill-archer-motion).
                     local aim = self:AimPointOf(defender)
-                    _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, aim, 0, Vector3(1, 1, 1), false)
+                    self:PlayHitEffect(defender, aim)
                 end
-                if self.HitSoundRUID ~= "" then
+                -- 볼리 발은 명중 소리도 발마다 한 번(대상마다 아님 · 2026-10-01 사용자 결정). 다른 투사체는 예전 그대로.
+                if self.HitSoundRUID ~= "" and not (self.Volley ~= nil and self.soundDone) then
                     _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)
+                    self.soundDone = true
                 end
             end
             -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
@@ -268,7 +392,54 @@ script SkillProjectile extends AttackComponent
 
         if self.DestroyOnHit and not self.consumed then
             self.consumed = true
+            if self.HideOnHit then self:HideSprite() end
             self.Entity:Destroy(0.05)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void HideSprite()
+        -- 그림만 숨긴다 — 알파 0(Color 는 서버 → 클라 동기 · SkillExecutors.PlaySpriteFlash · LaneFacilityService 와 같은 방법). 엔티티 · 이펙트 주체는 그대로 둔다.
+        -- 🔴 SpriteRUID = "" 로 지우면 살아 있는 엔티티에 MSW 로딩 표시(점 고리)가 뜬다(2026-10-03 Play 캡처 · 화살마다 ≈0.15s).
+        local sr = self.Entity.SpriteRendererComponent
+        if isvalid(sr) then
+            local c = sr.Color
+            sr.Color = Color(c.r, c.g, c.b, 0)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void HoldForFollow(number delay, any leaderDefender)
+        -- 볼리 후속 발(2026-10-01 · 영상 2009 더블 샷): 먼저 맞힌 발과 같이 날아왔으니 그 순간 그림을 숨기고 멈춘 뒤,
+        --   delay 뒤에 유도 대상(없으면 먼저 맞은 대상)의 조준점에서 한 번 판정한다(ResolveHeldHit) → 숫자 · 소리 · 폭발이 delay 만큼 늦게.
+        if self.consumed or self.held then return end
+        self.held = true
+        self:HideSprite()
+        local tgt = self.TargetEntity
+        if tgt == nil or not isvalid(tgt) then tgt = leaderDefender end
+        log("[SkillProjectile] volley " .. self.SkillId .. " follower held " .. tostring(delay) .. "s — its hit comes after the first arrow")
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(self.Entity) then return end
+            self.held = false
+            self:ResolveHeldHit(tgt)
+        end, delay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ResolveHeldHit(any tgt)
+        -- 멈춰 있던 후속 발의 판정 한 번. 대상이 있으면 그 조준점, 없으면 제자리. 아무도 안 맞으면 조용히 지운다.
+        local transform = self.Entity.TransformComponent
+        if not isvalid(transform) then return end
+        local pos = transform.WorldPosition
+        if tgt ~= nil and isvalid(tgt) and isvalid(tgt.TransformComponent) then pos = self:AimPointOf(tgt) end
+        self.Shape.Position = Vector2(pos.x, pos.y)
+        self.Shape.Size = Vector2(self.RangeX, self.RangeY)
+        self.Shape.Angle = 0
+        self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        if not self.consumed then
+            log("[SkillProjectile] volley " .. self.SkillId .. " follower found no target after the hold — removed")
+            self.consumed = true
+            self.Entity:Destroy()
         end
     end
 
@@ -277,7 +448,7 @@ script SkillProjectile extends AttackComponent
         -- the only place the damage VALUE comes from. SkillId/Level/CasterUserId are relayed
         -- from spawn time instead of re-derived from `attacker`, because `attacker` here is this
         -- projectile entity, not the caster - it has no PlayerComponent to read a userId from.
-        -- DamageMul: N발 스킬의 첫 투사체는 ×N (표시는 GetDisplayHitCount 가 N타로 나눈다).
+        -- DamageMul: N발 스킬의 첫 투사체는 ×N (표시는 GetDisplayHitCount 가 N타로 나눈다). 발마다 1타 볼리는 1.
         return math.floor(_SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId) * self.DamageMul)
     end
 
@@ -296,7 +467,68 @@ script SkillProjectile extends AttackComponent
                 return false
             end
         end
-        return __base:IsAttackTarget(defender, attackInfo)
+        -- 단일 대상(스나이핑 · b/skill-archer-effects): 유도 대상만. 대상이 있었는데 풀렸으면(사라짐) 아무도 안 맞는다(OnUpdate 가 화살을 지운다).
+        -- 처음부터 대상이 없던 화살(앞에 몬스터 없음 · 직선)은 제한 없음.
+        if self.SingleTargetOnly and self.hadTarget and (self.TargetEntity == nil or defender ~= self.TargetEntity) then
+            return false
+        end
+        if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        -- 화살 하나 = 몬스터 1마리(더블 샷): 다른 판정을 다 통과한 대상 중 하나만.
+        if self.OneTargetPerArrow then return self:AcceptOneTarget(defender) end
+        return true
+    end
+
+    method boolean AcceptOneTarget(Entity defender)
+        -- 화살 하나 = 몬스터 1마리(#40 5927314999 2번 · 몬스터 무적이 빠졌으니 화살마다 1마리에 1타). IsAttackTarget 에서만 부른다(서버 판정 길).
+        -- 살아 있는 유도 대상이 있으면 그것만. 없으면 이 화살이 처음 통과시킨 살아 있는 몬스터(pickedTarget)만 — 같은 판정에 겹친 나머지는 거른다.
+        -- 이미 한 번 맞힌 화살(consumed · OnAttack 이 첫 명중 직후 켠다)은 아무도 더 안 맞는다 — 같은 판정 안에서 대상이 죽어도 옆 몬스터로 넘어가지 않게(2026-10-03 Play D6b).
+        if self.consumed then return false end
+        local t = self.TargetEntity
+        if t ~= nil and not self:IsTargetGone(t) then
+            return defender == t
+        end
+        if self:IsTargetGone(defender) then return false end
+        if self.pickedTarget == nil or not isvalid(self.pickedTarget) then
+            self.pickedTarget = defender
+            log("[SkillProjectile] " .. self.SkillId .. " one target per arrow — no live homing target, picked " .. tostring(defender.Name))
+            return true
+        end
+        return defender == self.pickedTarget
+    end
+
+    method any FollowImpactSpec()
+        -- effectOverrides[SkillId].impactFollow(b/skill-archer-effects · 더블 샷 두 번째 명중 연출) 또는 nil.
+        if _SkillExecutors == nil or _SkillExecutors.effectOverrides == nil then return nil end
+        local entry = _SkillExecutors.effectOverrides[self.SkillId]
+        if entry == nil or entry.impactFollow == nil or entry.impactFollow.ruid == nil then return nil end
+        return entry.impactFollow
+    end
+
+    method void PlayFollowImpact(Entity defender)
+        -- 두 번째 명중 연출(b/skill-archer-effects · 원작 더블 샷: 작은 불꽃 → 0.1초 뒤 큰 별 폭발 · 영상 19.600 / 19.700s): impactFollow 가 있으면 delay 뒤 같은 조준점에 한 번.
+        -- 화살 엔티티는 0.05초 뒤 사라지므로 이펙트 주체는 시전자 플레이어로 둔다. 대상이 그새 사라져도 처음 조준점에서 터진다. 없으면 아무 일도 안 한다.
+        -- 분홍 sprite(impactFrames / impactFollowFrames 가 다 RUID · 사용자 결정 2026-09-27): 불꽃도 여기서 sprite 순서로 지금 · 폭발은 delay 뒤 sprite 순서로
+        --   (명중 클립은 GetImpactEffectRuid 가 비워 OnAttack 이 안 튼다). 자리표시자면 예전처럼 파란 클립 — 불꽃은 OnAttack 의 명중 클립 · 폭발은 아래 PlayEffect.
+        local spec = self:FollowImpactSpec()
+        if spec == nil or not isvalid(defender) then return end
+        local aim = self:AimPointOf(defender)
+        local caster = _UserService:GetUserEntityByUserId(self.CasterUserId)
+        if not isvalid(caster) then return end
+        local exec = _SkillExecutors
+        local entry = exec.effectOverrides[self.SkillId]
+        local tag = self.SkillId
+        if exec:HasValidFrames(entry.impactFrames) then exec:PlaySpriteSequence(entry.impactFrames, caster, aim, tag .. "_spark") end
+        local s = spec.scale or 1
+        local ruid = spec.ruid
+        local followFrames = entry.impactFollowFrames
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(caster) then return end
+            if exec:HasValidFrames(followFrames) then
+                exec:PlaySpriteSequence(followFrames, caster, aim, tag .. "_burst")
+            else
+                _EffectService:PlayEffect(ruid, caster, aim, 0, Vector3(s, s, 1), false)
+            end
+        end, spec.delay or 0.1)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
