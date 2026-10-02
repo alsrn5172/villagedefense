@@ -11,6 +11,7 @@
 | 적용 | `Monster.ResolveInfoSounds` — 모델 값이 비어 있고 보스가 아니면 이 몹의 `MonsterInfo.Id`(레인 미니언 `MinionUnit.MonsterId` → 수비대 `DefenderUnit.MonsterId` → 사냥터 `FarmReward.MonsterId` → 자이언트 `FarmReward.EliteId` 의 베이스 몹)로 채운다. 스폰 0.1s 뒤 + 피격 때 다시 시도. 스포너는 안 고침. 로그 `[Monster] sounds <이름> id=… damage=… die=…` |
 | 소리 내기 | 지금 있던 `HandleHitEvent` 길 그대로(살아 있는 피격 = Damage · 죽이는 타격 = Die · 맵 안 플레이어마다 그 위치에서). 새 규칙 2개: 몬스터끼리의 피격(수비대 ↔ 미니언)은 피격 소리 안 냄(`MonsterVsMonsterHitSound = false`) · 같은 몹은 0.08s 안에 한 번(`HitSoundMinInterval`). 사망 소리는 누가 죽였든 낸다 |
 | 사망 소리 겹침 (2026-10-02 · 사용자 결정) | 같은 맵에서 **같은 사망 소리는 0.1s 안에 한 번**(`Monster.DieSoundMapWindow` · 몹을 가리지 않음). `PlaySoundToMap` 이 `DieSoundRUID` 를 낼 때 `_MonsterCatalog.TakeDieSoundSlot(맵 이름, RUID, 0.1)` 로 거른다 — 억제기 폭발(`LaneStateService`)로 미니언 여럿이 한꺼번에 죽어도 한 번 · `LaneStateService` 는 안 고침. `MonsterCatalog` 는 룸마다 따로 뜨는 Logic 이라 맵 이름 키가 룸끼리 섞이지 않는다 |
+| 검증 로그 스위치 (2026-10-03) | `Monster.LogSounds`(기본 꺼짐 · 인스펙터에 안 보임). 켜면 소리를 낼 때 `[Monster] hit sound played <이름> <RUID> users=N` · `[Monster] die sound played …`, 규칙으로 안 낼 때 `[Monster] hit sound skipped <이름> — monster attacker <공격자>` · `— within 0.08s` · `[Monster] die sound skipped <이름> — same die sound on <맵> within 0.1s`. Play 확인 때 스크립트로 테스트 몹에만 켠다(로그로 검증하는 보고서용) |
 | 안 바꾼 것 | 스킬 명중음(`SkillExecutors.extraSounds` 등) · 보스 소리(`BossInfo`) · 억제기 폭발 처치의 사망 소리 줄(`LaneStateService` — 이제 미니언에 값이 생겨 소리가 나지만 위 0.1s 창으로 한 번) |
 
 검사: 스크립트 검사 0 오류 / 0 경고(`Monster.mlua` info 2 = Maker Refresh 전 `MonsterCatalog` codeblock) · `check-integrity.cjs` 통과(경고 3 · main 과 같음).
