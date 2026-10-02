@@ -39,6 +39,17 @@ script PlayerSkillState extends Logic
     property boolean TierSpEnabled = true
     property string TierSpResetTag = "TIER_SP_RESET"
 
+    -- 초보자는 이 레벨까지만 SP 를 얻는다(A 답 #40 5927820330 "초보자는 Lv7 까지만 SP 를 얻는다(Lv8 · 9 에서는 안 얻는다)"). 0 = 제한 없음.
+    --   지갑(A 의 SummonManager.econ.sp)은 레벨업 때 LevelTable SP 를 그대로 받으므로(A 파일 편집 없음), 0 차 번 SP 를 이 레벨에서 끊고(TierSpEarned)
+    --   서버 타이머(NoviceSpCheckInterval)가 초보자 구간 Lv8 · 9 레벨업이 준 SP 를 지갑에서 SpendSp(uid, TierSpResetTag, n) 로 바로 덜어 낸다(ForfeitNoviceLateSp).
+    --   Lv10 부터 번 SP 는 1 차 몫이라 그대로 둔다(늦게 전직해도 1 차 몫 · A 답 5927820330 Q3 (c)).
+    property integer NoviceSpMaxLevel = 7
+
+    property number NoviceSpCheckInterval = 0.5
+
+    @HideFromInspector
+    property integer noviceSpTimer = 0
+
     -- ⚠ DEV 임시 (2026-09-09 · 테스트 편의): true 면 RequestChooseJob 이 초보자가 아니어도 직업을 바꿔 준다 — F10(SkillWindowLogic.OnDevChooseJob)
     -- 순환으로 5직업을 바로 시험하기 위한 것. 실제 규칙은 "전직은 초보자에서 1회"(추가기획1 §1-7). 협업-규칙 §10-1: 머지 전 false 로 되돌린다.
     -- 직업이 바뀌어도 이미 배운 스킬 레벨·쓴 SP 는 그대로다(다른 직업 스킬은 CanUse 의 직업 검사로 시전만 막힌다).
@@ -62,6 +73,18 @@ script PlayerSkillState extends Logic
         -- @Logic OnBeginPlay 순서는 보장되지 않으므로 멱등 EnsureLoaded 를 직접 부른다.
         _SkillDatabase:EnsureLoaded()
         _JobDatabase:EnsureLoaded()
+        -- 서버: 초보자 Lv8 · 9 SP 덜어 내기(NoviceSpMaxLevel). 레벨업 이벤트가 없어(A 의 SummonManager.GrantKillReward → ApplyLevelUpRewards) 짧은 주기로 본다.
+        if self:IsServer() and self.TierSpEnabled and self.NoviceSpMaxLevel > 0 then
+            self.noviceSpTimer = _TimerService:SetTimerRepeat(function() self:ForfeitNoviceLateSpAll() end, self.NoviceSpCheckInterval)
+        end
+    end
+
+    method void OnEndPlay()
+        -- 서버 타이머 정리(OnBeginPlay 와 짝).
+        if self.noviceSpTimer ~= 0 then
+            _TimerService:ClearTimer(self.noviceSpTimer)
+            self.noviceSpTimer = 0
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -80,7 +103,7 @@ script PlayerSkillState extends Logic
         if userId == nil or userId == "" then return nil end
         local u = self.users[userId]
         if u == nil then
-            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {} }
+            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {}, noviceSpForfeited = 0 }
             self.users[userId] = u
             self:AutoLearnNoviceSkill(u, userId)
         end
@@ -127,6 +150,8 @@ script PlayerSkillState extends Logic
         local hi = self:TierStartLevel(u.jobId, tier + 1) - 1
         local level = self:GetLevel(userId)
         if hi > level then hi = level end
+        -- 초보자(0 차)는 NoviceSpMaxLevel 까지만 번다(Lv8 · 9 레벨업 SP 는 ForfeitNoviceLateSp 가 지갑에서 덜어 낸다).
+        if tier == 0 and self.NoviceSpMaxLevel > 0 and hi > self.NoviceSpMaxLevel then hi = self.NoviceSpMaxLevel end
         if lo < 2 then lo = 2 end
         local sum = 0
         for n = lo, hi do
@@ -142,6 +167,43 @@ script PlayerSkillState extends Logic
         local u = self:EnsureUser(userId)
         if u == nil then return 0 end
         return self:TierSpEarned(userId, tier) - (u.spentByTier[tier] or 0)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ForfeitNoviceLateSpAll()
+        -- 타이머(NoviceSpCheckInterval): 원장이 있는 초보자마다 ForfeitNoviceLateSp.
+        for uid, u in pairs(self.users) do
+            if u ~= nil and u.jobId == self.NoviceJobId then self:ForfeitNoviceLateSp(uid) end
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ForfeitNoviceLateSp(string userId)
+        -- 초보자 구간(0 차)에서 NoviceSpMaxLevel 을 넘는 레벨업(지금 Lv8 · 9)이 지갑에 준 SP 를 덜어 낸다 — A 답 5927820330 "Lv8 · 9 에서는 안 얻는다".
+        --   덜 몫 = LevelTable 에서 새 레벨 n ∈ [NoviceSpMaxLevel+1, min(지금 레벨, 1 차 시작 −1)] 행 SP 합 − 이미 덜어 낸 몫(u.noviceSpForfeited). Lv10 부터는 1 차 몫이라 안 덜어 낸다.
+        if _MonsterCatalog == nil or _SummonManager == nil then return end
+        local u = self.users[userId]
+        if u == nil or u.jobId ~= self.NoviceJobId or self.NoviceSpMaxLevel <= 0 then return end
+        local level = self:GetLevel(userId)
+        local hi = self:TierStartLevel(u.jobId, 1) - 1
+        if hi > level then hi = level end
+        local owed = 0
+        for n = self.NoviceSpMaxLevel + 1, hi do
+            local row = _MonsterCatalog:GetLevelRow(n - 1)
+            if row ~= nil and row.sp ~= nil then owed = owed + row.sp end
+        end
+        owed = math.floor(owed)
+        local done = u.noviceSpForfeited or 0
+        if owed <= done then return end
+        local e = _SummonManager:GetEcon(userId)
+        if e == nil then return end
+        local take = owed - done
+        local wallet = math.floor(e.sp or 0)
+        if take > wallet then take = wallet end
+        if take > 0 then _SummonManager:SpendSp(userId, self.TierSpResetTag, take) end
+        -- 지갑이 모자라도(다른 경로로 이미 썼다) 그 레벨 몫은 처리한 것으로 센다 — 다음 틱에 같은 몫을 또 덜지 않게.
+        u.noviceSpForfeited = owed
+        log("[Skill] novice SP cap Lv" .. tostring(self.NoviceSpMaxLevel) .. ": level=" .. tostring(level) .. " owed=" .. tostring(owed) .. " took=" .. tostring(take) .. " wallet=" .. tostring(wallet) .. " -> " .. tostring(wallet - take) .. " (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
