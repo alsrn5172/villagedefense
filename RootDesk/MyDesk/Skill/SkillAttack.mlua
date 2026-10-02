@@ -11,7 +11,7 @@ script SkillAttack extends AttackComponent
     --   · DealSkillDamageCircleScaled: 반지름 피해에 배율·표시 타수를 따로 준다(함포 사격 6파 · 메소 익스플로전 동전 개수).
     --   · OnAttack: 타격마다 impact 클립(PendingImpactRuid)·hit 사운드 + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
     --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리 · 배율 2.0.
-    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해).
+    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해 · effectOverrides.spawn.perProjectileHit 면 발마다 1타).
 
     @HideFromInspector
     property any Shape = nil
@@ -87,7 +87,7 @@ script SkillAttack extends AttackComponent
     -- 열로 승격하려면 헤더 변경이라 협업-규칙 §1-5(스키마-계약 선행 PR + 공지)를 먼저 거쳐야 한다.
     property number ProjectileSpawnOffsetX = 0.5
 
-    -- 볼리(더블 샷 · 럭키 세븐): 2발째부터의 발사 간격(초). 2발째부터는 VisualOnly(피해 없음).
+    -- 볼리(더블 샷 · 럭키 세븐): 2발째부터의 발사 간격(초). 2발째부터는 VisualOnly(피해 없음) — perProjectileHit 스킬(럭키 세븐)은 2발째도 진짜 투사체.
     property number VolleyInterval = 0.12
 
     -- 스킬별 투사체 sprite 가 없을 때 쓰는 기본 투사체 = 에너지볼트 공(skill/200.img/skill/2001008 ball · SK_M11).
@@ -575,9 +575,16 @@ script SkillAttack extends AttackComponent
         local lifetime = range / speed
         if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
 
-        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, hitCount, false, sc)
+        -- 스킬별 투사체 규칙(effectOverrides[skill].spawn · b/skill-thief-effects · 럭키 세븐):
+        --   perProjectileHit = 발마다 1타(첫 발도 ×1 · 2발째부터도 진짜 투사체 = 피해 · 명중 폭발 · 소리 · 픽파켓). 몬스터 피격 무적이 없어져(#120 · #40 5884388966 (a)) 두 발 다 들어간다.
+        --   singleTarget = 투사체 하나가 상자 안 몬스터 하나만(SkillProjectile.SingleTargetOnly · #40 5884390073 7번).
+        local perShot = self:ProjectileSpawnFlag(skillId, "perProjectileHit")
+        local single = self:ProjectileSpawnFlag(skillId, "singleTarget")
+        local firstMul = hitCount
+        if perShot then firstMul = 1 end
+        local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, firstMul, false, sc)
         if mover == nil then return end
-        -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요.
+        -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요(perProjectileHit 면 2발째도 넣는다).
         mover.SameFloorOnly = true
         mover.FloorY = pos.y
         mover.FloorTolerance = self.AimFloorTolerance
@@ -590,16 +597,27 @@ script SkillAttack extends AttackComponent
             mover.ExplodeMaxTargets = math.floor(explode.maxTargets or 0)
             explodeText = tostring(explode.sizeX) .. "x" .. tostring(explode.sizeY) .. "@" .. tostring(mover.ExplodeCenterY) .. " max=" .. tostring(mover.ExplodeMaxTargets)
         end
+        mover.SingleTargetOnly = single
 
-        -- 볼리: 2발째부터 VisualOnly. 첫 발이 이미 ×hitCount 피해를 지고 있다(무적시간 때문에 2발째 피해는 어차피 무효).
+        -- 볼리: 2발째부터 VisualOnly. 첫 발이 이미 ×hitCount 피해를 지고 있다. perProjectileHit 면 2발째부터도 1타짜리 진짜 투사체.
         for i = 2, math.floor(hitCount) do
             _TimerService:SetTimerOnce(function()
                 if not isvalid(caster) or not isvalid(caster.TransformComponent) then return end
                 local p2 = caster.TransformComponent.WorldPosition
-                local sp2 = Vector3(p2.x + dirX * ox, p2.y + spawnOffsetY, p2.z)
+                local sp2 = Vector3(p2.x + dirX * ox, p2.y + spawnOffsetY + self:VolleyGapY(skillId) * (i - 1), p2.z)
                 local t2 = target
                 if not isvalid(t2) then t2 = nil end
-                self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc)
+                if perShot then
+                    local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, 1, false, sc)
+                    if m2 ~= nil then
+                        m2.SameFloorOnly = true
+                        m2.FloorY = pos.y
+                        m2.FloorTolerance = self.AimFloorTolerance
+                        m2.SingleTargetOnly = single
+                    end
+                else
+                    self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc)
+                end
             end, (i - 1) * self.VolleyInterval)
         end
 
@@ -608,6 +626,7 @@ script SkillAttack extends AttackComponent
         log("SkillAttack: spawned projectile " .. skillId .. " speed=" .. tostring(speed)
             .. " lifetime=" .. tostring(lifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName .. " volley=" .. tostring(hitCount)
             .. " sprite=" .. tostring(spriteRuid ~= "") .. " scale=" .. tostring(sc) .. " preferBoss=" .. tostring(preferBoss) .. " explode=" .. explodeText
+            .. " perShot=" .. tostring(perShot) .. " single=" .. tostring(single)
             .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
             .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * ox) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end
@@ -662,6 +681,25 @@ script SkillAttack extends AttackComponent
             mover:SetTarget(target)
         end
         return mover
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean ProjectileSpawnFlag(string skillId, string key)
+        -- effectOverrides[skillId].spawn[key] == true 인가(b/skill-thief-effects · singleTarget · perProjectileHit). 없으면 false = 예전 규칙(첫 발 ×N · 상자 안 전부).
+        if _SkillExecutors == nil then return false end
+        local entry = _SkillExecutors.effectOverrides[skillId]
+        if entry == nil or entry.spawn == nil then return false end
+        return entry.spawn[key] == true
+    end
+
+    @ExecSpace("ServerOnly")
+    method number VolleyGapY(string skillId)
+        -- 볼리 k번째 발의 세로 간격(world unit · b/skill-thief-effects): effectOverrides[skill].spawn.volleyGapY × (k − 1). 없으면 0(더블 샷 등 그대로).
+        -- 럭키 세븐 −0.09 = 사용자 영상 캐릭터 Lv.25 판(19.2–19.9s) 실측: 둘째 표창이 첫 표창보다 ≈14 video px(160 px = 1 unit) 아래로 날아간다.
+        if _SkillExecutors == nil then return 0 end
+        local entry = _SkillExecutors.effectOverrides[skillId]
+        if entry == nil or entry.spawn == nil or entry.spawn.volleyGapY == nil then return 0 end
+        return entry.spawn.volleyGapY
     end
 
 end
