@@ -35,6 +35,13 @@ script SkillMovement extends Logic
     -- 발판 체인 추적 상한(무한 루프 방지).
     property integer MaxChainSteps = 64
 
+    -- 더블 점프(SK_N02 · 초보자 스킬 · b/skill-novice-double-jump 2026-10-02 · A 답 #40 5927820330 Q6). SkillHotbar 가 공중 점프 키에서 부른다.
+    --   플레이어 위치의 소유자는 그 클라다(위 텔레포트와 같은 원칙) → 소유 클라가 RigidbodyComponent:SetForce 로 바로 민다. 서버는 이펙트 · 소리 · MP · 로그만(SkillExecutors.RequestDoubleJump).
+    --   앞 힘 = 스킬 거리값(SkillDatabase.RatioAt · CSV BaseEffect 1.5 + 0.5/레벨) × DoubleJumpForceScale · 위 힘 = DoubleJumpLift. 둘 다 임시값 — Play 에서 착지 거리를 재서 맞춘다.
+    property number DoubleJumpForceScale = 2.0
+
+    property number DoubleJumpLift = 1.4
+
     -- 스폰 로케이션으로 가는 BLINK 행(skillId -> true). BuildTables 에서 채운다. 닷지 SK_A22.
     property table spawnBlinkSkills = {}
 
@@ -76,6 +83,31 @@ script SkillMovement extends Logic
                 log("SkillMovement: map entry recorded " .. map.Name .. " at (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
             end
         end
+    end
+
+    @ExecSpace("ClientOnly")
+    method table TryDoubleJump(string skillId, number level)
+        -- 로컬 플레이어를 공중에서 한 번 더 민다. 반환 { ok, reason, dirX, fx, fy, fromX, fromY }. ok=false 면 아무것도 안 바꿨다.
+        -- 방향 = 누른 좌우 방향키 → 없으면 바라보는 쪽(ResolveDirection 의 좌우 · 위/아래만 눌렸으면 바라보는 쪽).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return { ok = false, reason = "no local player" } end
+        local body = player.RigidbodyComponent
+        if not isvalid(body) then return { ok = false, reason = "no rigidbody" } end
+        if body:IsOnGround() then return { ok = false, reason = "on ground" } end
+        local controller = player.PlayerControllerComponent
+        local dir = self:ResolveDirection(controller)
+        local dirX = dir.x
+        if dirX == 0 then
+            dirX = 1
+            if isvalid(controller) and controller.LookDirectionX < 0 then dirX = -1 end
+        end
+        local dist = _SkillDatabase:RatioAt(skillId, level)
+        local fx = dirX * dist * self.DoubleJumpForceScale
+        local fy = self.DoubleJumpLift
+        local p = player.TransformComponent.WorldPosition
+        body:SetForce(Vector2(fx, fy))
+        log("SkillMovement: DOUBLE JUMP " .. skillId .. " lv=" .. tostring(level) .. " dist=" .. tostring(dist) .. " force=(" .. tostring(fx) .. "," .. tostring(fy) .. ") from (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
+        return { ok = true, reason = "ok", dirX = dirX, fx = fx, fy = fy, fromX = p.x, fromY = p.y }
     end
 
     @ExecSpace("ClientOnly")
