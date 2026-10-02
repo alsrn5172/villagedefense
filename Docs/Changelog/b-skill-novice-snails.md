@@ -59,7 +59,7 @@ main(`28edf31` · #131 · #154 · #155 포함)을 먼저 합쳤다(`bff1318` · 
 |---|---|---|
 | Q2 스킬 ID `N` | 계약서 §0-4 표에 "스킬 `SK_{머리글자}{차수}{번호}` · W M A T P · **N 초보자**" 한 줄 | `Docs/스키마-계약.md` §0-4 (**스키마-계약 §0-4 단독**) |
 | Q5 사거리 · 속도 | `SK_N01` Range 3 → **2.5** · Speed 8 → **6.5** · `#Note` 에 출처 | `SkillInfo.csv` (헤더 · 열 그대로) |
-| Q6 초보자 SP Lv7 까지 | 0 차 번 SP 를 Lv7 에서 끊는다(`TierSpEarned`) + 초보자 구간 Lv8 · 9 레벨업이 지갑에 준 SP 를 서버 타이머(0.5 s)가 `SpendSp(uid, "TIER_SP_RESET", n)` 으로 덜어 낸다(`ForfeitNoviceLateSp`) · Lv10 부터 번 SP 는 1 차 몫이라 그대로(Q3 (c)) | `PlayerSkillState` `NoviceSpMaxLevel = 7` · `NoviceSpCheckInterval = 0.5` |
+| Q6 초보자 SP Lv7 까지 | 0 차 번 SP 를 Lv7 에서 끊는다(`TierSpEarned` → 배우기 게이트 `TierSpLeft` 가 이것만 허락 · 타이머 틈에도 못 쓴다) + 초보자 구간 Lv8 · 9 레벨업이 지갑에 준 SP 를 서버 타이머(0.5 s)가 `SpendSp(uid, "TIER_SP_RESET", n)` 으로 덜어 낸다(`ForfeitNoviceLateSp`) · Lv10 부터 번 SP 는 1 차 몫이라 그대로(Q3 (c)) | `PlayerSkillState` `NoviceSpMaxLevel = 7` · `NoviceSpCheckInterval = 0.5` |
 | Q1 초보자 스킬 창 | 초보자면 탭 세 개 = 0 · 1 · 2 차(첫 탭 = 초보자 스킬 · 탭 글자 "초보자" / 원래 첫 탭 글 / 둘째 탭 글) · 전직 뒤 예전처럼 1 · 2 · 3 차(.ui 원래 글자로 되돌림). 툴팁: 효과 "고정 피해 10/20/40" · MP = 그 레벨 MP(`MpCostAt`) · 다음 레벨 MP 가 다르면 금색 "→ MP 15" · 필요 줄 "필요 초보자 · 1레벨" | `SkillWindowLogic` `TabTier` · `ApplyTabLabels` · `FormatEffect` · `FormatCost` · `BuildTooltipParts` |
 
 - **`.ui` 는 안 고쳤다.** 탭 글자는 런타임에 바꾼다(원래 글자를 처음 한 번 기억). 4번째 탭을 만들지 않은 이유: 초보자는 직업 줄이 없어 1 · 2 · 3 차 목록이 어차피 비어 있고, 전직 뒤엔 초보자 스킬을 못 쓴다(1차 결정 · `CanUse` 직업 검사).
@@ -77,6 +77,7 @@ main(`28edf31` · #131 · #154 · #155 포함)을 먼저 합쳤다(`bff1318` · 
 2. 툴팁: "고정 피해 10" · "MP 10" · "→ 고정 피해 20" · "→ MP 15" · "필요 초보자 · 1레벨". Lv3 에서 "(최대)" · MP 20.
 3. Lv2 이상에서 + 로 Lv2 · Lv3 배우기 → 0 차 SP 가 준다(`[Skill] learn SK_N01 -> Lv.2 · tier 0 SP left …`).
 4. 레벨 7 → 8 → 9: `[Skill] novice SP cap Lv7: level=8 owed=3 took=3` · 지갑(스킬 창 SP · HUD)이 Lv7 값 그대로 · Lv9 에서 owed=6.
+4b. 틈 막기(2026-10-02 사용자 지적): Lv7 까지 번 0 차 SP 를 다 쓴 초보자가 Lv8 이 되는 순간(타이머가 덜기 전 · 지갑엔 +3) + 를 눌러도 거절 — `[Skill] learn SK_N01 rejected: tier 0 SP left 0 < 1 (novice SP counted to Lv7 · level 8)`. 배우기 게이트는 지갑이 아니라 0 차 몫(`TierSpLeft` = Lv7 까지 번 SP − 0 차에 쓴 SP)만 본다 — 타이머는 지갑 표시를 맞출 뿐 규칙을 지키는 곳이 아니다.
 5. 레벨 10 이상 초보자: SP 가 다시 늘어난다(1 차 몫) · 전직하면 `tier SP -> tier 1 … keep=` 이 Lv10 이후 몫.
 6. 전직 뒤 K: 탭 글자 .ui 원래 글자(1 · 2 · 3 차) · 첫 탭 = 1 차 스킬 · 초보자 스킬 없음.
 7. 달팽이 껍질 사거리 2.5 · 속도 6.5(예전보다 짧고 느림).
