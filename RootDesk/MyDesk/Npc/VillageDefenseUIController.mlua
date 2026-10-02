@@ -39,6 +39,23 @@ script VillageDefenseUIController extends Logic
 	@HideFromInspector
 	property boolean waiting = false
 
+	-- 체력 게이지 채움 그림(gauge_fill_green / gauge_fill_gold / gauge_fill_red) · 글자 색 (디자이너 시안 12-defense)
+	property string fillGreenRuid = "eff713b745054e28916931de6c2b9d7f"
+
+	property string fillGoldRuid = "ea2abb4053514239ba0cf1b4fef5c825"
+
+	property string fillRedRuid = "bca9a94f5caa49fc85ef6f7745c73880"
+
+	property Color cIvory = Color(0.953, 0.933, 0.886, 1)
+
+	property Color cSub = Color(0.682, 0.722, 0.812, 1)
+
+	property Color cInk = Color(0.11, 0.078, 0.02, 1)
+
+	property Color cPale = Color(0.894, 0.91, 0.937, 1)
+
+	property Color cCoral = Color(1, 0.541, 0.478, 1)
+
 	method void OnBeginPlay()
 		-- 클라만 배선.
 		if self:IsClient() then self:SetupClient() end
@@ -88,9 +105,9 @@ script VillageDefenseUIController extends Logic
 		self.waiting = false
 		self:SetOpen(true)
 		if isvalid(self.titleText) then self.titleText.Text = "방어 시설" end
-		if isvalid(self.footer) then self.footer.Enable = false end
+		-- 바닥 띠 = 요약 칩(시안) — 켠다. 옛 상태줄(StatusText)은 끈 채로 둔다.
+		if isvalid(self.footer) then self.footer.Enable = true end
 		if isvalid(self.contentTower) then self.contentTower.Enable = true end
-		if isvalid(self.statusText) then self.statusText.Text = "불러오는 중..." end
 		if _LaneStateService ~= nil then _LaneStateService:RequestView("defense") end
 	end
 
@@ -126,54 +143,148 @@ script VillageDefenseUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method Entity Child(Entity root, string path)
+		-- "A/B/C" 경로로 자식을 찾는다(없으면 nil).
+		local cur = root
+		for seg in string.gmatch(path, "[^/]+") do
+			if not isvalid(cur) then return nil end
+			cur = cur:GetChildByName(seg)
+		end
+		if not isvalid(cur) then return nil end
+		return cur
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(Entity root, string path, boolean on)
+		-- 자식 켜고 끄기.
+		local c = self:Child(root, path)
+		if c ~= nil then c.Enable = on end
+	end
+
+	@ExecSpace("ClientOnly")
 	method void SetText(Entity parent, string childName, string text)
-		-- 자식 텍스트 한 줄.
-		if not isvalid(parent) then return end
-		local c = parent:GetChildByName(childName)
-		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+		-- 자식 텍스트 한 줄(childName 은 "A/B" 경로도 된다).
+		local c = self:Child(parent, childName)
+		if c ~= nil and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetColor(Entity parent, string childName, Color col)
+		-- 자식 글자 색.
+		local c = self:Child(parent, childName)
+		if c ~= nil and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.FontColor = col end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Comma(any v)
+		-- 천 단위 쉼표("50,250").
+		local n = math.floor(tonumber(v) or 0)
+		local s = string.format("%d", n)
+		local out = ""
+		local len = #s
+		for i = 1, len do
+			out = out .. string.sub(s, i, i)
+			local rem = len - i
+			if rem > 0 and rem % 3 == 0 then out = out .. "," end
+		end
+		return out
 	end
 
 	@ExecSpace("ClientOnly")
 	method void SetFill(Entity gauge, number ratio, number width, number height)
-		-- 게이지 Fill 폭 = 비율.
+		-- 게이지 Fill 폭 = 비율 · 그림은 비율에 따라 초록(>50%) / 금(20~50%) / 빨강(<20%) (시안 · 그림 교체).
 		if not isvalid(gauge) then return end
 		local f = gauge:GetChildByName("Fill")
 		if isvalid(f) and f.UITransformComponent ~= nil then
 			local r = math.max(0, math.min(1, ratio))
 			f.UITransformComponent.RectSize = Vector2(width * r, height)
 			if f.SpriteGUIRendererComponent ~= nil then
-				if r > 0.5 then f.SpriteGUIRendererComponent.Color = Color(0.35, 0.80, 0.40, 1)
-				elseif r > 0.2 then f.SpriteGUIRendererComponent.Color = Color(0.95, 0.75, 0.25, 1)
-				else f.SpriteGUIRendererComponent.Color = Color(0.90, 0.30, 0.30, 1) end
+				local want = self.fillRedRuid
+				if r > 0.5 then want = self.fillGreenRuid
+				elseif r > 0.2 then want = self.fillGoldRuid end
+				if f.SpriteGUIRendererComponent.ImageRUID ~= want then f.SpriteGUIRendererComponent.ImageRUID = want end
 			end
 		end
 	end
 
 	@ExecSpace("ClientOnly")
+	method void SetupBtn(Entity card, string childName, any cost, boolean on, boolean show, string kind, number meso)
+		-- 카드 버튼 하나: 켜짐/꺼짐 그림은 ButtonComponent 전환(서버 판정 on). 안쪽 = 이름 · 주화 · 비용 / MAX / 필요 없음.
+		-- 주화가 모자라면(클라 비교) 비용 글자만 붉게 — 버튼 켜짐은 서버가 정한다.
+		local b = card:GetChildByName(childName)
+		if not isvalid(b) then return end
+		b.Enable = show
+		if b.ButtonComponent ~= nil then b.ButtonComponent.Enable = on end
+		local ink = on and self.cInk or self.cPale
+		local costN = tonumber(cost) or 0
+		local short = on and (costN > meso)
+		local costOn = (kind == "cost")
+		self:SetColor(b, "Label", ink)
+		self:SetText(b, "Cost", self:Comma(costN))
+		self:SetColor(b, "Cost", short and self.cCoral or ink)
+		self:Show(b, "CoinIcon", costOn)
+		self:Show(b, "Cost", costOn)
+		self:Show(b, "MaxChip", kind == "max")
+		self:Show(b, "NoNeed", kind == "noneed")
+		local ic = b:GetChildByName("ActIcon")
+		if isvalid(ic) and ic.SpriteGUIRendererComponent ~= nil then
+			ic.SpriteGUIRendererComponent.Color = on and Color(1, 1, 1, 1) or Color(1, 1, 1, 0.6)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
 	method void Render(any rows)
-		-- T 행 = 카드 + 방어선 노드, FRONT = 수비대 표식 위치, DEF = 상태줄.
+		-- T 행 = 카드 + 방어선 노드, FRONT = 수비대 표식 · 최전방 카드, DEF · COIN = 바닥 요약 칩, NO_VILLAGE = 빈 안내.
+		-- 먼저 한 번 훑어 T 가 아닌 행(FRONT · DEF · COIN · NO_VILLAGE)을 잡는다(T 행 그릴 때 최전방 · 주화를 알아야 한다).
 		local front = "CORE"
 		local defBundles, defUnits, defCap = "0", "0", "10"
-		local meso = "0"
+		local meso = 0
+		local noVillage = false
 		local names = {}
+		for _, f in ipairs(rows) do
+			if f[1] == "FRONT" then front = f[2]
+			elseif f[1] == "DEF" then defBundles, defUnits, defCap = f[2], f[3], f[4]
+			elseif f[1] == "COIN" then meso = tonumber(f[2]) or 0
+			elseif f[1] == "NO_VILLAGE" then noVillage = true
+			elseif f[1] == "T" then names[f[2]] = f[3] end
+		end
+		-- 마을 없음: 카드 · 방어선 대신 빈 안내판, 바닥은 안내 한 줄(요약 칩은 숨김)
+		self:Show(self.contentTower, "NoVillage", noVillage)
+		if isvalid(self.laneStrip) then self.laneStrip.Enable = not noVillage end
+		if isvalid(self.cardRoot) then self.cardRoot.Enable = not noVillage end
+		self:Show(self.footer, "NoVillage", noVillage)
+		self:Show(self.footer, "Chips", not noVillage)
+		if noVillage then return end
+		local dim = Color(0.45, 0.45, 0.45, 1)
 		for _, f in ipairs(rows) do
 			if f[1] == "T" then
 				local stage = f[2]
-				names[stage] = f[3]
 				local lv, hp, max, alive = f[4], tonumber(f[5]) or 0, tonumber(f[6]) or 1, (f[7] == "1")
 				local attack, range, upCost, repCost, rebCost = f[8], f[9], f[10], f[11], f[12]
-				-- 시설 그림은 마을마다 다르다 — 서버가 FacilitySprite 에서 뽑아 16·17번에 실어 보낸다.
+				-- 시설 그림은 마을마다 다르다 — 서버가 FacilitySprite 에서 뽑아 16·17번에 실어 보낸다(시안의 공용 그림으로 바꾸지 않는다).
 				-- 빈 문자열이면 .ui 에 박힌 기본 그림을 그대로 둔다(빈 RUID 를 대입하면 아이콘이 사라진다).
 				local iconRuid = f[16] or ""
 				local iconFlip = (f[17] == "1")
 				local canUp, canRep, canReb = (f[13] == "1"), (f[14] == "1"), (f[15] == "1")
+				local isMax = (stage ~= "CORE") and ((tonumber(upCost) or 0) <= 0)
+				local ratio = alive and (hp / max) or 0
+				local isFront = alive and (stage == front)
 				-- 카드
 				local card = isvalid(self.cardRoot) and self.cardRoot:GetChildByName("Card_" .. stage) or nil
 				if isvalid(card) then
 					self:SetText(card, "Name", f[3])
 					self:SetText(card, "LvText", "Lv " .. lv)
-					self:SetText(card, "HpText", alive and (tostring(hp) .. " / " .. tostring(max)) or "파괴됨")
-					self:SetFill(card:GetChildByName("HpBar"), alive and (hp / max) or 0, 256, 22)
+					self:Show(card, "LvText", not isMax)
+					self:Show(card, "MaxChip", isMax)
+					self:Show(card, "HpText", alive)
+					self:Show(card, "DeadText", not alive)
+					if alive then self:SetText(card, "HpText", self:Comma(hp) .. " / " .. self:Comma(max)) end
+					self:SetFill(card:GetChildByName("HpBar"), ratio, 234.5, 12)
+					-- 상태 덮개: 최전방 = 금테 · 파괴 = 잠김 판 + 잔해
+					self:Show(card, "Sel", isFront)
+					self:Show(card, "FrontChip", isFront)
+					self:Show(card, "Dead", not alive)
+					self:Show(card, "Rubble", not alive)
 					if stage == "TOWER" then self:SetText(card, "StatText", "공격력 " .. attack .. " · 사거리 " .. range)
 					elseif stage == "SUPPRESSOR" then self:SetText(card, "StatText", "파괴되면 미니언이 강해집니다")
 					else self:SetText(card, "StatText", "파괴되면 탈락 · 재건 불가") end
@@ -181,60 +292,47 @@ script VillageDefenseUIController extends Logic
 					if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
 						if iconRuid ~= "" then icon.SpriteGUIRendererComponent.ImageRUID = iconRuid end
 						icon.SpriteGUIRendererComponent.FlipY = iconFlip
-						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or Color(0.5, 0.25, 0.25, 1)
+						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or dim
 					end
-					local function btn(childName, label, on, show)
-						local b = card:GetChildByName(childName)
-						if isvalid(b) then
-							b.Enable = show
-							if b.TextGUIRendererComponent ~= nil then b.TextGUIRendererComponent.Text = label end
-							if b.ButtonComponent ~= nil then b.ButtonComponent.Enable = on end
-							if b.SpriteGUIRendererComponent ~= nil then
-								b.SpriteGUIRendererComponent.Color = on and Color(0.46, 0.49, 0.54, 1) or Color(0.62, 0.64, 0.68, 0.7)
-							end
-						end
-					end
-					btn("BtnUpgrade", (tonumber(upCost) or 0) > 0 and ("강화 (" .. upCost .. ")") or "최대 Lv", canUp, stage ~= "CORE")
-					btn("BtnRepair", "수리 (" .. repCost .. ")", canRep, true)
-					btn("BtnRebuild", "재건 (" .. rebCost .. ")", canReb, stage ~= "CORE")
+					self:SetupBtn(card, "BtnUpgrade", upCost, canUp, stage ~= "CORE", isMax and "max" or "cost", meso)
+					self:SetupBtn(card, "BtnRepair", repCost, canRep, true, (alive and hp >= max) and "noneed" or "cost", meso)
+					self:SetupBtn(card, "BtnRebuild", rebCost, canReb, stage ~= "CORE", "cost", meso)
 				end
 				-- 방어선 노드
 				local node = isvalid(self.laneStrip) and self.laneStrip:GetChildByName("Node_" .. stage) or nil
 				if isvalid(node) then
-					self:SetText(node, "Label", f[3] .. " Lv" .. lv)
-					self:SetFill(node:GetChildByName("HpBar"), alive and (hp / max) or 0, 120, 12)
+					self:SetText(node, "Label", f[3])
+					self:SetColor(node, "Label", alive and self.cIvory or self.cSub)
+					self:SetText(node, "LvChip/Text", "Lv " .. lv)
+					self:Show(node, "LvChip", not isMax)
+					self:Show(node, "MaxChip", isMax)
+					self:SetFill(node:GetChildByName("HpBar"), ratio, 138, 6)
 					local icon = node:GetChildByName("Icon")
 					if isvalid(icon) and icon.SpriteGUIRendererComponent ~= nil then
 						if iconRuid ~= "" then icon.SpriteGUIRendererComponent.ImageRUID = iconRuid end
 						icon.SpriteGUIRendererComponent.FlipY = iconFlip
-						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or Color(0.5, 0.25, 0.25, 1)
+						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or dim
 					end
 					local mark = node:GetChildByName("Mark")
 					if isvalid(mark) then mark.Enable = false end
 				end
-			elseif f[1] == "FRONT" then
-				front = f[2]
-			elseif f[1] == "DEF" then
-				defBundles, defUnits, defCap = f[2], f[3], f[4]
-			elseif f[1] == "COIN" then
-				meso = f[2]
-			elseif f[1] == "NO_VILLAGE" then
-				if isvalid(self.statusText) then self.statusText.Text = "마을이 없습니다 — 넥서스를 클릭해 마을을 연결하세요 (10레벨)" end
-				return
 			end
 		end
-		-- 수비대 표식 = 최전방 노드
+		-- 수비대 표식 = 최전방 노드(표식 자신이 글자 · 받침 그림 없음)
 		local node = isvalid(self.laneStrip) and self.laneStrip:GetChildByName("Node_" .. front) or nil
 		if isvalid(node) then
 			local mark = node:GetChildByName("Mark")
 			if isvalid(mark) then
 				mark.Enable = true
-				self:SetText(mark, "Text", "수비 " .. defBundles .. "묶음 · " .. defUnits .. "마리")
+				if mark.TextGUIRendererComponent ~= nil then
+					mark.TextGUIRendererComponent.Text = "수비대 " .. defBundles .. "묶음 집결 · " .. defUnits .. "마리"
+				end
 			end
 		end
-		if isvalid(self.statusText) then
-			self.statusText.Text = "최전방: " .. tostring(names[front] or front) .. " · 수비대 " .. defBundles .. "/" .. defCap .. "묶음 (" .. defUnits .. "마리) · 빅토리아 주화 " .. meso
-		end
+		-- 바닥 요약 칩: 최전방 · 수비대 · 빅토리아 주화
+		self:SetText(self.footer, "Chips/ChipFront/Name", tostring(names[front] or front))
+		self:SetText(self.footer, "Chips/ChipGuard/Val", defBundles .. " / " .. defCap .. "묶음")
+		self:SetText(self.footer, "Chips/ChipCoin/Num", self:Comma(meso))
 	end
 
 	method void OnEndPlay()

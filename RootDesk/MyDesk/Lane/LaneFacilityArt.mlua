@@ -1,0 +1,399 @@
+@Component
+script LaneFacilityArt extends Component
+
+	-- 방어 시설 그림 재생 (WO-040 조각 2~4 · 2026-10-02 · 표 기반). 정의는 FacilityArt.csv(계약서 A-2-4c · 마을 × 시설 × 상태)가 정본이다 — 이 파일에 RUID · 시간 · 좌표 상수는 없다.
+	-- 방식(조사 문서 §4 의 A-ⓑ · LaneHpBar 패턴): 서버는 @Sync 로 Key(마을:시설) · Tier(0 일반 · 1 손상 · 2 완파) · AttackSeq(공격할 때마다 +1) · FrameSec 만 쓰고,
+	--   클라가 표를 직접 읽어(UserDataSet 은 클라에도 있다) 시설 스프라이트의 SpriteRUID 를 프레임마다 갈아 끼운다. 서버 값(SpriteRUID)은 스폰 때 FacilitySprite 가 정한 정지 그림 하나뿐이다.
+	-- 붙는 조건: LaneFacilityService.SpawnFacility 가 FacilityArt 의 NORMAL 행이 켜진(Enabled) 시설에만 붙인다. 행이 없거나 꺼져 있으면 이 컴포넌트가 없고 시설은 지금처럼(정지 그림 + 색 틴트).
+	--   DAMAGE1/DAMAGE2 행만 꺼져 있으면 그 상태는 일반 그림 정지 + 옛 틴트(ApplyVisual 이 HasTierArt 로 가른다).
+	-- Mode: ATTACK = AttackSeq 가 오를 때 Frames 를 한 번 재생하고 대기 프레임(IdleIndex)으로 · LOOP = 상시 반복 · STILL = 정지 · HIDDEN = 그림 없음(서버가 스프라이트 알파 0).
+	-- 재생 순서 = Frames 순서(원본 번호 높은 것 → 낮은 것). 공격 중 다음 공격이 오면 처음부터 다시. Tier 가 바뀌면 그 상태 세트로 즉시 교체(공격 중이면 끊는다).
+	-- 서버 호출 지점: LaneFacilityService.ApplyVisual → ApplyState(체력 비율 · 생존) · ApplyCombat → SetCooldown / ApplyToFx · TurretAI → NotifyAttack / CanAttackNow.
+
+	-- "마을:시설" (예 HENESYS:TOWER) — 서버가 부착 직후 쓴다. 클라는 이 값으로 표에서 자기 행을 찾는다.
+	@Sync
+	property string Key = ""
+
+	@Sync
+	property integer Tier = 0
+
+	@Sync
+	property integer AttackSeq = 0
+
+	-- 프레임 한 장 시간(초). 서버가 표 값과 공격 쿨로 정한다(RecalcFrameSec).
+	@Sync
+	property number FrameSec = 0.12
+
+	-- 손상 임계값(체력 비율 이하면 Tier 1) · 회복할 때는 이 값을 넘어야 일반으로 돌아간다(경계 깜빡임 방지 5%p 겹침).
+	property number DamageBelowRatio = 0.5
+
+	property number DamageUpRatio = 0.55
+
+	-- 재생 길이가 공격 쿨의 몇 배 안에 끝나게 할지(ATTACK 만 · 사용자 확정 0.9) · 프레임 시간 하한(초).
+	property number CooldownFit = 0.9
+
+	property number MinFrameSec = 0.03
+
+	-- 서버가 공격을 정한 뒤 클라가 그 소식을 받아 첫 그림을 칠하기까지의 지연 보정(초). 로컬 Maker 실측 0.03~0.05 · 서버 타이머가 0.02 정도 일찍 도는 것까지 합쳐 0.05.
+	-- 실제 네트워크에서는 더 길다 → 발사체가 섬광보다 먼저 보일 수 있다(조각 0 보고).
+	property number ReleaseExtraSec = 0.05
+
+	-- 클라 시험 스위치: 처음 재생 전에 프레임을 미리 불러올지 · 공격 시작/끝 로그 · 프레임 한 장마다 로그(많음) · 한 프레임에 멈출지(0 = 재생, 1~N = Frames 번호로 정지 · 확인 캡처용).
+	property boolean Prewarm = true
+
+	property boolean AttackLog = true
+
+	property boolean FrameLog = false
+
+	property integer HoldIndex = 0
+
+	-- 서버: 지금 공격 쿨(초 · ApplyCombat 이 SetCooldown 으로 넣는다). 0 = 아직 모름.
+	@HideFromInspector
+	property number cooldown = 0
+
+	-- 클라: 이 시설의 상태별 정의 { NORMAL = def, DAMAGE1 = def, DAMAGE2 = def } (켜진 행만).
+	@HideFromInspector
+	property any defs = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
+	property integer seenSeq = -1
+
+	@HideFromInspector
+	property integer seenTier = -1
+
+	@HideFromInspector
+	property boolean playing = false
+
+	@HideFromInspector
+	property number playT = 0
+
+	@HideFromInspector
+	property number loopT = 0
+
+	@HideFromInspector
+	property integer curIdx = 0
+
+	@HideFromInspector
+	property string curRuid = ""
+
+	@HideFromInspector
+	property number playStart = 0
+
+	@HideFromInspector
+	property integer heldIdx = -1
+
+	-- ───────────────────────── 서버 ─────────────────────────
+
+	method string StateName(integer tier)
+		-- Tier 번호 → 표의 State 값(서버 · 클라 공용 — ExecSpace 를 붙이면 한쪽에서 조용히 안 돈다).
+		if tier >= 2 then return "DAMAGE2" end
+		if tier == 1 then return "DAMAGE1" end
+		return "NORMAL"
+	end
+
+	@ExecSpace("ServerOnly")
+	method any DefOf(string state)
+		-- 이 시설의 그 상태 정의(서버 · LaneStateService 의 표). 없거나 꺼져 있으면 nil.
+		if _LaneStateService == nil or self.Key == "" then return nil end
+		local villageId = string.match(self.Key, "^([^:]+):")
+		local stage = string.match(self.Key, ":(.+)$")
+		if villageId == nil or stage == nil then return nil end
+		return _LaneStateService:FacilityArtDef(villageId, stage, state)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any CurDef()
+		-- 지금 Tier 의 정의.
+		return self:DefOf(self:StateName(self.Tier))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HasTierArt()
+		-- 지금 Tier 의 그림 행이 켜져 있는가. false 면 ApplyVisual 이 옛 틴트를 쓴다(안전망).
+		return self:CurDef() ~= nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsHidden()
+		-- 지금 Tier 가 HIDDEN(그림 없음)인가 — 노틸러스호 넥서스. 스프라이트 알파를 0 으로 둔다.
+		local d = self:CurDef()
+		return d ~= nil and d.mode == "HIDDEN"
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsHiddenAny()
+		-- NORMAL 이 HIDDEN 인가(주인 없는 마을 회색 틴트 때도 그림을 안 보이게).
+		local d = self:DefOf("NORMAL")
+		return d ~= nil and d.mode == "HIDDEN"
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanAttackNow()
+		-- 지금 Tier 에서 공격해도 되는가(표의 CanAttack). 행이 없으면 true — 헤네시스 억제기 손상 = false.
+		local d = self:CurDef()
+		if d == nil then return true end
+		return d.canAttack
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ApplyState(boolean alive, number ratio)
+		-- 원장 상태 → Tier. 파괴 = 2 · 체력 ≤ 50% = 1 · 손상에서 올라올 때는 55% 를 넘어야 0. 바뀔 때만 쓴다(같은 값 재대입은 동기화만 낭비). 바뀌었으면 true.
+		local t = 0
+		if not alive then
+			t = 2
+		elseif self.Tier == 1 then
+			if ratio > self.DamageUpRatio then t = 0 else t = 1 end
+		else
+			if ratio <= self.DamageBelowRatio then t = 1 else t = 0 end
+		end
+		if t == self.Tier then return false end
+		log(string.format("[FacArt] tier %d -> %d ratio=%.2f alive=%s %s", self.Tier, t, ratio, tostring(alive), self.Entity.Name))
+		self.Tier = t
+		self:RecalcFrameSec()
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void NotifyAttack()
+		-- TurretAI 가 공격을 시작할 때 부른다. 파괴된(Tier 2) 시설은 공격하지 않는다. 공격 애니메이션(ATTACK)이 있는 상태에서만 AttackSeq 를 올린다.
+		if self.Tier >= 2 then return end
+		local d = self:CurDef()
+		if d == nil or d.mode ~= "ATTACK" then return end
+		self.AttackSeq = self.AttackSeq + 1
+		if self.AttackLog then
+			log(string.format("[FacArt] attack seq=%d tier=%d frameSec=%.3f sT=%.3f %s", self.AttackSeq, self.Tier, self.FrameSec, _UtilLogic.ServerElapsedSeconds, self.Entity.Name))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecalcFrameSec()
+		-- 프레임 시간 = 표 FrameSec. ATTACK 은 재생 길이가 공격 쿨 × CooldownFit 을 넘지 않게 줄인다(쿨이 짧은 Lv3 · 프레임 많은 7-3 대비). 하한 MinFrameSec.
+		local d = self:CurDef()
+		if d == nil then return end
+		local fs = d.frameSec
+		if d.mode == "ATTACK" and #d.frames > 0 and self.cooldown > 0 then
+			fs = math.min(fs, self.cooldown * self.CooldownFit / #d.frames)
+		end
+		fs = math.max(self.MinFrameSec, fs)
+		if math.abs(fs - self.FrameSec) > 0.0001 then self.FrameSec = fs end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCooldown(number cooldown)
+		-- ApplyCombat 이 공격 쿨을 넣는다 → 프레임 시간을 다시 맞춘다.
+		self.cooldown = cooldown
+		self:RecalcFrameSec()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyToFx(any fx)
+		-- 발사체(LaneAttackFx)를 그림의 발사 프레임 시각에 맞춰 내보내고 표의 발사 위치에서 나가게 한다. ApplyAttackFx 가 값을 덮은 직후에 부른다.
+		-- 우선순위: 표(FacilityArt)에 ReleaseOffsetX/Y 가 둘 다 있으면 FacilityAttackFx 의 LaunchOffset 을 덮는다 · 없으면 그대로. ReleaseIndex < 0 이면 발사 지연 없음.
+		if not isvalid(fx) then return end
+		local d = self:CurDef()
+		fx.ReleaseSec = 0
+		if d == nil then return end
+		if d.relX ~= nil and d.relY ~= nil then
+			local sc = math.abs(self.Entity.TransformComponent.Scale.x)
+			local sr = self.Entity.SpriteRendererComponent
+			local flip = isvalid(sr) and sr.FlipX or false
+			-- 표 값은 원본(왼쪽을 봄 · 반전 전) 기준 · 1 = 그림 100px. 반전(FlipX)이면 포구가 반대쪽 · 시설 배율을 곱한다.
+			local dir = flip and -1 or 1
+			fx.LaunchOffsetX = dir * d.relX * sc
+			fx.LaunchOffsetY = d.relY * sc
+		end
+		if d.releaseIndex >= 0 then
+			fx.ReleaseSec = d.releaseIndex * self.FrameSec + self.ReleaseExtraSec
+			-- 발사가 여러 번(ReleaseIndex 12|15|18 · 노틸러스 3연사)이면 첫 발은 위 지연으로, 다음 발과의 간격은 (둘째 − 첫째 칸 수) × FrameSec 로 정한다 —
+			-- 표의 IntervalSec 대신 그림의 발사 프레임에 붙는다(쿨 때문에 FrameSec 가 줄어도 같은 그림 프레임에서 나간다). 발사 개수는 FacilityAttackFx 의 CountMin/Max.
+			local idxs = d.releaseIdxs
+			if idxs ~= nil and #idxs >= 2 then
+				local gap = (idxs[2] - idxs[1]) * self.FrameSec
+				if gap > 0 then fx.IntervalSec = gap end
+			end
+		end
+	end
+
+	-- ───────────────────────── 클라 ─────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void Setup()
+		-- 클라: 표에서 이 시설(Key)의 행을 읽고(한 번) 쓸 프레임을 미리 불러온다. 🔴 표 행은 1-based. 이 Logic 이 아닌 표를 직접 읽는다(LaneStateService 는 서버 전용).
+		if self.defs ~= nil then return end
+		self.defs = {}
+		local villageId = string.match(self.Key, "^([^:]+):")
+		local stage = string.match(self.Key, ":(.+)$")
+		local t = _DataService:GetTable("FacilityArt")
+		if t == nil or villageId == nil or stage == nil then
+			log_warning("[FacArt] FacilityArt dataset not found on client " .. self.Key)
+			self.loaded = true
+			return
+		end
+		local list = {}
+		local seen = {}
+		for i = 1, t:GetRowCount() do
+			if t:GetCell(i, "VillageId") == villageId and t:GetCell(i, "Stage") == stage then
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				local state = t:GetCell(i, "State") or ""
+				if enabled and state ~= "" then
+					local frames = {}
+					for ruid in string.gmatch(t:GetCell(i, "Frames") or "", "[^|]+") do
+						local r = string.match(ruid, "^%s*(.-)%s*$") or ""
+						if r ~= "" then table.insert(frames, r) end
+					end
+					local mode = string.upper(tostring(t:GetCell(i, "Mode") or "STILL"))
+					if mode == "" then mode = "STILL" end
+					if mode == "HIDDEN" or #frames >= 1 then
+						self.defs[state] = {
+							frames = frames,
+							frameSec = math.max(0.01, tonumber(t:GetCell(i, "FrameSec")) or 0.12),
+							mode = mode,
+							idleIndex = math.max(0, math.floor(tonumber(t:GetCell(i, "IdleIndex")) or 0)),
+						}
+						for _, r in ipairs(frames) do
+							if not seen[r] then
+								seen[r] = true
+								table.insert(list, r)
+							end
+						end
+					end
+				end
+			end
+		end
+		if not self.Prewarm or #list == 0 then
+			self.loaded = true
+			log(string.format("[FacArt] setup %s frames=%d (no prewarm)", self.Key, #list))
+			return
+		end
+		local t0 = _UtilLogic.ElapsedSeconds
+		_ResourceService:PreloadAsync(list, function(result)
+			self.loaded = true
+			log(string.format("[FacArt] preload done %s %d sprites in %.3fs", self.Key, #list, _UtilLogic.ElapsedSeconds - t0))
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method any CurrentDef()
+		-- 지금 Tier 의 정의. 그 상태 행이 없으면 일반 행(정지로만 쓴다 · 서버가 옛 틴트를 칠한다). 그것도 없으면 nil.
+		if self.defs == nil then return nil end
+		local d = self.defs[self:StateName(self.Tier)]
+		if d ~= nil then return d end
+		return self.defs["NORMAL"]
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsFallbackDef()
+		-- 지금 Tier 의 행이 없어 일반 행으로 대신하는가(이 경우 재생 없이 정지).
+		if self.defs == nil then return false end
+		return self.defs[self:StateName(self.Tier)] == nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Paint(string ruid)
+		-- 같은 그림이면 다시 대입하지 않는다(같은 RUID 재대입 = 불필요한 동기화 · 깜빡임 위험).
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(sr) or ruid == nil or ruid == "" then return end
+		if ruid == self.curRuid then return end
+		self.curRuid = ruid
+		sr.SpriteRUID = ruid
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintIdle()
+		-- 지금 Tier 의 정지 그림 = Frames[IdleIndex + 1].
+		local d = self:CurrentDef()
+		if d == nil or d.mode == "HIDDEN" or #d.frames == 0 then return end
+		local idx = math.min(d.idleIndex + 1, #d.frames)
+		self:Paint(d.frames[idx])
+	end
+
+	method void OnUpdate(number delta)
+		-- 클라: Tier 가 바뀌면 정지 그림으로 · ATTACK 은 AttackSeq 가 오르면 Frames 를 한 번 재생(FrameSec 간격)한 뒤 대기 프레임으로 · LOOP 은 계속 반복.
+		if not self:IsClient() then return end
+		if not isvalid(self.Entity.SpriteRendererComponent) or self.Key == "" then return end
+		if self.defs == nil then
+			self:Setup()
+			return
+		end
+		if not self.loaded then return end
+		local d = self:CurrentDef()
+		if d == nil or d.mode == "HIDDEN" or #d.frames == 0 then return end
+		local n = #d.frames
+		if self.seenSeq < 0 then
+			-- 첫 틱: 늦게 들어온 클라는 재생 없이 현재 값만 맞춘다.
+			self.seenSeq = self.AttackSeq
+			self.seenTier = self.Tier
+			self:PaintIdle()
+			log(string.format("[FacArt] first paint %s tier=%d seq=%d mode=%s frames=%d", self.Key, self.Tier, self.AttackSeq, d.mode, n))
+			return
+		end
+		-- 확인 캡처용: 한 프레임에 멈춘다.
+		if self.HoldIndex >= 1 and self.HoldIndex <= n then
+			if self.heldIdx ~= self.HoldIndex then
+				self.heldIdx = self.HoldIndex
+				self.playing = false
+				self:Paint(d.frames[self.HoldIndex])
+			end
+			return
+		elseif self.heldIdx ~= -1 then
+			self.heldIdx = -1
+			self:PaintIdle()
+		end
+		if self.Tier ~= self.seenTier then
+			-- 상태가 바뀌면 그 세트의 정지 그림으로 즉시(재생 중이면 끊는다).
+			log(string.format("[FacArt] client tier %s %d -> %d mode=%s", self.Key, self.seenTier, self.Tier, d.mode))
+			self.seenTier = self.Tier
+			self.playing = false
+			self.curIdx = 0
+			self.loopT = 0
+			self:PaintIdle()
+		end
+		local fallback = self:IsFallbackDef()
+		local fs = math.max(0.01, self.FrameSec)
+		if d.mode == "LOOP" and not fallback then
+			-- 상시 반복: 프레임 시간(표 값)마다 다음 장. 한 장뿐이면 정지.
+			if n > 1 then
+				self.loopT = self.loopT + delta
+				local lf = math.max(0.01, d.frameSec)
+				local idx = math.floor(self.loopT / lf) % n + 1
+				if idx ~= self.curIdx then
+					self.curIdx = idx
+					self:Paint(d.frames[idx])
+					if self.FrameLog then log(string.format("[FacArt] loop %s f%d", self.Key, idx)) end
+				end
+			else
+				self:PaintIdle()
+			end
+			self.seenSeq = self.AttackSeq
+			return
+		end
+		if self.AttackSeq ~= self.seenSeq then
+			self.seenSeq = self.AttackSeq
+			if d.mode == "ATTACK" and not fallback and self.Tier < 2 then
+				self.playing = true
+				self.playT = 0
+				self.curIdx = 0
+				self.playStart = _UtilLogic.ElapsedSeconds
+				if self.AttackLog then log(string.format("[FacArt] play start %s seq=%d tier=%d frameSec=%.3f sT=%.3f", self.Key, self.AttackSeq, self.Tier, fs, _UtilLogic.ServerElapsedSeconds)) end
+			end
+		end
+		if not self.playing then return end
+		-- 이번 프레임 시간을 먼저 더한다(시작 틱은 0 → 첫 그림을 바로 칠함).
+		if self.curIdx > 0 then self.playT = self.playT + delta end
+		local idx = math.floor(self.playT / fs) + 1
+		if idx > n then
+			self.playing = false
+			self.curIdx = 0
+			self:PaintIdle()
+			if self.AttackLog then log(string.format("[FacArt] play end %s seq=%d cycle=%.3fs", self.Key, self.seenSeq, _UtilLogic.ElapsedSeconds - self.playStart)) end
+		elseif idx ~= self.curIdx then
+			self.curIdx = idx
+			self:Paint(d.frames[idx])
+			if self.FrameLog then log(string.format("[FacArt] f%d paint t+%.3f dt=%.4f sT=%.3f", idx, _UtilLogic.ElapsedSeconds - self.playStart, delta, _UtilLogic.ServerElapsedSeconds)) end
+		end
+	end
+
+end
