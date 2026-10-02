@@ -27,7 +27,7 @@
 
 - **새 스킬 ID 는 만들지 않았다.** 변형 키 `SK_W11_RB` · `SK_M11_FH` 는 코드 안의 키일 뿐(시전 락 · 동작 · 그림 · 소리 표의 열쇠)이고 `SkillInfo.csv` 행 · 스킬창 · 레벨 · SP 가 없다. 피해 태그 · 쿨타임 · 레벨 · 처치 귀속은 원래 ID(SK_W11 · SK_M11) 그대로다. 시전 로그에는 `variant=SK_W11_RB` 로 남는다.
 - 변형 시전은 원래 스킬의 쿨타임을 걸지 않는다(둘 다 원래 쿨 0 이라 지금은 차이 없음).
-- 죽어 있으면 변형이 안 나간다(버프는 죽어도 남아 있어서 — `SkillBuffs` 는 죽음에 버프를 지우지 않는다 · 매치 리셋에만). 버프가 남은 채 부활하면 다시 변형이 된다. 아이콘도 같은 규칙.
+- 죽어 있으면 변형이 안 나간다(사용자 2026-10-02: 당분간 유지 · 버프가 죽음에 끝나야 하는지는 #40 에 질문). 버프는 죽어도 남아 있어서 — `SkillBuffs` 는 죽음에 버프를 지우지 않는다 · 매치 리셋에만). 버프가 남은 채 부활하면 다시 변형이 된다. 아이콘도 같은 규칙.
 - 원작 동작(`ragingBlowNew` · `flameHaze`)을 MSW 아바타가 재생하는지 확인되지 않았다 → 서버 속성 `SkillExecutors.VariantOwnMotion`(기본 true). Play 에서 동작이 안 나오면 false 로 바꾸면 원래 스킬 모션(파워 스트라이크 · 에너지볼트)으로 돌아간다.
 
 ### 수정
@@ -45,14 +45,14 @@
   - `PlayAttachedSpec`(시전자에 붙여 한 번 · 오른쪽을 보면 FlipX) · `effectOverrides.SK_W11_RB` / `SK_M11_FH` · `castSounds.SK_M11_FH` · `extraSounds.SK_W11_RB` / `SK_M11_FH`.
 - `RootDesk/MyDesk/Skill/SkillAttack.mlua`
   - `DealSkillDamageScaled(skillId, level, shape, mul, displayHits)`: `DealSkillDamage` 와 같은 상자 판정에 배율 · 표시 타수만 받는다(판정 1번 = 넉백/경직 1번 · 숫자 4개). 반환 = 맞은 수.
-  - `PendingProjectileDamageMul` · `PendingProjectileExtraHitCsv`: 다음 `SpawnProjectile` 한 번에만 쓰고 바로 비운다(다른 스킬로 새지 않게).
-- `RootDesk/MyDesk/Skill/SkillProjectile.mlua` — `ExtraHitEffectCsv`: 맞은 자리마다 불꽃 그림을 하나씩 돌려 튼다(연출만).
+  - `PendingProjectileDamageMul` · `PendingProjectileExtraHitCsv`: 다음 `SpawnProjectile` 한 번에만 쓰고 바로 비운다(다른 스킬로 새지 않게). 배율은 투사체의 `BaseDamageMul` 로 간다.
+- `RootDesk/MyDesk/Skill/SkillProjectile.mlua` — `ExtraHitEffectCsv`: 맞은 자리마다 불꽃 그림을 하나씩 돌려 튼다(연출만). `BaseDamageMul`: `CalcDamage` 가 `DamageAt` 에서 매직 가드 추가 피해를 뺀 몫에만 곱하고 추가 피해를 다시 더한다.
 - `RootDesk/MyDesk/SkillInfo.csv` — SK_M22 `SecondaryEffect` 2.5 · 설명 · `#Note`.
 
 ### 피해 계산 메모
 
 - 레이징 블로우 = 판정 1번 × 배율 3.2(= 4 × 0.8) × 표시 4타 → 타마다 파워 스트라이크 % × 0.8. 크리는 이 한 판정에서 굴린다(지금 스킬엔 무작위 크리가 없다 — 회피 확정 크리만 있다).
-- 플레임 헤이즈 × 2 는 `DamageAt` 결과 전체에 곱한다 → 매직 가드 추가 피해(현재 MP 2.5 %)도 두 배가 된다(사실상 5 %). 원하면 추가 피해를 배율 밖으로 빼는 쪽으로 바꿀 수 있다.
+- 플레임 헤이즈 × 2 는 **스킬 자체 피해에만** 곱한다(`SkillProjectile.BaseDamageMul` · 매직 가드 추가 피해 = 현재 MP 2.5 % 는 배율 밖 · 사용자 2026-10-02: A 인계 "플레임 헤이즈 2배 대신 매직 가드 추가 피해 2.5 %" 라 플레임 헤이즈에서도 2.5 % 그대로). 로그 `SkillProjectile: SK_M11 base x2 (bonus N kept) A -> B`.
 - 플레임 헤이즈 명중 그림 위치는 에너지볼트의 `impact.offsetY 0.20` 을 그대로 쓴다(스폰 스킬 ID 가 SK_M11).
 
 ### 인계 페이지와 다른 값 (사용자 값을 따름)
@@ -64,7 +64,7 @@
 | 플레임 헤이즈 MP · 쿨 | 70 · 10 s | 에너지볼트와 같음 · 0 |
 | 플레임 헤이즈 화상 · 둔화 | 있음 | 없음 |
 
-### 툴팁 (제안만 · 정하지 않았다)
+### 툴팁 (보류 — 사용자가 나중에 정한다 · 코드엔 넣지 않았다)
 
 - 파워 스트라이크: 끝에 "불굴의 진 동안 레이징 블로우(파워 스트라이크 %의 80 % × 4타 · 최대 6명 · MP 10)로 바뀐다."
 - 에너지볼트: 끝에 "매직 가드 동안 플레임 헤이즈(에너지볼트 %의 2배 · 주변 최대 10명)로 바뀐다."
@@ -82,7 +82,7 @@
 2. 같은 버프 중 연속 시전: 동작 New → New2 → New3 → New4 → New 순서 · 베기 그림이 동작과 짝. 동작이 안 나오면(아바타가 액션을 모름) `VariantOwnMotion = false` 로 바꾸고 다시 본다.
 3. `hitAt 0.12` 가 베기 그림 · 동작과 맞는지(맞춰야 할 숫자). 시전 락 0.78 동안 다른 스킬이 안 나가는지.
 4. MP 10 이 빠지는지(Lv 무관) · 쿨 표시가 생기지 않는지.
-5. 매직 가드 → 에너지볼트 키: `variant=SK_M11_FH` · `FLAME HAZE` · 첫 대상 둘레 10명까지 · 피해가 에너지볼트의 2배 · 불꽃 그림 · Use 한 번 · Hit 한 번.
+5. 매직 가드 → 에너지볼트 키: `variant=SK_M11_FH` · `FLAME HAZE` · 첫 대상 둘레 10명까지 · 스킬 몫이 에너지볼트의 2배이고 매직 가드 추가 피해는 그대로(`base x2 (bonus N kept)` 로그의 N = 현재 MP × 2.5 %) · 불꽃 그림 · Use 한 번 · Hit 한 번.
 6. 플레임 헤이즈 구체가 키 누름 즉시 나가는 게 어색하면 `effectOverrides.SK_M11_FH.spawnDelay` 를 맞춘다(에너지볼트는 0.50).
 7. 아이콘: 버프 켜면 0.1 s 안에 HUD 슬롯이 새 아이콘(`[SkillHud] icon swap …` · `[Buff] icon swap … on`) · 만료 · 매치 리셋 때 원래 아이콘(`… off`). 죽은 동안은 원래 아이콘, 버프가 남은 채 부활하면 다시 새 아이콘.
 8. 매직 가드 추가 피해가 현재 MP 2.5 % 인지(에너지볼트 · 다른 스킬 · 툴팁 "2.5%").
