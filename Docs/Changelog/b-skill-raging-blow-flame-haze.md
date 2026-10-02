@@ -100,3 +100,15 @@
 
 10. 서버 Lua `_SkillBuffs.EndBuffsOnDeath = true` → 전사 R(불굴의 진) · 마법사 E(매직 가드) 각각 켠 채 죽기(서버 Lua 로 HP 0 · 또는 몬스터) → `[Buff] OFF INVULNERABLE (death)` / `OFF MAGIC_GUARD (death)` · `[Buff] death -> ended 1 buff(s) [...]` · `[Buff] icon swap SK_W11 -> … (레이징 블로우 off)` / `SK_M11 … (플레임 헤이즈 off)` · HUD 아이콘 원래대로 · 부활 뒤 Q = 보통 파워 스트라이크 / 에너지볼트(`variant=-`) · 버프 루프 이펙트 사라짐.
 11. 스위치 끈 채(기본) 같은 것 → 버프가 남고(`death -> ended` 줄 없음) · 죽은 동안 변형 안 나감 · 버프가 남은 채 부활하면 변형 · 아이콘 다시 켜짐.
+
+## 2026-10-03 — 툴팁 안 A (따로 커밋 · push 안 함 · 사용자가 고른다)
+
+- 안 A(`villagedefense-harness/pirate-check/pr-drafts/tooltips-rbfh.md`): 공격 스킬 설명에 한 줄.
+  - SK_W11 파워 스트라이크: "… 불굴의 진 지속 중에는 레이징 블로우가 된다: 파워 스트라이크 데미지의 80%로 4번 · 앞쪽 최대 6명 · MP 10."
+  - SK_M11 에너지볼트: "… 매직 가드 지속 중에는 플레임 헤이즈가 된다: 데미지 2배 · 맞은 자리 주변 최대 10명."
+- `SkillInfo.csv` Description 2칸만(헤더 · 다른 열 그대로 · 쉼표 없음). 코드 변경 없음. 상대 수치라 모든 레벨에서 맞다.
+- 다른 안을 고르면 이 커밋을 되돌리는 커밋을 하나 더 한다(되쓰기 없음).
+
+### Play 체크 (안 A)
+
+12. K → 파워 스트라이크 · 에너지볼트 툴팁에 새 줄 · 줄바꿈 · 툴팁 칸 크기가 넘치지 않는다(*Look*).
