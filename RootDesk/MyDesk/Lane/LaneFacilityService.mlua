@@ -34,6 +34,12 @@ script LaneFacilityService extends Logic
 
 	property number HitWidthCore = 2.4
 
+	-- 그림 없는(HIDDEN) 넥서스 = 노틸러스호의 피격 상자 · 클릭 영역 가로(월드 단위 · WO-040 M2). 배 몸통 가로 약 8.8 중 넥서스 슬롯 쪽 6.
+	property number HitWidthHiddenCore = 6.0
+
+	-- 그림 있는 넥서스의 클릭 영역 가로(월드 단위 · WO-040 M2). 옛 영역(모델값 13.46 × 옛 Scale 0.25 = 3.4)과 같다 — 새 그림 폭 2.9~3.7 을 거의 덮는다(피격 상자 HitWidthCore 2.4 보다 넓게).
+	property number TouchWidthCore = 3.4
+
 	-- 시설 오라의 가로 = 시설 가로너비(HitWidth) × 이 배수 · 시설 중심 기준 좌우 대칭 (사용자 2026-09-13 · F-2 "포탑 가로너비의 3배 · 중앙 유지"). 세로는 컨트롤러 기본(3.0).
 	property number AuraWidthMul = 3.0
 
@@ -42,10 +48,13 @@ script LaneFacilityService extends Logic
 
 	-- 🧪 테스트맵 레인 (WO-025 · LaneTestDriver 가 호출). 한 맵에 5줄 — 위부터 헤네시스·커닝·엘리니아·노틸러스·페리온. 줄 간격 = 포탑 높이(2×GroundOffset)의 1.3배.
 	-- 좌→우로 오는 마을(쉼표 구분): 실제 맵 방향에 맞춰 줄을 거울로 놓는다(사용자 2026-09-15). 나머지는 우→좌.
-	property string TestLaneLeftToRight = "ELLINIA,PERION,NAUTILUS"
+	-- 2026-10-02(WO-040 M2): 페리온을 뺐다 — 실제 레인 맵 3곳(NorthernRidge · WildBoarLand · 마을)에서 미니언이 LaneConfig 대로 오른쪽→왼쪽으로 걷는다(실측). 새 그림의 FlipX 도 그 방향에 맞췄다.
+	property string TestLaneLeftToRight = "ELLINIA,NAUTILUS"
 
-	-- 시설 스프라이트 OrderInLayer (사용자 2026-09-15 · 타일보다 앞에).
-	property integer FacilityOrderInLayer = 150
+	-- 시설 스프라이트 OrderInLayer. 렌더 순서 규칙(사용자 2026-10-02 WO-040 3차): **시설 < 몬스터(미니언 · 수비대 · NPC = 같은 층 3) < 플레이어(Default/4) < 포탈(Default/5)**.
+	-- 시설은 슬롯 발판의 SortingLayer 위에서 발판 바닥 그림(LaneGround · 포탈 = 2)과 같은 2 — 몬스터 3 보다 낮아 겹치면 몬스터가 앞이다. 발사체 · 마법진 · 번개(154~156) · 체력 바(160/161)는 그대로 위.
+	-- (옛 값 150 — 사용자 2026-09-15 "타일보다 앞에" — 은 같은 층의 몬스터(3)를 시설이 가렸다.)
+	property integer FacilityOrderInLayer = 2
 
 	-- UseTestLanes 가 켠다: 주인 없는 마을도 주인 있는 것처럼 그린다(HP 바 표시).
 	@HideFromInspector
@@ -253,6 +262,10 @@ script LaneFacilityService extends Logic
 		if isvalid(ai) then
 			ai.AttackRange = range
 			ai.AttackCooldown = cooldown
+			-- 새 그림(WO-040): 한 번 재생이 쿨 × 0.9 안에 끝나도록 프레임 시간을 맞춘다.
+			---@type LaneFacilityArt
+			local artCd = ent:GetComponent("script.LaneFacilityArt")
+			if isvalid(artCd) then artCd:SetCooldown(cooldown) end
 			ai.PreferMinions = true
 			-- 사거리도 바닥에서 잰다(트랜스폼 높이가 세로 거리로 들어가 수평 사거리를 깎던 것).
 			ai.RangeOffsetY = -self:GroundOffset(villageId, stage)
@@ -277,7 +290,13 @@ script LaneFacilityService extends Logic
 		-- 공격 연출 (WO-025): 마을×시설×Lv 행을 LaneAttackFx 에 넣는다. 레벨이 오르면 Changed → 여기로 다시 와서 연출이 진화한다.
 		---@type LaneAttackFx
 		local fx = ent.LaneAttackFx
-		if isvalid(fx) then self:ApplyAttackFx(fx, villageId, stage, lv) end
+		if isvalid(fx) then
+			self:ApplyAttackFx(fx, villageId, stage, lv)
+			-- 새 그림(WO-040): 발사체를 표의 발사 프레임 시각 · 발사 위치에서 내보낸다(ApplyAttackFx 가 덮은 직후라야 한다).
+			---@type LaneFacilityArt
+			local artFx = ent:GetComponent("script.LaneFacilityArt")
+			if isvalid(artFx) then artFx:ApplyToFx(fx) end
+		end
 		if attacks or isvalid(aura) then
 			log(string.format("[Facility] combat %s:%s lv=%d alive=%s attacks=%s dmg=%d range=%.1f cd=%.2f maxTargets=%d playerMul=%.1f auraSpeed=%.2f splash=%.1f fx=%s",
 				villageId, stage, lv, tostring(alive), tostring(attacks), math.floor(baseDamage), range, cooldown, math.max(0, maxTargets), _LaneStateService.PlayerDamageMul, auraSpd, splashRadius, tostring(isvalid(fx) and fx.Mode or "-")))
@@ -302,6 +321,7 @@ script LaneFacilityService extends Logic
 		if row.interval ~= nil then fx.IntervalSec = row.interval end
 		if row.scale ~= nil then fx.Scale = row.scale end
 		if row.hitScale ~= nil then fx.HitScale = row.hitScale end
+		fx.HitScale2 = row.hitScale2 or 0 -- "a|b" 의 b(Ball2 발의 적중 크기) · 0/빈칸 = HitScale 과 같음
 		if row.flight ~= nil then fx.FlightSec = row.flight end
 		if row.arc ~= nil then fx.ArcHeight = row.arc end
 		if row.stick ~= nil then fx.StickSec = row.stick end
@@ -317,6 +337,10 @@ script LaneFacilityService extends Logic
 		fx.HitStartFrame = math.floor(row.hitStart or 0)
 		fx.HitOffsetX = row.hitOffX or 0
 		fx.HitOffsetY = row.hitOffY or 0
+		fx.CastTrimSec = math.max(0, row.castTrim or 0)
+		fx.LaunchAdjX = row.adjX or 0
+		fx.LaunchAdjY = row.adjY or 0
+		fx.BallStartFrame = row.ballStart or ""
 	end
 
 	@ExecSpace("ServerOnly")
@@ -462,12 +486,41 @@ script LaneFacilityService extends Logic
 		local sx = math.abs(sc.x)
 		local sy = math.abs(sc.y)
 		if sx <= 0 or sy <= 0 then return end
-		local h = self:GroundOffset(villageId, stage) * 2
-		local w = self.HitWidth
-		if stage == "CORE" then w = self.HitWidthCore end
+		local size = self:HitSize(villageId, stage)
+		local w = size.w
+		local h = size.h
 		ent.HitComponent.BoxSize = Vector2(w / sx, h / sy)
 		ent.HitComponent.ColliderOffset = Vector2(0, 0)
 		log(string.format("[Facility] hitbox %s:%s world=(%.2f,%.2f) scale=(%.2f,%.2f)", villageId, stage, w, h, sx, sy))
+	end
+
+	@ExecSpace("ServerOnly")
+	method any HitSize(string villageId, string stage)
+		-- 피격 상자 · 클릭 영역의 월드 크기 {w, h}. 가로 = HitWidth(넥서스 HitWidthCore) · 세로 = GroundOffset × 2.
+		-- 그림이 없는(HIDDEN) 넥서스 = 노틸러스호 자체가 넥서스(WO-040 M2) → 가로는 배 크기에 맞춘 HitWidthHiddenCore (세로는 표의 GroundOffset 으로).
+		local w = self.HitWidth
+		if stage == "CORE" then
+			w = self.HitWidthCore
+			if _LaneStateService ~= nil then
+				local d = _LaneStateService:FacilityArtDef(villageId, stage, "NORMAL")
+				if d ~= nil and d.mode == "HIDDEN" then w = self.HitWidthHiddenCore end
+			end
+		end
+		return { w = w, h = self:GroundOffset(villageId, stage) * 2 }
+	end
+
+	@ExecSpace("ServerOnly")
+	method any TouchSize(string villageId, string stage)
+		-- 넥서스 클릭 영역의 월드 크기 {w, h}. 그림 있는 넥서스 = 옛 영역과 같은 가로(TouchWidthCore) · 그림 없는(HIDDEN) 노틸러스호 = 피격 상자와 같게. 세로 = 피격 상자(GroundOffset × 2).
+		local size = self:HitSize(villageId, stage)
+		local w = size.w
+		if _LaneStateService ~= nil then
+			local d = _LaneStateService:FacilityArtDef(villageId, stage, "NORMAL")
+			if d == nil or d.mode ~= "HIDDEN" then w = self.TouchWidthCore end
+		else
+			w = self.TouchWidthCore
+		end
+		return { w = w, h = size.h }
 	end
 
 	@ExecSpace("ServerOnly")
@@ -504,14 +557,14 @@ script LaneFacilityService extends Logic
 			log_error("[Facility] spawn failed model=" .. modelId .. " map=" .. row.mapName)
 			return nil
 		end
-		-- 렌더 순서(사용자 2026-09-09): 플레이어 4 > 몬스터 3 > 통로 바닥 2 > **시설 1**. 전부 슬롯 발판의 SortingLayer 위에서 겨룬다.
-		-- 🔴 바닥(LaneGround)이 시설보다 앞인 건 의도다 — 시설 그림이 발판 아래로 조금 잠기는데(GroundOffset 실측 전) 바닥이 그 부분을 가려 준다.
-		--    시설을 바닥보다 앞으로 올리면 "포탑이 가라앉은" 것처럼 보인다(2026-09-09 실측: 커닝 포탑 그림 1402px → 반높이 1.75, GroundOffset 1.125 이라 0.63 잠김).
+		-- 렌더 순서(사용자 2026-09-09 → 2026-10-02 WO-040 3차): 포탈(Default/5) > 플레이어(Default/4) > 몬스터 · 수비대 · NPC 3 > 통로 바닥 · 시설 2. 시설 · 몬스터는 슬롯 발판의 SortingLayer 위에서 겨룬다.
+		-- (2026-09-09 의 "시설 1 · 바닥이 시설을 가린다" 는 GroundOffset 이 실측 전이라 그림이 발판에 잠겼던 때의 안전장치였다 — 지금은 바닥선이 발판에 닿게 재 둬서 필요 없다.)
 		-- 발판을 못 찾으면 모델값(Default/-1) 유지.
 		if isvalid(ent.SpriteRendererComponent) then
 			local layer = self:SortingLayerBelow(map, row.slotX, row.slotY)
 			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
-			-- OrderInLayer 150 (사용자 2026-09-15): 1 이면 타일보다 뒤에 그려졌다. 발사체·클립은 155/156, HP 바는 160 으로 그 위.
+			-- OrderInLayer = FacilityOrderInLayer(2 · WO-040 3차: 시설 < 몬스터 3 < 플레이어 4). 1 이면 발판 바닥 그림(2)보다 뒤라 사용자 2026-09-15 "타일보다 앞에" 를 깨고, 150 이면 몬스터를 가렸다.
+			-- 발사체·클립은 154~156, HP 바는 160/161 으로 그 위.
 			ent.SpriteRendererComponent.OrderInLayer = self.FacilityOrderInLayer
 			-- 그림은 마을마다 다르다(FacilitySprite.csv · 계약서 A-2-4b). 빈 값이면 .model 기본값을 그대로 둔다.
 			if _LaneStateService ~= nil then
@@ -532,6 +585,12 @@ script LaneFacilityService extends Logic
 		if isvalid(fc) then
 			fc.VillageId = villageId
 			fc.Stage = stage
+			-- 클릭(소유권 연결)을 받는 넥서스: 터치 영역 크기를 피격 상자와 같게 클라에 알린다(LaneFacility.FitTouch · 서버가 TouchArea 를 써도 클라엔 안 간다).
+			if stage == "CORE" then
+				local size = self:TouchSize(villageId, stage)
+				fc.TouchW = size.w
+				fc.TouchH = size.h
+			end
 		end
 		-- 전투 부품: 진영(방어 2x · 미니언 FactionAI 의 표적이 된다) · 피격 그룹 Monster(FactionAttack 이 때리는 그룹) · 포탑은 FactionAttack + TurretAI.
 		local faction = ent:AddComponent("script.Faction")
@@ -557,6 +616,16 @@ script LaneFacilityService extends Logic
 			local fx = ent:AddComponent("script.LaneAttackFx")
 			if not isvalid(fx) then log_warning("[Facility] LaneAttackFx add failed") end
 		end
+		-- 새 그림 재생기(WO-040 · FacilityArt 표): NORMAL 행이 켜진 시설에만 붙인다 — 없으면 정지 그림 + 틴트(지금 방식)로 돈다. ApplyVisual · ApplyCombat 이 상태 · 쿨 · 발사 위치를 넣는다.
+		if _LaneStateService ~= nil and _LaneStateService:FacilityArtEnabled(villageId, stage) then
+			---@type LaneFacilityArt
+			local art = ent:AddComponent("script.LaneFacilityArt")
+			if isvalid(art) then
+				art.Key = key
+			else
+				log_warning("[Facility] LaneFacilityArt add failed " .. key)
+			end
+		end
 		self.entities[key] = ent
 		self:SpawnHpBar(villageId, stage, map, row.slotX, row.slotY + self:GroundOffset(villageId, stage) + self:BarOffset(villageId, stage))
 		log("[Facility] spawned " .. key .. " at " .. row.mapName .. " (" .. tostring(row.slotX) .. "," .. tostring(row.slotY) .. ") team=" .. tostring(faction and faction.Team or "?"))
@@ -580,25 +649,49 @@ script LaneFacilityService extends Logic
 			if bar == nil or not isvalid(bar.comp) then return end
 			bar.comp.Shown = on
 		end
+		-- 새 그림 재생기(WO-040 · FacilityArt)가 붙은 시설은 손상 · 파괴를 그림(Tier)으로 나타낸다 → 그 상태 행이 켜져 있으면 틴트를 끈다(HasTierArt). 꺼져 있으면 옛 틴트(안전망).
+		-- 주인 없는 마을의 회색 틴트는 그대로(노틸러스호 넥서스처럼 그림 없는(HIDDEN) 시설은 회색이어도 알파 0).
+		---@type LaneFacilityArt
+		local art = ent:GetComponent("script.LaneFacilityArt")
+		local artOn = isvalid(art)
+		local function artColor()
+			-- 그림이 이 상태를 직접 그리는 중: 흰색(HIDDEN 이면 투명). 클라 재생기가 SpriteRUID 를 바꾼다.
+			if art:IsHidden() then return Color(1, 1, 1, 0) end
+			return Color(1, 1, 1, 1)
+		end
 		if not owned or t == nil then
-			sr.Color = Color(0.6, 0.6, 0.6, 1)
+			if artOn and art:IsHiddenAny() then sr.Color = Color(0.6, 0.6, 0.6, 0) else sr.Color = Color(0.6, 0.6, 0.6, 1) end
 			showBar(false)
 			return
 		end
+		-- 상태가 바뀌면(Tier 변경) 발사 위치 · 프레임 시간 · 공격 가능 여부가 달라지므로 전투 부품도 다시 맞춘다(피격마다가 아니라 임계를 넘을 때만).
+		local tierChanged = false
 		if not t.alive then
-			sr.Color = Color(0.5, 0.5, 0.5, 0.5)
+			if artOn then tierChanged = art:ApplyState(false, 0) end
+			if artOn and art:HasTierArt() then
+				sr.Color = artColor()
+			else
+				sr.Color = Color(0.5, 0.5, 0.5, 0.5)
+			end
+			if artOn and art:IsHiddenAny() then sr.Color = Color(1, 1, 1, 0) end
 			showBar(false)
+			if tierChanged then self:ApplyCombat(villageId, stage) end
 			return
 		end
 		local ratio = math.max(0, math.min(1, t.hp / math.max(1, t.max)))
-		if stage == "CORE" then
+		if artOn then tierChanged = art:ApplyState(true, ratio) end
+		if artOn and art:HasTierArt() then
+			sr.Color = artColor()
+		elseif stage == "CORE" then
 			local v = 0.15 + 0.85 * ratio   -- HP 0 → 거의 검정
 			sr.Color = Color(v, v, v, 1)
 		else
 			sr.Color = Color(1, 1, 1, 1)
 		end
+		if artOn and art:IsHiddenAny() then sr.Color = Color(1, 1, 1, 0) end
 		showBar(true)
 		if bar ~= nil and isvalid(bar.comp) then bar.comp.Ratio = ratio end
+		if tierChanged then self:ApplyCombat(villageId, stage) end
 	end
 
 	@ExecSpace("ServerOnly")
