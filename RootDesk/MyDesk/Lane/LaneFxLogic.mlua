@@ -4,16 +4,95 @@ script LaneFxLogic extends Logic
 	-- 시설 연출 보조 (WO-025 · 2026-09-15). 애니메이션 클립을 **특정 프레임부터** 한 번만 보여 줘야 할 때 쓴다
 	-- (사용자: 엘리니아 Lv3 적중 = 엘리멘탈 블래스트 effect0 의 뒷 프레임 13개만). _EffectService:PlayEffect 는 첫 프레임부터 전부 재생하므로
 	-- laneshot 모델을 스폰해 SpriteRendererComponent.StartFrameIndex 로 시작 프레임을 잡고, 끝 프레임 이벤트(또는 안전 타이머)에서 지운다.
+	-- WO-040 M3(2026-10-02): 같은 자리에 두 효과(엘리니아 착탄 = 마법진 아래 · 번개 위)를 겹칠 때 그리기 순서를 정하려고 OrderInLayer 를 받는 PlayClipOrdered 를 더했다.
 
-	-- 클립이 끝 이벤트를 안 보낼 때의 안전 수명(초). 🔴 프레임 100ms 기준 13프레임 = 1.3초보다 살짝 길게 — 3초로 두면 한 바퀴 더 돌아 "두 번 터지는" 것처럼 보였다(사용자 2026-09-15).
+	-- 클립 길이를 못 읽을 때의 안전 수명(초). 🔴 서버는 클립 애니메이션을 돌리지 않아 끝 프레임 이벤트를 못 받는다(WO-040 M3 실측 — 이벤트가 안 와서 이 타이머가 매번 지웠다) →
+	--   클립이 이 값보다 짧으면 클라가 **한 바퀴 더 돌아 "두 번 터지는"** 것처럼 보인다(사용자 2026-09-15 · 2026-10-02 "엘리니아 마법진 · 번개가 한 번에 두 번"의 원인 — Lv1·2 번개는 프레임 3 부터 0.72초인데 1.15초에 지웠다).
+	--   그래서 지금은 클립의 실제 재생 길이(ClipLife = startFrame 이후 프레임 지연 합)에 지운다. 이 값은 길이를 못 읽었을 때만.
 	property number MaxLifeSec = 1.15
+
+	-- 착탄 마법진 같은 긴 클립의 안전 수명(초 · PlayClipOrdered 에 maxLife 를 안 주면 이 값). 끝 프레임 이벤트가 먼저 지운다.
+	property number MaxLifeOrderedSec = 2.0
 
 	@HideFromInspector
 	property integer seq = 0
 
+	-- 클립 재생 길이 캐시: lifeCache["<ruid>:<startFrame>"] = 초
+	@HideFromInspector
+	property any lifeCache = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 연출 클립(FacilityAttackFx 의 마법진 · 번개)의 길이 · 첫 보이는 프레임을 시작할 때 미리 읽어 둔다 — 공격 도중 처음 읽으면 서버가 몇 프레임 멈춰 연출이 겹쳐 만들어지거나 늦는다(WO-040 M3).
+		if not self:IsServer() then return end
+		local t = _DataService:GetTable("FacilityAttackFx")
+		if t == nil then return end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			local mode = t:GetCell(i, "Mode") or ""
+			if enabled and (mode == "SHOT_CAST" or mode == "CAST_HIT") then
+				local hit = t:GetCell(i, "HitRuid") or ""
+				local cast = t:GetCell(i, "CastRuid") or ""
+				local hitStart = math.floor(tonumber(t:GetCell(i, "HitStartFrame")) or 0)
+				if hit ~= "" then self:ClipLife(hit, hitStart); n = n + 1 end
+				if cast ~= "" and mode == "SHOT_CAST" then
+					local first = self:FirstVisibleFrame(cast)
+					self:ClipLife(cast, first)
+					n = n + 1
+				end
+			end
+		end
+		log("[LaneFx] clip lengths warmed: " .. tostring(n))
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ClipLife(string ruid, integer startFrame)
+		-- 클립의 재생 길이(초) = startFrame(0 기준) 이후 프레임 지연의 합 ÷ PlayRate. 처음 한 번만 리소스를 읽고(LoadAnimationClipAndWait) 캐시한다. 못 읽으면 0.
+		local key = ruid .. ":" .. tostring(startFrame)
+		if self.lifeCache == nil then self.lifeCache = {} end
+		local v = self.lifeCache[key]
+		if v ~= nil then return v end
+		local life = 0
+		local ok, clip = pcall(function() return _ResourceService:LoadAnimationClipAndWait(ruid) end)
+		if ok and clip ~= nil then
+			local n = clip.Frames.Count
+			for i = startFrame + 1, n do
+				local fr = clip.Frames[i]
+				if fr ~= nil then life = life + (fr.Delay or 0) end
+			end
+			local rate = clip.PlayRate or 1
+			if rate > 0.01 then life = life / rate end
+		end
+		self.lifeCache[key] = life
+		return life
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer FirstVisibleFrame(string ruid)
+		-- 클립에서 처음으로 보이는 프레임(0 기준) — 앞쪽 1×1 빈 프레임을 건너뛰려는 값(엘리니아 Lv3 마법진은 앞 0.24초가 빈 그림이라 번개와 "동시에" 안 보인다). 캐시 lifeCache["first:<ruid>"]. 못 읽으면 0.
+		local key = "first:" .. ruid
+		if self.lifeCache == nil then self.lifeCache = {} end
+		local v = self.lifeCache[key]
+		if v ~= nil then return v end
+		local first = 0
+		local ok, clip = pcall(function() return _ResourceService:LoadAnimationClipAndWait(ruid) end)
+		if ok and clip ~= nil then
+			for i = 1, clip.Frames.Count do
+				local sp = clip.Frames[i].FrameSprite
+				if sp ~= nil and sp.Width > 1 and sp.Height > 1 then
+					first = i - 1
+					break
+				end
+			end
+		end
+		self.lifeCache[key] = first
+		return first
+	end
+
 	@ExecSpace("ServerOnly")
 	method void PlayClip(Entity map, string ruid, Vector3 pos, number scale, integer startFrame, string sortingLayer, boolean flipX)
-		-- startFrame ≤ 0 이면 보통 이펙트(PlayEffect · flipX 는 x 배율 음수). 아니면 엔티티 스폰 + StartFrameIndex(+ FlipX).
+		-- startFrame ≤ 0 이면 보통 이펙트(PlayEffect · flipX 는 x 배율 음수). 아니면 엔티티 스폰 + StartFrameIndex(+ FlipX) · 그리기 순서 156.
 		if ruid == nil or ruid == "" then return end
 		if startFrame == nil or startFrame <= 0 then
 			local sx = scale
@@ -21,6 +100,15 @@ script LaneFxLogic extends Logic
 			_EffectService:PlayEffect(ruid, map, pos, 0, Vector3(sx, scale, 1))
 			return
 		end
+		self:PlayClipOrdered(map, ruid, pos, scale, startFrame, sortingLayer, flipX, 156, 0, 0, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayClipOrdered(Entity map, string ruid, Vector3 pos, number scale, integer startFrame, string sortingLayer, boolean flipX, integer orderInLayer, number maxLife, number trimSec, number fadeSec)
+		-- 클립을 laneshot 엔티티로 그린다(startFrame 이 0 이어도) — 그리기 순서(OrderInLayer)와 층을 정할 수 있다. 클립이 한 번 재생되는 길이(ClipLife)에 지운다(루프로 두 번 도는 것을 막는다).
+		-- 길이를 못 읽으면 maxLife(0 이하 = MaxLifeOrderedSec) 뒤 지운다. (서버는 끝 프레임 이벤트를 못 받지만 받으면 그때 지운다.)
+		-- trimSec > 0 이면 클립이 끝나기 trimSec 초 전에 지운다(WO-040 M3 후속 · 엘리니아 Lv1·2 마법진 · FacilityAttackFx.CastTrimSec · 클립 길이를 읽었을 때만). fadeSec > 0 이면 지우기 전 그 시간 동안 점점 흐려진다(뚝 끊김 방지).
+		if ruid == nil or ruid == "" then return end
 		if not isvalid(map) then return end
 		self.seq = self.seq + 1
 		local ent = _SpawnService:SpawnByModelId("laneshot", "ClipFx_" .. tostring(self.seq), pos, map)
@@ -28,29 +116,50 @@ script LaneFxLogic extends Logic
 			log_warning("[LaneFx] clip spawn failed ruid=" .. ruid)
 			return
 		end
+		-- 🔴 번쩍임 방지(WO-040 조각 9): laneshot 기본 그림은 비어 있다. 배율 · 뒤집기 · 층 · 시작 프레임을 먼저 넣고 그림(SpriteRUID)은 맨 마지막.
+		ent.TransformComponent.Scale = Vector3(scale, scale, 1)
 		local sr = ent.SpriteRendererComponent
 		if isvalid(sr) then
-			sr.SpriteRUID = ruid
-			sr.StartFrameIndex = startFrame
 			sr.PlayRate = 1
 			sr.FlipX = (flipX == true)
 			if sortingLayer ~= nil and sortingLayer ~= "" then sr.SortingLayer = sortingLayer end
-			sr.OrderInLayer = 156
+			sr.OrderInLayer = orderInLayer
+			sr.SpriteRUID = ruid
+			sr.StartFrameIndex = math.max(0, startFrame or 0)   -- 그림을 넣은 뒤에 시작 프레임(이전 순서 그대로)
 		end
-		ent.TransformComponent.Scale = Vector3(scale, scale, 1)
-		log(string.format("[LaneFx] clip %s from frame %d @(%.2f,%.2f) scale=%.2f", string.sub(ruid, 1, 8), startFrame, pos.x, pos.y, scale))
-		-- 끝 프레임에 닿으면 지운다(루프로 다시 돌기 전에). 이벤트가 안 오면 MaxLifeSec 뒤 안전 삭제.
+		local clipLife = self:ClipLife(ruid, math.max(0, startFrame or 0))
+		local life = clipLife
+		if life <= 0 then
+			life = maxLife
+			if life == nil or life <= 0 then life = self.MaxLifeOrderedSec end
+		elseif trimSec ~= nil and trimSec > 0 then
+			life = math.max(0.1, clipLife - trimSec)
+		end
+		local born = _UtilLogic.ServerElapsedSeconds
+		log(string.format("[LaneFx] clip %s from frame %d @(%.2f,%.2f) scale=%.2f order=%d life=%.3f(%s clip=%.3f trim=%.2f) sT=%.3f", string.sub(ruid, 1, 8), startFrame or 0, pos.x, pos.y, scale, orderInLayer, life, clipLife > 0 and "clip" or "fallback", clipLife, trimSec or 0, born))
+		-- 끝 프레임에 닿으면 지운다(루프로 다시 돌기 전에). 이벤트가 안 오면 안전 수명 뒤 삭제.
 		local done = false
 		ent:ConnectEvent(SpriteAnimPlayerEndFrameEvent, function()
 			if done then return end
 			done = true
+			log(string.format("[LaneFx] clip %s end(event) after %.3fs sT=%.3f", string.sub(ruid, 1, 8), _UtilLogic.ServerElapsedSeconds - born, _UtilLogic.ServerElapsedSeconds))
 			if isvalid(ent) then ent:Destroy() end
 		end)
+		-- 끝 fadeSec 동안 점점 흐려진다(지우기 전 · 서버가 알파를 쓰면 클라에 동기화).
+		if fadeSec ~= nil and fadeSec > 0 and life > fadeSec + 0.02 and isvalid(sr) then
+			_TimerService:SetTimerOnce(function()
+				if done or not isvalid(ent) or not isvalid(sr) then return end
+				_TweenLogic:PlayTween(1.0, 0.0, fadeSec, EaseType.Linear, function(v)
+					if not done and isvalid(ent) and isvalid(sr) then sr:SetAlpha(v) end
+				end)
+			end, life - fadeSec)
+		end
 		_TimerService:SetTimerOnce(function()
 			if done then return end
 			done = true
+			log(string.format("[LaneFx] clip %s end(timer) after %.3fs sT=%.3f", string.sub(ruid, 1, 8), _UtilLogic.ServerElapsedSeconds - born, _UtilLogic.ServerElapsedSeconds))
 			if isvalid(ent) then ent:Destroy() end
-		end, self.MaxLifeSec)
+		end, life)
 	end
 
 end
