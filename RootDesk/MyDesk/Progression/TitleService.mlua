@@ -3,7 +3,8 @@ script TitleService extends Logic
 
 	-- 칭호 (WO-031 묶음 5 · 계약서 A-2-24 TitleInfo · §0-5 account_titles / account_title · GDD §4.12).
 	--   보유·장착 원장 = AccountData(프로필 v4) · 얻는 곳 = 업적(AchievementService.Complete → Grant).
-	--   한 번에 하나 장착 · 목록·장착은 로비 계정 창(RequestEquip) · 표시 = 머리 위 이름표 "칭호 닉네임"(NameTagComponent.Name · @Sync 라 서버가 쓰면 모두에게 보인다)
+	--   한 번에 하나 장착 · 목록·장착은 로비 계정 창(RequestEquip) · 표시 = 플레이어 자식 월드 이름표(WorldNameTag · 닉네임 어두운 판 + 그 위 금 띠 칭호 ·
+	--   서버는 Label · Title · Kind 만 쓴다 · @Sync 라 모두에게 보인다 · 엔진 NameTagComponent 는 끈다 — 우리 판 그림을 못 받는다)
 	--   · 생존자 통계 상세 · 매치 결과 화면(이름 = 칭호 닉네임).
 
 	-- defs[titleId] = { name, desc, order, enabled } · order = 정렬된 TitleId 목록
@@ -12,6 +13,11 @@ script TitleService extends Logic
 
 	@HideFromInspector
 	property any order = nil
+
+	-- 월드 이름표 모델 id(Models/Progression/WorldNameTag) · 플레이어 자식 엔티티 이름.
+	property string TagModelId = "worldnametag"
+
+	property string TagEntityName = "WorldNameTag"
 
 	-- 이름표를 못 붙였을 때(엔티티가 아직 없음) 다시 해 볼 유저: userId → 남은 횟수
 	@HideFromInspector
@@ -123,32 +129,43 @@ script TitleService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void ApplyNameTag(string userId)
-		-- 머리 위 이름표 = "칭호 닉네임"(칭호 없으면 닉네임). 플레이어 엔티티가 아직 없으면 1초마다 몇 번 더 해 본다.
+		-- 이름표 = 플레이어 자식 월드 엔티티(WorldNameTag): 닉네임(어두운 판) + 장착 칭호(위 금 띠). 플레이어 엔티티가 아직 없으면 1초마다 몇 번 더 해 본다.
+		-- 서버는 Label · Title · Kind 만 쓴다(@Sync). 판 · 글자 · 크기 · 층은 클라이언트의 WorldNameTag 가 맞춘다. 엔진 이름표(NameTagComponent)는 끈다.
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if not isvalid(player) or not isvalid(player.PlayerComponent) then
-			if self.pendingTag == nil then self.pendingTag = {} end
-			if self.pendingTag[userId] == nil then self.pendingTag[userId] = 5 end
-			self:EnsureTagTimer()
+			self:QueueTagRetry(userId)
 			return
 		end
-		local tag = player.NameTagComponent
-		if not isvalid(tag) then
-			-- 이름표 컴포넌트가 아직 안 붙었다 → 엔티티 없음과 같이 재시도(Codex 리뷰 2026-09-26).
-			if self.pendingTag == nil then self.pendingTag = {} end
-			if self.pendingTag[userId] == nil then self.pendingTag[userId] = 5 end
-			self:EnsureTagTimer()
-			return
-		end
-		if self.pendingTag ~= nil then self.pendingTag[userId] = nil end
 		local nick = player.PlayerComponent.Nickname
 		if nick == nil or nick == "" then nick = player.Name end
 		if nick == nil or nick == "" then return end   -- 빈 이름표로 덮지 않는다
-		local title = self:EquippedNameOf(userId)
-		local text = (title ~= "") and (title .. " " .. nick) or nick
-		if tag.Name ~= text then
-			tag.Name = text
-			log("[Title] nametag " .. userId .. " = " .. text)
+		local engineTag = player.NameTagComponent
+		if isvalid(engineTag) and engineTag.Enable then engineTag.Enable = false end
+		local tagEntity = player:GetChildByName(self.TagEntityName)
+		if not isvalid(tagEntity) then
+			tagEntity = _SpawnService:SpawnByModelId(self.TagModelId, self.TagEntityName, Vector3(0, 0, 0), player)
 		end
+		---@type WorldNameTag
+		local tag = isvalid(tagEntity) and tagEntity:GetComponent("script.WorldNameTag") or nil
+		if not isvalid(tag) then
+			-- 모델이 아직 등록 전이거나 스폰이 실패 → 엔티티 없음과 같이 재시도(Codex 리뷰 2026-09-26).
+			self:QueueTagRetry(userId)
+			return
+		end
+		if self.pendingTag ~= nil then self.pendingTag[userId] = nil end
+		local title = self:EquippedNameOf(userId)
+		if tag.Label ~= nick or tag.Title ~= title or tag.Kind ~= "player" then
+			tag:Setup(nick, title, "player")
+			log("[Title] nametag " .. userId .. " = " .. nick .. ((title ~= "") and (" · " .. title) or ""))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void QueueTagRetry(string userId)
+		-- 이름표를 못 붙인 유저를 재시도 목록에 넣는다(남은 횟수 5).
+		if self.pendingTag == nil then self.pendingTag = {} end
+		if self.pendingTag[userId] == nil then self.pendingTag[userId] = 5 end
+		self:EnsureTagTimer()
 	end
 
 	@ExecSpace("ServerOnly")

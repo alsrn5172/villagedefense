@@ -33,6 +33,29 @@ script QuickSlotController extends Logic
 
 	property TextGUIRendererComponent coolText2 = "535f274b-15f7-40a3-b544-4ab421735edd"
 
+	-- 디자이너 시안(04-hud) 새 칸들 — UUID 는 apply-hud-quickslot 이 write({bind}) 로 주입한다. 손으로 고치지 않는다.
+	-- 칸 그림 자체(빈 칸 ↔ 등록된 칸)를 바꾸려고 칸 스프라이트를 따로 잡는다.
+	property SpriteGUIRendererComponent slotImg1 = "fd8b3f9d-dc38-477b-89b3-83c5f1a62c5c"
+
+	property SpriteGUIRendererComponent slotImg2 = "77ff1c45-d581-42bf-a6a2-94252218d069"
+
+	property Entity plus1 = "4298f618-ecc1-4c50-b02d-26038897a8a2"
+
+	property Entity plus2 = "0a743744-9f9f-40f5-8e74-f8418210271f"
+
+	property Entity emptyHint = "020ee772-b010-4fd8-b496-eca29b4d247f"
+
+	-- 칸 그림: 빈 칸 = 점선 칸(slot_item_drag) · 등록된 칸 = 파랑 칸(slot_frame)
+	property string ruidSlotEmpty = "43af9a1f254d402aa9c094000d872aef"
+
+	property string ruidSlotFull = "e466f5e115804f28aafdf4386fbd51cd"
+
+	-- 빈 칸을 눌렀을 때 안내를 켜 두는 시간(초)
+	property number HintSeconds = 2
+
+	@HideFromInspector
+	property number hintLeft = 0
+
 	-- 쿨 오버레이(사용자 지시 2026-09-16): 사용 직후 아래→위로 차오르고(RiseSeconds), 그 뒤 남은 비율에 따라
 	-- 위→아래로 줄어든다. 비율은 10·25·40·55·70·85·100% 7단계로 끊어서 보여준다(StepLevel).
 	property number RiseSeconds = 0.35
@@ -130,19 +153,37 @@ script QuickSlotController extends Logic
 		local count = (slot == 1) and self.count1 or self.count2
 		local has = (s ~= nil and s.itemId ~= "")
 		local def = has and _ItemCatalog:Get(s.itemId) or nil
+		local empty0 = has and (s.count or 0) <= 0
 		if isvalid(icon) then
 			local ruid = (def ~= nil) and (def.icon or "") or ""
 			icon.ImageRUID = ruid
 			icon.Entity.Enable = (ruid ~= "")
-			if has and (s.count or 0) <= 0 then
-				icon.Color = Color(1, 1, 1, 0.35)
+			if empty0 then
+				-- 시안 7번: 다 쓴 칸은 아이콘이 흑백으로 어두워진다 → 회색 곱셈으로 대신한다.
+				icon.Color = Color(0.55, 0.55, 0.55, 1)
 			else
 				icon.Color = Color(1, 1, 1, 1)
 			end
 		end
 		if isvalid(count) then
 			count.Text = has and tostring(s.count or 0) or ""
+			-- 수량 0 은 붉은 숫자(시안 19번)
+			count.FontColor = empty0 and Color(1, 0.541, 0.478, 1) or Color(1, 1, 1, 1)
 		end
+		-- 칸 틀: 빈 칸 = 점선 칸 + 흐린 "+" · 등록된 칸 = 파랑 칸
+		local slotImg = (slot == 1) and self.slotImg1 or self.slotImg2
+		local plus = (slot == 1) and self.plus1 or self.plus2
+		if isvalid(slotImg) then
+			slotImg.ImageRUID = DataRef(has and self.ruidSlotFull or self.ruidSlotEmpty)
+		end
+		if isvalid(plus) then plus.Enable = not has end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowEmptyHint()
+		-- 빈 칸을 눌렀을 때 화면 위 "인벤토리에서 물약을 끌어다 놓으세요" 안내를 HintSeconds 동안 켠다(OnUpdate 가 끈다).
+		self.hintLeft = self.HintSeconds
+		if isvalid(self.emptyHint) then self.emptyHint.Enable = true end
 	end
 
 	-- ── 쿨 오버레이 ────────────────────────────────────────────
@@ -150,6 +191,10 @@ script QuickSlotController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
 		if self.slots == nil then return end
+		if self.hintLeft > 0 then
+			self.hintLeft = self.hintLeft - delta
+			if self.hintLeft <= 0 and isvalid(self.emptyHint) then self.emptyHint.Enable = false end
+		end
 		local now = _UtilLogic.ElapsedSeconds
 		self:UpdateCool(1, now)
 		self:UpdateCool(2, now)
@@ -212,6 +257,9 @@ script QuickSlotController extends Logic
 		local now = _UtilLogic.ElapsedSeconds
 		if now - self.lastUseAt < self.RepeatGuardSec then return end
 		self.lastUseAt = now
+		-- 등록 안 된 빈 칸이면 안내를 띄운다(요청은 그대로 보낸다 — 판정은 서버).
+		local s = (self.slots ~= nil) and self.slots[slot] or nil
+		if s == nil or s.itemId == "" then self:ShowEmptyHint() end
 		_InventoryService:RequestQuickSlot(slot)
 		log("[QuickSlot] use requested slot=" .. tostring(slot))
 	end
