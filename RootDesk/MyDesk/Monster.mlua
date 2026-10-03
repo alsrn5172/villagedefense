@@ -63,6 +63,13 @@ script Monster extends Component
 	@HideFromInspector
 	property boolean infoSoundsResolved = false
 
+	-- ResolveInfoSounds 재시도 횟수(RetryResolveInfoSounds · 0.25s 간격 · InfoSoundRetryMax 번까지).
+	@HideFromInspector
+	property integer infoSoundRetries = 0
+
+	@HideFromInspector
+	property integer InfoSoundRetryMax = 20
+
 	@HideFromInspector
 	property number lastHitSoundAt = -1000
 
@@ -144,9 +151,9 @@ script Monster extends Component
 			if self.FitHitbox then
 				self:FitHitboxToSprite()
 			end
-			-- 원작 피격 · 사망 소리: 스포너가 스폰 직후 MonsterId 를 넣으니 한 박자 뒤에 찾는다(피격 때도 다시 시도 · HandleHitEvent).
+			-- 원작 피격 · 사망 소리: 스포너가 스폰 직후 MonsterId 를 넣으니 한 박자 뒤에 찾는다(못 찾으면 0.25s 마다 다시 · 피격 때도 다시 시도 · HandleHitEvent).
 			_TimerService:SetTimerOnce(function()
-				if isvalid(self.Entity) then self:ResolveInfoSounds() end
+				if isvalid(self.Entity) then self:RetryResolveInfoSounds() end
 			end, 0.1)
 		end
 	end
@@ -166,8 +173,30 @@ script Monster extends Component
 		self.DieSoundRUID = _MonsterCatalog:GetDieSoundRuid(id)
 		self.DamagedSoundVolume = _MonsterCatalog:GetDamagedSoundVolume(id)
 		self.DieSoundVolume = _MonsterCatalog:GetDieSoundVolume(id)
-		log("[Monster] sounds " .. tostring(self.Entity.Name) .. " id=" .. tostring(id) .. " damage=" .. self.DamagedSoundRUID .. " x" .. tostring(self.DamagedSoundVolume) .. " die=" .. self.DieSoundRUID .. " x" .. tostring(self.DieSoundVolume))
+		log("[Monster] sounds " .. tostring(self.Entity.Name) .. " id=" .. tostring(id) .. " damage=" .. self.DamagedSoundRUID .. " x" .. tostring(self.DamagedSoundVolume) .. " die=" .. self.DieSoundRUID .. " x" .. tostring(self.DieSoundVolume) .. (self.infoSoundRetries > 0 and (" (retry " .. tostring(self.infoSoundRetries) .. ")") or ""))
 		self:PreloadSoundsToMap()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RetryResolveInfoSounds()
+		-- ResolveInfoSounds 를 Id 를 알 때까지 0.25s 마다 다시(최대 InfoSoundRetryMax 번 ≈ 5s · b/monster-sounds 2026-10-03).
+		-- 레인 미니언은 SpawnMinion 이 몹을 스폰한 뒤 MinionUnit 을 붙이는데 그 사이가 0.1s 를 넘기도 해서(실측 1마리 0.16s) 첫 시도가 Id 0 으로 끝났다.
+		-- 그 미니언은 맞아야 소리가 채워졌고, 피격 없이 죽이는 억제기 폭발(LaneStateService.SuppressorBoom)에서는 사망 소리 없이 죽었다.
+		if self.infoSoundsResolved or not isvalid(self.Entity) then
+			return
+		end
+		self:ResolveInfoSounds()
+		if self.infoSoundsResolved then
+			return
+		end
+		self.infoSoundRetries = self.infoSoundRetries + 1
+		if self.infoSoundRetries >= self.InfoSoundRetryMax then
+			if self.LogSounds then log("[Monster] sounds " .. tostring(self.Entity.Name) .. " — no MonsterInfo id after " .. tostring(self.infoSoundRetries) .. " tries") end
+			return
+		end
+		_TimerService:SetTimerOnce(function()
+			if isvalid(self.Entity) then self:RetryResolveInfoSounds() end
+		end, 0.25)
 	end
 
 	@ExecSpace("ServerOnly")
