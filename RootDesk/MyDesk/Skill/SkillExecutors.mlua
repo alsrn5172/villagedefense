@@ -60,6 +60,13 @@ script SkillExecutors extends Logic
     -- skill_id -> { hit = RUID(투사체·타격 명중음), punch = RUID(변신 중 주먹), wave = RUID(폭격 파마다) }. 없으면 그 소리 없음.
     property table extraSounds = {}
 
+    -- 버프 변형(b/skill-raging-blow-flame-haze · SkillBuffs.VariantSpec): 원작 동작(ragingBlowNew ~ New4 · flameHaze)을 직접 재생할지.
+    --   MSW 재생이 확인되지 않아 Play 에서 정한다 — true = 변형 동작 · false = 원래 스킬 모션(파워 스트라이크 · 에너지볼트) 그대로. 서버 Lua 로 바꿀 수 있다.
+    property boolean VariantOwnMotion = true
+
+    -- [서버] 유저별 변형 시전 순번(레이징 블로우 동작 · 베기 그림 · 명중 그림을 New → New4 순서로 돌린다 · PlayVariantMotion 이 올린다).
+    property table variantSeq = {}
+
     -- EntryKey of the shared projectile model every behavior="PROJECTILE" skill spawns
     -- (RootDesk/MyDesk/Models/Skills/SkillProjectile.model). One model, one script.SkillProjectile
     -- component - per-skill damage/hit config is set on the spawned instance in
@@ -603,6 +610,35 @@ script SkillExecutors extends Logic
         -- fires from the projectile's own OnAttack (see SkillProjectile.mlua / SkillAttack.
         -- SpawnProjectile), not from here at cast time, since behavior is projectile again.
         self.effectOverrides = {
+            -- 버프 변형(b/skill-raging-blow-flame-haze · A 인계 2026-10-02 "레이징 블로우 · 플레임 헤이즈" · 값 = 사용자 결정). 키 = 변형 키(SkillInfo 행 아님).
+            SK_W11_RB = {   -- 레이징 블로우 — 원작 인레이지판 skill/112.img/skill/1120017(일반 1121008 아님): 동작 ragingBlowNew ~ New4(각 780ms) · 베기 4종 · 명중 5종 · 소리 Hit 하나(Use 없음)
+                baseSkillId = "SK_W11",
+                motions = { "ragingBlowNew", "ragingBlowNew2", "ragingBlowNew3", "ragingBlowNew4" },
+                cast = { ruid = "5308ef85369c4f31843d6e8cde4b1012" },
+                -- 베기 = 동작 순번과 같은 번호(New · New2 · New3 · New4 · A 인계 표의 짝).
+                slashes = {
+                    { ruid = "8f13cadae8d74120834e6b00bdae2faf" },
+                    { ruid = "b69c64835da9420ebeb3ca4e365e258b" },
+                    { ruid = "71d8513c51fc48c49609837f3d15160b" },
+                    { ruid = "3448ba941413425bb8622c9c5059842f" },
+                },
+                -- 명중 5종: 시전 순번으로 하나를 골라 맞은 대상마다 4번(hitInterval 간격 · SkillAttack.PendingImpactRepeat).
+                hitClips = { "b79cbdf6d06b487382f03d625a1fc464", "a5fa2b779db14f93b881a873f36b7eac", "1ce3b9be19764a70a6229665e15adf42", "79132eeadd9b4ab090bf4845bfcfdbdb", "3720a775e9c241fbb547c81d76598843" },
+                -- 4타 · 타마다 파워 스트라이크 % × 0.8 · 앞 3.5 × 높이 2.5 · 최대 6명. hitAt = 원작 ragingBlowNew 첫 공격 프레임(0 ~ 120ms)의 끝 · 임시값 · Play 로 맞춘다.
+                hits = 4, damageMul = 0.8, maxTargets = 6, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.12, hitInterval = 0.08,
+            },
+            SK_M11_FH = {   -- 플레임 헤이즈 — 원작 skill/212.img/skill/2121011: 동작 flameHaze · 시전 · 투사체 · 폭발 hit/0 · 불꽃 5종(연출만) · 소리 Use · Hit
+                baseSkillId = "SK_M11",
+                motions = { "flameHaze" },
+                cast = { ruid = "b1663006fa294e76acf62983a70448b4" },
+                ball = { ruid = "2c49a8bcdf65476a889f4d5f2bbb6942" },
+                impact = { ruid = "9f78110bec954e8e9c3a81512d520281" },
+                flames = { "3751747780a14afaa1d447606689347a", "5ce0877223ac447ca43682b0af51cfa2", "2f71b9e2636a4b45b49565f10b14cf34", "192746ee42764166b2b9e61d4ac9081e", "ae070e6b15934f64a723d57f0bb67313" },
+                -- 에너지볼트 % × 2 · 1타 · 첫 대상 둘레 3.5 × 2 상자 폭발 · 최대 10명(#100 폭발 투사체 · centerY = 에너지볼트와 같은 0.25) · 화상 · 둔화 없음.
+                -- spawnDelay = 투사체가 나가는 때(초 · 0 = 키 누름 즉시 · 에너지볼트는 시전 클립 때문에 0.50) — 임시값 · Play 로 맞춘다. 스폰 자리는 에너지볼트(SK_M11.spawn)와 같다.
+                damageMul = 2, spawnDelay = 0,
+                explode = { sizeX = 3.5, sizeY = 2.0, centerY = 0.25, maxTargets = 10 },
+            },
             SK_M11 = {
                 -- 크기 · 위치(b/skill-magician-effects 2026-09-26 · 레드 2013 영상 프레임 실측 · 영상 배율 1.67 = 뿔버섯 56×52 → 94×87): 영상의 구체 중심은 발 기준
                 -- 앞 41 · 위 22 px, 우리 클립은 앞 62 · 위 29 px 이고 크기는 영상이 약 1.15 배 → scale 1.15 · offset(앞 −0.30, 위 −0.11) = 구체 중심 (0.41, 0.22). 사용자 Play 선택 P2.
@@ -963,6 +999,7 @@ script SkillExecutors extends Logic
         -- SK_M11's (renamed from sk_100) real Energy Bolt "Use" sound; every other skill falls
         -- back to defaultCastSound (a generic confirmed magic-skill sound effect).
         self.castSounds = {
+            SK_M11_FH = "888da6679a2448a7961f53e9f2f797fd",   -- 플레임 헤이즈 2121011 _audio/Use(b/skill-raging-blow-flame-haze · 레이징 블로우 1120017 팩엔 Use 가 없어 시전음 없음)
             SK_M11 = "5fd9ddc5564648d1bffc21f3407ecf51",
             SK_M13 = "6046095db6a24eaab07d268f7d3040c2",   -- 텔레포트 Use
             SK_M21 = "7c1c509dc17c459da9a496da153e8d4b",   -- 텔레포트 마스터리 Use2
@@ -992,6 +1029,8 @@ script SkillExecutors extends Logic
             SK_P31 = "686297b95cc34db9a713adaaff436909",
         }
         self.extraSounds = {
+            SK_W11_RB = { hit = "aa92fddf0e404d35bf6406cef6bc7ad5" },  -- 레이징 블로우 1120017 _audio/Hit(시전당 한 번 · ExecuteRagingBlow)
+            SK_M11_FH = { hit = "6adfe5a797ce469a840e223fd0dfee6f" },  -- 플레임 헤이즈 2121011 _audio/Hit(폭발 한 번에 한 번 · SkillProjectile.explodeSoundPlayed)
             SK_M11 = { hit = "ab4202ad4cac42a397a120a335bb038f" },     -- 에너지 볼트 2001008 _audio/Hit (b/skill-magician-effects · 같은 레드 팩 · 폭발 한 번에 한 번)
             -- 텔레포트 강화 · 대마법 명중 사운드(사용자 Play 선택 2026-10-01 · 원작 텔레포트 마스터리 2211007 · 프로즌 라이트닝 2241500 사운드는 라이브러리에 없어 같은 썬콜 계열).
             -- 둘 다 대상마다가 아니라 도착/시전 한 번에 한 번(ExecuteBlink · ExecuteBlast 가 직접 튼다 · 대상 수만큼 겹치지 않게).
@@ -1013,6 +1052,18 @@ script SkillExecutors extends Logic
     method void Execute(string behavior, string skillId, table skillData, Entity casterEntity, number level)
         -- "handler" is a reserved word in mlua (the `handler EventName(...)` declaration
         -- syntax), so the looked-up executor function is named executorFn instead.
+        -- 버프 변형(b/skill-raging-blow-flame-haze · SkillBuffs.VariantOf): 불굴의 진 중 파워 스트라이크 키 = 레이징 블로우 · 매직 가드 중 에너지볼트 키 = 플레임 헤이즈.
+        --   원래 스킬 레벨로 변형 실행기만 돈다(모션은 SkillCaster → PlayMotion(변형 키) 가 이미 틀었다).
+        if _SkillBuffs ~= nil and isvalid(casterEntity) and isvalid(casterEntity.PlayerComponent) then
+            local variant = _SkillBuffs:VariantOf(casterEntity.PlayerComponent.UserId, skillId)
+            if variant == "SK_W11_RB" then
+                self:ExecuteRagingBlow(skillId, skillData, casterEntity, level)
+                return
+            elseif variant == "SK_M11_FH" then
+                self:ExecuteFlameHaze(skillId, skillData, casterEntity, level)
+                return
+            end
+        end
         local executorFn = self.behaviorHandlers[behavior]
         if executorFn == nil then
             log_warning("SkillExecutors: no executor registered for behavior='" .. behavior .. "' (skill=" .. skillId .. ")")
@@ -1144,11 +1195,141 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method boolean PlayVariantMotion(string uid, string variant)
+        -- 변형 시전 동작(b/skill-raging-blow-flame-haze). 순번을 하나 올리고(레이징 블로우 베기 · 명중 그림도 같은 순번) VariantOwnMotion 이면 원작 동작을
+        -- A 의 PlayerMotion.PlayAction 으로 바로 틀고(WeaponMotion 행 없이), 아니면 원래 스킬(파워 스트라이크 · 에너지볼트) 모션 그대로.
+        local entry = self.effectOverrides[variant]
+        local n = 1
+        if entry ~= nil and entry.motions ~= nil and #entry.motions > 0 then n = #entry.motions end
+        local seq = (self.variantSeq[uid] or 0) + 1
+        if seq > n then seq = 1 end
+        self.variantSeq[uid] = seq
+        if self.VariantOwnMotion and entry ~= nil and entry.motions ~= nil and #entry.motions > 0 and _PlayerMotion ~= nil then
+            local core = entry.motions[seq]
+            _PlayerMotion:PlayAction(core, core, 1, "ONETIME", uid)
+            log("SkillExecutors: variant motion " .. variant .. " -> " .. core .. " (seq " .. tostring(seq) .. ") (" .. uid .. ")")
+            return true
+        end
+        local base = ""
+        if entry ~= nil and entry.baseSkillId ~= nil then base = entry.baseSkillId end
+        log("SkillExecutors: variant motion " .. variant .. " -> " .. base .. " motion (VariantOwnMotion=" .. tostring(self.VariantOwnMotion) .. " · seq " .. tostring(seq) .. ") (" .. uid .. ")")
+        if base == "" then return false end
+        return self:PlayMotion(uid, base, false)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayAttachedSpec(any spec, Entity casterEntity)
+        -- 시전자에 붙여 한 번 튼다(PlayStageEffect "cast" 단계와 같은 규칙: 원작 클립은 왼쪽 기준 → 오른쪽을 보면 FlipX). spec = { ruid, scale?, offsetX?(바라보는 쪽 +), offsetY? }.
+        if spec == nil or spec.ruid == nil or spec.ruid == "" or not isvalid(casterEntity) then return end
+        local facing = self:GetFacingX(casterEntity)
+        local opt = {}
+        opt["FlipX"] = (facing > 0)
+        local s = spec.scale or 1
+        _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteRagingBlow(string skillId, table skillData, Entity casterEntity, number level)
+        -- 레이징 블로우(불굴의 진 중 파워 스트라이크 키 · A 인계 2026-10-02 · 사용자 결정 값 · effectOverrides.SK_W11_RB): 파워 스트라이크 레벨로
+        --   4타 × (파워 스트라이크 % × 0.8)(Lv1 120 % × 4 … Lv5 240 % × 4) · 앞 3.5 × 높이 2.5 · 최대 6명 · 4타가 같은 대상에(AttackFast 1번 = 넉백 · 경직 1번).
+        --   크리 = 다른 스킬과 같은 판정(마지막 2타 확정 크리 없음) · MP 10 · 쿨 0(SkillBuffs.VariantSpec) · 시전 락 0.78(SkillCaster.castLockOverrides).
+        --   소리: 시전음 없음(팩에 Use 가 없다) · 명중음은 맞은 대상이 있을 때 시전당 한 번. 피해 태그는 SK_W11 그대로(처치 귀속 규칙 같음).
+        local key = "SK_W11_RB"
+        local entry = self.effectOverrides[key]
+        if entry == nil or not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then
+            log_warning("SkillExecutors: RAGING BLOW missing spec or caster - skipped")
+            return
+        end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping raging blow")
+            return
+        end
+        local uid = casterEntity.PlayerComponent.UserId
+        local seq = self.variantSeq[uid] or 1
+        local pos = casterEntity.TransformComponent.WorldPosition
+        local dirX = self:GetFacingX(casterEntity)
+        self:PlayAttachedSpec(entry.cast, casterEntity)
+        if entry.slashes ~= nil and #entry.slashes > 0 then
+            self:PlayAttachedSpec(entry.slashes[((seq - 1) % #entry.slashes) + 1], casterEntity)
+        end
+        local box = {
+            posX = pos.x + dirX * entry.boxFront / 2, posY = pos.y + entry.boxHeight / 2,
+            sizeX = entry.boxFront, sizeY = entry.boxHeight, hitCount = entry.hits,
+        }
+        local mul = entry.hits * entry.damageMul
+        local hitRuid = ""
+        if entry.hitClips ~= nil and #entry.hitClips > 0 then hitRuid = entry.hitClips[((seq - 1) % #entry.hitClips) + 1] end
+        log("SkillExecutors: RAGING BLOW lv=" .. tostring(level) .. " seq=" .. tostring(seq) .. " box=" .. tostring(entry.boxFront) .. "x" .. tostring(entry.boxHeight)
+            .. " hits=" .. tostring(entry.hits) .. " x" .. tostring(entry.damageMul) .. " (mul " .. tostring(mul) .. ") cap=" .. tostring(entry.maxTargets) .. " hitAt=" .. tostring(entry.hitAt) .. " (" .. uid .. ")")
+        _TimerService:SetTimerOnce(function()
+            if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            skillAttack.PendingImpactRuid = hitRuid
+            skillAttack.PendingImpactRepeat = entry.hits
+            skillAttack.PendingImpactInterval = entry.hitInterval
+            skillAttack.PendingHitSound = ""
+            skillAttack.PendingMaxTargets = entry.maxTargets
+            local n = skillAttack:DealSkillDamageScaled(skillId, level, box, mul, entry.hits)
+            if n ~= 0 then
+                self:PlaySoundRuid(self:GetExtraSound(key, "hit"), casterEntity, casterEntity.TransformComponent.WorldPosition)
+            end
+            log("SkillExecutors: RAGING BLOW hit targets=" .. tostring(n) .. " sound=" .. tostring(n ~= 0) .. " (" .. uid .. ")")
+        end, entry.hitAt)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExecuteFlameHaze(string skillId, table skillData, Entity casterEntity, number level)
+        -- 플레임 헤이즈(매직 가드 중 에너지볼트 키 · A 인계 2026-10-02 · 사용자 결정 값 · effectOverrides.SK_M11_FH): 에너지볼트 레벨 · 사거리 · 속도로
+        --   에너지볼트 % × 2 · 1타 · 첫 대상에 닿으면 그 둘레 3.5 × 2 상자 폭발 · 최대 10명(#100 폭발 투사체 · 숫자만 바꿈) · 화상 · 둔화 없음.
+        --   MP · 쿨 0 · 시전 락 0.4 = 에너지볼트와 같다(SkillBuffs.VariantSpec mpCost -1 · castLockOverrides.SK_M11_FH). 명중음은 폭발 한 번에 한 번 · 불꽃 5종은 맞은 자리 연출만.
+        local key = "SK_M11_FH"
+        local entry = self.effectOverrides[key]
+        if entry == nil or not isvalid(casterEntity) then
+            log_warning("SkillExecutors: FLAME HAZE missing spec or caster - skipped")
+            return
+        end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping flame haze")
+            return
+        end
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlayAttachedSpec(entry.cast, casterEntity)
+        self:PlaySoundRuid(self.castSounds[key] or "", casterEntity, pos)
+        -- 스폰 자리는 에너지볼트와 같다(effectOverrides.SK_M11.spawn · 없으면 CSV SpawnOffsetY).
+        local spawnX = 0
+        local spawnY = skillData.spawnOffsetY
+        local base = self.effectOverrides[skillId]
+        if base ~= nil and base.spawn ~= nil then
+            if base.spawn.offsetX ~= nil then spawnX = base.spawn.offsetX end
+            if base.spawn.offsetY ~= nil then spawnY = base.spawn.offsetY end
+        end
+        local ex = entry.explode
+        local function spawnNow()
+            if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            skillAttack.PendingProjectileDamageMul = entry.damageMul
+            skillAttack.PendingProjectileExtraHitCsv = table.concat(entry.flames, ",")
+            skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId, skillData.range, skillData.speed, 1, entry.impact.ruid,
+                spawnY, entry.ball.ruid, self:GetExtraSound(key, "hit"), false, spawnX, 1,
+                { sizeX = ex.sizeX, sizeY = ex.sizeY, centerY = ex.centerY, maxTargets = ex.maxTargets })
+        end
+        log("SkillExecutors: FLAME HAZE lv=" .. tostring(level) .. " x" .. tostring(entry.damageMul) .. " explode=" .. tostring(ex.sizeX) .. "x" .. tostring(ex.sizeY)
+            .. " max=" .. tostring(ex.maxTargets) .. " flames=" .. tostring(#entry.flames) .. " delay=" .. tostring(entry.spawnDelay))
+        if entry.spawnDelay ~= nil and entry.spawnDelay > 0 then
+            _TimerService:SetTimerOnce(spawnNow, entry.spawnDelay)
+        else
+            spawnNow()
+        end
+    end
+
+    @ExecSpace("ServerOnly")
     method boolean PlayMotion(string uid, string motionId, boolean ownRowOnly)
         -- WeaponMotion 행을 찾아(ResolveMotionRow) 그 유저의 클라에서 재생한다(A 의 PlayerMotion.PlayAction 을 그대로 부른다 · A 파일 편집 없음).
         -- ownRowOnly = 스킬 전용 행만 재생(무기 기본 공격 행으로의 폴백 금지 · 이동 스킬 / 순서 단계).
         -- SkillCaster.RequestCast(시전 행) · PlayMotionSequence(_2/_END) 가 전부 이 한 곳을 쓴다.
         -- 모션 세트(SkillMotionSet · A-2-23 · 2026-09-24 #83)가 있으면 그게 먼저다 — 세트에서 하나 골라 재생하고 WeaponMotion 은 보지 않는다.
+        -- 버프 변형 키(SK_W11_RB · SK_M11_FH)는 WeaponMotion 행이 없다 → PlayVariantMotion(원작 동작 또는 원래 스킬 모션).
+        if motionId == "SK_W11_RB" or motionId == "SK_M11_FH" then return self:PlayVariantMotion(uid, motionId) end
         local picked = self:PickMotionFromSet(uid, motionId)
         if picked ~= nil then
             _PlayerMotion:PlayAction(picked.row.core, picked.row.parts, picked.row.rate, "ONETIME", uid)

@@ -60,6 +60,10 @@ script SkillProjectile extends AttackComponent
     -- 피해 배율(HitCount 발 스킬의 첫 투사체 = HitCount). CalcDamage 가 곱한다.
     property number DamageMul = 1
 
+    -- 스킬 자체 피해 배율(b/skill-raging-blow-flame-haze · 플레임 헤이즈 = 에너지볼트 % × 2). DamageAt 에서 매직 가드 추가 피해(GetOnHitBonusDamage)를 뺀 몫에만 곱한다 —
+    --   A 인계: 플레임 헤이즈를 2배로 하는 대신 매직 가드 추가 피해를 2.5 % 로 줄였으니 플레임 헤이즈에서도 2.5 % 그대로(사용자 2026-10-02). 1 = 예전 그대로.
+    property number BaseDamageMul = 1
+
     -- 표시 타수(GetDisplayHitCount). 피해 배율과 같은 값으로 두면 "N타에 각 1발 피해" 로 보인다.
     property number DisplayHits = 1
 
@@ -92,6 +96,10 @@ script SkillProjectile extends AttackComponent
 
     -- 명중 시 재생할 사운드 RUID(원작 팩 _audio/Hit). 비면 없음.
     property string HitSoundRUID = ""
+
+    -- 맞은 자리마다 더 트는 그림(b/skill-raging-blow-flame-haze · 플레임 헤이즈 불꽃 5종 · 쉼표 구분 RUID · 연출만 · 피해 없음). 대상마다 다음 것을 돌아가며.
+    property string ExtraHitEffectCsv = ""
+    property integer extraHitIndex = 0
 
     -- 명중 이펙트 높이 보정(world unit · b/skill-magician-effects 2026-09-26): 클립 원점을 대상 몸 중심(콜라이더 중심)에서 이만큼 올린다.
     -- 스킬별 값 = SkillExecutors.effectOverrides[skill].impact.offsetY (SkillAttack.SpawnOneProjectile 이 넣는다 · 없으면 0).
@@ -471,6 +479,16 @@ script SkillProjectile extends AttackComponent
                     local hp = self:HitPointOf(defender)
                     _EffectService:PlayEffect(self.HitEffectRUID, self.Entity, Vector3(hp.x, hp.y + self.HitEffectOffsetY, hp.z), 0, Vector3(1, 1, 1), false)
                 end
+                if self.ExtraHitEffectCsv ~= "" then
+                    -- 플레임 헤이즈 불꽃(연출만): 쉼표로 나눈 목록에서 대상마다 다음 것. 자리 = 명중 그림과 같은 몸 중심.
+                    local list = {}
+                    for r in string.gmatch(self.ExtraHitEffectCsv, "[^,]+") do table.insert(list, r) end
+                    if #list > 0 then
+                        self.extraHitIndex = (self.extraHitIndex % #list) + 1
+                        local fp = self:HitPointOf(defender)
+                        _EffectService:PlayEffect(list[self.extraHitIndex], self.Entity, Vector3(fp.x, fp.y, fp.z), 0, Vector3(1, 1, 1), false)
+                    end
+                end
                 -- 폭발 패스에서는 한 번만(대상마다 같은 소리가 겹친다).
                 if self.HitSoundRUID ~= "" and not (self.explodePass and self.explodeSoundPlayed) then
                     _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)
@@ -499,7 +517,16 @@ script SkillProjectile extends AttackComponent
         -- from spawn time instead of re-derived from `attacker`, because `attacker` here is this
         -- projectile entity, not the caster - it has no PlayerComponent to read a userId from.
         -- DamageMul: N발 스킬의 첫 투사체는 ×N (표시는 GetDisplayHitCount 가 N타로 나눈다).
-        return math.floor(_SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId) * self.DamageMul)
+        local dmg = _SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId)
+        if self.BaseDamageMul ~= 1 then
+            -- BaseDamageMul: 매직 가드 추가 피해는 배율 밖(같은 서버 프레임 · 같은 MP 로 다시 읽으니 DamageAt 이 더한 값과 같다).
+            local bonus = 0
+            if _SkillBuffs ~= nil then bonus = _SkillBuffs:GetOnHitBonusDamage(self.CasterUserId) or 0 end
+            local scaled = math.floor((dmg - bonus) * self.BaseDamageMul) + bonus
+            log("SkillProjectile: " .. self.SkillId .. " base x" .. tostring(self.BaseDamageMul) .. " (bonus " .. tostring(bonus) .. " kept) " .. tostring(dmg) .. " -> " .. tostring(scaled))
+            dmg = scaled
+        end
+        return math.floor(dmg * self.DamageMul)
     end
 
     method boolean IsAttackTarget(Entity defender, string attackInfo)
