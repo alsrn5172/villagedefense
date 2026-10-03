@@ -51,6 +51,15 @@ script Monster extends Component
 	@HideFromInspector
 	property boolean LogSounds = false
 
+	-- 원작 소리 배율(MonsterInfo.DamagedSoundVolume · DieSoundVolume · ResolveInfoSounds 가 채움). 원작 파일마다 음량이 -10 ~ -29 LUFS 로 제각각이라
+	-- 같은 크기로 들리게 맞춘 값(목표 = 레이스 사망 ×6 · 2026-10-03 사용자 결정). PlaySoundToMap 이 그 RUID 를 낼 때 넘어온 volume 에 곱한다 —
+	-- 그래서 억제기 폭발(LaneStateService)처럼 SoundVolume 을 넘기는 호출도 같은 크기가 된다. 보스 · 모델에 소리가 박힌 몹은 1.0 그대로.
+	@HideFromInspector
+	property number DamagedSoundVolume = 1.0
+
+	@HideFromInspector
+	property number DieSoundVolume = 1.0
+
 	@HideFromInspector
 	property boolean infoSoundsResolved = false
 
@@ -155,7 +164,46 @@ script Monster extends Component
 		self.infoSoundsResolved = true
 		self.DamagedSoundRUID = _MonsterCatalog:GetDamagedSoundRuid(id)
 		self.DieSoundRUID = _MonsterCatalog:GetDieSoundRuid(id)
-		log("[Monster] sounds " .. tostring(self.Entity.Name) .. " id=" .. tostring(id) .. " damage=" .. self.DamagedSoundRUID .. " die=" .. self.DieSoundRUID)
+		self.DamagedSoundVolume = _MonsterCatalog:GetDamagedSoundVolume(id)
+		self.DieSoundVolume = _MonsterCatalog:GetDieSoundVolume(id)
+		log("[Monster] sounds " .. tostring(self.Entity.Name) .. " id=" .. tostring(id) .. " damage=" .. self.DamagedSoundRUID .. " x" .. tostring(self.DamagedSoundVolume) .. " die=" .. self.DieSoundRUID .. " x" .. tostring(self.DieSoundVolume))
+		self:PreloadSoundsToMap()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PreloadSoundsToMap()
+		-- 같은 맵 플레이어에게 이 몹의 피격 · 사망 소리를 미리 읽혀 둔다. 처음 낼 때 읽느라 늦게 들리지 않게(b/monster-sounds · 2026-10-03).
+		-- 스폰마다 한 번 · 이미 읽힌 소리는 LoadSound 가 다시 읽지 않는다.
+		if self.DamagedSoundRUID == "" and self.DieSoundRUID == "" then
+			return
+		end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return
+		end
+		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		if users == nil then
+			return
+		end
+		for _, u in ipairs(users) do
+			if isvalid(u) and isvalid(u.PlayerComponent) then
+				self:PreloadSoundsLocal(self.DamagedSoundRUID, self.DieSoundRUID, self.LogSounds, u.PlayerComponent.UserId)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PreloadSoundsLocal(string damagedRuid, string dieRuid, boolean logIt)
+		-- 클라에서 소리를 읽어 둔다(_SoundService.LoadSound 는 ClientOnly). logIt = 서버의 LogSounds(동기화 안 되는 값이라 인자로 받는다).
+		if damagedRuid ~= "" then
+			_SoundService:LoadSound(damagedRuid)
+		end
+		if dieRuid ~= "" then
+			_SoundService:LoadSound(dieRuid)
+		end
+		if logIt then
+			log("[Monster] sounds preloaded " .. tostring(self.Entity.Name) .. " damage=" .. damagedRuid .. " die=" .. dieRuid)
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -468,11 +516,17 @@ script Monster extends Component
 		if users == nil then
 			return
 		end
+		-- 원작 소리면 그 소리의 배율을 곱한다(DamagedSoundVolume · DieSoundVolume — 같은 RUID 면 같은 파일이라 배율도 같다).
+		if ruid == self.DamagedSoundRUID then
+			volume = volume * self.DamagedSoundVolume
+		elseif ruid == self.DieSoundRUID then
+			volume = volume * self.DieSoundVolume
+		end
 		local p = tr.WorldPosition
 		if self.LogSounds then
 			local kind = "sound"
 			if ruid == self.DamagedSoundRUID then kind = "hit sound" elseif ruid == self.DieSoundRUID then kind = "die sound" end
-			log("[Monster] " .. kind .. " played " .. tostring(self.Entity.Name) .. " " .. ruid .. " users=" .. tostring(#users))
+			log("[Monster] " .. kind .. " played " .. tostring(self.Entity.Name) .. " " .. ruid .. " vol=" .. string.format("%.2f", volume) .. " users=" .. tostring(#users))
 		end
 		for _, u in ipairs(users) do
 			if isvalid(u) and isvalid(u.PlayerComponent) then

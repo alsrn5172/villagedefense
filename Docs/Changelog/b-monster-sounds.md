@@ -1,6 +1,6 @@
 # b/monster-sounds — 몹마다 원작 피격 · 사망 소리
 
-> 🔴 **헤더 변경**: `MonsterInfo.csv` 맨 뒤에 `DamagedSoundRUID` · `DieSoundRUID` 2열 추가(A 파일 · 협업-규칙 §3-3 · §3-4 · A 리뷰 승인 필요). `check-integrity.cjs` CANONICAL · `Docs/스키마-계약.md` A-1-1 같이 고침.
+> 🔴 **헤더 변경**: `MonsterInfo.csv` 맨 뒤에 `DamagedSoundRUID` · `DieSoundRUID` · `DamagedSoundVolume` · `DieSoundVolume` 4열 추가(A 파일 · 협업-규칙 §3-3 · §3-4 · A 리뷰 승인 필요). `check-integrity.cjs` CANONICAL · `Docs/스키마-계약.md` A-1-1 같이 고침.
 
 ## 1차 — 구현 (2026-10-02 · #40 5927315317 · 정정 5927819993 · 사용자(강민구) 결정 2026-10-01 "몬스터에 넣는다 · 오디오는 B")
 
@@ -14,6 +14,7 @@
 | 검증 로그 스위치 (2026-10-03) | `Monster.LogSounds`(기본 꺼짐 · 인스펙터에 안 보임). 켜면 소리를 낼 때 `[Monster] hit sound played <이름> <RUID> users=N` · `[Monster] die sound played …`, 규칙으로 안 낼 때 `[Monster] hit sound skipped <이름> — monster attacker <공격자>` · `— within 0.08s` · `[Monster] die sound skipped <이름> — same die sound on <맵> within 0.1s`. Play 확인 때 스크립트로 테스트 몹에만 켠다(로그로 검증하는 보고서용) |
 | 사망 빈칸 3종 메우기 (2026-10-03 · 사용자 지시 "원작 소리가 없으면 같은 계열 · 비슷한 생김새의 공식 사망 소리") | 라이브러리에 원작 `_audio/Die` 가 없는 3종(팩에도 없고 `sound/mob.img/<id>/Die` 검색에도 없음)을 같은 모델 계열 몬스터의 공식 사망 소리로: **콜드아이 4230100 → 커즈아이 3230100 `cd02ae7d`**(1.04s · 이블아이 · 커즈아이 · 콜드아이 · 서전아이는 같은 눈알 그림의 색 바꿈이고, 콜드아이 피격 소리가 등록된 이벤트 사본 9100017 은 커즈아이 사본 9100016 바로 옆 — 이블아이 · 서전아이 사망음 1.65s 도 후보) · **레이스 4230102 → 주니어 레이스 3230101 `4e9c63a1`**(1.93s · 같은 유령의 작은 판 · 계열에 다른 사망음 없음) · **스톤골렘 5130101 → 다크 스톤골렘 5130102 `5f543a38`**(3.00s · 같은 골렘의 어두운 색 바꿈 · 믹스골렘 계열보다 가깝다). 이제 78행 전부 Damage · Die 가 있다(Die 3행은 대체 소리) |
 | 사망 소리 창 0.1 → 0.05s (2026-10-03 · 사용자 결정 · 합동 Play) | `Monster.DieSoundMapWindow` 0.05. 목적은 같은 프레임 몰살(억제기 폭발)을 한 번으로 묶는 것이라 0.05s 로도 그대로 한 번이고, 따로 난 처치 0.10s 간격(더블 샷 두 발이 겹친 두 마리를 하나씩)은 둘 다 들린다 |
+| 음량 맞춤 + 미리 읽기 (2026-10-03 · 사용자 결정 · 합동 Play) | 로비 Play 에서 사망 소리가 대부분 거의 안 들렸다(스톤골렘만 또렷). 원인 3개: 원작 파일 음량이 제각각(−10 ~ −29 LUFS) · 화살 명중음과 같은 프레임에 겹침 · 처음 낼 때 읽느라 늦음. 레이스 사망을 ×2 ~ ×10 으로 들어 보고 사용자가 **×6** 을 골랐다 → 목표 = −24.0 + 15.6 = **−8.4 LUFS**. 표에 쓰인 소리 151개(피격 77 · 사망 74 · MSW CDN 1.7 MB)를 ffmpeg ebur128 로 재서 소리마다 배율 = 10^((−8.4 − LUFS)/20) · 1 ~ 10(0.4s 미만 42개는 0.4s 로 늘려 잼) → `MonsterInfo.csv` **`DamagedSoundVolume` · `DieSoundVolume`** 2열(중앙값 ×2.91 · 최소 ×1.23 · ×10 상한 2개). 레이스 사망 6.00 · 콜드아이 사망(커즈아이 소리) 1.79 · 스톤골렘 2.56 · 달팽이 3.74 · 주황버섯 4.20. `MonsterCatalog.GetDamagedSoundVolume` · `GetDieSoundVolume`(없으면 1.0) · `Monster.DamagedSoundVolume` · `DieSoundVolume` — **`PlaySoundToMap` 이 그 RUID 를 낼 때 곱한다**(그래서 억제기 폭발 `LaneStateService` 도 안 고치고 같은 크기). 미리 읽기: `ResolveInfoSounds` 가 채운 직후 같은 맵 플레이어에게 `PreloadSoundsLocal` → `_SoundService:LoadSound`. 로그 `sounds … damage=<RUID> x<배율> die=<RUID> x<배율>` · `… sound played … vol=<값>` · `sounds preloaded …`(LogSounds). 측정표(저장소 밖) `villagedefense-harness/combined-102-156/run-1003/sounds/all/loudness.json` · `gains.csv` |
 | 안 바꾼 것 | 스킬 명중음(`SkillExecutors.extraSounds` 등) · 보스 소리(`BossInfo`) · 억제기 폭발 처치의 사망 소리 줄(`LaneStateService` — 이제 미니언에 값이 생겨 소리가 나지만 위 0.1s 창으로 한 번) |
 
 검사: 스크립트 검사 0 오류 / 0 경고(`Monster.mlua` info 2 = Maker Refresh 전 `MonsterCatalog` codeblock) · `check-integrity.cjs` 통과(경고 3 · main 과 같음).
