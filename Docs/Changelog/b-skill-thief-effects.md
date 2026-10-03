@@ -154,3 +154,18 @@
 7. 툴팁: 다크 사이트 한 줄 · 이름 "메소 익스플로전"(툴팁 · HUD) · 쉐도우 파트너 "+50%".
 8. 팔 잔상: `sprite flash SK_T11_arc … scale=0.7x0.62` · 양쪽 방향 · 에너지볼트 공이 한 프레임도 안 보인다.
 9. 빌드 경고 N → N.
+
+## 2026-10-03 (8) — 메소 익스플로전 사운드(사용자 Play 선택) · #100 위에 쌓음
+
+- 쌓기: #115 base = `b/skill-magician-effects`(#100). `980ea06` = #100 `19192fb` 병합 · `b6ef176` = #100 `8e785aa`(#100 + main `28edf31`) 병합 — 둘 다 충돌 없음.
+- **사운드(사용자 Play 선택 2026-10-03 · #100 의 텔레포트 강화 · 대마법 명중 사운드와 같은 방식)** — `Skill/SkillExecutors.mlua` 만:
+
+| 항목 | 예전 | 지금 |
+|---|---|---|
+| 시전 사운드 `castSounds.SK_T31` | `0fb09c17…` 일도양단 | `2205468d99934b83ac1632cab8c954ef` = 쉐도우 메소 4111004/Use |
+| 명중 사운드 `extraSounds.SK_T31.hit` | 없음 | `04edcf3c77b049bc9bfa1fa0f541b063` = 메소 익스플로젼 4210014/Hit · **시전 한 번에 한 번** — 중심 폭발(CSV Duration +1.6s · `ExecuteMesoOrigin` 의 impact 타이머)과 함께 · 동전마다 틀지 않는다 |
+
+- 로그: `SkillExecutors: MESO SK_T31 hit sound once (04edcf3c…) with the center blast at +1.6s · N coins`.
+- 처음(`d44fb76`)엔 첫 동전 폭발(+1.15s 안팎)에서 틀었으나 시전 사운드(2.0s)에 묻혀 안 들렸다 → 사용자 Play A/B(2026-10-03)에서 중심 폭발 시점(+1.6s)이 잘 들린다고 골라 옮겼다. 동전 폭발 피해 경로(`DealSkillDamageCircleScaled`)는 `PendingHitSound` 를 쓰지 않아 동전마다 겹치지 않는다.
+- #115 Play(`b6ef176` · 2026-10-02/03): 체크리스트 (7) 1~9 + 스택 확인 + 실제 쿨타임 전부 통과 — 결과는 PR 본문 표 · 보고서 페이지.
+- 빌드 경고 `b6ef176`: 에러 0 · 경고 6 — 전부 #115 가 건드리지 않는 A 파일(WorkshopUIController · VillageLifeUIController · StatUIController · SummonManager · worldnametag 모델) · #115 자기 파일 0.
