@@ -20,3 +20,15 @@ Play 확인(아직 안 함): 도적 Lv30 · 달팽이를 앞 0.3 에 한 마리 
 - main `6519369`(#100 · #115 · #116 머지) 병합 `18fd142` — 충돌 없음 · 스크립트 검사 0 오류 / 0 경고(SkillAttack info 15 = #100 줄) · `check-integrity` 통과.
 - **탐색 범위는 앞쪽만 그대로** — A [#40 5957804369](https://github.com/alsrn5172/villagedefense/issues/40#issuecomment-5957804369) "안늘림"(질문 5957719766 "조준 범위를 플레이어 뒤쪽으로 조금 늘려야 하는가?"의 답). 위 "안 바꾼 것" 줄이 그대로 확정이다.
 - Play 확인은 통합 Play 런시트 `smallprs-check/RUN-combined-1003.md` §F2 A1 ~ A5.
+
+## 2026-10-05 — 뒤쪽 대상은 당기지 않고 버린다 (로컬 · push 전)
+
+| 무엇 | 어떻게 |
+|---|---|
+| 증상 (Play · 로그) | `FindSkillTarget` 가 시전자보다 살짝 **뒤**의 달팽이를 고를 때가 있다(로그 `ADJnearR is -0.18 ahead` 왼쪽 보기 · `-0.08 ahead` 오른쪽 보기). 1차 규칙이 `ox = max(0, ahead) = 0` 으로 당겨 투사체가 시전자 몸에서 생기고, 판정 상자가 뒤 달팽이와 겹쳐 **뒤 달팽이가 맞는데 그림은 앞으로 날아갔다**. 더블 샷 14번 중 6번 |
+| 고친 것 (사용자 결정) | `SkillAttack.SpawnProjectile`: `ahead < 0` 이면 당기지 않고 `target = nil` — 오프셋은 원래 값, 바라보는 방향으로 곧게 쏜다. 그 아래 수명(`HomingLifetimeMul` 안 곱함) · `SetTarget`(안 부름) · 볼리 2발째(`t2 = nil`) · 마지막 `spawned projectile … target=none` 로그가 전부 대상 없음으로 간다. `ahead >= 0` 은 1차 규칙 그대로. 로그 `SkillAttack: projectile <스킬> target <이름> is <d> behind — dropped (straight shot · offset <ox>)` |
+| 두 번째 경로 | 같은 당김이 다른 곳에는 없다 — 투사체 스폰은 `SpawnProjectile` 한 곳(볼리도 그 안 타이머). `SkillExecutors` 의 `spec.offsetX` 들은 이펙트 자리일 뿐 |
+
+검사: 스크립트 검사 0 오류 / 0 경고 · `check-integrity.cjs` 통과.
+
+Play 재확인(아직 안 함): 에너지볼트 · 더블 샷 · 럭키 세븐 · 달팽이 세마리 · 플레임 헤이즈 — 각각 달팽이를 바로 앞에 한 마리 · 바로 뒤에 한 마리 두고 양쪽 방향으로 시전 → 뒤 달팽이가 골라지면 `… behind — dropped` 줄 · 뒤 달팽이는 안 맞고 투사체가 앞으로 날아 앞 달팽이가 맞는다 / 앞 달팽이만 골라지면 1차 규칙(`pulled back` 줄) 그대로.
