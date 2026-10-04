@@ -316,6 +316,22 @@ script SkillExecutors extends Logic
 
     property table loopTurnTimers = {}
 
+    -- 루프 겹 sprite(FIXES §8 · b/skill-pirate-followup · 2026-10-05 사용자 범위: 에너지 차지 세 티어 loop + 불꽃 · 에너지 쉴드 방울):
+    --   followTurn 겹을 EffectService 이펙트 대신 **플레이어 자식 sprite 엔티티**(model://skillprojectile · VisualOnly)로 건다.
+    --   예전엔 돌아설 때마다 RemoveEffect + 새 FlipX 로 다시 걸어 클립이 0프레임부터 다시 돌았다(불꽃이 튀고 방울이 1프레임 사라짐 · EC_turn_1005.mkv).
+    --   sprite 는 FlipX · 위치만 바꾸면 되므로 프레임이 이어진다. 서버 살피기(EnsureLoopTurnPoll)가 FlipX 를 바꾸고(늦게 들어온 클라도 맞는 값),
+    --   클라마다 매 프레임 주인 LookDirectionX 로 FlipX · 앞 offsetX 를 먼저 맞춘다(OnUpdate · loopSpriteFollow) — 서버 0.1 s 살피기 · 동기화 지연 없이 바로 돈다.
+    --   false 면 예전 이펙트 경로(되돌리기용 스위치).
+    property boolean LoopLayerAsSprite = true
+
+    -- 서버: userId → { [buffLoopEffects 키(태그 · 태그 .. "#flame")] = sprite 엔티티 }.
+    property table loopSprites = {}
+
+    property integer loopSpriteSeq = 0
+
+    -- 클라: 따라갈 루프 sprite { uid, name, offsetX, noFlip, since, fx, lastFacing } 목록(FollowLoopSprite 가 넣고 OnUpdate 가 돈다).
+    property table loopSpriteFollow = {}
+
     -- 궁 화면 컷신 UI(b/skill-cutscene-measured · #40 comment 5830063946 A 결정 · 2026-09-26): 화면 컷신(cast.cutsceneSeconds 가 있는 것)은 월드 이펙트라
     -- 플레이어에 붙어 맵 끝에서 화면 한쪽이 비고(카메라가 맵 끝에서 멈춘다), UI 그룹(HUD)이 그 위에 그려졌다. 그래서 **시전자 화면에만** 같은 클립을
     -- ui/SkillCutsceneGroup(GroupOrder 30 · 모든 UI 그룹 위)의 전체 화면 sprite 로 한 번 더 재생한다 — 화면을 덮는 크기 · 클립 비율 유지 · 넘치는 쪽은 잘린다.
@@ -401,6 +417,7 @@ script SkillExecutors extends Logic
         for _, id in pairs(self.loopTurnTimers) do _TimerService:ClearTimer(id) end
         self.loopTurnTimers = {}
         self.loopTurnState = {}
+        self.loopSprites = {}
     end
 
     @ExecSpace("ServerOnly")
@@ -1812,6 +1829,14 @@ script SkillExecutors extends Logic
                 perUser[buffTag .. "#pending"] = nil
                 if not isvalid(casterEntity) then return end
                 local lateSerial = 0
+                if self:UseLoopSprite(spec) then
+                    -- 루프 sprite(FIXES §8 · 에너지 쉴드 방울): 거는 순간의 facing 으로 자식 sprite 를 건다 · 돌아서면 뒤집기만(이펙트 serial 없음 · 수명 = 남은 버프).
+                    local lateFacing = self:GetFacingX(casterEntity)
+                    self:PlayLoopSprite(casterEntity, buffTag, spec, lateFacing, rest)
+                    self:RegisterLoopTurn(userId, buffTag, buffTag, spec, lateFacing)
+                    log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " started after " .. tostring(startDelay) .. "s as sprite")
+                    return
+                end
                 if spec.followTurn then
                     -- followTurn(에너지 쉴드 · b/skill-pirate-followup): 첫 바퀴 동안 돌아섰을 수 있다 → 거는 순간의 facing 으로 걸고 살피기에 넘긴다.
                     local lateFacing = self:GetFacingX(casterEntity)
@@ -1832,6 +1857,12 @@ script SkillExecutors extends Logic
                 log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " started after " .. tostring(startDelay) .. "s serial=" .. tostring(lateSerial))
             end, startDelay)
             log("SkillExecutors: buff loop effect " .. skillId .. " " .. buffTag .. " waits " .. tostring(startDelay) .. "s (cast plays the first pass)")
+            return
+        end
+        -- 루프 sprite(FIXES §8): followTurn 겹(첫 바퀴 대기 없는 것)도 자식 sprite 로 — 돌아서면 뒤집기만. 이 겹엔 아바타 알파 · 앞 겹 · 분신 살피기가 없다.
+        if self:UseLoopSprite(spec) then
+            self:PlayLoopSprite(casterEntity, buffTag, spec, facing, duration)
+            self:RegisterLoopTurn(userId, buffTag, buffTag, spec, facing)
             return
         end
         local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, offY, 0), zRot, Vector3(s, s, 1), true, opt)
@@ -1913,9 +1944,13 @@ script SkillExecutors extends Logic
         -- 재시전(PlayBuffLoop · keepAvatarHidden = 바로 다시 숨기므로 깜빡임 방지) · 컷신 숨김 · 분신 따라하기 · StopBuffLoop 가 쓴다.
         -- 방향 따라가기(followTurn) 등록도 내린다 — 다시 거는 쪽(PlayBuffLoop · PlayChargeLoop)이 지금 spec 으로 새로 올린다(티어가 바뀌어도 옛 겹을 다시 걸지 않게).
         if self.loopTurnState[userId] ~= nil then self.loopTurnState[userId][buffTag] = nil end
+        -- 루프 sprite(FIXES §8 · 태그 · 태그 .. "#flame"): 걸려 있었으면 지우고 "있었다" 로 센다(보호막이 깨질 때 끝 연출 판단).
+        local hadSprite = false
+        if self:RemoveLoopSprite(userId, buffTag) then hadSprite = true end
+        if self:RemoveLoopSprite(userId, buffTag .. "#flame") then hadSprite = true end
         local perUser = self.buffLoopEffects[userId]
-        if perUser == nil then return false end
-        local had = false
+        if perUser == nil then return hadSprite end
+        local had = hadSprite
         if perUser[buffTag .. "#hidden"] then
             had = true
             if not keepAvatarHidden then
@@ -2039,6 +2074,163 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method boolean UseLoopSprite(table spec)
+        -- 이 겹을 sprite 엔티티로 걸지(FIXES §8): followTurn 겹이고 스위치(LoopLayerAsSprite)가 켜져 있으면 true.
+        return self.LoopLayerAsSprite and spec ~= nil and spec.followTurn == true and spec.ruid ~= nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method Entity PlayLoopSprite(Entity player, string key, table spec, number facing, number duration)
+        -- 반복 겹 하나를 플레이어 **자식** sprite 엔티티로 건다(FIXES §8 · 클립이 돌아설 때 0프레임으로 돌아가지 않게). 이펙트 경로(PlayLoopLayer)와 같은 값을 쓴다:
+        --   앞 offsetX × facing · offsetY · scale · 오른쪽을 볼 때 FlipX(noFlip 이면 안 뒤집음) · startFrame/endFrame = 그 구간만 반복 · sortBehind/behindPlayer = 플레이어 바로 뒤 층,
+        --   아니면 플레이어 바로 앞 층(이펙트 기본 층과 같은 앞). 엔티티는 model://skillprojectile(VisualOnly · Speed 0 · MaxLifetime = duration)이라 피해 · 판정이 없고 스스로 사라진다.
+        --   기록 = loopSprites[uid][key](같은 키에 이미 있으면 먼저 지운다) · 모든 클라에 따라가기 등록(FollowLoopSprite · 클라가 매 프레임 FlipX 를 맞춘다).
+        if not isvalid(player) or not isvalid(player.PlayerComponent) or not isvalid(player.TransformComponent) then return nil end
+        local uid = player.PlayerComponent.UserId
+        self:RemoveLoopSprite(uid, key)
+        self.loopSpriteSeq = self.loopSpriteSeq + 1
+        local name = "LoopFx_" .. uid .. "_" .. tostring(self.loopSpriteSeq)
+        local ox = spec.offsetX or 0
+        local oy = spec.offsetY or 0
+        local p = player.TransformComponent.WorldPosition
+        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", name, Vector3(p.x + ox * facing, p.y + oy, p.z), player)
+        if not isvalid(fx) then
+            log_warning("SkillExecutors: loop sprite spawn failed " .. tostring(key) .. " (" .. uid .. ")")
+            return nil
+        end
+        local mover = fx:GetComponent("script.SkillProjectile")
+        if isvalid(mover) then
+            mover.VisualOnly = true
+            mover.Speed = 0
+            -- DirectionX −1: SkillProjectile.ApplyFacing 이 Scale.x 를 양수로 둔다(뒤집기는 아래 FlipX 가 한다 · 두 번 뒤집지 않게).
+            mover.DirectionX = -1
+            mover.DirectionY = 0
+            local life = duration
+            if life == nil or life <= 0 then life = 100000 end
+            mover.MaxLifetime = life
+            mover.SkillId = "LoopFx"
+        end
+        local s = spec.scale or 1
+        fx.TransformComponent.Position = Vector3(ox * facing, oy, 0)
+        fx.TransformComponent.Scale = Vector3(s, s, 1)
+        local sr = fx.SpriteRendererComponent
+        if isvalid(sr) then
+            if _PlayerFrontLayer ~= nil then
+                sr.SortingLayer = _PlayerFrontLayer.PlayerSortingLayer
+                if spec.sortBehind or spec.behindPlayer then
+                    sr.OrderInLayer = _PlayerFrontLayer.PlayerOrderInLayer - self.ShadowOrderBelowPlayer
+                else
+                    sr.OrderInLayer = _PlayerFrontLayer.PlayerOrderInLayer + 1
+                end
+            end
+            if spec.startFrame ~= nil then sr.StartFrameIndex = spec.startFrame end
+            if spec.endFrame ~= nil then sr.EndFrameIndex = spec.endFrame end
+            sr.FlipX = (facing > 0) and not spec.noFlip
+            -- 그림은 맨 마지막(배율 · 층이 먼저 가야 첫 프레임에 기본 배율 · 층으로 번쩍이지 않는다 · LaneAttackFx 와 같은 순서).
+            sr.SpriteRUID = spec.ruid
+        end
+        local perUser = self.loopSprites[uid]
+        if perUser == nil then
+            perUser = {}
+            self.loopSprites[uid] = perUser
+        end
+        perUser[key] = fx
+        self:FollowLoopSprite(uid, name, ox, spec.noFlip == true)
+        log("SkillExecutors: loop sprite " .. key .. " " .. name .. " ruid=" .. string.sub(spec.ruid, 1, 8) .. " facing=" .. tostring(facing)
+            .. " flipX=" .. tostring(isvalid(sr) and sr.FlipX) .. " frames=" .. tostring(spec.startFrame or 0) .. "-" .. tostring(spec.endFrame or "end")
+            .. " behind=" .. tostring(spec.sortBehind == true or spec.behindPlayer == true) .. " for " .. tostring(duration) .. "s (" .. uid .. ")")
+        return fx
+    end
+
+    @ExecSpace("ServerOnly")
+    method Entity GetLoopSprite(string uid, string key)
+        -- loopSprites[uid][key] 가 살아 있으면 그 엔티티, 아니면(없음 · 수명이 다해 스스로 사라짐) nil — 죽은 기록은 지운다.
+        local perUser = self.loopSprites[uid]
+        if perUser == nil then return nil end
+        local fx = perUser[key]
+        if fx == nil then return nil end
+        if not isvalid(fx) then
+            perUser[key] = nil
+            return nil
+        end
+        return fx
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean RemoveLoopSprite(string uid, string key)
+        -- 루프 sprite 하나를 지운다. 있었으면 true(이미 수명이 다해 사라졌어도 기록이 있었으면 true — 끝 연출 판단은 "걸려 있었는가" 로 한다).
+        local perUser = self.loopSprites[uid]
+        if perUser == nil or perUser[key] == nil then return false end
+        local fx = perUser[key]
+        perUser[key] = nil
+        if isvalid(fx) then fx:Destroy() end
+        log("SkillExecutors: loop sprite removed " .. key .. " (" .. uid .. ")")
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TurnLoopSprite(Entity fx, table spec, number facing)
+        -- 돌아섰을 때(EnsureLoopTurnPoll): 다시 걸지 않고 FlipX · 앞 offsetX 만 바꾼다 — 프레임이 그대로 이어진다. 클라는 이미 매 프레임 맞추고 있고, 이 값은 늦게 들어온 클라용.
+        if not isvalid(fx) then return end
+        local sr = fx.SpriteRendererComponent
+        if isvalid(sr) then sr.FlipX = (facing > 0) and not spec.noFlip end
+        local t = fx.TransformComponent
+        if isvalid(t) then
+            local cur = t.Position
+            t.Position = Vector3((spec.offsetX or 0) * facing, cur.y, cur.z)
+        end
+    end
+
+    @ExecSpace("Multicast")
+    method void FollowLoopSprite(string uid, string name, number offsetX, boolean noFlip)
+        -- 모든 클라: 이 루프 sprite(플레이어 uid 의 자식 name)를 매 프레임 주인 facing 에 맞춘다(OnUpdate). 엔티티가 아직 안 왔으면 올 때까지(최대 LoopSpriteFindSeconds) 찾는다.
+        table.insert(self.loopSpriteFollow, { uid = uid, name = name, offsetX = offsetX, noFlip = noFlip, since = _UtilLogic.ElapsedSeconds, fx = nil, lastFacing = 0 })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- 클라: 루프 sprite 따라가기(FIXES §8). 주인 LookDirectionX 가 바뀐 프레임에만 FlipX · 앞 offsetX 를 고친다. 주인 · 엔티티가 사라지면 목록에서 뺀다.
+        local list = self.loopSpriteFollow
+        if #list == 0 then return end
+        local now = _UtilLogic.ElapsedSeconds
+        local keep = {}
+        for _, f in ipairs(list) do
+            local alive = true
+            local player = _UserService:GetUserEntityByUserId(f.uid)
+            if not isvalid(player) or not isvalid(player.PlayerControllerComponent) then
+                alive = false
+            else
+                if f.fx == nil then
+                    local found = player:GetChildByName(f.name)
+                    if isvalid(found) then
+                        f.fx = found
+                    elseif now - f.since > 3 then
+                        alive = false
+                    end
+                elseif not isvalid(f.fx) then
+                    alive = false
+                end
+                if alive and f.fx ~= nil then
+                    local facing = player.PlayerControllerComponent.LookDirectionX
+                    if facing == 0 then facing = 1 end
+                    if facing ~= f.lastFacing then
+                        f.lastFacing = facing
+                        local sr = f.fx.SpriteRendererComponent
+                        if isvalid(sr) then sr.FlipX = (facing > 0) and not f.noFlip end
+                        local t = f.fx.TransformComponent
+                        if isvalid(t) then
+                            local cur = t.Position
+                            t.Position = Vector3(f.offsetX * facing, cur.y, cur.z)
+                        end
+                    end
+                end
+            end
+            if alive then table.insert(keep, f) end
+        end
+        self.loopSpriteFollow = keep
+    end
+
+    @ExecSpace("ServerOnly")
     method void RegisterLoopTurn(string uid, string buffTag, string key, table spec, number facing)
         -- followTurn 겹 하나를 살피기에 올린다. key = buffLoopEffects[uid] 의 키(태그 · 태그 .. "#flame"). 같은 태그의 겹은 같은 facing 을 공유한다 — 겹을 걸 때마다 지금 facing 으로 맞춘다.
         if uid == nil or uid == "" or spec == nil then return end
@@ -2084,12 +2276,19 @@ script SkillExecutors extends Logic
             local before = st.facing
             st.facing = facing
             local perUser = self.buffLoopEffects[uid]
-            if perUser == nil then return end
+            if perUser == nil then perUser = {} end
             local names = ""
             local n = 0
+            local flipped = 0
             for key, spec in pairs(st.layers) do
                 local old = perUser[key]
-                if old ~= nil then
+                local fx = self:GetLoopSprite(uid, key)
+                if fx ~= nil then
+                    -- sprite 겹(FIXES §8): 다시 걸지 않고 뒤집기만 — 프레임이 이어진다.
+                    self:TurnLoopSprite(fx, spec, facing)
+                    flipped = flipped + 1
+                    names = names .. " " .. key .. "=sprite"
+                elseif old ~= nil then
                     _EffectService:RemoveEffect(old)
                     local serial = self:PlayLoopLayer(player, spec, facing)
                     perUser[key] = serial
@@ -2104,7 +2303,7 @@ script SkillExecutors extends Logic
                     names = names .. " " .. key .. "=" .. tostring(serial)
                 end
             end
-            log("SkillExecutors: loop turned " .. buffTag .. " facing " .. tostring(before) .. " -> " .. tostring(facing) .. " re-played " .. tostring(n) .. " layer(s) flipX=" .. tostring(facing > 0) .. names .. " (" .. uid .. ")")
+            log("SkillExecutors: loop turned " .. buffTag .. " facing " .. tostring(before) .. " -> " .. tostring(facing) .. " re-played " .. tostring(n) .. " layer(s) · flipped " .. tostring(flipped) .. " sprite(s) (no restart) flipX=" .. tostring(facing > 0) .. names .. " (" .. uid .. ")")
         end, self.ShadowFacingPollSeconds)
     end
 
@@ -2613,17 +2812,23 @@ script SkillExecutors extends Logic
         --    범용 경로인 PlayBuffLoop 는 같은 플래그를 지킨다(`if spec.behindPlayer or spec.sortBehind then ...` · `:982`) —
         --    PlayChargeLoop 를 PlayBuffLoop 확장이 아니라 별 함수로 쓴 탓에 생긴 비대칭이다. 이 겹을 뒤로 보내려면
         --    플래그가 아니라 **여기 ApplyShadowSorting 호출을 추가**해야 한다.
-        local opt = {}
-        opt["FlipX"] = (facing > 0) and not spec.noFlip
-        local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity,
-            Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
-        perUser[buffTag] = serial
-        _TimerService:SetTimerOnce(function()
-            if perUser[buffTag] == serial then
-                _EffectService:RemoveEffect(serial)
-                perUser[buffTag] = nil
-            end
-        end, duration)
+        local serial = 0
+        if self:UseLoopSprite(spec) then
+            -- 루프 sprite(FIXES §8 · 세 티어 공통): 자식 sprite 로 걸고 돌아서면 뒤집기만(0프레임으로 안 돌아감). 수명 = duration(엔티티가 스스로 사라진다).
+            self:PlayLoopSprite(casterEntity, buffTag, spec, facing, duration)
+        else
+            local opt = {}
+            opt["FlipX"] = (facing > 0) and not spec.noFlip
+            serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity,
+                Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
+            perUser[buffTag] = serial
+            _TimerService:SetTimerOnce(function()
+                if perUser[buffTag] == serial then
+                    _EffectService:RemoveEffect(serial)
+                    perUser[buffTag] = nil
+                end
+            end, duration)
+        end
         -- followTurn(세 티어 공통 · 2026-10-04 P18b "뒤집기 + 따라감" · b/skill-pirate-followup): 차지 동안 돌아서면 이 겹을 새 FlipX 로 다시 건다(EnsureLoopTurnPoll · 에너지 쉴드와 같은 살피기).
         if spec.followTurn then self:RegisterLoopTurn(userId, buffTag, buffTag, spec, facing) end
         -- 두 번째 루프 겹(loopFlame = 팩의 effect/2 · 제자리에서 깜빡이는 불꽃 기둥). affected 는 흩날리는 입자라
@@ -2632,7 +2837,11 @@ script SkillExecutors extends Logic
         --    그래서 **하위 키**(태그 .. "#flame")에 따로 담는다 — 예전 loopFront 가 쓰던 것과 같은 방식이고
         --    RemoveBuffLoop 이 그 키를 지운다(버프 만료·재시전·매치 초기화가 전부 거기로 모인다).
         local flame = tier.loopFlame
-        if flame ~= nil and flame.ruid ~= nil then
+        if flame ~= nil and flame.ruid ~= nil and self:UseLoopSprite(flame) then
+            -- 불꽃도 자식 sprite(FIXES §8 · sortBehind = 플레이어 바로 뒤 층 · PlayLoopSprite 가 같은 값을 넣는다).
+            self:PlayLoopSprite(casterEntity, buffTag .. "#flame", flame, facing, duration)
+            self:RegisterLoopTurn(userId, buffTag, buffTag .. "#flame", flame, facing)
+        elseif flame ~= nil and flame.ruid ~= nil then
             local fs = flame.scale or 1
             local fopt = {}
             fopt["FlipX"] = (facing > 0) and not flame.noFlip

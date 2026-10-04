@@ -60,3 +60,17 @@ P18b: 들어올림 세트 c · c1 · c2 · c3 어느 것도 후반(거꾸로 →
 7. 빌드 경고 N → N.
 - 2026-10-05 섬머솔트 킥 후반 = **v4** (사용자 D1 선택 · v3 모양 + v2 속도: 자세 고정 · 매달림 0.49s · 섬 0.64s · 끝 0.70s) · 기본값 BackflipSecondHalf v1 → v4
 - 2026-10-05 피스트인레인지 티어 색(R2 사용자 선택): 대상 위 폭발 = 티어 원작 hit/0(5100015 / 5110014 / 5120018) · VI 휩쓸기에 색 곱하기 ENERGY 1/0.85/0.15 · SUPER 1/0.45/0.35 · ULTRA 그대로(stageColor · PlayStageEffect Color 옵션)
+
+## 2026-10-05 — 돌아설 때 루프가 끊기던 것(FIXES §8) · 에너지 차지 세 티어 loop + 불꽃 · 에너지 쉴드 방울
+
+- 문제(D3 · R2 · EC_turn_1005.mkv): 돌아설 때마다 `EnsureLoopTurnPoll` 이 이펙트를 지우고 새 FlipX 로 다시 걸어 클립이 0프레임부터 다시 돌았다 — 불꽃이 튀고 방울이 1프레임(33 ms) 사라졌다. EffectService 는 도는 이펙트의 FlipX 를 바꾸거나 프레임을 이어 걸 수 없다.
+- 수정(`RootDesk/MyDesk/Skill/SkillExecutors.mlua`): followTurn 겹을 **플레이어 자식 sprite 엔티티**(`model://skillprojectile` · VisualOnly · Speed 0 · 수명 = 버프 남은 시간)로 건다(`PlayLoopSprite`). 돌아서면 서버가 FlipX · 앞 offsetX 만 바꾸고(`TurnLoopSprite` · 다시 걸지 않음), 모든 클라는 매 프레임 주인 LookDirectionX 로 먼저 맞춘다(`FollowLoopSprite` Multicast → `OnUpdate` ClientOnly). 값(크기 · 앞 offset · 구간 프레임 13–20 · 뒤 층)은 이펙트 때와 같다. 지우기는 `RemoveBuffLoop` → `RemoveLoopSprite`(보호막 끝 연출 판단 유지).
+- 스위치 `LoopLayerAsSprite`(기본 true · false = 예전 이펙트 경로).
+- 로그: `loop sprite <키> LoopFx_<uid>_<n> ruid=… facing=… flipX=… frames=… behind=…` · 돌아서면 `loop turned … flipped N sprite(s) (no restart)` · 지울 때 `loop sprite removed`.
+- 점검: LSP 0 · `check-integrity` 통과(경고 3 = main). **Play 안 함** — 공용 빌드가 이 커밋을 안 갖고 있고 메인 폴더 전환은 사용자 Reimport All 이 필요하다. 사용자 RELOOK 행으로 본다.
+
+### Play 체크 (RELOOK — 한 행)
+
+1. W(에너지 차지) ENERGY · SUPER · ULTRA 마다 → · 차지 중 ← → ← 여러 번: 불꽃 · 루프가 튀지 않고 이어서 돈다 · 몸 뒤 가운데 · 로그 `flipped 2 sprite(s) (no restart)`.
+2. E(에너지 쉴드) → · 보호막 중 ← → ←: 방울이 사라지지 않고 이어서 돈다 · 앞 0.06 이 바라보는 쪽 · 깨질 때 끝 연출(그대로).
+3. 다른 유저 화면에서도 같은지(두 클라 · 가능할 때).
