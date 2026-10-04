@@ -949,13 +949,21 @@ script SkillExecutors extends Logic
                         special = "131741196aa2474cbaf5bb2257250542",
                     },
                     ULTRA = {    -- 울트라 차지 (lv5) · cast 155×158 · flame 172×216
-                        cast = { ruid = "2f9d1267ccd446adb0abd4f1ac040e77", noFlip = true, scale = 1.15 },
+                        -- 🔴 2026-10-04 합동 Play P18b 사용자 선택(b/skill-pirate-followup · pirate-check/FIXES-after-play.md §2 · 세트 "b1"/"y10"):
+                        --   진입 원(2f9d1267 = KMS 359 5120018 effect/0) = 바라보는 쪽으로 뒤집기(noFlip 뺌 · 원작처럼) · 배율 1.0 · offsetY −0.10 · 5번째 프레임부터(startFrame 4 · PlayChargeEnter).
+                        --     예전 = noFlip · ×1.15(2026-09-18 "진입 이펙트도 세 티어 전부 크게" · noFlip 은 def1e43 에서 이유 없이 복사됨).
+                        --   loop + 불꽃 = 뒤집기 + 차지 내내 바라보는 쪽을 따라감(followTurn · 에너지 쉴드와 같은 살피기 · 돌아서면 두 겹을 새 FlipX 로 다시 건다).
+                        --   ENERGY · SUPER 티어는 고르지 않았다(P18b 는 울트라 클립으로만 봤다) — 그대로 둔다(PR 본문 · 변경 기록 "남은 것").
+                        cast = { ruid = "2f9d1267ccd446adb0abd4f1ac040e77", scale = 1.0, offsetY = -0.10, startFrame = 4 },
                         -- ⚠ 이 loop spec 은 정렬되지 않았다(플레이어 앞). sortBehind 를 여기 적어도 PlayChargeLoop 의 loop 경로가 이 플래그를 읽지 않아 무효다.
-                        loop = { ruid = "18cdaebc99aa443b8020a85b32e7a239", noFlip = true, scale = 1.08 },
-                        loopFlame = { ruid = "6eaba42b5cb54977b67f16c98603b2cb", noFlip = true, scale = 1.0, sortBehind = true },
+                        loop = { ruid = "18cdaebc99aa443b8020a85b32e7a239", scale = 1.08, followTurn = true },
+                        loopFlame = { ruid = "6eaba42b5cb54977b67f16c98603b2cb", scale = 1.0, sortBehind = true, followTurn = true },
                         special = "3591203cf0fb4cbbb8e5701d0d33755e",
                     },
                 },
+                -- castSoundDelay(2026-10-04 합동 Play P18b 사용자 선택 · b/skill-pirate-followup): 시작 소리(castSounds.SK_P21)를 진입 원보다 0.40s 늦게(타이머 · ExecuteBuff).
+                --   loop · 불꽃은 그대로 0s. 세 티어가 같은 소리라 티어와 무관하다. 0 = 예전처럼 시전과 같이.
+                castSoundDelay = 0.40,
                 -- 2단 주먹: 시전자에게 공격 이펙트 1회 + 맞은 대상마다 hit/0(SkillAttack.PendingImpactRuid).
                 -- offsetX(2026-09-18 요청 "이펙트가 캐릭터에 겹치지 않고 조금 앞에 뜨게"): PlayStageEffect 가 (offsetX × facing) 으로
                 --   곱해 주므로 양수 = **바라보는 쪽 앞**이고 왼쪽을 볼 때는 알아서 뒤집힌다(SK_P11.cast offsetX −0.95 와 같은 자리).
@@ -1851,6 +1859,8 @@ script SkillExecutors extends Logic
     method boolean RemoveBuffLoop(string userId, string buffTag, boolean keepAvatarHidden)
         -- 루프 이펙트 · 앞 겹(태그 .. "#front") · 틴트 왕복 타이머(태그 .. "#pulse") · 숨긴 아바타(태그 .. "#hidden" · keepAvatarHidden 이 아니면 알파 1 복구) 제거. 하나라도 있었으면 true.
         -- 재시전(PlayBuffLoop · keepAvatarHidden = 바로 다시 숨기므로 깜빡임 방지) · 컷신 숨김 · 분신 따라하기 · StopBuffLoop 가 쓴다.
+        -- 방향 따라가기(followTurn) 등록도 내린다 — 다시 거는 쪽(PlayBuffLoop · PlayChargeLoop)이 지금 spec 으로 새로 올린다(티어가 바뀌어도 옛 겹을 다시 걸지 않게).
+        if self.loopTurnState[userId] ~= nil then self.loopTurnState[userId][buffTag] = nil end
         local perUser = self.buffLoopEffects[userId]
         if perUser == nil then return false end
         local had = false
@@ -2435,7 +2445,19 @@ script SkillExecutors extends Logic
             -- 발밑 고리(effectOverrides[skill].ground · 매직 가드 effect0) — 요정과 같은 순간. 항목이 없는 버프는 아무것도 안 한다.
             self:PlayStageEffect(skillId, "ground", casterEntity, pos, nil)
         end
-        self:PlayCastSound(skillId, casterEntity)
+        -- castSoundDelay(에너지 차지 0.40s · b/skill-pirate-followup · 2026-10-04 P18b): 시작 소리만 진입 원보다 늦게. 그동안 시전자가 사라지면(퇴장) 소리도 없다.
+        local soundDelay = 0
+        local soundEntry = self.effectOverrides[skillId]
+        if soundEntry ~= nil and soundEntry.castSoundDelay ~= nil then soundDelay = soundEntry.castSoundDelay end
+        if soundDelay > 0 then
+            _TimerService:SetTimerOnce(function()
+                if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
+                self:PlayCastSound(skillId, casterEntity)
+                log("SkillExecutors: start sound " .. skillId .. " +" .. tostring(soundDelay) .. "s after the cast (" .. uid .. ")")
+            end, soundDelay)
+        else
+            self:PlayCastSound(skillId, casterEntity)
+        end
 
         if skillData.buffTag == nil or skillData.buffTag == "" then
             log("SkillExecutors: BUFF " .. skillId .. " has no BuffTag — visual only")
@@ -2501,9 +2523,14 @@ script SkillExecutors extends Logic
         local facing = self:GetFacingX(casterEntity)
         local opt = {}
         opt["FlipX"] = (facing > 0) and not spec.noFlip
+        -- startFrame/endFrame(2026-10-04 P18b · 울트라 진입 원 startFrame 4): 클립 일부 프레임만(EffectService options StartFrameIndex/EndFrameIndex).
+        if spec.startFrame ~= nil then opt["StartFrameIndex"] = spec.startFrame end
+        if spec.endFrame ~= nil then opt["EndFrameIndex"] = spec.endFrame end
         _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0),
             0, Vector3(s, s, 1), false, opt)
-        log("SkillExecutors: CHARGE enter " .. skillId .. " tier=" .. self:ChargeTierKey(skillId, level) .. " lv" .. tostring(level))
+        log("SkillExecutors: CHARGE enter " .. skillId .. " tier=" .. self:ChargeTierKey(skillId, level) .. " lv" .. tostring(level)
+            .. " facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]) .. " scale=" .. tostring(s) .. " offsetY=" .. tostring(spec.offsetY or 0)
+            .. " startFrame=" .. tostring(spec.startFrame or 0))
     end
 
     @ExecSpace("ServerOnly")
@@ -2545,6 +2572,8 @@ script SkillExecutors extends Logic
                 perUser[buffTag] = nil
             end
         end, duration)
+        -- followTurn(울트라 · 2026-10-04 P18b "뒤집기 + 따라감" · b/skill-pirate-followup): 차지 동안 돌아서면 이 겹을 새 FlipX 로 다시 건다(EnsureLoopTurnPoll · 에너지 쉴드와 같은 살피기).
+        if spec.followTurn then self:RegisterLoopTurn(userId, buffTag, buffTag, spec, facing) end
         -- 두 번째 루프 겹(loopFlame = 팩의 effect/2 · 제자리에서 깜빡이는 불꽃 기둥). affected 는 흩날리는 입자라
         -- 그것만으로는 원작과 달라 보인다(2026-09-18 사용자가 GIF 프레임을 직접 열어 확인) — 불꽃이 주 시각이다.
         -- 🔴 같은 키에 덮어쓰면 앞 serial 이 RemoveEffect 에 도달하지 못해 isLoop 이펙트가 영구히 남는다.
@@ -2568,6 +2597,8 @@ script SkillExecutors extends Logic
                     perUser[buffTag .. "#flame"] = nil
                 end
             end, duration)
+            -- 불꽃 겹도 같이 따라간다(키 = 태그 .. "#flame" · 뒤 층 정렬은 PlayLoopLayer 가 sortBehind 로 다시 넣는다).
+            if flame.followTurn then self:RegisterLoopTurn(userId, buffTag, buffTag .. "#flame", flame, facing) end
             log("SkillExecutors: CHARGE flame loop " .. skillId .. " serial=" .. tostring(flameSerial)
                 .. " scale=" .. tostring(fs) .. " offsetY=" .. tostring(flame.offsetY or 0) .. " (" .. userId .. ")")
         end
