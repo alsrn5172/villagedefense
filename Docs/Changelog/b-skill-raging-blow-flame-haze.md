@@ -137,3 +137,23 @@
 13. 불굴의 진 → Q(한손 · 두손 · 양쪽 방향): 몸이 원작처럼 11프레임으로 움직이고 0.78 s 뒤 서 있기(두손이면 대검이 보이는지) · 시전 · 베기가 캐릭터 **뒤** · 숫자가 키 +0.28 s 쯤 · 로그 `variant motion SK_W11_RB -> body frames x11` · `body frames x11 · 0.78 s` · `RAGING BLOW … hitAt=0.28`.
 14. 연속 시전(락 0.78 끝나자마자): 앞 순서의 끝 서 있기가 새 순서를 덮지 않는지.
 - 2026-10-05 레이징 블로우 시전음: 원작 1120017 Use 가 라이브러리 팩에 없어 같은 스킬 일반판 1121008 _audio/Use(d3df4514…) 를 시전마다(대상 없어도) 튼다 (사용자 결정 B3 · 귀로 확인은 RELOOK R1)
+
+## 2026-10-05 — 플레임 헤이즈 외형 = 원작 영상(9–22 s) 기준
+
+- 기준: 사용자 영상 「불탄 집『파이어 데몬』의 변화」 9–22 s(레드 2013 · 1.2.338 2020 · 두 판 모두 우리 팩 `skill/212.img/skill/2121011` 과 같은 그림 · KMS 359 프레임 수와 팩이 같다 7/16/10/8×5) + maplestory.io KMS 359 WZ(참고만 · 그림은 가져오지 않음). 우리 쪽 = 캡처 `FH_ours_1005.mkv`(#157 51608aa).
+- 소리 맞춤: 영상 소리에서 원작 Use · Hit 파형을 찾았다 — Use 9.497 / 12.997 / 16.447 / 19.947 · Hit = 각 Use + 1.200 s. 팩 소리와 길이가 같다(Use 2.35 s · Hit 0.94 s). 바꾼 것 없음.
+- `RootDesk/MyDesk/Skill/SkillExecutors.mlua`
+  - `effectOverrides.SK_M11_FH`: `motions = { "flameHaze" }`(이 엔진에서 재생 안 됨 · 몸이 서 있었다) → `bodyFrames` = swingO2 0번 0.81 s → stabO2 1번 0.63 s(원작 `Character/00002000.img/flameHaze` KMS 359) · `spawnDelay` 0 → **0.81**(원작 시전 effect 9번째 번쩍임 · 영상 공 = Use + 0.79–0.80 s) · `impact.offsetY = 0`(hit/0 원점 = 그림 중심 · 예전엔 에너지볼트 0.20 을 물려받았다) · `flameSeconds = 2.04`(WZ special interval 720 × count 2 + fadeTime 600).
+  - `ExecuteFlameHaze`: `SkillAttack.PendingProjectileEffectKey = "SK_M11_FH"`. `PlayMobFlame`(새로): 맞은 몬스터 머리 위(콜라이더 위끝)에 불꽃을 붙여 반복 · 2.04 s 뒤 `RemoveEffect`. 로그 `SkillExecutors: mob flame SK_M11_FH on … y=… 2.04s serial=…`.
+  - `PlayBodyFrames`: 시작 자리에서 0.05 넘게 움직이면 남은 프레임 · 끝 서 있기를 지운다(로그 `body frames cut (moved)`) — 락 0.4 가 몸 동작 1.44 s 보다 짧아서. 레이징 블로우는 락 = 동작이라 넉백 때만 해당.
+- `SkillAttack.mlua`: `PendingProjectileEffectKey`(한 번짜리) → 투사체 `EffectKey` · 폭발 그림 높이를 그 키의 `impact.offsetY` 로.
+- `SkillProjectile.mlua`: 불꽃 = 대상마다 무작위 하나(원작 randomOnce) · `EffectKey` 가 있으면 `PlayMobFlame` · 없으면 예전대로 몸 중심 한 번. `extraHitIndex` 제거.
+- `SkillCaster.mlua`: 주석만(원작 flameHaze 동작 KMS 359 = 1.44 s · 389 = 1.17 s). **시전 락 0.4 는 그대로** — 0.4 / 0.81 / 1.44 는 후보 키트(`villagedefense-harness/pirate-check/pfhv_server.lua` · `pfhv_client.lua`)로 사용자가 고른다.
+- 그대로 둔 것: 공 속도 8 · 사거리 · 스폰 자리(에너지볼트 값 · 영상 거리 3.46 u 에서 Use → 폭발 1.19 s 로 영상 1.20 s 와 같다) · 크기 전부 ×1.0(영상 배율 1.28 로 나누면 원작 크기 = 클립 원본) · 소리 · 폭발 그림이 대상마다 하나(WZ hit/0 `onlyOnce 1` — 영상은 대상 1마리라 판단 못 함 · 열린 질문).
+- 영상의 화면 전체 초록 안개: WZ 2121011 에 그런 노드가 없고 시전과 동시에 켜져 편집 연출로 본다(레드 설명의 "포이즌 미스트" 일 수도) — 넣지 않았다.
+- 점검: `node Docs/tools/check-integrity.cjs` 전부 통과 · CRLF 유지. **Play 안 함** — RELOOK R5.
+
+### Play 체크 (플레임 헤이즈 영상 맞춤)
+
+15. 매직 가드 → Q(양쪽 방향 · 대상 있음/없음): 몸이 지팡이 든 자세 0.81 s → 앞으로 내밂 0.63 s · 공이 번쩍임과 함께 키 +0.81 s 에 나간다 · 폭발 그림이 몸 중심 · 불꽃이 머리 위에서 ≈2 s 타다 사라진다 · 로그 `variant motion SK_M11_FH -> body frames x2` · `FLAME HAZE … delay=0.81` · `mob flame SK_M11_FH`.
+16. 시전 0.4 s 뒤 바로 걷기: 몸이 걷기로 돌아오고 찌르기 자세로 미끄러지지 않는다(`body frames cut (moved)`).
