@@ -107,3 +107,14 @@ A 결정: 공짜 달팽이 세마리 Lv1 없음 · 매치 시작에 **SP 1**(스
 3. 레벨 2 ~ 6: 레벨업마다 SP +1. 레벨 7 ~ 9: SP 그대로(`[Summon]` 레벨업 SP 0 · `novice SP cap Lv6` 로그 없음 · 덜 몫 0).
 4. 레벨 10: SP +3(1 차 몫) · 전직하면 `tier SP -> tier 1 … keep=` 이 Lv10 이후 몫.
 5. 두 번째 매치(로비 → 매치): 다시 SP 1 · 스킬 레벨 0(`ResetUser` 순서 = SummonManager → PlayerSkillState).
+
+## 4차 (2026-10-05) — 껍질이 손에서 나가게 (사용자 "머리 근처에서 나간다" · 기준 = 사용자 원작 영상)
+
+- 비교: 영상 "옛날메이플 달팽이세마리 무한던지기버그 쓰는 방법" t=4.57–5.15s · 5.80–6.40s(던지기 2번) ↔ 우리 Play 캡처 `N01_ours_1005.mkv` 13.0s(오른쪽) · 14.5s(왼쪽) · WZ KMS 359 `Skill/000.img/skill/0001000` · `Character/00002000.img/swingO1`. 길이 기준 = 껍질 그림(26px 실물) — 영상 ≈3.46px/원작 1px · 캡처 ≈0.66px/원작 1px.
+- `SkillExecutors.effectOverrides.SK_N01.spawn = { delay = 0.45, offsetY = 0.28 }` 한 줄:
+  - 높이 0.5(CSV · 키의 0.75배 = 눈높이) → **0.28**(영상 두 번 다 껍질 중심이 발바닥 위 원작 28px · 키의 0.42배).
+  - 시점 시전 즉시 → **0.45s 뒤**(swingO1 0.30/0.15/0.35s 의 2프레임 시작 · 영상 13프레임 = 0.43s).
+  - 앞 거리 · 크기 · 소리(Use 시전 순간 · Hit 없음 = 원작에도 없음) · 동작(swingO1 1배속) · 피해 · MP · 사거리 · 속도는 그대로.
+- 안 바꾼 것(후보 키트 `villagedefense-harness/pirate-check/pn01_server.lua` + `pn01_client.lua` 로 사용자가 고른다): 캡처에서 껍질이 생긴 자리보다 ≈0.4 앞에서 처음 보이는 지연 보정(앞 0.15 · 0.35s) · 시전 락 0.4 ↔ 0.8(원작은 swingO1 0.8s 동안 못 움직인다 · 지금은 0.45s 발사 전에 락이 풀린다).
+- 영상 속도 ≈7.3–8.4 u/s(우리 6.5 · A 답 5927820330 "본섭과 같게") — 숫자라 안 바꿨다 · A 에게 물을 거리.
+- #163(`b/skill-projectile-adjacent` · `SkillAttack.SpawnProjectile` 의 앞 거리 당기기)과 파일이 안 겹친다 — 이 변경은 실행기 표의 `spawn` 칸뿐이고 앞 거리 offsetX 를 넣지 않았다.
