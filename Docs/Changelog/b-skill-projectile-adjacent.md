@@ -1,6 +1,6 @@
 # b/skill-projectile-adjacent — 바로 앞 대상에게 투사체가 너머에서 생기지 않게
 
-> #115(`b/skill-thief-effects` `d44fb76`) 위 로컬 브랜치. #115 가 머지되면 main 을 합치고 PR 로 연다.
+> #115(`b/skill-thief-effects` `d44fb76`) 위에서 만들었다. #115 머지(2026-10-04) 뒤 main `6519369` 을 합쳐 Draft PR 로 열었다.
 
 ## 1차 — 투사체 스폰을 대상 앞에서 끊기 (2026-10-03 · 사용자 지시 · 도적 창에서 넘겨받음)
 
@@ -14,3 +14,9 @@
 검사: 스크립트 검사 0 오류 / 0 경고 · `check-integrity.cjs` 통과.
 
 Play 확인(아직 안 함): 도적 Lv30 · 달팽이를 앞 0.3 에 한 마리 · 앞 1.5 에 한 마리(넉백 전 첫 시전) → `FindSkillTarget SK_T11 … -> <0.3 달팽이>` · `spawn pulled back … is 0.30 ahead (offset 0.95 -> 0.30)` · 그 달팽이에 두 발 모두 명중 · 표창이 되돌아 날지 않음 / 앞 1.5 만 있으면 pulled back 줄 없음(오프셋 0.95 그대로) / 에너지볼트 · 더블 샷 붙어 선 대상 회귀.
+
+## 2026-10-04 — main 병합 · Draft PR · A 답 반영
+
+- main `6519369`(#100 · #115 · #116 머지) 병합 `18fd142` — 충돌 없음 · 스크립트 검사 0 오류 / 0 경고(SkillAttack info 15 = #100 줄) · `check-integrity` 통과.
+- **탐색 범위는 앞쪽만 그대로** — A [#40 5957804369](https://github.com/alsrn5172/villagedefense/issues/40#issuecomment-5957804369) "안늘림"(질문 5957719766 "조준 범위를 플레이어 뒤쪽으로 조금 늘려야 하는가?"의 답). 위 "안 바꾼 것" 줄이 그대로 확정이다.
+- Play 확인은 통합 Play 런시트 `smallprs-check/RUN-combined-1003.md` §F2 A1 ~ A5.
