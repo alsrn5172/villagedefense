@@ -10,7 +10,7 @@
 | 피해 | **고정** 10 / 20 / 40 · 1타 | `EffectUnit FLAT` · `SkillDatabase.DamageAt` 에 FLAT 분기(= RatioAt · 공격력 · 버프 배율 없음) |
 | MP | 10 / 15 / 20 | `SkillDatabase.MpCostAt` → `SkillCaster` 클라 예측 · 서버 차감 두 곳 |
 | 쿨타임 | 0 | CSV |
-| 해금 · 최대 · SP | Lv1 · 3 · 1씩 | CSV. **Lv1 은 매치 시작(새 원장)에 자동**(A 요청 3번 · SP 안 씀) → Lv2 · Lv3 에 SP 1씩 |
+| 해금 · 최대 · SP | Lv1 · 3 · 1씩 | CSV. ~~**Lv1 은 매치 시작(새 원장)에 자동**(A 요청 3번 · SP 안 씀) → Lv2 · Lv3 에 SP 1씩~~ → **3차: 자동 Lv1 없음 · 매치 시작 SP 1 로 직접 배운다**(A 결정 #40 5977728018) |
 | Q | 초보자면 Q = 달팽이 세마리 | `SkillHotbar` slot 1 `byJob.NOVICE`(구조 그대로 · A 의 HUD 가 읽는다) |
 | 연출 | 원작 `skill/000.img/skill/0001000`(KMS 389 String "달팽이 세마리"): 레벨별 껍질 ball + hit/0 · Use 소리 `9313440a…` · 아이콘 `bd139447…` · 시전 이펙트 없음 · 동작 swingO1 | `SkillExecutors.effectOverrides.SK_N01`(`levels` · `cast.none`) · `castSounds` |
 | 사거리 · 속도 | ~~Range 3 · Speed 8(임시값)~~ → **2차: Range 2.5 · Speed 6.5**(A 답 5927820330 Q5 "본섭과 같게") | CSV |
@@ -65,7 +65,7 @@ main(`28edf31` · #131 · #154 · #155 포함)을 먼저 합쳤다(`bff1318` · 
 - **`.ui` 는 안 고쳤다.** 탭 글자는 런타임에 바꾼다(원래 글자를 처음 한 번 기억). 4번째 탭을 만들지 않은 이유: 초보자는 직업 줄이 없어 1 · 2 · 3 차 목록이 어차피 비어 있고, 전직 뒤엔 초보자 스킬을 못 쓴다(1차 결정 · `CanUse` 직업 검사).
 - 레벨업 SP 를 덜어 내는 이유: 지갑은 A 의 `SummonManager.ApplyLevelUpRewards` 가 `LevelTable` SP 를 그대로 넣는다(레벨업 이벤트가 없어 짧은 주기로 본다 · A 파일 편집 없음). A 가 나중에 초보자 구간 레벨당 SP 를 `LevelTable` 에서 바꾸면(5927820330 "따로 알린다") 이 코드는 그 값을 그대로 읽는다 — Lv8 · 9 행을 0 으로 두면 덜어 낼 것도 0.
 - 로그: `[Skill] novice SP cap Lv7: level= owed= took= wallet= -> …` · `SkillWindowLogic: ShowTab(0) jobLine=NOVICE tier=0 rows=1 labels=…`.
-- **안 넣은 것:** 더블 점프(초보자 스킬 둘째 · 계획만 · 별도 PR) · 초보자 구간 레벨당 SP 양(A 가 따로 알림) · 기획 문서(A 가 직접 · Q4).
+- **안 넣은 것:** 더블 점프(초보자 스킬 둘째 · 계획만 · 별도 PR) · 초보자 구간 레벨당 SP 양(A 가 따로 알림 → **3차에서 정리** · 5977728018) · 기획 문서(A 가 직접 · Q4).
 
 ### 점검
 
@@ -82,3 +82,28 @@ main(`28edf31` · #131 · #154 · #155 포함)을 먼저 합쳤다(`bff1318` · 
 6. 전직 뒤 K: 탭 글자 .ui 원래 글자(1 · 2 · 3 차) · 첫 탭 = 1 차 스킬 · 초보자 스킬 없음.
 7. 달팽이 껍질 사거리 2.5 · 속도 6.5(예전보다 짧고 느림).
 8. 빌드 경고 N → N.
+
+## 3차 (2026-10-04) — 초보자 SP 규칙 (A 결정 #40 5977728018 · 사용자 승인)
+
+A 결정: 공짜 달팽이 세마리 Lv1 없음 · 매치 시작에 **SP 1**(스킬이 아니라 SP 만) · Lv2 ~ Lv6 레벨업마다 +1 · Lv7 ~ Lv9 는 0 · 초보자 합계 **6**. 표로 해도 된다(A 파일 · A 가 리뷰에서 승인).
+
+| 바꾼 것 | 값 | 어디 |
+|---|---|---|
+| 자동 Lv1 끔 | `NoviceAutoSkillId` `"SK_N01"` → `""`(`AutoLearnNoviceSkill` 은 남기고 아무것도 안 한다) | `PlayerSkillState` |
+| 매치 시작 SP 1 | 새 원장(`EnsureUser` — 매치 시작 · 리셋은 `ResetMatchState` 가 부른다 · 예전 자동 Lv1 자리)에서 `GrantNoviceStartSp` → A 의 `SummonManager:GrantSp(uid, 1)` · `u.noviceStartSp = 1` | `PlayerSkillState` `NoviceStartSp = 1` |
+| 0 차 번 SP 에 시작 SP 포함 | `TierSpEarned(uid, 0)` = `u.noviceStartSp` + 레벨업 몫 → 배우기 게이트 `TierSpLeft` 가 Lv1 에서 SP 1 을 허락 · 전직 때 안 쓴 시작 SP 는 다른 0 차 SP 와 같이 `ForfeitOldTierSp` 가 없앤다 | `PlayerSkillState` |
+| 초보자 SP 상한 | `NoviceSpMaxLevel` 7 → **6**(Lv7 ~ 9 레벨업 몫은 0 차에 안 센다 · 타이머 `ForfeitNoviceLateSp` 는 안전망으로 남김 · 지금 표로는 덜 몫 0) | `PlayerSkillState` |
+| 레벨업 SP | `LevelTable` SP: 1 ~ 5 행 3 → **1** · 6 ~ 8 행 3 → **0** · 9 행 이후 3 그대로 | `LevelTable.csv` (A 파일 · BOM + CRLF · 열 그대로) |
+
+- 행 번호 = **오르기 전 레벨**이다: `SummonManager.ApplyLevelUpRewards(fromLevel)` 가 `GetLevelRow(fromLevel)` 의 SP 를 준다(1 행 #Note "Lv1→2 에 필요한 exp"). 그래서 "Lv2 ~ Lv6 레벨업" = 1 ~ 5 행 · "Lv7 ~ Lv9 레벨업" = 6 ~ 8 행 · Lv9→10(1 차 몫) = 9 행은 3 그대로.
+- 차수별 번 SP(지금 표): 0 차 **6**(시작 1 + 5) · 1 차 30 · 2 차 30 · 3 차 3. 0 차 필요 SP = 달팽이 세마리 3 + 더블 점프(#160) 3 = 6.
+- 계약서 B-3 의 SP 지급 경로가 하나 늘었다(`GrantSp` 호출 첫 곳 · A 의 공개 API · A 파일 편집 없음).
+- 로그: `[Skill] novice start SP +1 (no skill · #40 5977728018)` · `[Summon] +sp 1 -> sp=1` · 거절 `… (novice SP = start 1 + level-ups to Lv6 · level n)`.
+
+### Play 체크리스트 (3차 · 아직 안 함)
+
+1. 매치 시작 직후(초보자 Lv1): `[Skill] novice start SP +1` · HUD · 스킬 창 SP 1 · 달팽이 세마리 Lv0(자동 습득 로그 없음) · Q 는 아직 못 쓴다.
+2. 스킬 창 + → `[Skill] learn SK_N01 -> Lv.1 · tier 0 SP left 0` · Q 시전 가능.
+3. 레벨 2 ~ 6: 레벨업마다 SP +1. 레벨 7 ~ 9: SP 그대로(`[Summon]` 레벨업 SP 0 · `novice SP cap Lv6` 로그 없음 · 덜 몫 0).
+4. 레벨 10: SP +3(1 차 몫) · 전직하면 `tier SP -> tier 1 … keep=` 이 Lv10 이후 몫.
+5. 두 번째 매치(로비 → 매치): 다시 SP 1 · 스킬 레벨 0(`ResetUser` 순서 = SummonManager → PlayerSkillState).

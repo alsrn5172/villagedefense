@@ -27,9 +27,15 @@ script PlayerSkillState extends Logic
     property integer MaxTier = 3
     property string NoviceJobId = "NOVICE"
 
-    -- 초보자 스킬 자동 습득(b/skill-novice-snails · A 요청 #40 5875058360 3번 "매치 시작·리셋 뒤 초보자면 Lv1"): 새 원장(EnsureUser · ResetMatchState 가 부른다)에서
-    -- 이 스킬을 Lv1 로 둔다 — SP 를 쓰지 않는다(레벨 1 에는 SP 가 0 이다). "" 면 끈다.
-    property string NoviceAutoSkillId = "SK_N01"
+    -- 초보자 스킬 자동 습득 — 끔(""). 1차 때는 A 요청 #40 5875058360 3번 "매치 시작·리셋 뒤 초보자면 Lv1" 으로 SK_N01 을 Lv1 로 뒀다.
+    -- A 결정 #40 5977728018(2026-10-04): 공짜 달팽이 세마리 Lv1 은 없다 → 매치 시작에 SP 1(NoviceStartSp)을 주고 스킬 창에서 직접 배운다.
+    -- 값을 다시 넣으면 새 원장(EnsureUser · ResetMatchState 가 부른다)에서 그 스킬을 SP 없이 Lv1 로 둔다(AutoLearnNoviceSkill).
+    property string NoviceAutoSkillId = ""
+
+    -- 매치 시작 SP(A 결정 #40 5977728018 · 2026-10-04 "매치 시작에 SP 1 · 스킬이 아니라 SP 만"): 새 원장(EnsureUser · ResetMatchState)의 초보자에게
+    -- A 의 SummonManager:GrantSp 로 지갑에 넣고, 0 차 번 SP(TierSpEarned)에 u.noviceStartSp 로 센다 → 배우기 게이트(TierSpLeft)가 이 SP 를 허락한다. 0 = 안 준다.
+    --   초보자 합계 = 시작 1 + Lv2 ~ Lv6 레벨업 1 씩(LevelTable 1 ~ 5 행 SP 1) = 6 · Lv7 ~ Lv9 레벨업은 0(6 ~ 8 행 SP 0).
+    property integer NoviceStartSp = 1
 
     -- 차수별 SP(b/skill-novice-snails · A 답 #40 5891464912 "0차(초보자), 1차,2차,3차는 스킬포인트 독립적이고 모아놨다가 쓰는거 안됨").
     --   SP 지갑은 A 의 SummonManager.econ.sp 하나다(SpendSp 로만 줄인다 · A 파일 편집 없음). B 는 차수마다 번 SP 와 쓴 SP(users[uid].spentByTier)를 따로 센다.
@@ -39,11 +45,12 @@ script PlayerSkillState extends Logic
     property boolean TierSpEnabled = true
     property string TierSpResetTag = "TIER_SP_RESET"
 
-    -- 초보자는 이 레벨까지만 SP 를 얻는다(A 답 #40 5927820330 "초보자는 Lv7 까지만 SP 를 얻는다(Lv8 · 9 에서는 안 얻는다)"). 0 = 제한 없음.
-    --   지갑(A 의 SummonManager.econ.sp)은 레벨업 때 LevelTable SP 를 그대로 받으므로(A 파일 편집 없음), 0 차 번 SP 를 이 레벨에서 끊고(TierSpEarned)
-    --   서버 타이머(NoviceSpCheckInterval)가 초보자 구간 Lv8 · 9 레벨업이 준 SP 를 지갑에서 SpendSp(uid, TierSpResetTag, n) 로 바로 덜어 낸다(ForfeitNoviceLateSp).
+    -- 초보자는 이 레벨까지만 SP 를 얻는다(A 결정 #40 5977728018 · 2026-10-04 "Lv2 ~ Lv6 레벨업마다 +1 · Lv7 ~ Lv9 는 0" · 이전 = A 답 5927820330 Lv7). 0 = 제한 없음.
+    --   지갑(A 의 SummonManager.econ.sp)은 레벨업 때 LevelTable SP 를 그대로 받는다 — 표(A 파일 · A 허락)에서 6 ~ 8 행(→ Lv7 ~ 9) SP 를 0 으로 뒀다.
+    --   표가 다시 바뀌어도 규칙이 지켜지도록 0 차 번 SP 를 이 레벨에서 끊고(TierSpEarned) 서버 타이머(NoviceSpCheckInterval)가
+    --   초보자 구간 Lv7 ~ 9 레벨업이 준 SP 를 지갑에서 SpendSp(uid, TierSpResetTag, n) 로 덜어 낸다(ForfeitNoviceLateSp · 지금 표로는 덜 몫 0).
     --   Lv10 부터 번 SP 는 1 차 몫이라 그대로 둔다(늦게 전직해도 1 차 몫 · A 답 5927820330 Q3 (c)).
-    property integer NoviceSpMaxLevel = 7
+    property integer NoviceSpMaxLevel = 6
 
     property number NoviceSpCheckInterval = 0.5
 
@@ -73,7 +80,7 @@ script PlayerSkillState extends Logic
         -- @Logic OnBeginPlay 순서는 보장되지 않으므로 멱등 EnsureLoaded 를 직접 부른다.
         _SkillDatabase:EnsureLoaded()
         _JobDatabase:EnsureLoaded()
-        -- 서버: 초보자 Lv8 · 9 SP 덜어 내기(NoviceSpMaxLevel). 레벨업 이벤트가 없어(A 의 SummonManager.GrantKillReward → ApplyLevelUpRewards) 짧은 주기로 본다.
+        -- 서버: 초보자 Lv7 ~ 9 SP 덜어 내기(NoviceSpMaxLevel). 레벨업 이벤트가 없어(A 의 SummonManager.GrantKillReward → ApplyLevelUpRewards) 짧은 주기로 본다.
         if self:IsServer() and self.TierSpEnabled and self.NoviceSpMaxLevel > 0 then
             self.noviceSpTimer = _TimerService:SetTimerRepeat(function() self:ForfeitNoviceLateSpAll() end, self.NoviceSpCheckInterval)
         end
@@ -103,16 +110,30 @@ script PlayerSkillState extends Logic
         if userId == nil or userId == "" then return nil end
         local u = self.users[userId]
         if u == nil then
-            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {}, noviceSpForfeited = 0 }
+            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {}, noviceSpForfeited = 0, noviceStartSp = 0 }
             self.users[userId] = u
             self:AutoLearnNoviceSkill(u, userId)
+            self:GrantNoviceStartSp(u, userId)
         end
         return u
     end
 
     @ExecSpace("ServerOnly")
+    method void GrantNoviceStartSp(any u, string userId)
+        -- 새 원장의 초보자에게 매치 시작 SP(NoviceStartSp) — A 결정 #40 5977728018(2026-10-04). 스킬은 주지 않는다(SP 만).
+        --   지갑 = A 의 SummonManager:GrantSp(이 PR 에서 처음 부르는 곳 · A 파일 편집 없음) · 0 차 번 SP = u.noviceStartSp(TierSpEarned 가 더한다).
+        --   매치 시작은 MatchResetService.ResetUser 가 SummonManager:ResetMatchState(지갑 0) → 이 파일 ResetMatchState(새 원장 → 여기) 순서로 부른다 → 판마다 정확히 1.
+        if self.NoviceStartSp <= 0 or u == nil or u.jobId ~= self.NoviceJobId then return end
+        if _SummonManager == nil then return end
+        _SummonManager:GrantSp(userId, self.NoviceStartSp)
+        u.noviceStartSp = self.NoviceStartSp
+        log("[Skill] novice start SP +" .. tostring(self.NoviceStartSp) .. " (no skill · #40 5977728018) (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
     method void AutoLearnNoviceSkill(any u, string userId)
         -- 새 원장의 초보자에게 NoviceAutoSkillId 를 Lv1 로(SP 안 씀 · spentByTier 에 안 넣는다). HUD 는 SkillHotbar byJob NOVICE 로 Q 에 띄운다(A 의 SkillHudController).
+        -- 지금은 NoviceAutoSkillId = "" 라 아무것도 안 한다(A 결정 #40 5977728018 · 공짜 Lv1 없음 → GrantNoviceStartSp).
         if self.NoviceAutoSkillId == "" or u == nil or u.jobId ~= self.NoviceJobId then return end
         _SkillDatabase:EnsureLoaded()
         if _SkillDatabase:GetSkill(self.NoviceAutoSkillId) == nil then return end
@@ -142,18 +163,21 @@ script PlayerSkillState extends Logic
 
     @ExecSpace("ServerOnly")
     method number TierSpEarned(string userId, number tier)
-        -- t 차 구간에서 지금 레벨까지 번 SP. 레벨업 L→L+1 이 LevelTable L 행 SP 를 준다(A 의 SummonManager.ApplyLevelUpRewards · 다른 SP 지급 경로는 없다 · GrantSp 호출 0곳).
-        if _MonsterCatalog == nil then return 0 end
+        -- t 차 구간에서 지금 레벨까지 번 SP. 레벨업 L→L+1 이 LevelTable L 행 SP 를 준다(A 의 SummonManager.ApplyLevelUpRewards).
+        -- 다른 SP 지급 경로는 매치 시작 SP 하나(GrantNoviceStartSp → GrantSp · 0 차에 u.noviceStartSp 로 더한다 · A 결정 #40 5977728018).
         local u = self:EnsureUser(userId)
         if u == nil then return 0 end
+        local startSp = 0
+        if tier == 0 then startSp = u.noviceStartSp or 0 end
+        if _MonsterCatalog == nil then return startSp end
         local lo = self:TierStartLevel(u.jobId, tier)
         local hi = self:TierStartLevel(u.jobId, tier + 1) - 1
         local level = self:GetLevel(userId)
         if hi > level then hi = level end
-        -- 초보자(0 차)는 NoviceSpMaxLevel 까지만 번다(Lv8 · 9 레벨업 SP 는 ForfeitNoviceLateSp 가 지갑에서 덜어 낸다).
+        -- 초보자(0 차)는 NoviceSpMaxLevel(6)까지만 번다(Lv7 ~ 9 레벨업 SP 는 표에서 0 · 0 이 아니게 되면 ForfeitNoviceLateSp 가 지갑에서 덜어 낸다).
         if tier == 0 and self.NoviceSpMaxLevel > 0 and hi > self.NoviceSpMaxLevel then hi = self.NoviceSpMaxLevel end
         if lo < 2 then lo = 2 end
-        local sum = 0
+        local sum = startSp
         for n = lo, hi do
             local row = _MonsterCatalog:GetLevelRow(n - 1)
             if row ~= nil and row.sp ~= nil then sum = sum + row.sp end
@@ -179,7 +203,8 @@ script PlayerSkillState extends Logic
 
     @ExecSpace("ServerOnly")
     method void ForfeitNoviceLateSp(string userId)
-        -- 초보자 구간(0 차)에서 NoviceSpMaxLevel 을 넘는 레벨업(지금 Lv8 · 9)이 지갑에 준 SP 를 덜어 낸다 — A 답 5927820330 "Lv8 · 9 에서는 안 얻는다".
+        -- 초보자 구간(0 차)에서 NoviceSpMaxLevel 을 넘는 레벨업(지금 Lv7 ~ 9)이 지갑에 준 SP 를 덜어 낸다 — A 결정 #40 5977728018 "Lv7 ~ Lv9 는 0"
+        --   (이전 5927820330 "Lv8 · 9 에서는 안 얻는다"). 지금 LevelTable 6 ~ 8 행 SP 가 0 이라 덜 몫도 0 — 표가 바뀌어도 규칙을 지키는 안전망.
         --   덜 몫 = LevelTable 에서 새 레벨 n ∈ [NoviceSpMaxLevel+1, min(지금 레벨, 1 차 시작 −1)] 행 SP 합 − 이미 덜어 낸 몫(u.noviceSpForfeited). Lv10 부터는 1 차 몫이라 안 덜어 낸다.
         if _MonsterCatalog == nil or _SummonManager == nil then return end
         local u = self.users[userId]
@@ -414,13 +439,13 @@ script PlayerSkillState extends Logic
                 self:LearnResult(skillId, false, "per-tier SP: only tier " .. tostring(u.tier) .. " skills now (this is tier " .. tostring(skillTier) .. ")", uid)
                 return
             end
-            -- 🔴 이 게이트가 "초보자 SP Lv7 까지"(NoviceSpMaxLevel)를 지킨다: 0 차 남은 SP = Lv7 까지 번 SP − 0 차에 쓴 SP(TierSpEarned 가 끊는다).
-            --   지갑(A 의 econ.sp)에는 Lv8 · 9 레벨업 SP 가 ForfeitNoviceLateSp 타이머(0.5 s)가 덜어 낼 때까지 잠깐 남지만, 배우기는 지갑이 아니라
-            --   이 차수 몫으로만 허락되므로 그 틈에 쓸 수 없다. 스킬에 SP 를 쓰는 길은 여기(RequestLearn) 하나다(다른 SpendSp = 차수 리셋 · Lv8·9 덜기).
+            -- 🔴 이 게이트가 "초보자 SP Lv6 까지"(NoviceSpMaxLevel)를 지킨다: 0 차 남은 SP = 매치 시작 SP 1 + Lv6 까지 번 SP − 0 차에 쓴 SP(TierSpEarned · A 결정 #40 5977728018).
+            --   표가 Lv7 ~ 9 레벨업에 SP 를 다시 주게 되더라도 그 SP 는 ForfeitNoviceLateSp 타이머(0.5 s)가 덜어 낼 때까지 지갑에 잠깐 남을 뿐, 배우기는 지갑이 아니라
+            --   이 차수 몫으로만 허락되므로 그 틈에 쓸 수 없다. 스킬에 SP 를 쓰는 길은 여기(RequestLearn) 하나다(다른 SpendSp = 차수 리셋 · Lv7~9 덜기).
             local left = self:TierSpLeft(uid, skillTier)
             if left < spCost then
                 local capNote = ""
-                if skillTier == 0 and self.NoviceSpMaxLevel > 0 then capNote = " (novice SP counted to Lv" .. tostring(self.NoviceSpMaxLevel) .. " · level " .. tostring(self:GetLevel(uid)) .. ")" end
+                if skillTier == 0 and self.NoviceSpMaxLevel > 0 then capNote = " (novice SP = start " .. tostring(u.noviceStartSp or 0) .. " + level-ups to Lv" .. tostring(self.NoviceSpMaxLevel) .. " · level " .. tostring(self:GetLevel(uid)) .. ")" end
                 log("[Skill] learn " .. skillId .. " rejected: tier " .. tostring(skillTier) .. " SP left " .. tostring(left) .. " < " .. tostring(spCost) .. capNote .. " (" .. uid .. ")")
                 self:LearnResult(skillId, false, "not enough tier " .. tostring(skillTier) .. " SP (" .. tostring(left) .. ")", uid)
                 return
