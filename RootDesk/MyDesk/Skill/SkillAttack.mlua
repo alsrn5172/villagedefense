@@ -65,6 +65,31 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property string PendingSkillId = ""
 
+    -- 이번 타격 패스의 대상 상한(b/skill-pirate-effects 2026-09-27 · 원작 mobCount). 0 = 상한 없음(모양 안 전부 · 예전 그대로).
+    -- 0 보다 크면 DealSkillDamage/DealSkillDamageCircleScaled 가 같은 모양으로 probe 해서 시전자에게 가까운 순서로 이만큼만 CappedTargets 에 담고,
+    -- IsAttackTarget 이 그 목록만 통과시킨다. 판정은 여전히 AttackFast 1회(피해 ×N · 표시 N타). EndPass 가 되돌린다.
+    @HideFromInspector
+    property integer PendingMaxTargets = 0
+
+    @HideFromInspector
+    property any CappedTargets = nil
+
+    -- 이번 타격 패스의 impact 클립 반복(b/skill-pirate-effects · 피스트인레인지 영상: 대상마다 폭발 10번 · 0.12s 간격).
+    -- 연출만이다 — 피해는 이미 한 번에 들어갔다(PAJ-02 (a)). 1 = 한 번(예전 그대로). EndPass 가 되돌린다.
+    @HideFromInspector
+    property integer PendingImpactRepeat = 1
+
+    @HideFromInspector
+    property number PendingImpactInterval = 0
+
+    -- 이번 타격 패스의 impact 클립 배율(b/skill-pirate-effects · 섬머솔트 킥 = 영상 크기에 맞춤). 1 = 원본 크기(예전 그대로). EndPass 가 되돌린다.
+    @HideFromInspector
+    property number PendingImpactScale = 1
+
+    -- 연속 타격 표식(b/skill-pirate-effects 2026-09-27 · 피스트인레인지 10타): 2타째부터 attackInfo = 스킬 id .. 이 표식 .. 번호("SK_P21#2").
+    -- 몬스터 무적 0.4s(A 의 Faction/MonsterHit.IsHitTarget)를 "같은 시전의 다음 타격" 만 건너뛰게 할 때 A 가 이 표식을 본다(#40 제안). 피해 값은 BaseSkillId 로 원래 id.
+    property string SequenceHitTag = "#"
+
     -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
     property number CritDamageRate = 2.0
 
@@ -167,6 +192,47 @@ script SkillAttack extends AttackComponent
         self.PendingImpactRuid = ""
         self.PendingImpactAtBody = false
         self.PendingHitSound = ""
+        self.PendingMaxTargets = 0
+        self.CappedTargets = nil
+        self.PendingImpactRepeat = 1
+        self.PendingImpactInterval = 0
+        self.PendingImpactScale = 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CapTargetsByShape(string skillId, any probeShape, integer maxTargets)
+        -- 대상 상한(PendingMaxTargets): 같은 모양으로 probe(피해 없음)해서 시전자에게 가까운 순서로 maxTargets 개만 CappedTargets 에 담는다.
+        -- maxTargets <= 0 이면 아무것도 안 한다(상한 없음). BoxShape · CircleShape 둘 다 받는다(AttackComponent.Attack 의 Shape).
+        self.CappedTargets = nil
+        if maxTargets == nil or maxTargets <= 0 then return end
+        self.Candidates = {}
+        self.SingleTarget = nil
+        self:Attack(probeShape, self.ProbeTag, CollisionGroups.Monster)
+        local origin = self.Entity.TransformComponent.WorldPosition
+        local list = {}
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) then
+                local dup = false
+                for _, row in ipairs(list) do
+                    if row.e == cand then dup = true end
+                end
+                if not dup then
+                    local p = cand.TransformComponent.WorldPosition
+                    local dx = p.x - origin.x
+                    local dy = p.y - origin.y
+                    table.insert(list, { e = cand, d = dx * dx + dy * dy })
+                end
+            end
+        end
+        self.Candidates = {}
+        table.sort(list, function(a, b) return a.d < b.d end)
+        local picked = {}
+        for i = 1, #list do
+            if i > maxTargets then break end
+            table.insert(picked, list[i].e)
+        end
+        self.CappedTargets = picked
+        log("SkillAttack: target cap " .. skillId .. " max=" .. tostring(maxTargets) .. " inShape=" .. tostring(#list) .. " chosen=" .. tostring(#picked))
     end
 
     -- @ExecSpace("Server"): the whole SkillHotbar -> SkillCaster -> SkillExecutors chain runs
@@ -193,6 +259,9 @@ script SkillAttack extends AttackComponent
 
         local hitCount = shape.hitCount
         if hitCount == nil or hitCount < 1 then hitCount = 1 end
+
+        -- 대상 상한(PendingMaxTargets · 호출자가 이 호출 직전에 넣는다 · 0 = 상자 안 전부).
+        self:CapTargetsByShape(skillId, self.Shape, self.PendingMaxTargets)
 
         -- N타 = 1회 AttackFast × 피해 N배 · 표시 N타 (2026-09-12 · 무적시간 때문에 N회 호출은 1회만 유효했다).
         self:BeginPass(skillId, level, hitCount, hitCount)
@@ -227,7 +296,17 @@ script SkillAttack extends AttackComponent
             return 0
         end
         local userId = attacker.PlayerComponent.UserId
-        return math.floor(_SkillDatabase:DamageAt(attackInfo, self.PendingLevel, userId) * self.PendingDamageMul)
+        -- 연속 타격(DealSequenceHit)의 2타째부터는 attackInfo = "<스킬>#k" — 피해 값은 스킬 id 로 찾는다.
+        return math.floor(_SkillDatabase:DamageAt(self:BaseSkillId(attackInfo), self.PendingLevel, userId) * self.PendingDamageMul)
+    end
+
+    method string BaseSkillId(string attackInfo)
+        -- "SK_P21#3" → "SK_P21". 표식(SequenceHitTag)이 없으면 그대로. 양쪽 인스턴스 공용(ExecSpace 없음).
+        if attackInfo == nil then return "" end
+        -- string.find 는 값 두 개(시작 · 끝)를 돌려준다 — 받는 변수도 둘(하나면 빌드가 LWA-1111 UnbalancedAssignment · SkillWindowLogic.LabelFor 와 같은 처리).
+        local p, pEnd = string.find(attackInfo, self.SequenceHitTag, 1, true)
+        if p == nil then return attackInfo end
+        return string.sub(attackInfo, 1, p - 1)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
@@ -261,17 +340,39 @@ script SkillAttack extends AttackComponent
             if isvalid(t) then
                 local p = t.WorldPosition
                 if self.PendingImpactRuid ~= "" then
-                    local ix = p.x
-                    local iy = p.y + 0.5
+                    -- 위치 = #100(b/skill-magician-effects): PendingImpactAtBody 면 몸 중심(콜라이더 중심 · SkillProjectile.HitPointOf 와 같은 기준), 아니면 발 + 0.5.
+                    -- 크기 · 반복 = #116(b/skill-pirate-effects): PendingImpactScale · PendingImpactRepeat/Interval. 반복도 같은 몸 기준으로 대상을 따라간다.
+                    local offX = 0
+                    local offY = 0.5
                     if self.PendingImpactAtBody then
-                        -- 몸 중심 = 콜라이더 중심(SkillProjectile.HitPointOf 와 같은 기준) · 크기 1.0 · 좌우 뒤집기 없음.
                         local hit = defender.HitComponent
                         if isvalid(hit) and hit.BoxSize ~= nil and hit.BoxSize.y > 0 then
-                            ix = p.x + hit.ColliderOffset.x
-                            iy = p.y + hit.ColliderOffset.y
+                            offX = hit.ColliderOffset.x
+                            offY = hit.ColliderOffset.y
                         end
                     end
-                    _EffectService:PlayEffect(self.PendingImpactRuid, self.Entity, Vector3(ix, iy, p.z), 0, Vector3(1, 1, 1), false)
+                    local sc = self.PendingImpactScale
+                    if sc == nil or sc <= 0 then sc = 1 end
+                    local scaleVec = Vector3(sc, sc, 1)
+                    _EffectService:PlayEffect(self.PendingImpactRuid, self.Entity, Vector3(p.x + offX, p.y + offY, p.z), 0, scaleVec, false)
+                    -- 반복(PendingImpactRepeat · 피스트인레인지 10번): 연출만. 대상이 밀리거나 죽어도 그 자리에서 이어서 터진다.
+                    local rep = self.PendingImpactRepeat
+                    local gap = self.PendingImpactInterval
+                    if rep ~= nil and rep > 1 and gap ~= nil and gap > 0 then
+                        local ruid = self.PendingImpactRuid
+                        local owner = self.Entity
+                        local last = Vector3(p.x + offX, p.y + offY, p.z)
+                        for i = 1, rep - 1 do
+                            _TimerService:SetTimerOnce(function()
+                                if not isvalid(owner) then return end
+                                if isvalid(defender) and isvalid(defender.TransformComponent) then
+                                    local q = defender.TransformComponent.WorldPosition
+                                    last = Vector3(q.x + offX, q.y + offY, q.z)
+                                end
+                                _EffectService:PlayEffect(ruid, owner, last, 0, scaleVec, false)
+                            end, i * gap)
+                        end
+                    end
                 end
                 if self.PendingHitSound ~= "" then
                     _SoundService:PlaySoundAtPos(self.PendingHitSound, p, self.Entity, 1.0)
@@ -307,6 +408,13 @@ script SkillAttack extends AttackComponent
         if attackInfo ~= self.FlatTag and isvalid(self.Entity.PlayerComponent) and (self.Entity.PlayerComponent.Hp <= 0 or self.Entity.PlayerComponent:IsDead()) then return false end
         if self.SingleTarget ~= nil then
             return defender == self.SingleTarget
+        end
+        -- 대상 상한(CapTargetsByShape): 목록에 든 대상만.
+        if self.CappedTargets ~= nil then
+            for _, e in ipairs(self.CappedTargets) do
+                if e == defender then return true end
+            end
+            return false
         end
         return true
     end
@@ -374,6 +482,43 @@ script SkillAttack extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
+    method table SnapshotTargets(string skillId, table shape, integer maxTargets)
+        -- 연속 타격 대상 고정(피스트인레인지): shape 상자 안 대상을 한 번 골라 목록으로 돌려준다(probe · 피해 없음).
+        -- maxTargets > 0 이면 시전자에게 가까운 순서로 그만큼(CapTargetsByShape) · 0 이면 전부(FindSkillTargets).
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        if maxTargets ~= nil and maxTargets > 0 then
+            self:CapTargetsByShape(skillId, self.Shape, maxTargets)
+            local picked = self.CappedTargets
+            self.CappedTargets = nil
+            if picked == nil then return {} end
+            return picked
+        end
+        return self:FindSkillTargets(skillId, shape)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSequenceHit(string skillId, number level, table shape, table targets, integer hitIndex)
+        -- 연속 타격 한 번(피스트인레인지 10타 중 hitIndex 번째): 고정한 targets 만 · 피해 = 표 % × 1 · 표시 1타.
+        -- 2타째부터 attackInfo = skillId .. SequenceHitTag .. hitIndex — 몬스터 무적 0.4s 예외용 표식(A 의 MonsterHit · #40). 연출(폭발)은 부르는 쪽이 따로 튼다.
+        if _SpectateService ~= nil and isvalid(self.Entity.PlayerComponent) and _SpectateService:Blocked(self.Entity.PlayerComponent.UserId) then return end
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        local info = skillId
+        if hitIndex ~= nil and hitIndex > 1 then info = skillId .. self.SequenceHitTag .. tostring(hitIndex) end
+        self:BeginPass(skillId, level, 1, 1)
+        self.CappedTargets = targets
+        if self.CappedTargets == nil then self.CappedTargets = {} end
+        self:AttackFast(self.Shape, info, CollisionGroups.Monster)
+        self:EndPass()
+        log("SkillAttack: sequence hit " .. info .. " lv=" .. tostring(level) .. " targets=" .. tostring(#targets))
+    end
+
+    @ExecSpace("ServerOnly")
     method void DealFlatDamageToTarget(Entity target, integer amount, string sourceSkillId)
         -- 평값 피해를 대상 하나에 1회 (아이언 바디 반사 · SkillBuffs.OnPlayerHitEvent). 피해 값은 CalcDamage 의 FlatTag 분기가 amount 를 그대로 쓴다.
         -- 몬스터 쪽 무적 시간(MonsterHit.ImmuneCooldown 0.4s)에 걸리면 이번 반사는 조용히 빠진다 — 로그로만 남는다.
@@ -411,6 +556,8 @@ script SkillAttack extends AttackComponent
         if mul == nil or mul <= 0 then mul = 1 end
         if displayHits == nil or displayHits < 1 then displayHits = 1 end
         local circle = CircleShape(Vector2(cx, cy), radius)
+        -- 대상 상한(PendingMaxTargets · 함포 사격 파마다 · 0 = 원 안 전부).
+        self:CapTargetsByShape(skillId, circle, self.PendingMaxTargets)
         self:BeginPass(skillId, level, mul, math.floor(displayHits))
         self:AttackFast(circle, skillId, CollisionGroups.Monster)
         self:EndPass()
