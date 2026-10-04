@@ -23,3 +23,9 @@
 - 지금은 빈 값 = 동작 변화 없음(몬스터 기본 소리만). 통합 Play(RUN-combined-1003 135-S)에서 W1 / W2 / W3 중 하나를 고르면 `hit = "<id>"` 한 줄만 바꾼다.
 - 후보: W1 `1488e238bb474c9087cd563a892d5dcb` 11101008/Hit 브랜디쉬(기사단) · W2 `6c06fe8ab27b469eb61f466ea7f7e182` 1101011/Hit 브랜디쉬(파이터) · W3 `ca35cb7d0652411395a5bb90a5beecd3` 1001005/Hit 슬래시 블러스트.
 - 이 PR 이 건드리는 파일에 `Skill/SkillExecutors.mlua` 가 더해진다(push 할 때 본문 "건드리는 파일"에 적는다).
+
+## 2026-10-05 (로컬 · push 전) — 파워 스트라이크 소리 확정(사용자 Play 선택)
+
+- `Skill/SkillExecutors.mlua`(B): 명중 `extraSounds.SK_W11.hit` = W3 `ca35cb7d0652411395a5bb90a5beecd3`(sound/skill.img 1001005/Hit 슬래시 블러스트) · 시전 `castSounds.SK_W11` = 원작 모험가 `0b9adf262d544256adb5bff20eaa4fe1`(sound/skill.img 1001004/Use · tags API 확인) — 예전 11001002 _audio/Use `e0178f48…`.
+- 근거: 통합 Play(night-capture `6aa221c` · RUN-combined-1003 S-W11) 사용자 선택 "W3 for the hit" · 시전은 "원작이 기준, 비교 불필요". 원작 1001004/Hit 와 시그너스 11001002 Hit 는 색인에 없다(11001002 팩엔 Use 만).
+- Play 확인: 같은 Play 에서 런타임으로 같은 값을 넣고 Q 로 확인(명중마다 `SkillExecutors: POWER STRIKE hit sound once (ca35cb7d…)`).
