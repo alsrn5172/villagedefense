@@ -20,6 +20,9 @@ script LaneShot extends Component
 
 	property number HitScale = 1.0
 
+	-- 확인용(LaneAttackFx.ShotLog 와 같이 켠다): 도착해 적중 이펙트를 띄울 때 [AttackFx] hit 로그 한 줄. 평소 false.
+	property boolean ShotLog = false
+
 	-- 도착 hit 이펙트 위치 보정(유닛 · FacilityAttackFx.HitOffsetX/Y).
 	property number HitOffsetX = 0
 
@@ -27,6 +30,32 @@ script LaneShot extends Component
 
 	-- 도착 hit 이펙트 좌우 반전(FacilityAttackFx.HitFlipX).
 	property boolean HitFlipX = false
+
+	-- 착탄 연출(WO-040 M3 · 엘리니아 Mode=SHOT_CAST): 도착 지점에 마법진(CastRuid · 아래 층)과 번개(HitRuid · 위 층)를 같이 띄운다. CastRuid 가 비어 있으면 지금까지처럼 hit 이펙트 하나(PlayEffect).
+	-- 위치 = 도착 지점(표적 몸통 중심) + CastOffset / HitOffset. 층 = 시설과 같은 SortingLayer(FxLayer · 플레이어 Default/4 뒤) · 마법진 CastOrder < 번개 HitOrder.
+	property string CastRuid = ""
+
+	property number CastScale = 1.0
+
+	property number CastOffsetX = 0
+
+	property number CastOffsetY = 0
+
+	property boolean CastFlipX = false
+
+	-- 번개 클립을 이 프레임부터만(FacilityAttackFx.HitStartFrame · 0 = 전체).
+	property integer HitStartFrame = 0
+
+	property string FxLayer = ""
+
+	property integer CastOrder = 154
+
+	-- 마법진을 클립이 끝나기 이만큼(초) 전에 지운다(FacilityAttackFx.CastTrimSec · 0 = 클립 끝까지) · 지우기 전 CastFadeSec 동안 흐려진다.
+	property number CastTrimSec = 0
+
+	property number CastFadeSec = 0.1
+
+	property integer HitOrder = 156
 
 	-- 비행 시간(초). 거리와 무관하게 고정 → 멀수록 빠르다.
 	property number FlightSec = 0.45
@@ -45,6 +74,11 @@ script LaneShot extends Component
 
 	@HideFromInspector
 	property boolean launched = false
+
+	-- 도착 연출을 이미 시작했는가. 🔴 PlayArrival 안에서 클립 리소스를 처음 읽는 동안(LoadAnimationClipAndWait · 서버가 몇 프레임 양보)
+	--   이 발사체의 OnUpdate 가 다시 돌아 도착 연출이 열 번 넘게 겹쳐 만들어졌다(WO-040 M3 실측 · 콜드 캐시 첫 발) → 한 번만.
+	@HideFromInspector
+	property boolean arrived = false
 
 	@HideFromInspector
 	property boolean stuck = false
@@ -105,6 +139,20 @@ script LaneShot extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method void PlayArrival(number x, number y)
+		-- 착탄(엘리니아): 도착 지점에 마법진(아래) + 번개(위)를 같은 순간에. 둘 다 LaneFxLogic.PlayClipOrdered(엔티티 · 시설과 같은 층) — 마법진이 낮은 OrderInLayer 라 번개가 위에 겹친다.
+		local map = self.Entity.CurrentMap
+		if _LaneFxLogic == nil or not isvalid(map) then return end
+		if self.CastRuid ~= "" then
+			_LaneFxLogic:PlayClipOrdered(map, self.CastRuid, Vector3(x + self.CastOffsetX, y + self.CastOffsetY, 0), self.CastScale, _LaneFxLogic:FirstVisibleFrame(self.CastRuid), self.FxLayer, self.CastFlipX, self.CastOrder, 0, self.CastTrimSec, self.CastFadeSec)
+		end
+		if self.HitRuid ~= "" then
+			_LaneFxLogic:PlayClipOrdered(map, self.HitRuid, Vector3(x + self.HitOffsetX, y + self.HitOffsetY, 0), self.HitScale, self.HitStartFrame, self.FxLayer, self.HitFlipX, self.HitOrder, 0, 0, 0)
+		end
+		log(string.format("[AttackFx] arrive %s sT=%.3f @(%.2f,%.2f)", self.Entity.Name, _UtilLogic.ServerElapsedSeconds, x, y))
+	end
+
+	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- 진행. u = 0~1 · x 는 직선 보간, y 는 수평 발사 뒤 낙하: start + (aim − start)·u^(1+ArcHeight) (ArcHeight 0 = 직선). 표적이 살아 있으면 조준점을 매 프레임 갱신(유도).
 		if not self.launched then return end
@@ -129,10 +177,15 @@ script LaneShot extends Component
 		tf.WorldPosition = Vector3(x, y, 0)
 		self:Face(x - prev.x, y - prev.y)
 		if u < 1 then return end
+		if self.arrived then return end
+		self.arrived = true
 		if alive or self.StickSec <= 0 then
-			if self.HitRuid ~= "" then
+			if self.CastRuid ~= "" then
+				self:PlayArrival(x, y)
+			elseif self.HitRuid ~= "" then
 				local sx = self.HitScale
 				if self.HitFlipX then sx = -self.HitScale end
+					if self.ShotLog then log(string.format("[AttackFx] hit %s ruid=%s scale=%.2f @(%.2f,%.2f) sT=%.3f", self.Entity.Name, string.sub(self.HitRuid, 1, 8), self.HitScale, x + self.HitOffsetX, y + self.HitOffsetY, _UtilLogic.ServerElapsedSeconds)) end
 				_EffectService:PlayEffect(self.HitRuid, self.Entity, Vector3(x + self.HitOffsetX, y + self.HitOffsetY, 0), 0, Vector3(sx, self.HitScale, 1))
 			end
 			self.Entity:Destroy()

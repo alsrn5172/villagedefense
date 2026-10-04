@@ -1,0 +1,236 @@
+@Component
+script WorldNameTag extends Component
+
+	-- 머리 위(발 아래) 이름표 — 디자이너 시안 20-damage #2 를 월드 엔티티로 새로 그린다.
+	--   엔진 NameTagComponent 는 이름표 종류 리소스만 받아 우리 판 그림(plate_dark · chip_gold_dark · chip_green_dark)이 안 그려진다.
+	--   그래서 플레이어 · NPC 의 자식으로 이 모델(worldnametag)을 붙이고, 판(SpriteRenderer · 9-slice)과 글자(TextRendererComponent)를 스크립트가 맞춘다.
+	--   (🔴 월드 글자는 TextRendererComponent 다. TextComponent 는 UI 용이라 월드 엔티티에서는 아무것도 안 그려진다 — Play 로 확인.)
+	--   구조: 루트(이 컴포넌트) · Plate/Label(이름) · TitlePlate/TitleLabel(칭호 띠 · 이름 위).
+	--   서버는 Label · Title · Kind 값만 쓴다(@Sync). 글자 · 판 크기 · 층은 클라이언트마다 여기서 맞춘다.
+	--   치수는 시안 px(1920 기준) 단위. 150px = 1유닛.
+	--   🔴 월드 스프라이트 Sliced 의 TiledSize 는 "월드 유닛"이 아니라 그림 원본 크기의 배수다(Play 로 확인: 1 = 원본 px/100 유닛). 그래서 NativeW/H 로 나눠 준다.
+	--   🔴 층 규칙: 플레이어(Default/4)보다 앞에 그리지 않는다 → 판 Default/BaseOrder · 글자 BaseOrder+1(둘 다 3 이하).
+
+	@Sync
+	property string Label = ""
+
+	@Sync
+	property string Title = ""
+
+	-- "player"(어두운 판) | "npc"(초록 판)
+	@Sync
+	property string Kind = "player"
+
+	-- 이름표 윗변이 엔티티 원점(발)에서 내려간 거리(유닛 · 아래 -). 시안: 발 바로 아래 6px.
+	property number OffsetY = -0.04
+
+	-- 시안 px → 월드 유닛 (1920 기준 150px = 1유닛)
+	property number PxPerUnit = 150
+
+	property string NamePlateRUID = "da18b53886bf413e82c9a290cdc85df0"
+
+	property string NpcPlateRUID = "6f24a05e70874a9d8022035f70ed0709"
+
+	property string TitlePlateRUID = "f5f3c23972dc42d086a2ce5147504180"
+
+	-- 판 9-slice 배율: 올린 그림의 모서리 테두리(10px)를 시안 테두리(9 · 8px)로 맞춘다(그림 1px = 0.01유닛 · Transform 배율로 줄임).
+	property number NameSlice = 0.6
+
+	property number NpcSlice = 0.6
+
+	property number TitleSlice = 0.533
+
+	-- 판 그림 원본 크기(유닛 = 업로드 px / 100): plate_dark_sm 43x29 · chip_green_dark / chip_gold_dark 50x37.
+	property number NameNativeW = 0.43
+
+	property number NameNativeH = 0.29
+
+	property number NpcNativeW = 0.5
+
+	property number NpcNativeH = 0.37
+
+	property number TitleNativeW = 0.5
+
+	property number TitleNativeH = 0.37
+
+	property string TagSortingLayer = "Default"
+
+	property integer BaseOrder = 2
+
+	-- 글자: TextRendererComponent.FontSize 1 이 차지하는 유닛(Play 로 확인: FontSize 20 → 글자 높이 약 1.8유닛 ≈ 1 당 0.09~0.1).
+	property number TextEmUnits = 0.1
+
+	property number NameFontDp = 14
+
+	property number TitleFontDp = 13
+
+	property number NamePadX = 9.3
+
+	property number NamePadY = 4.75
+
+	property number TitlePadX = 13
+
+	property number TitlePadY = 3.5
+
+	property number RowGapDp = 2
+
+	property number MinNameWidthDp = 36
+
+	-- 글자 세로 보정(시안 px · 아래 +). 글꼴 여백 때문에 판 가운데에서 어긋나면 값으로 맞춘다.
+	property number TextNudgeDp = 0
+
+	property number PollInterval = 0.25
+
+	@HideFromInspector
+	property number pollLeft = 0
+
+	@HideFromInspector
+	property string appliedSig = ""
+
+	@ExecSpace("ServerOnly")
+	method void Setup(string label, string title, string kind)
+		-- 서버: 이름 · 칭호 · 종류를 쓴다(바뀐 것만). @Sync 라 모든 클라이언트에 간다.
+		if self.Label ~= label then self.Label = label end
+		if self.Title ~= title then self.Title = title end
+		if self.Kind ~= kind then self.Kind = kind end
+	end
+
+	method void OnBeginPlay()
+		-- 클라이언트: 처음 한 번 그린다. 서버 값이 늦게 오면 OnSyncProperty · OnUpdate 가 다시 맞춘다.
+		if not self:IsClient() then return end
+		self:Refresh(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- @Sync 값(Label · Title · Kind)이 도착하면 다시 그린다.
+		if name == "Label" or name == "Title" or name == "Kind" then
+			self:Refresh(false)
+		end
+	end
+
+	method void OnUpdate(number delta)
+		-- 클라이언트: 동기화 순서가 어긋나도 따라잡게 PollInterval 마다 값을 확인한다(바뀐 때만 다시 그림).
+		if not self:IsClient() then return end
+		self.pollLeft = self.pollLeft - delta
+		if self.pollLeft > 0 then return end
+		self.pollLeft = self.PollInterval
+		self:Refresh(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(boolean force)
+		-- 값이 바뀌었으면(또는 force) 판 · 글자를 다시 맞춘다.
+		local sig = self.Label .. "\n" .. self.Title .. "\n" .. self.Kind
+		if not force and sig == self.appliedSig then return end
+		self.appliedSig = sig
+		self:Layout()
+	end
+
+	@ExecSpace("ClientOnly")
+	method number EstimateEm(string s)
+		-- 글자 폭을 em(FontSize 1 = 1) 로 어림한다: 한글 · 한자(3바이트) 0.95(Play 실측: 굵은 한글 14자 = 시안 14px 에서 약 187px) · 2바이트 0.9 · 영문 대문자 0.7 · 소문자 0.58 · 숫자 0.6 · 공백 0.28 · 그 밖 0.6.
+		local w = 0
+		local i = 1
+		local n = #s
+		while i <= n do
+			local b = string.byte(s, i)
+			if b < 128 then
+				if b == 32 then
+					w = w + 0.28
+				elseif b >= 65 and b <= 90 then
+					w = w + 0.7
+				elseif b >= 97 and b <= 122 then
+					w = w + 0.58
+				elseif b >= 48 and b <= 57 then
+					w = w + 0.6
+				else
+					w = w + 0.6
+				end
+				i = i + 1
+			elseif b < 224 then
+				w = w + 0.9
+				i = i + 2
+			elseif b < 240 then
+				w = w + 0.95
+				i = i + 3
+			else
+				w = w + 0.95
+				i = i + 4
+			end
+		end
+		return w
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceRow(string plateName, string labelName, string text, string plateRUID, number slice, number nativeW, number nativeH, number fontDp, number widthDp, number heightDp, number centerDp, number order)
+		-- 한 줄(판 + 글자)을 자리에 놓는다. text 가 비면 판을 0 크기 · 글자를 빈 문자열로 숨긴다. centerDp = 판 중심이 윗변 기준 아래로 내려간 시안 px.
+		local plate = self.Entity:GetChildByName(plateName, false)
+		local label = self.Entity:GetChildByName(labelName, false)
+		if not isvalid(plate) or not isvalid(label) then return end
+		local pr = plate.SpriteRendererComponent
+		local pt = plate.TransformComponent
+		local tr = label.TextRendererComponent
+		local lt = label.TransformComponent
+		if not isvalid(pr) or not isvalid(pt) or not isvalid(tr) or not isvalid(lt) then return end
+		if text == "" then
+			pr.TiledSize = Vector2(0.001, 0.001)
+			if tr.Text ~= "" then tr.Text = "" end
+			return
+		end
+		local u = 1 / self.PxPerUnit
+		local y = self.OffsetY - centerDp * u
+		if pr.SpriteRUID ~= plateRUID then pr.SpriteRUID = plateRUID end
+		-- 목표 월드 크기 = dp * u. Sliced TiledSize 는 원본 크기(native) 의 배수 · Transform 배율(slice)도 곱해진다.
+		pr.TiledSize = Vector2(widthDp * u / (slice * nativeW), heightDp * u / (slice * nativeH))
+		-- Sliced 는 그림 원본 크기(native · 배율 slice 포함)의 피벗 기준 왼쪽 아래에서 시작해 오른쪽 위로 자란다(Play 로 확인) → 중심이 (0, y) 가 되게 어긋난 만큼 되돌린다.
+		pt.Position = Vector3((nativeW * slice - widthDp * u) / 2, y + (nativeH * slice - heightDp * u) / 2, 0)
+		pt.Scale = Vector3(slice, slice, 1)
+		if pr.SortingLayer ~= self.TagSortingLayer then pr.SortingLayer = self.TagSortingLayer end
+		if pr.OrderInLayer ~= order then pr.OrderInLayer = order end
+		-- 글자: FontSize(float) 1 = TextEmUnits 유닛. 목표 글자 높이(em) = fontDp 시안 px.
+		local fs = fontDp * u / self.TextEmUnits
+		if math.abs(tr.FontSize - fs) > 0.001 then tr.FontSize = fs end
+		lt.Position = Vector3(0, y - self.TextNudgeDp * u, 0)
+		if tr.Text ~= text then tr.Text = text end
+		if tr.SortingLayer ~= self.TagSortingLayer then tr.SortingLayer = self.TagSortingLayer end
+		if tr.OrderInLayer ~= order + 1 then tr.OrderInLayer = order + 1 end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Layout()
+		-- 이름 줄(위쪽에 칭호 띠가 있으면 그 아래)의 판 크기를 글자 길이로 어림해 놓는다.
+		local label = self.Label
+		local title = self.Title
+		if label == "" then title = "" end
+		local nameWidth = 0
+		local nameHeight = self.NameFontDp + self.NamePadY * 2
+		local nameSlice = self.NameSlice
+		local nameNativeW = self.NameNativeW
+		local nameNativeH = self.NameNativeH
+		local namePlate = self.NamePlateRUID
+		if self.Kind == "npc" then
+			namePlate = self.NpcPlateRUID
+			nameSlice = self.NpcSlice
+			nameNativeW = self.NpcNativeW
+			nameNativeH = self.NpcNativeH
+		end
+		if label ~= "" then
+			nameWidth = math.max(self:EstimateEm(label) * self.NameFontDp + self.NamePadX * 2, self.MinNameWidthDp)
+		end
+		local cursor = 0
+		if title ~= "" then
+			local titleWidth = self:EstimateEm(title) * self.TitleFontDp + self.TitlePadX * 2
+			local titleHeight = self.TitleFontDp + self.TitlePadY * 2
+			self:PlaceRow("TitlePlate", "TitleLabel", title, self.TitlePlateRUID, self.TitleSlice, self.TitleNativeW, self.TitleNativeH, self.TitleFontDp, titleWidth, titleHeight, cursor + titleHeight / 2, self.BaseOrder)
+			cursor = cursor + titleHeight + self.RowGapDp
+		else
+			self:PlaceRow("TitlePlate", "TitleLabel", "", self.TitlePlateRUID, self.TitleSlice, self.TitleNativeW, self.TitleNativeH, self.TitleFontDp, 0, 0, 0, self.BaseOrder)
+		end
+		self:PlaceRow("Plate", "Label", label, namePlate, nameSlice, nameNativeW, nameNativeH, self.NameFontDp, nameWidth, nameHeight, cursor + nameHeight / 2, self.BaseOrder)
+		if label ~= "" then
+			log(string.format("[NameTag] layout %s label=%s title=%s kind=%s w=%.1f", self.Entity.Name, label, title, self.Kind, nameWidth))
+		end
+	end
+
+end
