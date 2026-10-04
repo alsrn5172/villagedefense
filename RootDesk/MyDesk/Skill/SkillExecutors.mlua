@@ -60,12 +60,17 @@ script SkillExecutors extends Logic
     -- skill_id -> { hit = RUID(투사체·타격 명중음), punch = RUID(변신 중 주먹), wave = RUID(폭격 파마다) }. 없으면 그 소리 없음.
     property table extraSounds = {}
 
-    -- 버프 변형(b/skill-raging-blow-flame-haze · SkillBuffs.VariantSpec): 원작 동작(ragingBlowNew ~ New4 · flameHaze)을 직접 재생할지.
-    --   MSW 재생이 확인되지 않아 Play 에서 정한다 — true = 변형 동작 · false = 원래 스킬 모션(파워 스트라이크 · 에너지볼트) 그대로. 서버 Lua 로 바꿀 수 있다.
+    -- 버프 변형(b/skill-raging-blow-flame-haze · SkillBuffs.VariantSpec): 원작 동작을 직접 재생할지.
+    --   true = 변형 동작 — 레이징 블로우는 원작 몸 동작 11프레임(effectOverrides.SK_W11_RB.bodyFrames → PlayBodyFrames · 후보 E) · 플레임 헤이즈는 flameHaze 이름.
+    --   false = 원래 스킬 모션(파워 스트라이크 · 에너지볼트) 그대로. 서버 Lua 로 바꿀 수 있다.
     property boolean VariantOwnMotion = true
 
-    -- [서버] 유저별 변형 시전 순번(레이징 블로우 동작 · 베기 그림 · 명중 그림을 New → New4 순서로 돌린다 · PlayVariantMotion 이 올린다).
+    -- [서버] 유저별 변형 시전 순번(레이징 블로우 베기 그림 · 명중 그림을 차례로 돌린다 · PlayVariantMotion 이 올린다).
     property table variantSeq = {}
+
+    -- [클라] 진행 중인 몸 동작 프레임 순서(PlayBodyFrames)의 타이머 id 목록. 새 순서가 오면 이전 것을 지운다(남은 프레임 · 끝 서 있기가 새 순서를 덮지 않게).
+    @HideFromInspector
+    property table bodyFrameTimers = {}
 
     -- EntryKey of the shared projectile model every behavior="PROJECTILE" skill spawns
     -- (RootDesk/MyDesk/Models/Skills/SkillProjectile.model). One model, one script.SkillProjectile
@@ -611,21 +616,35 @@ script SkillExecutors extends Logic
         -- SpawnProjectile), not from here at cast time, since behavior is projectile again.
         self.effectOverrides = {
             -- 버프 변형(b/skill-raging-blow-flame-haze · A 인계 2026-10-02 "레이징 블로우 · 플레임 헤이즈" · 값 = 사용자 결정). 키 = 변형 키(SkillInfo 행 아님).
-            SK_W11_RB = {   -- 레이징 블로우 — 원작 인레이지판 skill/112.img/skill/1120017(일반 1121008 아님): 동작 ragingBlowNew ~ New4(각 780ms) · 베기 4종 · 명중 5종 · 소리 Hit 하나(Use 없음)
+            SK_W11_RB = {   -- 레이징 블로우 — 원작 인레이지판 skill/112.img/skill/1120017(일반 1121008 아님): 몸 동작 ragingBlowNew(0.78 s) · 베기 4종 · 명중 5종 · 소리 Hit 하나(Use 없음)
+                -- 🔴 2026-10-04 Play 후보 E(prbv_server.lua · prbv_client.lua): 원작 몸 동작 11프레임 + 시전 · 베기를 캐릭터 뒤에 · 첫 피해 +0.28 s · 크기 ×1.0.
+                --   예전 값(motions = ragingBlowNew ~ New4 · 앞에 그리기 · hitAt 0.12)은 2026-10-04 전까지 사용자도 A 도 본 적이 없었다 — ragingBlowNew 는 이 엔진에서
+                --   재생되지 않고(에러 없이 몸이 서 있음) New2 ~ New4 는 원작 KMS 359 데이터에도 없다.
                 baseSkillId = "SK_W11",
-                motions = { "ragingBlowNew", "ragingBlowNew2", "ragingBlowNew3", "ragingBlowNew4" },
-                cast = { ruid = "5308ef85369c4f31843d6e8cde4b1012" },
-                -- 베기 = 동작 순번과 같은 번호(New · New2 · New3 · New4 · A 인계 표의 짝).
+                -- 몸 동작 = 원작 Character/00002000.img/ragingBlowNew(KMS 359) 11프레임. 전부 기본 액션이라 프레임 고정(StartFrameIndex = EndFrameIndex)으로 재현한다.
+                --   { 액션, 프레임 번호, 그 프레임을 보여 주는 초 } · 합 0.78 s = 시전 락(SkillCaster.castLockOverrides.SK_W11_RB). 무기 한손 · 두손 모두 같은 표(후보 E = "orig").
+                --   VariantOwnMotion 이면 PlayVariantMotion 이 시전자 클라로 보낸다(PlayBodyFrames). 끝나면 bodyEnd1H / bodyEnd2H 서 있기로 돌아온다.
+                bodyFrames = {
+                    { "swingT3", 0, 0.12 }, { "swingT3", 1, 0.06 }, { "swingT3", 2, 0.06 }, { "swingT1", 1, 0.12 }, { "swingTF", 3, 0.06 },
+                    { "swingT3", 1, 0.06 }, { "swingT3", 2, 0.06 }, { "stabOF", 0, 0.06 }, { "stabOF", 2, 0.06 }, { "stabOF", 2, 0.06 }, { "stabOF", 2, 0.06 },
+                },
+                -- 끝 서 있기. 후보 키트는 두손이면 stand2 였지만, 이 월드의 두손검 아바타는 stand2 에서 대검을 안 그린다(WeaponMotion SK_W21_END_SWORD_2H 등 · #94 ·
+                --   엔진 기본 서 있기도 이 대검들에 stand1 을 고른다) → 둘 다 stand1. 키트와 같게 하려면 bodyEnd2H = "stand2" 한 단어.
+                bodyEnd1H = "stand1", bodyEnd2H = "stand1",
+                -- 시전 · 베기는 캐릭터 **뒤** 층에 그린다(sortBehind → PlayAttachedSpec → ApplyShadowSorting · 원작 베기 z 뒤 · 후보 E). 크기 ×1.0 = 원작과 아바타 대비 같은 크기(2026-10-04 실측).
+                cast = { ruid = "5308ef85369c4f31843d6e8cde4b1012", scale = 1.0, sortBehind = true },
+                -- 베기 4종 = 같은 0.78 s 연타(13 × 60 ms)를 무기별로 그린 것(WZ effect/0 ~ 3 ↔ 무기 30 · 31 · 40 · 41 = 한손검 · 한손도끼 · 두손검 · 두손도끼).
+                --   지금은 예전처럼 시전 순번으로 돌린다(후보 키트와 같음 · PlayVariantMotion 의 순번 개수 = 이 표 개수).
                 slashes = {
-                    { ruid = "8f13cadae8d74120834e6b00bdae2faf" },
-                    { ruid = "b69c64835da9420ebeb3ca4e365e258b" },
-                    { ruid = "71d8513c51fc48c49609837f3d15160b" },
-                    { ruid = "3448ba941413425bb8622c9c5059842f" },
+                    { ruid = "8f13cadae8d74120834e6b00bdae2faf", scale = 1.0, sortBehind = true },
+                    { ruid = "b69c64835da9420ebeb3ca4e365e258b", scale = 1.0, sortBehind = true },
+                    { ruid = "71d8513c51fc48c49609837f3d15160b", scale = 1.0, sortBehind = true },
+                    { ruid = "3448ba941413425bb8622c9c5059842f", scale = 1.0, sortBehind = true },
                 },
                 -- 명중 5종: 시전 순번으로 하나를 골라 맞은 대상마다 4번(hitInterval 간격 · SkillAttack.PendingImpactRepeat).
                 hitClips = { "b79cbdf6d06b487382f03d625a1fc464", "a5fa2b779db14f93b881a873f36b7eac", "1ce3b9be19764a70a6229665e15adf42", "79132eeadd9b4ab090bf4845bfcfdbdb", "3720a775e9c241fbb547c81d76598843" },
-                -- 4타 · 타마다 파워 스트라이크 % × 0.8 · 앞 3.5 × 높이 2.5 · 최대 6명. hitAt = 원작 ragingBlowNew 첫 공격 프레임(0 ~ 120ms)의 끝 · 임시값 · Play 로 맞춘다.
-                hits = 4, damageMul = 0.8, maxTargets = 6, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.12, hitInterval = 0.08,
+                -- 4타 · 타마다 파워 스트라이크 % × 0.8 · 앞 3.5 × 높이 2.5 · 최대 6명. hitAt 0.28 = 원작 첫 피해(영상 2013 실측 ≈ +0.28 s · 후보 E · 예전 0.12).
+                hits = 4, damageMul = 0.8, maxTargets = 6, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
             },
             SK_M11_FH = {   -- 플레임 헤이즈 — 원작 skill/212.img/skill/2121011: 동작 flameHaze · 시전 · 투사체 · 폭발 hit/0 · 불꽃 5종(연출만) · 소리 Use · Hit
                 baseSkillId = "SK_M11",
@@ -1196,14 +1215,26 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method boolean PlayVariantMotion(string uid, string variant)
-        -- 변형 시전 동작(b/skill-raging-blow-flame-haze). 순번을 하나 올리고(레이징 블로우 베기 · 명중 그림도 같은 순번) VariantOwnMotion 이면 원작 동작을
-        -- A 의 PlayerMotion.PlayAction 으로 바로 틀고(WeaponMotion 행 없이), 아니면 원래 스킬(파워 스트라이크 · 에너지볼트) 모션 그대로.
+        -- 변형 시전 동작(b/skill-raging-blow-flame-haze). 순번을 하나 올리고(레이징 블로우 베기 · 명중 그림도 같은 순번) VariantOwnMotion 이면 원작 동작을 틀고,
+        -- 아니면 원래 스킬(파워 스트라이크 · 에너지볼트) 모션 그대로.
+        --   bodyFrames 가 있으면(레이징 블로우 · 후보 E) 기본 액션 프레임 순서를 시전자 클라로 보낸다(PlayBodyFrames). 이 호출은 RequestCast 에서 실행기(베기 이펙트)와
+        --   같은 서버 틱이라 몸 동작과 베기가 같은 지연으로 클라에 닿는다(키트 실측: 서버 베기 ≈ 키 +0.28 s · 몸 프레임 키 +0.28 s).
+        --   motions 만 있으면(플레임 헤이즈) A 의 PlayerMotion.PlayAction 으로 그 이름을 바로 튼다(WeaponMotion 행 없이).
         local entry = self.effectOverrides[variant]
         local n = 1
-        if entry ~= nil and entry.motions ~= nil and #entry.motions > 0 then n = #entry.motions end
+        if entry ~= nil and entry.motions ~= nil and #entry.motions > 0 then
+            n = #entry.motions
+        elseif entry ~= nil and entry.slashes ~= nil and #entry.slashes > 0 then
+            n = #entry.slashes
+        end
         local seq = (self.variantSeq[uid] or 0) + 1
         if seq > n then seq = 1 end
         self.variantSeq[uid] = seq
+        if self.VariantOwnMotion and entry ~= nil and entry.bodyFrames ~= nil and #entry.bodyFrames > 0 then
+            self:PlayBodyFrames(entry.bodyFrames, entry.bodyEnd1H or "stand1", entry.bodyEnd2H or "stand1", uid)
+            log("SkillExecutors: variant motion " .. variant .. " -> body frames x" .. tostring(#entry.bodyFrames) .. " (seq " .. tostring(seq) .. ") (" .. uid .. ")")
+            return true
+        end
         if self.VariantOwnMotion and entry ~= nil and entry.motions ~= nil and #entry.motions > 0 and _PlayerMotion ~= nil then
             local core = entry.motions[seq]
             _PlayerMotion:PlayAction(core, core, 1, "ONETIME", uid)
@@ -1217,13 +1248,51 @@ script SkillExecutors extends Logic
         return self:PlayMotion(uid, base, false)
     end
 
+    @ExecSpace("Client")
+    method void PlayBodyFrames(table frames, string end1H, string end2H)
+        -- 로컬 플레이어 body 에 기본 액션 프레임을 차례로 고정해 보여 준다(원작 몸 동작 재현 · 레이징 블로우 후보 E · PlayVariantMotion 이 시전자 클라로 보낸다).
+        -- frames = { { 액션, 프레임 번호, 보여 줄 초 }, ... } · 프레임마다 ActionStateChangedEvent(액션, 액션, 1, Loop, f, f)(PlayHeldAction 과 같은 frame hold).
+        -- 끝나면 두손 무기면 end2H · 아니면 end1H 서 있기(두손 여부 = CostumeManagerComponent.CustomTwoHandedWeaponEquip · 후보 키트와 같은 판정).
+        -- 비표준 이름(ragingBlowNew)은 에러 없이 재생되지 않는다 — 기본 액션 + 프레임 고정만 된다(2026-10-04 Play).
+        for _, id in ipairs(self.bodyFrameTimers) do _TimerService:ClearTimer(id) end
+        self.bodyFrameTimers = {}
+        local p = _UserService.LocalPlayer
+        if not isvalid(p) or not isvalid(p.AvatarRendererComponent) then return end
+        local body = p.AvatarRendererComponent:GetBodyEntity()
+        if not isvalid(body) or frames == nil then return end
+        local two = false
+        local cm = p.CostumeManagerComponent
+        if isvalid(cm) and cm.CustomTwoHandedWeaponEquip ~= nil and cm.CustomTwoHandedWeaponEquip ~= "" then two = true end
+        local t = 0
+        for _, st in ipairs(frames) do
+            local core = st[1]
+            local f = math.floor(st[2])   -- 표가 RPC 를 건너며 실수(2.0)로 올 수 있다 → 정수 프레임 번호로
+            if t <= 0 then
+                body:SendEvent(ActionStateChangedEvent(core, core, 1, SpriteAnimClipPlayType.Loop, f, f))
+            else
+                table.insert(self.bodyFrameTimers, _TimerService:SetTimerOnce(function()
+                    if isvalid(body) then body:SendEvent(ActionStateChangedEvent(core, core, 1, SpriteAnimClipPlayType.Loop, f, f)) end
+                end, t))
+            end
+            t = t + st[3]
+        end
+        local stand = end1H
+        if two then stand = end2H end
+        table.insert(self.bodyFrameTimers, _TimerService:SetTimerOnce(function()
+            if isvalid(body) then body:SendEvent(ActionStateChangedEvent(stand, stand, 1, SpriteAnimClipPlayType.Loop)) end
+        end, t))
+        log(string.format("SkillExecutors: body frames x%d · %.2f s · end %s (%s)", #frames, t, stand, two and "2H" or "1H"))
+    end
+
     @ExecSpace("ServerOnly")
     method void PlayAttachedSpec(any spec, Entity casterEntity)
-        -- 시전자에 붙여 한 번 튼다(PlayStageEffect "cast" 단계와 같은 규칙: 원작 클립은 왼쪽 기준 → 오른쪽을 보면 FlipX). spec = { ruid, scale?, offsetX?(바라보는 쪽 +), offsetY? }.
+        -- 시전자에 붙여 한 번 튼다(PlayStageEffect "cast" 단계와 같은 규칙: 원작 클립은 왼쪽 기준 → 오른쪽을 보면 FlipX). spec = { ruid, scale?, offsetX?(바라보는 쪽 +), offsetY?, sortBehind? }.
+        -- sortBehind = 플레이어 바로 뒤 층에 그린다(ApplyShadowSorting · 레이징 블로우 시전 · 베기 = 후보 E).
         if spec == nil or spec.ruid == nil or spec.ruid == "" or not isvalid(casterEntity) then return end
         local facing = self:GetFacingX(casterEntity)
         local opt = {}
         opt["FlipX"] = (facing > 0)
+        if spec.sortBehind then self:ApplyShadowSorting(opt, casterEntity) end
         local s = spec.scale or 1
         _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
     end

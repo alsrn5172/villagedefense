@@ -119,3 +119,20 @@
 - A #40 5977727869: "죽으면 버프가 끝난다(원작과 같음)". 사용자 결정 → `SkillBuffs.EndBuffsOnDeath` 기본 **true**(값 한 줄 + 주석). 동작 코드는 2026-10-03 그대로. 끄려면 서버 Lua `_SkillBuffs.EndBuffsOnDeath = false`.
 - 툴팁 안 A(`2443047` · SK_W11 · SK_M11 설명 한 줄) 사용자 확정 — 되돌리지 않는다.
 - Play 체크는 위 10 · 11 · 12 그대로(10 은 이제 기본값으로 본다). 아직 안 함.
+
+## 2026-10-05 — 레이징 블로우 외형 = 후보 E (원작 몸 동작 11프레임 · 베기/시전 캐릭터 뒤 · 첫 피해 +0.28 s · 크기 1.0)
+
+- 2026-10-04 Play 에서 확인: `ragingBlowNew` ~ `New4` 는 이 엔진에서 재생되지 않는다(에러 없이 몸이 서 있음 · New2 ~ New4 는 원작 KMS 359 에도 없음). 위 2026-10-02 표의 "동작" 칸 · Play 체크 2 · 3 은 이 절로 바뀐다.
+- 후보 키트(`villagedefense-harness/pirate-check/prbv_server.lua` · `prbv_client.lua`)의 **E** 를 그대로 옮겼다. 다른 스킬 · 플레임 헤이즈는 안 건드렸다.
+- `RootDesk/MyDesk/Skill/SkillExecutors.mlua`
+  - `effectOverrides.SK_W11_RB`: `motions` 제거 → `bodyFrames`(원작 `Character/00002000.img/ragingBlowNew` 11프레임 = swingT3 0 · 1 · 2 · swingT1 1 · swingTF 3 · swingT3 1 · 2 · stabOF 0 · 2 · 2 · 2 · 120/60/60/120/60/60/60/60/60/60/60 ms = 0.78 s) · `bodyEnd1H` / `bodyEnd2H` = stand1 · 시전 · 베기 4종에 `scale = 1.0` · `sortBehind = true` · `hitAt` 0.12 → **0.28**.
+  - `PlayVariantMotion`: `VariantOwnMotion`(기본 true 그대로)이고 `bodyFrames` 가 있으면 시전자 클라로 `PlayBodyFrames` · 순번 개수 = 베기 개수(예전과 같은 4). 플레임 헤이즈는 예전 경로(`motions` = flameHaze).
+  - `PlayBodyFrames`(Client · 새로): 프레임마다 body 에 `ActionStateChangedEvent(액션, 액션, 1, Loop, f, f)` · 0.78 s 뒤 서 있기 · 새 순서가 오면 이전 타이머를 지운다. 로그 `SkillExecutors: body frames x11 · 0.78 s · end stand1 (1H|2H)`.
+  - `PlayAttachedSpec`: spec 의 `sortBehind` 면 `ApplyShadowSorting`(플레이어 Default / 4 − 1 층) — 키트 E 의 "cast/slash behind" 와 같은 옵션(FlipX = 오른쪽을 보면 · 위치 0 · 크기 1.0).
+- 키트와 다른 한 곳: 키트는 두손이면 끝 서 있기 stand2 였다. 이 월드 두손검 아바타는 stand2 에서 대검을 안 그려서(#94 · WeaponMotion `*_END_SWORD_2H` = stand1) 둘 다 stand1. 키트대로 하려면 `bodyEnd2H = "stand2"` 한 단어.
+- 점검: `node Docs/tools/check-integrity.cjs` · LSP 는 커밋 메시지/PR 참고. **Play 안 함 · 캡처 없음** — 외형은 사용자 픽(RUN-NEXT B3) 뒤에 본다.
+
+### Play 체크 (후보 E)
+
+13. 불굴의 진 → Q(한손 · 두손 · 양쪽 방향): 몸이 원작처럼 11프레임으로 움직이고 0.78 s 뒤 서 있기(두손이면 대검이 보이는지) · 시전 · 베기가 캐릭터 **뒤** · 숫자가 키 +0.28 s 쯤 · 로그 `variant motion SK_W11_RB -> body frames x11` · `body frames x11 · 0.78 s` · `RAGING BLOW … hitAt=0.28`.
+14. 연속 시전(락 0.78 끝나자마자): 앞 순서의 끝 서 있기가 새 순서를 덮지 않는지.
