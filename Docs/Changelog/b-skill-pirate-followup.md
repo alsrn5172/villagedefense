@@ -58,3 +58,4 @@ P18b: 들어올림 세트 c · c1 · c2 · c3 어느 것도 후반(거꾸로 →
 5. E2 깨짐 양쪽: 끝 연출 가운데 · 뒤집힘 — `buff loop end effect SK_P22 … facing=±1 flipX=…`.
 6. H1 · H2 명중음: W 차지 주먹 3명 이상 · Q 섬머솔트 킥 3명 이상 → 소리 한 번 · `hit sound once … hit=3` / `PUNCH hit sound once … hit=3`.
 7. 빌드 경고 N → N.
+- 2026-10-05 섬머솔트 킥 후반 = **v4** (사용자 D1 선택 · v3 모양 + v2 속도: 자세 고정 · 매달림 0.49s · 섬 0.64s · 끝 0.70s) · 기본값 BackflipSecondHalf v1 → v4
