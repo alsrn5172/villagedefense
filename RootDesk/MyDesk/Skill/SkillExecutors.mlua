@@ -304,6 +304,14 @@ script SkillExecutors extends Logic
 
     property table shadowFacingTimers = {}
 
+    -- 버프 루프 방향 따라가기(spec.followTurn · b/skill-pirate-followup · 에너지 쉴드 루프 · 에너지 차지 울트라 루프 + 불꽃): 서버.
+    --   loopTurnState[userId][buffTag] = { facing = 걸었을 때의 facing, layers = { [buffLoopEffects 키] = spec } } · loopTurnTimers["userId|buffTag"] = 살피기 타이머 id.
+    --   분신 살피기(shadowFacing · 유저당 하나 · PlayBuffLoop 를 처음부터 다시 부름)와 달리 유저 × 태그마다 따로 돌고, 그 루프 겹만 그 자리에서 새 쪽으로 다시 건다
+    --   (첫 바퀴 대기 startDelay · 진입 연출을 다시 틀지 않는다). 간격 = ShadowFacingPollSeconds. 버프가 끝나면(GetBuff nil) 스스로 멈춘다.
+    property table loopTurnState = {}
+
+    property table loopTurnTimers = {}
+
     -- 궁 화면 컷신 UI(b/skill-cutscene-measured · #40 comment 5830063946 A 결정 · 2026-09-26): 화면 컷신(cast.cutsceneSeconds 가 있는 것)은 월드 이펙트라
     -- 플레이어에 붙어 맵 끝에서 화면 한쪽이 비고(카메라가 맵 끝에서 멈춘다), UI 그룹(HUD)이 그 위에 그려졌다. 그래서 **시전자 화면에만** 같은 클립을
     -- ui/SkillCutsceneGroup(GroupOrder 30 · 모든 UI 그룹 위)의 전체 화면 sprite 로 한 번 더 재생한다 — 화면을 덮는 크기 · 클립 비율 유지 · 넘치는 쪽은 잘린다.
@@ -372,6 +380,10 @@ script SkillExecutors extends Logic
         local uids = {}
         for uid, _ in pairs(self.punchSkinDelayRestore) do table.insert(uids, uid) end
         for _, uid in ipairs(uids) do self:RestorePunchDamageSkinDelay(uid, "end play") end
+        -- 루프 방향 살피기(followTurn · b/skill-pirate-followup) 타이머도 멈춘다.
+        for _, id in pairs(self.loopTurnTimers) do _TimerService:ClearTimer(id) end
+        self.loopTurnTimers = {}
+        self.loopTurnState = {}
     end
 
     @ExecSpace("ServerOnly")
@@ -981,11 +993,16 @@ script SkillExecutors extends Logic
                 --   원작 재생 방식: repeat 을 처음엔 0~12 프레임까지 한 번(원반 → 방울이 생김) → repeatIdx 13 부터 13~20 반복 → 보호막이 끝나면 end.
                 --   → cast = repeat 0~12 한 번 · loop = repeat 13~20(startDelay 1.11s = 0~12 지연 합 뒤에 건다) · loopEnd = end. 원본 크기 · pivot = 캐릭터 발(원작 배치) · 좌우 대칭(noFlip).
                 --   크기: 방울 테두리 ≈ 캐릭터 키의 1.5배(2026-09-28 P5 Play 캡처 실측 · 가운데 발 위 ≈0.5) · 프레임은 글로우 포함 208~220 × 168~224 px.
-                --     배율 1.0 = 원본 크기 그대로(2026-09-28 사용자 결정 · "조금 크다" 는 제보를 보고 원본 크기 유지로 정함). 예전 = 제로 이뮨 배리어 101120109(pre 7aa944dc… · loop 19694b83… · end 224122b4… · x0.85 · +0.45).
-                cast = { ruid = "51d514ea697047ec8025de52a3b4c903", noFlip = true, startFrame = 0, endFrame = 12 },
-                loop = { ruid = "51d514ea697047ec8025de52a3b4c903", noFlip = true, startFrame = 13, endFrame = 20, startDelay = 1.11 },
+                --     [이력] 배율 1.0 = 원본 크기 그대로(2026-09-28 사용자 결정 · "조금 크다" 는 제보를 보고 원본 크기 유지로 정함) · noFlip. 예전 = 제로 이뮨 배리어 101120109(pre 7aa944dc… · loop 19694b83… · end 224122b4… · x0.85 · +0.45).
+                -- 🔴 2026-10-03 합동 Play P1 사용자 결정 "J"(b/skill-pirate-followup · 위 2026-09-28 "배율 1.0 · noFlip" 을 대체) — 몸 가운데에 · 크기 0.75 · 바라보는 쪽으로 뒤집기:
+                --   캡처 실측(844×475 · 65.3 px/유닛 · Orbis_Lobby_VictoriaStation): 몸 가운데가 이펙트 기준점보다 바라보는 쪽 앞 ≈3.75px(두 방향 같음 · 그림은 기준점 둘레로 좌우 대칭)
+                --   → offsetX +0.06(× facing = 앞) · offsetY 0(배율 0.75 에서 · 세로 px = 23 − 31.3 × 배율) · scale 0.75(방울 ≈ 캐릭터 키 1.2배) · 원작처럼 오른쪽을 볼 때 FlipX(noFlip 뺌).
+                --   확인값: 오른쪽 dx 0 / dy −1px · 왼쪽 dx −0.5 / dy −1.5px(≤ 0.02 유닛). cast · loop · loopEnd 세 겹 같은 값.
+                --   followTurn(loop): 보호막 동안 바라보는 쪽이 바뀌면 루프를 새 쪽으로 다시 건다(EnsureLoopTurnPoll · 앞 0.06 과 뒤집기가 몸을 따라오게). 끝 연출도 터지는 순간의 facing(StopBuffLoop).
+                cast = { ruid = "51d514ea697047ec8025de52a3b4c903", offsetX = 0.06, offsetY = 0, scale = 0.75, startFrame = 0, endFrame = 12 },
+                loop = { ruid = "51d514ea697047ec8025de52a3b4c903", offsetX = 0.06, offsetY = 0, scale = 0.75, startFrame = 13, endFrame = 20, startDelay = 1.11, followTurn = true },
                 -- prewarm(2026-09-28): 세션 첫 터짐의 ≈0.57s 빈틈(P5 Play) → 입장 때 예열(PrewarmCutscenesFor · loopEnd.prewarm).
-                loopEnd = { ruid = "693d4c4e2a8f4197822d1c362230cfd8", prewarm = true },
+                loopEnd = { ruid = "693d4c4e2a8f4197822d1c362230cfd8", offsetX = 0.06, offsetY = 0, scale = 0.75, prewarm = true },
             },
             SK_P31 = {   -- 함포 사격 — skill/524.img/skill/5241500 드레드노트(캡틴 오리진 · 기획서 추천): screen 79프레임 컷신(1434×835) · 폭탄 = 같은 드레드노트 팩 hit/0(72cef21e… · 15f · 424×348 · 흩뿌림 ×0.6 · 대상 hit ×1 · 파마다 3발 = BarrageBombsPerWave) · 시전 소리 = 배틀쉽 봄버 Use(686297b9…)
                 -- cutsceneSeconds 4.3 = 컷신 표시 + 실측 실패 때의 대체 길이(드레드노트 79프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
@@ -1734,7 +1751,15 @@ script SkillExecutors extends Logic
                 if perUser[buffTag .. "#pending"] ~= token then return end
                 perUser[buffTag .. "#pending"] = nil
                 if not isvalid(casterEntity) then return end
-                local lateSerial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, offVec, zRot, Vector3(s, s, 1), true, opt)
+                local lateSerial = 0
+                if spec.followTurn then
+                    -- followTurn(에너지 쉴드 · b/skill-pirate-followup): 첫 바퀴 동안 돌아섰을 수 있다 → 거는 순간의 facing 으로 걸고 살피기에 넘긴다.
+                    local lateFacing = self:GetFacingX(casterEntity)
+                    lateSerial = self:PlayLoopLayer(casterEntity, spec, lateFacing)
+                    self:RegisterLoopTurn(userId, buffTag, buffTag, spec, lateFacing)
+                else
+                    lateSerial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, offVec, zRot, Vector3(s, s, 1), true, opt)
+                end
                 perUser[buffTag] = lateSerial
                 if rest > 0 then
                     _TimerService:SetTimerOnce(function()
@@ -1783,6 +1808,8 @@ script SkillExecutors extends Logic
             self.shadowFacing[userId] = facing
             self:EnsureShadowFacingPoll(userId, skillId, buffTag)
         end
+        -- followTurn(b/skill-pirate-followup · 에너지 쉴드): 이 루프 하나만 그 자리에서 새 쪽으로 다시 건다(EnsureLoopTurnPoll · 유저 × 태그마다 · 분신 살피기와 따로).
+        if spec.followTurn then self:RegisterLoopTurn(userId, buffTag, buffTag, spec, facing) end
         _TimerService:SetTimerOnce(function()
             if perUser[buffTag] == serial then
                 _EffectService:RemoveEffect(serial)
@@ -1811,9 +1838,13 @@ script SkillExecutors extends Logic
         if not isvalid(player) or not isvalid(player.TransformComponent) then return end
         local spec = entry.loopEnd
         local s = spec.scale or 1
-        _EffectService:PlayEffectAttached(spec.ruid, player, Vector3(spec.offsetX or 0, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false)
+        -- 끝 연출도 cast · loop 처럼 터지는 순간의 facing 을 따른다(b/skill-pirate-followup · 2026-10-03 P1 결정): 앞 offsetX × facing · 오른쪽을 볼 때 FlipX(noFlip 이면 안 뒤집는다).
+        local facing = self:GetFacingX(player)
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        _EffectService:PlayEffectAttached(spec.ruid, player, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
         self:PlaySoundRuid(self:GetExtraSound(skillId, "finish"), player, player.TransformComponent.WorldPosition)
-        log("SkillExecutors: buff loop end effect " .. skillId .. " " .. buffTag .. " (" .. userId .. ")")
+        log("SkillExecutors: buff loop end effect " .. skillId .. " " .. buffTag .. " facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]) .. " (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -1929,6 +1960,89 @@ script SkillExecutors extends Logic
                 log("SkillExecutors: shadow re-anchored behind (facing " .. tostring(self.shadowFacing[uid]) .. " -> " .. tostring(facing) .. ") (" .. uid .. ")")
             end
             self:PlayBuffLoop(skillId, buffTag, player, remain)
+        end, self.ShadowFacingPollSeconds)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer PlayLoopLayer(Entity player, table spec, number facing)
+        -- 반복 겹 하나를 facing 기준으로 붙여 건다(b/skill-pirate-followup · followTurn 의 처음 걸기 · 돌아선 뒤 다시 걸기 공용): 앞 offsetX × facing · 오른쪽을 볼 때 FlipX(noFlip 이면 안 뒤집음) ·
+        -- sortBehind/behindPlayer = 플레이어 바로 뒤 층(ApplyShadowSorting) · startFrame/endFrame = 클립 일부만 반복. 돌려주는 값 = 이펙트 serial.
+        local s = spec.scale or 1
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        if spec.sortBehind or spec.behindPlayer then self:ApplyShadowSorting(opt, player) end
+        if spec.startFrame ~= nil then opt["StartFrameIndex"] = spec.startFrame end
+        if spec.endFrame ~= nil then opt["EndFrameIndex"] = spec.endFrame end
+        return _EffectService:PlayEffectAttached(spec.ruid, player, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), true, opt)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void RegisterLoopTurn(string uid, string buffTag, string key, table spec, number facing)
+        -- followTurn 겹 하나를 살피기에 올린다. key = buffLoopEffects[uid] 의 키(태그 · 태그 .. "#flame"). 같은 태그의 겹은 같은 facing 을 공유한다 — 겹을 걸 때마다 지금 facing 으로 맞춘다.
+        if uid == nil or uid == "" or spec == nil then return end
+        local perUser = self.loopTurnState[uid]
+        if perUser == nil then
+            perUser = {}
+            self.loopTurnState[uid] = perUser
+        end
+        local st = perUser[buffTag]
+        if st == nil then
+            st = { facing = facing, layers = {} }
+            perUser[buffTag] = st
+        end
+        st.facing = facing
+        st.layers[key] = spec
+        self:EnsureLoopTurnPoll(uid, buffTag)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EnsureLoopTurnPoll(string uid, string buffTag)
+        -- 버프 동안 ShadowFacingPollSeconds 마다 facing 을 읽어 바뀌었으면 올라온 겹(지금 떠 있는 serial 만)을 지우고 새 쪽으로 다시 건다 — 남은 버프 시간 뒤 지우는 타이머도 새로.
+        -- 겹이 아직 없으면(에너지 쉴드 첫 바퀴 대기 · 컷신 숨김) facing 만 기억한다 — 늦게 거는 쪽이 그때의 facing 으로 건다. 버프가 끝나면 타이머 · 상태를 지우고 멈춘다.
+        local timerKey = uid .. "|" .. buffTag
+        if self.loopTurnTimers[timerKey] ~= nil then return end
+        self.loopTurnTimers[timerKey] = _TimerService:SetTimerRepeat(function()
+            local st = nil
+            if self.loopTurnState[uid] ~= nil then st = self.loopTurnState[uid][buffTag] end
+            local buff = nil
+            if _SkillBuffs ~= nil then buff = _SkillBuffs:GetBuff(uid, buffTag) end
+            if buff == nil or st == nil then
+                local id = self.loopTurnTimers[timerKey]
+                if id ~= nil then _TimerService:ClearTimer(id) end
+                self.loopTurnTimers[timerKey] = nil
+                if self.loopTurnState[uid] ~= nil then self.loopTurnState[uid][buffTag] = nil end
+                return
+            end
+            local player = _UserService:GetUserEntityByUserId(uid)
+            if not isvalid(player) or not isvalid(player.TransformComponent) then return end
+            local facing = self:GetFacingX(player)
+            if facing == st.facing then return end
+            local remain = buff.endsAt - _UtilLogic.ServerElapsedSeconds
+            if remain <= 0 then return end
+            local before = st.facing
+            st.facing = facing
+            local perUser = self.buffLoopEffects[uid]
+            if perUser == nil then return end
+            local names = ""
+            local n = 0
+            for key, spec in pairs(st.layers) do
+                local old = perUser[key]
+                if old ~= nil then
+                    _EffectService:RemoveEffect(old)
+                    local serial = self:PlayLoopLayer(player, spec, facing)
+                    perUser[key] = serial
+                    local k = key
+                    _TimerService:SetTimerOnce(function()
+                        if perUser[k] == serial then
+                            _EffectService:RemoveEffect(serial)
+                            perUser[k] = nil
+                        end
+                    end, remain)
+                    n = n + 1
+                    names = names .. " " .. key .. "=" .. tostring(serial)
+                end
+            end
+            log("SkillExecutors: loop turned " .. buffTag .. " facing " .. tostring(before) .. " -> " .. tostring(facing) .. " re-played " .. tostring(n) .. " layer(s) flipX=" .. tostring(facing > 0) .. names .. " (" .. uid .. ")")
         end, self.ShadowFacingPollSeconds)
     end
 
