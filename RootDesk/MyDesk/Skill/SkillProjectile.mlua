@@ -14,9 +14,11 @@ script SkillProjectile extends AttackComponent
     -- b/skill-archer-thief-pirate (2026-09-12):
     --   · DamageMul / DisplayHits: "60x2%" 같은 N발 스킬은 첫 투사체 하나가 피해 ×N · 표시 N타를 지고 나머지는 VisualOnly(피해 없음 · 연출만).
     --     당시엔 몬스터 피격 무적(MonsterHit.ImmuneCooldown 0.4s) 때문에 두 번째 투사체 피해가 무효였다. #120(2026-09-29)이 그 무적을 뺐다(IsHitTarget 항상 true)
-    --     → 더블 샷은 발마다 ×1(SkillAttack.IsPerArrowVolley · Volley). 다른 N발 스킬(럭키 세븐)은 아직 첫 발 ×N.
+    --     → 더블 샷은 발마다 ×1(SkillAttack.IsPerArrowVolley · Volley) · 럭키 세븐도 발마다 1타(아래 perProjectileHit).
     --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 배율 2.0.
     --   · OnAttack: hit 사운드(HitSoundRUID) + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
+    -- b/skill-thief-effects: SingleTargetOnly(럭키 세븐 · #40 5884390073 7번) = 판정마다 상자 안 몬스터 하나만(조준 대상 우선 · 없으면 가장 가까운 것).
+    --   럭키 세븐은 발마다 1타(DamageMul 1 · 2발째도 진짜 투사체 · SkillAttack.SpawnProjectile perProjectileHit).
 
     property number DirectionX = 1
 
@@ -92,6 +94,10 @@ script SkillProjectile extends AttackComponent
     -- 명중 시 재생할 사운드 RUID(원작 팩 _audio/Hit). 비면 없음.
     property string HitSoundRUID = ""
 
+    -- 명중 이펙트 높이 보정(world unit · b/skill-magician-effects 2026-09-26): 클립 원점을 대상 몸 중심(콜라이더 중심)에서 이만큼 올린다.
+    -- 스킬별 값 = SkillExecutors.effectOverrides[skill].impact.offsetY (SkillAttack.SpawnOneProjectile 이 넣는다 · 없으면 0).
+    property number HitEffectOffsetY = 0
+
     -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
     property number CritDamageRate = 2.0
 
@@ -102,6 +108,44 @@ script SkillProjectile extends AttackComponent
     property number FloorY = 0
 
     property number FloorTolerance = 0.6
+
+    -- true = 판정 한 번에 몬스터 하나만 맞는다(b/skill-thief-effects · 럭키 세븐 1 대상). OnUpdate 가 probe 패스(ProbeTag · Candidates)로 후보를 모으고
+    -- (조준 대상 TargetEntity 가 후보에 있으면 그것 · 없으면 투사체에 가장 가까운 것) 그 하나만 AllowedTargets 로 통과시켜 AttackFast 한다(에너지볼트 폭발과 같은 거름망).
+    -- false = 예전대로 상자 안 전부.
+    property boolean SingleTargetOnly = false
+
+    -- 폭발(에너지볼트 SK_M11 · b/skill-magician-effects 2026-09-26 · 기획 확인 "처음 맞은 적 자리에서 폭발 · 주변 최대 6명"):
+    -- ExplodeSizeX/Y 가 0 보다 크면 날아가다 처음 닿은 몬스터 자리에서 터진다. 폭발 상자 = 그 몬스터 발 기준(중심 = 발 + ExplodeCenterY · 가로 ExplodeSizeX × 세로 ExplodeSizeY).
+    -- 맞는 대상은 최대 ExplodeMaxTargets 명 — 처음 닿은 몬스터는 언제나 포함, 나머지는 폭발 중심에서 가까운 순. 0 = 폭발 없음(예전처럼 닿은 것만).
+    -- 값은 SkillExecutors.effectOverrides[skill].explode → SkillAttack.SpawnProjectile 이 스폰 직후 넣는다.
+    property number ExplodeSizeX = 0
+
+    property number ExplodeSizeY = 0
+
+    property number ExplodeCenterY = 0
+
+    property integer ExplodeMaxTargets = 0
+
+    -- 후보만 모으는 패스(피해 없음)의 attackInfo. SkillAttack.ProbeTag 와 같은 값 · 스킬 id 와 겹치지 않는다.
+    property string ProbeTag = "probe"
+
+    -- probe 패스 동안만 채운다(IsAttackTarget).
+    @HideFromInspector
+    property table Candidates = {}
+
+    -- 폭발 패스 동안만: 맞을 대상(엔티티 → true). IsAttackTarget 이 이 밖은 거른다. nil = 거르지 않음.
+    @HideFromInspector
+    property any AllowedTargets = nil
+
+    -- 폭발 패스 표시: 명중 사운드는 폭발 한 번에 한 번만(대상 6명이면 같은 소리 6겹) · 맞은 수 세기.
+    @HideFromInspector
+    property boolean explodePass = false
+
+    @HideFromInspector
+    property boolean explodeSoundPlayed = false
+
+    @HideFromInspector
+    property integer explodeHits = 0
 
     -- 발마다 1타 볼리(b/skill-archer-effects · 더블 샷 · SkillAttack.IsPerArrowVolley · #40 5884388966 (a)): 같은 볼리의 발들이 같은 표
     --   { members = 발 목록, firstHitAt = 첫 명중 시각, followDelay = 둘째부터 늦출 초 } 를 든다. nil = 볼리 아님.
@@ -123,16 +167,17 @@ script SkillProjectile extends AttackComponent
     @HideFromInspector
     property boolean soundDone = false
 
-    -- 단일 대상(b/skill-archer-effects · 스나이핑 · SkillAttack.IsSingleTargetProjectile): true 면 유도 대상(TargetEntity · 보스 우선)만 맞는다.
+    -- 유도 대상만(b/skill-archer-effects · 스나이핑 · SkillAttack.IsSingleTargetProjectile): true 면 유도 대상(TargetEntity · 보스 우선)만 맞는다.
     -- 대상이 사라지면(죽음 · 제거) 화살도 사라진다(#40 5884388966 (b) · OnUpdate) — 다른 몬스터를 맞히지 않는다.
-    property boolean SingleTargetOnly = false
+    -- #115 의 SingleTargetOnly(럭키 세븐 · 판정마다 상자 안 하나)와 뜻이 달라 main 6519369 병합 때 이름을 나눴다(2026-10-04).
+    property boolean HomingTargetOnly = false
 
     -- SetTarget 으로 유도 대상을 받은 적이 있는가(단일 대상 화살이 "대상이 사라졌다" 를 알려면 — TargetEntity 는 대상이 무효가 되면 nil 로 풀린다).
     @HideFromInspector
     property boolean hadTarget = false
 
     -- 화살 하나 = 몬스터 1마리(b/skill-archer-effects · 더블 샷 · #40 5927314999 2번 · SkillAttack.IsOneTargetPerArrow): 판정 상자에 몬스터가 여럿 겹쳐도 하나만 맞는다.
-    -- 살아 있는 유도 대상이 있으면 그것만, 없으면(직선 · 대상이 죽음/사라짐) 처음 통과한 살아 있는 몬스터 하나(pickedTarget). 스나이핑의 SingleTargetOnly 와 달리 대상이 사라져도 화살은 남는다.
+    -- 살아 있는 유도 대상이 있으면 그것만, 없으면(직선 · 대상이 죽음/사라짐) 처음 통과한 살아 있는 몬스터 하나(pickedTarget). 스나이핑의 HomingTargetOnly 와 달리 대상이 사라져도 화살은 남는다.
     property boolean OneTargetPerArrow = false
 
     @HideFromInspector
@@ -212,12 +257,14 @@ script SkillProjectile extends AttackComponent
 
     method Vector3 AimPointOf(Entity target)
         -- 조준점(월드) = 대상 HitComponent 콜라이더 중심(발 + ColliderOffset · BoxSize 가 0 이 아닐 때). 없으면 발 + TargetAimOffsetY.
-        -- OnAttack 의 명중 이펙트 위치도 같은 점을 쓴다(화살이 닿은 곳에 hit 클립). ExecSpace 없음 = 서버 피격 파이프라인(OnAttack)에서도 부른다.
+        -- 명중 이펙트 자리는 HitPointOf(같은 콜라이더 중심 · 스킬별 예외 없음) + HitEffectOffsetY 가 따로 정한다(b/skill-magician-effects). ExecSpace 없음 = 서버에서도 부른다.
         local t = target.TransformComponent.WorldPosition
-        -- 에너지볼트(SK_M11)만 #56 이전 조준점인 **발 + 0.5**(= 손 높이 · CSV SpawnOffsetY)를 그대로 쓴다 — 그래야 예전 궤적이 나온다.
+        -- 에너지볼트(SK_M11)만 **대상의 발 + 0.22** 를 노린다 = 발사 높이(SkillExecutors.effectOverrides.SK_M11.spawn.offsetY 0.22)와 같아 같은 높이의 대상에는 수평으로 난다(원작 레드 영상 ≈0.20 수평 · 사용자 선택 2026-09-27).
+        -- 높이가 다른 대상(날아다니는 몬스터 등)에는 그쪽으로 기울어 날아가 맞는다(Round 9 M7 · 스티지 · 깊은 숲 위습 명중 · 사용자 수용 · 최종).
+        -- 예전(#82)은 발 + 0.5(= 손 높이 · CSV SpawnOffsetY)로 곡선 궤적이었다. 발사 높이를 바꾸면 이 값도 같이 바꾼다.
         -- 나머지 투사체는 #56 대로 콜라이더 중심을 노린다. CSV 열·스키마를 늘리지 않으려고 여기 한 곳에 하드코딩한다.
         if self.SkillId == "SK_M11" then
-            return Vector3(t.x, t.y + 0.5, t.z)
+            return Vector3(t.x, t.y + 0.22, t.z)
         end
         local hit = target.HitComponent
         if isvalid(hit) then
@@ -317,7 +364,7 @@ script SkillProjectile extends AttackComponent
             return
         end
         -- 단일 대상(스나이핑 · #40 5884388966 (b) 2번): 대상이 사라지거나 죽으면 화살도 사라진다 — 마지막 방향으로 날아가 다른 몬스터를 맞히지 않는다.
-        if self.SingleTargetOnly and self.hadTarget and not self.consumed and self:IsTargetGone(self.TargetEntity) then
+        if self.HomingTargetOnly and self.hadTarget and not self.consumed and self:IsTargetGone(self.TargetEntity) then
             log("[SkillProjectile] " .. self.SkillId .. " single target gone — arrow removed (lived " .. tostring(self.lived) .. "s)")
             self.consumed = true
             self.Entity:Destroy()
@@ -346,7 +393,175 @@ script SkillProjectile extends AttackComponent
         self.Shape.Position = Vector2(pos.x, pos.y)
         self.Shape.Size = Vector2(self.RangeX, self.RangeY)
         self.Shape.Angle = 0
+        if self.SingleTargetOnly then
+            local pick = self:PickSingleTarget(pos)
+            if pick == nil then return end
+            local only = {}
+            only[pick] = true
+            self.AllowedTargets = only
+            self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+            self.AllowedTargets = nil
+            return
+        end
+        if self.ExplodeSizeX > 0 and self.ExplodeSizeY > 0 then
+            self:TryExplode(pos)
+            return
+        end
         self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+    end
+
+    @ExecSpace("ServerOnly")
+    method any PickSingleTarget(Vector3 pos)
+        -- SingleTargetOnly: 지금 상자(Shape) 안 후보를 probe 패스로 모아(피해 없음 · IsAttackTarget 이 false) 하나를 고른다.
+        -- 조준 대상이 후보에 있으면 그것, 아니면 투사체 위치에 가장 가까운 것. 죽었거나 죽는 중인 몬스터는 뺀다. 없으면 nil.
+        self.Candidates = {}
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local best = nil
+        local bestD = math.huge
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) and not self:IsDeadOrDying(cand) then
+                if cand == self.TargetEntity then
+                    best = cand
+                    break
+                end
+                local cp = cand.TransformComponent.WorldPosition
+                local dx = cp.x - pos.x
+                local dy = cp.y - pos.y
+                local d = dx * dx + dy * dy
+                if d < bestD then
+                    best = cand
+                    bestD = d
+                end
+            end
+        end
+        self.Candidates = {}
+        return best
+    end
+
+    method boolean IsDeadOrDying(Entity defender)
+        -- 몬스터(script.Monster · A)가 죽었거나 HP 0 이하인가(SkillAttack.IsDeadOrDying 과 같은 규칙). Monster 가 없는 대상은 false. ExecSpace 없음 = 서버 판정 경로에서만 부른다.
+        if not isvalid(defender) then return true end
+        ---@type Monster
+        local mon = defender:GetComponent("script.Monster")
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return true end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return true end
+        return false
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TryExplode(Vector3 pos)
+        -- 폭발형 명중 검사: 지금 날아가는 상자(Shape · RangeX × RangeY)에 닿은 몬스터를 피해 없이 모은다. 없으면 계속 난다.
+        -- 첫 대상 = 유도 대상이 닿았으면 그것, 아니면 볼트에서 가장 가까운 것(가는 길에 먼저 닿은 몬스터에서 터진다).
+        self.Candidates = {}
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local touched = self.Candidates
+        self.Candidates = {}
+        if #touched == 0 then return end
+
+        local first = nil
+        local best = math.huge
+        for _, c in ipairs(touched) do
+            if isvalid(c) and isvalid(c.TransformComponent) then
+                if c == self.TargetEntity then
+                    first = c
+                    break
+                end
+                local p = c.TransformComponent.WorldPosition
+                local dx = p.x - pos.x
+                local dy = p.y - pos.y
+                local d = dx * dx + dy * dy
+                if d < best then
+                    best = d
+                    first = c
+                end
+            end
+        end
+        if first == nil then return end
+        self:Explode(first, pos)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void Explode(Entity first, Vector3 contactPos)
+        -- 첫 대상 발 기준 폭발 상자 안 몬스터를 최대 ExplodeMaxTargets 명(첫 대상 포함 · 나머지는 폭발 중심에서 가까운 순) 한 번에 때린다.
+        -- 피해 · 크리 · 픽파켓 · 명중 이펙트는 보통 명중과 같은 길(AttackFast → CalcDamage / OnAttack). 볼트는 터지면 사라진다.
+        -- 이웃은 터지는 순간에 고른다 — 폭발 자리가 시전 때는 정해지지 않기 때문(스킬 메이커 "시전 시점 스냅샷" 과 다름 · 원장에 기록).
+        self.consumed = true
+        local fp = first.TransformComponent.WorldPosition
+        local cx = fp.x
+        local cy = fp.y + self.ExplodeCenterY
+        self.Shape.Position = Vector2(cx, cy)
+        self.Shape.Size = Vector2(self.ExplodeSizeX, self.ExplodeSizeY)
+        self.Shape.Angle = 0
+        self.Candidates = {}
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local inBox = self.Candidates
+        self.Candidates = {}
+
+        local others = {}
+        local firstInBox = false
+        for _, c in ipairs(inBox) do
+            if c == first then
+                firstInBox = true
+            elseif isvalid(c) and isvalid(c.TransformComponent) then
+                local p = c.TransformComponent.WorldPosition
+                local dx = p.x - cx
+                local dy = p.y - cy
+                table.insert(others, { e = c, d = dx * dx + dy * dy })
+            end
+        end
+        table.sort(others, function(a, b) return a.d < b.d end)
+
+        local cap = self.ExplodeMaxTargets
+        if cap < 1 then cap = 1 + #others end
+        local allowed = {}
+        allowed[first] = true
+        local chosen = 1
+        for _, o in ipairs(others) do
+            if chosen >= cap then break end
+            allowed[o.e] = true
+            chosen = chosen + 1
+        end
+
+        self.AllowedTargets = allowed
+        self.explodePass = true
+        self.explodeSoundPlayed = false
+        self.explodeHits = 0
+        self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        if not firstInBox then
+            -- 폭발 상자가 첫 대상 콜라이더에 안 닿는 경우(발보다 한참 위에 콜라이더가 있는 몬스터 등): 닿았던 비행 상자로 첫 대상만 한 번 더.
+            local only = {}
+            only[first] = true
+            self.AllowedTargets = only
+            self.Shape.Position = Vector2(contactPos.x, contactPos.y)
+            self.Shape.Size = Vector2(self.RangeX, self.RangeY)
+            self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        end
+        self.explodePass = false
+        self.AllowedTargets = nil
+
+        log("[SkillProjectile] EXPLODE " .. self.SkillId .. " first=" .. tostring(first.Name)
+            .. " at (" .. string.format("%.2f", cx) .. "," .. string.format("%.2f", cy) .. ") box "
+            .. tostring(self.ExplodeSizeX) .. "x" .. tostring(self.ExplodeSizeY)
+            .. " inBox=" .. tostring(#inBox) .. " firstInBox=" .. tostring(firstInBox)
+            .. " chosen=" .. tostring(chosen) .. "/" .. tostring(self.ExplodeMaxTargets)
+            .. " hit=" .. tostring(self.explodeHits) .. " (" .. self.CasterUserId .. ")")
+        self.Entity:Destroy(0.05)
+    end
+
+    method Vector3 HitPointOf(Entity target)
+        -- 명중 이펙트 기준점 = 대상 몸 중심(HitComponent 콜라이더 중심 · BoxSize 가 0 이 아닐 때). 없으면 발 + TargetAimOffsetY.
+        -- AimPointOf(조준점)와 달리 스킬별 예외가 없다 — 볼트 궤적(조준)과 명중 그림 자리를 따로 둔다(b/skill-magician-effects 2026-09-26).
+        local t = target.TransformComponent.WorldPosition
+        local hit = target.HitComponent
+        if isvalid(hit) then
+            local off = hit.ColliderOffset
+            local size = hit.BoxSize
+            if off ~= nil and size ~= nil and size.y > 0 then
+                return Vector3(t.x + off.x, t.y + off.y, t.z)
+            end
+        end
+        return Vector3(t.x, t.y + self.TargetAimOffsetY, t.z)
     end
 
     -- Impact effect fires here, from the normal AttackFast/HitEvent pipeline - not a
@@ -374,15 +589,23 @@ script SkillProjectile extends AttackComponent
             if isvalid(t) then
                 local p = t.WorldPosition
                 if self.HitEffectRUID ~= "" then
-                    -- 명중 이펙트는 조준점(콜라이더 중심)에 — 예전 발 + 0.5 는 작은 몬스터 머리 위에 떴다(b/skill-archer-motion).
-                    local aim = self:AimPointOf(defender)
-                    self:PlayHitEffect(defender, aim)
+                    -- 명중 이펙트는 대상 몸 중심(콜라이더 중심)에 — 예전 발 + 0.5 는 작은 몬스터 머리 위에 떴다(b/skill-archer-motion).
+                    -- b/skill-magician-effects: 조준점(AimPointOf)이 아니라 HitPointOf — 볼트가 어디를 노리든(에너지볼트 발 + 0.22) 명중 그림은 몸 중심 + HitEffectOffsetY.
+                    -- b/skill-archer-effects: 배치 · 프레임 · 층(스나이핑 VI impact)은 PlayHitEffect 가 푼다(배치 값이 없는 스킬은 이 점 · 원본 크기 그대로).
+                    local hp = self:HitPointOf(defender)
+                    self:PlayHitEffect(defender, Vector3(hp.x, hp.y + self.HitEffectOffsetY, hp.z))
                 end
+                -- 폭발 패스에서는 한 번만(대상마다 같은 소리가 겹친다).
                 -- 볼리 발은 명중 소리도 발마다 한 번(대상마다 아님 · 2026-10-01 사용자 결정). 다른 투사체는 예전 그대로.
-                if self.HitSoundRUID ~= "" and not (self.Volley ~= nil and self.soundDone) then
+                if self.HitSoundRUID ~= "" and not (self.explodePass and self.explodeSoundPlayed) and not (self.Volley ~= nil and self.soundDone) then
                     _SoundService:PlaySoundAtPos(self.HitSoundRUID, p, self.Entity, 1.0)
+                    if self.explodePass then self.explodeSoundPlayed = true end
                     self.soundDone = true
                 end
+            end
+            if self.explodePass then
+                self.explodeHits = self.explodeHits + 1
+                log("[SkillProjectile] EXPLODE hit #" .. tostring(self.explodeHits) .. " " .. tostring(defender.Name) .. " (" .. self.SkillId .. ")")
             end
             -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
             if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
@@ -455,8 +678,10 @@ script SkillProjectile extends AttackComponent
     method boolean IsAttackTarget(Entity defender, string attackInfo)
         -- 같은 층 판정: SameFloorOnly 면 발이 시전자 발(FloorY)보다 FloorTolerance 이상 낮은 대상은 맞지 않는다(아래층 제외). 나머지는 부모 판정 그대로.
         -- ⚠ 부모(AttackComponent.IsAttackTarget)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014 · Boss/BossProjectileAttack 과 같은 형태).
+        -- 폭발형(b/skill-magician-effects): attackInfo == ProbeTag 면 후보만 모으고 아무도 안 맞는다 · AllowedTargets 가 있으면 그 안의 대상만 맞는다.
         -- 진영 필터(2026-09-24 · b/skill-attack-faction-filter): SkillAttack.IsAttackTarget 과 같은 규칙. 공격자는 이 투사체가 아니라 **시전자**로 판정한다
         -- (투사체 엔티티엔 진영이 없어 FactionLogic 이 중립으로 본다). 시전자를 못 찾으면(퇴장) 아무도 안 맞는다.
+        -- 폭발 probe 도 이 필터를 먼저 지난다 — 후보에는 적만 모인다.
         if isvalid(defender) and _FactionLogic ~= nil then
             local caster = nil
             if self.CasterUserId ~= "" then caster = _UserService:GetUserEntityByUserId(self.CasterUserId) end
@@ -469,10 +694,19 @@ script SkillProjectile extends AttackComponent
         end
         -- 단일 대상(스나이핑 · b/skill-archer-effects): 유도 대상만. 대상이 있었는데 풀렸으면(사라짐) 아무도 안 맞는다(OnUpdate 가 화살을 지운다).
         -- 처음부터 대상이 없던 화살(앞에 몬스터 없음 · 직선)은 제한 없음.
-        if self.SingleTargetOnly and self.hadTarget and (self.TargetEntity == nil or defender ~= self.TargetEntity) then
+        if self.HomingTargetOnly and self.hadTarget and (self.TargetEntity == nil or defender ~= self.TargetEntity) then
             return false
         end
         if not __base:IsAttackTarget(defender, attackInfo) then return false end
+        -- probe 패스는 후보만 모은다(에너지볼트 폭발 · 럭키 세븐 1 대상 공용) — 화살 하나 = 몬스터 1마리 선택(pickedTarget)보다 먼저 돌아야 probe 가 대상을 잡지 않는다.
+        -- AllowedTargets 가 있으면 그 안만 맞는다(폭발 대상 · 럭키 세븐이 고른 하나).
+        if attackInfo == self.ProbeTag then
+            table.insert(self.Candidates, defender)
+            return false
+        end
+        if self.AllowedTargets ~= nil then
+            return self.AllowedTargets[defender] == true
+        end
         -- 화살 하나 = 몬스터 1마리(더블 샷): 다른 판정을 다 통과한 대상 중 하나만.
         if self.OneTargetPerArrow then return self:AcceptOneTarget(defender) end
         return true

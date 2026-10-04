@@ -12,7 +12,7 @@ script SkillAttack extends AttackComponent
     --   · DealSkillDamageCircleScaled: 반지름 피해에 배율·표시 타수를 따로 준다(함포 사격 6파 · 메소 익스플로전 동전 개수).
     --   · OnAttack: 타격마다 impact 클립(PendingImpactRuid)·hit 사운드 + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
     --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리 · 배율 2.0.
-    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해 · 더블 샷은 발마다 ×1 = IsPerArrowVolley).
+    --   · SpawnProjectile: 스프라이트 RUID(화살·표창) · hit 사운드 · 보스 우선 조준 · 볼리(HitCount 발 — 첫 발만 피해 · 더블 샷은 발마다 ×1 = IsPerArrowVolley · effectOverrides.spawn.perProjectileHit(럭키 세븐)면 발마다 1타).
 
     @HideFromInspector
     property any Shape = nil
@@ -53,6 +53,11 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property string PendingImpactRuid = ""
 
+    -- true 면 PendingImpactRuid 를 대상 몸 중심(HitComponent 콜라이더 중심 · 없으면 발 + 0.5)에 재생한다. false = 예전대로 발 + 0.5.
+    -- 텔레포트 강화 도착 피해(SK_M21 · b/skill-magician-effects 2026-09-27)가 켠다. 패스가 끝나면 false.
+    @HideFromInspector
+    property boolean PendingImpactAtBody = false
+
     -- 이번 타격 패스에서 맞은 대상마다 재생할 hit 사운드 RUID(OnAttack). 비면 없음.
     @HideFromInspector
     property string PendingHitSound = ""
@@ -60,6 +65,31 @@ script SkillAttack extends AttackComponent
     -- 이번 타격 패스의 스킬 id(OnAttack 의 픽파켓 훅용). 평값(flat)·probe 패스는 "".
     @HideFromInspector
     property string PendingSkillId = ""
+
+    -- 이번 타격 패스의 대상 상한(b/skill-pirate-effects 2026-09-27 · 원작 mobCount). 0 = 상한 없음(모양 안 전부 · 예전 그대로).
+    -- 0 보다 크면 DealSkillDamage/DealSkillDamageCircleScaled 가 같은 모양으로 probe 해서 시전자에게 가까운 순서로 이만큼만 CappedTargets 에 담고,
+    -- IsAttackTarget 이 그 목록만 통과시킨다. 판정은 여전히 AttackFast 1회(피해 ×N · 표시 N타). EndPass 가 되돌린다.
+    @HideFromInspector
+    property integer PendingMaxTargets = 0
+
+    @HideFromInspector
+    property any CappedTargets = nil
+
+    -- 이번 타격 패스의 impact 클립 반복(b/skill-pirate-effects · 피스트인레인지 영상: 대상마다 폭발 10번 · 0.12s 간격).
+    -- 연출만이다 — 피해는 이미 한 번에 들어갔다(PAJ-02 (a)). 1 = 한 번(예전 그대로). EndPass 가 되돌린다.
+    @HideFromInspector
+    property integer PendingImpactRepeat = 1
+
+    @HideFromInspector
+    property number PendingImpactInterval = 0
+
+    -- 이번 타격 패스의 impact 클립 배율(b/skill-pirate-effects · 섬머솔트 킥 = 영상 크기에 맞춤). 1 = 원본 크기(예전 그대로). EndPass 가 되돌린다.
+    @HideFromInspector
+    property number PendingImpactScale = 1
+
+    -- 연속 타격 표식(b/skill-pirate-effects 2026-09-27 · 피스트인레인지 10타): 2타째부터 attackInfo = 스킬 id .. 이 표식 .. 번호("SK_P21#2").
+    -- 몬스터 무적 0.4s(A 의 Faction/MonsterHit.IsHitTarget)를 "같은 시전의 다음 타격" 만 건너뛰게 할 때 A 가 이 표식을 본다(#40 제안). 피해 값은 BaseSkillId 로 원래 id.
+    property string SequenceHitTag = "#"
 
     -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
     property number CritDamageRate = 2.0
@@ -83,12 +113,12 @@ script SkillAttack extends AttackComponent
     -- 열로 승격하려면 헤더 변경이라 협업-규칙 §1-5(스키마-계약 선행 PR + 공지)를 먼저 거쳐야 한다.
     property number ProjectileSpawnOffsetX = 0.5
 
-    -- 볼리(더블 샷 · 럭키 세븐): 2발째부터의 발사 간격(초). 2발째부터는 VisualOnly(피해 없음).
+    -- 볼리(더블 샷 · 럭키 세븐): 2발째부터의 발사 간격(초). 2발째부터는 VisualOnly(피해 없음) — perProjectileHit 스킬(럭키 세븐)은 2발째도 진짜 투사체.
     property number VolleyInterval = 0.12
 
     -- 스킬별 볼리 간격(b/skill-archer-effects · 더블 샷 영상 돌희 19.300s: 두 화살이 **같은 프레임**에 나란히 떠나고 세로로 ≈0.04 유닛 떨어져 있다).
     --   delay = 다음 발까지 초(없으면 VolleyInterval) · gapY = k번째 발의 세로 간격 × (k − 1)(음수 = 아래). 표에 없는 스킬(럭키 세븐 등)은 예전 그대로.
-    --   ⚠ #115(도적)가 세로 간격을 effectOverrides[skill].spawn.volleyGapY 로 따로 넣었다 — 둘 다 머지되면 gapY 는 그쪽 하나로 합친다.
+    --   #115(도적)는 세로 간격을 effectOverrides[skill].spawn.volleyGapY 로 넣었다(VolleyGapY · 럭키 세븐) — main 6519369 병합(2026-10-04): 이 표에 gapY 가 있으면 이것, 없으면 그쪽.
     --   2026-10-01 Play 뒤: gapY -0.04 → -0.16 (영상 간격 13~15px = 화살 길이의 0.17 · 우리 화살 그림이 영상보다 두 배 두꺼워 0.16 에서 두 발로 보임 · 사용자 선택) · delay 0 그대로(같이 난다).
     --   둘째 화살의 명중(숫자 · 소리 · 폭발)은 비행 지연이 아니라 FollowHitDelay 로 0.10s 늦춘다(SkillProjectile.HoldForFollow).
     property table VolleyTimingOverrides = { SK_A11 = { delay = 0, gapY = -0.16 } }
@@ -171,7 +201,49 @@ script SkillAttack extends AttackComponent
         self.PendingDisplayHits = 1
         self.PendingSkillId = ""
         self.PendingImpactRuid = ""
+        self.PendingImpactAtBody = false
         self.PendingHitSound = ""
+        self.PendingMaxTargets = 0
+        self.CappedTargets = nil
+        self.PendingImpactRepeat = 1
+        self.PendingImpactInterval = 0
+        self.PendingImpactScale = 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CapTargetsByShape(string skillId, any probeShape, integer maxTargets)
+        -- 대상 상한(PendingMaxTargets): 같은 모양으로 probe(피해 없음)해서 시전자에게 가까운 순서로 maxTargets 개만 CappedTargets 에 담는다.
+        -- maxTargets <= 0 이면 아무것도 안 한다(상한 없음). BoxShape · CircleShape 둘 다 받는다(AttackComponent.Attack 의 Shape).
+        self.CappedTargets = nil
+        if maxTargets == nil or maxTargets <= 0 then return end
+        self.Candidates = {}
+        self.SingleTarget = nil
+        self:Attack(probeShape, self.ProbeTag, CollisionGroups.Monster)
+        local origin = self.Entity.TransformComponent.WorldPosition
+        local list = {}
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) then
+                local dup = false
+                for _, row in ipairs(list) do
+                    if row.e == cand then dup = true end
+                end
+                if not dup then
+                    local p = cand.TransformComponent.WorldPosition
+                    local dx = p.x - origin.x
+                    local dy = p.y - origin.y
+                    table.insert(list, { e = cand, d = dx * dx + dy * dy })
+                end
+            end
+        end
+        self.Candidates = {}
+        table.sort(list, function(a, b) return a.d < b.d end)
+        local picked = {}
+        for i = 1, #list do
+            if i > maxTargets then break end
+            table.insert(picked, list[i].e)
+        end
+        self.CappedTargets = picked
+        log("SkillAttack: target cap " .. skillId .. " max=" .. tostring(maxTargets) .. " inShape=" .. tostring(#list) .. " chosen=" .. tostring(#picked))
     end
 
     -- @ExecSpace("Server"): the whole SkillHotbar -> SkillCaster -> SkillExecutors chain runs
@@ -185,7 +257,11 @@ script SkillAttack extends AttackComponent
     @ExecSpace("Server")
     method void DealSkillDamage(string skillId, number level, table shape)
         -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
-        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        -- 막혀도 EndPass: 호출자가 미리 넣은 PendingImpactRuid · PendingImpactAtBody · PendingHitSound 가 다음 타격 패스로 새지 않게(b/skill-magician-effects 2026-09-27).
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then
+            self:EndPass()
+            return
+        end
         self:EnsureShape()
 
         self.Shape.Position = Vector2(shape.posX, shape.posY)
@@ -194,6 +270,9 @@ script SkillAttack extends AttackComponent
 
         local hitCount = shape.hitCount
         if hitCount == nil or hitCount < 1 then hitCount = 1 end
+
+        -- 대상 상한(PendingMaxTargets · 호출자가 이 호출 직전에 넣는다 · 0 = 상자 안 전부).
+        self:CapTargetsByShape(skillId, self.Shape, self.PendingMaxTargets)
 
         -- N타 = 1회 AttackFast × 피해 N배 · 표시 N타 (2026-09-12 · 무적시간 때문에 N회 호출은 1회만 유효했다).
         self:BeginPass(skillId, level, hitCount, hitCount)
@@ -228,7 +307,17 @@ script SkillAttack extends AttackComponent
             return 0
         end
         local userId = attacker.PlayerComponent.UserId
-        return math.floor(_SkillDatabase:DamageAt(attackInfo, self.PendingLevel, userId) * self.PendingDamageMul)
+        -- 연속 타격(DealSequenceHit)의 2타째부터는 attackInfo = "<스킬>#k" — 피해 값은 스킬 id 로 찾는다.
+        return math.floor(_SkillDatabase:DamageAt(self:BaseSkillId(attackInfo), self.PendingLevel, userId) * self.PendingDamageMul)
+    end
+
+    method string BaseSkillId(string attackInfo)
+        -- "SK_P21#3" → "SK_P21". 표식(SequenceHitTag)이 없으면 그대로. 양쪽 인스턴스 공용(ExecSpace 없음).
+        if attackInfo == nil then return "" end
+        -- string.find 는 값 두 개(시작 · 끝)를 돌려준다 — 받는 변수도 둘(하나면 빌드가 LWA-1111 UnbalancedAssignment · SkillWindowLogic.LabelFor 와 같은 처리).
+        local p, pEnd = string.find(attackInfo, self.SequenceHitTag, 1, true)
+        if p == nil then return attackInfo end
+        return string.sub(attackInfo, 1, p - 1)
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
@@ -262,7 +351,39 @@ script SkillAttack extends AttackComponent
             if isvalid(t) then
                 local p = t.WorldPosition
                 if self.PendingImpactRuid ~= "" then
-                    _EffectService:PlayEffect(self.PendingImpactRuid, self.Entity, Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false)
+                    -- 위치 = #100(b/skill-magician-effects): PendingImpactAtBody 면 몸 중심(콜라이더 중심 · SkillProjectile.HitPointOf 와 같은 기준), 아니면 발 + 0.5.
+                    -- 크기 · 반복 = #116(b/skill-pirate-effects): PendingImpactScale · PendingImpactRepeat/Interval. 반복도 같은 몸 기준으로 대상을 따라간다.
+                    local offX = 0
+                    local offY = 0.5
+                    if self.PendingImpactAtBody then
+                        local hit = defender.HitComponent
+                        if isvalid(hit) and hit.BoxSize ~= nil and hit.BoxSize.y > 0 then
+                            offX = hit.ColliderOffset.x
+                            offY = hit.ColliderOffset.y
+                        end
+                    end
+                    local sc = self.PendingImpactScale
+                    if sc == nil or sc <= 0 then sc = 1 end
+                    local scaleVec = Vector3(sc, sc, 1)
+                    _EffectService:PlayEffect(self.PendingImpactRuid, self.Entity, Vector3(p.x + offX, p.y + offY, p.z), 0, scaleVec, false)
+                    -- 반복(PendingImpactRepeat · 피스트인레인지 10번): 연출만. 대상이 밀리거나 죽어도 그 자리에서 이어서 터진다.
+                    local rep = self.PendingImpactRepeat
+                    local gap = self.PendingImpactInterval
+                    if rep ~= nil and rep > 1 and gap ~= nil and gap > 0 then
+                        local ruid = self.PendingImpactRuid
+                        local owner = self.Entity
+                        local last = Vector3(p.x + offX, p.y + offY, p.z)
+                        for i = 1, rep - 1 do
+                            _TimerService:SetTimerOnce(function()
+                                if not isvalid(owner) then return end
+                                if isvalid(defender) and isvalid(defender.TransformComponent) then
+                                    local q = defender.TransformComponent.WorldPosition
+                                    last = Vector3(q.x + offX, q.y + offY, q.z)
+                                end
+                                _EffectService:PlayEffect(ruid, owner, last, 0, scaleVec, false)
+                            end, i * gap)
+                        end
+                    end
                 end
                 if self.PendingHitSound ~= "" then
                     _SoundService:PlaySoundAtPos(self.PendingHitSound, p, self.Entity, 1.0)
@@ -298,6 +419,13 @@ script SkillAttack extends AttackComponent
         if attackInfo ~= self.FlatTag and isvalid(self.Entity.PlayerComponent) and (self.Entity.PlayerComponent.Hp <= 0 or self.Entity.PlayerComponent:IsDead()) then return false end
         if self.SingleTarget ~= nil then
             return defender == self.SingleTarget
+        end
+        -- 대상 상한(CapTargetsByShape): 목록에 든 대상만.
+        if self.CappedTargets ~= nil then
+            for _, e in ipairs(self.CappedTargets) do
+                if e == defender then return true end
+            end
+            return false
         end
         return true
     end
@@ -365,6 +493,43 @@ script SkillAttack extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
+    method table SnapshotTargets(string skillId, table shape, integer maxTargets)
+        -- 연속 타격 대상 고정(피스트인레인지): shape 상자 안 대상을 한 번 골라 목록으로 돌려준다(probe · 피해 없음).
+        -- maxTargets > 0 이면 시전자에게 가까운 순서로 그만큼(CapTargetsByShape) · 0 이면 전부(FindSkillTargets).
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        if maxTargets ~= nil and maxTargets > 0 then
+            self:CapTargetsByShape(skillId, self.Shape, maxTargets)
+            local picked = self.CappedTargets
+            self.CappedTargets = nil
+            if picked == nil then return {} end
+            return picked
+        end
+        return self:FindSkillTargets(skillId, shape)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DealSequenceHit(string skillId, number level, table shape, table targets, integer hitIndex)
+        -- 연속 타격 한 번(피스트인레인지 10타 중 hitIndex 번째): 고정한 targets 만 · 피해 = 표 % × 1 · 표시 1타.
+        -- 2타째부터 attackInfo = skillId .. SequenceHitTag .. hitIndex — 몬스터 무적 0.4s 예외용 표식(A 의 MonsterHit · #40). 연출(폭발)은 부르는 쪽이 따로 튼다.
+        if _SpectateService ~= nil and isvalid(self.Entity.PlayerComponent) and _SpectateService:Blocked(self.Entity.PlayerComponent.UserId) then return end
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        local info = skillId
+        if hitIndex ~= nil and hitIndex > 1 then info = skillId .. self.SequenceHitTag .. tostring(hitIndex) end
+        self:BeginPass(skillId, level, 1, 1)
+        self.CappedTargets = targets
+        if self.CappedTargets == nil then self.CappedTargets = {} end
+        self:AttackFast(self.Shape, info, CollisionGroups.Monster)
+        self:EndPass()
+        log("SkillAttack: sequence hit " .. info .. " lv=" .. tostring(level) .. " targets=" .. tostring(#targets))
+    end
+
+    @ExecSpace("ServerOnly")
     method void DealFlatDamageToTarget(Entity target, integer amount, string sourceSkillId)
         -- 평값 피해를 대상 하나에 1회 (아이언 바디 반사 · SkillBuffs.OnPlayerHitEvent). 피해 값은 CalcDamage 의 FlatTag 분기가 amount 를 그대로 쓴다.
         -- 몬스터 쪽 피격 무적은 #120(2026-09-29)에 없어졌다 — 반사는 매번 들어간다(넉백 · 경직만 0.4s 에 한 번 · MonsterHit.ImmuneCooldown 간격).
@@ -402,6 +567,8 @@ script SkillAttack extends AttackComponent
         if mul == nil or mul <= 0 then mul = 1 end
         if displayHits == nil or displayHits < 1 then displayHits = 1 end
         local circle = CircleShape(Vector2(cx, cy), radius)
+        -- 대상 상한(PendingMaxTargets · 함포 사격 파마다 · 0 = 원 안 전부).
+        self:CapTargetsByShape(skillId, circle, self.PendingMaxTargets)
         self:BeginPass(skillId, level, mul, math.floor(displayHits))
         self:AttackFast(circle, skillId, CollisionGroups.Monster)
         self:EndPass()
@@ -412,7 +579,11 @@ script SkillAttack extends AttackComponent
     method void DealSkillDamageToTarget(string skillId, number level, Entity target, number hitCount)
         -- 단일 대상 타격: 대상 위치에 SingleTargetBoxSize 상자를 놓고 SingleTarget 필터로 그 하나만 (피해 ×hitCount · 표시 hitCount 타).
         -- 피해 값은 DealSkillDamage 와 같은 경로(CalcDamage → SkillDatabase.DamageAt).
-        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
+        -- 대상이 없어도 EndPass — 호출자가 넣은 impact · 사운드가 다음 패스로 새지 않게(b/skill-magician-effects 2026-09-27).
+        if not isvalid(target) or not isvalid(target.TransformComponent) then
+            self:EndPass()
+            return
+        end
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
         self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
@@ -432,7 +603,11 @@ script SkillAttack extends AttackComponent
     @ExecSpace("ServerOnly")
     method void DealSkillDamageToTargetScaled(string skillId, number level, Entity target, number mul, number displayHits)
         -- 단일 대상 타격 + 피해 배율·표시 타수 분리. DealSkillDamageToTarget 과 같은 경로. (파워 스트라이크는 2026-09-24 부터 1타 · DealSkillDamageToTargetAmount — 시전 순간 고정값.)
-        if not isvalid(target) or not isvalid(target.TransformComponent) then return end
+        -- 대상이 없어도 EndPass(위와 같은 이유 · b/skill-magician-effects 2026-09-27).
+        if not isvalid(target) or not isvalid(target.TransformComponent) then
+            self:EndPass()
+            return
+        end
         self:EnsureShape()
         local p = target.TransformComponent.WorldPosition
         self.Shape.Position = Vector2(p.x, p.y + self.SingleTargetBoxSize.y / 2)
@@ -507,9 +682,11 @@ script SkillAttack extends AttackComponent
     -- b/skill-archer-thief-pirate: spriteRuid(화살·표창 스프라이트 · "" = DefaultProjectileSpriteRUID 에너지볼트) · hitSoundRuid · preferBoss(스나이핑 보스 우선) ·
     -- hitCount > 1 = 볼리(첫 발 피해 ×N · 표시 N타, 이후 발은 VolleyInterval 간격으로 VisualOnly · IsPerArrowVolley 스킬은 모든 발 실제 · 발마다 ×1).
     -- b/skill-thief-motion: spawnOffsetX(0 이면 ProjectileSpawnOffsetX) — 럭키 세븐은 시전 이펙트(초승달) 중심에서 표창이 나가야 해서 스킬별 앞쪽 거리를 받는다(effectOverrides.spawn).
-    --   spriteScale(마지막 인자 · 0/1 이면 그대로) = 투사체 스프라이트 크기 배율(Transform.Scale · 판정 상자 RangeX/Y 는 월드 크기라 안 커진다) — 럭키 세븐 표창 1.3.
+    --   spriteScale = 투사체 스프라이트 크기 배율(Transform.Scale · 판정 상자 RangeX/Y 는 월드 크기라 안 커진다) — 럭키 세븐 표창 1.3.
+    -- b/skill-magician-effects: explode(마지막 인자) = { sizeX, sizeY, centerY, maxTargets } — 에너지볼트는 처음 닿은 적 자리에서 터져 주변 최대 N명(SkillProjectile.Explode).
+    --   실행기 effectOverrides[skill].explode 에서 온다. 빈 표 / 크기 0 = 폭발 없음(예전처럼 닿은 것만).
     @ExecSpace("Server")
-    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY, string spriteRuid, string hitSoundRuid, boolean preferBoss, number spawnOffsetX, number spriteScale)
+    method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY, string spriteRuid, string hitSoundRuid, boolean preferBoss, number spawnOffsetX, number spriteScale, table explode)
         -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
         if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local caster = self.Entity
@@ -556,19 +733,36 @@ script SkillAttack extends AttackComponent
         local lifetime = range / speed
         if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
 
-        -- 발마다 1타(b/skill-archer-effects · 더블 샷 · #40 5884388966 (a) · #120 이 몬스터 피격 무적을 뺐다): 모든 발이 실제 투사체 · 피해 ×1 · 표시 1타.
-        -- 그 외 볼리(럭키 세븐 등)는 예전 그대로 — 첫 발 피해 ×hitCount · 표시 hitCount 타 · 2발째부터 VisualOnly.
+        -- 발마다 1타 — 두 길(둘 다 몬스터 피격 무적이 없어진 뒤 · #120 · #40 5884388966 (a)):
+        --   · 더블 샷(b/skill-archer-effects · IsPerArrowVolley): 모든 발이 실제 투사체 · 피해 ×1 · 표시 1타 · 같은 Volley 표(둘째 명중 FollowHitDelay 늦춤).
+        --   · effectOverrides[skill].spawn.perProjectileHit(b/skill-thief-effects · 럭키 세븐): 발마다 1타 · Volley 표 없음.
+        --   singleTarget = 투사체 하나가 상자 안 몬스터 하나만(SkillProjectile.SingleTargetOnly · #40 5884390073 7번).
+        -- 그 외 볼리는 예전 그대로 — 첫 발 피해 ×hitCount · 표시 hitCount 타 · 2발째부터 VisualOnly.
         local perArrow = hitCount > 1 and self:IsPerArrowVolley(skillId)
+        local perShot = self:ProjectileSpawnFlag(skillId, "perProjectileHit")
+        local single = self:ProjectileSpawnFlag(skillId, "singleTarget")
         local firstMul = hitCount
-        if perArrow then firstMul = 1 end
+        if perArrow or perShot then firstMul = 1 end
         local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, firstMul, false, sc)
         if mover == nil then return end
-        -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요.
+        -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요(perProjectileHit 면 2발째도 넣는다).
         mover.SameFloorOnly = true
         mover.FloorY = pos.y
         mover.FloorTolerance = self.AimFloorTolerance
-        -- 단일 대상(b/skill-archer-effects · 스나이핑): 유도 대상(보스 우선)만 맞는다 — 판정 상자에 겹친 다른 몬스터는 제외(SkillProjectile.IsAttackTarget).
-        mover.SingleTargetOnly = self:IsSingleTargetProjectile(skillId)
+        -- 폭발형(에너지볼트): 첫 발에만. 볼리 2발째부터는 VisualOnly 라 판정이 없다.
+        local explodeText = "none"
+        if explode ~= nil and explode.sizeX ~= nil and explode.sizeY ~= nil and explode.sizeX > 0 and explode.sizeY > 0 then
+            mover.ExplodeSizeX = explode.sizeX
+            mover.ExplodeSizeY = explode.sizeY
+            mover.ExplodeCenterY = explode.centerY or 0
+            mover.ExplodeMaxTargets = math.floor(explode.maxTargets or 0)
+            explodeText = tostring(explode.sizeX) .. "x" .. tostring(explode.sizeY) .. "@" .. tostring(mover.ExplodeCenterY) .. " max=" .. tostring(mover.ExplodeMaxTargets)
+        end
+        -- 럭키 세븐 1 대상(b/skill-thief-effects · effectOverrides spawn.singleTarget): 판정마다 상자 안 몬스터 하나만(조준 대상 우선).
+        mover.SingleTargetOnly = single
+        -- 유도 대상만(b/skill-archer-effects · 스나이핑): 유도 대상(보스 우선)만 맞는다 — 판정 상자에 겹친 다른 몬스터는 제외 · 대상이 사라지면 화살도 사라진다.
+        --   #115 의 SingleTargetOnly(럭키 세븐)와 뜻이 달라 이름을 HomingTargetOnly 로 나눴다(main 6519369 병합 · 2026-10-04).
+        mover.HomingTargetOnly = self:IsSingleTargetProjectile(skillId)
         -- 발마다 1타 볼리: 모든 발이 같은 Volley 표({ impactPlayed })를 든다 — 두 번째 명중 연출(분홍 불꽃 → 폭발 · impactFollow)은 볼리당 한 번(먼저 맞힌 발 · SkillProjectile.OnAttack).
         local volley = nil
         if perArrow then
@@ -576,9 +770,10 @@ script SkillAttack extends AttackComponent
             mover.Volley = volley
         end
 
-        -- 볼리 2발째부터: 발마다 1타 스킬은 실제 투사체(피해 ×1 · 같은 Volley · 명중 이펙트/사운드 포함) · 그 외는 VisualOnly(첫 발이 ×hitCount 를 이미 졌다).
+        -- 볼리 2발째부터: 더블 샷은 실제 투사체(피해 ×1 · 같은 Volley · 명중 이펙트/사운드 포함) · perProjectileHit 는 1타짜리 진짜 투사체 · 그 외는 VisualOnly(첫 발이 ×hitCount 를 이미 졌다).
+        -- 간격 · 세로 간격: VolleyTimingOverrides(더블 샷)가 있으면 그것, 없으면 VolleyInterval · effectOverrides spawn.volleyGapY(VolleyGapY · 럭키 세븐).
         local volleyDelay = self.VolleyInterval
-        local volleyGapY = 0
+        local volleyGapY = self:VolleyGapY(skillId)
         local vt = nil
         if self.VolleyTimingOverrides ~= nil then vt = self.VolleyTimingOverrides[skillId] end
         if vt ~= nil then
@@ -602,6 +797,14 @@ script SkillAttack extends AttackComponent
                         m2.FloorY = pos.y
                         m2.FloorTolerance = self.AimFloorTolerance
                     end
+                elseif perShot then
+                    local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, 1, false, sc)
+                    if m2 ~= nil then
+                        m2.SameFloorOnly = true
+                        m2.FloorY = pos.y
+                        m2.FloorTolerance = self.AimFloorTolerance
+                        m2.SingleTargetOnly = single
+                    end
                 else
                     self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc)
                 end
@@ -612,7 +815,8 @@ script SkillAttack extends AttackComponent
         if target ~= nil then targetName = tostring(target.Name) end
         log("SkillAttack: spawned projectile " .. skillId .. " speed=" .. tostring(speed)
             .. " lifetime=" .. tostring(lifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName .. " volley=" .. tostring(hitCount)
-            .. " sprite=" .. tostring(spriteRuid ~= "") .. " scale=" .. tostring(sc) .. " preferBoss=" .. tostring(preferBoss)
+            .. " sprite=" .. tostring(spriteRuid ~= "") .. " scale=" .. tostring(sc) .. " preferBoss=" .. tostring(preferBoss) .. " explode=" .. explodeText
+            .. " perShot=" .. tostring(perShot) .. " single=" .. tostring(single)
             .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
             .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * ox) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end
@@ -684,6 +888,8 @@ script SkillAttack extends AttackComponent
         mover.OneTargetPerArrow = self:IsOneTargetPerArrow(skillId)
         mover.HitEffectRUID = hitEffectRuid or ""
         mover.HitSoundRUID = hitSoundRuid or ""
+        -- 명중 이펙트 높이 보정(b/skill-magician-effects · effectOverrides[skill].impact.offsetY · 에너지볼트 0.20 = 레드 영상에서 그림 중심이 몸 중심).
+        if _SkillExecutors ~= nil and mover.HitEffectRUID ~= "" then mover.HitEffectOffsetY = _SkillExecutors:GetImpactOffsetY(skillId) end
         -- 스프라이트 크기 배율(럭키 세븐 표창 1.3): SetDirection 앞에 Scale 크기를 넣으면 ApplyFacing 이 부호만 바꾸고 크기는 지킨다(PlaySpriteFlash 와 같은 순서). 판정 상자는 월드 크기라 그대로.
         if spriteScale ~= nil and spriteScale > 0 and spriteScale ~= 1 then
             local pt = proj.TransformComponent
@@ -695,6 +901,25 @@ script SkillAttack extends AttackComponent
             mover:SetTarget(target)
         end
         return mover
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean ProjectileSpawnFlag(string skillId, string key)
+        -- effectOverrides[skillId].spawn[key] == true 인가(b/skill-thief-effects · singleTarget · perProjectileHit). 없으면 false = 예전 규칙(첫 발 ×N · 상자 안 전부).
+        if _SkillExecutors == nil then return false end
+        local entry = _SkillExecutors.effectOverrides[skillId]
+        if entry == nil or entry.spawn == nil then return false end
+        return entry.spawn[key] == true
+    end
+
+    @ExecSpace("ServerOnly")
+    method number VolleyGapY(string skillId)
+        -- 볼리 k번째 발의 세로 간격(world unit · b/skill-thief-effects): effectOverrides[skill].spawn.volleyGapY × (k − 1). 없으면 0(더블 샷 등 그대로).
+        -- 럭키 세븐 −0.09 = 사용자 영상 캐릭터 Lv.25 판(19.2–19.9s) 실측: 둘째 표창이 첫 표창보다 ≈14 video px(160 px = 1 unit) 아래로 날아간다.
+        if _SkillExecutors == nil then return 0 end
+        local entry = _SkillExecutors.effectOverrides[skillId]
+        if entry == nil or entry.spawn == nil or entry.spawn.volleyGapY == nil then return 0 end
+        return entry.spawn.volleyGapY
     end
 
 end
