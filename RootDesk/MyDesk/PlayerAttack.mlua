@@ -42,6 +42,12 @@ script PlayerAttack extends AttackComponent
 	@HideFromInspector
 	property number AttackSheetRate = 1
 
+	-- 좌우 그림 갱신(F13 · 2026-10-05): 클라가 "지금 몸이 그려진 방향"으로 보는 부호(+1 / -1 · 0 = 아직 안 봄). 서버 · 클라마다 각자 값(동기화 안 함).
+	--   매핑이 있는 상태(IDLE · MOVE · 검의 ATTACK …)에서는 엔진이 그림을 맞추므로 매 프레임 LookDirectionX 부호로 따라간다.
+	--   매핑을 걷어낸 ATTACK(활 · 아대)에서 LookDirectionX 가 이 값과 달라지면 OnUpdate 가 다시 그리게 한다(RefreshBodyFacing).
+	@HideFromInspector
+	property number FacingDrawn = 0
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
@@ -106,6 +112,61 @@ script PlayerAttack extends AttackComponent
 		log("[PlayerAttack] ATTACK motion sheet -> restored (" .. shown .. ") " .. self.AttackSheetName .. " x" .. tostring(self.AttackSheetRate) .. " (" .. uid .. ")")
 	end
 
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- F13(2026-10-05 Play · 3225adb): 활을 쏘고 돌아서다 보면 몸이 반대쪽으로 그려진 채 남았다 — 클라 · 서버 LookDirectionX 는 둘 다 맞았고
+		--   (모든 방향 전환이 0.05s 안에 양쪽 도착) 화살도 LookDirectionX 쪽으로 나갔다. 바뀐 것은 ATTACK 매핑을 걷어낸 것 하나뿐이다.
+		-- 왜 이 방법인가(Environment/NativeScripts · 문서 "Controlling Avatar Animations"):
+		--   · 상태 → 몸동작 경로 = StateComponent 의 StateChangeEvent → AvatarStateAnimationComponent.ReceiveStateChangeEvent →
+		--     매핑(StateToAvatarBodyActionSheet)을 찾아 EmitBodyActionStateChangeEvent → body 의 AvatarBodyActionSelectorComponent 가 액션을 고른다.
+		--     매핑이 없는 ATTACK 에서는 이 사슬이 아무것도 내지 않는다 → 그 사이 돌아서도 몸을 다시 그릴 계기가 없다.
+		--   · 우리 표 모션(ActionStateChangedEvent · body 로 · Onetime)에는 방향 필드가 없다(ActionStateChangedEvent.d.mlua) → 몸은 직전 그림의 좌우를 그대로 쓴다.
+		--   · 그래서 끊긴 바로 그 입구 = BodyActionStateChangeEvent(루트로 · needResetAction = true · 같은 상태여도 처음부터 다시)를 직접 넣는다.
+		--     몸동작은 Alert = 엔진이 ATTACK 다음(ATTACK_WAIT)에 보여 주는 자세(프로브 +0.58s alert) — Attack 을 넣으면 엔진이 무기로 풀어 다시 휘두른다(원래 버그).
+		--   · 언제: 매핑을 걷어낸 ATTACK / ATTACK_WAIT 에서 LookDirectionX 부호가 마지막으로 그려진 방향(FacingDrawn)과 달라졌을 때만.
+		--     돌지 않고 쏘면 아무것도 안 보낸다 = 표 shoot1 / swingO3 그대로(사용자 Play 확인 1번 유지). 쏘는 중에 돌면 남은 쏘기 자세가 alert 로 바뀐다(화살 방향은 쏘는 순간 LookDirectionX).
+		--   · 검 · 완드 · 맨손(ATTACK 매핑 있음)은 상태가 늘 "매핑 있음" 쪽이라 FacingDrawn 만 따라가고 아무것도 보내지 않는다 = 예전과 같다.
+		local pc = self.Entity.PlayerControllerComponent
+		local st = self.Entity.StateComponent
+		if not isvalid(pc) or not isvalid(st) then return end
+		local f = 1
+		if pc.LookDirectionX < 0 then f = -1 end
+		local state = st.CurrentStateName
+		local unmapped = false
+		if state == "ATTACK" or state == "ATTACK_WAIT" then
+			local asac = self.Entity.AvatarStateAnimationComponent
+			if isvalid(asac) and not asac.IsLegacy then
+				local sheet = asac.StateToAvatarBodyActionSheet
+				-- ATTACK 키가 없음 = 우리가 걷어낸 모드(활 · 아대). 그 모드에서 지금 상태도 매핑이 없을 때만.
+				if not sheet:ContainsKey("ATTACK") and not sheet:ContainsKey(state) then unmapped = true end
+			end
+		end
+		if not unmapped or self.FacingDrawn == 0 then
+			self.FacingDrawn = f
+			return
+		end
+		if f == self.FacingDrawn then return end
+		local prev = self.FacingDrawn
+		self.FacingDrawn = f
+		self:RefreshBodyFacing(prev, f, state)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshBodyFacing(number prev, number facing, string state)
+		-- 매핑을 걷어낸 ATTACK 중 방향이 바뀌었을 때 몸을 지금 방향으로 다시 그리게 한다(이유는 OnUpdate 주석).
+		-- BodyActionStateChangeEvent 는 body 가 아니라 아바타 루트(self.Entity)로 보낸다(msw-avatar · 문서 예제 self.Entity:SendEvent).
+		local ev = BodyActionStateChangeEvent()
+		ev.ActionState = MapleAvatarBodyActionState.Alert
+		ev.needResetAction = true
+		self.Entity:SendEvent(ev)
+		local who = "?"
+		if isvalid(self.Entity.PlayerComponent) then who = self.Entity.PlayerComponent.UserId end
+		local side = "remote"
+		if _UserService.LocalPlayer == self.Entity then side = "local" end
+		log("[PlayerAttack] facing refresh (ATTACK sheet off · state=" .. state .. ") LookDirectionX " .. tostring(prev) .. " -> " .. tostring(facing)
+			.. " · BodyActionStateChangeEvent Alert reset -> root (" .. side .. " · " .. who .. ")")
+	end
+
 	@ExecSpace("ServerOnly")
 	method void BuildRangedBasic()
 		-- 무기 종류 → 원거리 기본 공격 설정(전부 B 기본값 · PR 본문에 적는다 · 밸런싱은 나중).
@@ -120,10 +181,15 @@ script PlayerAttack extends AttackComponent
 		self.RangedBasic = {
 			-- 활 = 활전용 화살 item/consume/0206.img 02060003/bullet(44×16 · 2프레임). 02060000(기본 화살)의 bullet 은 색인에 없다.
 			--   사거리 5(더블 샷 6 보다 짧게) · 속도 12(더블 샷 CSV Speed) · shoot1 1배속.
-			BOW = { sprite = "2ddccada5b02442897c557596d0cfdc6", range = 5, speed = 12, delay = 0.2, offsetX = 0.5, offsetY = 0.5, scale = 1, single = true, damageMul = 1 },
+			--   offsetY 0.5 → 0.28(2026-10-05 · 사용자 Play "화살이 너무 높이서 나간다"): 더블 샷과 같은 손 높이 = #102 b/skill-archer-effects 의
+			--   effectOverrides.SK_A11.spawn.offsetY 0.28(돌희 영상 2009 lv.25 19.333s 실측 · 두 화살 = 발 위 캐릭터 키 0.40 · 키 0.70 u).
+			--   예전 0.5 = SkillInfo.csv SK_A11 SpawnOffsetY(#102 이 덮기 전 값).
+			BOW = { sprite = "2ddccada5b02442897c557596d0cfdc6", range = 5, speed = 12, delay = 0.2, offsetX = 0.5, offsetY = 0.28, scale = 1, single = true, damageMul = 1 },
 			-- 아대 = 수비 표창 item/consume/0207.img 02070000/bullet(18×20 · 2프레임 회전 · 럭키 세븐 표창과 같은 그림).
 			--   사거리 4(럭키 세븐 5 보다 짧게) · 속도 6(럭키 세븐 영상 실측) · swingO3 1배속.
-			CLAW = { sprite = "551dec3dbf5e4a9f8eae6c9933f41bf2", range = 4, speed = 6, delay = 0.15, offsetX = 0.5, offsetY = 0.4, scale = 1, single = true, damageMul = 1 },
+			--   offsetY 0.4 → 0.26(2026-10-05): 럭키 세븐과 같은 손 높이 = SkillExecutors.effectOverrides.SK_T11.spawn.offsetY 0.26
+			--   (같은 bullet 그림 · 영상 Lv.25 19.2–19.9s 실측 "발 위 0.26 에서 처음 보임"). 앞(offsetX)은 0.5 그대로 — 럭키 세븐 0.95 는 초승달 이펙트 중심이라 기본 공격엔 안 맞는다.
+			CLAW = { sprite = "551dec3dbf5e4a9f8eae6c9933f41bf2", range = 4, speed = 6, delay = 0.15, offsetX = 0.5, offsetY = 0.26, scale = 1, single = true, damageMul = 1 },
 		}
 		-- 엔진 ATTACK 몸동작을 끄는 무기 = 표(WeaponMotion.csv) 모션만 나와야 하는 무기: 활(shoot1) · 아대(swingO3).
 		--   검(SWORD_1H/2H) · 완드 등은 넣지 않는다 = 엔진 ATTACK 모션 + 표 행 지금 그대로.
@@ -222,6 +288,11 @@ script PlayerAttack extends AttackComponent
 		self:SyncAttackMotionSheet()
 		if _PlayerMotion ~= nil and isvalid(self.Entity.PlayerComponent) then
 			_PlayerMotion:PlayAttack(self.Entity.PlayerComponent.UserId)
+			-- F13 확인용: 매핑을 걷어낸 무기(활 · 아대)면 표 모션을 보낸 순간의 바라보는 방향을 남긴다(클라 "facing refresh" 줄과 맞춰 본다).
+			if self.AttackSheetState == "OFF" and isvalid(self.Entity.PlayerControllerComponent) then
+				log("[PlayerAttack] table motion sent (ATTACK sheet off · " .. _PlayerMotion:WeaponTypeOf(self.Entity.PlayerComponent.UserId) .. ") facing="
+					.. tostring(self.Entity.PlayerControllerComponent.LookDirectionX) .. " (" .. self.Entity.PlayerComponent.UserId .. ")")
+			end
 			-- b/skill-thief-effects: 쉐도우 파트너(SK_T22) 분신이 기본 공격 동작도 따라 한다 — 장착 무기의 기본 공격 행(= 방금 PlayAttack 이 재생한 행)의 CoreAction.
 			-- 연출만: 분신 몫 피해(+50~70%)와 픽파켓 동전(타격당 1개)은 그대로. 맨손이면 행이 없어 부르지 않고(PlayAttack 도 재생 안 함), 버프가 없으면 PlayShadowMimic 이 아무것도 안 한다.
 			if _SkillExecutors ~= nil then

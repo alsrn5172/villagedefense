@@ -53,3 +53,35 @@ B 기본값(한 표 `PlayerAttack.BuildRangedBasic`) — **A 답 #40 5927315886(
 3. 활 → 검 · 완드로 바꾼 뒤 Ctrl: 예전 그대로(엔진 ATTACK 모션 + 표 행) · 로그 `-> restored (SWORD_1H)` 등.
 4. 걷어낸 뒤 alert · stand1 복귀가 그대로인지(ATTACK_WAIT · IDLE 매핑은 안 건드림).
 5. 다른 유저 화면에서도 같은지(`StateToAvatarBodyActionSheet` @Sync).
+
+## 2026-10-05 (로컬 · push 전) — 좌우 그림 갱신 유지 · 화살 높이 · 바로 앞/뒤 대상(F13 · F12)
+
+**사용자 Play 결과(3225adb)**: ① 활 쏘기 모션 자체는 맞다(진짜 `shoot1`). ② **F13** — 몇 번 쏘고 돌아서다 보면 캐릭터가 **반대쪽으로 그려진다**(스크린샷: 왼쪽을 보는데 오른쪽으로 그려짐). 프로브: 클라 · 서버 `PlayerControllerComponent.LookDirectionX` 는 둘 다 맞고 서로 같았다(07:17:30 둘 다 −1 · 07:18:19–07:18:36 모든 방향 전환이 0.05s 안에 양쪽 도착 · Ctrl 마다 화살 dir = 그 방향) → 화면에선 뒤로 쏘는 것처럼 보였다. ③ 그 상태에서 화살이 너무 높이서 나간다. ④ **F12** — 기본 공격 투사체가 대상이 더 가까워도 늘 앞 0.5 에서 생기고, 탐색이 살짝 **뒤**(0.07~0.11 뒤)의 달팽이를 고르기도 했다.
+
+**F13 고침(`PlayerAttack.mlua` · 표 모션만 나오는 것은 그대로)**:
+- 원인 판단: 바뀐 것은 ATTACK 매핑을 걷어낸 것 하나다. 상태 → 몸동작 경로(StateChangeEvent → `AvatarStateAnimationComponent` 매핑 → `BodyActionStateChangeEvent` → body 의 `AvatarBodyActionSelectorComponent`)가 매핑 없는 ATTACK 에서는 아무것도 내지 않고, 우리 표 모션(`ActionStateChangedEvent` · Onetime)에는 방향 필드가 없어 몸이 직전 그림의 좌우를 그대로 쓴다.
+- 고침: 클라 `OnUpdate` 가 "마지막으로 그려진 방향"(`FacingDrawn`)을 들고, **매핑을 걷어낸 ATTACK / ATTACK_WAIT** 중에 `LookDirectionX` 부호가 그것과 달라지면 끊긴 입구 그대로 `BodyActionStateChangeEvent(Alert · needResetAction = true)` 를 아바타 루트에 보낸다(`RefreshBodyFacing`). Alert = 엔진이 ATTACK 다음에 보여 주는 자세(프로브 +0.58s alert) — Attack 을 넣으면 엔진이 무기로 풀어 다시 휘두른다(원래 버그).
+- 돌지 않고 쏘면 아무것도 안 보낸다 = `shoot1` / `swingO3` 그대로(① 유지). 쏘는 중에 돌면 남은 쏘기 자세가 alert 로 바뀐다(화살 방향은 쏘는 순간 `LookDirectionX`).
+- 검 · 완드 · 맨손(ATTACK 매핑 있음)은 `FacingDrawn` 만 따라가고 아무것도 보내지 않는다 = 예전과 같다. `PlayerMotion.mlua`(A) 는 건드리지 않았다.
+- 로그: 서버 `[PlayerAttack] table motion sent (ATTACK sheet off · BOW) facing=-1 (<uid>)` · 클라 `[PlayerAttack] facing refresh (ATTACK sheet off · state=ATTACK) LookDirectionX 1 -> -1 · BodyActionStateChangeEvent Alert reset -> root (local · <uid>)`.
+
+**화살 · 표창 높이(`PlayerAttack.BuildRangedBasic`)**:
+
+| 무기 | 예전 offsetY | 지금 | 근거 |
+|---|---|---|---|
+| BOW | 0.5 | **0.28** | 더블 샷과 같은 손 높이 = #102 `b/skill-archer-effects` `effectOverrides.SK_A11.spawn.offsetY 0.28`(영상 2009 lv.25 19.333s 실측). 예전 0.5 = SkillInfo.csv SK_A11 SpawnOffsetY(#102 이 덮기 전) |
+| CLAW | 0.4 | **0.26** | 럭키 세븐과 같은 손 높이 = `effectOverrides.SK_T11.spawn.offsetY 0.26`(같은 bullet 그림 · 영상 실측) |
+
+앞(offsetX)은 둘 다 0.5 그대로.
+
+**F12 고침(`SkillAttack.FireBasicProjectile` 안만 · #163 `SpawnProjectile` 과 같은 규칙 · 충돌 피하려고 그 함수는 안 건드림)**: 조준 대상이 뒤(ahead < 0)면 대상을 버리고 바라보는 방향으로 곧게 · 보통 앞 거리 / 0 <= ahead < ox 면 스폰을 대상 자리까지 당긴다(ox = ahead).
+- 로그: `SkillAttack: basic projectile BOW spawn pulled back to the target — <name> is 0.30 ahead (offset 0.5 -> 0.30)` · `SkillAttack: basic projectile BOW target <name> is 0.09 behind — dropped (straight shot · offset 0.5)`.
+
+- 검증(코드만 · Play 없음): LSP `PlayerAttack.mlua` 깨끗 · `SkillAttack.mlua` 에러 0 · 경고 0(info 15 = 예전부터) · `check-integrity` 통과(경고 3 = 예전부터).
+
+### Play 확인 (대기 · 캡처 필요)
+1. 활 · 오른쪽을 보고 Ctrl / 왼쪽을 보고 Ctrl / 쏘다가 돌아선 뒤 Ctrl — 세 장면 다 몸이 `LookDirectionX` 쪽으로 그려지고 `shoot1` 만 나온다. 돌 때 클라 로그 `facing refresh … LookDirectionX a -> b` 가 찍히고 서버 `table motion sent … facing=` 가 화살 dir 과 같다.
+2. 아대도 1번과 같게(`swingO3`).
+3. 화살 높이가 더블 샷 화살과 같은 손 높이(0.28)인지 · 표창이 럭키 세븐(0.26)과 같은지 — 나란히 캡처.
+4. 달팽이 0.3 앞: 화살이 달팽이 너머가 아니라 그 자리에서 생긴다(`spawn pulled back … 0.30 ahead`) · 달팽이 0.3 뒤: 뒤를 맞히지 않고 앞으로 곧게(`… behind — dropped`).
+5. 검 · 완드: 예전과 같다(`facing refresh` · `table motion sent` 줄 없음).
