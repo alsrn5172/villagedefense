@@ -27,9 +27,9 @@ script SkillExecutors extends Logic
     --   캐릭터 모션: 공격 3종은 전부 활 쏘기 shoot1(사용자 요청) · GetMotionSequence 에 궁수 3종(스나이핑 발사 · 닷지 버프 순서 · 폭풍의 화살 발사/복귀) — 발사 시점은 CSV Duration 을 그대로 쓴다.
     --   투사체 조준점: SkillProjectile.AimPointOf = 대상 HitComponent 콜라이더 중심(제보 "더블 샷 화살이 대상 조금 위로 지나간다") · 명중 이펙트도 같은 점.
     -- b/skill-thief-motion (2026-09-13 · 사용자의 도적 표 이미지 재대조 · CSV 값 변경 0):
-    --   캐릭터 모션(아대 CLAW 행): 럭키 세븐 = 표창 던지기 swingT3 · 다크 사이트/쉐도우 파트너 = 비공격 버프 순서(heal 왕복 → alert → stand1) · 메소 익스플로전 = alert → CSV Duration 에 swingT3 → stand1.
+    --   캐릭터 모션(아대 CLAW 행): 럭키 세븐 = 표창 던지기 swingT3(→ b/skill-thief-effects 5차 swingO3) · 다크 사이트/쉐도우 파트너 = 비공격 버프 순서(heal 왕복 → alert → stand1) · 메소 익스플로전 = alert → CSV Duration 에 swingT3 → stand1.
     --   분신 따라하기(원작 쉐도우 파트너 = 분신이 시전자의 공격을 그대로 따라 한다): 쉐도우 파트너가 켜져 있으면 PlayMotion 이 재생한 동작을 분신이 시전자 뒤에서 한 번 따라 하고
-    --   (effectOverrides.SK_T22.mimic 의 팩 special/<action> 클립 · PlayShadowMimic) 서 있기 루프로 돌아온다. 피해 2배는 그대로 SkillBuffs.GetOutgoingDamageMul 한 줄.
+    --   (effectOverrides.SK_T22.mimic 의 팩 special/<action> 클립 · PlayShadowMimic) 서 있기 루프로 돌아온다. 분신 몫 피해(+50~70% · #40 5884390073 4번)는 그대로 SkillBuffs.GetOutgoingDamageMul 한 줄.
     -- b/skill-pirate-motion (2026-09-13 · 사용자의 해적 표 이미지 재대조 · CSV 값 변경 0 · SK_P11 IconRUID/#Note 만):
     --   캐릭터 모션(너클 KNUCKLE 행): 섬머솔트 킥 = swingPF(뛰어오르는 피니시) · 슈퍼 트랜스폼 변신/에너지 쉴드 = 비공격 버프 순서(heal 왕복 → alert → stand1) ·
     --   변신 중 재시전(주먹) = swingP2 훅(순서 없음 · Execute 가 IsRecastCast 로 `_RECAST` 순서 id 를 쓴다) · 함포 사격 = alert → 폭격 파마다 잽/훅(BarrageInterval 간격) → 마지막 파 swingPF → stand1.
@@ -162,10 +162,36 @@ script SkillExecutors extends Logic
 
     property integer LineHitEffects = 4
 
-    -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초) · 표시 타수 상한(피해 배율은 동전 개수 그대로).
+    -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초).
     property number MesoExplodeInterval = 0.06
 
-    property integer MesoDisplayHitsMax = 15
+    -- 동전 하나의 폭발 반지름(world unit · B 기본값 · #40 5884390073 5번 "동전마다 그 자리에서 터져 그 주변 적만 때린다 · 반경은 B 기본값"):
+    --   1.0 u = 100 px. 픽파켓 동전은 맞은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다(MesoCoin.ArcSpread) → 1.0 이면 동전을 떨군 몬스터가
+    --   조금 움직여도 맞고, 옆 몬스터(≈1 u 떨어짐)는 가장자리만 걸친다. 모인 동전은 같은 적을 여러 번 때린다(동전 하나 = 50% 1타).
+    property number MesoCoinBlastRadius = 1.0
+
+    -- true = 착지한 동전(MesoCoin.landed · #125)만 센다. false(기본) = 날아가는 중인 동전도 센다 — 폭발 위치는 터지는 순간의 동전 자리라
+    --   (포물선 0.45s < 컷신 뒤 폭발) 날던 동전도 바닥에서 터진다. A 가이드 5906002741 "엄격히는 mc.landed · B 판단".
+    property boolean MesoLandedOnly = false
+
+    -- 메소 익스플로전 "주변 메소" 의 출처(b/skill-thief-effects):
+    --   MesoUseFloorCoins   true = 반경 안 바닥 동전(시전자가 주울 수 있는 것)을 센다 — 기획 답 2026-09-24 6번 "바닥에 떨어진 메소를 소모".
+    --   MesoPickpocketCoinsOnly  true = 픽파켓 동전만(SkillBuffs.PickpocketCoinName · 사냥 드랍 "Meso" 는 세지도 터뜨리지도 않는다) — #40 5884390073 5번에 맞춰 변경.
+    --                       예전 false(2026-09-27 표 답변 6 · 바닥 동전 전부)는 사냥 드랍 동전(처치 메소 몫)까지 터뜨렸다.
+    --   MesoSummonCount     시전 순간 반경 안에 "소환" 해서 같이 터뜨리는 동전 수(연출용 · 줍지 못함 · 재화 아님). 0 = 소환 없음 — 기획 답 6번 "소환은 연출" · 원작에 메소를 스스로 만드는 판 없음.
+    --                       1 이상이면 바닥 동전이 0 개여도 시전된다(PreCheck).
+    --   MesoMaxCoins        한 번에 세는 동전 상한(바닥 + 소환). 0 = 상한 없음 — 기획 답 6번 "상한은 없습니다"(원작 최신 15 · 고전 20). 넘치는 바닥 동전은 남는다.
+    -- 반경 = CSV Range(6 · 원작 최신 range 640 px ≈ 6.4).
+    property boolean MesoUseFloorCoins = true
+
+    property boolean MesoPickpocketCoinsOnly = true
+
+    property integer MesoSummonCount = 0
+
+    property integer MesoMaxCoins = 0
+
+    -- 소환 동전 연출(MesoSummonCount > 0 일 때만): 원작 메소 포스 아톰(빛나는 동전 · effect/charactereff.img/forceAtom/12/atom/2 · 4프레임 40×40 · pivot 가운데).
+    property string MesoSummonCoinRuid = "f2f02260507a45c493d831eeca270e95"
 
     -- 메소 동전 모델(A 의 Farm/MesoCoin · FarmReward.DropCoins 의 CoinModelId 와 같은 EntryKey).
     property string MesoCoinModelId = "mesocoin"
@@ -665,20 +691,55 @@ script SkillExecutors extends Logic
                 --   delay 0.2(2026-09-13 제보 "표창이 다 나간 뒤 이펙트가 뜬다"): effect 0프레임 = 4×4 빈 프레임이라 초승달은 1프레임부터 보인다 → 표창을 초승달이 뜨는 시점에 맞춰 늦게 쏜다(소리·연출·던지기 모션은 시전 순간 그대로 ·
                 --   볼리 2발째는 그 +0.12). 실제 프레임 딜레이는 오프라인에서 못 읽어(썸네일 GIF 는 150ms 로 정규화) 0.2 부터 — 늦으면 0.15 · 이르면 0.25 로 한 칸.
                 --   scale 1.3 = 사용자 요청 "표창을 조금 더 크게"(28×28 스프라이트 · 판정 상자는 그대로).
-                cast = { ruid = "0ae88fa494e743158da6ddb81c0c55f2" },
-                impact = { ruid = "458e72f0720a4584a9a7fc3642b6e601" },
-                ball = { ruid = "5d2441df6e6f4446beb45b301cdba0f2" },
-                spawn = { offsetX = 1.02, offsetY = 0.09, delay = 0.2, scale = 1.3 },
+                -- b/skill-thief-effects (2026-09-27 · 사용자 영상 "럭키세븐의 변화" + 라이브러리 재검색 · 원장 Skill look rule):
+                --   라이브(2022 리마스터 · 보라 7표창) 그림은 라이브러리에 없다 → 라이브러리에 있는 가장 새 원작 = 같은 팩의 CharLevel/25 판(영상 "캐릭터 Lv.25" 구간과 같은 그림).
+                --   cast = CharLevel/25/effect(7프레임 · 116×88 · 분홍 초승달) · impact = CharLevel/25/hit/0(76×72 · 흰 분홍 별 폭발) · ball = 수비 표창 아이템의 bullet 클립(20×20 · 2프레임 회전 ·
+                --   날아가는 모습 원본 · 예전 5d2441df… = 인벤토리 아이콘 28×28 · pivot 이 그림 밖). 예전 cast 0ae88fa4… / hit 458e72f0… = 같은 팩 기본(CharLevel 이전) 그림.
+                --   startFrame 1: WZ(참고 데이터) CharLevel/25/effect 0프레임 = 1×1 빈 프레임 360ms → 건너뛰어 키 입력 순간 초승달(영상 t0 = 초승달 첫 프레임).
+                --   spawn(영상 Lv.25 구간 19.2–19.9s · 60fps · 160 video px = 1 unit 실측): 1발 t0+0.15s 에 캐릭터 앞 ≈1.0 · 발 위 0.26 에서 처음 보임 → 엔티티(= 표창 그림 중심 · bullet pivot 가운데)
+                --   앞 0.95(몸 중심이 원점보다 0.05 앞) · 위 0.26 · delay 0.15 · 2발 = +0.117s(VolleyInterval 0.12 그대로) · 2발이 ≈0.09 아래(volleyGapY) · 속도 ≈6 u/s(CSV Speed) ·
+                --   scale 1.0 = 영상 표창 ≈18 px(빛 포함) ≈ bullet 20 px. ⚠ 예전 1.3 은 2026-09-13 사용자 요청("조금 더 크게" · 아이콘 28px 기준) — 영상 기준으로 되돌렸다(Play 확인 필요).
+                cast = { ruid = "77d56fb65a3f4d7fbc4915ed8a5290a2", startFrame = 1 },
+                impact = { ruid = "7368bd9bbc74484285ef2b832fbd89e9" },
+                ball = { ruid = "551dec3dbf5e4a9f8eae6c9933f41bf2" },
+                -- singleTarget · perProjectileHit(b/skill-thief-effects · #40 5884390073 7번 "럭키 세븐 = 1 대상" · 5884388966 (a) 몬스터 피격 무적 제거 → "투사체마다 1타"):
+                --   표창 하나가 상자 안 몬스터 **하나만**(조준 대상 우선 · 없으면 가장 가까운 것) 때리고, 2발째도 진짜 투사체(피해 1타 · 명중 폭발 · 픽파켓 동전)다.
+                --   예전 = 첫 표창이 ×2 피해 · 표시 2타를 지고 2발째는 연출만(VisualOnly · 명중해도 안 사라지고 폭발도 없었다). SkillAttack.SpawnProjectile 이 읽는다.
+                spawn = { offsetX = 0.95, offsetY = 0.26, delay = 0.15, scale = 1.0, volleyGapY = -0.09, singleTarget = true, perProjectileHit = true },
+                -- arc(b/skill-thief-effects 5차 · 2026-09-27 · 사용자 영상 "럭키세븐의 변화" Lv.25 구간 · 미리보기 v2 승인): 던지는 팔의 파란 호 = 원작 표창 afterImage(swordOL) swingO3 한 프레임
+                --   (80003330 swordOL/swingO3 a49c9904… 를 색상만 +225° = 영상 hue 246° · 112×60 · pivot = 그림 뒤 끝(0.991071, 0.033333) · 그림은 왼쪽을 본다). 던지기 모션도 swingO3(WeaponMotion MOTION_SK_T11_CLAW).
+                --   sprite 라 EffectService 로 못 튼다 → PlaySpriteFlashXY(가로·세로 배율 · FireProjectile). 자리 = 원점(서 있을 때 발 중심) 기준 · 바라보는 쪽 + · 바라보는 쪽으로 뒤집음.
+                --   offsetX −0.22 = 앞끝이 원점 앞 0.83 u(영상 0.78~0.83) · scaleY 0.62 + offsetY 0.14 = 호의 세로 범위 발 위 0.16~0.45 u(영상과 같음) · alpha 0.9 · 시전 +0.10s 에 0.25s 동안.
+                --   scaleX(가로 배율)를 바꿔도 앞끝은 그대로: frontTip = 배율 1 에서 pivot → 앞끝 거리(1.05 u) · FireProjectile 이 pivot 을 frontTip × (1 − scaleX) 만큼 앞으로 옮긴다 → 꼬리만 짧아진다
+                --   (0.8 → 실제 offsetX −0.01 · 0.7 → +0.095). 1.0 은 꼬리가 머리 뒤까지 갔다(영상 호는 얼굴 근처에서 끝난다).
+                --   scaleX 1.0 → 0.7(2026-09-28 · 월드 T 실측: 0.7 에서 호 뒤끝 = 원점 앞 0.195 u · 영상 0.20 u · 앞끝은 그대로 0.83 u).
+                arc = { sprite = "c81dcd53d6244d5eacc38682858c31bd", scaleX = 0.7, scaleY = 0.62, offsetX = -0.22, offsetY = 0.14, frontTip = 1.05, alpha = 0.9, showAt = 0.10, seconds = 0.25 },
             },
             SK_T21 = {   -- 다크 사이트 — skill/1400.img/skill/14001003 다크 사이트(나이트워커 · 400.img 은 색인에 없음): effect 4프레임(61×39 · 은신 연기). 은신 자체는 SkillBuffs 가 알파로.
-                cast = { ruid = "abdf05be0b3e4146a6271c4ee1f3b1b1" },
+                -- b/skill-thief-effects: 라이브러리 태그 API = 이 클립은 모험가 원작 skill/400.img/skill/4001003/effect 그 자체(흰 연기 · 고전 판 · 영상 "초기 2003" 과 같은 그림).
+                --   영상 리마스터 2022(보라·검은 연기가 몸 전체를 덮음)는 라이브러리에 없다. 영상 기준 크기(연기 ≈0.85 × 0.9 unit · 캐릭터 위에 그림 · t0 ~ +0.57s)에 맞춰 scale 1.5
+                --   (0프레임 ≈40×56 px → 60×84). 은신 알파·전환은 SkillBuffs.DarkSightAlpha / FadeAvatarAlpha.
+                cast = { ruid = "abdf05be0b3e4146a6271c4ee1f3b1b1", scale = 1.5 },
             },
-            SK_T22 = {   -- 쉐도우 파트너 — skill/411.img/skill/4111002 쉐도우 파트너: effect 16프레임(132×136 · 시전) · loop = special/stand1(52×68 · 분신 서 있기) 을 시전자 뒤(offsetX -0.45)에 반복
+            SK_T22 = {   -- 쉐도우 파트너 — skill/411.img/skill/4111002 쉐도우 파트너(나이트로드 계열 · 리마스터 전 KMS ≤359): effect 16프레임(룬 원반 → 검은 가시) + effect0 11프레임(검은 먹 리본) · loop = special/stand1(52×68 · 분신 서 있기) 을 시전자 뒤(offsetX -0.33)에 반복
                 -- mimic(b/skill-thief-motion · 2026-09-13): 같은 팩의 special/<action> 클립(분신이 그 동작을 하는 3프레임 실루엣 · 전부 52~70px · pivot 은 stand1 과 같은 발) — PlayMotion 이 재생한
                 --   WeaponMotion CoreAction 이름으로 찾아 분신이 한 번 따라 한다(PlayShadowMimic). 없는 이름(stand1 = 루프 자체)은 따라 하지 않는다. 팩 목록엔 create2~4·walk·jump 등도 있다.
-                cast = { ruid = "8ef08d990aeb452bad114479f6bc76fd", noFlip = true },
+                -- b/skill-thief-effects 2차(2026-09-27 · 사용자 결정 "옵션 A" · 원작 메이플 = 연출 기준 · 사용자 참고 영상 "쉐도우 파트너의 변화" 의 "초기 2004" 구간과 같은 그림):
+                --   1차의 cast 01615030…(skill/421.img/skill/4211008 effect)는 "2022 리마스터" 가 아니라 **리마스터 전(KMS 359 = 9프레임 · noFlip 없음)** 섀도어판이었고,
+                --   appear 6f05153b…(4211008 special/summoned)는 라이브(KMS 360+)에만 있는 그림이라 한 스킬에 두 시대가 섞였다(maplestory.io WZ 대조 · 참고용).
+                --   라이브 2022 그림(붉은 빛기둥 → 바닥 문양 → 불꽃 → 붉은 테 분신)은 4111002 effect 16프레임이고 4211008 도 그것을 _outlink 로 쓴다 — 라이브러리에 없다.
+                --   → 리마스터 전 나이트로드판 한 벌(원작 두 층을 같은 순간에):
+                --   cast   = effect  8ef08d99…(룬 원반 → 검은 가시 · 16프레임 85~120ms · 원반 중심 = 발 기준 −0.04 / +0.32 unit = 캐릭터 가운데). WZ 359 에 noFlip 없음 → 바라보는 쪽으로 뒤집는다.
+                --   appear = effect0 6db426f9…(검은 먹 리본이 위·뒤로 돌며 오른다 = 영상의 "용처럼 도는" 연출 · 11프레임 × 85ms · WZ z −1 = 캐릭터 뒤) — 시전 순간 (0, 0) 에 붙이고
+                --            바라보는 쪽으로 뒤집고, 층은 플레이어 뒤(sortBehind → ApplyShadowSorting). offsetX 0 을 적어야 loop.offsetX(분신 자리)로 가지 않는다.
+                --   loop.delay 1.4 = 영상 "초기 2004" 구간(1.0s 시전 → 2.4s 분신이 서 있음 · 소환 폭발 없음). 그동안 분신·따라하기는 숨긴다(HideShadowFor 재사용).
+                --   ⚠ 연출만 바꿨다 — 버프(분신 몫 +50~70%)는 예전대로 시전 순간부터 걸린다(SkillBuffs · 시전 락 0.6s 뒤 공격하면 분신이 보이기 전에도 붙는다).
+                --   loop offsetX −0.33 = 영상 실측 분신 중심이 몸 중심보다 ≈80 video px(≈0.38 unit · 2004·2022 두 구간 같음) 뒤 − 우리 몸 중심이 원점보다 0.05 앞. 예전 −0.45.
+                --   분신 몸(special/stand1 f4aba8c3…)은 그대로. 투명도는 그림에 들어 있다.
+                cast = { ruid = "8ef08d990aeb452bad114479f6bc76fd" },
+                appear = { ruid = "6db426f91ed54b83beddb7837d96fb4c", offsetX = 0, sortBehind = true },
                 -- behindPlayer: 루프·따라하기 클립을 플레이어 뒤 층에 그리고(ApplyShadowSorting · Default / 플레이어 순서값 − 1), 방향을 바꾸면 등 뒤로 다시 건다(EnsureShadowFacingPoll).
-                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.45, behindPlayer = true },
+                loop = { ruid = "f4aba8c33f204125a231595006d84b4a", offsetX = -0.33, behindPlayer = true, delay = 1.4 },
                 mimic = {
                     swingT3 = "15a76a6ee450459a97fe44e3ad9283d0",   -- 표창 던지기(럭키 세븐 · 메소 익스플로전 폭발)
                     swingO3 = "fc164d4b226e4a22bab992992cdfdd4c",   -- 아대 기본 행(A 후보값)이 쓰이는 경우
@@ -814,7 +875,7 @@ script SkillExecutors extends Logic
             SK_T11 = "879c81c8fc274aea87dc673de48ab5d1",   -- 럭키 세븐 Use
             SK_T21 = "be18b6cf4ef54178b6bd2bde33bddd27",   -- 다크 사이트 Use
             SK_T22 = "6c7c28167b9049419435cc53001cef0c",   -- 쉐도우 파트너 Use
-            SK_T31 = "0fb09c17cade4f41895807a3154c6813",   -- 일도양단 (오디오 검색 1순위 · 2026-09-13 컷신 추가와 함께 · 예전 값 acb0f702… = 메소 익스플로젼 Hit)
+            SK_T31 = "2205468d99934b83ac1632cab8c954ef",   -- 쉐도우 메소 4111004/Use (사용자 Play 선택 2026-10-03 · 예전 값 0fb09c17… = 일도양단 · 그전 acb0f702… = 메소 익스플로젼 Hit)
             SK_P11 = "85398b7f1a5340469034ff1f67e6b412",   -- 써머솔트 킥 강화 400004134 Use (2026-09-13 · 예전 값 6010e41f… = 스트라이커 15001002 Use)
             SK_P21 = "6829607402014177967d41324a0b78ea",   -- 에너지 차지 진입(1단). 세 티어가 같이 쓴다 — ENERGY/ULTRA 팩엔 자체 오디오가 없다
             SK_P22 = "5d388814166742adabb883cb8ff1b96b",   -- 이뮨 배리어 101120109 Pre (2026-09-13 · 예전 값 668564fe… = 미하일 51111004 Use)
@@ -829,6 +890,8 @@ script SkillExecutors extends Logic
             SK_A11 = { hit = "956ddfb53d7845ce972acab3e51b05e1" },     -- 더블 샷 Hit
             SK_A21 = { hit = "81a8c21eaf31429aa21ccaa63afc1b35" },     -- 스나이핑 3221007 Hit (2026-09-13)
             SK_T11 = { hit = "48c2f4049db54b3b88b9144320d3d41a" },     -- 럭키 세븐 Hit
+            -- 메소 익스플로전 명중 사운드(사용자 Play 선택 2026-10-03): 동전마다가 아니라 시전 한 번에 한 번(ExecuteMesoOrigin 이 중심 폭발 시점에 직접 튼다 · 동전 수만큼 겹치지 않게).
+            SK_T31 = { hit = "04edcf3c77b049bc9bfa1fa0f541b063" },     -- 메소 익스플로젼 4210014/Hit
             SK_P11 = { hit = "1b54e03352ae4430ae39be54d2ee88f4" },     -- 써머솔트 킥 강화 400004134 Hit (2026-09-13 · 예전 값 8e7b0c6f… = 스트라이커 Hit)
             SK_P21 = { punch = "1b6eedf4e6d14684abd96a444dfa59a7", hit = "6e58d1e3abc44a1ba059842159b7c035" },   -- 2단 주먹 시전 / 명중 (피스트 인레이지 · 티어 공용)
             SK_P22 = { finish = "26311ed71f6b47ec9e45f614aeaf1eeb" },  -- 이뮨 배리어 End (보호막이 터질 때 · StopBuffLoop 의 loopEnd 와 같이)
@@ -1040,7 +1103,7 @@ script SkillExecutors extends Logic
         --   폭풍의 화살 SK_A31 = 시전 행 shoot1 0.5배속(컷신 아래 충전) → `_2` CSV Duration(1.5 = ExecuteLineOrigin 피해) shoot1 1.5배속 → `_END` 5.5(컷신 133프레임 ≈ 7s 면 컷신 아래 · 미실측).
         --   포커스 SK_A12 는 패시브(시전 없음) → 행 없음. 같은 액션 재전송(shoot1→shoot1)이 재시작되는지는 🟡 Play 확인 — 안 돼도 시전 행의 느린 당기기가 발사 시점 근처에 발사 프레임에 닿게 배속을 잡았다.
         -- 도적 (b/skill-thief-motion · 2026-09-13 사용자의 도적 표 이미지 · 아대 CLAW 행 · 검을 든 도적·맨손 도적도 ResolveMotionRow ② 로 CLAW 행):
-        --   럭키 세븐 SK_T11        = 시전 행 swingT3 1.2배속 한 동작(원작 = 던지기 한 번에 표창 2개 · 팩 special/swingT3 실루엣 = 팔을 앞으로 뻗는 던지기) · 순서 없음.
+        --   럭키 세븐 SK_T11        = 시전 행 swingO3 1.2배속 한 동작(원작 = 던지기 한 번에 표창 2개 · b/skill-thief-effects 5차에서 swingT3 → swingO3 = 원작 표창 잔상 swingO3 모양 · 팔 잔상 arc) · 순서 없음.
         --   다크 사이트 SK_T21      = 비공격 버프 순서(하이퍼 바디와 같은 1.0 / 1.6 · 시전 락 0.5) — 원작은 몸 동작 없이 반투명만이라 "사용이 보이는 동작" 요청으로 넣었다.
         --   쉐도우 파트너 SK_T22    = 같은 순서(1.0 / 1.6 · 시전 락 0.6). 분신은 ExecuteBuff 뒤에 뜨므로 시전 행(heal)은 따라 하지 않고 `_2` alert 부터 따라 한다(PlayShadowMimic).
         --   메소 익스플로전 SK_T31  = 시전 행 alert(컷신 아래 자세) → `_2` CSV Duration(1.6 = ExecuteMesoOrigin 피해·중심 폭발) swingT3 1.5배속(공격 동작) → `_END` 5.5(일도양단 85프레임 ≈ 4.6s 추정 뒤 서 있기).
@@ -1135,9 +1198,13 @@ script SkillExecutors extends Logic
             if not isvalid(casterEntity.PlayerComponent) then return { ok = false, reason = "no PlayerComponent" } end
             local radius = skill.range
             if radius <= 0 then radius = 3 end
-            local coins = self:FindMesoCoins(casterEntity, radius, casterEntity.PlayerComponent.UserId)
-            if #coins == 0 then
-                return { ok = false, reason = "no meso nearby (r=" .. tostring(radius) .. ")" }
+            -- b/skill-thief-effects: 소환 동전이 있으면(MesoSummonCount > 0) 바닥 동전 없이도 된다. 바닥 동전을 안 세면(MesoUseFloorCoins false) 소환만.
+            if self.MesoSummonCount <= 0 then
+                local coins = {}
+                if self.MesoUseFloorCoins then coins = self:FindMesoCoins(casterEntity, radius, casterEntity.PlayerComponent.UserId) end
+                if #coins == 0 then
+                    return { ok = false, reason = "no meso nearby (r=" .. tostring(radius) .. ")" }
+                end
             end
         end
         return { ok = true, reason = "ok" }
@@ -1644,6 +1711,27 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void PlayAppearEffect(string skillId, Entity casterEntity)
+        -- effectOverrides[skillId].appear(b/skill-thief-effects): 시전 순간 한 번 붙여 재생하는 두 번째 층. 쉐도우 파트너 2차 = 4111002 effect0(검은 먹 리본 · (0, 0) · 플레이어 뒤 층).
+        -- 자리 = appear.offsetX(없으면 loop.offsetX · 바라보는 쪽 + · 음수 = 등 뒤). 1차의 4211008 special/summoned(라이브 시대 그림)는 2차에서 뺐다.
+        local entry = self.effectOverrides[skillId]
+        if entry == nil or entry.appear == nil or entry.appear.ruid == nil then return end
+        if not isvalid(casterEntity) then return end
+        local spec = entry.appear
+        local ox = spec.offsetX
+        if ox == nil and entry.loop ~= nil then ox = entry.loop.offsetX end
+        if ox == nil then ox = 0 end
+        local facing = self:GetFacingX(casterEntity)
+        local s = spec.scale or 1
+        local opt = {}
+        opt["FlipX"] = (facing > 0) and not spec.noFlip
+        -- sortBehind(2차 · 쉐도우 파트너 effect0 = WZ z −1): 플레이어 뒤 층에 그린다 — 분신 루프와 같은 ApplyShadowSorting(층만 · 바라보기 추적 없음).
+        if spec.sortBehind then self:ApplyShadowSorting(opt, casterEntity) end
+        _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(ox * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+        log("SkillExecutors: appear effect " .. skillId .. " at offsetX=" .. tostring(ox * facing) .. " facing=" .. tostring(facing) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]))
+    end
+
+    @ExecSpace("ServerOnly")
     method void PlayMobEffect(string skillId, Entity mob)
         -- effectOverrides[skillId].mob 가 있으면(노블 디맨드 "mob" 클립) 대상 몬스터에 한 번 붙여 재생한다.
         local entry = self.effectOverrides[skillId]
@@ -1722,6 +1810,17 @@ script SkillExecutors extends Logic
         if withCastBeat then
             self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
             self:PlayCastSound(skillId, casterEntity)
+            -- 팔 잔상(effectOverrides[skillId].arc · 럭키 세븐 파란 호): 시전 이펙트(분홍 초승달)와 같은 순간에 숨긴 채 걸어 두고 arc.showAt 에 드러낸다(PlaySpriteFlashXY). arc 가 없으면 아무것도 안 한다.
+            --   예전 #115 전용 PlayArmArc(화면 밖 스폰 우회)는 main 의 PlaySpriteFlash(모델 기본 sprite "" · 숨긴 채 스폰)로 바꿨다(#40 5874867817 ②).
+            --   앞끝 고정: 그림 pivot 이 뒤 끝이라 가로 배율을 줄이면 앞끝이 뒤로 당겨진다 → 줄어든 길이 frontTip × (1 − scaleX) 만큼 pivot 을 앞으로(바라보는 쪽 +).
+            local fxEntry = self.effectOverrides[skillId]
+            if fxEntry ~= nil and fxEntry.arc ~= nil and fxEntry.arc.sprite ~= nil and fxEntry.arc.sprite ~= "" then
+                local arc = fxEntry.arc
+                local sx = arc.scaleX or 1
+                if sx <= 0 then sx = 1 end
+                local ox = (arc.offsetX or 0) + (arc.frontTip or 0) * (1 - sx)
+                self:PlaySpriteFlashXY(arc.sprite, casterEntity, ox, arc.offsetY or 0, sx, arc.scaleY or 1, arc.showAt or 0, arc.seconds or 0.25, skillId .. "_arc", -1, arc.alpha or 1)
+            end
         end
 
         local skillAttack = casterEntity:GetComponent("script.SkillAttack")
@@ -1964,8 +2063,18 @@ script SkillExecutors extends Logic
         _SkillBuffs:ApplyBuff(uid, skillId, skillData.buffTag, level, duration)
         -- Duration 0(에너지 쉴드 = 깨질 때까지)은 SkillBuffs 가 NoExpireSeconds 로 넣는다 — 루프도 같은 길이(조기 종료는 StopBuffLoop).
         if duration <= 0 then duration = _SkillBuffs.NoExpireSeconds end
+        -- b/skill-thief-effects: appear(두 번째 시전 층 · 쉐도우 파트너 2차 = 4111002 effect0 먹 리본)는 시전 순간 한 번.
+        self:PlayAppearEffect(skillId, casterEntity)
+        -- loop.delay(쉐도우 파트너 1.4s · 영상 "초기 2004" 실측 "시전 연출이 끝난 뒤 분신이 선다"): 그동안 분신 루프·따라하기를 숨겨 두고(HideShadowFor 재사용 · 컷신 숨김과 같은 경로)
+        -- 끝나면 남은 버프 시간만큼 루프를 건다(ScheduleShadowRestore). 분신 태그에만 쓴다.
+        local loopDelay = 0
+        local loopEntry = self.effectOverrides[skillId]
+        if loopEntry ~= nil and loopEntry.loop ~= nil and loopEntry.loop.delay ~= nil then loopDelay = loopEntry.loop.delay end
         if self.chargeSkills[skillId] then
             self:PlayChargeLoop(skillId, skillData.buffTag, casterEntity, level, duration)
+        elseif loopDelay > 0 and skillData.buffTag == _SkillBuffs.TagShadowPartner then
+            log("SkillExecutors: buff loop " .. skillId .. " " .. skillData.buffTag .. " appears after " .. tostring(loopDelay) .. "s (summon effect first)")
+            self:HideShadowFor(uid, loopDelay)
         else
             self:PlayBuffLoop(skillId, skillData.buffTag, casterEntity, duration)
         end
@@ -2309,11 +2418,16 @@ script SkillExecutors extends Logic
         local comps = map:GetChildComponentsByTypeName("script.MesoCoin", true)
         if comps == nil then return found end
         local r2 = radius * radius
+        -- b/skill-thief-effects: MesoPickpocketCoinsOnly(기본 true · #40 5884390073 5번)면 픽파켓 동전(이름 = SkillBuffs.PickpocketCoinName)만. MesoLandedOnly 면 착지한 동전만. PreCheck · ExecuteMesoOrigin 둘 다 여기서 거른다.
+        local pickName = "PickpocketMeso"
+        if _SkillBuffs ~= nil and _SkillBuffs.PickpocketCoinName ~= "" then pickName = _SkillBuffs.PickpocketCoinName end
         for _, mc in ipairs(comps) do
             local coin = nil
             if isvalid(mc) then coin = mc.Entity end
+            if isvalid(coin) and self.MesoPickpocketCoinsOnly and coin.Name ~= pickName then coin = nil end
             if isvalid(coin) and isvalid(coin.TransformComponent) then
                 local collected = mc.Collected
+                if self.MesoLandedOnly and not mc.landed then collected = true end
                 if not collected then
                     local pickable = true
                     local own = coin:GetComponent("script.DropOwner")
@@ -2334,16 +2448,39 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ExecuteMesoOrigin(string skillId, table skillData, Entity casterEntity, number level)
-        -- 메소 익스플로전(SK_T31 · 추가기획1 도적 궁 "메소를 소환해서 주변 지역을 다 폭발 · 50% × 주변 메소 갯수"):
-        --   반경 Range(6) 안의 메소 동전 N 개(FindMesoCoins · PreCheck 가 N ≥ 1 을 보장)를 MesoExplodeInterval 간격으로 하나씩 터뜨리고(coinHits 순환 · 동전 소멸),
-        --   CSV Duration(0.6) 시점에 반지름 안 몬스터 전부에 atk × BaseEffect 50% × N (DealSkillDamageCircleScaled · 표시 타수는 min(N, MesoDisplayHitsMax)).
+        -- 메소 익스플로전(SK_T31 · 추가기획1 도적 궁 · #40 5884390073 5번 "동전 하나 = 공격 한 번"):
+        --   반경 Range(6) 안의 픽파켓 동전 N 개(FindMesoCoins · PreCheck 가 N ≥ 1 을 보장)를 MesoExplodeInterval 간격으로 하나씩 터뜨린다(coinHits 순환 · 동전 소멸).
+        --   동전마다 **그 자리**(터지는 순간의 동전 위치)에서 반지름 MesoCoinBlastRadius 원 안 몬스터에 atk × BaseEffect 50% 1타(DealSkillDamageCircleScaled · 배율 1 · 표시 1타).
+        --   모인 동전은 같은 적을 여러 번 때린다. 예전 = CSV Duration 시점에 시전자 반경 Range 원 하나로 50% × N.
+        --   마지막 동전은 CSV Duration(컷신 뒤 피해 시점) 0.15s 전에 터진다. 중심 폭발 그림(impact)은 그 시점에 연출로만 남긴다(피해 없음).
         --   동전은 Collected 로 먼저 잠가 자석·줍기가 같은 프레임에 가져가지 않게 한다. 픽파켓으로 떨어뜨린 동전이 재료다(자동획득을 끄면 남는다).
+        --   피해는 시전자의 SkillAttack 으로 낸다 → 처치 귀속 = 시전자(#123 AttackCredit · A 가이드 5906002741 4번 (a)).
         if not isvalid(casterEntity.PlayerComponent) then return end
         local uid = casterEntity.PlayerComponent.UserId
         local radius = skillData.range
         if radius <= 0 then radius = 3 end
-        local coins = self:FindMesoCoins(casterEntity, radius, uid)
-        local n = #coins
+        -- b/skill-thief-effects: 동전 출처 = 바닥 동전(MesoUseFloorCoins · MesoPickpocketCoinsOnly 면 픽파켓 동전만) + 소환 동전(MesoSummonCount · 연출용 점) · 상한 MesoMaxCoins(0 = 없음).
+        --   기본값 = 픽파켓 동전만(#40 5884390073 5번 · 시전자 소유만) · 소환 0 · 상한 없음(기획 답 2026-09-24 6번).
+        local coins = {}
+        if self.MesoUseFloorCoins then coins = self:FindMesoCoins(casterEntity, radius, uid) end
+        local cap = self.MesoMaxCoins
+        if cap > 0 and #coins > cap then
+            local kept = {}
+            for i = 1, cap do table.insert(kept, coins[i]) end
+            coins = kept
+        end
+        local summonPoints = {}
+        local summonN = self.MesoSummonCount
+        if cap > 0 and #coins + summonN > cap then summonN = cap - #coins end
+        if summonN > 0 then
+            local cp0 = casterEntity.TransformComponent.WorldPosition
+            for i = 1, summonN do
+                -- 시전자 발 높이의 좌우로 반경 안에 고르게 흩뿌린다(바닥 동전과 같은 높이 · 층 판정 없이 연출만).
+                local sx = cp0.x + (_UtilLogic:RandomDouble() * 2 - 1) * radius * 0.8
+                table.insert(summonPoints, Vector3(sx, cp0.y, cp0.z))
+            end
+        end
+        local n = #coins + #summonPoints
         local entry = self.effectOverrides[skillId]
         local hits = {}
         if entry ~= nil and entry.coinHits ~= nil then hits = entry.coinHits end
@@ -2352,7 +2489,16 @@ script SkillExecutors extends Logic
         if delay <= 0 then delay = 0.6 end
         local detonateStart = delay - 0.15 - (n - 1) * self.MesoExplodeInterval
         if detonateStart < 0 then detonateStart = 0 end
+        -- 소환 동전: 시전 순간 그 자리에 나타나(MesoSummonCoinRuid · 반복) 자기 폭발 차례에 사라진다.
+        local summonSerials = {}
+        for j, sp in ipairs(summonPoints) do
+            if self.MesoSummonCoinRuid ~= "" then
+                summonSerials[j] = _EffectService:PlayEffect(self.MesoSummonCoinRuid, casterEntity, Vector3(sp.x, sp.y + 0.2, sp.z), 0, Vector3(1, 1, 1), true)
+            end
+        end
+        local order = 0
         for i, coin in ipairs(coins) do
+            order = order + 1
             local mc = coin.MesoCoin
             if isvalid(mc) then mc.Collected = true end
             local cp = coin.TransformComponent.WorldPosition
@@ -2360,29 +2506,69 @@ script SkillExecutors extends Logic
             local ey = cp.y
             local ez = cp.z
             local ruid = nil
-            if #hits > 0 then ruid = hits[((i - 1) % #hits) + 1] end
+            if #hits > 0 then ruid = hits[((order - 1) % #hits) + 1] end
+            local k = order
             _TimerService:SetTimerOnce(function()
+                -- 터지는 순간의 동전 자리(날던 동전은 그사이 앉았다). 동전이 이미 사라졌으면 시전 순간 자리.
+                if isvalid(coin) and isvalid(coin.TransformComponent) then
+                    local now = coin.TransformComponent.WorldPosition
+                    ex = now.x
+                    ey = now.y
+                end
                 if ruid ~= nil and isvalid(casterEntity) then
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(ex, ey + 0.3, ez), 0, Vector3(1, 1, 1), false)
                 end
                 if isvalid(coin) then coin:Destroy() end
-            end, detonateStart + (i - 1) * self.MesoExplodeInterval)
+                self:MesoCoinBlast(skillId, casterEntity, level, ex, ey + 0.3, k, n)
+            end, detonateStart + (order - 1) * self.MesoExplodeInterval)
         end
+        for j, sp in ipairs(summonPoints) do
+            order = order + 1
+            local ruid = nil
+            if #hits > 0 then ruid = hits[((order - 1) % #hits) + 1] end
+            local serial = summonSerials[j]
+            local k = order
+            _TimerService:SetTimerOnce(function()
+                if serial ~= nil and serial ~= 0 then _EffectService:RemoveEffect(serial) end
+                if ruid ~= nil and isvalid(casterEntity) then
+                    _EffectService:PlayEffect(ruid, casterEntity, Vector3(sp.x, sp.y + 0.3, sp.z), 0, Vector3(1, 1, 1), false)
+                end
+                self:MesoCoinBlast(skillId, casterEntity, level, sp.x, sp.y + 0.3, k, n)
+            end, detonateStart + (order - 1) * self.MesoExplodeInterval)
+        end
+        log("SkillExecutors: MESO " .. skillId .. " source floor=" .. tostring(#coins) .. " summoned=" .. tostring(#summonPoints)
+            .. " (useFloor=" .. tostring(self.MesoUseFloorCoins) .. " pickpocketOnly=" .. tostring(self.MesoPickpocketCoinsOnly)
+            .. " summonCount=" .. tostring(self.MesoSummonCount) .. " cap=" .. tostring(cap) .. " landedOnly=" .. tostring(self.MesoLandedOnly) .. ")")
         _TimerService:SetTimerOnce(function()
-            if not isvalid(casterEntity) then return end
-            local skillAttack = casterEntity:GetComponent("script.SkillAttack")
-            if not isvalid(skillAttack) then
-                log_warning("SkillExecutors: no script.SkillAttack on caster, skipping meso damage for " .. skillId)
-                return
-            end
+            if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
             local p = casterEntity.TransformComponent.WorldPosition
             self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(p.x, p.y + 0.5, p.z), nil)
-            local display = n
-            if display > self.MesoDisplayHitsMax then display = self.MesoDisplayHitsMax end
-            skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, n, display)
-            log("SkillExecutors: MESO " .. skillId .. " coins=" .. tostring(n) .. " r=" .. tostring(radius) .. " -> " .. tostring(_SkillDatabase:RatioAt(skillId, level) * n) .. "% (" .. uid .. ")")
+            -- 명중 사운드(extraSounds[skill].hit · 메소 익스플로젼 4210014/Hit): 중심 폭발과 함께 시전 한 번에 한 번.
+            --   동전마다 틀면 N 겹 · 첫 동전 폭발(+1.15s 안팎)은 시전 사운드(2.0s)에 묻혀 안 들렸다(사용자 Play A/B 2026-10-03 → 중심 폭발 시점 선택).
+            local hitSound = self:GetExtraSound(skillId, "hit")
+            if hitSound ~= "" and n > 0 then
+                self:PlaySoundRuid(hitSound, casterEntity, Vector3(p.x, p.y + 0.5, p.z))
+                log("SkillExecutors: MESO " .. skillId .. " hit sound once (" .. hitSound .. ") with the center blast at +" .. tostring(delay) .. "s · " .. tostring(n) .. " coins")
+            end
         end, delay)
-        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins over " .. tostring(n * self.MesoExplodeInterval) .. "s, damage at +" .. tostring(delay) .. "s")
+        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval)
+            .. "s · each blast r=" .. tostring(self.MesoCoinBlastRadius) .. " x " .. tostring(_SkillDatabase:RatioAt(skillId, level)) .. "% · center fx at +" .. tostring(delay) .. "s (" .. uid .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void MesoCoinBlast(string skillId, Entity casterEntity, number level, number x, number y, integer k, integer n)
+        -- 메소 익스플로전 동전 하나의 폭발(#40 5884390073 5번): (x, y) 중심 반지름 MesoCoinBlastRadius 원 안 몬스터에 atk × BaseEffect 1타.
+        -- 시전자의 SkillAttack 으로 때린다(처치 귀속 = 시전자 · #123). 이 타격은 픽파켓 동전을 떨구지 않는다(SkillBuffs.PickpocketExcludedSkillIds = "SK_T31").
+        if not isvalid(casterEntity) then return end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping meso blast for " .. skillId)
+            return
+        end
+        local r = self.MesoCoinBlastRadius
+        if r <= 0 then r = 1 end
+        skillAttack:DealSkillDamageCircleScaled(skillId, level, x, y, r, 1, 1)
+        log("SkillExecutors: MESO blast " .. tostring(k) .. "/" .. tostring(n) .. " at (" .. string.format("%.2f", x) .. ", " .. string.format("%.2f", y) .. ") r=" .. tostring(r))
     end
 
     @ExecSpace("ServerOnly")
@@ -2691,6 +2877,13 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void PlaySpriteFlash(string ruid, Entity casterEntity, number offsetX, number offsetY, number scale, number showAt, number seconds, string tag, integer holdFrame, number alpha)
+        -- 가로·세로 같은 배율(scale)로 PlaySpriteFlashXY. 설명은 그쪽.
+        self:PlaySpriteFlashXY(ruid, casterEntity, offsetX, offsetY, scale, scale, showAt, seconds, tag, holdFrame, alpha)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlaySpriteFlashXY(string ruid, Entity casterEntity, number offsetX, number offsetY, number scaleX, number scaleY, number showAt, number seconds, string tag, integer holdFrame, number alpha)
+        -- b/skill-thief-effects: 가로·세로 배율을 따로 받는다(럭키 세븐 팔 잔상 0.7 × 0.62). 나머지는 예전 PlaySpriteFlash 그대로.
         -- 1프레임 sprite(팩 afterimage/…/swingT1 처럼 animationclip 이 아닌 것)를 시전자 위치에 잠깐 보여 준다.
         -- EffectService 는 sprite RUID 를 못 튼다(2026-09-13 Play: PlayEffectAttached 에 넘기면 아무것도 안 뜸) → B 의 투사체 모델
         -- (model://skillprojectile = SpriteRenderer + script.SkillProjectile · Models/Skills)을 빌려 VisualOnly · Speed 0 · MaxLifetime = showAt + seconds 로 스폰한다.
@@ -2748,11 +2941,15 @@ script SkillExecutors extends Logic
                 sprite.Color = Color(c0.r, c0.g, c0.b, showA)
             end
         end
-        local s = scale or 1
-        if s <= 0 then s = 1 end
-        fx.TransformComponent.Scale = Vector3(s, s, 1)
+        local sx = scaleX or 1
+        if sx <= 0 then sx = 1 end
+        local sy = scaleY or 1
+        if sy <= 0 then sy = 1 end
+        -- 크기 먼저 · SetDirection 나중: ApplyFacing 이 Scale.x 의 부호만 바꾸고 크기는 지킨다.
+        fx.TransformComponent.Scale = Vector3(sx, sy, 1)
         if isvalid(mover) then mover:SetDirection(facing) end
-        log("SkillExecutors: sprite flash " .. tostring(tag) .. " ruid=" .. ruid .. " facing=" .. tostring(facing) .. " scale=" .. tostring(s) .. " hidden until +" .. tostring(delay) .. "s then " .. tostring(seconds) .. "s")
+        log("SkillExecutors: sprite flash " .. tostring(tag) .. " ruid=" .. ruid .. " facing=" .. tostring(facing) .. " scale=" .. tostring(sx) .. "x" .. tostring(sy)
+            .. " offset=(" .. tostring(offsetX * facing) .. ", " .. tostring(offsetY) .. ") hidden until +" .. tostring(delay) .. "s then " .. tostring(seconds) .. "s")
     end
 
     @ExecSpace("ServerOnly")

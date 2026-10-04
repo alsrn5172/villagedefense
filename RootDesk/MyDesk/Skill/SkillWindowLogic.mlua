@@ -136,6 +136,12 @@ script SkillWindowLogic extends Logic
     -- 목록 영역을 벗어날 때 툴팁을 내리는 안전망(행 Exit 가 빠지는 경우 대비). OnEndPlay 에서 끊는다.
     property any listExitHandler = nil
 
+    -- 스킬 id → 주 효과 한 줄 전체(b/skill-thief-effects). 있으면 FormatEffect 가 BuffTag/EffectUnit 문구와 "지속 N초" 대신 이 줄만 쓴다 —
+    -- CSV Duration 이 지속시간이 아니라 피해 시점인 스킬(메소 익스플로전 1.6 = 컷신 뒤 폭발)이 "지속 1.6초" 로 보이던 것을 막는다. "{v}" = 그 레벨의 BaseEffect 값.
+    -- BuildEffectLabels 가 채운다.
+    @HideFromInspector
+    property table SkillEffectLines = {}
+
     -- 툴팁 문구표: BuffTag → 주/부 효과 한 줄. "{v}" 자리에 그 레벨의 값이 들어간다.
     -- 이건 표시 문구일 뿐이고 수치는 전부 SkillInfo.csv 에서 온다 — 새 열도 새 표도 아니다(스키마 변경 없음).
     -- BuildEffectLabels 가 OnBeginPlay 에서 채운다(property 기본값에 내용 있는 테이블을 두지 않는 이 파일의 방식).
@@ -204,6 +210,13 @@ script SkillWindowLogic extends Logic
         -- 추가기획1 표의 "효과" 열을 그대로 읽히게 하는 문구. 태그가 없는 공격 스킬(파워 스트라이크·에너지볼트·
         -- 더블 샷·럭키 세븐·섬머솔트 킥·스나이핑·대마법·폭풍의 화살·메소 익스플로전·함포 사격)은
         -- FormatEffect 가 EffectUnit 기본 문구("데미지 N%")로 떨어진다.
+        -- b/skill-thief-effects (2026-09-27 · 사용자 도적 표 "tooltips exactly from the table"): 메소 익스플로전은 한 줄로.
+        --   "없으면 시전 불가" = 기획 답 2026-09-24 6번(메소 0 개면 시전 안 되고 재화도 안 씀 · SkillExecutors.PreCheck).
+        --   동전마다 폭발 · 픽파켓 메소만 = #40 5884390073 5번에 맞춰 변경(SkillExecutors.MesoPickpocketCoinsOnly = true · ExecuteMesoOrigin 이 동전마다 MesoCoinBlastRadius 원으로 때린다).
+        --   예전 = "데미지 {v}% x 주변 메소 갯수(바닥에 떨어진 메소)" — 한 원에 50% x N.
+        self.SkillEffectLines = {
+            SK_T31 = "주변 픽파켓 메소가 하나씩 터지며 동전마다 주변 몬스터에 데미지 {v}% · 없으면 시전 불가",
+        }
         self.MainEffectLabels = {
             REFLECT_HP_PCT = "반사 데미지 = 최대 HP의 {v}%",            -- 아이언 바디 SK_W12
             HYPER_BODY = "최대 HP +{v}%",                                -- 하이퍼 바디 SK_W21
@@ -212,9 +225,13 @@ script SkillWindowLogic extends Logic
             MAGIC_GUARD = "받는 피해의 {v}%를 MP가 대신 받음",            -- 매직 가드 SK_M22
             DROP_RATE_DREAM_SHARD = "특수 재화 드랍율 +{v}% · 보스 리젠 표시", -- 포커스 SK_A12
             GUARANTEED_CRIT = "{v}초간 확정 크리티컬",                    -- 닷지 SK_A22
-            STACK_GAIN = "1타마다 메소 {v}개 즉시 드랍",                  -- 픽파켓 SK_T12
-            DARK_SIGHT = "{v}초간 은신 · 공격 1회 무조건 회피",           -- 다크 사이트 SK_T21
-            SHADOW_PARTNER = "분신 소환 · 스킬 피해 +{v}%",               -- 쉐도우 파트너 SK_T22
+            -- 도적 3종 문구(b/skill-thief-effects · #40 5884390073 에 맞춰 변경):
+            --   픽파켓 = 타수당 동전 1개 · {v} = 동전 값(1~2 메소 · FormatEffect 가 내림 · SkillBuffs.PickpocketValue) — 1번.
+            --   다크 사이트 = 은신 중 표적 제외 문구(A 예시 5886841184 · _FactionLogic:IsTargetable #120) — 3번.
+            --   쉐도우 파트너 = 분신이 원래 피해의 50~70% 를 더한다(모든 공격 · 기획 답 2026-09-24 7번) — 4번. 예전 "화력 2배".
+            STACK_GAIN = "몬스터를 때릴 때마다(타수당) {v}메소 동전 1개 즉시 드랍 · 기존 드랍에 영향 없음",   -- 픽파켓 SK_T12
+            DARK_SIGHT = "{v}초간 은신 · 공격 1번 무조건 회피 · 회피하면 해제 · 은신 중엔 몬스터 · 포탑이 노리거나 쫓지 않는다(범위 공격 · 보스 패턴은 맞는다)",   -- 다크 사이트 SK_T21
+            SHADOW_PARTNER = "분신 소환 · 분신이 모든 공격 피해의 {v}%를 더함",       -- 쉐도우 파트너 SK_T22
             COST_REDUCE_RECRUIT = "모집·훈련 재화 -{v}%",                 -- 선원 관리 SK_P12
             ENERGY_SHIELD = "보호막 = 최대 HP의 {v}%",                    -- 에너지 쉴드 SK_P22
         }
@@ -1408,6 +1425,16 @@ script SkillWindowLogic extends Logic
         -- EffectUnit 으로 떨어진다. 값 자체는 전부 SkillDatabase.RatioAt/SecondaryAt/DurationAt 에서 온다.
         local ratio = _SkillDatabase:RatioAt(skill.id, level)
         local parts = {}
+
+        -- b/skill-thief-effects: 스킬 전용 한 줄(SkillEffectLines)이 있으면 그것만. 픽파켓은 동전 값이 정수라 내린 값을 보여 준다(서버 드랍과 같은 SkillBuffs.PickpocketValue).
+        local skillLine = self.SkillEffectLines[skill.id]
+        if skillLine ~= nil then
+            local line, lineCount = string.gsub(skillLine, "{v}", self:Num(ratio))
+            return line
+        end
+        if skill.buffTag == "STACK_GAIN" and _SkillBuffs ~= nil and _SkillBuffs.PickpocketRoundDown then
+            ratio = _SkillBuffs:PickpocketValue(ratio)
+        end
 
         local labeled = self:LabelFor(self.MainEffectLabels, skill.buffTag, ratio)
         if labeled ~= "" then
