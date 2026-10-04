@@ -10,14 +10,14 @@
 
 ### 원인
 
-- `OnSkillStateChanged` 의 `"job"` 분기(`SkillWindowLogic.mlua:527-529`)는 **창이 열려 있을 때만** `ShowTab` 으로 행을 다시 만든다. NPC 대화로 전직하면 그 순간 창은 닫혀 있으므로 아무것도 안 한다.
-- 창을 열 때 `Toggle`(`:498`)이 부르는 `RefreshFromState` → `RefreshRowLevels` 는 **지금 있는 행의 레벨·잠김 상태만** 다시 칠한다. 행 목록은 `ShowTab` 만 만들기 때문에 예전 직업 행이 남는다. 탭을 누르면 `ShowTab` 이 돌아서 그제야 바뀐다.
+- `OnSkillStateChanged` 의 `"job"` 분기(`SkillWindowLogic.mlua:529-531`)는 **창이 열려 있을 때만** `ShowTab` 으로 행을 다시 만든다. NPC 대화로 전직하면 그 순간 창은 닫혀 있으므로 아무것도 안 한다.
+- 창을 열 때 `Toggle`(`:500`)이 부르는 `RefreshFromState` → `RefreshRowLevels` 는 **지금 있는 행의 레벨·잠김 상태만** 다시 칠한다. 행 목록은 `ShowTab` 만 만들기 때문에 예전 직업 행이 남는다. 탭을 누르면 `ShowTab` 이 돌아서 그제야 바뀐다.
 
 ### 수정 (`Skill/SkillWindowLogic.mlua`)
 
-- 새 property `builtJobLine` · `builtTier`(`@HideFromInspector` · `:66-71`): 지금 떠 있는 행을 만들 때 읽은 직업·차수.
-- `ShowTab`(`:670-671`): 행을 만들 때 미러(`LocalJobId` · `LocalTier`)를 위 두 값에 적는다.
-- `Toggle`(`:505-514`): 창을 열 때 미러의 직업·차수가 `builtJobLine`/`builtTier` 와 다르면 먼저 `ShowTab(currentTab)` 으로 행을 다시 만들고, 그다음 기존대로 `RefreshFromState`. 다시 만들 때 `SkillWindowLogic: rows built for A/1 -> rebuild for B/2` 로그를 남긴다.
+- 새 property `builtJobLine` · `builtTier`(`@HideFromInspector` · `:78-83` · `hoveredSkillId` 바로 아래 — #142 가 `currentTab` 아래에 property 를 넣어 같은 자리를 피했다): 지금 떠 있는 행을 만들 때 읽은 직업·차수.
+- `ShowTab`(`:672-673`): 행을 만들 때 미러(`LocalJobId` · `LocalTier`)를 위 두 값에 적는다.
+- `Toggle`(`:507-516`): 창을 열 때 미러의 직업·차수가 `builtJobLine`/`builtTier` 와 다르면 먼저 `ShowTab(currentTab)` 으로 행을 다시 만들고, 그다음 기존대로 `RefreshFromState`. 다시 만들 때 `SkillWindowLogic: rows built for A/1 -> rebuild for B/2` 로그를 남긴다.
 - 창이 열려 있을 때의 `"job"` 분기는 그대로 둔다(동작 변화 없음). 창을 연 채 전직하는 경우는 원래도 맞게 다시 만들었다.
 - 처음 들어올 때(`OnBeginPlay` 의 `ShowTab(0)`)도 같은 값을 적으므로, 미러가 늦게 도착해 직업이 달라진 경우도 창을 열 때 다시 만든다.
 
