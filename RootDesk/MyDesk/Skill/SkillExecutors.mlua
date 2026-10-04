@@ -2642,7 +2642,8 @@ script SkillExecutors extends Logic
         if self.PunchSequenceHits and hitCount > 1 and interval > 0 then
             -- 🔴 2026-09-27: 폭발 1번 = 타격 1번. 대상은 첫 타 때 고정(가까운 순 · 상한 skillTargetCaps) · k번째 타격 = hitDelay + (k−1) × interval · 표 % × 1.
             --   폭발(연출)은 타격이 막혀도 고정한 대상 위에 제때 튼다(몬스터 피격 무적은 #120 에서 없어졌지만 main 을 합치기 전 판에서도 화면은 원작 그대로).
-            --   명중음(extraSounds.hit)은 대상마다 첫 타에만 낸다(아래 idx == 1 · 2026-10-01 기본값을 true 로 바꾸면서 그대로 둠).
+            --   명중음(extraSounds.hit)은 **시전당 한 번**(b/skill-pirate-followup · 2026-10-04): 첫 타(idx == 1)에서 실제로 맞은 대상이 하나라도 있으면(PassHitCount) 첫 대상 자리에서 한 번.
+            --     예전 = 대상마다 첫 타에 한 번(4명이면 4번 겹침 · 레이징 블로우처럼 한 번으로).
             local fireSeq = function()
                 if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
                 local targets = skillAttack:SnapshotTargets(skillId, box, self:TargetCapOf(skillId))
@@ -2654,16 +2655,22 @@ script SkillExecutors extends Logic
                     local idx = k
                     _TimerService:SetTimerOnce(function()
                         if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+                        local soundPos = nil
                         for _, t in ipairs(targets) do
                             if isvalid(t) and isvalid(t.TransformComponent) then
                                 local tp = t.TransformComponent.WorldPosition
                                 if impact ~= "" then
                                     _EffectService:PlayEffect(impact, casterEntity, Vector3(tp.x, tp.y + 0.5, tp.z), 0, Vector3(sc, sc, 1), false)
                                 end
-                                if idx == 1 then self:PlaySoundRuid(hitSound, casterEntity, tp) end
+                                if soundPos == nil then soundPos = tp end
                             end
                         end
                         skillAttack:DealSequenceHit(skillId, level, box, targets, idx)
+                        if idx == 1 then
+                            local hits = skillAttack.PassHitCount
+                            if hits > 0 and soundPos ~= nil then self:PlaySoundRuid(hitSound, casterEntity, soundPos) end
+                            log("SkillExecutors: PUNCH hit sound once targets=" .. tostring(#targets) .. " hit=" .. tostring(hits) .. " sound=" .. tostring(hits > 0 and soundPos ~= nil))
+                        end
                     end, (idx - 1) * interval)
                 end
             end
@@ -2680,7 +2687,8 @@ script SkillExecutors extends Logic
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
             skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "punchImpact")
             skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "punchImpact")
-            skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
+            -- 명중음은 대상마다가 아니라 시전당 한 번(아래 DealSkillDamage 뒤 PassHitCount · b/skill-pirate-followup).
+            skillAttack.PendingHitSound = ""
             skillAttack.PendingMaxTargets = self:TargetCapOf(skillId)
             -- 피스트인레인지 영상(2022 데스티니 · 2023 VI): 대상마다 폭발이 HitCount 번 · 약 0.12s 간격. 피해는 한 번에 이미 들어간다 — 연출만 반복.
             local impactSpec = nil
@@ -2690,6 +2698,7 @@ script SkillExecutors extends Logic
                 skillAttack.PendingImpactInterval = impactSpec.repeatInterval
             end
             skillAttack:DealSkillDamage(skillId, level, box)
+            self:PlayHitSoundOnce(skillId, casterEntity, skillAttack)
         end
         -- 숫자 10개 간격 = 폭발 간격(PunchDamageSkinDelay 0.12 · 시전 순간에 걸어 +hitDelay 의 판정 전에 동기화되게). 마지막 숫자가 뜬 뒤 되돌린다.
         self:ApplyPunchDamageSkinDelay(casterEntity, hitDelay + hitCount * interval + 0.3)
@@ -3268,20 +3277,34 @@ script SkillExecutors extends Logic
                     if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
                     skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "impact")
                     skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "impact")
-                    skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
+                    -- 명중음 = 시전당 한 번(b/skill-pirate-followup · 2026-10-04 · 예전 = 맞은 대상마다 · 6명이면 6번 겹침).
+                    skillAttack.PendingHitSound = ""
                     skillAttack.PendingMaxTargets = self:TargetCapOf(skillId)
                     skillAttack:DealSkillDamage(skillId, level, box)
+                    self:PlayHitSoundOnce(skillId, casterEntity, skillAttack)
                 end, hitDelay)
                 return
             end
         end
 
-        -- 상자 안(섬머솔트 킥 SK_P11 · 상한 = skillTargetCaps): 맞은 대상마다 impact 클립·hit 사운드(SkillAttack.OnAttack · b/skill-archer-thief-pirate).
+        -- 상자 안(섬머솔트 킥 SK_P11 · 상한 = skillTargetCaps): 맞은 대상마다 impact 클립(SkillAttack.OnAttack · b/skill-archer-thief-pirate) · 명중음은 시전당 한 번(PlayHitSoundOnce · b/skill-pirate-followup).
         skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "impact")
         skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "impact")
-        skillAttack.PendingHitSound = self:GetExtraSound(skillId, "hit")
+        skillAttack.PendingHitSound = ""
         skillAttack.PendingMaxTargets = self:TargetCapOf(skillId)
         skillAttack:DealSkillDamage(skillId, level, box)
+        self:PlayHitSoundOnce(skillId, casterEntity, skillAttack)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayHitSoundOnce(string skillId, Entity casterEntity, any skillAttack)
+        -- 시전당 한 번 명중음(b/skill-pirate-followup · 2026-10-04 · 섬머솔트 킥 · 피스트인레인지 판정 1번 경로): 방금 끝난 타격 패스에서 실제로 맞은 대상이
+        -- 하나라도 있으면(SkillAttack.PassHitCount · OnAttack 마다 +1) extraSounds[skill].hit 를 시전자 자리에서 한 번. 레이징 블로우(`if n ~= 0`)와 같은 규칙 — 대상 수만큼 겹치지 않게.
+        if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) or not isvalid(skillAttack) then return end
+        local hits = skillAttack.PassHitCount
+        local sound = self:GetExtraSound(skillId, "hit")
+        if hits > 0 then self:PlaySoundRuid(sound, casterEntity, casterEntity.TransformComponent.WorldPosition) end
+        log("SkillExecutors: hit sound once " .. skillId .. " hit=" .. tostring(hits) .. " sound=" .. tostring(hits > 0 and sound ~= ""))
     end
 
     @ExecSpace("ServerOnly")
