@@ -126,6 +126,21 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property any zombieTemplate = nil
 
+	-- 미점령 탈락 (WO-044 · 사용자 2026-10-05): 이 페이즈가 시작될 때까지 넥서스를 못 잡은 참가자는 탈락(관전 전환). "" 이면 끈다.
+	property string UnclaimedDeadlinePhase = "PHASE1"
+
+	-- 마감 몇 초 전에 마을 없는 참가자에게 알릴지(쉼표). 한 프레임에 여러 값을 지나면(페이즈 건너뛰기) 한 번만 알린다.
+	property string UnclaimedWarnSeconds = "30,10"
+
+	@HideFromInspector
+	property number unclaimedDeadline = -1
+
+	@HideFromInspector
+	property boolean unclaimedSwept = false
+
+	@HideFromInspector
+	property any unclaimedWarned = nil
+
 	method void OnBeginPlay()
 		-- 서버: 표만 로드하고 **시계는 돌리지 않는다.** 시작은 StartMatch 가 한다 (WO-019).
 		if not self:IsServer() then return end
@@ -262,6 +277,8 @@ script MatchSessionLogic extends Logic
 		self.participants = userIds or {}
 		self.finalRows = {}
 		self.leftUsers = {}
+		-- 제한 시간은 시작 인원으로 정한다(혼자 30분 · 여럿 45분). 도중에 나가도 바뀌지 않는다.
+		self:LoadMatchConfig()
 		self.Difficulty = math.max(1, math.min(5, difficulty))
 		self.MatchSerial = self.MatchSerial + 1
 
@@ -295,6 +312,7 @@ script MatchSessionLogic extends Logic
 		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
 		self.spawnTimer = 0
 		self.clockTimer = 0
+		self:ResetUnclaimed()
 		self.Expired = false
 		self.Running = true
 		self:SetPhase(1)
@@ -327,6 +345,7 @@ script MatchSessionLogic extends Logic
 	@ExecSpace("ServerOnly")
 	method void LoadMatchConfig()
 		-- MatchConfig 에서 현재 Profile 행의 MatchDurationSeconds. 표가 없으면 기본값 유지 (LIVE 1800 / TEST 225).
+		-- 행 Key: 혼자(참가자 1명 이하) = DEFAULT · 여럿 = MULTI (사용자 2026-10-05 "멀티는 45분 — 주니어 발록에 몰두"). MULTI 행이 없으면 DEFAULT.
 		local fallback = (self.Profile == "TEST") and 225 or 1800
 		self.MatchDuration = fallback
 		local t = _DataService:GetTable("MatchConfig")
@@ -334,16 +353,24 @@ script MatchSessionLogic extends Logic
 			log_warning("[Match] MatchConfig dataset not found — 만료 " .. tostring(fallback) .. "s 기본값 사용")
 			return
 		end
-		for i = 1, t:GetRowCount() do
-			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
-			local profile = tostring(t:GetCell(i, "Profile") or "")
-			if enabled and profile == self.Profile then
-				local v = tonumber(t:GetCell(i, "MatchDurationSeconds"))
-				if v ~= nil and v > 0 then self.MatchDuration = v end
-				break
+		local n = (self.participants ~= nil) and #self.participants or 0
+		local want = (n > 1) and "MULTI" or "DEFAULT"
+		local used = ""
+		for _, key in ipairs({ want, "DEFAULT" }) do
+			for i = 1, t:GetRowCount() do
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				local profile = tostring(t:GetCell(i, "Profile") or "")
+				local rowKey = tostring(t:GetCell(i, "Key") or "DEFAULT")
+				if enabled and profile == self.Profile and rowKey == key then
+					local v = tonumber(t:GetCell(i, "MatchDurationSeconds"))
+					if v ~= nil and v > 0 then self.MatchDuration = v end
+					used = key
+					break
+				end
 			end
+			if used ~= "" then break end
 		end
-		log("[Match] MatchConfig loaded: duration=" .. tostring(self.MatchDuration) .. "s (profile=" .. self.Profile .. ")")
+		log("[Match] MatchConfig loaded: duration=" .. tostring(self.MatchDuration) .. "s (profile=" .. self.Profile .. " key=" .. used .. " players=" .. tostring(n) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -414,6 +441,103 @@ script MatchSessionLogic extends Logic
 		self:SendEvent(ev)
 		log("[Match] phase -> " .. tostring(idx) .. " " .. self.CurrentPhaseName .. " at " .. string.format("%.1f", self.Elapsed) .. "s")
 		self.clockTimer = 0
+		-- 미점령 마감 (WO-044): 마감 페이즈 이후로 들어서면 한 번 쓸어 낸다. 페이즈를 건너뛰어도(리모컨) 지나친 마감을 놓치지 않는다.
+		if self.Running and not self.unclaimedSwept and self.unclaimedDeadline >= 0 and self.phases[idx].start >= self.unclaimedDeadline then
+			self:SweepUnclaimed()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetUnclaimed()
+		-- 미점령 마감 준비 (WO-044): 마감 페이즈의 시작 초를 표에서 찾고 알림 기록을 비운다. 매치 시작 · 프로필 전환(시계 0)마다.
+		self.unclaimedSwept = false
+		self.unclaimedWarned = {}
+		self.unclaimedDeadline = -1
+		if self.UnclaimedDeadlinePhase == "" or self.phases == nil then return end
+		for _, p in ipairs(self.phases) do
+			if p.name == self.UnclaimedDeadlinePhase then self.unclaimedDeadline = p.start end
+		end
+		if self.unclaimedDeadline < 0 then
+			log_warning("[Match] 미점령 마감 페이즈 " .. self.UnclaimedDeadlinePhase .. " 가 표에 없다 — 미점령 탈락 꺼짐")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsUnclaimedAlive(string userId)
+		-- 아직 매치에 남아 있는데(탈락 · 이탈 아님) 마을이 없는 참가자인가 (WO-044).
+		if userId == nil or userId == "" or _VillageOwnership == nil then return false end
+		if self.leftUsers ~= nil and self.leftUsers[userId] then return false end
+		if _VillageOwnership:IsEliminated(userId) then return false end
+		return _VillageOwnership:VillageOf(userId) == ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickUnclaimedWarning()
+		-- 미점령 마감 알림 (WO-044): 마감까지 남은 초가 UnclaimedWarnSeconds 의 값을 지나면 마을 없는 참가자에게 토스트.
+		if self.unclaimedSwept or self.unclaimedDeadline < 0 or self.participants == nil then return end
+		local remain = self.unclaimedDeadline - self.Elapsed
+		if remain <= 0 then return end
+		if self.unclaimedWarned == nil then self.unclaimedWarned = {} end
+		local fire = false
+		for s in string.gmatch(self.UnclaimedWarnSeconds, "[^,]+") do
+			local sec = tonumber(s)
+			if sec ~= nil and sec > 0 and remain <= sec and self.unclaimedWarned[sec] ~= true then
+				self.unclaimedWarned[sec] = true
+				fire = true
+			end
+		end
+		if not fire then return end
+		local secs = math.ceil(remain)
+		local claimLevel = (_VillageOwnership ~= nil) and _VillageOwnership.ClaimLevel or 10
+		local n = 0
+		for _, uid in ipairs(self.participants) do
+			if self:IsUnclaimedAlive(uid) and isvalid(_UserService:GetUserEntityByUserId(uid)) then
+				n = n + 1
+				local msg = tostring(secs) .. "초 안에 넥서스를 점령하지 않으면 탈락합니다"
+				if _VillageOwnership:LevelOf(uid) < claimLevel then msg = msg .. " (점령은 Lv" .. tostring(claimLevel) .. "부터)" end
+				if _UIToast ~= nil then _UIToast:ShowMessage(msg, uid) end
+			end
+		end
+		log("[Match] unclaimed warning " .. tostring(secs) .. "s before " .. self.UnclaimedDeadlinePhase .. " -> " .. tostring(n) .. " user(s)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SweepUnclaimed()
+		-- 미점령 탈락 (WO-044 · 사용자 2026-10-05 "1페이즈 시작 · 관전 전환"): 마감 페이즈가 시작됐는데 마을이 없는 참가자를 전부 탈락시킨다.
+		-- 대상을 먼저 뽑는다 — 마지막 사람에서 CheckAllOut → Expire 가 나도 순회가 흔들리지 않게.
+		self.unclaimedSwept = true
+		if self.participants == nil then return end
+		local targets = {}
+		for _, uid in ipairs(self.participants) do
+			if self:IsUnclaimedAlive(uid) then table.insert(targets, uid) end
+		end
+		log("[Match] unclaimed sweep at " .. self.CurrentPhaseName .. " -> " .. tostring(#targets) .. " user(s)")
+		for _, uid in ipairs(targets) do
+			self:EliminateUnclaimed(uid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EliminateUnclaimed(string userId)
+		-- 마을 없는 탈락 1명 (WO-044). 넥서스 파괴 탈락(LaneStateService.Eliminate)과 같은 뒤처리를 마을 없이 한다:
+		-- 탈락 표시 → PlayerEliminatedEvent(UNCLAIMED) → 토스트 → 관전 진입 → 계정 저장 → 스냅샷 · 전원 탈락 판정.
+		if _VillageOwnership == nil or not _VillageOwnership:EliminateUser(userId) then return end
+		log("[Match] unclaimed elimination " .. userId .. " phase=" .. self.CurrentPhaseName)
+		local ev = PlayerEliminatedEvent()
+		ev.MatchId = ""
+		ev.UserId = userId
+		ev.Reason = "UNCLAIMED"
+		self:SendEvent(ev)
+		-- 접속이 끊긴 사람은 OnUserLeave 가 이미 이탈로 뺐다. 그래도 룸에 없으면 Client RPC 를 보내지 않는다(LEA-3032).
+		if isvalid(_UserService:GetUserEntityByUserId(userId)) then
+			if _UIToast ~= nil then _UIToast:ShowMessage("넥서스를 점령하지 못해 탈락했습니다. 관전 모드로 전환합니다", userId) end
+			if _SpectateService ~= nil then _SpectateService:Enter(userId) end
+		end
+		-- ★1 안내는 탈락자에게 더 띄우지 않는다(관전 화면 위에 "넥서스를 차지하세요" 가 남지 않게).
+		if _GuideService ~= nil then _GuideService:RemoveParticipant(userId) end
+		-- 🔴 여기서 _DataStorageService 를 직접 부르지 않는다. 저장 창구는 _PlayerDBManager 하나뿐이다 (WO-018).
+		if _PlayerDBManager ~= nil then _PlayerDBManager:RequestFlush(userId) end
+		self:OnPlayerEliminated(userId)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -506,6 +630,7 @@ script MatchSessionLogic extends Logic
 		self.nextWave = 1
 		self.waveRepeatTimer = 0
 		if _MinionFlowService ~= nil then _MinionFlowService:ResetQueue() end
+		self:ResetUnclaimed()
 		self.Expired = false
 		self.Running = true
 		self:SetPhase(1)
@@ -634,6 +759,9 @@ script MatchSessionLogic extends Logic
 			if self.Elapsed >= p.start then idx = i end
 		end
 		if idx ~= self.CurrentPhase then self:SetPhase(idx) end
+		-- 미점령 탈락(WO-044)으로 방금 전원이 나갔으면 Expire 가 이미 끝냈다 — 웨이브 · 시계를 더 돌리지 않는다.
+		if not self.Running then return end
+		self:TickUnclaimedWarning()
 		local row = self.phases[self.CurrentPhase]
 		-- 웨이브 (B3 · MinionWave 표): 시작 시각을 지난 행을 차례로 투입. 표가 끝나면 마지막 행을 마지막 간격으로 반복(3P 매분).
 		if self.waves ~= nil and #self.waves > 0 then
