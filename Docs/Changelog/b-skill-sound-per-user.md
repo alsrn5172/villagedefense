@@ -35,3 +35,9 @@ MSW Maker Play 창의 **Adding Virtual Players**(테스트 중 가상 클라 최
 4. **다른 맵**: 가상 플레이어를 다른 맵으로(서버 Lua: 두 번째 유저 `PlayerComponent:MoveToMapPosition("Orbis_Lobby_VictoriaShip", Vector2(0, 0))` · 또는 `pirate-check/p134_server.lua` 의 `moveOther`) → 같은 스킬 → `-> 1 user(s)` · 한 번만 들린다.
 5. 픽파켓(도적 · 동전이 떨어질 때) · 투사체 명중(에너지볼트 · 더블 샷)도 같은 규칙인지 한 번씩: `-> 2` / `-> 1`.
 6. `_SkillExecutors.SkillSoundLog = false` 로 되돌린다 · 빌드 경고 N → N.
+
+## 2026-10-05 — main 1d518c6 합침
+
+- 충돌 1곳: `SkillProjectile.mlua` `OnAttack` 명중 소리 — main(#102)의 조건(볼리 발은 발마다 한 번 · `soundDone`)에 이 브랜치의 재생(`SkillExecutors.PlaySkillSoundToMap` · 그 맵 유저에게만)을 붙였다.
+- main 이 새로 넣은 스킬 소리 호출 중 `_SoundService` 를 바로 부르는 곳은 없다(Skill 폴더 검색 · 남은 두 줄은 이 브랜치의 클라 재생 함수 안).
+- 점검: LSP(바뀐 .mlua 4개) 오류 0 · `check-integrity` 전부 통과(경고 3 = main) · SkillInfo 중복 id 0. Play 안 함.
