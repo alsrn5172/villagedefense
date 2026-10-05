@@ -16,6 +16,10 @@
 - 플레이어 기본 HP: `Global/DefaultPlayer` 모델의 `PlayerComponent.MaxHp`(와 노출 속성 `maxHp`)가 **200000**(9/03 보스 수정 때 들어간 값)이었다 → **400**. 레벨당 +50(LevelTable)은 그대로 → Lv10 850 · Lv30 1850. (`SummonManager.BaseMaxHp` 1000 은 어디서도 안 쓰는 속성이다.)
 - 이동 속도: `StatService` 가 걷기 속도 · InputSpeed · 점프력의 기준값을 **엔티티의 현재 값**에서 다시 읽어, 이전 판의 이속 보너스가 기준에 눌러앉아 판마다 불어났다 → 고정 속성 `BaseWalkSpeed` · `BaseInputSpeed`(2) · `BaseJumpForce`(0.9). 걷기 기준은 사용자 요청대로 **절반**(엔진 기본 1.4 → 0.7). 모델의 `RigidbodyComponent.WalkSpeed` 도 0.7.
 
+### 밸런스 — 처치 경험치 1.5배 (사용자 2026-10-05 "경험치 올리기 빡세다 · 모든 몬스터 1.5배")
+- `SummonManager.KillExpMul = 1.5`(새 속성) · `Farm/FarmReward` 가 난이도 배율(`MATCH_EXP_MUL` · ★1 1.5)과 곱한다 → 일반 · 엘리트 · 보스 · 미니언 처치 경험치 모두. 표(MonsterInfo · EliteMonsterInfo · MinionWave) 값은 그대로.
+- `GrantKillReward` 에는 곱하지 않는다(리모컨 "레벨 +n" 이 정확한 필요 경험치를 넣는 경로).
+
 ### HUD — 친구 · 메뉴 버튼 삭제
 - `Summon/StatusHUDController`: 두 버튼("준비 중" 토스트만 띄우던 것)을 `OnBeginPlay` 에서 끈다. `.ui` 배치는 그대로(디자이너 배치 보존). `apply-hud-status.cjs` 주석에 표시.
 
