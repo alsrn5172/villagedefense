@@ -7,11 +7,30 @@ script PlayerFrontLayer extends Logic
 	--   · 같은 층이어도 시설은 OrderInLayer 150 이라 플레이어(4) 앞이었다.
 	-- → 모든 플레이어를 발판과 무관하게 Default 층(MapLayer0~7 보다 위 · PortalNetwork·NpcSpawner 실측) · OrderInLayer 4 로 고정한다.
 	--   예외는 포탈 하나 — Default/5 로 플레이어 앞 (PortalNetwork · 사용자 지시 2026-09-07).
+	-- 🔴 이 고정에 예외 하나가 더 있다(사용자 요청 2026-10-05 · WO-050 §2-8 "원근 정렬"): **시설(포탑·억제기·넥서스)보다 한 층 이상 위에 서서 시설 그림과 겹치는 캐릭터는 시설 뒤.**
+	--   키 큰 시설이 위층(더 안쪽)을 가리는 것이 원근법에 맞다. 같은 층이거나 아래면 지금처럼 캐릭터가 앞.
+	--   판정(서버·클라 같은 값 · 위치만으로): 같은 맵 · |x − 시설 x| ≤ ZoneHalfW · 발 y ≥ 시설 바닥 + FloorGap · 발 y < 시설 위끝.
+	--   뒤 구역이면 서버가 SortingLayer 를 시설 층(MapLayerN)으로, 클라가 OrderInLayer 를 BehindOrderInLayer(1 · 시설 2 보다 아래)로 쓴다.
+	--   점프로 순간 겹치는 깜빡임을 막으려 "땅에 서 있을 때만 들어가고, 이미 뒤라면 공중에서도 유지"(히스테리시스).
+	--   🔴 Play 에서 볼 것: 뒤 구역에선 MapLayer 층으로 내려가 더 높은 MapLayer 의 발판 타일 가장자리가 발을 덮을 수 있다. 보이면 BehindFacilityEnabled 를 끄거나 대안(시설 Default/2 · 몬스터 Default/3 · 뒤 구역 Default/1)으로 바꾼다.
 	-- SortingLayer · LayerSettingType 은 @Sync 라 서버에서 쓰고, OrderInLayer 는 동기화되지 않아 각 클라이언트에서 쓴다.
 
 	property string PlayerSortingLayer = "Default"
 	property integer PlayerOrderInLayer = 4
-	property number CheckInterval = 0.5
+	-- 판정 주기. 뒤 구역 판정 때문에 0.1 초(플레이어마다 속성 몇 개 읽는 정도라 부담 없음 · 쓰기는 값이 달라질 때만).
+	property number CheckInterval = 0.1
+
+	-- 원근 정렬 "뒤 구역"(WO-050 §2-8). false 면 예전처럼 항상 맨 앞.
+	property boolean BehindFacilityEnabled = true
+
+	-- 시설 바닥에서 이만큼(월드 단위) 이상 위에 서야 "위층"으로 본다. 이미 뒤인 캐릭터는 절반까지 내려와도 유지.
+	property number FloorGap = 1.0
+
+	-- 뒤 구역에서 캐릭터의 OrderInLayer(시설 FacilityOrderInLayer 2 보다 아래).
+	property integer BehindOrderInLayer = 1
+
+	-- 맵마다 시설 목록을 다시 훑는 주기(초).
+	property number ZoneRescan = 2.0
 
 	@HideFromInspector
 	property number checkLeft = 0
@@ -19,8 +38,20 @@ script PlayerFrontLayer extends Logic
 	@HideFromInspector
 	property boolean logged = false
 
+	@HideFromInspector
+	property number clock = 0
+
+	-- userId → 지금 뒤 구역에 있는 시설 층 이름(없으면 nil). 서버 · 각 클라가 따로 들고 있다.
+	@HideFromInspector
+	property any behind = nil
+
+	-- 맵 이름 → { t = 마지막으로 훑은 시각, list = { {ent, comp}, … } }
+	@HideFromInspector
+	property any zoneCache = nil
+
 	method void OnUpdate(number delta)
 		-- CheckInterval 마다 모든 플레이어의 층을 다시 맞춘다 (새로 들어온 플레이어 · 맵 이동 뒤에도 유지).
+		self.clock = self.clock + delta
 		self.checkLeft = self.checkLeft - delta
 		if self.checkLeft > 0 then return end
 		self.checkLeft = self.CheckInterval
@@ -35,20 +66,91 @@ script PlayerFrontLayer extends Logic
 		if not isvalid(user) then return end
 		local avatar = user.AvatarRendererComponent
 		if not isvalid(avatar) then return end
+		-- 시설 뒤 구역이면 그 시설의 층 이름(아니면 "").
+		local behindLayer = ""
+		if self.BehindFacilityEnabled then behindLayer = self:BehindLayerOf(user) end
 		if server then
 			local rb = user.RigidbodyComponent
 			if isvalid(rb) and rb.LayerSettingType ~= AutomaticLayerOption.None then
 				rb.LayerSettingType = AutomaticLayerOption.None
 			end
-			if avatar.SortingLayer ~= self.PlayerSortingLayer then
-				avatar.SortingLayer = self.PlayerSortingLayer
+			local wantLayer = self.PlayerSortingLayer
+			if behindLayer ~= "" then wantLayer = behindLayer end
+			if avatar.SortingLayer ~= wantLayer then
+				avatar.SortingLayer = wantLayer
 			end
-		elseif avatar.OrderInLayer ~= self.PlayerOrderInLayer then
-			avatar.OrderInLayer = self.PlayerOrderInLayer
+		else
+			local wantOrder = self.PlayerOrderInLayer
+			if behindLayer ~= "" then wantOrder = self.BehindOrderInLayer end
+			if avatar.OrderInLayer ~= wantOrder then
+				avatar.OrderInLayer = wantOrder
+			end
 		end
 		if not self.logged then
 			self.logged = true
 			log(string.format("[PlayerFrontLayer] %s %s -> %s/%d", server and "server" or "client", user.Name, avatar.SortingLayer, avatar.OrderInLayer))
 		end
+	end
+
+	method any ZonesOf(Entity map)
+		-- 이 맵의 시설(이름 "Facility_…" + LaneFacility 부품) 목록. ZoneRescan 초마다 다시 훑는다(캐시).
+		if self.zoneCache == nil then self.zoneCache = {} end
+		local key = map.Name
+		local c = self.zoneCache[key]
+		if c ~= nil and self.clock - c.t < self.ZoneRescan then return c.list end
+		local list = {}
+		for _, ch in ipairs(map.Children) do
+			if isvalid(ch) and string.sub(ch.Name, 1, 9) == "Facility_" then
+				local comp = ch:GetComponent("script.LaneFacility")
+				if isvalid(comp) then table.insert(list, { ent = ch, comp = comp }) end
+			end
+		end
+		self.zoneCache[key] = { t = self.clock, list = list }
+		return list
+	end
+
+	method string BehindLayerOf(Entity user)
+		-- 플레이어가 시설 뒤 구역에 있으면 그 시설의 SortingLayer 이름, 아니면 "". 위치만 쓰는 결정적 규칙이라 서버와 클라가 같은 답을 낸다.
+		if self.behind == nil then self.behind = {} end
+		local pc = user.PlayerComponent
+		local uid = isvalid(pc) and pc.UserId or user.Name
+		local map = user.CurrentMap
+		if not isvalid(map) then
+			self.behind[uid] = nil
+			return ""
+		end
+		local pos = user.TransformComponent.WorldPosition
+		local rb = user.RigidbodyComponent
+		local grounded = isvalid(rb) and rb:IsOnGround()
+		local prev = self.behind[uid]
+		local found = ""
+		for _, z in ipairs(self:ZonesOf(map)) do
+			local fac = z.ent
+			local comp = z.comp
+			if isvalid(fac) and isvalid(comp) and comp.ZoneHalfW > 0 and isvalid(fac.SpriteRendererComponent) then
+				local layer = fac.SpriteRendererComponent.SortingLayer
+				if layer ~= "" and layer ~= self.PlayerSortingLayer then
+					local fp = fac.TransformComponent.WorldPosition
+					local half = comp.ZoneHeight / 2
+					local base = fp.y - half
+					local top = fp.y + half
+					if math.abs(pos.x - fp.x) <= comp.ZoneHalfW and pos.y < top then
+						local stay = (prev == layer) and pos.y >= base + self.FloorGap * 0.5
+						local enter = grounded and pos.y >= base + self.FloorGap
+						if stay or enter then
+							found = layer
+							break
+						end
+					end
+				end
+			end
+		end
+		if found ~= "" then
+			if prev ~= found then log(string.format("[PlayerFrontLayer] behind %s -> %s", tostring(user.Name), found)) end
+			self.behind[uid] = found
+		else
+			self.behind[uid] = nil
+		end
+		return found
 	end
 end

@@ -56,6 +56,52 @@ script LaneFacilityService extends Logic
 	-- (옛 값 150 — 사용자 2026-09-15 "타일보다 앞에" — 은 같은 층의 몬스터(3)를 시설이 가렸다.)
 	property integer FacilityOrderInLayer = 2
 
+	-- 주인 없는 넥서스 위 "클릭하세요" 표시(WO-050 §2-6 · 사용자 2026-10-05): 고리 + 손가락. 주인이 생기면 지운다.
+	-- 그림 = 처음 안내(코치 마크)와 같은 coach_ring / coach_finger. 모양을 따로 받으면 아래 RUID 만 바꾼다.
+	property boolean ClickHereEnabled = true
+
+	-- 표시를 안 놓는 마을(쉼표). 노틸러스 넥서스는 그림 없는 HIDDEN 시설이라 제외.
+	property string ClickHereExclude = "NAUTILUS"
+
+	-- 그림을 얹는 모델(AuraEmitter 가 쓰는 SpriteRenderer 만 있는 모델 · 서버가 스폰하면 모두에게 보인다).
+	property string ClickHereModelId = "auracircle"
+
+	property string ClickHereRingRUID = "4263cccdbec141a0b890bc65dd4919eb"
+
+	property string ClickHereFingerRUID = "87acffbd5d8b4786a5e7738159a4c952"
+
+	-- 고리 중심 위치 = 넥서스 슬롯(+GroundOffset) + 이 오프셋 "x,y". 마을마다 다르면 "HENESYS=x,y;KERNING=x,y" 로 덮는다(없는 마을은 기본).
+	property string ClickHereOffset = "-0.8,2.2"
+
+	property string ClickHereOffsetByVillage = ""
+
+	-- 그림 크기 배율(그림 한 변 px / 100 = 월드 단위): 고리 224px · 손가락 88px.
+	property number ClickHereRingScale = 0.7
+
+	property number ClickHereFingerScale = 0.9
+
+	-- 손가락 끝(그림 왼쪽 위 모서리)이 고리 가운데에 오도록 손가락 중심을 고리 중심에서 옮기는 값(배율 적용 전 그림 크기 기준)
+	property number ClickHereFingerShiftX = 0.29
+
+	property number ClickHereFingerShiftY = -0.33
+
+	-- 손가락 흔들림 폭 · 속도
+	property number ClickHereBobAmp = 0.12
+
+	property number ClickHereBobSpeed = 5
+
+	-- 그리는 층. 🔴 "DamageSkin"(사용자 표기) 층 이름은 저장소 · 엔진 문서에서 확인되지 않아 Default + 높은 순서로 둔다(시설 연출 154~161 보다 위).
+	property string ClickHereLayer = "Default"
+
+	property integer ClickHereOrder = 170
+
+	-- 마을 → { ring, finger }
+	@HideFromInspector
+	property any clickHere = nil
+
+	-- 원근 정렬 뒤 구역 가로 배율(WO-050 §2-8): 반폭 = 피격 상자 가로 / 2 × 이 값. 그림이 상자보다 넓어 겹침이 남으면 키운다.
+	property number BehindZoneWidthMul = 1.0
+
 	-- UseTestLanes 가 켠다: 주인 없는 마을도 주인 있는 것처럼 그린다(HP 바 표시).
 	@HideFromInspector
 	property boolean testLanes = false
@@ -79,6 +125,7 @@ script LaneFacilityService extends Logic
 		if not self:IsServer() then return end
 		self.entities = {}
 		self.bars = {}
+		self.clickHere = {}
 		self:LoadLanes()
 		_TimerService:SetTimerOnce(function() self:SpawnAllNexus() end, 1.0)
 		log("[Facility] LaneFacilityService ready (server)")
@@ -420,12 +467,105 @@ script LaneFacilityService extends Logic
 		if self.laneRows == nil then return end
 		for vid, _rows in pairs(self.laneRows) do
 			self:SpawnFacility(vid, "CORE")
+			self:SpawnClickHere(vid)
 		end
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean ClickHereExcluded(string villageId)
+		-- ClickHereExclude(쉼표 목록)에 든 마을이면 true.
+		for token in string.gmatch(self.ClickHereExclude or "", "[^,%s]+") do
+			if token == villageId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ClickHereOffsetOf(string villageId)
+		-- 마을별 오프셋("HENESYS=x,y;…")이 있으면 그것, 없으면 ClickHereOffset("x,y"). 반환 {x, y}.
+		local function parse(text)
+			local a, b = string.match(text or "", "^%s*(-?[%d%.]+)%s*,%s*(-?[%d%.]+)%s*$")
+			if a == nil then return nil end
+			return { x = tonumber(a), y = tonumber(b) }
+		end
+		for entry in string.gmatch(self.ClickHereOffsetByVillage or "", "[^;]+") do
+			local name, rest = string.match(entry, "^%s*([%w_]+)%s*=%s*(.-)%s*$")
+			if name == villageId then
+				local v = parse(rest)
+				if v ~= nil then return v end
+			end
+		end
+		return parse(self.ClickHereOffset) or { x = -0.8, y = 2.2 }
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnClickHere(string villageId)
+		-- 주인 없는 넥서스 왼쪽 위에 고리 + 손가락을 놓는다(서버 스폰 → 모두에게 보임). 제외 마을 · 이미 주인 있음 · 이미 있음이면 건너뜀.
+		if not self.ClickHereEnabled then return end
+		if self:ClickHereExcluded(villageId) then return end
+		if self.clickHere[villageId] ~= nil then return end
+		if _VillageOwnership ~= nil and _VillageOwnership:OwnerOf(villageId) ~= "" then return end
+		local row = self:LaneRow(villageId, self:RoleOfStage("CORE"))
+		if row == nil then return end
+		local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
+		if not isvalid(map) then
+			log_warning("[Facility] clickhere: map not loaded " .. row.mapName)
+			return
+		end
+		local off = self:ClickHereOffsetOf(villageId)
+		local cx = row.slotX + off.x
+		local cy = row.slotY + self:GroundOffset(villageId, "CORE") + off.y
+		local function make(suffix, ruid, scale, x, y, bobAmp)
+			local e = _SpawnService:SpawnByModelId(self.ClickHereModelId, "ClickHere" .. suffix .. "_" .. villageId, Vector3(x, y, 0), map)
+			if not isvalid(e) then
+				log_error("[Facility] clickhere spawn failed model=" .. self.ClickHereModelId .. " " .. villageId)
+				return nil
+			end
+			local sr = e.SpriteRendererComponent
+			if isvalid(sr) then
+				sr.SpriteRUID = ruid
+				sr.SortingLayer = self.ClickHereLayer
+				sr.OrderInLayer = self.ClickHereOrder
+				sr.Color = Color(1, 1, 1, 1)
+			end
+			e.TransformComponent.Scale = Vector3(scale, scale, 1)
+			local mk = e:AddComponent("script.ClickHereMarker")
+			if not isvalid(mk) then mk = e.ClickHereMarker end
+			if isvalid(mk) then
+				mk.MarkerOrder = self.ClickHereOrder
+				mk.BobAmp = bobAmp
+				mk.BobSpeed = self.ClickHereBobSpeed
+				mk.BaseX = x
+				mk.BaseY = y
+			else
+				log_warning("[Facility] clickhere component add failed " .. villageId)
+			end
+			return e
+		end
+		local fx = cx + self.ClickHereFingerShiftX * self.ClickHereFingerScale
+		local fy = cy + self.ClickHereFingerShiftY * self.ClickHereFingerScale
+		local ring = make("Ring", self.ClickHereRingRUID, self.ClickHereRingScale, cx, cy, 0)
+		local finger = make("Finger", self.ClickHereFingerRUID, self.ClickHereFingerScale, fx, fy, self.ClickHereBobAmp)
+		if ring == nil and finger == nil then return end
+		self.clickHere[villageId] = { ring = ring, finger = finger }
+		log("[Facility] clickhere +" .. villageId .. " pos=(" .. tostring(cx) .. "," .. tostring(cy) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveClickHere(string villageId, string reason)
+		-- 표시를 지운다(주인이 생김 · 정리).
+		local h = (self.clickHere ~= nil) and self.clickHere[villageId] or nil
+		if h == nil then return end
+		if isvalid(h.ring) then h.ring:Destroy() end
+		if isvalid(h.finger) then h.finger:Destroy() end
+		self.clickHere[villageId] = nil
+		log("[Facility] clickhere -" .. villageId .. " (" .. tostring(reason) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
 	method void OnVillageClaimed(string villageId, string userId)
-		-- 소유권 생김 → 포탑·억제기 스폰 + 넥서스 색 갱신.
+		-- 소유권 생김 → 포탑·억제기 스폰 + 넥서스 색 갱신 + "클릭하세요" 표시 삭제.
+		self:RemoveClickHere(villageId, "claimed by " .. tostring(userId))
 		if _LaneStateService ~= nil then _LaneStateService:EnsureVillage(villageId) end
 		self:SpawnFacility(villageId, "TOWER")
 		self:SpawnFacility(villageId, "SUPPRESSOR")
@@ -510,6 +650,17 @@ script LaneFacilityService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method any ZoneSize(string villageId, string stage)
+		-- 원근 정렬 뒤 구역의 월드 크기 {w, h}. 피격 상자와 같게 · 그림 없는(HIDDEN) 시설은 가릴 그림이 없으므로 가로 0(구역 없음).
+		local size = self:HitSize(villageId, stage)
+		if _LaneStateService ~= nil then
+			local d = _LaneStateService:FacilityArtDef(villageId, stage, "NORMAL")
+			if d ~= nil and d.mode == "HIDDEN" then return { w = 0, h = size.h } end
+		end
+		return size
+	end
+
+	@ExecSpace("ServerOnly")
 	method any TouchSize(string villageId, string stage)
 		-- 넥서스 클릭 영역의 월드 크기 {w, h}. 그림 있는 넥서스 = 옛 영역과 같은 가로(TouchWidthCore) · 그림 없는(HIDDEN) 노틸러스호 = 피격 상자와 같게. 세로 = 피격 상자(GroundOffset × 2).
 		local size = self:HitSize(villageId, stage)
@@ -591,6 +742,10 @@ script LaneFacilityService extends Logic
 				fc.TouchW = size.w
 				fc.TouchH = size.h
 			end
+			-- 원근 정렬 뒤 구역(PlayerFrontLayer 가 읽는다 · WO-050 §2-8).
+			local zone = self:ZoneSize(villageId, stage)
+			fc.ZoneHalfW = zone.w / 2 * self.BehindZoneWidthMul
+			fc.ZoneHeight = zone.h
 		end
 		-- 전투 부품: 진영(방어 2x · 미니언 FactionAI 의 표적이 된다) · 피격 그룹 Monster(FactionAttack 이 때리는 그룹) · 포탑은 FactionAttack + TurretAI.
 		local faction = ent:AddComponent("script.Faction")
