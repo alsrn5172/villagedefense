@@ -1,0 +1,130 @@
+@Logic
+script UIEscStack extends Logic
+
+	-- ESC = 가장 최근에 연 창 하나만 닫는다 (WO-046 · 사용자 2026-10-05 "UI 들 최근에 킨 순서대로 ESC 누르면 꺼지게").
+	-- 예전엔 창마다 따로 ESC 를 받아(캐릭터 · 공방) 한 번에 같이 닫히거나, 나머지 창은 ESC 로 안 닫혔다 → 여기 한 곳만 ESC 를 받는다.
+	-- 열린 순서는 0.1초마다 창 상태를 보고 "닫힘 → 열림" 이 된 창을 맨 위로 올려 기록한다(창 코드는 그대로 · B 의 스킬 창 포함).
+	-- 닫기는 그 창의 닫기 메서드로(상태 플래그가 어긋나지 않게). 결과 · 부활 · 관전 · 외형 고르기처럼 골라야 닫히는 창은 넣지 않는다.
+
+	property number PollSeconds = 0.1
+
+	-- 창 키 목록(뒤가 최근에 연 것)
+	@HideFromInspector
+	property any stack = nil
+
+	@HideFromInspector
+	property any wasOpen = nil
+
+	@HideFromInspector
+	property number timer = 0
+
+	@HideFromInspector
+	property any hKey = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 키 하나 · 창 상태 기록 준비.
+		self.stack = {}
+		self.wasOpen = {}
+		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		log("[EscStack] ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 키 연결 해제.
+		if self.hKey ~= nil then _InputService:DisconnectEvent(KeyDownEvent, self.hKey) end
+	end
+
+	method any Keys()
+		-- 다루는 창 목록(순서 무관).
+		return { "char", "skill", "workshop", "lobby", "commonnpc", "vdefense", "vlife", "vrecord", "account", "worldmap" }
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsOpen(string key)
+		-- 그 창이 지금 열려 있나(각 창의 상태 플래그).
+		if key == "char" then return _StatUIController ~= nil and _StatUIController.isOpen == true end
+		if key == "skill" then return _SkillWindowLogic ~= nil and isvalid(_SkillWindowLogic.rootGroup) and _SkillWindowLogic.rootGroup.Enable == true end
+		if key == "workshop" then return _WorkshopUIController ~= nil and _WorkshopUIController.isOpen == true end
+		if key == "lobby" then return _LobbyUIController ~= nil and _LobbyUIController.isOpen == true end
+		if key == "commonnpc" then return _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen == true end
+		if key == "vdefense" then return _VillageDefenseUIController ~= nil and _VillageDefenseUIController.isOpen == true end
+		if key == "vlife" then return _VillageLifeUIController ~= nil and _VillageLifeUIController.isOpen == true end
+		if key == "vrecord" then return _VillageRecordUIController ~= nil and _VillageRecordUIController.isOpen == true end
+		if key == "account" then return _AccountRecordUIController ~= nil and _AccountRecordUIController.isOpen == true end
+		if key == "worldmap" then return _WorldMapController ~= nil and _WorldMapController.isOpen == true end
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseWindow(string key)
+		-- 그 창의 닫기 메서드를 부른다(토글뿐인 창은 열려 있을 때만 토글).
+		if key == "char" then _StatUIController:Close()
+		elseif key == "skill" then _SkillWindowLogic:Toggle()
+		elseif key == "workshop" then _WorkshopUIController:Close()
+		elseif key == "lobby" then _LobbyUIController:Close()
+		elseif key == "commonnpc" then _CommonNpcUIController:Close()
+		elseif key == "vdefense" then _VillageDefenseUIController:Close()
+		elseif key == "vlife" then _VillageLifeUIController:Close()
+		elseif key == "vrecord" then _VillageRecordUIController:Close()
+		elseif key == "account" then _AccountRecordUIController:Close()
+		elseif key == "worldmap" then _WorldMapController:Toggle() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Poll()
+		-- 닫힘 → 열림이 된 창을 맨 위로 · 닫힌 창은 목록에서 뺀다.
+		for _, key in ipairs(self:Keys()) do
+			local open = self:IsOpen(key)
+			if open and self.wasOpen[key] ~= true then
+				self:Remove(key)
+				table.insert(self.stack, key)
+			elseif not open and self.wasOpen[key] == true then
+				self:Remove(key)
+			end
+			self.wasOpen[key] = open
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Remove(string key)
+		-- 목록에서 그 창을 뺀다.
+		for i = #self.stack, 1, -1 do
+			if self.stack[i] == key then table.remove(self.stack, i) end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 0.1초마다 창 상태를 본다.
+		self.timer = self.timer - delta
+		if self.timer > 0 then return end
+		self.timer = self.PollSeconds
+		self:Poll()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- ESC: 방금 연 창까지 반영한 뒤 맨 위 창 하나만 닫는다.
+		if event.key ~= KeyboardKey.Escape then return end
+		-- 채팅이 열려 있으면 이 ESC 는 채팅을 접는 몫이다(사용자 2026-10-05 "ESC 누르면 채팅 토글 off"). 채팅이 먼저 받아 이미 접혔으면 escAt 이 방금 시각.
+		if _ChatService ~= nil and (_ChatService.expanded or _ChatService.typing or (_UtilLogic.ElapsedSeconds - _ChatService.escAt) < 0.1) then
+			log("[EscStack] ESC -> chat only")
+			return
+		end
+		self:Poll()
+		for i = #self.stack, 1, -1 do
+			local key = self.stack[i]
+			if self:IsOpen(key) then
+				self:CloseWindow(key)
+				table.remove(self.stack, i)
+				self.wasOpen[key] = false
+				log("[EscStack] ESC -> close " .. key .. " (left " .. tostring(#self.stack) .. ")")
+				return
+			end
+			table.remove(self.stack, i)
+		end
+	end
+
+end

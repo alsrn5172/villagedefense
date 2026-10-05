@@ -53,6 +53,10 @@ script SkillBuffs extends Logic
     -- [클라] 로컬 유저 미러: buffTag -> { level, endsAt, skillId }
     property table mirrorBuffs = {}
 
+    -- [클라] 버프 변형 아이콘(ApplyVariantIcon): 0.1초 간격 · 바꾸기 전 원래 아이콘(원래 스킬 ID → IconRUID).
+    property number variantIconTick = 0
+    property table variantBaseIcons = {}
+
     -- 매직 가드: 활성 중 스킬 MP 소모 배율 (추가기획1 "스킬 사용 시 소모 MP 가 50% 증가"). CSV 에 열이 없어 코드 상수.
     property number MagicGuardMpCostMul = 1.5
 
@@ -87,6 +91,22 @@ script SkillBuffs extends Logic
     -- 이제 PlayerHit.OnHit 가 HP 감산 전에 ModifyIncomingDamage 를 부른다(#40 5813239867). 다시 켜면 흡수·감소가 두 번 들어간다
     -- (보호막 · MP 두 번 소모 · 하이퍼 바디 두 번 감소). 스위치는 PlayerHit 훅을 되돌릴 때만 쓴다.
     property boolean MagicGuardSelfWire = false
+
+    -- 죽으면 버프가 끝나는가(b/skill-raging-blow-flame-haze · 기본 켜짐 — A #40 5977727869 "죽으면 버프가 끝난다(원작과 같음)" · 2026-10-04 사용자 결정).
+    --   켜져 있으면 DeathCheckInterval 마다 버프가 있는 유저 중 죽은(HP 0 · IsDead) 유저의 B 버프를 전부
+    --   보통 끝내기(EndBuffNow · 태그별 종료 처리 · 루프 이펙트 제거 · 미러 갱신)로 끝내고 궁 시전 무적 창도 지운다.
+    --   레이징 블로우 · 플레임 헤이즈 변형과 슬롯 아이콘은 버프가 있을 때만 있으므로 같이 끝난다(VariantOf · ApplyVariantIcon).
+    --   끄면(서버 Lua: _SkillBuffs.EndBuffsOnDeath = false) 예전처럼 죽어도 버프가 남는다(ResetMatchState 만 지운다).
+    property boolean EndBuffsOnDeath = true
+
+    property number DeathCheckInterval = 0.25
+
+    -- 레이징 블로우는 불굴의 진 컷신이 끝난 뒤에만(#40 5988186219 · 사용자 결정 2026-10-05 "(b) 컷신이 끝난 뒤 8초만 레이징 블로우 · 컷신 중엔 막는다").
+    --   불굴의 진 버프 = 컷신 + Duration(8초 · buffExtendsByCutscene) → 남은 시간이 Duration 보다 길면 아직 컷신 중. 이 여유(초)만큼은 끝난 것으로 본다(서버 · 클라 시계 차 · 소수점).
+    property number VariantCutsceneSlack = 0.05
+
+    @HideFromInspector
+    property integer deathCheckTimer = 0
 
     property boolean DarkSightSelfWire = false
 
@@ -201,7 +221,9 @@ script SkillBuffs extends Logic
                 self:AttachHitListener(user.PlayerComponent.UserId)
             end
         end
-        log("[Buff] SkillBuffs ready (hit listener for reflect)")
+        -- 죽음 → 버프 끝(EndBuffsOnDeath). 타이머는 늘 돌고 스위치는 틱마다 본다 — 서버 Lua 로 켜고 끄면 바로 따른다. 꺼져 있으면 아무것도 안 한다.
+        self.deathCheckTimer = _TimerService:SetTimerRepeat(function() self:CheckDeathEndsBuffs() end, self.DeathCheckInterval)
+        log("[Buff] SkillBuffs ready (hit listener for reflect · EndBuffsOnDeath=" .. tostring(self.EndBuffsOnDeath) .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -218,6 +240,10 @@ script SkillBuffs extends Logic
             end
         end
         self.hitHandlers = {}
+        if self.deathCheckTimer ~= 0 then
+            _TimerService:ClearTimer(self.deathCheckTimer)
+            self.deathCheckTimer = 0
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -490,6 +516,37 @@ script SkillBuffs extends Logic
         end
         self:OnBuffEnded(userId, buffTag)
         self:PushBuffs(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CheckDeathEndsBuffs()
+        -- 타이머(DeathCheckInterval): EndBuffsOnDeath 가 켜져 있으면 버프가 남은 유저 중 죽은 유저의 버프를 끝낸다(EndAllBuffsOnDeath).
+        if not self.EndBuffsOnDeath then return end
+        local dead = {}
+        for uid, u in pairs(self.buffs) do
+            local has = false
+            if u ~= nil then for _, _ in pairs(u) do has = true break end end
+            if has then
+                local player = _UserService:GetUserEntityByUserId(uid)
+                if isvalid(player) and isvalid(player.PlayerComponent) and (player.PlayerComponent.Hp <= 0 or player.PlayerComponent:IsDead()) then
+                    table.insert(dead, uid)
+                end
+            end
+        end
+        for _, uid in ipairs(dead) do self:EndAllBuffsOnDeath(uid) end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void EndAllBuffsOnDeath(string userId)
+        -- 죽은 유저의 B 버프 전부를 보통 끝내기 길(EndBuffNow · 만료와 같은 태그별 처리)로 끝낸다 + 궁 시전 무적 창 지우기.
+        -- 에너지 차지 쿨다운은 만료 때와 같은 규칙(EndChargeState)을 따른다 — 죽음이라고 다르게 하지 않는다.
+        local u = self.buffs[userId]
+        if u == nil then return end
+        local tags = {}
+        for tag, _ in pairs(u) do table.insert(tags, tag) end
+        for _, tag in ipairs(tags) do self:EndBuffNow(userId, tag, "death") end
+        self.castInvulnUntil[userId] = nil
+        log("[Buff] death -> ended " .. tostring(#tags) .. " buff(s) [" .. table.concat(tags, ",") .. "] (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -1019,7 +1076,8 @@ script SkillBuffs extends Logic
         if isvalid(own) then own.OwnerUserId = userId end
         if now - self.pickpocketSoundAt >= self.PickpocketSoundInterval then
             self.pickpocketSoundAt = now
-            _SoundService:PlaySoundAtPos(self.PickpocketSoundRuid, tp, target, 1.0)
+            -- 그 맵 유저에게만(b/skill-sound-per-user · SkillExecutors.PlaySkillSoundToMap · 예전 = 모든 클라). 맵 = 맞은 몬스터의 맵.
+            if _SkillExecutors ~= nil then _SkillExecutors:PlaySkillSoundToMap(self.PickpocketSoundRuid, tp, target, 1.0) end
         end
         log("[Buff] PICKPOCKET +1 coin value=" .. tostring(value) .. " at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ") floor=" .. floorNote)
     end
@@ -1123,6 +1181,117 @@ script SkillBuffs extends Logic
             end
         end
         log("[Buff] mirror <- '" .. csv .. "'")
+    end
+
+    -- ───────────────────────── 버프 중 다른 스킬로 바뀌는 키 (b/skill-raging-blow-flame-haze · 2026-10-02) ─────────────────────────
+    -- A 인계(2026-10-02 · 사용자 결정): 불굴의 진(SK_W31 · INVULNERABLE 8초) 중 파워 스트라이크 키 = 레이징 블로우 · 매직 가드(SK_M22 · 45초) 중 에너지볼트 키 = 플레임 헤이즈.
+    -- 칸의 스킬 ID 는 그대로(SK_W11 / SK_M11) — HUD 가 그 ID 로 레벨을 읽는다. 따로 배우지 않고 원래 스킬 레벨을 쓴다.
+    -- 변형 키(SK_W11_RB · SK_M11_FH)는 SkillInfo 행이 아니다: 시전 락 · 모션 · 연출 · 소리 표의 키로만 쓴다.
+
+    method any VariantSpec(string skillId)
+        -- 그 스킬의 버프 변형 정의(없으면 nil). 서버 · 클라 양쪽이 같은 표를 쓴다(ExecSpace 없음 · 상수).
+        --   mpCost < 0 = 원래 스킬 MP 그대로 · cooldown = 변형의 쿨타임(원래 스킬 쿨다운은 건너뛰고 새로 걸지도 않는다).
+        if skillId == "SK_W11" then
+            -- afterCutscene: 버프의 컷신 부분(불굴의 진 영상)이 끝난 뒤에만 변형 · 컷신 중엔 파워 스트라이크 키를 막는다(VariantWaitsForCutscene · #40 5988186219).
+            return { key = "SK_W11_RB", baseSkillId = "SK_W11", buffTag = self.TagInvulnerable, name = "레이징 블로우",
+                icon = "644fc39bcc684c209264eb9d9a4cd6f8", mpCost = 10, cooldown = 0, afterCutscene = true }
+        end
+        if skillId == "SK_M11" then
+            return { key = "SK_M11_FH", baseSkillId = "SK_M11", buffTag = self.TagMagicGuard, name = "플레임 헤이즈",
+                icon = "b16f2dee3dc64b4a941d7d84defe9665", mpCost = -1, cooldown = 0 }
+        end
+        return nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method string VariantOf(string userId, string skillId)
+        -- 서버 판정: 지금 이 유저가 skillId 를 누르면 나가는 변형 키("" = 원래 스킬). 버프가 켜져 있고 살아 있을 때만.
+        -- 사망: 기본(EndBuffsOnDeath = true)은 사망 틱에 버프 자체가 끝난다. 아래 "살아 있을 때만" 검사는 그 틱 사이(≤ DeathCheckInterval)와
+        --   스위치를 끈 경우(버프가 남는다 · ResetMatchState 만 지운다)를 위해 둔다 → 죽어 있는 동안은 원래 스킬로 본다.
+        local spec = self:VariantSpec(skillId)
+        if spec == nil then return "" end
+        if not self:IsActive(userId, spec.buffTag) then return "" end
+        if self:VariantBlockedNow(userId, skillId) then return "" end
+        local player = _UserService:GetUserEntityByUserId(userId)
+        if isvalid(player) and isvalid(player.PlayerComponent) and (player.PlayerComponent.Hp <= 0 or player.PlayerComponent:IsDead()) then return "" end
+        return spec.key
+    end
+
+    @ExecSpace("ClientOnly")
+    method string LocalVariantOf(string skillId)
+        -- 클라 예측(시전 게이트 · 아이콘): 미러 기준. 서버 VariantOf 와 같은 규칙.
+        local spec = self:VariantSpec(skillId)
+        if spec == nil then return "" end
+        if not self:LocalIsActive(spec.buffTag) then return "" end
+        if self:LocalVariantBlockedNow(skillId) then return "" end
+        local me = _UserService.LocalPlayer
+        if isvalid(me) and isvalid(me.PlayerComponent) and (me.PlayerComponent.Hp <= 0 or me.PlayerComponent:IsDead()) then return "" end
+        return spec.key
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- 0.1초마다 변형 아이콘을 맞춘다: 버프 중 SkillDatabase(클라 사본):GetSkill(원래 ID).icon = 변형 아이콘, 끝나면(만료 · 사망 · 매치 리셋 = 미러가 비면) 원래 아이콘.
+        -- A 의 스킬 HUD(#155 · Stat/SkillHudController)가 같은 ID 에서 아이콘만 바뀌어도 0.1초 안에 다시 칠한다(로그 "[SkillHud] icon swap …").
+        self.variantIconTick = self.variantIconTick - delta
+        if self.variantIconTick > 0 then return end
+        self.variantIconTick = 0.1
+        if _SkillDatabase == nil then return end
+        self:ApplyVariantIcon("SK_W11")
+        self:ApplyVariantIcon("SK_M11")
+    end
+
+    method boolean VariantWaitsForCutscene(any spec, string buffSkillId, number level, number endsAt)
+        -- 변형이 컷신 뒤에만 열리는가(spec.afterCutscene) — 버프 남은 시간 > 그 버프 스킬의 기본 Duration(+ VariantCutsceneSlack)이면 아직 컷신 중 → true.
+        --   불굴의 진 버프는 컷신 + Duration 으로 걸린다(SkillExecutors buffExtendsByCutscene). 서버 · 클라 같은 식(ExecSpace 없음 · 시계 = ServerElapsedSeconds).
+        if spec == nil or spec.afterCutscene ~= true then return false end
+        if buffSkillId == nil or buffSkillId == "" then return false end
+        local base = _SkillDatabase:DurationAt(buffSkillId, level)
+        if base <= 0 then return false end
+        local left = endsAt - _UtilLogic.ServerElapsedSeconds
+        return left > base + self.VariantCutsceneSlack
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean VariantBlockedNow(string userId, string skillId)
+        -- 서버: 이 키의 변형 버프가 켜져 있지만 아직 컷신 중이라 막아야 하는가(레이징 블로우 · 불굴의 진 영상 중). 막히면 SkillCaster.RequestCast 가 시전을 거절한다.
+        local spec = self:VariantSpec(skillId)
+        if spec == nil or spec.afterCutscene ~= true then return false end
+        local b = self:GetBuff(userId, spec.buffTag)
+        if b == nil then return false end
+        return self:VariantWaitsForCutscene(spec, b.skillId, b.level, b.endsAt)
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalVariantBlockedNow(string skillId)
+        -- 클라 예측: VariantBlockedNow 와 같은 규칙(미러 기준).
+        local spec = self:VariantSpec(skillId)
+        if spec == nil or spec.afterCutscene ~= true then return false end
+        local b = self.mirrorBuffs[spec.buffTag]
+        if b == nil or b.endsAt <= _UtilLogic.ServerElapsedSeconds then return false end
+        return self:VariantWaitsForCutscene(spec, b.skillId, b.level, b.endsAt)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyVariantIcon(string baseSkillId)
+        -- 한 칸의 아이콘을 지금 변형 상태에 맞춘다. 원래 아이콘은 처음 바꿀 때 기억해 두고(CSV IconRUID) 끝날 때 되돌린다.
+        local spec = self:VariantSpec(baseSkillId)
+        local skill = _SkillDatabase:GetSkill(baseSkillId)
+        if spec == nil or skill == nil then return end
+        local active = self:LocalVariantOf(baseSkillId) ~= ""
+        if active then
+            if skill.icon ~= spec.icon then
+                self.variantBaseIcons[baseSkillId] = skill.icon
+                skill.icon = spec.icon
+                log("[Buff] icon swap " .. baseSkillId .. " -> " .. string.sub(spec.icon, 1, 8) .. " (" .. spec.name .. " on)")
+            end
+        else
+            local base = self.variantBaseIcons[baseSkillId]
+            if base ~= nil and skill.icon ~= base then
+                skill.icon = base
+                log("[Buff] icon swap " .. baseSkillId .. " -> " .. string.sub(base, 1, 8) .. " (" .. spec.name .. " off)")
+            end
+        end
     end
 
     -- ───────────────────────── 클라: 미러 접근자 ─────────────────────────
