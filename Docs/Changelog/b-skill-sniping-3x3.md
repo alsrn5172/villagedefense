@@ -13,3 +13,16 @@
 - 발마다 피해: 지금 경로 그대로 — 첫 발 ×HitCount · 표시 HitCount 타(= 타당 DamageAt × 3 · 숫자 3개). 2발째 VisualOnly 화살은 띄우지 않는다(한 대상에 화살 한 발). 유도 대상만 맞음(HomingTargetOnly) · 선딜 1.15 s · 조준 연출 · 소리 그대로.
 - 바뀐 점: 예전 = 보스 우선 한 명 → 지금 = 가까운 순 3명(보스도 가까우면 포함). 대상이 없을 때의 한 발만 보스 우선 조준을 그대로 쓴다.
 - 점검: LSP · `check-integrity` — 로그 `villagedefense-harness/pirate-check/after-maker-free/sniping-3x3-*.txt`. **Play 안 함** — RELOOK R31 · 숫자 N11.
+
+## 2026-10-05 2차 — 시전 시간 반 · 타당 피해 반 (A 요청)
+
+| 값 | old → new | 파일 |
+|---|---|---|
+| 선딜(발사까지) | CSV `Duration` 1 → **0.5** · `projectileReleaseExtra.SK_A21` 0.15 → **0.075** → 발사 1.15 s → **0.575 s** (발사 자세 SK_A21_2 도 같은 시각 · `GetMotionSequence`) | SkillInfo.csv · SkillExecutors.mlua |
+| 시전 락 | `castLockOverrides.SK_A21` 1.35 → **0.675** (= 발사 + 0.1 · 예전 발사 + 0.2) | Skill/SkillCaster.mlua |
+| 조준 자세(활 당기기) | `WeaponMotion.csv` MOTION_SK_A21_BOW `PlayRate` 0.4 → **0.8** — **2배속**(잘라내지 않음 · 0.5 s 동안 끝까지 당긴다) · 발사 스냅(SK_A21_2 · 1.5배속)은 그대로 | WeaponMotion.csv(B 스킬 행) |
+| 조준 연출 클립 · Use 소리 | `aim.delay` 0.43 → **0** — 클립 속도는 그대로(배속 안 함) · 클립 속 발사 섬광(≈0.567 s)이 새 발사 0.575 s 와 맞는다 | SkillExecutors.mlua |
+| 타당 피해 | `BaseEffect` 300 → **150** · `EffectPerLevel` 50 → **25** (HitCount 3 그대로 → 대상당 합계 = 원래 1타의 1.5배) | SkillInfo.csv |
+
+- 툴팁 "선딜 {v}초" 는 Duration 을 읽어 0.5 로 바뀐다(코드 변경 없음).
+- 점검: LSP · `check-integrity` — 로그 `villagedefense-harness/pirate-check/after-maker-free/sniping-3x3-v2-*.txt`. **Play 안 함.**
