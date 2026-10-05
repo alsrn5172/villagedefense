@@ -20,6 +20,9 @@
 - `SummonManager.KillExpMul = 1.5`(새 속성) · `Farm/FarmReward` 가 난이도 배율(`MATCH_EXP_MUL` · ★1 1.5)과 곱한다 → 일반 · 엘리트 · 보스 · 미니언 처치 경험치 모두. 표(MonsterInfo · EliteMonsterInfo · MinionWave) 값은 그대로.
 - `GrantKillReward` 에는 곱하지 않는다(리모컨 "레벨 +n" 이 정확한 필요 경험치를 넣는 경로).
 
+### 밸런스 — 마을 재료(헤네시스 포자 등) 드롭 2배 (사용자 2026-10-05 "20렙 찍는데 8개밖에 못 얻음")
+- `DropTable.csv` `GROUND` × `REGION_LOCAL` 3행(값만 · 헤더 그대로): 사냥터1 35% → **70%** · 사냥터2 75%×1 → **100%×1~2**(평균 1.5) · 사냥터3 100%×3~4 → **100%×6~8**. 처치마다 굴리는 행이라 기대값이 정확히 2배. 리스항구 · 마을 · 보스 맵은 원래 GROUND 행이 없다.
+
 ### HUD — 친구 · 메뉴 버튼 삭제
 - `Summon/StatusHUDController`: 두 버튼("준비 중" 토스트만 띄우던 것)을 `OnBeginPlay` 에서 끈다. `.ui` 배치는 그대로(디자이너 배치 보존). `apply-hud-status.cjs` 주석에 표시.
 
