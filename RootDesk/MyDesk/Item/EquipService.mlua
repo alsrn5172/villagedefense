@@ -20,6 +20,10 @@ script EquipService extends Logic
 		self.slots = { "WEAPON", "SUBWEAPON", "HAT", "TOP", "BOTTOM", "SHOES", "GLOVES" }
 		-- 입장 유저의 아바타 외형 복구 — 플레이어 엔티티가 새로 만들어지면 다시 입혀야 한다.
 		_UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
+		-- 1차 전직 기본 무기 (WO-045). 전직은 B 가 발행한다(PlayerSkillState.ChangeJob).
+		if _PlayerSkillState ~= nil then
+			_PlayerSkillState:ConnectEvent(JobChangedEvent, self.OnJobChanged)
+		end
 		-- 이미 들어와 있는 유저도 처리(에디터 플레이는 보통 여기 걸린다).
 		for _, user in ipairs(_UserService.UserEntities.Values) do
 			if isvalid(user) and isvalid(user.PlayerComponent) then
@@ -27,6 +31,49 @@ script EquipService extends Logic
 			end
 		end
 		log("[Item] EquipService ready (server)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnJobChanged(JobChangedEvent event)
+		-- 1차 전직(초보자 → 직업) 기본 무기 (WO-045 · 사용자 2026-10-05): 그 직업 기본 무기(WEAPON_<직업>_BASIC · Lv10 · 구매 10제보다 약함)를
+		-- 인벤토리에 넣고 무기 칸에 끼운다. 몽둥이 등 지금 무기는 칸에서만 빠지고 인벤토리에 남는다.
+		-- 이미 새 직업 무기를 끼고 있으면 인벤토리에만 넣는다. 2 · 3차 전직은 주지 않는다.
+		local uid = event.UserId
+		if uid == nil or uid == "" or event.PrevJobId ~= "NOVICE" or event.NewJobId == "" or event.NewJobId == "NOVICE" then return end
+		local itemId = "WEAPON_" .. event.NewJobId .. "_BASIC"
+		local def = _ItemCatalog:Get(itemId)
+		if def == nil or _InventoryService == nil then
+			log_warning("[Item] job basic weapon missing: " .. itemId)
+			return
+		end
+		if _InventoryService:GiveItem(uid, itemId, 1) <= 0 then return end
+		local e = self:EnsureUser(uid)
+		local cur = self:EquippedItemId(uid, e, "WEAPON")
+		local curDef = (cur ~= "") and _ItemCatalog:Get(cur) or nil
+		if curDef ~= nil and curDef.reqJob == event.NewJobId then
+			_InventoryService:PushInventory(uid)
+			if _UIToast ~= nil then _UIToast:ShowMessage("전직 기념으로 " .. def.name .. "을(를) 받았습니다 (인벤토리)", uid) end
+			log("[Item] job basic weapon " .. itemId .. " -> inventory only (already " .. cur .. ") " .. uid)
+			return
+		end
+		-- 방금 넣은 인스턴스 = 그 아이템의 마지막 인스턴스(장비는 GiveItem 이 뒤에 하나씩 붙인다).
+		local iid = ""
+		local inv = _InventoryService:EnsureUser(uid)
+		for _, it in ipairs(inv.items) do
+			if it.itemId == itemId then iid = it.iid end
+		end
+		if iid == "" then return end
+		-- 두손 무기(활 · 아대 · 너클)는 방패 칸을 같이 쓴다 — RequestEquip 과 같은 자동 해제.
+		if _ItemCatalog:IsTwoHand(itemId) and e["SUBWEAPON"] ~= "" then
+			local dropped = e["SUBWEAPON"]
+			e["SUBWEAPON"] = ""
+			self:Apply(uid, "SUBWEAPON", dropped, "")
+		end
+		local prev = e["WEAPON"]
+		e["WEAPON"] = iid
+		self:Apply(uid, "WEAPON", prev, iid)
+		if _UIToast ~= nil then _UIToast:ShowMessage("전직 기념으로 " .. def.name .. "을(를) 장착했습니다", uid) end
+		log("[Item] job basic weapon " .. itemId .. " equipped (prev " .. tostring(cur) .. ") " .. uid)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -95,10 +142,8 @@ script EquipService extends Logic
 			self:DenyEquip(userId, def.name .. " 은(는) Lv" .. tostring(def.reqLevel) .. " 부터 장착할 수 있습니다 (현재 Lv" .. tostring(level) .. ")")
 			return
 		end
-		-- 직업 제한: 아직 전직하지 않은 유저(NOVICE)는 제한 없음.
-		-- 전직(B 의 JobChangedEvent → _StatService:SetJob)이 아직 어디서도 호출되지 않아
-		-- 모든 유저가 영구 NOVICE 였고, 그래서 제작한 직업 장비를 아무도 못 입었다 (2026-09-08).
-		-- 전직이 붙으면 그때부터 다른 직업 장비만 막힌다.
+		-- 직업 제한: 아직 전직하지 않은 유저(NOVICE)는 제한 없음. 전직한 유저는 다른 직업 장비만 막힌다.
+		-- 전직(B 의 JobChangedEvent → _StatService:SetJob)은 WO-045(2026-10-05)에서 연결됐다 — 그 전엔 모두 영구 NOVICE 라 제한이 안 걸렸다.
 		if def.reqJob ~= "" and _StatService ~= nil then
 			local su = _StatService:EnsureUser(userId)
 			local job = (su ~= nil) and su.job or ""

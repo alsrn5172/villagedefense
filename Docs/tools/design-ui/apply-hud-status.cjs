@@ -90,8 +90,8 @@ S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-203, -20],
 const SHORT = [
   { id: 'BtnCharacter', x: 1604, icon: 'ico_user', key: 'C', label: '캐릭터', alert: true },
   { id: 'BtnSkill', x: 1680, icon: 'ico_star', key: 'K', label: '스킬', alert: true },
-  { id: 'BtnFriend', x: 1756, icon: 'ico_party', key: 'F', label: '친구' },          // 기능 없음 → 누르면 "준비 중" 토스트
-  { id: 'BtnMenu', x: 1832, icon: null, key: null, label: '메뉴' },                    // 틀 없이 btn_icon_more 그림 하나 · 기능 없음 → "준비 중" 토스트
+  { id: 'BtnFriend', x: 1756, icon: 'ico_party', key: 'F', label: '친구' },          // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
+  { id: 'BtnMenu', x: 1832, icon: null, key: null, label: '메뉴' },                    // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
 ];
 for (const s of SHORT) {
   const BTN = [s.x, 20, 64, 64];

@@ -1,0 +1,323 @@
+@Logic
+script ChatService extends Logic
+
+	-- 우리 채팅 창 (WO-043 · 사용자 2026-10-05 "우리 채팅 창으로 · UI 는 디자이너 시안"). 엔진 채팅(DefaultGroup/UIChat)은 끈다.
+	--   · Enter = 입력 시작(접혀 있으면 자동으로 펼침) · 입력 중 Enter = 보내기 · ESC = 입력 취소 · `/` = 펼침 · 접힘 토글(입력 중엔 글자) · 왼쪽 위 칸 버튼 = 토글.
+	--   · 접힘 = 시안 04-hud #1(72 칸 버튼 + 420×40 마지막 한 줄 판) · 펼침 = 같은 판 그림으로 기록(최근 줄) + 입력 줄.
+	--   · 보내기는 서버가 중계한다: **같은 룸 안의 사람에게만**(매치는 인스턴스 룸이라 = 같은 매치 사람끼리 · 로비 사람과 끊긴다).
+	--   · 말풍선 = 보낸 사람 ChatBalloonComponent.Message(@Sync)를 서버가 쓰고 몇 초 뒤 비운다.
+	--   · `typing`(클라) = 입력 중 — 단축키를 쓰는 다른 창은 이 값이 true 면 키를 무시한다(A 단축키는 반영 · B 단축키는 B 에 요청).
+	-- 잃는 것(엔진 채팅): 월드 채팅 · 채팅 감정 표현 · 음성 채팅.
+
+	property Entity chatRoot = "03feff81-3809-44d5-ad68-abdc831b326c"
+
+	property ButtonComponent btnChat = "1fb52006-8660-4a65-a51a-67625959c98e"
+
+	property Entity lineBox = "01989396-58f9-4688-9ffe-1478d55ea436"
+
+	property TextGUIRendererComponent lineText = "d1ec667e-6cb8-4eab-9996-cb9ea6badf86"
+
+	property Entity logBox = "7d5a72f6-ce79-4827-a62d-5288842363ce"
+
+	property TextGUIRendererComponent logText = "aaa8bcdc-bb05-457c-bea8-8f1ac7d01b14"
+
+	property Entity inputBox = "26e9805b-0f90-4ae6-b8c3-3ec7da7ce4a9"
+
+	property TextGUIRendererInputComponent inputField = "6a7c8fc9-8c1d-4abe-9450-96fa29119d21"
+
+	-- 펼친 기록에 보이는 줄 수 · 들고 있는 줄 수 · 한 번에 보낼 수 있는 글자 수 · 연속 전송 간격(초) · 말풍선 시간(초)
+	property integer VisibleLines = 12
+
+	property integer KeepLines = 60
+
+	property integer MaxChars = 80
+
+	property number SendGapSeconds = 0.5
+
+	property number BalloonSeconds = 5
+
+	-- 입력 중(클라). 다른 단축키 창이 본다.
+	@HideFromInspector
+	property boolean typing = false
+
+	@HideFromInspector
+	property boolean expanded = false
+
+	@HideFromInspector
+	property boolean restoreCollapsed = false
+
+	@HideFromInspector
+	property number submitAt = -10
+
+	-- ESC 로 채팅을 접은 시각(클라). 같은 ESC 로 다른 창까지 닫히지 않게 ESC 창 스택이 본다.
+	@HideFromInspector
+	property number escAt = -10
+
+	-- 입력 중 막을 플레이어 액션(이름 → true)과 그 컨트롤러(바뀌면 다시 단다).
+	@HideFromInspector
+	property any guardedActions = nil
+
+	@HideFromInspector
+	property any guardedPc = nil
+
+	@HideFromInspector
+	property any lines = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	-- 서버: 유저별 마지막 전송 시각 · 말풍선 지우기 타이머
+	@HideFromInspector
+	property any lastSent = nil
+
+	@HideFromInspector
+	property any balloonTimer = nil
+
+	method void OnBeginPlay()
+		-- 서버 = 원장만 · 클라 = 엔진 채팅 끄기 · 키 · 버튼 · 입력칸 연결.
+		if self:IsServer() then
+			self.lastSent = {}
+			self.balloonTimer = {}
+			log("[Chat] ChatService ready (server)")
+			return
+		end
+		-- 클라 준비 전에 먼저 도착한 줄(ReceiveChat)이 있으면 지우지 않는다.
+		if self.lines == nil then self.lines = {} end
+		self.handlers = {}
+		local engine = _EntityService:GetEntityByPath("/ui/DefaultGroup/UIChat")
+		if isvalid(engine) then engine.Enable = false end
+		table.insert(self.handlers, { svc = true, ev = KeyDownEvent, h = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown) })
+		if isvalid(self.btnChat) then
+			table.insert(self.handlers, { e = self.btnChat.Entity, ev = ButtonClickEvent, h = self.btnChat.Entity:ConnectEvent(ButtonClickEvent, function() self:Toggle() end) })
+		end
+		if isvalid(self.inputField) then
+			local fe = self.inputField.Entity
+			table.insert(self.handlers, { e = fe, ev = TextInputSubmitEvent, h = fe:ConnectEvent(TextInputSubmitEvent, self.OnSubmit) })
+			table.insert(self.handlers, { e = fe, ev = TextInputEndEditEvent, h = fe:ConnectEvent(TextInputEndEditEvent, self.OnEndEdit) })
+		end
+		self:SetExpanded(false)
+		log("[Chat] ChatService ready (client) engineChatOff=" .. tostring(isvalid(engine)))
+	end
+
+	method void OnEndPlay()
+		-- 클라 연결 해제.
+		if self:IsServer() or self.handlers == nil then return end
+		for _, x in ipairs(self.handlers) do
+			if x.svc then _InputService:DisconnectEvent(x.ev, x.h)
+			elseif isvalid(x.e) then x.e:DisconnectEvent(x.ev, x.h) end
+		end
+		self.handlers = {}
+	end
+
+	-- ── 클라: 창 ──────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void SetExpanded(boolean on)
+		-- 펼침 = 기록 + 입력 줄 · 접힘 = 마지막 한 줄 판.
+		self.expanded = on
+		if isvalid(self.logBox) then self.logBox.Enable = on end
+		if isvalid(self.inputBox) then self.inputBox.Enable = on end
+		if isvalid(self.lineBox) then self.lineBox.Enable = not on end
+		self:Render()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Toggle()
+		-- `/` · 칸 버튼: 펼침 ↔ 접힘. 입력 중에 접으면 입력도 끝낸 것으로 친다.
+		self:SetExpanded(not self.expanded)
+		if not self.expanded then
+			self.typing = false
+			self.restoreCollapsed = false
+		end
+		log("[Chat] toggle expanded=" .. tostring(self.expanded))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BeginTyping()
+		-- Enter: 접혀 있었으면 펼치고(보낸 뒤 다시 접는다) 입력칸에 바로 커서를 둔다.
+		if not isvalid(self.inputField) then return end
+		self.restoreCollapsed = not self.expanded
+		if not self.expanded then self:SetExpanded(true) end
+		self.typing = true
+		self:GuardActionKeys()
+		self.inputField:ActivateInputField()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GuardActionKeys()
+		-- 입력 중엔 플레이어 액션 키(스킬 Q W E R … · 공격 · 점프 · 줍기)가 안 나가게, 지금 키에 걸린 액션마다 "입력 중이 아닐 때만" 조건을 단다.
+		-- 엔진 PlayerController.AddCondition 이라 스킬 파일(B)은 건드리지 않는다. 조건은 남으므로 액션마다 한 번만 · 플레이어가 바뀌면 다시.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.PlayerControllerComponent) then return end
+		local pc = p.PlayerControllerComponent
+		if self.guardedPc ~= pc then
+			self.guardedPc = pc
+			self.guardedActions = {}
+		end
+		local keys = {
+			KeyboardKey.A, KeyboardKey.B, KeyboardKey.C, KeyboardKey.D, KeyboardKey.E, KeyboardKey.F, KeyboardKey.G, KeyboardKey.H, KeyboardKey.I,
+			KeyboardKey.J, KeyboardKey.K, KeyboardKey.L, KeyboardKey.M, KeyboardKey.N, KeyboardKey.O, KeyboardKey.P, KeyboardKey.Q, KeyboardKey.R,
+			KeyboardKey.S, KeyboardKey.T, KeyboardKey.U, KeyboardKey.V, KeyboardKey.W, KeyboardKey.X, KeyboardKey.Y, KeyboardKey.Z,
+			KeyboardKey.Alpha0, KeyboardKey.Alpha1, KeyboardKey.Alpha2, KeyboardKey.Alpha3, KeyboardKey.Alpha4,
+			KeyboardKey.Alpha5, KeyboardKey.Alpha6, KeyboardKey.Alpha7, KeyboardKey.Alpha8, KeyboardKey.Alpha9,
+			KeyboardKey.Space, KeyboardKey.LeftShift, KeyboardKey.RightShift, KeyboardKey.LeftControl, KeyboardKey.RightControl,
+			KeyboardKey.LeftAlt, KeyboardKey.RightAlt, KeyboardKey.Insert, KeyboardKey.Delete, KeyboardKey.Home, KeyboardKey.End,
+			KeyboardKey.PageUp, KeyboardKey.PageDown,
+		}
+		local added = 0
+		for _, key in ipairs(keys) do
+			local name = pc:GetActionName(key)
+			if name ~= nil and name ~= "" and self.guardedActions[name] ~= true then
+				self.guardedActions[name] = true
+				pc:AddCondition(name, function() return not self.typing end)
+				added = added + 1
+			end
+		end
+		if added > 0 then log("[Chat] guarded " .. tostring(added) .. " player actions while typing") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndTyping(boolean collapse)
+		-- 입력 끝: 입력 시작 때 접혀 있었으면 다시 접는다.
+		self.typing = false
+		if collapse and self.restoreCollapsed then self:SetExpanded(false) end
+		self.restoreCollapsed = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- Enter = 입력 시작 · `/` = 토글 · ESC = 채팅 접기(입력 중이면 쓰던 글도 지움). 입력칸에 커서가 있을 땐 Enter · `/` 는 입력칸 몫이다.
+		local focused = isvalid(self.inputField) and self.inputField.IsFocused
+		local key = event.key
+		if key == KeyboardKey.Return or key == KeyboardKey.KeypadEnter then
+			-- 방금 보낸 Enter 가 KeyDown 으로도 한 번 더 들어오면 다시 열리지 않게(0.3초).
+			if focused or (_UtilLogic.ElapsedSeconds - self.submitAt) < 0.3 then return end
+			self:BeginTyping()
+		elseif key == KeyboardKey.Slash then
+			if focused or self.typing then return end
+			self:Toggle()
+		elseif key == KeyboardKey.Escape then
+			-- 펼쳐져 있거나 입력 중이면 접는다(사용자 2026-10-05 "ESC 누르면 채팅 토글 off"). 입력칸이 ESC 로 먼저 풀려 typing 이 꺼졌어도 펼침을 보고 접는다.
+			if self.expanded or self.typing then
+				if isvalid(self.inputField) then self.inputField.Text = "" end
+				self.typing = false
+				self.restoreCollapsed = false
+				self:SetExpanded(false)
+				self.escAt = _UtilLogic.ElapsedSeconds
+				log("[Chat] esc -> collapsed")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSubmit(TextInputSubmitEvent event)
+		-- 입력 중 Enter: 보내고 입력칸을 비운다.
+		self.submitAt = _UtilLogic.ElapsedSeconds
+		local text = event.Text or ""
+		if isvalid(self.inputField) then self.inputField.Text = "" end
+		text = (string.gsub(text, "^%s+", ""))
+		text = (string.gsub(text, "%s+$", ""))
+		if text ~= "" then self:RequestSend(text) end
+		self:EndTyping(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndEdit(TextInputEndEditEvent event)
+		-- 다른 곳을 눌러 입력칸에서 커서가 빠졌다 → 입력 끝(창 모양은 그대로).
+		if self.typing and (_UtilLogic.ElapsedSeconds - self.submitAt) >= 0.3 then
+			self.typing = false
+			self.restoreCollapsed = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Render()
+		-- 펼침 = 최근 VisibleLines 줄 · 접힘 = 마지막 한 줄(없으면 안내).
+		if self.lines == nil then return end
+		local n = #self.lines
+		if isvalid(self.logText) then
+			local from = math.max(1, n - self.VisibleLines + 1)
+			local out = {}
+			for i = from, n do table.insert(out, self.lines[i]) end
+			self.logText.Text = table.concat(out, "\n")
+		end
+		if isvalid(self.lineText) then
+			if n > 0 then
+				self.lineText.Text = self.lines[n]
+			else
+				self.lineText.Text = "<color=#7C88A4>Enter 로 채팅 · / 로 펼치기</color>"
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ReceiveChat(string name, string text)
+		-- 서버 → 같은 룸 사람들: 한 줄 추가. 닉네임 금색 · 말 아이보리(시안 #1).
+		if self.lines == nil then self.lines = {} end
+		table.insert(self.lines, "<color=#E8B64C>" .. name .. "</color>  " .. text)
+		while #self.lines > self.KeepLines do table.remove(self.lines, 1) end
+		self:Render()
+	end
+
+	-- ── 서버: 중계 ─────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method string Clean(string text)
+		-- 앞뒤 공백 · 줄바꿈 정리 · 글자 수 자르기 · 서식 태그 막기(말풍선 · 기록은 서식 글자를 그린다).
+		local t = (string.gsub(text or "", "[\r\n\t]", " "))
+		t = (string.gsub(t, "^%s+", ""))
+		t = (string.gsub(t, "%s+$", ""))
+		t = (string.gsub(t, "<", "‹"))
+		t = (string.gsub(t, ">", "›"))
+		local ok, len = pcall(utf8.len, t)
+		if ok and len ~= nil and len > self.MaxChars then
+			local cut = utf8.offset(t, self.MaxChars + 1)
+			if cut ~= nil then t = string.sub(t, 1, cut - 1) end
+		end
+		return t
+	end
+
+	@ExecSpace("Server")
+	method void RequestSend(string text)
+		-- 클라 → 서버: 같은 룸 안 사람들에게만 보낸다(룸 = 매치 인스턴스 · 로비). 너무 잦으면 버린다.
+		local uid = senderUserId
+		if uid == nil or uid == "" then return end
+		local now = _UtilLogic.ElapsedSeconds
+		if self.lastSent == nil then self.lastSent = {} end
+		if self.lastSent[uid] ~= nil and now - self.lastSent[uid] < self.SendGapSeconds then return end
+		local t = self:Clean(text)
+		if t == "" then return end
+		self.lastSent[uid] = now
+		local sender = _UserService:GetUserEntityByUserId(uid)
+		local name = uid
+		if isvalid(sender) and isvalid(sender.PlayerComponent) and (sender.PlayerComponent.Nickname or "") ~= "" then name = sender.PlayerComponent.Nickname end
+		name = (string.gsub(name, "<", "‹"))
+		local n = 0
+		for _, u in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(u) and isvalid(u.PlayerComponent) then
+				self:ReceiveChat(name, t, u.PlayerComponent.UserId)
+				n = n + 1
+			end
+		end
+		self:ShowBalloon(sender, uid, t)
+		log("[Chat] " .. uid .. " -> " .. tostring(n) .. " user(s) in room (" .. tostring(utf8.len(t) or 0) .. " chars)")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ShowBalloon(Entity sender, string uid, string text)
+		-- 보낸 사람 머리 위 말풍선(Message 는 @Sync) — BalloonSeconds 뒤 비운다. 새 말이 오면 타이머를 다시 잰다.
+		if not isvalid(sender) or not isvalid(sender.ChatBalloonComponent) then return end
+		local cb = sender.ChatBalloonComponent
+		cb.Message = text
+		cb.ShowDuration = self.BalloonSeconds
+		if self.balloonTimer == nil then self.balloonTimer = {} end
+		if self.balloonTimer[uid] ~= nil then _TimerService:ClearTimer(self.balloonTimer[uid]) end
+		self.balloonTimer[uid] = _TimerService:SetTimerOnce(function()
+			self.balloonTimer[uid] = nil
+			if isvalid(sender) and isvalid(sender.ChatBalloonComponent) and sender.ChatBalloonComponent.Message == text then
+				sender.ChatBalloonComponent.Message = ""
+			end
+		end, self.BalloonSeconds)
+	end
+
+end
