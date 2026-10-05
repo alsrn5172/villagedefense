@@ -19,7 +19,19 @@
 ### HUD — 친구 · 메뉴 버튼 삭제
 - `Summon/StatusHUDController`: 두 버튼("준비 중" 토스트만 띄우던 것)을 `OnBeginPlay` 에서 끈다. `.ui` 배치는 그대로(디자이너 배치 보존). `apply-hud-status.cjs` 주석에 표시.
 
+### 리스항구 택시 — 차원의 거울
+- 새 기능 NPC `VD_LITH_TAXI`(`FunctionalNpcCatalog` 행 · `MapNpcs_Village` 리스항구 (10.81, 1.11) · 모델 `Models/Npcs/VD_LITH_TAXI` = 원작 `npc/9010022` stand · 이름표 "차원의 거울"). 같은 자리에 있던 장식 NPC(`MapNpcs` 9010022 · 영어 이름표 "Dimensional Mirror") 행은 뺐다(노틸러스 장식 거울은 그대로).
+- 창: `CommonNpcUIController` 라우트 `taxi` — 차원 관문의 5마을 카드를 같이 쓴다(에너지 코어 칩 끔 · 무료). 카드 = 마을 이름 + 내 마을 / 주인 있음 / 빈 마을. 전직 전이면 "전직한 뒤에 이용할 수 있습니다" 로 [이동] 잠금.
+- 서버: `LaneStateService` 뷰 `taxi`(JOB · T 행) · `RequestTaxi(villageId)` — 관전 차단 · **전직했나**(B `PlayerSkillState.GetJobId` ≠ 초보자) · 리스항구 마을 맵에서만 · 도착 = 그 마을 `LaneConfig` VILLAGE 행의 넥서스 자리에서 통로 가운데 쪽으로 `TaxiSideOffset`(1.5) · 발판 0.3 위. 성공하면 창을 닫는다(`DONE`). 로그 `[Lane] taxi <uid> -> HENESYS Henesys_Village_MinimiMain (x, y)`.
+
+### 전직관 머리 위 전구
+- 전직관 모델 5종(`VD_JOB_*`)에 꺼진 자식 `JobMark`(원작 퀘스트 전구 `25076964…` · 후보 K5 · 머리 높이 = 그림 실측 0.80~1.52 · Default/3 = 플레이어 뒤).
+- 새 `Npc/JobMarkController`(@Logic · 클라): 0.5초마다 지금 맵의 `Npc_VD_JOB_<직업>_*` 의 `JobMark` 를 **초보자 · 레벨 ≥ 그 직업 1차 요구 레벨**(JobDatabase)일 때만 내 화면에서 켠다. 로그 `[JobMark] <맵> shown=5 job=NOVICE lv=10`.
+
 ### 로그 확인 (Maker Play) — TODO
+- [ ] Reimport All(새 `JobMarkController` · 새 모델 등록) → 빌드 경고 0.
+- [ ] Lv9 → 전구 없음 · Lv10 → 5명 머리 위 전구 · 전직하면 사라짐(눈 확인 · 높이 조정 필요할 수 있음).
+- [ ] 차원의 거울: 초보자 → [이동] 잠금 · 전직 뒤 → 5마을 각각 넥서스 옆에 내림(발판 위) · 창 닫힘.
 - [ ] 새 판 시작: HP 400/400 · 달팽이 접촉 피해 1~3 · 빨간 달팽이 16 안쪽.
 - [ ] 걷기 속도 절반 · 두 판 연속으로 해도 빨라지지 않는다(`[Stat]` 걷기 속도 로그).
 - [ ] 오른쪽 위 친구 · 메뉴 버튼이 안 보인다.
