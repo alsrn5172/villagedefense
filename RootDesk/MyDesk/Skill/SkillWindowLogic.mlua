@@ -71,6 +71,19 @@ script SkillWindowLogic extends Logic
     --   (예전 b/skill-novice-snails: 탭 3개 — 초보자면 0 · 1 · 2 차 · 전직하면 1 · 2 · 3 차로 글자를 런타임에 바꿨다.)
     property string NoviceTabLabel = "초보자"
 
+    -- 배우기 거절 문구(화면용 한국어 · F-3 2026-10-05). 서버 사유(영어)는 로그에만 — LearnReasonText 가 바꿔 띄운다. 비활성 "+" 는 요청 없이 같은 문구(PlusBlockReason).
+    property string NoCastKeyText = "전직 뒤에는 쓸 키가 없어 올릴 수 없습니다"
+
+    property string MaxLevelText = "이미 최대 레벨입니다"
+
+    property string PastTierText = "지난 차수 스킬은 더 올릴 수 없습니다"
+
+    property string NoSpText = "스킬 포인트가 부족합니다"
+
+    property string WrongJobText = "이 직업은 배울 수 없는 스킬입니다"
+
+    property string LearnFailText = "지금은 배울 수 없습니다"
+
     property table rowEntities = {}
     property table rowHandlers = {}
 
@@ -561,7 +574,10 @@ script SkillWindowLogic extends Logic
             local reason = _PlayerSkillState.lastLearnReason
             if reason ~= nil and reason ~= "" then
                 -- 실패: 설명 칸이 없어졌으니 마지막 커서 자리에 잠깐 띄운다(누른 "+" 바로 옆).
-                self:ShowFloatingMessage(reason)
+                -- 서버 사유는 로그용 영어 문자열이다 — 화면에는 한국어 한 줄만(LearnReasonText · F-3 2026-10-05). 한 번 띄우면 비워 다음 갱신 때 다시 뜨지 않게 한다.
+                log("SkillWindowLogic: learn refused by server · " .. reason)
+                _PlayerSkillState.lastLearnReason = ""
+                self:ShowFloatingMessage(self:LearnReasonText(reason))
             elseif self.hoveredSkillId ~= "" then
                 -- 성공(또는 단순 갱신): 커서가 아직 올라가 있는 행의 툴팁을 새 레벨·새 수치로 다시 그린다.
                 self:ShowTooltip(self.hoveredSkillId)
@@ -889,18 +905,15 @@ script SkillWindowLogic extends Logic
     method void ApplyRowState(any row, table skill, string playerJobLine, number playerTier, number playerLevel)
         -- 목록 행 한 줄의 표시 상태를 PlayerSkillState 에서 읽어 한꺼번에 정한다(디자이너 시안 08-skill #5~#10).
         -- CreateRow(행을 만들 때)와 RefreshRowLevels(레벨 · 포인트가 바뀔 때)가 같은 길로 부른다.
-        -- 잠김 = CanLearn 이 못 배운다고 하는 행(전직 전 · 레벨 부족 — 둘 다 "지금 표시 유지"로 잠김 그림) · 잠김은 그리기 상태일 뿐
-        -- 배우기를 막지 않는다(+ 를 누르면 PlayerSkillState.LearnSkill → CanLearn 이 사유를 돌려주고 ShowFloatingMessage 가 띄운다).
+        -- 잠김 = CanLearn 이 못 배운다고 하는 행(전직 전 · 레벨 부족 — 둘 다 "지금 표시 유지"로 잠김 그림).
+        -- 잠긴 행 · 비활성 "+" 를 누르면 요청을 보내지 않고 사유를 한국어로 띄운다(OnPlusClicked → PlusBlockReason · F-3 2026-10-05).
         local level = _PlayerSkillState:LocalSkillLevel(skill.id)
         local requirements = _SkillDatabase:CanLearn(skill.id, playerJobLine, playerTier, playerLevel)
         local locked = not requirements.ok
         local maxed = (not locked) and level >= skill.maxLevel
-        -- 포인트 = 그 스킬 차수의 남은 SP(차수별 SP · 서버 RequestLearn 과 같은 기준). 전직 뒤 지갑에 초보자 SP 가 남아 있어도
-        -- 1 차 행의 "+" 는 1 차 SP 로만 켜진다(b/skill-window-novice-tab). 차수별 SP 를 끄면 예전처럼 지갑 전체.
-        local noPoints = _PlayerSkillState:LocalSp() <= 0
-        if _PlayerSkillState.TierSpEnabled then noPoints = _PlayerSkillState:LocalTierSpLeft(skill.requiredTier) < math.max(skill.spCost, 1) end
-        -- 전직 뒤 누를 키가 없는 초보자 액티브 스킬(달팽이 세마리)은 못 올린다 — 서버 RequestLearn 도 거절한다(PlayerSkillState.NoviceSkillHasNoKey).
-        if _PlayerSkillState:NoviceSkillHasNoKey(playerJobLine, skill) then noPoints = true end
+        -- "+" 비활성 = 서버가 거절할 행(PlusBlockReason · 서버 RequestLearn 과 같은 판정 · OnPlusClicked 도 같은 판정으로 요청을 안 보낸다):
+        --   차수 남은 SP 부족 · 키 없는 초보자 액티브 스킬(달팽이 세마리 전직 뒤) · 지난 차수 스킬 등. 차수별 SP 를 끄면 예전처럼 지갑 전체.
+        local noPoints = self:PlusBlockReason(skill, playerJobLine, playerTier, playerLevel) ~= ""
         local isPassive = skill.behavior == "PASSIVE"
         self.rowLocked[skill.id] = locked
 
@@ -1243,7 +1256,7 @@ script SkillWindowLogic extends Logic
         if lockReason ~= "" then
             table.insert(top, "<color=#F0806F>필요 : " .. lockReason .. "</color>")
         elseif _PlayerSkillState:NoviceSkillHasNoKey(_PlayerSkillState:LocalJobId(), skill) then
-            table.insert(top, "<color=#F0806F>전직 뒤에는 쓸 키가 없어 올릴 수 없습니다</color>")
+            table.insert(top, "<color=#F0806F>" .. self.NoCastKeyText .. "</color>")
         else
             local tierText = self:Num(skill.requiredTier) .. "차"
             if skill.requiredTier <= 0 then tierText = self.NoviceTabLabel end
@@ -1747,8 +1760,60 @@ script SkillWindowLogic extends Logic
         -- 성공 → 서버가 SyncState → "skill" 이벤트 → RefreshFromState 가 레벨·SP 를 다시 그린다.
         -- 실패 → LearnResult 가 lastLearnReason 을 채우고 "skill" 이벤트 → OnSkillStateChanged 가 사유를 띄운다.
         -- 예전에는 여기서 설명 칸에 "..." 을 써 두었지만, 그 칸은 이제 툴팁 본문이라 지우면 방금 띄운 툴팁이 날아간다.
+        -- 비활성 "+"(PlusBlockReason ≠ "")는 요청을 보내지 않고 그 사유를 한국어로 띄운다(F-3 2026-10-05: 예전엔 회색 "+" 도 요청을 보내 서버 영어 사유가 화면에 떴다).
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill ~= nil then
+            local blocked = self:PlusBlockReason(skill, _PlayerSkillState:LocalJobId(), _PlayerSkillState:LocalTier(), _PlayerSkillState:LocalLevel())
+            if blocked ~= "" then
+                log("SkillWindowLogic: + blocked " .. skillId .. " (no request) · " .. blocked)
+                self:ShowFloatingMessage(blocked)
+                return
+            end
+        end
         _PlayerSkillState:RequestLearn(skillId)
         log("SkillWindowLogic: RequestLearn(" .. skillId .. ")")
+    end
+
+    @ExecSpace("ClientOnly")
+    method string PlusBlockReason(table skill, string playerJobLine, number playerTier, number playerLevel)
+        -- 이 행의 "+" 를 눌러도 서버가 거절할 사유(한국어 한 줄) · 배울 수 있으면 "". 서버 PlayerSkillState.RequestLearn 의 거절 순서를 따른다:
+        --   CanLearn(직업 · 차수 · 레벨) → 최대 레벨 → 키 없는 초보자 액티브 스킬 → 지난 차수 스킬 → 그 차수 남은 SP.
+        -- ApplyRowState("+" 비활성 그림)와 OnPlusClicked(요청 안 보냄)가 같이 쓴다. 판정은 결국 서버가 한다(여기는 미러로 미리 보는 것).
+        local req = _SkillDatabase:CanLearn(skill.id, playerJobLine, playerTier, playerLevel)
+        if not req.ok then
+            local lock = self:LockReasonText(skill, playerTier, playerLevel)
+            if lock ~= "" then return lock end
+            return self:LearnReasonText(req.reason)
+        end
+        if _PlayerSkillState:LocalSkillLevel(skill.id) >= skill.maxLevel then return self.MaxLevelText end
+        if _PlayerSkillState:NoviceSkillHasNoKey(playerJobLine, skill) then return self.NoCastKeyText end
+        local cost = math.max(skill.spCost, 1)
+        if _PlayerSkillState.TierSpEnabled then
+            local t = math.floor(skill.requiredTier)
+            local noviceAnyTier = _PlayerSkillState.NoviceSpKeptAcrossJobs and t == 0
+            if t ~= math.floor(playerTier) and not noviceAnyTier then return self.PastTierText end
+            if _PlayerSkillState:LocalTierSpLeft(t) < cost then return self.NoSpText end
+        elseif _PlayerSkillState:LocalSp() < cost then
+            return self.NoSpText
+        end
+        return ""
+    end
+
+    @ExecSpace("ClientOnly")
+    method string LearnReasonText(string reason)
+        -- 서버 거절 사유(PlayerSkillState.RequestLearn · SkillDatabase.CheckRequirements 의 로그용 영어) → 화면용 한국어 한 줄.
+        -- 원문은 로그에만 남긴다(OnSkillStateChanged). 모르는 사유는 일반 문구.
+        if reason == nil or reason == "" then return self.LearnFailText end
+        local n = string.match(reason, "^requires tier (%d+)")
+        if n ~= nil then return n .. "차 전직 필요" end
+        n = string.match(reason, "^requires level (%d+)")
+        if n ~= nil then return n .. "레벨 필요" end
+        if string.find(reason, "^requires job line") then return self.WrongJobText end
+        if string.find(reason, "^already at max level") then return self.MaxLevelText end
+        if string.find(reason, "^no cast key") then return self.NoCastKeyText end
+        if string.find(reason, "^per%-tier SP: only tier") then return self.PastTierText end
+        if string.find(reason, "^not enough") then return self.NoSpText end
+        return self.LearnFailText
     end
 
     @ExecSpace("ClientOnly")

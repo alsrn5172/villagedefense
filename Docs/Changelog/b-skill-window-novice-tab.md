@@ -29,3 +29,10 @@
 
 ### 스킬 창 — 툴팁 단어 단위 줄바꿈
 - `ShowPanelWithParts` 가 글을 넣기 전에 `WrapWords` 로 띄어쓰기 자리에서 줄을 나눈다(폭 = 그 칸 폭 − `TooltipWrapSlack` 6 · 재기 = 그 글자 컴포넌트 `GetPreferredWidth` · 색 태그 뺀 글자). 한 단어가 칸보다 길면 그 단어만 엔진이 꺾는다. `TooltipWordWrap = false` 면 예전처럼.
+
+### 비활성 "+" · 거절 문구 (F-3 · 사용자 눈 확인 2026-10-05)
+- 예전: 회색 "+"(전직 뒤 달팽이 세마리)를 눌러도 `RequestLearn` 을 보냈고, 서버 거절 사유 영어 문자열 "no cast key for WARRIOR (novice active skill)" 이 그대로 화면에 떴다.
+- 지금: `SkillWindowLogic.PlusBlockReason` = 서버 `RequestLearn` 과 같은 순서의 미리 판정(CanLearn → 최대 레벨 → 키 없는 초보자 액티브 → 지난 차수 → 그 차수 SP). 사유가 있으면 "+" 는 비활성 그림이고, 눌러도 **요청을 보내지 않고** 한국어 한 줄만 띄운다(`OnPlusClicked`). `ApplyRowState` 도 같은 판정을 쓴다.
+- 서버가 거절해도(미러가 늦은 경우 등) 화면에는 `LearnReasonText` 의 한국어만 — 원문은 로그(`learn refused by server · …`). 띄운 뒤 `lastLearnReason` 을 비워 다음 갱신 때 다시 뜨지 않는다.
+- 영어로 화면에 뜰 수 있던 사유 → 한국어: `requires tier N` → "N차 전직 필요" · `requires level N` → "N레벨 필요" · `requires job line X` → "이 직업은 배울 수 없는 스킬입니다" · `already at max level` → "이미 최대 레벨입니다" · `no cast key for …` → "전직 뒤에는 쓸 키가 없어 올릴 수 없습니다"(툴팁과 같은 줄) · `per-tier SP: only tier …` → "지난 차수 스킬은 더 올릴 수 없습니다" · `not enough tier N SP (x)` · `not enough SP` → "스킬 포인트가 부족합니다" · `unknown skill: …` · 그 밖 → "지금은 배울 수 없습니다"(원문은 로그만).
+- 같이 고친 표시: 지난 차수 스킬(예: 2차인데 1차 스킬) 행의 "+" 가 켜져 보이던 것 — 미러 원장은 1차 SP 를 남은 것으로 세지만 서버는 차수 규칙으로 거절한다 → 이제 비활성.
