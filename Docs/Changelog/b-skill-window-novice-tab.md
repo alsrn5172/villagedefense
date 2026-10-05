@@ -25,5 +25,7 @@
 - `SkillWindowLogic`: UI 탭 번호 = 차수(0 초보자 · 1 · 2 · 3 · `TabTier`) · 모든 직업 같은 배치. 초보자 탭은 NOVICE 줄 스킬을 보여 준다. 탭 글자 런타임 바꾸기(`tabLabelBase`)는 없앴다. 직업 · 차수가 바뀌어 행을 다시 만들면 지금 차수 탭으로 간다(`TabAfterBuild`).
 - 행 "+" 비활성 기준: 지갑 0 → 그 스킬 차수 남은 SP(`LocalTierSpLeft`) < SpCost. 전직 뒤 지갑에 초보자 SP 만 남아 있어도 1 차 행 "+" 는 꺼진 그림.
 
+- **스킬 포인트 띠 숫자 = 고른 탭 차수의 남은 SP**(사용자 2026-10-05 · 예전 = 지갑 전체라 초보자 SP 6 + 1차 9 = 15 가 보여도 직업 스킬엔 9 만 쓸 수 있었다): `RefreshFooter`(새) 가 `LocalTierSpLeft(TabTier(currentTab))` 를 쓰고 `RefreshFromState` · `ShowTab` 이 부른다. 0 일 때 안내 글 · 회색도 이 숫자를 따른다. 글자 모양은 그대로(숫자만). 차수별 SP 를 끄면 지갑. A 의 HUD "AP · SP" 칩(`Summon/StatusHUDController.mlua:225`)은 그대로 지갑 전체(A 가 정할 것).
+
 ### 스킬 창 — 툴팁 단어 단위 줄바꿈
 - `ShowPanelWithParts` 가 글을 넣기 전에 `WrapWords` 로 띄어쓰기 자리에서 줄을 나눈다(폭 = 그 칸 폭 − `TooltipWrapSlack` 6 · 재기 = 그 글자 컴포넌트 `GetPreferredWidth` · 색 태그 뺀 글자). 한 단어가 칸보다 길면 그 단어만 엔진이 꺾는다. `TooltipWordWrap = false` 면 예전처럼.
