@@ -56,13 +56,14 @@
 
 ### 게임 종료 경고 (사용자 2026-10-05 · 방식 = 엔진 나가기 창 + 경고)
 - MSW 는 스크립트로 게임을 끄는 API 가 없다(나가기 = 엔진 창 · `ExitPopupOpenedEvent` / `ExitPopupClosedEvent` 만 들을 수 있다 · `KickUser` 는 "추방" 문구).
-- 새 `Match/ExitWarnController`(@Logic): 나가기 창이 열리면 서버에 물어 **매치 진행 중 · 남아 있는 참가자**면 경고 띠를 켠다 · 창이 닫히면 끈다. 나가면 지금처럼 `OnUserLeave` → 포기(넥서스 0 · 탈락 · 이탈 기록).
+- 새 `Match/ExitWarnController`(@Logic): 나가기 창이 열리면 서버에 물어 **매치 진행 중 · 남아 있는 참가자**면 경고 띠를 켠다 · 창이 닫히면 끈다. 서버 답이 창이 닫힌 뒤에 오면 무시한다(Codex 검토 반영). 나가면 지금처럼 `OnUserLeave` → 포기(넥서스 0 · 탈락 · 이탈 기록).
 - 새 `ui/ExitWarnGroup`(`Docs/tools/design-ui/apply-exit-warn.cjs` · 순위 40 · 클릭 안 막음): 화면 위쪽 700×196 띠 — 부활 창과 같은 판 · 제목 띠 · 경고 아이콘 · 글자 색 재사용. "매치 중에 나가면 불이익이 있어요" / "지금 나가면 포기로 처리됩니다 — 넥서스가 0 이 되어 탈락하고 순위 보상을 받을 수 없어요." / "그래도 나가려면 나가기 창에서 계속 진행하세요".
 
 ### 몬스터 도감 해금 재료 (사용자 2026-10-05 "다이아몬드가 아니라 몬스터 재료")
 - `LaneStateService.CollectionMaterialOf(villageId, monsterId)`: 그 몬스터의 재료(`MonsterRecruit.MaterialItemId` × `MaterialCount` = 모집과 같은 `MAT_<id>` 8개). 모집 표에 없으면 `MAT_<id>` → 그것도 없으면 예전 `MaterialOf`(다이아몬드).
 - 도감 뷰 `C` 행 뒤에 재료 4칸(itemId · 이름 · 보유 · 필요) · `RequestUnlockCollection` 도 같은 재료를 받는다.
 - `Npc/VillageRecordUIController`: 고른 몬스터의 재료로 비용 칩을 그리고, 고르기 전 보유 칩의 공용 재화(다이아몬드) 칸은 감춘다.
+- (Codex 검토 반영) 재료가 없는 몬스터 10종(달팽이 · 파란 달팽이 · 스포아 · 빨간 달팽이 · 슬라임 · 초록버섯 · 우는 파란버섯 · 겁먹은 와일드보어 · 주니어 레이스 · 아이언호그 — 모집 표에도 없다)은 다이아몬드로 받지 않고 **해금 없음 · 모집 대상 아님**(버튼 끔 · 서버도 거절). 재료를 새로 만들지는 사용자 결정 대기.
 
 ### 몬스터가 죽어도 쫓아옴 (사용자 2026-10-05)
 - 원인: `Monster.Dead()` 는 `IsDead` 만 세우고 DEAD 전이는 다음 틱이라, 그 사이 추격 상태(`StateTypeChase`)가 계속 밀고 붙은 속도도 남았다.

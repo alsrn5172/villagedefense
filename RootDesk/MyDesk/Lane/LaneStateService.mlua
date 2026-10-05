@@ -716,13 +716,14 @@ script LaneStateService extends Logic
 	@ExecSpace("ServerOnly")
 	method any CollectionMaterialOf(string villageId, integer monsterId)
 		-- 도감 해금 재료 = **그 몬스터의 재료**(MonsterRecruit.MaterialItemId × MaterialCount · 모집과 같은 재료 · 사용자 2026-10-05 "다이아몬드가 아니라 몬스터 재료").
-		-- 모집 표에 없는 몬스터는 MAT_<id> 아이템이 있으면 그것 8개, 그것도 없으면 예전 마을 재화(MaterialOf).
+		-- 모집 표에 없는 몬스터는 MAT_<id> 아이템이 있으면 그것 8개. 그것도 없으면 nil = 모집 대상이 아니라 해금이 없다
+		-- (예전엔 다이아몬드로 받았다 · Codex 검토 2026-10-05 — 달팽이 · 스포아 등 10종).
 		local rr = self:RecruitRow(monsterId)
 		local itemId = (rr ~= nil) and rr.materialItemId or ""
 		local count = (rr ~= nil) and rr.materialCount or 8
 		if itemId == "" then itemId = "MAT_" .. tostring(monsterId) end
 		local def = (_ItemCatalog ~= nil) and _ItemCatalog:Get(itemId) or nil
-		if def == nil then return self:MaterialOf(villageId) end
+		if def == nil then return nil end
 		return { itemId = itemId, name = def.name or itemId, count = count }
 	end
 
@@ -1291,10 +1292,15 @@ script LaneStateService extends Logic
 						nextMul = nr.mul
 					end
 					-- 뒤 4칸 = 이 몬스터 해금 재료(itemId · 이름 · 보유 · 필요) — 몹마다 다르다(WO-046 · 2026-10-05).
+					-- 재료가 없는 몬스터(모집 대상 아님)는 itemId 칸에 "-" → 클라가 "해금 없음" 으로 그린다.
 					local cm = self:CollectionMaterialOf((v ~= nil) and v.id or "", math.floor(tonumber(r.id) or 0))
-					local cmHave = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, cm.itemId) or 0
-					add({ "C", r.id, r.name, tostring(r.level), tostring(monLv), r.icon, tostring(nextCost), string.format("%.1f", mul), string.format("%.1f", nextMul),
-						cm.itemId, cm.name, tostring(cmHave), tostring(cm.count) })
+					if cm == nil then
+						add({ "C", r.id, r.name, tostring(r.level), tostring(monLv), r.icon, tostring(nextCost), string.format("%.1f", mul), string.format("%.1f", nextMul), "-", "", "0", "0" })
+					else
+						local cmHave = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, cm.itemId) or 0
+						add({ "C", r.id, r.name, tostring(r.level), tostring(monLv), r.icon, tostring(nextCost), string.format("%.1f", mul), string.format("%.1f", nextMul),
+							cm.itemId, cm.name, tostring(cmHave), tostring(cm.count) })
+					end
 				end
 			end
 			local vid = self:VillageOfUser(userId)
@@ -1413,6 +1419,11 @@ script LaneStateService extends Logic
 		if monsterId <= 0 then self:Push(uid, "collection") return end
 		if self:MonLevel(v, monsterId) >= 1 then self:Toast(uid, "이미 해금했습니다") self:Push(uid, "collection") return end
 		local mat = self:CollectionMaterialOf(v.id, monsterId)
+		if mat == nil then
+			self:Toast(uid, "모집 대상이 아닌 몬스터라 해금할 수 없습니다")
+			self:Push(uid, "collection")
+			return
+		end
 		if _InventoryService == nil or _InventoryService:CountItem(uid, mat.itemId) < mat.count then
 			-- 실패도 뷰를 다시 보내야 클라 waiting 이 풀린다 (2026-09-07 "해금 버튼이 안 눌림" 원인).
 			self:Toast(uid, mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다 (보유 " .. tostring(_InventoryService and _InventoryService:CountItem(uid, mat.itemId) or 0) .. ")")
