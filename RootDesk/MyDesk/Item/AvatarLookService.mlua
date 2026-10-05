@@ -36,11 +36,16 @@ script AvatarLookService extends Logic
 	@HideFromInspector
 	property any arriving = nil
 
+	-- 내 아바타(MY) 계정 무기 유무 (WO-042): nil = 아직 모름 · "asking" = 클라에 물어봄 · "has" · "none"(직업 무기를 채운다). 룸마다 · 떠나면 지운다.
+	@HideFromInspector
+	property any weaponState = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self.records = {}
 		self.awaiting = {}
 		self.arriving = {}
+		self.weaponState = {}
 		self:LoadLooks()
 		_UserService:ConnectEvent(UserEnterEvent, self.OnUserEnter)
 		_UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
@@ -146,10 +151,26 @@ script AvatarLookService extends Logic
 			return false
 		end
 		if rec.mode == "MY" then
-			-- 계정 아바타 그대로 · 장비 안 보임(무기 포함).
+			-- 계정 아바타 그대로 · 게임 장비 안 보임. 단 계정 아바타가 무기를 안 들고 있으면 직업 무기만 쥐여 준다(WO-042 · 사용자 2026-10-05).
+			-- 무기 유무는 클라만 안다(GetEquip 은 ClientOnly) → 처음 한 번 무기 칸을 비운 채 입히고 그 클라에 물어본다(CheckAccountWeapon).
+			-- 채운 뒤에는 다시 묻지 않는다(채운 무기를 계정 무기로 잘못 읽지 않게).
 			costume.UseCustomEquipOnly = false
-			self:WriteSlots(costume, {})
-			log("[Look] applied MY (" .. userId .. ")")
+			local s = {}
+			local st = (self.weaponState ~= nil) and self.weaponState[userId] or nil
+			if st == "none" then
+				local w = self:JobWeaponLook(userId)
+				if w ~= nil then
+					s.OneHandWeapon = w.OneHandWeapon
+					s.TwoHandWeapon = w.TwoHandWeapon
+					s.SubWeapon = w.SubWeapon
+				end
+			end
+			self:WriteSlots(costume, s)
+			log("[Look] applied MY weapon=" .. tostring(st) .. " (" .. userId .. ")")
+			if st == nil and self.weaponState ~= nil then
+				self.weaponState[userId] = "asking"
+				self:CheckAccountWeapon(userId)
+			end
 			return true
 		end
 		local lookId = rec.mode
@@ -256,6 +277,7 @@ script AvatarLookService extends Logic
 		self.records[uid] = nil
 		self.awaiting[uid] = nil
 		self.arriving[uid] = nil
+		if self.weaponState ~= nil then self.weaponState[uid] = nil end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -266,11 +288,75 @@ script AvatarLookService extends Logic
 			return
 		end
 		local rec = self.records[uid]
-		if rec == nil or rec.mode == "MY" or rec.jobLook ~= true then
+		if rec ~= nil and rec.mode == "MY" then
+			-- 내 아바타: 계정 무기가 없어 직업 무기를 쥐여 준 사람만 새 직업 무기로 다시 입힌다(WO-042).
+			if self.weaponState ~= nil and self.weaponState[uid] == "none" then
+				log("[Look] MY job weapon -> " .. tostring(event.NewJobId) .. " (" .. uid .. ")")
+				self:Reapply(uid)
+			end
+			return
+		end
+		if rec == nil or rec.jobLook ~= true then
 			return
 		end
 		log("[Look] job changed " .. tostring(event.PrevJobId) .. " -> " .. tostring(event.NewJobId) .. " (" .. uid .. ")")
 		self:Reapply(uid)
+	end
+
+	-- ── 내 아바타 무기 (WO-042) ─────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method any JobWeaponLook(string userId)
+		-- 지금 직업 행의 무기 칸(OneHandWeapon · TwoHandWeapon · SubWeapon). 초보자 · 행이 없는 직업 = 모험가 남 행 무기.
+		local job = ""
+		if _PlayerSkillState ~= nil then job = _PlayerSkillState:GetJobId(userId) or "" end
+		local look = nil
+		if job ~= "" and _PlayerSkillState ~= nil and job ~= _PlayerSkillState.NoviceJobId then look = self:LookOf(job) end
+		if look == nil then look = self:LookOf("EXPLORER_M") end
+		return look
+	end
+
+	@ExecSpace("Client")
+	method void CheckAccountWeapon()
+		-- 클라: 계정 아바타가 무기를 들고 있나(GetEquip 은 클라 전용). 아바타가 다 실리길 1초 기다렸다 보고 · 아직이면 두 번 더.
+		local tries = 0
+		local check = nil
+		check = function()
+			tries = tries + 1
+			local p = _UserService.LocalPlayer
+			local c = isvalid(p) and p.CostumeManagerComponent or nil
+			-- 아바타 컴포넌트가 늦게 생기면 10초까지 기다린다. 그래도 없으면 "무기 없음"으로 답한다(서버가 "asking" 에 멈춰 있지 않게 · 직업 무기가 채워진다).
+			if not isvalid(c) then
+				if tries < 10 then
+					_TimerService:SetTimerOnce(check, 1.0)
+				else
+					log_warning("[Look] account weapon check gave up: no CostumeManagerComponent → report none")
+					self:ReportAccountWeapon(false)
+				end
+				return
+			end
+			local one = c:GetEquip(MapleAvatarItemCategory.OneHandedWeapon) or ""
+			local two = c:GetEquip(MapleAvatarItemCategory.TwoHandedWeapon) or ""
+			local hair = c:GetEquip(MapleAvatarItemCategory.Hair) or ""
+			-- 머리까지 비었으면 아바타가 아직 안 실렸다 → 조금 더 기다린다.
+			if hair == "" and one == "" and two == "" and tries < 3 then
+				_TimerService:SetTimerOnce(check, 1.0)
+				return
+			end
+			log("[Look] account weapon check one=" .. one .. " two=" .. two .. " (try " .. tostring(tries) .. ")")
+			self:ReportAccountWeapon(one ~= "" or two ~= "")
+		end
+		_TimerService:SetTimerOnce(check, 1.0)
+	end
+
+	@ExecSpace("Server")
+	method void ReportAccountWeapon(boolean hasWeapon)
+		-- 클라 답: 무기가 없으면 직업 무기를 채워 다시 입힌다. 물어본 사람의 답만 받는다.
+		local uid = senderUserId
+		if uid == nil or uid == "" or self.weaponState == nil or self.weaponState[uid] ~= "asking" then return end
+		self.weaponState[uid] = hasWeapon and "has" or "none"
+		log("[Look] MY account weapon=" .. tostring(hasWeapon) .. " (" .. uid .. ")")
+		if not hasWeapon then self:Reapply(uid) end
 	end
 
 	@ExecSpace("ServerOnly")
