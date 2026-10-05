@@ -17,6 +17,11 @@
 - `OnUpdate`: `SetPhase` 안에서 전원 탈락으로 매치가 끝나면 그 프레임의 웨이브 · 시계 방송을 건너뛴다.
 - 로그: `[Match] unclaimed warning Ns before PHASE1 -> n user(s)` · `[Match] unclaimed sweep at PHASE1 -> n user(s)` · `[Match] unclaimed elimination <userId> phase=PHASE1` · `[Village] eliminated user <userId> (no village)`.
 
+### 멀티 제한 시간 45분 (사용자 2026-10-05 "솔로는 30분 그대로 · 멀티는 45분 — 주니어 발록 잡는 데 몰두")
+- `MatchConfig.csv` 에 `MULTI` 행 2개(행 추가만 · 헤더 그대로): LIVE 2700초 · TEST 338초(LIVE÷8). 혼자는 기존 `DEFAULT`(LIVE 1800 · TEST 225).
+- `LoadMatchConfig`: 참가자 2명 이상이면 `MULTI` 행, 아니면(또는 `MULTI` 행이 없으면) `DEFAULT` 행. `StartMatch` 가 참가자를 정한 직후 다시 읽는다 — 시작 인원으로 정하고 도중에 나가도 바뀌지 않는다. 로그 `[Match] MatchConfig loaded: duration=2700s (profile=LIVE key=MULTI players=2)`.
+- 페이즈 시각은 그대로 — 3페이즈(24:30)가 45:00 까지 길어진다(웨이브는 3페이즈 규칙대로 매분 반복). 시계 HUD 남은 시간은 `MatchDuration` 을 따른다.
+
 ### 테스트할 때
 - TEST 프로필은 마감이 34초다. 웨이브 · 시설 검증(B3 레시피)처럼 마을을 스크립트로 잡는 경우 34초 안에 잡거나, 이번 판만 끄려면 서버에서 `_MatchSessionLogic.unclaimedSwept = true`, 다음 판부터 끄려면 `UnclaimedDeadlinePhase = ""`.
 
