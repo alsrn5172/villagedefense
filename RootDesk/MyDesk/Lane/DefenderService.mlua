@@ -18,6 +18,12 @@ script DefenderService extends Logic
 	-- 수비대 이동속도 배수 (WO-016 · 원문 "일반 몬스터의 2배" · 미정-값 E-3 잠정). 기준 = MonsterInfo.MoveSpeed(없으면 모델 기본 InputSpeed). 하드코딩 금지.
 	property number MoveSpeedMul = 2.0
 
+	property number GuardHpAtMax = 18300
+
+	property number GuardAtkAtMax = 3400
+
+	property number GuardLv1Mul = 0.9
+
 	@HideFromInspector
 	property integer spawnSeq = 0
 
@@ -59,7 +65,7 @@ script DefenderService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method Entity SpawnOne(string villageId, integer monsterId, number statMul, string frontStage, integer slot, number hpRatio)
+	method Entity SpawnOne(string villageId, integer monsterId, number statMul, integer upgradeLevel, string frontStage, integer slot, number hpRatio)
 		-- 최전방 시설 뒤 대기 위치에 1마리. slot = 0.. (뒤로 0.35 씩 · 4열 순환) · hpRatio = 재집결 시 이어받는 HP 비율.
 		if _LaneFacilityService == nil or _MonsterCatalog == nil then return nil end
 		local role = _LaneFacilityService:RoleOfStage(frontStage)
@@ -75,11 +81,15 @@ script DefenderService extends Logic
 		if level == nil or level <= 0 then level = 10 end
 		local maxHp = math.max(1, math.floor(baseHp * self.HpRatio * statMul))
 		local attack = math.max(1, math.floor(level * self.AttackPerLevel * statMul))
-		-- 수비대 스탯 = MonsterRecruit 행(티어 고정 GuardHp/GuardAttack) × 훈련 배율 (B5 · 페이즈 갱신 없음). 행이 없으면 옛 식(도감 HP × HpRatio · 레벨 × AttackPerLevel).
+		-- 수비대 스탯은 티어 기본값에서 강화 레벨별 기하 보간. MonsterTraining.StatMul 은 파병 등 다른 계산에 유지한다.
 		local rr = (_LaneStateService ~= nil) and _LaneStateService:RecruitRow(monsterId) or nil
 		if rr ~= nil then
-			maxHp = math.max(1, math.floor(rr.guardHp * statMul))
-			attack = math.max(1, math.floor(rr.guardAttack * statMul))
+			local lv = math.max(1, math.min(5, upgradeLevel or 1))
+			local progress = (lv - 1) / 4
+			local baseHp = rr.guardHp * self.GuardLv1Mul
+			local baseAttack = rr.guardAttack * self.GuardLv1Mul
+			maxHp = math.max(1, math.floor(baseHp * (self.GuardHpAtMax / baseHp) ^ progress + 0.5))
+			attack = math.max(1, math.floor(baseAttack * (self.GuardAtkAtMax / baseAttack) ^ progress + 0.5))
 		end
 		local range = self:GuardRange()
 		local minX = row.pathMinX or -100000
@@ -175,19 +185,20 @@ script DefenderService extends Logic
 			du.VillageId = villageId
 			du.MonsterId = monsterId
 		end
+		log("[Defender] spawn " .. name .. " mob=" .. tostring(monsterId) .. " upgradeLv=" .. tostring(upgradeLevel) .. " hp=" .. tostring(maxHp) .. " atk=" .. tostring(attack))
 		return ent
 	end
 
 	@ExecSpace("ServerOnly")
-	method integer SpawnBundle(string villageId, integer monsterId, number statMul, integer count, string frontStage)
+	method integer SpawnBundle(string villageId, integer monsterId, number statMul, integer upgradeLevel, integer count, string frontStage)
 		-- 최전방 시설 뒤에 count 마리. 스폰된 수를 돌려준다.
 		local list = self:UnitList(villageId)
 		local spawned = 0
 		local first = nil
 		for i = 1, count do
-			local ent = self:SpawnOne(villageId, monsterId, statMul, frontStage, i - 1, 1.0)
+			local ent = self:SpawnOne(villageId, monsterId, statMul, upgradeLevel, frontStage, i - 1, 1.0)
 			if isvalid(ent) then
-				table.insert(list, { ent = ent, monsterId = monsterId, statMul = statMul })
+				table.insert(list, { ent = ent, monsterId = monsterId, statMul = statMul, upgradeLevel = upgradeLevel })
 				spawned = spawned + 1
 				if first == nil then first = ent end
 			end
@@ -216,10 +227,10 @@ script DefenderService extends Logic
 				local du = u.ent.DefenderUnit
 				if isvalid(du) then du.reported = true end
 				u.ent:Destroy()
-				local ent = self:SpawnOne(villageId, u.monsterId, u.statMul, frontStage, slot, ratio)
+				local ent = self:SpawnOne(villageId, u.monsterId, u.statMul, u.upgradeLevel, frontStage, slot, ratio)
 				slot = slot + 1
 				if isvalid(ent) then
-					table.insert(keep, { ent = ent, monsterId = u.monsterId, statMul = u.statMul })
+					table.insert(keep, { ent = ent, monsterId = u.monsterId, statMul = u.statMul, upgradeLevel = u.upgradeLevel })
 					moved = moved + 1
 				end
 			end
