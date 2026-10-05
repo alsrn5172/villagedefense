@@ -337,6 +337,9 @@ script SkillExecutors extends Logic
     -- 클라: 영상 프레임 넘기기 타이머 id(새 컷신 · 끄기 때 지운다).
     property integer cutsceneFrameTimer = 0
 
+    -- 폭풍의 화살(SK_A31) 영상 타격 타수(사용자 결정 2026-10-05 · #40 5986277680 · A 확인 대기): 4000% 1타를 영상의 두 구간에 이만큼 나눠 친다(한 타 = 합계 ÷ 이 값). 1 = 예전처럼 1타(첫 구간 가운데).
+    property integer StormArrowSplitHits = 8
+
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
     property number BackflipDriftX = 0.35
@@ -1385,6 +1388,10 @@ script SkillExecutors extends Logic
         --   기획 컷신(약 1초)보다 길어서 무적 창을 클립이 아니라 기획 길이에 맞춘다. 시전 락(SkillCaster.castLockOverrides)은 이 값을 따르지 않는다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.cast == nil or entry.cast.cutsceneSeconds == nil then return 0 end
+        -- 궁 컷신 영상(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05 "컷신 내내 무적 · 시전부터 영상 끝까지 · 직업마다 길이가 다르다"): 영상이 있으면 그 길이가 먼저다
+        --   (아래 cutsceneLengthSeconds · 실측 · 리터럴보다 앞 · 함포 사격 1.0 s 도 영상 6.5 s 로).
+        local video = self:CutsceneVideoSeconds(skillId)
+        if video > 0 then return video end
         local fixed = entry.cast.cutsceneLengthSeconds
         if fixed ~= nil and fixed > 0 then return fixed end
         local measured = self.cutsceneClipSeconds[skillId]
@@ -1727,6 +1734,63 @@ script SkillExecutors extends Logic
                 self.castSounds[skillId] = fs.sound
             end
         end
+    end
+
+    method number CutsceneVideoSeconds(string skillId)
+        -- 궁 컷신 영상 길이(초) = 프레임 수 ÷ fps(b/skill-ultimate-cutscenes). 영상이 없거나 스위치가 꺼져 있으면 0. 서버 · 클라 공용 —
+        --   무적 창(GetCutsceneSeconds → SkillCaster) · 시전 락(SkillCaster.GetCastLockSeconds) · "끝까지" 피해 구간의 끝이 이 값이다(사용자 결정 2026-10-05 · 직업마다 길이가 다른 것이 맞다).
+        if not self.CutsceneVideoFrames then return 0 end
+        local fs = self:CutsceneFrameSet(skillId)
+        if fs == nil or fs.frames == nil or #fs.frames == 0 then return 0 end
+        local fps = fs.fps or 8
+        if fps <= 0 then fps = 8 end
+        return #fs.frames / fps
+    end
+
+    method table UltimateHitTimes(string skillId, integer count)
+        -- 궁 피해 시각(시전 뒤 초 · 오름차순) — 기획 `컷신_타격_타이밍.txt`(초:프레임 · 24 fps) 그대로(사용자 결정 2026-10-05 · #166).
+        --   점 시각(points)을 앞에서부터 쓰고, 타수가 점보다 많으면 남는 타를 구간(windows)에 고르게 나눈다(구간마다 같은 수 · 나머지는 앞 구간부터 ·
+        --   구간 안에서는 길이를 타수로 나눈 칸의 가운데). count 가 0 이면 점 시각만. 구간 끝 −1 = 영상 끝(CutsceneVideoSeconds).
+        --   영상이 없거나 이 궁의 표가 없으면 빈 표 → 부르는 쪽이 예전 시각(CSV Duration 등)을 쓴다.
+        --   불굴의 진(SK_W31)은 표에 피해가 없다(8초 버프 · skill-spec.md) → 파일의 전사 시각 4개(1:04 · 1:11 · 4:16 · 5:00)는 쓰지 않는다.
+        local out = {}
+        local video = self:CutsceneVideoSeconds(skillId)
+        if video <= 0 then return out end
+        local points = {}
+        local windows = {}
+        if skillId == "SK_M31" then
+            points = { 6 + 4 / 24 }                                                         -- 마법사 06:04
+        elseif skillId == "SK_A31" then
+            windows = { { 3 + 16 / 24, 4 + 4 / 24 }, { 6 + 11 / 24, -1 } }                  -- 궁수 03:16~04:04 · 06:11~끝
+        elseif skillId == "SK_T31" then
+            points = { 2 + 8 / 24, 2 + 13 / 24, 2 + 19 / 24, 3, 3 + 4 / 24 }                -- 도적 02:08 · 02:13 · 02:19 · 03:00 · 03:04
+            windows = { { 4 + 11 / 24, -1 } }                                               --      04:11~끝
+        elseif skillId == "SK_P31" then
+            points = { 2 + 15 / 24, 6 + 1 / 24 }                                            -- 해적 02:15 · 06:01
+        else
+            return out
+        end
+        if count == nil or count <= 0 then
+            for _, t in ipairs(points) do table.insert(out, t) end
+            return out
+        end
+        for i = 1, math.min(count, #points) do table.insert(out, points[i]) end
+        local rest = count - #points
+        if rest > 0 and #windows > 0 then
+            local base = math.floor(rest / #windows)
+            local extra = rest - base * #windows
+            for w, win in ipairs(windows) do
+                local n = base
+                if w <= extra then n = n + 1 end
+                local a = win[1]
+                local b = win[2]
+                if b < 0 then b = video end
+                if b < a then b = a end
+                for k = 1, n do table.insert(out, a + (k - 0.5) * (b - a) / n) end
+            end
+        end
+        table.sort(out)
+        return out
     end
 
     @ExecSpace("ClientOnly")
@@ -2932,6 +2996,11 @@ script SkillExecutors extends Logic
             return
         end
 
+        -- 피해 시각(b/skill-ultimate-cutscenes · 대마법 SK_M31): 영상이 있으면 타이밍 파일의 시각(06:04 = 6.17 s · UltimateHitTimes), 없으면 예전대로 CSV Duration.
+        local hitDelay = skillData.duration
+        local hitTimes = self:UltimateHitTimes(skillId, 1)
+        if #hitTimes > 0 then hitDelay = hitTimes[1] end
+        log("SkillExecutors: ORIGIN " .. skillId .. " hit at +" .. string.format("%.2f", hitDelay) .. "s (CSV Duration " .. tostring(skillData.duration) .. " · video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
         _TimerService:SetTimerOnce(function()
             if chargeSerial ~= 0 then _ParticleService:RemoveParticle(chargeSerial) end
             if not isvalid(casterEntity) then return end
@@ -2957,7 +3026,7 @@ script SkillExecutors extends Logic
 
             self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
             skillAttack:DealSkillDamage(skillId, level, screen)
-        end, skillData.duration)
+        end, hitDelay)
     end
 
     @ExecSpace("ServerOnly")
@@ -2967,6 +3036,24 @@ script SkillExecutors extends Logic
         -- 연출: 맞은 대상마다 hit/0(SkillAttack.OnAttack) + 직선 위 LineHitEffects 지점에 순차 hit/0(대상이 없어도 화살이 지나간 것을 보인다).
         local delay = skillData.duration
         if delay < 0 then delay = 0 end
+        -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05 · #40 5986277680): 영상의 화살비 구간 두 개(03:16~04:04 · 06:11~끝)에
+        --   StormArrowSplitHits(8)타로 나눠 고르게 — 한 타 = 표 피해(4000% × HitCount) ÷ 8 = 500%. 합계는 그대로. 영상이 없으면 예전 1타(CSV Duration).
+        local splitTimes = self:UltimateHitTimes(skillId, self.StormArrowSplitHits)
+        if #splitTimes > 0 then
+            local baseHits = skillData.hitCount
+            if baseHits <= 0 then baseHits = 1 end
+            local mul = baseHits / #splitTimes
+            local parts = {}
+            for k, t in ipairs(splitTimes) do
+                table.insert(parts, string.format("%.2f", t))
+                local idx = k
+                _TimerService:SetTimerOnce(function()
+                    self:StormArrowSplitHit(skillId, skillData, casterEntity, level, mul, idx, #splitTimes)
+                end, t)
+            end
+            log("SkillExecutors: LINE " .. skillId .. " split " .. tostring(#splitTimes) .. " hits x" .. string.format("%.3f", mul) .. " of the table damage at +[" .. table.concat(parts, ", ") .. "]s (video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
+            return
+        end
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
             local skillAttack = casterEntity:GetComponent("script.SkillAttack")
@@ -3000,6 +3087,46 @@ script SkillExecutors extends Logic
             end
             log("SkillExecutors: LINE " .. skillId .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range) .. " height=" .. tostring(self.LineHeight) .. " lv=" .. tostring(level))
         end, delay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void StormArrowSplitHit(string skillId, table skillData, Entity casterEntity, number level, number mul, integer k, integer n)
+        -- 폭풍의 화살 나눠 친 한 타(b/skill-ultimate-cutscenes): 그 순간 시전자 앞 직선 상자(Range × LineHeight · 예전 1타와 같은 상자) 안 전부에 표 피해 × mul · 표시 1타.
+        --   SkillAttack 의 패스 순서(EnsureShape → CapTargetsByShape → BeginPass → AttackFast → EndPass)를 그대로 쓴다 — DealSkillDamage 와 같지만 배율을 따로 준다.
+        --   대상마다 hit/0(PendingImpactRuid) · 직선 위 hit/0 은 구간의 첫 타에만(같은 그림이 매 타 겹치지 않게).
+        if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping split line hit for " .. skillId)
+            return
+        end
+        local p = casterEntity.TransformComponent.WorldPosition
+        local dirX = self:GetFacingX(casterEntity)
+        local range = skillData.range
+        if range <= 0 then range = 1 end
+        local hitRuid = self:GetSpecRuid(skillId, "impact")
+        skillAttack.PendingImpactRuid = hitRuid
+        skillAttack:EnsureShape()
+        skillAttack.Shape.Position = Vector2(p.x + dirX * range / 2, p.y + self.LineHeight / 2)
+        skillAttack.Shape.Size = Vector2(range, self.LineHeight)
+        skillAttack.Shape.Angle = 0
+        skillAttack:CapTargetsByShape(skillId, skillAttack.Shape, skillAttack.PendingMaxTargets)
+        skillAttack:BeginPass(skillId, level, mul, 1)
+        skillAttack:AttackFast(skillAttack.Shape, skillId, CollisionGroups.Monster)
+        skillAttack:EndPass()
+        local firstOfWindow = (k == 1) or (k == math.floor(n / 2) + 1)
+        if hitRuid ~= "" and firstOfWindow then
+            local m = self.LineHitEffects
+            for j = 1, m do
+                local ex = p.x + dirX * range * j / (m + 1)
+                local ey = p.y + 0.6
+                _TimerService:SetTimerOnce(function()
+                    if not isvalid(casterEntity) then return end
+                    _EffectService:PlayEffect(hitRuid, casterEntity, Vector3(ex, ey, p.z), 0, Vector3(1, 1, 1), false)
+                end, j * 0.08)
+            end
+        end
+        log("SkillExecutors: LINE " .. skillId .. " split hit " .. tostring(k) .. "/" .. tostring(n) .. " x" .. string.format("%.3f", mul) .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range))
     end
 
     @ExecSpace("ServerOnly")
@@ -3086,6 +3213,11 @@ script SkillExecutors extends Logic
         if delay <= 0 then delay = 0.6 end
         local detonateStart = delay - 0.15 - (n - 1) * self.MesoExplodeInterval
         if detonateStart < 0 then detonateStart = 0 end
+        -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05): 영상이 있으면 동전 k 번째 폭발 = 타이밍 파일 시각(02:08 · 02:13 · 02:19 · 03:00 · 03:04 → 남는 동전은 04:11~끝에 고르게 ·
+        --   UltimateHitTimes). 동전 하나 = 50% 1타는 그대로(타수 = 동전 수 · 합계 = 50% × N). 중심 폭발 그림 · 명중음은 첫 동전 시각에. 영상이 없으면 예전(Duration − 0.15 s 에 마지막 동전).
+        local coinTimes = self:UltimateHitTimes(skillId, n)
+        local useVideoTimes = (n > 0 and #coinTimes == n)
+        if useVideoTimes then delay = coinTimes[1] end
         -- 소환 동전: 시전 순간 그 자리에 나타나(MesoSummonCoinRuid · 반복) 자기 폭발 차례에 사라진다.
         local summonSerials = {}
         for j, sp in ipairs(summonPoints) do
@@ -3117,7 +3249,7 @@ script SkillExecutors extends Logic
                 end
                 if isvalid(coin) then coin:Destroy() end
                 self:MesoCoinBlast(skillId, casterEntity, level, ex, ey + 0.3, k, n)
-            end, detonateStart + (order - 1) * self.MesoExplodeInterval)
+            end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
         for j, sp in ipairs(summonPoints) do
             order = order + 1
@@ -3131,7 +3263,7 @@ script SkillExecutors extends Logic
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(sp.x, sp.y + 0.3, sp.z), 0, Vector3(1, 1, 1), false)
                 end
                 self:MesoCoinBlast(skillId, casterEntity, level, sp.x, sp.y + 0.3, k, n)
-            end, detonateStart + (order - 1) * self.MesoExplodeInterval)
+            end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
         log("SkillExecutors: MESO " .. skillId .. " source floor=" .. tostring(#coins) .. " summoned=" .. tostring(#summonPoints)
             .. " (useFloor=" .. tostring(self.MesoUseFloorCoins) .. " pickpocketOnly=" .. tostring(self.MesoPickpocketCoinsOnly)
@@ -3148,8 +3280,20 @@ script SkillExecutors extends Logic
                 log("SkillExecutors: MESO " .. skillId .. " hit sound once (" .. hitSound .. ") with the center blast at +" .. tostring(delay) .. "s · " .. tostring(n) .. " coins")
             end
         end, delay)
-        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval)
+        local timesText = ""
+        if useVideoTimes then
+            local parts = {}
+            for _, t in ipairs(coinTimes) do table.insert(parts, string.format("%.2f", t)) end
+            timesText = " · video times +[" .. table.concat(parts, ", ") .. "]s"
+        end
+        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval) .. timesText
             .. "s · each blast r=" .. tostring(self.MesoCoinBlastRadius) .. " x " .. tostring(_SkillDatabase:RatioAt(skillId, level)) .. "% · center fx at +" .. tostring(delay) .. "s (" .. uid .. ")")
+    end
+
+    method number MesoCoinTime(boolean useVideoTimes, table coinTimes, number detonateStart, integer order)
+        -- 메소 익스플로전 동전 order 번째의 폭발 시각(시전 뒤 초): 영상 타이밍이 있으면 그 표(UltimateHitTimes) · 없으면 예전 간격(detonateStart + (order − 1) × MesoExplodeInterval).
+        if useVideoTimes and coinTimes[order] ~= nil then return coinTimes[order] end
+        return detonateStart + (order - 1) * self.MesoExplodeInterval
     end
 
     @ExecSpace("ServerOnly")
@@ -3180,6 +3324,13 @@ script SkillExecutors extends Logic
         local waves = self.BarrageWaves
         if waves < 1 then waves = 1 end
         if waves > hitCount then waves = hitCount end
+        -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05): 영상이 있으면 파 = 타이밍 파일의 점 시각(02:15 · 06:01 → 2파 · UltimateHitTimes) ·
+        --   HitCount(30)를 그 파 수로 나눈다(15 + 15 · 합계 30 × 150% 그대로). 영상이 없으면 예전(BarrageWaves 파 · Duration 부터 BarrageInterval 간격).
+        local waveTimes = self:UltimateHitTimes(skillId, 0)
+        if #waveTimes > 0 then
+            waves = #waveTimes
+            if waves > hitCount then waves = hitCount end
+        end
         local perWave = math.floor(hitCount / waves)
         local remainder = hitCount - perWave * waves
         local lead = skillData.duration
@@ -3216,10 +3367,22 @@ script SkillExecutors extends Logic
                     skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "targetHit")
                     skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, hits, hits)
                     log("SkillExecutors: BARRAGE " .. skillId .. " wave " .. tostring(w) .. "/" .. tostring(waves) .. " hits=" .. tostring(hits) .. " r=" .. tostring(radius))
-                end, lead + (w - 1) * self.BarrageInterval)
+                end, self:BarrageWaveTime(waveTimes, lead, w))
             end
         end
-        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits from +" .. tostring(lead) .. "s every " .. tostring(self.BarrageInterval) .. "s")
+        local whenText = "from +" .. tostring(lead) .. "s every " .. tostring(self.BarrageInterval) .. "s"
+        if #waveTimes > 0 then
+            local parts = {}
+            for w = 1, waves do table.insert(parts, string.format("%.2f", waveTimes[w])) end
+            whenText = "at video times +[" .. table.concat(parts, ", ") .. "]s"
+        end
+        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits " .. whenText)
+    end
+
+    method number BarrageWaveTime(table waveTimes, number lead, integer w)
+        -- 함포 사격 w 번째 파의 시각(시전 뒤 초): 영상 타이밍이 있으면 그 점 시각 · 없으면 예전(lead + (w − 1) × BarrageInterval).
+        if waveTimes ~= nil and waveTimes[w] ~= nil then return waveTimes[w] end
+        return lead + (w - 1) * self.BarrageInterval
     end
 
     @ExecSpace("ServerOnly")
