@@ -1,0 +1,751 @@
+@Logic
+script CoachMarkController extends Logic
+	-- 처음 하는 사람 안내(클릭 유도) 클라 컨트롤러 — 디자이너 시안 WIN_COACH (2026-10-05 · CoachMarkGroup).
+	--   화면 전체를 남색 막(74%)으로 덮고 눌러야 할 곳만 구멍을 뚫어 금테로 밝힌다(막 4장 = 구멍 위·아래·왼쪽·오른쪽 + 금테 1장).
+	--   구멍 자리에는 아무것도 없어 밝힌 실제 버튼(월드맵 · 캐릭터 · 도움말)을 그대로 누를 수 있다.
+	--   말풍선 = n/9 칩 · 제목 · 설명 · 진행 점 · 건너뛰기 · 다음. 월드 대상(전직관 · 넥서스)에는 금 고리 + 손가락.
+	--   StartOpening() = 소개를 마친 직후 1 시계 → 2 상태창 → 3 월드맵 버튼 → 4 월드맵 사냥터 (GameIntroController.Finish 가 부른다).
+	--   ShowStep(n) = 한 단계만 띄운다. 5~9 는 게임 진행 시점(첫 레벨업 · Lv 10 · 전직관 근처 · 전직 직후 · 마을 차지)에 A 가 연결한다(인계).
+	--   대상 위치: UI 는 대상 네 모서리(GetWorldCorners) → 막 루트 로컬(ToLocalPoint), 월드는 WorldPosition → 화면 → 막 루트 로컬.
+	--   UUID 는 Docs/tools/design-ui/apply-intro-coach.cjs 가 주입한다.
+
+	property Entity root = "e05bfd86-5224-4ab7-86ec-0efc53a85309"
+
+	property Entity dimTop = "ea9a6068-b1b6-47ba-b222-8a5f5f5d0d20"
+
+	property Entity dimBottom = "1b95c415-0458-4922-bf15-c570427cb7cf"
+
+	property Entity dimLeft = "3c32ae5e-6b71-47ac-9463-dc0aafc97e4e"
+
+	property Entity dimRight = "66ecd13b-a442-4c1c-a4c8-84ed04cc0186"
+
+	property Entity frame = "20e04260-ce2b-4e40-bdc7-246d73e7cf75"
+
+	property Entity pulse = "7b00e169-189c-416d-9244-5bdece5c24c3"
+
+	property Entity finger = "7154686e-d5e9-4e47-b28b-e31bf9b32795"
+
+	property Entity bubble = "cc4b4e1a-05fd-44c8-bd78-453f19b7c266"
+
+	property Entity tailUp = "5113d0b8-f158-43e6-8c8b-6fc1afbb2f4c"
+
+	property Entity tailDown = "11da7482-5e3f-42fd-b076-71192bf499c7"
+
+	property Entity tailLeft = "665de0db-9930-4de9-a1fa-c6e12ef8444e"
+
+	property Entity tailRight = "d0db91d5-81a7-43e3-b219-72a04ee506c0"
+
+	property Entity head = "4d7b3d9c-6dce-4f32-a586-13d7e1f7243e"
+
+	property Entity foot = "c65374b1-a7f9-44f6-97df-3a041b578b34"
+
+	property Entity dotsRoot = "158b4400-ae5a-43db-af36-224be876c0bf"
+
+	property TextGUIRendererComponent chipText = "6a824aca-8c94-4fb8-9d41-25c52c0a1980"
+
+	property TextGUIRendererComponent titleText = "43da6729-e98e-4ee8-93fb-ed799443fc10"
+
+	property TextGUIRendererComponent bodyText = "c2ca35b9-616e-4dff-89da-3d4e7b2d9719"
+
+	property ButtonComponent btnSkip = "bbc9a3b4-5dba-40f6-9879-f3d5412f7baf"
+
+	property ButtonComponent btnNext = "f2eb02ac-9240-4ddf-a667-c01ad82d73ae"
+
+	property integer totalSteps = 9
+
+	-- 구멍을 대상보다 키우는 여백(px) · 금테가 구멍 밖으로 나가는 폭(px · 레벨업 금테와 같은 14)
+	property number holePad = 8
+
+	property number frameOut = 14
+
+	@HideFromInspector
+	property boolean active = false
+
+	@HideFromInspector
+	property integer step = 0
+
+	@HideFromInspector
+	property integer seqEnd = 0
+
+	@HideFromInspector
+	property any steps = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property any keyHandler = nil
+
+	@HideFromInspector
+	property any targetClick = nil
+
+	@HideFromInspector
+	property integer tickTimer = 0
+
+	@HideFromInspector
+	property string lastRectLog = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 단계 표 · 버튼 · 키 연결. 꺼진 채로 시작.
+		self:BuildSteps()
+		self.handlers = {}
+		if isvalid(self.btnNext) then
+			table.insert(self.handlers, { e = self.btnNext.Entity, h = self.btnNext.Entity:ConnectEvent(ButtonClickEvent, function() self:OnNextClicked() end) })
+		end
+		if isvalid(self.btnSkip) then
+			table.insert(self.handlers, { e = self.btnSkip.Entity, h = self.btnSkip.Entity:ConnectEvent(ButtonClickEvent, function() self:Close("skip") end) })
+		end
+		-- Esc(건너뛰기)는 Summon/UIEscStack 이 받아 Close("esc") 를 부른다(WO-050 §3 · 다른 창까지 한 번에 닫히지 않게).
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		self.active = false
+		log("[Coach] ready (client) steps=" .. tostring(#self.steps))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BuildSteps()
+		-- 시안 WIN_COACH 9단계 + 실제 조작에 맞춘 문구(7 · 9단계). 글자 색: 금 #E8B64C.
+		--   ui = 밝힐 UI 엔티티 경로 · target = 월드맵/월드 대상 종류 · side = 말풍선 쪽(t 아래 · b 위 · l 오른쪽 · r 왼쪽 · auto)
+		--   w = 말풍선 폭 · btn/btnW = 다음 버튼 글자/폭 · finger/pulse = 손가락/고리 · clickNext = 밝힌 버튼을 누르면 다음 · needMap = 월드맵을 연다
+		-- 줄바꿈은 직접 넣는다: 게임 글꼴은 한글을 글자 단위로 끊어 "올\n려요" 처럼 낱말 가운데서 꺾였다(2026-10-05 Play 실측 · 시안은 낱말 단위).
+		self.steps = {
+			{ title = "지금은 개척 시간", text = "위 시계는 매치 시간이에요.\n<color=#E8B64C><b>4:30</b></color>까지 사냥으로 레벨을 올려요.", ui = "/ui/MatchClockGroup/Panel", side = "t", w = 420 },
+			{ title = "Lv 10이 첫 목표", text = "몬스터를 잡으면 <b>EXP</b>가 차요. <color=#E8B64C><b>Lv 10</b></color>이 되면\n전직하고 마을을 차지할 수 있어요.", ui = "/ui/StatusHUD/UIMyInfo", side = "b", w = 420 },
+			{ title = "사냥터는 월드맵에서", text = "<b>월드맵</b>(M)을 눌러 보세요.\n노란 점이 사냥터, 내 위치는 파란 핀이에요.", ui = "/ui/WorldMapGroup/Toolbar/OpenBtn", side = "b", w = 440, btn = "월드맵 열기", btnW = 150, finger = true, openMap = true },
+			{ title = "여기서 사냥해요", text = "내 위치에서 가장 가까운 <b>노란 점</b>이에요.\n걸어가면 몬스터가 나와요.", target = "hunt", side = "auto", w = 420, needMap = true },
+			{ title = "능력치를 찍어요", text = "빨간 알림 = 찍을 <b>AP</b>가 있어요.\n<b>캐릭터</b>(C)를 눌러 <b>자동 분배</b>를 누르면 끝!", ui = "/ui/StatusHUD/Shortcuts/BtnCharacter", side = "t", w = 430, clickNext = true },
+			{ title = "Lv 10! 전직하러 가요", text = "<color=#E8B64C><b>목표 핀</b></color>이 전직관 5명이 있는 곳이에요.", target = "goalpin", side = "auto", w = 420, needMap = true },
+			{ title = "원하는 직업을 골라요", text = "전사 · 마법사 · 궁수 · 도적 · 해적 전직관이 나란히 있어요.\n원하는 전직관을 <b>클릭</b>해 말을 걸어요.\n직업은 마을과 상관없이 <b>자유</b>예요.", target = "jobnpc", side = "t", w = 480, pulse = true, finger = true },
+			{ title = "넥서스를 눌러 내 마을로", text = "아무도 없는 마을의 <b>넥서스</b>를 누르면 내 마을이 돼요.\n먼저 누른 사람이 주인!", target = "nexus", side = "auto", w = 440, pulse = true, finger = true },
+			{ title = "7:30부터 미니언이 와요", text = "마을 <b>NPC</b>에게서 포탑을 강화하고 수비대를 모아요.\n헷갈리면 <b>도움말</b>(H)!", ui = "/ui/HelpHudGroup/Shortcut/BtnHelp", side = "t", w = 470, btn = "시작하기", btnW = 130, clickNext = true },
+		}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartOpening()
+		-- 소개를 마친 직후: 1 → 4 단계를 이어서 보여 준다.
+		self.seqEnd = 4
+		self:Begin(1, "opening")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowStep(integer n)
+		-- 한 단계만 띄운다(5~9 는 게임 진행 시점에 A 가 부른다 · 미리보기도 이것으로).
+		if n < 1 or n > #self.steps then
+			log_warning("[Coach] bad step " .. tostring(n))
+			return
+		end
+		self.seqEnd = n
+		self:Begin(n, "single")
+	end
+
+	@ExecSpace("Client")
+	method void ShowStepFromServer(integer n)
+		-- 서버 → 이 클라: ShowStep(n). 서버 코드는 _CoachMarkController:ShowStepFromServer(n, userId) 로 부른다.
+		self:ShowStep(n)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Begin(integer n, string reason)
+		-- 막을 켜고 n 단계로. 소개 창이 열려 있으면 열지 않는다(소개가 먼저).
+		if not isvalid(self.root) then
+			log_warning("[Coach] root missing")
+			return
+		end
+		if _GameIntroController ~= nil and _GameIntroController.isOpen == true then
+			log("[Coach] skip begin while intro is open")
+			return
+		end
+		self.active = true
+		self:BringToFront()
+		self.root.Enable = true
+		if self.tickTimer ~= 0 then
+			_TimerService:ClearTimer(self.tickTimer)
+		end
+		self.tickTimer = _TimerService:SetTimerRepeat(function() self:Tick() end, 1 / 30)
+		log("[Coach] begin step=" .. tostring(n) .. " end=" .. tostring(self.seqEnd) .. " reason=" .. reason)
+		self:GoStep(n)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BringToFront()
+		-- UI 그룹을 그리는 순서는 런타임에 /ui 형제 순서로 정해진다 — 파일 GroupOrder 18 이어도 월드맵(런타임 24)보다 아래에 들어가
+		-- 월드맵 버튼 · 지도 위에 막 · 손가락이 안 그려졌다(2026-10-05 Play 실측). 시작할 때 부활 팝업 바로 아래로 올린다.
+		local me = _EntityService:GetEntityByPath("/ui/CoachMarkGroup")
+		if not isvalid(me) then
+			return
+		end
+		local idx = 1000000
+		local rev = _EntityService:GetEntityByPath("/ui/RevivePopupGroup")
+		if isvalid(rev) then
+			idx = _UILogic:GetSiblingIndex(rev.UITransformComponent)
+		end
+		local before = _UILogic:GetSiblingIndex(me.UITransformComponent)
+		_UILogic:SetSiblingIndex(me.UITransformComponent, idx)
+		log("[Coach] front sibling " .. tostring(before) .. " -> " .. tostring(_UILogic:GetSiblingIndex(me.UITransformComponent)) .. " (revive " .. tostring(idx) .. ")")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close(string reason)
+		-- 막을 끈다(건너뛰기 · Esc · 마지막 단계 · 소개 열림).
+		if not self.active then
+			return
+		end
+		self.active = false
+		self:DropTargetClick()
+		if self.tickTimer ~= 0 then
+			_TimerService:ClearTimer(self.tickTimer)
+			self.tickTimer = 0
+		end
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		log("[Coach] close step=" .. tostring(self.step) .. " reason=" .. reason)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnNextClicked()
+		-- 말풍선 [다음]. 3단계 '월드맵 열기' 는 월드맵을 열고 4단계로.
+		--   월드맵을 여는 동안 Tick 이 "열림"을 먼저 보고 4단계로 넘길 수 있다 → 누른 때의 단계에서만 한 번 넘긴다(2026-10-05 Play: 3 → 4 → 닫힘 두 번 넘김).
+		local from = self.step
+		local s = self.steps[from]
+		if s ~= nil and s.openMap == true then
+			self:EnsureMap()
+		end
+		if self.active and self.step == from then
+			self:Next("button")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Next(string reason)
+		-- 다음 단계. 이어서 보여 줄 마지막 단계면 닫는다.
+		if not self.active then
+			return
+		end
+		log("[Coach] next from=" .. tostring(self.step) .. " reason=" .. reason)
+		if self.step >= self.seqEnd then
+			self:Close("done")
+			return
+		end
+		self:GoStep(self.step + 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoStep(integer n)
+		-- 글자 · 점 · 버튼을 채우고 대상 자리에 막 · 금테 · 말풍선을 놓는다.
+		self:DropTargetClick()
+		self.step = n
+		self.lastRectLog = ""
+		local s = self.steps[n]
+		if s.needMap == true then
+			self:EnsureMap()
+		end
+		if isvalid(self.chipText) then
+			self.chipText.Text = tostring(n) .. " / " .. tostring(self.totalSteps)
+		end
+		if isvalid(self.titleText) then
+			self.titleText.Text = s.title
+		end
+		if isvalid(self.bodyText) then
+			self.bodyText.Text = s.text
+		end
+		-- 설명 높이는 단계마다 한 번만 잰다(Tick 30Hz 에서 다시 재지 않음).
+		local inner = 420 - 44
+		if s.w ~= nil then
+			inner = s.w - 44
+		end
+		self._T.textH = 50
+		if isvalid(self.bodyText) then
+			local ph = self.bodyText:GetPreferredHeight(s.text, inner)
+			if ph ~= nil and ph > 0 then
+				self._T.textH = math.ceil(ph) + 2
+			end
+		end
+		self:RefreshFoot(s)
+		self:Layout()
+		if s.clickNext == true and s.ui ~= nil then
+			local e = _EntityService:GetEntityByPath(s.ui)
+			if isvalid(e) and e.ButtonComponent ~= nil then
+				self.targetClick = { e = e, h = e:ConnectEvent(ButtonClickEvent, function() self:Next("target") end) }
+			end
+		end
+		log("[Coach] step " .. tostring(n) .. "/" .. tostring(self.totalSteps) .. " " .. s.title)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DropTargetClick()
+		-- 밝힌 버튼에 걸어 둔 클릭을 푼다.
+		if self.targetClick ~= nil then
+			if isvalid(self.targetClick.e) then
+				self.targetClick.e:DisconnectEvent(ButtonClickEvent, self.targetClick.h)
+			end
+			self.targetClick = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EnsureMap()
+		-- 월드맵이 닫혀 있으면 연다(3 → 4 · 6단계).
+		local wm = _WorldMapController
+		if wm ~= nil and wm.isOpen ~= true then
+			wm:OpenMap()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Tick()
+		-- 30Hz: 대상 위치를 다시 맞추고(카메라가 움직이는 월드 대상), 3단계는 월드맵이 열리면(버튼 · M 키) 4단계로 넘긴다.
+		if not self.active then
+			return
+		end
+		local s = self.steps[self.step]
+		if s ~= nil and s.openMap == true and _WorldMapController ~= nil and _WorldMapController.isOpen == true then
+			self:Next("map-opened")
+			return
+		end
+		self:Layout()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshFoot(any s)
+		-- 진행 점 9개(지금 = 금 22 · 지난 = 어두운 금 · 남은 = 남색 · 8 높이 · 간격 5) + 다음 버튼 글자 · 폭 + 건너뛰기 위치.
+		if isvalid(self.dotsRoot) then
+			local x = 0
+			for i = 1, self.totalSteps do
+				local d = self.dotsRoot:GetChildByName("D" .. tostring(i))
+				if isvalid(d) then
+					local w = 8
+					local c = Color(0.243, 0.322, 0.51, 1)
+					if i == self.step then
+						w = 22
+						c = Color(0.91, 0.714, 0.298, 1)
+					elseif i < self.step then
+						c = Color(0.541, 0.455, 0.251, 1)
+					end
+					local t = d.UITransformComponent
+					t.anchoredPosition = Vector2(x + w / 2, 0)
+					t.RectSize = Vector2(w, 8)
+					local sp = d.SpriteGUIRendererComponent
+					if sp ~= nil then
+						sp.Color = c
+					end
+					x = x + w + 5
+				end
+			end
+		end
+		local label = "다음"
+		if self.step >= self.seqEnd then
+			label = "확인"
+		end
+		if s.btn ~= nil then
+			label = s.btn
+		end
+		local bw = 120
+		if s.btnW ~= nil then
+			bw = s.btnW
+		end
+		if isvalid(self.btnNext) then
+			local tx = self.btnNext.Entity.TextGUIRendererComponent
+			if tx ~= nil then
+				tx.Text = label
+			end
+			local t = self.btnNext.Entity.UITransformComponent
+			t.anchoredPosition = Vector2(0, 0)
+			t.RectSize = Vector2(bw, 44)
+		end
+		if isvalid(self.btnSkip) then
+			local t = self.btnSkip.Entity.UITransformComponent
+			t.anchoredPosition = Vector2(-(bw + 12), 0)
+			t.RectSize = Vector2(t.RectSize.x, t.RectSize.y)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method any Bounds()
+		-- 막 루트(화면 전체 · 늘림 · 피벗 가운데)의 범위 — 루트 로컬 좌표(가운데 원점 · 위가 +) = ±RectSize/2.
+		--   네 모서리(GetWorldCorners → ToLocalPoint)로 재면 Maker 화면 크기가 바뀌는 순간 1131x636 처럼 틀린 값이 나와 막이 화면 일부만 덮었다(2026-10-05 Play 실측) → 크기로 잰다.
+		local rs = self.root.UITransformComponent.RectSize
+		local w = rs.x
+		local h = rs.y
+		if w <= 0 or h <= 0 then
+			w = 1920
+			h = 1080
+		end
+		return { x1 = -w / 2, y1 = -h / 2, x2 = w / 2, y2 = h / 2 }
+	end
+
+	@ExecSpace("ClientOnly")
+	method any RectOfUI(Entity e)
+		-- 다른 UI 그룹의 엔티티 사각형 → 막 루트 로컬 좌표.
+		if not isvalid(e) or e.UITransformComponent == nil then
+			return nil
+		end
+		local cs = e.UITransformComponent:GetWorldCorners()
+		if cs == nil or #cs < 4 then
+			return nil
+		end
+		local rt = self.root.UITransformComponent
+		local a = rt:ToLocalPoint(Vector3(cs[1].x, cs[1].y, 0))
+		local b = rt:ToLocalPoint(Vector3(cs[3].x, cs[3].y, 0))
+		return { x1 = math.min(a.x, b.x), y1 = math.min(a.y, b.y), x2 = math.max(a.x, b.x), y2 = math.max(a.y, b.y) }
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 LocalOfWorld(number wx, number wy)
+		-- 월드 좌표(맵) → 화면 → 막 루트 로컬 좌표.
+		local sp = _UILogic:WorldToScreenPosition(Vector2(wx, wy))
+		return _UILogic:ScreenToLocalUIPosition(sp, self.root.UITransformComponent)
+	end
+
+	@ExecSpace("ClientOnly")
+	method any ResolveTarget(any s)
+		-- 단계의 대상 → { r = 사각형, px · py = 고리 중심, name }. 화면에 없으면 nil (막만 깔고 말풍선은 가운데).
+		if s.ui ~= nil then
+			local e = _EntityService:GetEntityByPath(s.ui)
+			if isvalid(e) and e.EnabledInHierarchy then
+				local r = self:RectOfUI(e)
+				if r ~= nil then
+					return { r = r, px = (r.x1 + r.x2) / 2, py = (r.y1 + r.y2) / 2, name = s.ui }
+				end
+			end
+			return nil
+		end
+		if s.target == "hunt" then
+			return self:HuntTarget()
+		elseif s.target == "goalpin" then
+			return self:GoalPinTarget()
+		elseif s.target == "jobnpc" then
+			return self:JobNpcTarget()
+		elseif s.target == "nexus" then
+			return self:NexusTarget()
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method any HuntTarget()
+		-- 월드맵이 열려 있을 때 '내 위치' 표시에서 가장 가까운 사냥터 노드(Type = Hunt)의 점 · 80×80 구멍(시안).
+		local wm = _WorldMapController
+		if wm == nil or wm.isOpen ~= true or wm.regions == nil then
+			return nil
+		end
+		local hx = 0
+		local hy = 0
+		local hasHere = false
+		if isvalid(wm.hereMarker) and wm.hereMarker.EnabledInHierarchy then
+			local hr = self:RectOfUI(wm.hereMarker)
+			if hr ~= nil then
+				hx = (hr.x1 + hr.x2) / 2
+				hy = (hr.y1 + hr.y2) / 2
+				hasHere = true
+			end
+		end
+		local best = nil
+		local bestD = 0
+		for _, r in ipairs(wm.regions) do
+			if r.kind == "Hunt" and isvalid(r.ent) then
+				local dot = r.ent:GetChildByName("Dot")
+				if not isvalid(dot) or not dot.EnabledInHierarchy then
+					dot = r.ent
+				end
+				local rr = self:RectOfUI(dot)
+				if rr ~= nil then
+					local cx = (rr.x1 + rr.x2) / 2
+					local cy = (rr.y1 + rr.y2) / 2
+					local d = 0
+					if hasHere then
+						d = (cx - hx) * (cx - hx) + (cy - hy) * (cy - hy)
+					end
+					if best == nil or d < bestD then
+						best = { r = { x1 = cx - 40, y1 = cy - 40, x2 = cx + 40, y2 = cy + 40 }, px = cx, py = cy, name = "hunt:" .. tostring(r.name) }
+						bestD = d
+					end
+				end
+			end
+		end
+		return best
+	end
+
+	@ExecSpace("ClientOnly")
+	method any GoalPinTarget()
+		-- 월드맵 목표 핀(goalMarker0 · ★1 안내가 Lv 10 에 띄운다) · 100×120 구멍(시안).
+		local wm = _WorldMapController
+		if wm == nil or wm.isOpen ~= true then
+			return nil
+		end
+		local mk = wm.goalMarker0
+		if not isvalid(mk) or not mk.EnabledInHierarchy then
+			return nil
+		end
+		local rr = self:RectOfUI(mk)
+		if rr == nil then
+			return nil
+		end
+		local cx = (rr.x1 + rr.x2) / 2
+		local cy = (rr.y1 + rr.y2) / 2
+		return { r = { x1 = cx - 50, y1 = cy - 60, x2 = cx + 50, y2 = cy + 60 }, px = cx, py = cy, name = "goalpin" }
+	end
+
+	@ExecSpace("ClientOnly")
+	method any JobNpcTarget()
+		-- 지금 맵의 전직관 5명(NpcSpawner 이름 "Npc_VD_JOB_*") 전부를 감싸는 구멍 · 고리는 첫 전직관(전사) 몸 가운데.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return nil
+		end
+		local box = nil
+		local px = 0
+		local py = 0
+		local hasPulse = false
+		for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+			if string.sub(c.Name, 1, 11) == "Npc_VD_JOB_" and c.TransformComponent ~= nil then
+				local wp = c.TransformComponent.WorldPosition
+				local a = self:LocalOfWorld(wp.x - 0.55, wp.y - 0.1)
+				local b = self:LocalOfWorld(wp.x + 0.55, wp.y + 1.7)
+				if box == nil then
+					box = { x1 = math.min(a.x, b.x), y1 = math.min(a.y, b.y), x2 = math.max(a.x, b.x), y2 = math.max(a.y, b.y) }
+				else
+					box.x1 = math.min(box.x1, a.x, b.x)
+					box.y1 = math.min(box.y1, a.y, b.y)
+					box.x2 = math.max(box.x2, a.x, b.x)
+					box.y2 = math.max(box.y2, a.y, b.y)
+				end
+				if not hasPulse or string.find(c.Name, "WARRIOR", 1, true) ~= nil then
+					local m = self:LocalOfWorld(wp.x, wp.y + 0.7)
+					px = m.x
+					py = m.y
+					hasPulse = true
+				end
+			end
+		end
+		if box == nil then
+			return nil
+		end
+		return { r = box, px = px, py = py, name = "jobnpc" }
+	end
+
+	@ExecSpace("ClientOnly")
+	method any NexusTarget()
+		-- 지금 맵의 넥서스(LaneFacility · Stage CORE) 중 플레이어에게 가장 가까운 것.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return nil
+		end
+		local me = p.TransformComponent.WorldPosition
+		local best = nil
+		local bestD = 0
+		local list = p.CurrentMap:GetChildComponentsByTypeName("script.LaneFacility", true)
+		if list == nil then
+			return nil
+		end
+		for _, comp in ipairs(list) do
+			---@type LaneFacility
+			local f = comp
+			if isvalid(f) and f.Stage == "CORE" then
+				local wp = f.Entity.TransformComponent.WorldPosition
+				local d = (wp.x - me.x) * (wp.x - me.x) + (wp.y - me.y) * (wp.y - me.y)
+				if best == nil or d < bestD then
+					best = wp
+					bestD = d
+				end
+			end
+		end
+		if best == nil then
+			return nil
+		end
+		local a = self:LocalOfWorld(best.x - 1.3, best.y - 0.2)
+		local b = self:LocalOfWorld(best.x + 1.3, best.y + 2.6)
+		local m = self:LocalOfWorld(best.x, best.y + 1.1)
+		return { r = { x1 = math.min(a.x, b.x), y1 = math.min(a.y, b.y), x2 = math.max(a.x, b.x), y2 = math.max(a.y, b.y) }, px = m.x, py = m.y, name = "nexus" }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceRect(Entity e, number x1, number y1, number x2, number y2)
+		-- 막 루트 가운데 기준 엔티티를 사각형(x1,y1)-(x2,y2) 에 맞춘다. 위치 → 크기 순서.
+		if not isvalid(e) then
+			return
+		end
+		local w = x2 - x1
+		local h = y2 - y1
+		if w <= 0.5 or h <= 0.5 then
+			e.Enable = false
+			return
+		end
+		e.Enable = true
+		local t = e.UITransformComponent
+		t.anchoredPosition = Vector2((x1 + x2) / 2, (y1 + y2) / 2)
+		t.RectSize = Vector2(w, h)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Layout()
+		-- 대상 → 구멍 · 막 4장 · 금테 · 고리 · 손가락 · 말풍선 자리.
+		local s = self.steps[self.step]
+		if s == nil or not isvalid(self.root) then
+			return
+		end
+		local B = self:Bounds()
+		local tg = self:ResolveTarget(s)
+		local hole = nil
+		if tg ~= nil then
+			hole = { x1 = tg.r.x1 - self.holePad, y1 = tg.r.y1 - self.holePad, x2 = tg.r.x2 + self.holePad, y2 = tg.r.y2 + self.holePad }
+			self:PlaceRect(self.dimTop, B.x1, hole.y2, B.x2, B.y2)
+			self:PlaceRect(self.dimBottom, B.x1, B.y1, B.x2, hole.y1)
+			self:PlaceRect(self.dimLeft, B.x1, hole.y1, hole.x1, hole.y2)
+			self:PlaceRect(self.dimRight, hole.x2, hole.y1, B.x2, hole.y2)
+			self:PlaceRect(self.frame, hole.x1 - self.frameOut, hole.y1 - self.frameOut, hole.x2 + self.frameOut, hole.y2 + self.frameOut)
+			if isvalid(self.pulse) then
+				if s.pulse == true then
+					self:PlaceRect(self.pulse, tg.px - 56, tg.py - 56, tg.px + 56, tg.py + 56)
+				else
+					self.pulse.Enable = false
+				end
+			end
+			if isvalid(self.finger) then
+				if s.finger == true then
+					-- 화살표 끝(그림 왼쪽 위에서 7 · 5.5)이 대상 가운데보다 조금 오른쪽 아래를 찌르게 둔다(시안 finger 위치).
+					local tipX = tg.px + 6
+					local tipY = tg.py - 10
+					self:PlaceRect(self.finger, tipX - 7.3, tipY + 5.5 - 44, tipX - 7.3 + 44, tipY + 5.5)
+				else
+					self.finger.Enable = false
+				end
+			end
+		else
+			self:PlaceRect(self.dimTop, B.x1, B.y1, B.x2, B.y2)
+			self:PlaceRect(self.dimBottom, 0, 0, 0, 0)
+			self:PlaceRect(self.dimLeft, 0, 0, 0, 0)
+			self:PlaceRect(self.dimRight, 0, 0, 0, 0)
+			self:PlaceRect(self.frame, 0, 0, 0, 0)
+			self:PlaceRect(self.pulse, 0, 0, 0, 0)
+			self:PlaceRect(self.finger, 0, 0, 0, 0)
+		end
+		self:PlaceBubble(s, tg, hole, B)
+		-- 대상 사각형을 1920 캔버스(왼쪽 위 원점) 값으로 한 번만 찍는다(탐색으로 잰 HUD 사각형과 맞춰 보기 위함).
+		local msg = "none"
+		if tg ~= nil then
+			msg = string.format("%s x=%.0f-%.0f y=%.0f-%.0f", tg.name, tg.r.x1 - B.x1, tg.r.x2 - B.x1, B.y2 - tg.r.y2, B.y2 - tg.r.y1)
+		end
+		if msg ~= self.lastRectLog then
+			self.lastRectLog = msg
+			log(string.format("[Coach] step %d target %s screen=%.0fx%.0f", self.step, msg, B.x2 - B.x1, B.y2 - B.y1))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceBubble(any s, any tg, any hole, any B)
+		-- 말풍선 높이 = 위 18 + 머리 28 + 10 + 설명 + 10 + 아래 줄 44 + 16. 쪽(side)에 따라 구멍 옆에 두고 화면 안으로 민다. 꼬리는 구멍 가운데를 가리킨다.
+		if not isvalid(self.bubble) then
+			return
+		end
+		local w = 420
+		if s.w ~= nil then
+			w = s.w
+		end
+		local inner = w - 44
+		local th = 50
+		if self._T.textH ~= nil then
+			th = self._T.textH
+		end
+		local H = 18 + 28 + 10 + th + 10 + 44 + 16
+		local side = "none"
+		local cx = (B.x1 + B.x2) / 2
+		local cy = (B.y1 + B.y2) / 2
+		local hcx = cx
+		local hcy = cy
+		if hole ~= nil then
+			hcx = (hole.x1 + hole.x2) / 2
+			hcy = (hole.y1 + hole.y2) / 2
+			local gap = 30
+			side = s.side
+			if side == "auto" then
+				if hcx < (B.x1 + B.x2) / 2 then
+					side = "l"
+				else
+					side = "r"
+				end
+			end
+			if side == "t" and hole.y1 - gap - H < B.y1 + 8 then
+				side = "b"
+			elseif side == "b" and hole.y2 + gap + H > B.y2 - 8 then
+				side = "t"
+			elseif side == "l" and hole.x2 + gap + w > B.x2 - 8 then
+				side = "r"
+			elseif side == "r" and hole.x1 - gap - w < B.x1 + 8 then
+				side = "l"
+			end
+			if side == "t" then
+				cx = hcx
+				cy = hole.y1 - gap - H / 2
+			elseif side == "b" then
+				cx = hcx
+				cy = hole.y2 + gap + H / 2
+			elseif side == "l" then
+				cx = hole.x2 + gap + w / 2
+				cy = hcy + 40 - H / 2
+			else
+				cx = hole.x1 - gap - w / 2
+				cy = hcy + 40 - H / 2
+			end
+			cx = math.max(B.x1 + 16 + w / 2, math.min(B.x2 - 16 - w / 2, cx))
+			cy = math.max(B.y1 + 16 + H / 2, math.min(B.y2 - 16 - H / 2, cy))
+		end
+		local bt = self.bubble.UITransformComponent
+		bt.anchoredPosition = Vector2(cx, cy)
+		bt.RectSize = Vector2(w, H)
+		if isvalid(self.head) then
+			self.head.UITransformComponent.RectSize = Vector2(inner, 28)
+		end
+		if isvalid(self.bodyText) then
+			self.bodyText.Entity.UITransformComponent.RectSize = Vector2(inner, th)
+		end
+		if isvalid(self.foot) then
+			self.foot.UITransformComponent.RectSize = Vector2(inner, 44)
+		end
+		-- 꼬리 = 말풍선 아래에 깔린 금 마름모(45° 돌린 칸). 가운데를 말풍선 가장자리에 두면 바깥 절반만 삼각형으로 보인다.
+		--   (다각형 렌더러는 Play 에서 그려지지 않아 쓰지 않는다 · 2026-10-05 실측)
+		local ax = math.max(-w / 2 + 30, math.min(w / 2 - 30, hcx - cx))
+		local ay = math.max(-H / 2 + 24, math.min(H / 2 - 24, hcy - cy))
+		self:PlaceTail(self.tailUp, side == "t", cx + ax, cy + H / 2)
+		self:PlaceTail(self.tailDown, side == "b", cx + ax, cy - H / 2)
+		self:PlaceTail(self.tailLeft, side == "l", cx - w / 2, cy + ay)
+		self:PlaceTail(self.tailRight, side == "r", cx + w / 2, cy + ay)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceTail(Entity e, boolean on, number x, number y)
+		-- 말풍선 꼬리 하나를 켜고 막 루트 가운데 기준 (x, y) 에 둔다(말풍선 형제 · 말풍선보다 먼저 그려진다).
+		if not isvalid(e) then
+			return
+		end
+		e.Enable = on
+		if on then
+			e.UITransformComponent.anchoredPosition = Vector2(x, y)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 연결 · 타이머 해제.
+		if self.handlers ~= nil then
+			for _, x in ipairs(self.handlers) do
+				if isvalid(x.e) then
+					x.e:DisconnectEvent(ButtonClickEvent, x.h)
+				end
+			end
+		end
+		self.handlers = {}
+		self:DropTargetClick()
+		if self.keyHandler ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.keyHandler)
+			self.keyHandler = nil
+		end
+		if self.tickTimer ~= 0 then
+			_TimerService:ClearTimer(self.tickTimer)
+			self.tickTimer = 0
+		end
+	end
+end
