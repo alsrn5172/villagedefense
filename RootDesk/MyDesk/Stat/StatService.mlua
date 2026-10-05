@@ -62,7 +62,14 @@ script StatService extends Logic
 		if uid == nil or uid == "" or event.NewJobId == nil or event.NewJobId == "" then return end
 		local prev = self:JobOf(uid)
 		self:SetJob(uid, event.NewJobId)
-		self:ResetAp(uid, "JOB")
+		-- 1차 전직(초보자 → 직업)에서만 환급한다(WO-050 §2-3 · 사용자 보완 "1차 전직에서만"). 2차 이상은 초기화하지 않는다.
+		if prev == "NOVICE" and event.NewJobId ~= "NOVICE" then
+			local refunded = self:ResetAp(uid, "JOB")
+			-- 자동 분배가 켜져 있으면 돌려받은 AP 만 새 직업 비율로 다시 나눈다(남아 있던 AP · 이미 찍은 스탯은 유지).
+			if refunded > 0 and self:IsAutoApOn(uid) then
+				self:AllocateByJob(uid, refunded, "job-refund")
+			end
+		end
 		log("[Stat] job " .. uid .. " " .. prev .. " -> " .. event.NewJobId .. " (tier " .. tostring(event.Tier) .. ")")
 	end
 
@@ -271,17 +278,55 @@ script StatService extends Logic
 		local u = self:EnsureUser(uid)
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(uid) or nil
 		if u == nil or e == nil or (e.ap or 0) <= 0 then return end
-		local ap = e.ap
+		self:AllocateByJob(uid, e.ap, "auto")
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AllocateByJob(string userId, integer amount, string source)
+		-- amount 만큼의 AP 를 직업 비율(JobInfo.ApRatio* · 없으면 NOVICE 6:4)로 나눠 찍는다(소수 버림 · 나머지는 주스탯). 반환 = 실제 쓴 AP.
+		local u = self:EnsureUser(userId)
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		if u == nil or e == nil or amount <= 0 or amount > (e.ap or 0) then return 0 end
 		local job = self:GetJob(u.job)
 		local alloc = { str = 0, dex = 0, int = 0, luk = 0 }
 		local given = 0
 		for _, k in ipairs({ "str", "dex", "int", "luk" }) do
-			local n = math.floor(ap * (job.ratio[k] or 0))
+			local n = math.floor(amount * (job.ratio[k] or 0))
 			alloc[k] = n
 			given = given + n
 		end
-		alloc[job.primary] = alloc[job.primary] + (ap - given)
-		self:Allocate(uid, alloc, "auto")
+		alloc[job.primary] = alloc[job.primary] + (amount - given)
+		return self:Allocate(userId, alloc, source)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsAutoApOn(string userId)
+		-- 레벨업 자동 AP 분배 설정(계정 저장 · 기본 켬).
+		if _AccountData == nil then return true end
+		return _AccountData:IsAutoApOn(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLevelUpAp(string userId, integer gained)
+		-- 레벨업으로 새로 얻은 AP 만 자동 분배(설정이 켜져 있을 때). 남아 있던 AP · 이미 찍은 스탯은 그대로(WO-050 §2-3).
+		if gained == nil or gained <= 0 then return end
+		if not self:IsAutoApOn(userId) then return end
+		local used = self:AllocateByJob(userId, gained, "levelup")
+		log("[Stat] AP auto " .. tostring(used) .. "/" .. tostring(gained) .. " (levelup · " .. userId .. ")")
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetAutoAp(boolean on)
+		-- 캐릭터 창 "레벨업 자동 분배" 토글(계정에 저장).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local uid = senderUserId
+		if uid == nil or uid == "" or _AccountData == nil then return end
+		_AccountData:SetAutoApOn(uid, on)
+		log("[Stat] auto AP " .. (on and "on" or "off") .. " (" .. uid .. ")")
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(on and "레벨업 자동 분배를 켰습니다 (계정에 저장)" or "레벨업 자동 분배를 껐습니다 (계정에 저장)", uid)
+		end
+		self:PushToClient(uid)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -460,22 +505,24 @@ script StatService extends Logic
 		end
 		local range = self:GetRange(userId)
 
-		-- 대상 레벨·회피·방어: 일반 몹은 MonsterInfo 레벨만 (Defense 열 없음 → 0, 회피 0)
+		-- 대상 레벨·방어: 스폰 행의 SpawnLevel 이 있으면 LevelOverride 반영 실레벨을 우선한다.
 		local targetLevel = 1
-		local targetAvoid = 0
 		local targetDefense = 0
 		if isvalid(defender) then
 			local fr = defender.FarmReward
-			if fr ~= nil and _MonsterCatalog ~= nil then
-				local lv = _MonsterCatalog:GetLevel(fr.MonsterId)
-				if lv > 0 then targetLevel = lv end
+			if isvalid(fr) then
+				if fr.SpawnLevel ~= nil and fr.SpawnLevel > 0 then
+					targetLevel = fr.SpawnLevel
+				elseif _MonsterCatalog ~= nil then
+					local lv = _MonsterCatalog:GetLevel(fr.MonsterId)
+					if lv > 0 then targetLevel = lv end
+				end
 			end
 		end
 
-		if not _DamageFormula:HitCheck(u.final.accuracy or 0, u.level or 1, targetLevel, targetAvoid) then
-			if self.LogDamage then
-				log("[Stat] MISS acc=" .. tostring(u.final.accuracy) .. " vs Lv" .. tostring(targetLevel))
-			end
+		if not _DamageFormula:HitCheck(u.final.accuracy or 0, u.level or 1, targetLevel) then
+			log("[Stat] MISS acc=" .. tostring(u.final.accuracy) .. " vs Lv" .. tostring(targetLevel))
+			_DamageFormula:ShowMiss(defender)
 			return 0
 		end
 
@@ -534,6 +581,7 @@ script StatService extends Logic
 			.. ";attack=" .. tostring(range.min) .. " ~ " .. tostring(range.max)
 			.. ";defense=" .. tostring(f.defense) .. ";speed=" .. tostring(f.speed) .. ";jump=" .. tostring(f.jump)
 			.. ";accuracy=" .. tostring(f.accuracy) .. ";avoid=" .. tostring(f.avoid)
+			.. ";autoap=" .. (self:IsAutoApOn(userId) and "1" or "0")
 	end
 
 	@ExecSpace("ServerOnly")

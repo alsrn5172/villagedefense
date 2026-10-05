@@ -145,6 +145,16 @@ const R4 = [64, 674, 440, 46];
 ctr(ST + '/Left/Row4/BtnAuto', [376, 679, 120, 36], R4);
 S.button(b, ST + '/Left/Row4/BtnAuto', { normal: 'btn_gold_default_sm', disabled: 'btn_gold_disabled_sm' });
 font(ST + '/Left/Row4/BtnAuto', { font: 'Maple', size: 16, color: C.goldInk, h: 'center', v: 'middle' });
+// 레벨업 자동 분배 토글 (WO-050 §2-3 · 계정 저장 · 기본 켬): 자동 분배 버튼 줄(Row4) 아래 빈 줄 y 724~768. 자동획득 줄과 같은 모양 = 파랑 칸 + 글자 + 토글
+// (토글 오른쪽 끝 x 496 = 자동 분배 버튼 오른쪽 끝). 켬/끔 그림은 Stat/StatUIController.SetAutoAp 가 바꾼다.
+const RAA = [64, 724, 440, 44];
+const AAP = ST + '/Left/AutoAp';
+img(AAP, 'btn_blue_default', RAA, LEFT);
+if (!b.hasComponent(AAP, 'MOD.Core.ButtonComponent')) b.addComponent(AAP, 'MOD.Core.ButtonComponent');
+S.button(b, AAP, { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed', disabled: 'btn_blue_disabled' });
+b.patchComponent(AAP, S.SPR, { RaycastTarget: true });
+txt(AAP + '/Label', '레벨업 자동 분배', [84, 724, 300, 44], RAA, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', v: 'middle' });
+img(AAP + '/Toggle', 'toggle_on', [432, 728.5, 64, 35], RAA);
 
 // 오른쪽: 소제목 · 남은 AP 칩 · 기본 능력치 4줄 · 전투 능력치 판 + 6줄
 txt(ST + '/Right/HeadBasic', '기본 능력치', [522, 238.5, 160, 25], RIGHT, { font: 'Maple', size: 18, color: C.title, h: 'left' });
@@ -312,6 +322,7 @@ b.write(path.join(WORLD, 'ui', 'CharacterGroup.ui'), {
       apChipBg: ST + '/Right/ApChip',
       apChipText: ST + '/Right/ApChip/Text',
       avatarPreviewEquip: AV,
+      btnAutoAp: ST + '/Left/AutoAp',
     },
   },
 });
