@@ -24,6 +24,9 @@
 | `WEAPON_THIEF_BASIC` | (마모된) 가니어 | 가니어와 같음(아대 · 두손 칸) |
 | `WEAPON_PIRATE_BASIC` | (마모된) 스틸 너클 | 스틸 너클과 같음(두손 칸) |
 
+### `AvatarLook.csv` — 해적 전직 외형 무기
+- `PIRATE` 행 `TwoHandWeapon`: 베인 슈터(총 · `cf589c3e…`) → **봉인된 제네시스 클로**(`e47d8220…` · 너클 모양 · 사용자 2026-10-05 "총이 아니라 너클 모양"). 나머지 칸은 사용자가 준 목록과 이미 같았다.
+
 ### 로그 확인 (Maker Play) — TODO
 - [ ] 초보자 → 도적 전직: `[Skill] JOB NOVICE -> THIEF/1` → `[Stat] job … NOVICE -> THIEF` → `[Item] job basic weapon WEAPON_THIEF_BASIC equipped (prev WEAPON_CLUB)` · 캐릭터 창 무기 = 기본 아대 · 몽둥이는 인벤토리.
 - [ ] ★1 체크리스트 '전직' 켜짐 · 안내가 G5 로 넘어감.
