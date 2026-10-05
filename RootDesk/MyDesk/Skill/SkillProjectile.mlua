@@ -109,11 +109,16 @@ script SkillProjectile extends AttackComponent
 
     property number FloorTolerance = 0.6
 
-    -- 같은 높이만(b/skill-projectile-level-aim · SkillAttack.LevelAimSkillIds): true 면 발이 FloorY 에서 위 · 아래로 LevelTolerance 보다 먼 적은 닿아도 맞지 않는다
-    --   (IsAttackTarget · 폭발형은 첫 대상 고르기 TryExplode 만 · 폭발 주변 대상은 예전대로). 달팽이 세마리 · 에너지볼트.
-    property boolean LevelOnly = false
+    -- 몸 띠 명중(b/skill-projectile-level-aim v2 · SkillAttack.AimBodyBand 와 같은 규칙): SameFloorOnly 투사체(스킬 · 기본 공격)는 몸 상자가 시전자의 몸 띠
+    --   (FloorY = 시전 때 발 ~ 발 + 시전자 키)와 세로로 겹치는 몬스터만 맞는다 — 머리 위 · 발 아래 몬스터는 닿아도 안 맞는다. 띠는 첫 판정 때 시전자 몸 상자로 한 번 잰다.
+    --   폭발 주변(에너지볼트 폭발 패스 · 그 후보 probe)은 예전 규칙(FloorTolerance)대로. false = 예전 규칙.
+    property boolean UseBodyBand = true
 
-    property number LevelTolerance = 0.5
+    @HideFromInspector
+    property number bandTop = -100000
+
+    @HideFromInspector
+    property boolean bandSkip = false
 
     -- true = 판정 한 번에 몬스터 하나만 맞는다(b/skill-thief-effects · 럭키 세븐 1 대상). OnUpdate 가 probe 패스(ProbeTag · Candidates)로 후보를 모으고
     -- (조준 대상 TargetEntity 가 후보에 있으면 그것 · 없으면 투사체에 가장 가까운 것) 그 하나만 AllowedTargets 로 통과시켜 AttackFast 한다(에너지볼트 폭발과 같은 거름망).
@@ -455,10 +460,27 @@ script SkillProjectile extends AttackComponent
         return false
     end
 
-    method boolean InLevelWindow(Entity defender)
-        -- 같은 높이 창(LevelOnly): 발 높이가 FloorY ± LevelTolerance 안인가.
-        if not isvalid(defender) or not isvalid(defender.TransformComponent) then return false end
-        return math.abs(defender.TransformComponent.WorldPosition.y - self.FloorY) <= self.LevelTolerance
+    method boolean InCasterBand(Entity defender)
+        -- 몸 띠(UseBodyBand): defender 몸 상자가 (FloorY ~ FloorY + 시전자 키)와 세로로 겹치는가. 시전자 키는 첫 호출 때 시전자의 SkillAttack 으로 한 번 잰다(띠 위끝 − 발).
+        --   시전자가 없으면(퇴장) 키 0.7(SkillAttack.CasterBodyHeightFallback 과 같은 값) · 몬스터는 발 높이 점으로 본다.
+        local caster = nil
+        if self.CasterUserId ~= "" then caster = _UserService:GetUserEntityByUserId(self.CasterUserId) end
+        local sa = nil
+        if isvalid(caster) then sa = caster:GetComponent("script.SkillAttack") end
+        if self.bandTop < -99999 then
+            local h = 0.7
+            if isvalid(sa) then
+                local band = sa:CasterBandOf(caster)
+                h = band.y - band.x
+                if h <= 0 then h = sa.CasterBodyHeightFallback end
+            end
+            self.bandTop = self.FloorY + h
+        end
+        if not isvalid(sa) then
+            local y = defender.TransformComponent.WorldPosition.y
+            return y >= self.FloorY and y < self.bandTop
+        end
+        return sa:OverlapsBand(defender, Vector2(self.FloorY, self.bandTop))
     end
 
     @ExecSpace("ServerOnly")
@@ -474,8 +496,7 @@ script SkillProjectile extends AttackComponent
         local first = nil
         local best = math.huge
         for _, c in ipairs(touched) do
-            -- 같은 높이만(LevelOnly): 위 · 아래 적에 닿아도 터지지 않고 계속 난다.
-            if isvalid(c) and isvalid(c.TransformComponent) and (not self.LevelOnly or self:InLevelWindow(c)) then
+            if isvalid(c) and isvalid(c.TransformComponent) then
                 if c == self.TargetEntity then
                     first = c
                     break
@@ -507,6 +528,8 @@ script SkillProjectile extends AttackComponent
         self.Shape.Size = Vector2(self.ExplodeSizeX, self.ExplodeSizeY)
         self.Shape.Angle = 0
         self.Candidates = {}
+        -- 폭발 주변은 예전 규칙(몸 띠 아님 · bandSkip) — 폭발 패스가 끝나면 아래에서 되돌린다.
+        self.bandSkip = true
         self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
         local inBox = self.Candidates
         self.Candidates = {}
@@ -551,6 +574,7 @@ script SkillProjectile extends AttackComponent
             self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
         end
         self.explodePass = false
+        self.bandSkip = false
         self.AllowedTargets = nil
 
         log("[SkillProjectile] EXPLODE " .. self.SkillId .. " first=" .. tostring(first.Name)
@@ -701,13 +725,12 @@ script SkillProjectile extends AttackComponent
             if not isvalid(caster) or not _FactionLogic:IsEnemy(caster, defender) then return false end
         end
         if self.SameFloorOnly and isvalid(defender) and isvalid(defender.TransformComponent) then
-            if defender.TransformComponent.WorldPosition.y < self.FloorY - self.FloorTolerance then
+            if self.UseBodyBand and not self.bandSkip then
+                -- 몸 띠(UseBodyBand): 시전자 발 ~ 머리와 몸 상자가 겹치는 몬스터만.
+                if not self:InCasterBand(defender) then return false end
+            elseif defender.TransformComponent.WorldPosition.y < self.FloorY - self.FloorTolerance then
                 return false
             end
-        end
-        -- 같은 높이만(LevelOnly): 직접 맞는 타격만 거른다 — 폭발 패스(explodePass · 주변 대상)와 폭발 주변 probe 는 예전대로(첫 대상은 TryExplode 가 거른다).
-        if self.LevelOnly and not self.explodePass and attackInfo ~= self.ProbeTag and not self:InLevelWindow(defender) then
-            return false
         end
         -- 단일 대상(스나이핑 · b/skill-archer-effects): 유도 대상만. 대상이 있었는데 풀렸으면(사라짐) 아무도 안 맞는다(OnUpdate 가 화살을 지운다).
         -- 처음부터 대상이 없던 화살(앞에 몬스터 없음 · 직선)은 제한 없음.
