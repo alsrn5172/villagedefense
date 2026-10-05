@@ -120,6 +120,23 @@ script SkillCaster extends Logic
 
     property any attackGateInstalledFor = nil
 
+    -- ───────────── 기본 공격 시전 락 (M1 · 사용자 결정 2026-10-05 · b/skill-no-attack-on-rope) ─────────────
+    -- 기본 공격(Ctrl)도 스킬과 같은 락(LockPresentation · ReleaseCastLock · castId)으로 공격 모션 한 번 동안 잡는다 — 따로 락 장치를 만들지 않는다.
+    --   땅: 걷기 · 방향 전환 · 점프 · 줄 잡기 금지 / 공중: 스킬과 같다(점프 · 줄 잡기만 금지 · 궤적 유지).
+    -- 길이 = 기본 공격 모션 한 번. 무기마다 다른 동작(swingO1 · swingT1 · shoot1(활) · stabO1(단검) · swingO3(아대) · 너클 · 완드)이지만
+    --   원작 프레임 지연 합이 전부 800ms(maplestory.io KMS 389 Character/00002000.img · harness smallprs-check/ref-basic-attack-motion-lengths.txt)이고
+    --   WeaponMotion.csv 기본 행은 전부 PlayRate 1, 휘두르기 Play 실측도 0.80s(SkillMotionSet LockTime) → 무기와 무관하게 한 값.
+    --   피해 · 공격 속도 · 판정 시각은 그대로 — 서버 PlayerAttack 이 정하고, 이 락은 클라 입력 · 표시만 잡는다(다음 Ctrl 도 막지 않는다).
+    property number BasicAttackLockSeconds = 0.8
+
+    -- 클라 전용: 지금 락이 기본 공격 락인가. 기본 공격 락 중의 스킬 시전은 막지 않는다(예전처럼 바로 나가고 그 스킬의 락이 이어받는다).
+    property boolean lockIsBasic = false
+
+    -- 클라 전용: 로컬 플레이어의 PlayerActionEvent 구독(기본 공격 락 시작)과 그 엔티티.
+    property any basicAttackHandler = nil
+
+    property any basicAttackHandlerFor = nil
+
     method void OnBeginPlay()
         -- 양쪽 인스턴스 모두. 스킬별 락 길이 (초).
         self.castLockOverrides = {
@@ -249,6 +266,18 @@ script SkillCaster extends Logic
                 controller:AddCondition("Attack", function() return not self:LocalIsClimbing() end)
                 log("SkillCaster: rope/ladder gate installed on the basic attack (Attack action condition)")
             end
+        end
+        -- ③ 기본 공격 락(M1): 로컬 플레이어의 "Attack" 액션(엔진 PlayerActionEvent · 클라에서도 난다)마다 LockForBasicAttack. 엔티티가 바뀌면 다시 구독한다.
+        --   무기와 무관한 같은 Ctrl 액션이라 근접 · 활 · 아대(#161 원거리 기본 공격) 모두 여기로 온다.
+        if self.basicAttackHandlerFor ~= player then
+            if self.basicAttackHandler ~= nil and self.basicAttackHandlerFor ~= nil and isvalid(self.basicAttackHandlerFor) then
+                self.basicAttackHandlerFor:DisconnectEvent(PlayerActionEvent, self.basicAttackHandler)
+            end
+            self.basicAttackHandlerFor = player
+            self.basicAttackHandler = player:ConnectEvent(PlayerActionEvent, function(event)
+                if event.ActionName == "Attack" then self:LockForBasicAttack() end
+            end)
+            log("SkillCaster: basic attack lock hooked (PlayerActionEvent Attack · " .. tostring(self.BasicAttackLockSeconds) .. "s)")
         end
         local climbing = self:IsClimbingEntity(player)
         if climbing ~= self.localClimbReported or self.localClimbReportedFor ~= player then
@@ -388,7 +417,8 @@ script SkillCaster extends Logic
         -- 시전 락: 다른 스킬(같은 스킬 포함)이 시전 중이면 거절. 쿨다운·MP 게이트 뒤, 프레젠테이션 변경 전(casting.md "Cooldown Before Presentation Lock").
         -- 이동 스킬은 예외 — 락 중에도 나간다.
         local isMove = self:IsMovementSkill(skill)
-        if self.castLockActive and not isMove then
+        -- 기본 공격 락(lockIsBasic · M1)은 스킬을 막지 않는다 — 예전처럼 Ctrl 바로 뒤 스킬이 나가고, 그 스킬의 락이 이어받는다.
+        if self.castLockActive and not isMove and not self.lockIsBasic then
             return self:FinishCast(skillId, { ok = false, reason = "casting (cast #" .. tostring(self.activeCastId) .. " in progress)" })
         end
 
@@ -416,6 +446,12 @@ script SkillCaster extends Logic
         local lockKey = self:CastLockKey(skillId, isRecast)
         if variant ~= "" then lockKey = variant end
         local lockSeconds = self:GetCastLockSeconds(lockKey)
+        if self.castLockActive and self.lockIsBasic and self.castLockTimerId ~= 0 then
+            -- 기본 공격 락 위에 스킬: 기본 공격 락 타이머를 지우고 이 스킬 락이 이어받는다(이동 캐시는 LockPresentation 이 그대로 둔다).
+            _TimerService:ClearTimer(self.castLockTimerId)
+            self.castLockTimerId = 0
+        end
+        self.lockIsBasic = false
         self.castLockActive = true
         self.activeCastId = castId
         self:LockPresentation(castId, skillId)
@@ -428,6 +464,31 @@ script SkillCaster extends Logic
             self:ReleaseCastLock(castId, "no-lock")
         end
         return self:FinishCast(skillId, { ok = true, reason = "requested (cast #" .. tostring(castId) .. ", lock " .. tostring(lockSeconds) .. "s)" })
+    end
+
+    @ExecSpace("ClientOnly")
+    method void LockForBasicAttack()
+        -- 기본 공격(Ctrl) 한 번 = 스킬 락 하나(M1 · 같은 castId · LockPresentation · ReleaseCastLock 경로). 길이 BasicAttackLockSeconds.
+        -- 스킬 락이 이미 돌고 있으면 아무것도 안 한다(그 락이 같거나 길다 · 짧게 끊지 않는다). 기본 공격 락 중에 다시 Ctrl 이면 새 락으로 이어 간다.
+        -- 줄 · 사다리에 매달렸으면 걸지 않는다(그 공격은 "Attack" 조건 · 서버가 이미 막는다).
+        if self.castLockActive and not self.lockIsBasic then return end
+        if self:LocalIsClimbing() then return end
+        local seconds = self.BasicAttackLockSeconds
+        if seconds <= 0 then return end
+        if self.castLockActive and self.castLockTimerId ~= 0 then
+            -- 이어진 기본 공격: 앞 락 타이머를 지운다(castId 가 달라 어차피 무시되지만 남겨 둘 이유가 없다). 걸어 둔 이동 캐시는 LockPresentation 이 그대로 이어 쓴다.
+            _TimerService:ClearTimer(self.castLockTimerId)
+            self.castLockTimerId = 0
+        end
+        self.castSequence = self.castSequence + 1
+        local castId = self.castSequence
+        self.castLockActive = true
+        self.lockIsBasic = true
+        self.activeCastId = castId
+        self:LockPresentation(castId, "BASIC")
+        self.castLockTimerId = _TimerService:SetTimerOnce(function()
+            self:ReleaseCastLock(castId, "timer")
+        end, seconds)
     end
 
     @ExecSpace("ClientOnly")
@@ -444,7 +505,8 @@ script SkillCaster extends Logic
         if isvalid(body) then grounded = body:IsOnGround() end
 
         if grounded and isvalid(movement) then
-            self.cachedInputSpeed = movement.InputSpeed
+            -- 이미 잡아 둔 락에서 이어지면(기본 공격 락 → 다음 Ctrl 또는 스킬 · M1) 처음 캐시를 지킨다 — 지금 InputSpeed 는 0 이라 다시 캐시하면 풀린 뒤에도 못 걷는다.
+            if not self.hasCachedInputSpeed then self.cachedInputSpeed = movement.InputSpeed end
             self.hasCachedInputSpeed = true
             movement:Stop()
             movement.InputSpeed = 0
@@ -453,8 +515,10 @@ script SkillCaster extends Logic
             -- 상태기(StateComponent)는 입력을 보고 MOVE 로 가서 걷기 애니메이션을 계속 밀어넣기 때문이다.
             -- casting.md 원칙 2·7: 시전 프레젠테이션 동안 StateComponent 를 끈다(제거가 아니라 Enable=false, 서버가 아닌 클라가).
             -- 끄기 전에 IDLE 로 보내 걷는 프레임에 멈추지 않게 한다. 그 위에 A 의 PlayerMotion 이 보내는 공격 액션만 재생된다.
+            -- 기본 공격(BASIC · M1)은 상태기를 건드리지 않는다: 엔진 ATTACK 상태가 지금 그 공격 모션을 재생 중이라 IDLE 로 보내면 휘두르기가 끊긴다.
+            --   걷기 모션은 MoveLeft / MoveRight 조건이 이동 액션 자체를 막아 나오지 않는다(아래 입력 게이트).
             local state = player.StateComponent
-            if isvalid(state) then
+            if isvalid(state) and skillId ~= "BASIC" then
                 if state.CurrentStateName ~= "IDLE" then state:ChangeState("IDLE") end
                 state.Enable = false
                 self.stateDisabled = true
@@ -542,6 +606,7 @@ script SkillCaster extends Logic
         end
         self.stateDisabled = false
         self.hasCachedInputSpeed = false
+        self.lockIsBasic = false
         self.castLockActive = false
         self.activeCastId = 0
         log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")")

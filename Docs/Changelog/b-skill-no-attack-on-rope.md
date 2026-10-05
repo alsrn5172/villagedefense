@@ -20,3 +20,14 @@
 
 - `Skill/SkillCaster.mlua` `LockPresentation`: 시전 락 입력 조건에 `MoveUp` · `MoveDown` 을 더했다(`Jump` · `DownJump` 와 같은 조건 = 락 중이면 땅 · 공중 모두 차단). 엔진의 줄 · 사다리 잡기(ActionClimb)는 위 · 아래 키로 시작하므로 어떤 시전 락 동안에도 줄을 잡아 무적으로 빠져나가지 못한다. 락 동안은 아래 키 엎드리기도 막힌다.
 - 런타임 미검증: 입력 조건 이름 `"MoveUp"` / `"MoveDown"`(엔진 기본 액션 이름 · `RUN-rope.md` RO-9).
+
+## 2026-10-05 (3) — 기본 공격 중 이동 금지 (M1 · 사용자 결정 · AUDIT-rope-move.md)
+
+- `Skill/SkillCaster.mlua`: 기본 공격(Ctrl)도 스킬과 **같은 시전 락**을 건다 — 따로 락 장치를 만들지 않았다(castId · `LockPresentation` · `ReleaseCastLock` · 타이머 그대로).
+  - 시작: 클라 `OnUpdate` 가 로컬 플레이어의 `PlayerActionEvent`(엔진 · 클라에서도 난다)를 구독 → `"Attack"` 이면 `LockForBasicAttack`. 무기와 무관한 같은 Ctrl 액션이라 근접 · 활 · 아대(#161 원거리 기본 공격, 머지되면)가 모두 같은 길로 온다.
+  - 길이 `BasicAttackLockSeconds` 0.8 = 기본 공격 모션 한 번: 무기별 동작(swingO1 · swingT1 · shoot1 · stabO1 · swingO3 · swingP1 …)의 원작 프레임 지연 합이 전부 800ms(maplestory.io KMS 389 · harness `smallprs-check/ref-basic-attack-motion-lengths.txt`) · `WeaponMotion.csv` 기본 행 PlayRate 전부 1 · 휘두르기 Play 실측 0.80s(SkillMotionSet LockTime)와 같다.
+  - 땅: 걷기 · 방향 전환 · 점프 · 줄 잡기 금지 / 공중: 스킬과 같다(점프 · 줄 잡기만 금지 · 궤적 유지).
+  - 기본 공격 락은 상태기를 끄지 않는다(엔진 ATTACK 상태가 재생 중인 휘두르기를 끊지 않게) · 다음 Ctrl 을 막지 않는다(공격 속도 그대로) · 스킬 시전을 막지 않는다(`lockIsBasic` · 스킬 락이 이어받는다). 스킬 락 도중의 Ctrl 은 그 락을 줄이지 않는다.
+  - 이어지는 락은 처음 캐시한 이동 속도를 지킨다(`LockPresentation` 이 다시 캐시하지 않는다 — 다시 캐시하면 0 을 담아 풀린 뒤 못 걷는다).
+  - 피해 · 판정 시각 · 서버 쪽은 그대로(서버 `PlayerAttack` 무변경).
+- 런타임 미검증: 클라에서 `PlayerActionEvent` "Attack" 이 나는지(API 문서: Space Server, Client) · 상태기를 켠 채 MoveLeft/MoveRight 조건만으로 제자리 걷기 모션이 안 나오는지 — `RUN-rope.md` RO-8 · RELOOK R27.
