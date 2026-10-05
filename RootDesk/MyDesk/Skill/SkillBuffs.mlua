@@ -101,6 +101,10 @@ script SkillBuffs extends Logic
 
     property number DeathCheckInterval = 0.25
 
+    -- 레이징 블로우는 불굴의 진 컷신이 끝난 뒤에만(#40 5988186219 · 사용자 결정 2026-10-05 "(b) 컷신이 끝난 뒤 8초만 레이징 블로우 · 컷신 중엔 막는다").
+    --   불굴의 진 버프 = 컷신 + Duration(8초 · buffExtendsByCutscene) → 남은 시간이 Duration 보다 길면 아직 컷신 중. 이 여유(초)만큼은 끝난 것으로 본다(서버 · 클라 시계 차 · 소수점).
+    property number VariantCutsceneSlack = 0.05
+
     @HideFromInspector
     property integer deathCheckTimer = 0
 
@@ -1187,8 +1191,9 @@ script SkillBuffs extends Logic
         -- 그 스킬의 버프 변형 정의(없으면 nil). 서버 · 클라 양쪽이 같은 표를 쓴다(ExecSpace 없음 · 상수).
         --   mpCost < 0 = 원래 스킬 MP 그대로 · cooldown = 변형의 쿨타임(원래 스킬 쿨다운은 건너뛰고 새로 걸지도 않는다).
         if skillId == "SK_W11" then
+            -- afterCutscene: 버프의 컷신 부분(불굴의 진 영상)이 끝난 뒤에만 변형 · 컷신 중엔 파워 스트라이크 키를 막는다(VariantWaitsForCutscene · #40 5988186219).
             return { key = "SK_W11_RB", baseSkillId = "SK_W11", buffTag = self.TagInvulnerable, name = "레이징 블로우",
-                icon = "644fc39bcc684c209264eb9d9a4cd6f8", mpCost = 10, cooldown = 0 }
+                icon = "644fc39bcc684c209264eb9d9a4cd6f8", mpCost = 10, cooldown = 0, afterCutscene = true }
         end
         if skillId == "SK_M11" then
             return { key = "SK_M11_FH", baseSkillId = "SK_M11", buffTag = self.TagMagicGuard, name = "플레임 헤이즈",
@@ -1205,6 +1210,7 @@ script SkillBuffs extends Logic
         local spec = self:VariantSpec(skillId)
         if spec == nil then return "" end
         if not self:IsActive(userId, spec.buffTag) then return "" end
+        if self:VariantBlockedNow(userId, skillId) then return "" end
         local player = _UserService:GetUserEntityByUserId(userId)
         if isvalid(player) and isvalid(player.PlayerComponent) and (player.PlayerComponent.Hp <= 0 or player.PlayerComponent:IsDead()) then return "" end
         return spec.key
@@ -1216,6 +1222,7 @@ script SkillBuffs extends Logic
         local spec = self:VariantSpec(skillId)
         if spec == nil then return "" end
         if not self:LocalIsActive(spec.buffTag) then return "" end
+        if self:LocalVariantBlockedNow(skillId) then return "" end
         local me = _UserService.LocalPlayer
         if isvalid(me) and isvalid(me.PlayerComponent) and (me.PlayerComponent.Hp <= 0 or me.PlayerComponent:IsDead()) then return "" end
         return spec.key
@@ -1231,6 +1238,37 @@ script SkillBuffs extends Logic
         if _SkillDatabase == nil then return end
         self:ApplyVariantIcon("SK_W11")
         self:ApplyVariantIcon("SK_M11")
+    end
+
+    method boolean VariantWaitsForCutscene(any spec, string buffSkillId, number level, number endsAt)
+        -- 변형이 컷신 뒤에만 열리는가(spec.afterCutscene) — 버프 남은 시간 > 그 버프 스킬의 기본 Duration(+ VariantCutsceneSlack)이면 아직 컷신 중 → true.
+        --   불굴의 진 버프는 컷신 + Duration 으로 걸린다(SkillExecutors buffExtendsByCutscene). 서버 · 클라 같은 식(ExecSpace 없음 · 시계 = ServerElapsedSeconds).
+        if spec == nil or spec.afterCutscene ~= true then return false end
+        if buffSkillId == nil or buffSkillId == "" then return false end
+        local base = _SkillDatabase:DurationAt(buffSkillId, level)
+        if base <= 0 then return false end
+        local left = endsAt - _UtilLogic.ServerElapsedSeconds
+        return left > base + self.VariantCutsceneSlack
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean VariantBlockedNow(string userId, string skillId)
+        -- 서버: 이 키의 변형 버프가 켜져 있지만 아직 컷신 중이라 막아야 하는가(레이징 블로우 · 불굴의 진 영상 중). 막히면 SkillCaster.RequestCast 가 시전을 거절한다.
+        local spec = self:VariantSpec(skillId)
+        if spec == nil or spec.afterCutscene ~= true then return false end
+        local b = self:GetBuff(userId, spec.buffTag)
+        if b == nil then return false end
+        return self:VariantWaitsForCutscene(spec, b.skillId, b.level, b.endsAt)
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalVariantBlockedNow(string skillId)
+        -- 클라 예측: VariantBlockedNow 와 같은 규칙(미러 기준).
+        local spec = self:VariantSpec(skillId)
+        if spec == nil or spec.afterCutscene ~= true then return false end
+        local b = self.mirrorBuffs[spec.buffTag]
+        if b == nil or b.endsAt <= _UtilLogic.ServerElapsedSeconds then return false end
+        return self:VariantWaitsForCutscene(spec, b.skillId, b.level, b.endsAt)
     end
 
     @ExecSpace("ClientOnly")

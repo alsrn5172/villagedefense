@@ -149,6 +149,10 @@ script SkillExecutors extends Logic
     -- PROJECTILE 중 CSV Duration 만큼 선딜 뒤 발사하는 스킬 (skillId -> true). 스나이핑 SK_A21.
     property table projectileDelayFromDuration = {}
 
+    -- 선딜 뒤 발사를 이만큼 더 늦춘다(초 · skillId -> 초). 표의 선딜(Duration · 툴팁 "선딜 1초")은 그대로 두고 화살 · 발사 자세(motion _2)만 민다.
+    -- 스나이핑 0.15(2026-10-03 합동 Play · 사용자 선택): Use 사운드(+0.43s)의 "휙" 소리 시작이 소리 안 0.62s → +1.05s, 그 +0.10 = 1.15s 에 화살이 나간다.
+    property table projectileReleaseExtra = {}
+
     -- PROJECTILE 중 보스 우선 조준 (skillId -> true). 스나이핑 SK_A21.
     property table projectilePreferBoss = {}
 
@@ -305,6 +309,14 @@ script SkillExecutors extends Logic
     -- 값은 상수로 박지 않고 _PlayerFrontLayer.PlayerSortingLayer · PlayerOrderInLayer 에서 읽는다(ApplyShadowSorting).
     -- 예전(2026-09-13)엔 밟은 발판의 SortingLayer + 2 였다 — 플레이어가 Default 로 옮겨 간 뒤로 발판 층은 Default 아래라 틀렸고, 공중(발판 없음)이면 앞에 그려졌다.
     property integer ShadowOrderBelowPlayer = 1
+
+    -- 플레이어 앞에 그리는 고정 위치 이펙트의 OrderInLayer(b/skill-archer-effects · 닷지 출발 · 같은 층의 플레이어 = 4 → 5 면 항상 앞). ApplyFrontSorting.
+    --   옵션이 없는 이펙트(Default 층)는 발판 층에 따라 플레이어 앞일 때도 뒤일 때도 있다(공중 · 높은 MapLayer 발판) — 층을 명시해 원작 z 0(캐릭터 앞)으로 고정한다.
+    property integer FrontEffectOrderInLayer = 5
+
+    -- 몬스터에 새기는 표식(mob.sortOnMob · 스나이핑 VI)의 OrderInLayer: 몬스터(2) 앞 · 플레이어(4) 뒤 · 명중 폭발(FrontEffectOrderInLayer 5) 아래.
+    --   2026-09-29 사용자 눈 확인 W: 옵션 없는 표식이 폭발보다 나중에 생겨 폭발을 덮었다(영상 92.767s = 폭발이 맨 앞). ApplyOrderAt.
+    property integer HitMarkOrderInLayer = 3
 
     -- 분신이 항상 등 뒤에 있도록 바라보는 쪽을 살피는 간격(초 · b/skill-thief-motion · 2026-09-13 제보 "방향을 바꾸면 분신이 안 움직여 앞에 남는다"):
     -- 부착 이펙트의 localPosition 은 시전 때 한 번 정해지고(offsetX × facing) 플레이어 facing(LookDirectionX)은 Transform 을 뒤집지 않아 따라오지 않는다 →
@@ -467,19 +479,37 @@ script SkillExecutors extends Logic
             if self.prewarmedJobs[userId] == jobId then return end
             self.prewarmedJobs[userId] = jobId
             local ruids = self:PrewarmRuidsFor(jobId)
-            if #ruids == 0 then
+            -- b/skill-archer-effects(2026-09-28 Play): prewarmFrames = true 인 스킬의 sprite 순서표(더블 샷 분홍 불꽃 · 폭발: 첫 시전만 sprite 로드 전이라 흰 공처럼 보였다).
+            local frameRuids = self:PrewarmFrameRuidsFor(jobId)
+            if #ruids == 0 and #frameRuids == 0 then
                 log("SkillExecutors: prewarm " .. jobId .. " — nothing to prewarm (" .. userId .. ")")
                 return
             end
             if self.CutscenePrewarmMode == "preload" then
-                self:PreloadClipsOnClient(table.concat(ruids, ","), userId)
+                -- 클립과 sprite 를 한 번에 받아 둔다(PreloadAsync 는 RUID 종류를 가리지 않는다).
+                local all = {}
+                for _, r in ipairs(ruids) do table.insert(all, r) end
+                for _, r in ipairs(frameRuids) do table.insert(all, r) end
+                self:PreloadClipsOnClient(table.concat(all, ","), userId)
             else
                 local s = self.CutscenePrewarmScale
                 for _, ruid in ipairs(ruids) do
                     _EffectService:PlayEffectAttached(ruid, player, Vector3(0, -40, 0), 0, Vector3(s, s, 1), false)
                 end
+                -- sprite 순서표는 EffectService 로 못 트니(animationclip 이 아니다) 발밑 40 유닛 아래에서 PlaySpriteSequence 로 한 번 돌린다.
+                if #frameRuids > 0 then
+                    local below = player.TransformComponent.WorldPosition + Vector3(0, -40, 0)
+                    for skillId, entry in pairs(self.effectOverrides) do
+                        local skill = _SkillDatabase:GetSkill(skillId)
+                        if entry.prewarmFrames == true and skill ~= nil and skill.requiredJobLine == jobId then
+                            for _, key in ipairs({ "impactFrames", "impactFollowFrames" }) do
+                                self:PlaySpriteSequence(entry[key], player, below, skillId .. "_prewarm")
+                            end
+                        end
+                    end
+                end
             end
-            log("SkillExecutors: prewarm " .. jobId .. " x" .. tostring(#ruids) .. " mode=" .. self.CutscenePrewarmMode .. " [" .. table.concat(ruids, ",") .. "] (" .. userId .. ")")
+            log("SkillExecutors: prewarm " .. jobId .. " x" .. tostring(#ruids) .. " frames x" .. tostring(#frameRuids) .. " mode=" .. self.CutscenePrewarmMode .. " [" .. table.concat(ruids, ",") .. "] (" .. userId .. ")")
         end, self.CutscenePrewarmDelay)
     end
 
@@ -489,6 +519,7 @@ script SkillExecutors extends Logic
         --   · cast.cutsceneSeconds 가 있는 화면 컷신 = 그 직업의 궁(불굴의 진 · 대마법 · 폭풍의 화살 · 메소 익스플로전 · 함포 사격)
         --   · cast.prewarm = true 인 시전 이펙트(컷신은 아니지만 첫 재생이 늦게 뜬다 · #94 하이퍼 바디 = 쓸만한 하이퍼 바디 · 라이브 2022 모습과 일치) — 이 필드는 #94 가 넣는다. #94 전에는 해당 없음.
         --   · thrust(main 의 파워 스트라이크 2단 찌르기 잔상 · 무기별) — #83 이 thrust 를 지우면 저절로 빠진다.
+        --   · aim · mob · impact · ball 단계의 prewarm = true 클립(b/skill-archer-effects · 스나이핑 VI). sprite 순서표는 PrewarmFrameRuidsFor.
         _SkillDatabase:EnsureLoaded()
         local ruids = {}
         local seen = {}
@@ -508,6 +539,37 @@ script SkillExecutors extends Logic
                 if entry.loopEnd ~= nil and entry.loopEnd.prewarm == true then add(entry.loopEnd.ruid) end
                 if entry.thrust ~= nil then
                     for _, t in pairs(entry.thrust) do add(t.ruid) end
+                end
+                -- b/skill-archer-effects(2026-09-28 Play): aim · mob · impact · ball 단계에 prewarm = true 인 클립(스나이핑 VI: 첫 시전의 조준 클립이 ≈1s 늦어 명중 뒤에 떴다).
+                for _, stage in ipairs({ "aim", "mob", "impact", "ball" }) do
+                    local st = entry[stage]
+                    if st ~= nil and st.prewarm == true then add(st.ruid) end
+                end
+            end
+        end
+        return ruids
+    end
+
+    @ExecSpace("ServerOnly")
+    method table PrewarmFrameRuidsFor(string jobId)
+        -- 그 직업 스킬 중 prewarmFrames = true 인 것의 sprite 순서표(impactFrames · impactFollowFrames) RUID 목록(b/skill-archer-effects · 더블 샷 분홍 · 같은 RUID 는 한 번).
+        -- 자리표시자가 남은 표(HasValidFrames false)는 뺀다.
+        _SkillDatabase:EnsureLoaded()
+        local ruids = {}
+        local seen = {}
+        for skillId, entry in pairs(self.effectOverrides) do
+            local skill = _SkillDatabase:GetSkill(skillId)
+            if entry.prewarmFrames == true and skill ~= nil and skill.requiredJobLine == jobId then
+                for _, key in ipairs({ "impactFrames", "impactFollowFrames" }) do
+                    local frames = entry[key]
+                    if self:HasValidFrames(frames) then
+                        for _, f in ipairs(frames) do
+                            if not seen[f.ruid] then
+                                seen[f.ruid] = true
+                                table.insert(ruids, f.ruid)
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -577,6 +639,9 @@ script SkillExecutors extends Logic
         }
         self.projectileDelayFromDuration = {
             SK_A21 = true,        -- 스나이핑: Duration(1s) 선딜
+        }
+        self.projectileReleaseExtra = {
+            SK_A21 = 0.15,        -- 스나이핑: 선딜 1s + 0.15 = 1.15s 에 발사(Use 사운드의 휙 소리에 맞춤 · 시전 락 SkillCaster.castLockOverrides 1.35)
         }
         self.projectilePreferBoss = {
             SK_A21 = true,
@@ -670,7 +735,40 @@ script SkillExecutors extends Logic
                 -- spawnDelay = 투사체가 나가는 때(키 누름 기준 초). 0.81 = 원작 시전 effect 0 ~ 8번(9 × 90 ms) 뒤 effect/9 번쩍임과 함께 공이 나간다
                 --   (영상: Use 소리 9.497 → 공 10.300 = 0.80 s · 16.447 → 17.233 = 0.79 s · 폭발 Hit 소리는 Use + 1.20 s 두 판 모두). 예전 0 = 키 누름 즉시. 스폰 자리는 에너지볼트(SK_M11.spawn)와 같다.
                 damageMul = 2, spawnDelay = 0.81,
-                explode = { sizeX = 3.5, sizeY = 2.0, centerY = 0.25, maxTargets = 10 },
+                -- impactOnce: 폭발 그림(hit/0)은 시전당 한 번 — 첫 대상 몸 중심(원작 onlyOnce · #40 5988186874 사용자 결정 2026-10-05). 피해 · 숫자 · 불꽃은 대상마다 그대로.
+                explode = { sizeX = 3.5, sizeY = 2.0, centerY = 0.25, maxTargets = 10, impactOnce = true },
+            },
+            SK_N01 = {   -- 달팽이 세마리(초보자 · b/skill-novice-snails 2026-10-01) — 원작 skill/000.img/skill/0001000(KMS 389 String "달팽이 세마리"): 시전 이펙트 없음 · 동작 swingO1 · 레벨별 껍질 ball(35×33 · 3프레임) + hit/0(73×71 · 6프레임) · Use 소리.
+                --   A 답 #40 5891464912 "원작 초보자 스킬 달팽이 세마리(달팽이 껍질 던지기) 그림을 쓰면 된다". 레벨마다 껍질이 다르다 → levels[레벨] 이 있으면 FireProjectile 이 그 칸을 먼저 쓴다(GetLevelSpecRuid).
+                --   cast.none: 원작에 시전 이펙트가 없어 기본 Charge 파티클도 틀지 않는다(PlayStageEffect).
+                cast = { none = true },
+                -- 껍질이 나가는 자리 · 시점(b/skill-novice-snails 2026-10-05 · 사용자 "껍질이 손이 아니라 머리 근처에서 나간다" · 기준 = 사용자 원작 영상 "옛날메이플 달팽이세마리 무한던지기버그"):
+                --   높이 offsetY 0.28: 영상 t=5.00s · t=6.23s 두 번 다 껍질 중심이 발바닥 위 96px(영상 배율 ≈3.46px/원작 1px — 껍질 그림 26px 이 영상 90px) = 원작 28px = 0.28
+                --     (캐릭터 키의 0.42배 · 가슴 · 손 높이). 예전 = CSV SpawnOffsetY 0.5(우리 Play 캡처 N01_ours_1005 13.0s · 14.5s: 키의 0.75배 = 눈높이 → "머리에서 나간다").
+                --   시점 delay 0.45: 원작 Skill/000.img/skill/0001000/action/0 = swingO1 · Character/00002000.img/swingO1 프레임 0.30/0.15/0.35s → 2프레임 시작 0.45s 에 나간다
+                --     (영상: 동작 시작 → 껍질 13프레임 = 0.43s · 두 번 같음 · SkillMotionSet SK_W11 swingO1 실측 HitTime 0.45 와 같은 값). 예전 = 시전 즉시(동작보다 먼저 날아갔다).
+                --   앞 거리는 그대로(SkillAttack.ProjectileSpawnOffsetX 0.5 · 영상 0.55 ± 0.1 = 같다고 봄). 소리(Use)는 지금처럼 시전 순간(영상도 동작 시작과 같이 난다).
+                --   🔴 2026-10-05 사용자 선택 = 키트 후보 B(지연 보정): 서버가 옮기는 껍질은 클라에 ≈0.1s · ≈0.4 유닛 늦게 보인다(캡처 실측) →
+                --     앞 0.15 · 0.35s 에 만들어 처음 보이는 자리 · 시점이 영상(손 앞 ≈0.55 · 0.43s)과 맞게. 시전 락 0.4 그대로(후보 D = 0.8 은 고르지 않음).
+                spawn = { delay = 0.35, offsetY = 0.28, offsetX = 0.15 },
+                ball = { ruid = "656a620d18744c9bbcb7b4073ba5eb7b" },
+                impact = { ruid = "12fab1a0a8e64654bf3f4d4061b6736d" },
+                levels = {
+                    { ball = { ruid = "656a620d18744c9bbcb7b4073ba5eb7b" }, impact = { ruid = "12fab1a0a8e64654bf3f4d4061b6736d" } },
+                    { ball = { ruid = "8a55fadcf95a4735b028f027eb387da3" }, impact = { ruid = "e5a1a78d719a4412948c9d615ad632c8" } },
+                    { ball = { ruid = "49e86b4bfb344c6995d819523d7535f2" }, impact = { ruid = "d6094d893e8a4e2391e20693154c3682" } },
+                },
+            },
+            SK_N02 = {   -- 더블 점프(초보자 · b/skill-novice-double-jump 2026-10-02) — 라이브러리에서 가장 가까운 공식 클립: 궁수 skill/300.img/skill/3000008 "더블 점프"(초보자용 원작 클립은 없다).
+                --   effect/0~2(117×169 · 6프레임) + effect0/0~2(153×160 · 5프레임) — 번호가 클수록 그림이 커진다(effect/2 프레임 높이 ≈300) → 스킬 레벨 1 · 2 · 3 에 맞춘다. 뛴 자리에 남는다(붙이지 않음).
+                --   effect = 앞 · effect0 = 뒤로 보고 둘 다 같은 자리에 튼다(🟡 층 순서는 Play 로 확인). 원작 클립은 왼쪽 기준 → 오른쪽으로 뛰면 FlipX.
+                --   2026-10-05 사용자 선택(A3 "더 둥글게"): 앞 겹(effect · 화살 모양 줄기)을 빼고 둥근 별빛(effect0)만 · 레벨별 그림은 그대로 · 크기 ×1.5(세 레벨 모두 · 1.0/1.25/1.5/1.75 중 고름).
+                --   예전 front = effect/0~2 (5d0e8dd1… · af166c03… · a6855579…).
+                levels = {
+                    { back = "e779695d426e413e865c03b04a2d0ecf", scale = 1.5 },
+                    { back = "2c925a0190d84e34a0a6531a4272b1af", scale = 1.5 },
+                    { back = "29a3364501674581a6472b31e1c8138a", scale = 1.5 },
+                },
             },
             SK_M11 = {
                 -- 크기 · 위치(b/skill-magician-effects 2026-09-26 · 레드 2013 영상 프레임 실측 · 영상 배율 1.67 = 뿔버섯 56×52 → 94×87): 영상의 구체 중심은 발 기준
@@ -720,7 +818,7 @@ script SkillExecutors extends Logic
             SK_W11 = {   -- 파워 스트라이크 — 2026-09-25 사용자 결정(원장 "Skill look rule": 라이브에서 없어진 스킬은 없어지기 전 마지막 모습 · 모험가 1001004 는 2010 빅뱅에 삭제):
                 -- 시전 · 타격 = skill/800033.img/skill/80003316 (모험가 파워 스트라이크 원화를 다시 낸 헌정 팩 · 사용자 영상의 "모험가 normal" 줄과 같다)
                 --   effect 6프레임 139×128(주황 광선) + hit/0 2프레임(붉은 X · 시전당 한 번 · hitEffectPolicy once). 이 팩엔 hit/1 이 없다.
-                --   영상의 캐릭터 레벨 lv.20/25 판(분홍 · 자홍)은 MSW 인덱스에 없다. 소리는 이 팩에 없어 11001002 Use(castSounds.SK_W11)를 그대로 쓴다(허용된 예외).
+                --   영상의 캐릭터 레벨 lv.20/25 판(분홍 · 자홍)은 MSW 인덱스에 없다. 소리는 이 팩에 없다 — 시전 = 원작 모험가 1001004/Use(castSounds.SK_W11 · 2026-10-05 사용자 결정) · 명중 = 1001005/Hit(extraSounds.SK_W11.hit).
                 -- 예전 = skill/1100.img/skill/11001002(시그너스 소울마스터 · effect aae5027d… + hit/0 88a17d40… + hit/1 c07906d7… 두 겹).
                 -- hitAt = 폴백 타격 시점(초). 정상 경로는 모션 세트(Skill/SkillMotionSet.csv)에서 고른 모션의 HitTime — 세트가 없을 때만 이 값.
                 -- 둘 다 0.45 = 휘두르기 6종(swingO1~3 · swingT1~3) 2프레임(칼이 앞으로 내려온 접촉 프레임) 시작 · 2026-09-25 Play 실측(프레임 0.30/0.15/0.35s).
@@ -776,20 +874,73 @@ script SkillExecutors extends Logic
             -- spec 키 추가: ball(투사체 스프라이트 · SpriteRUID) · depart(출발 지점 고정 재생) · punchCast/punchImpact(변신 중 재시전 주먹) ·
             --               coinHits(동전마다 순환 재생) · offsetX(cast/loop 부착 x · 바라보는 쪽 +).
             SK_A11 = {   -- 더블 샷 — skill/3300.img/skill/33001105 더블 샷(와일드헌터 · 궁수 300.img 는 색인에 없음): effect 8프레임 · ball/0 화살(60×20) · hit/0
-                cast = { ruid = "963362c63ba74293b734e35fa623b90f" },
-                impact = { ruid = "c5e5ec5781d84d22b4fd065ccfcc8987" },
-                ball = { ruid = "3ee73e25ce47428ca656d6bf0a04e603" },
+                -- 2026-09-27 b/skill-archer-effects(사용자 영상 돌희 19.1~20.1s · 원작 더블 샷 3001005 = 2013 RED 에서 삭제 · 마지막 모습 2009 lv.25 는 색인에 없음):
+                --   가장 가까운 색인 팩 = 시그너스 윈드브레이커 더블 샷 skill/1300.img/skill/13001003(같은 2008~2009 구조 · 영상 23~26.5s 에 그대로 나온다 · 파란색) —
+                --   시전 이펙트 없음(원작에 effect 가 없다 · cast.none) · 화살 = 지금 ball 그대로(원작 = 평범한 화살) ·
+                --   명중 = 작은 불꽃 hit/1(클립 57×58 · 프레임 최대 72×72 · 6프레임) → 0.10초 뒤 큰 별 폭발 hit/0(클립 78×74 · 프레임 최대 92×100(폭은 96까지) · 7프레임 · ≈ 캐릭터 키 0.9)(영상 19.600 / 19.700s · SkillProjectile.PlayFollowImpact).
+                --   이 팩은 hit/0 = 폭발 · hit/1 = 불꽃으로 모험가 3001005(hit/0 불꽃 6프레임 · hit/1 폭발 7프레임)와 순서가 반대다(WZ GMS 83 프레임 수 · 크기로 확인).
+                --   예전 = 와일드헌터 33001105(cast 963362c6… 파란 소용돌이 · hit c5e5ec57… 파란 별 한 번).
+                --   색 = 분홍(사용자 결정 2026-09-27 · 영상 2009 lv.25 불꽃 · 폭발 hue 351°): 원본 파랑(불꽃 210° · 폭발 208°)의 색상(hue)만 불꽃 +132° · 폭발 +134°(sprite 342° — 영상 배경 위에서 351° 로 읽힘) 돌린 sprite 13장
+                --     (채도 = v2 곡선(불꽃 S×0.90×(1−0.35·α³) · 폭발 상한 0.85) · 명도 · 알파 · 크기 · pivot 그대로 · design-handoff/archer-recolor/DS_*_h132_v3.png · DS_*_h134_v3.png · 프레임 60ms = WZ GMS 83 hit/N/delay).
+                --   impactFrames / impactFollowFrames = 팀 저장소에 올린 분홍 sprite 13장(2026-09-28 업로드 · design-handoff/archer-recolor/UPLOAD_REQUEST.md) → 분홍 sprite 순서로 재생
+                --     (SkillExecutors.PlaySpriteSequence). 하나라도 RUID(32자 16진)가 아니면 그 줄 전체를 건너뛰고 아래 파란 원본 클립(impact · impactFollow)을 쓴다.
+                cast = { none = true },
+                impact = { ruid = "ebbf2a13caad41ec9a0e33c7b2f611a5" },
+                impactFollow = { ruid = "568444a71de948dcae294ff97813796e", delay = 0.10 },
+                impactFrames = {        -- 불꽃 hit/1 · +132° · pivot = 원본(왼쪽 · 아래 기준 px)
+                    { ruid = "8e43a33132d24593850c29366b6195b3", delay = 0.06 },   -- 44×40 · pivot (20,16)
+                    { ruid = "0153519824e14230b5a3aaf19d745595", delay = 0.06 },   -- 68×68 · pivot (32,32)
+                    { ruid = "59819ffd37bf4bf0a3f7cff28510e416", delay = 0.06 },   -- 72×72 · pivot (34,35)
+                    { ruid = "4f042ec5549e48dbad7b9c007bd035b4", delay = 0.06 },   -- 64×68 · pivot (28,32)
+                    { ruid = "fba6b48a9ed846bfafb0f6ccbf7d04c6", delay = 0.06 },   -- 60×64 · pivot (29,30)
+                    { ruid = "aa6a66dcf73149deb24c9418bf5f1689", delay = 0.06 },   -- 36×36 · pivot (13,12)
+                },
+                impactFollowFrames = {  -- 폭발 hit/0 · +134°
+                    { ruid = "f5042cc86c04409c886d2fa7b59bd512", delay = 0.06 },   -- 64×44 · pivot (43,20)
+                    { ruid = "24628df485dd4e58a2aab734500f4380", delay = 0.06 },   -- 96×88 · pivot (47,45)
+                    { ruid = "5c71a74f8093484b970f0a816f02ef50", delay = 0.06 },   -- 96×92 · pivot (45,47)
+                    { ruid = "35c46b210d534f4589216aadb377946c", delay = 0.06 },   -- 92×100 · pivot (34,52)
+                    { ruid = "86e9defbac6847128291daa403bd76ec", delay = 0.06 },   -- 72×72 · pivot (32,35)
+                    { ruid = "e1ae468142d74158b44d05eb03e171d2", delay = 0.06 },   -- 64×60 · pivot (30,27)
+                    { ruid = "299dccc9b9b04ed5adc0a5bb2b443e0c", delay = 0.06 },   -- 64×64 · pivot (30,28)
+                },
+                -- ball(2026-09-29 사용자 눈 확인 Q): 영상 2009 lv.25(19.30~19.47s) = 나무 화살 2발(≈40px · 갈색 대 · 회색 깃 · 빛 없음) →
+                --   skill/800028.img/skill/80002808/ball/0(44×8 · 같은 그림의 평범한 화살 · 라이브러리에서 가장 가까움 · 앞촉 왼쪽 = 예전 것과 같은 방향).
+                --   예전 = 3ee73e25…(skill/3300.img 33001105 와일드 헌터 ball · 60×20 · 파란 흰 빛 화살 · 영상과 다름). 비교: archer-check/captures/Q2a_*.png
+                ball = { ruid = "7081cb1f302c4bbf8bc9e18bfbd5c31b" },
+                -- prewarmFrames(2026-09-28 Play): 세션 첫 시전만 분홍 sprite 가 로드 전이라 흰 공처럼 보였다 → 입장 때 13장을 한 번 돌려 둔다(PrewarmCutscenesFor).
+                prewarmFrames = true,
             },
             SK_A21 = {   -- 스나이핑 — skill/322.img/skill/3221007 스나이핑(신궁 원작 · 2026-09-13 색인에 잡혀 얼티밋 스나이핑 3241004 에서 교체 · b/skill-archer-motion)
                 -- aim = 팩 effect 13프레임(207×258 · 시전자에 붙는 조준 연출 · 선딜 1초 동안 = ExecuteProjectile 이 시전 순간 재생) · mob = 조준 중 대상 몬스터 표시(PlayAimMarker) ·
                 -- ball = 팩 ball 4프레임(196×53 · 큰 화살 · 더블 샷 60×20 과 다르다) · impact = hit/0. 예전 값: special d537bc5f… · hit b1675336… · ball 3ee73e25…(더블 샷 재사용).
-                aim = { ruid = "6c7b4f7910af41dfbe1348eaf2f8c9e6" },
-                mob = { ruid = "0c76a3bdd54548988c48bdbdbbd2a5ca" },
-                impact = { ruid = "72fa136a368d4f7eba60ce0d16606be5" },
-                ball = { ruid = "07a44ad4208240eaa8c67ca0e8688014" },
+                -- 🔴 2026-09-27 b/skill-archer-effects(사용자 결정: 한 시대 = **스나이핑 VI skill/324.img/skill/3241000** 한 벌 · 2023 뉴에이지 · 영상 88~98s):
+                --   aim = VI effect(662×357 · 27프레임 × 60ms = 1.62s · WZ) · delay 0.43 = 클립의 발사 섬광(≈0.567s · 영상 91.900 → 92.466)이 선딜 1초(표) 끝의 발사와 맞게 늦게 켠다.
+                --   예전 = 3221007 aim 6c7b4f79… · mob 0c76a3bd… · ball 07a44ad4… · hit 72fa136a…(≤2020 판).
+                aim = { ruid = "0b6df3e081d0484fb9a4aa174f9784a8", delay = 0.43, prewarm = true },   -- prewarm: 첫 시전만 ≈1s 늦게 떴다(2026-09-28 Play) → 입장 때 예열
+                -- mob(VI 표식 116×112 · pivot = 가운데): atHead = 콜라이더 위쪽 끝(머리)에 가운데를 둔다 · onHit = **맞을 때** 새긴다(영상 92.766s · 데스티니 64.966s ·
+                --   "적중 시 표식을 새김") — 선딜 동안의 조준 표시(PlayAimMarker)는 켜지 않는다.
+                -- 2026-09-29 사용자 눈 확인 W(영상 91.8s · 92.767s · 캐릭터 키 ≈74px = 원본 1:1): 표식 ≈80px = 원본 116px × 0.75 · 폭발 아래(sortOnMob · HitMarkOrderInLayer 3).
+                mob = { ruid = "caf8155446734cffaf7a2313133c0738", atHead = true, onHit = true, prewarm = true, scale = 0.75, sortOnMob = true },
+                -- impact(b/skill-archer-effects): hit = 스나이핑 VI skill/324.img/skill/3241000/hit/0(201×136 · 12프레임 · 2023 · 사용자 영상 92.8s 와 같은 그림). 예전 = 3221007 hit/0 72fa136a…(173×251 · 스네일의 7~9배).
+                --   scale 0.7 = 영상 VI 폭발 폭 ≈ 캐릭터 키 2 = 1.4 유닛 ÷ 클립 폭 2.01 · heightRatio 0.22 = 영상 폭발 중심 = 대상 발 위 몸 높이 0.18(VI)~0.25(데스티니) ·
+                --   minAboveFeet 0.4 = 작은 몬스터(스네일 0.28)에서 그림 아래쪽이 발판 밑으로 들어가지 않게 하는 최소 높이(SkillProjectile.PlayHitEffect · Play 로 0.35~0.6 조정).
+                -- 2026-09-29 사용자 눈 확인 W(영상 92.77~93.00s 한 프레임씩 비교 · archer-check/captures/W2_*.png): 영상의 별 폭발 = hit/0 **0번 프레임**(228×216 · ≈0.7 크기 맞음).
+                --   영상은 9줄이 줄마다 0번을 다시 틀어 0.23s 내내 폭발만 보이고 1~11번(주황 타원 고리 · pivot 이 왼쪽이라 대상 앞쪽에 뜸)은 안 보인다.
+                --   → endFrame 0(폭발만) · holdSeconds 0.24(반복 재생 뒤 지움 · 영상 92.767 → 93.0) · front(발판 층 + FrontEffectOrderInLayer 5 = 표식 위). 명중은 표대로 1타.
+                impact = { ruid = "2d79c1fb547846b4ae6ca7435b88d996", scale = 0.7, heightRatio = 0.22, minAboveFeet = 0.4, prewarm = true, endFrame = 0, holdSeconds = 0.24, front = true },
+                ball = { ruid = "38f9664abbec45a4b11b05ecc9ebfa02", prewarm = true },   -- VI ball(437×140 · 6프레임 · 불꽃 화살 · 원본 크기 = 원작 비율)
             },
             SK_A22 = {   -- 닷지 — 출발 지점에 skill/40000.img/skill/400004147 백스텝샷 effect(109×94 · 뒤로 빠지는 궁수). 도착 이펙트 없음(마법사 텔레포트 링과 겹치지 않게).
-                depart = { ruid = "4797106d3d1c415a9af3eb9475edbbc9" },
+                -- flipByFacing · frontOfPlayer(b/skill-archer-effects): 팩 = 건슬링어 백스텝샷 skill/520.img/skill/5201006/effect(태그 API) — 그림이 pivot 앞쪽 0.12~1.61 유닛에만 있어
+                --   바라보는 쪽으로 뒤집고(왼쪽 기준 그림), 원작 z 0(WZ effect 프레임에 z 없음 = 0 = 캐릭터 앞)대로 플레이어 층 앞(FrontEffectOrderInLayer)에 그린다.
+                -- atOrigin(2026-09-28 Play): 출발 이펙트를 클라가 옮기기 전의 자리(SkillMovement.ReportBlinkOrigin)에 — 예전엔 도착점에 떴다.
+                -- 2026-09-29 사용자 눈 확인 E("이펙트 두 개 · 색이 안 맞는다"): 두 번째(도착점의 파란 섬광)는 스킬 이펙트가 아니라 활 아이템 7061d571 의 heal 동작 그림이었다
+                --   (스킬 없이 heal 만 몸에 보내도 매 왕복마다 뜬다 · alert 는 안 뜬다 · archer-check/captures/E2_*.png) → WeaponMotion MOTION_SK_A22_BOW 를 alert 로.
+                --   닷지 이펙트 = 백스텝샷 5201006 한 벌(이 effect + castSounds Use 2e47b3c1 · 같은 팩 · 같은 시대 · 주황) · 도착 이펙트 없음 그대로.
+                -- 2026-10-01 Play 뒤 사용자 선택(제자리 미리보기 7개 비교 · "드릴 같다"): 모험가 궁수 리트리트 샷 skill/310.img/skill/3101008/effect ba912795(123×114 · 8프레임) + 같은 팩 _audio/Use 29101cbe.
+                --   백스텝샷 4797106d 는 안 씀. 뒤집기 · 앞 층 · 출발 자리는 그대로(뒤집는 방향은 다음 Play 에서 확인).
+                depart = { ruid = "ba91279567f94010ab62fb9abbbdd1fb", flipByFacing = true, frontOfPlayer = true, atOrigin = true },
             },
             SK_A31 = {   -- 폭풍의 화살 — skill/324.img/skill/3241500 파이널 에임(신궁 오리진 · 기획서 추천): screen 133프레임 컷신(1456×860 · 세이크리드 바스티온과 같은 보정) · hit/0(187×180)
                 -- cutsceneSeconds 7.2 = 컷신 표시 + 실측 실패 때의 대체 길이(파이널 에임 133프레임을 세이크리드 바스티온에 비례시킨 옛 추정 · 2026-09-13 · 실제 길이는 MeasureCutsceneClips).
@@ -1025,6 +1176,11 @@ script SkillExecutors extends Logic
                 targetHit = { ruid = "72cef21e15b6418f9c88348c8b142c5a", scale = 1.0 },
             },
         }
+        -- 화살 발사 높이(b/skill-archer-effects · 사용자 영상 실측 · CSV SpawnOffsetY 0.5 대신 · FireProjectile 이 spawn.offsetY 를 먼저 본다):
+        --   더블 샷 = 발 + 0.28 — 돌희 영상 19.333s(2009 lv.25): 두 화살 = 발 위 캐릭터 키 0.40(캐릭터 키 0.70 유닛).
+        --   스나이핑 = 발 + 0.25 — sukka 영상 64.733~64.800s(2022 데스티니): 화살 줄기 = 발 위 캐릭터 키 0.36(±0.03). 조준(유도)은 그대로 콜라이더 중심.
+        self.effectOverrides.SK_A11.spawn = { offsetY = 0.28 }
+        self.effectOverrides.SK_A21.spawn = { offsetY = 0.25 }
     end
 
     @ExecSpace("ServerOnly")
@@ -1033,21 +1189,23 @@ script SkillExecutors extends Logic
         -- back to defaultCastSound (a generic confirmed magic-skill sound effect).
         self.castSounds = {
             SK_M11_FH = "888da6679a2448a7961f53e9f2f797fd",   -- 플레임 헤이즈 2121011 _audio/Use(b/skill-raging-blow-flame-haze · 레이징 블로우 1120017 팩엔 Use 가 없어 시전음 없음)
+            SK_N02 = "cdfecf84e0134f6a8c8efa14793942fc",   -- 더블 점프 300.img/3000008 _audio/Use(1.18s · b/skill-novice-double-jump)
+            SK_N01 = "9313440ae33949489adee4e73cc70cd9",   -- 달팽이 세마리 0001000 _audio/Use(0.73s · b/skill-novice-snails · 원작 팩에 Hit 소리는 없다)
             SK_M11 = "5fd9ddc5564648d1bffc21f3407ecf51",
             SK_M13 = "6046095db6a24eaab07d268f7d3040c2",   -- 텔레포트 Use
             SK_M21 = "7c1c509dc17c459da9a496da153e8d4b",   -- 텔레포트 마스터리 Use2
             SK_M22 = "54da9a7be69645a0a75fd4e738020a2b",   -- 매직 가드 Use
             SK_M31 = "ae2c282c7348417abfbb75d4e3e673aa",   -- 프로즌 라이트닝 (오디오 검색 1순위)
             -- b/skill-warrior: 원작 사운드 (msw-search 오디오 검색 · 하이퍼 바디/노블 디맨드는 팩의 _audio/Use). 마법사와 겹치지 않는다.
-            SK_W11 = "e0178f48602742c0bd8b295fdc27261c",   -- 파워 스트라이크 — 11001002 _audio/Use (0.73s · 팩에 hit 소리 없음 → 몬스터 기본)
+            SK_W11 = "0b9adf262d544256adb5bff20eaa4fe1",   -- 파워 스트라이크 — 원작 모험가 sound/skill.img 1001004/Use (tags API 확인 · 2026-10-05 사용자 "원작이 기준" · 예전 11001002 _audio/Use e0178f48…)
             SK_W21 = "8257cc62a72149e09abc7bd4daa69bf5",   -- 하이퍼 바디 Use
             SK_W22 = "5f100db0c97746d2b3aa2a4c92c1d6e0",   -- 노블 디맨드 Use
             SK_W31 = "aa96c1117c634a23b56440be8de39037",   -- 세이크리드 바스티온
             -- b/skill-archer-thief-pirate: 원작 팩 _audio/Use (팩에 소리가 없는 얼티밋 스나이핑·파이널 에임·드레드노트는 같은 이름의 오디오 검색 1순위). 다른 직업과 겹치지 않는다.
             SK_A11 = "8faeed3b8ca64163a5121864db093e7a",   -- 더블 샷 Use
             SK_A21 = "384e71cfc38a4ab1b8a10963cae6365f",   -- 스나이핑 3221007 Use (2026-09-13 · 예전 값 c7a0c923… = 오디오 검색 1순위) · 선딜 스킬은 시전 순간(조준)에 난다
-            SK_A22 = "2e47b3c180744c3cb5c1f815f736e858",   -- 백스텝샷 Use
-            SK_A31 = "623628022c0942128e018e804bf15e1d",   -- 파이널 에임 (오디오 검색 1순위)
+            SK_A22 = "29101cbe391a4b08a9940ada4b3f3525",   -- 리트리트 샷 3101008 Use (2026-10-01 사용자 선택 · 예전 값 2e47b3c1… = 백스텝샷 Use)
+            SK_A31 = "f06e9bb7399640e088a081032036cebf",   -- 피어싱 3221001 Use (신궁 · 2026-10-01 사용자 선택 · 예전 값 62362802… = 80001884 파이널 토스 Hit · 파이널 에임 3241500 사운드는 라이브러리에 없음)
             SK_T11 = "879c81c8fc274aea87dc673de48ab5d1",   -- 럭키 세븐 Use
             SK_T21 = "be18b6cf4ef54178b6bd2bde33bddd27",   -- 다크 사이트 Use
             SK_T22 = "6c7c28167b9049419435cc53001cef0c",   -- 쉐도우 파트너 Use
@@ -1073,6 +1231,7 @@ script SkillExecutors extends Logic
             SK_M31 = { hit = "5b59c860a1944a5b8b67ea0864baf0ab" },     -- 썬더 스톰 2211011/Hit (화면 전체 · 맞은 대상이 있을 때 한 번)
             SK_A11 = { hit = "956ddfb53d7845ce972acab3e51b05e1" },     -- 더블 샷 Hit
             SK_A21 = { hit = "81a8c21eaf31429aa21ccaa63afc1b35" },     -- 스나이핑 3221007 Hit (2026-09-13)
+            SK_A31 = { hit = "e8eccd46590a4b1ea924da242f4532e9" },     -- 트루 스나이핑 400031010/Hit (2026-10-01 사용자 선택 · 시전 한 번에 한 번 · ExecuteLineOrigin 이 첫 대상 자리에서 튼다)
             SK_T11 = { hit = "48c2f4049db54b3b88b9144320d3d41a" },     -- 럭키 세븐 Hit
             -- 메소 익스플로전 명중 사운드(사용자 Play 선택 2026-10-03): 동전마다가 아니라 시전 한 번에 한 번(ExecuteMesoOrigin 이 중심 폭발 시점에 직접 튼다 · 동전 수만큼 겹치지 않게).
             SK_T31 = { hit = "04edcf3c77b049bc9bfa1fa0f541b063" },     -- 메소 익스플로젼 4210014/Hit
@@ -1080,6 +1239,12 @@ script SkillExecutors extends Logic
             SK_P21 = { punch = "1b6eedf4e6d14684abd96a444dfa59a7", hit = "6e58d1e3abc44a1ba059842159b7c035" },   -- 2단 주먹 시전 / 명중 (피스트 인레이지 · 티어 공용)
             -- 에너지 쉴드 터짐 소리: 없음(2026-09-27). 예전 26311ed7… = 제로 이뮨 배리어 End — 디펜스 폼 팩엔 소리가 없고, 라이브러리의 해적 소리 중 "보호막이 깨지는" 소리가 없어 뺐다.
             SK_P31 = { wave = "8fd7da623fe54f359638e4004216440a" },    -- 배틀쉽 봄버 Attack1 (파마다)
+            -- 파워 스트라이크 명중 사운드 — 2026-10-05 통합 Play(RUN-combined-1003 S-W11)에서 사용자가 W3 를 골랐다(비우면 몬스터 기본 소리만).
+            --   후보(리소스 tags API 로 확인 · 원작 1001004/Hit 는 색인에 없다):
+            --   | W1 | 1488e238bb474c9087cd563a892d5dcb | sound/skill.img 11101008/Hit 브랜디쉬(기사단) · 빠른 금속성 베기 |
+            --   | W2 | 6c06fe8ab27b469eb61f466ea7f7e182 | sound/skill.img 1101011/Hit 브랜디쉬(모험가 파이터) · 맑은 "딩"      |
+            --   | W3 | ca35cb7d0652411395a5bb90a5beecd3 | sound/skill.img 1001005/Hit 슬래시 블러스트(1차 전사) · 짧음 0.65s  |
+            SK_W11 = { hit = "ca35cb7d0652411395a5bb90a5beecd3" },   -- W3 1001005/Hit 슬래시 블러스트 (사용자 Play 선택 2026-10-05)
         }
     end
 
@@ -1131,6 +1296,7 @@ script SkillExecutors extends Logic
         elseif jobId == "ARCHER" then return "BOW"
         elseif jobId == "THIEF" then return "CLAW"
         elseif jobId == "PIRATE" then return "KNUCKLE"
+        elseif jobId == "NOVICE" then return "SWORD_1H"   -- b/skill-novice-snails: 맨손 초보자의 달팽이 세마리 = 한손검 기본 공격 행(swingO1 = 원작 0001000 action/0)
         end
         return ""
     end
@@ -1420,10 +1586,10 @@ script SkillExecutors extends Logic
             skillAttack.PendingProjectileEffectKey = key
             skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId, skillData.range, skillData.speed, 1, entry.impact.ruid,
                 spawnY, entry.ball.ruid, self:GetExtraSound(key, "hit"), false, spawnX, 1,
-                { sizeX = ex.sizeX, sizeY = ex.sizeY, centerY = ex.centerY, maxTargets = ex.maxTargets })
+                { sizeX = ex.sizeX, sizeY = ex.sizeY, centerY = ex.centerY, maxTargets = ex.maxTargets, impactOnce = ex.impactOnce == true })
         end
         log("SkillExecutors: FLAME HAZE lv=" .. tostring(level) .. " x" .. tostring(entry.damageMul) .. " explode=" .. tostring(ex.sizeX) .. "x" .. tostring(ex.sizeY)
-            .. " max=" .. tostring(ex.maxTargets) .. " flames=" .. tostring(#entry.flames) .. " delay=" .. tostring(entry.spawnDelay))
+            .. " max=" .. tostring(ex.maxTargets) .. " impactOnce=" .. tostring(ex.impactOnce == true) .. " flames=" .. tostring(#entry.flames) .. " delay=" .. tostring(entry.spawnDelay))
         if entry.spawnDelay ~= nil and entry.spawnDelay > 0 then
             _TimerService:SetTimerOnce(spawnNow, entry.spawnDelay)
         else
@@ -1524,7 +1690,8 @@ script SkillExecutors extends Logic
         -- 궁수 (b/skill-archer-motion · 2026-09-13 사용자 요청 "공격 스킬은 전부 활 쏘는 궁수 공격 동작(shoot1) · 비공격 스킬은 사용이 보이는 동작" · 활 BOW 행 · 검을 든 궁수도 ResolveMotionRow ② 로 BOW 행):
         --   더블 샷 SK_A11    = 시전 행 shoot1 1.2배속 한 동작(원작 더블 샷 = shoot1 한 번에 화살 2발) · 순서 없음.
         --   스나이핑 SK_A21   = 시전 행 shoot1 0.4배속(선딜 1초 동안 천천히 당기기 · 원작 신궁은 석궁 shoot2 지만 이 월드 궁수 무기는 활) → `_2` CSV Duration(1.0 = FireProjectile) shoot1 1.5배속 스냅.
-        --   닷지 SK_A22       = 텔레포트와 같은 비공격 순서: heal 1.5배속 왕복(도착 지점) → `_2` 0.75 alert 2.5배속 → `_END` 1.2 stand2(활 = 두손 무기 분류).
+        --   닷지 SK_A22       = 비공격 순서: alert 2.5배속 왕복(도착 지점) → `_2` 0.75 alert 2.5배속 → `_END` 1.2 stand2(활 = 두손 무기 분류).
+        --     2026-09-29 사용자 눈 확인 E: 예전 첫 동작 heal 1.5배속은 궁수 외형 활(7061d571)의 heal 그림에 파란 섬광이 들어 있어 주황 출발 이펙트와 색이 안 맞았다 → alert(섬광 없음).
         --   폭풍의 화살 SK_A31 = 시전 행 shoot1 0.5배속(컷신 아래 충전) → `_2` CSV Duration(1.5 = ExecuteLineOrigin 피해) shoot1 1.5배속 → `_END` 5.5(컷신 133프레임 ≈ 7s 면 컷신 아래 · 미실측).
         --   포커스 SK_A12 는 패시브(시전 없음) → 행 없음. 같은 액션 재전송(shoot1→shoot1)이 재시작되는지는 🟡 Play 확인 — 안 돼도 시전 행의 느린 당기기가 발사 시점 근처에 발사 프레임에 닿게 배속을 잡았다.
         -- 도적 (b/skill-thief-motion · 2026-09-13 사용자의 도적 표 이미지 · 아대 CLAW 행 · 검을 든 도적·맨손 도적도 ResolveMotionRow ② 로 CLAW 행):
@@ -1547,7 +1714,7 @@ script SkillExecutors extends Logic
         local stormAt = 1.5
         local mesoAt = 1.6
         local barrageAt = 1.0
-        if skillId == "SK_A21" and dur > 0 then snipeAt = dur end
+        if skillId == "SK_A21" and dur > 0 then snipeAt = dur + (self.projectileReleaseExtra[skillId] or 0) end   -- 발사 자세 = 화살이 나가는 순간(ExecuteProjectile 과 같은 값)
         if skillId == "SK_A31" and dur > 0 then stormAt = dur end
         if skillId == "SK_T31" and dur > 0 then mesoAt = dur end
         if skillId == "SK_P31" and dur > 0 then barrageAt = dur end
@@ -1717,6 +1884,11 @@ script SkillExecutors extends Logic
         local entry = self.effectOverrides[skillId]
         local spec = nil
         if entry ~= nil then spec = entry[stage] end
+        -- none(b/skill-archer-effects · 더블 샷 cast): 이 단계는 아무것도 재생하지 않는다(엔진 파티클 폴백도 안 쓴다) — 원작에 그 단계 이펙트가 없을 때.
+        if spec ~= nil and spec.none then return end
+
+        -- { none = true }: 이 단계는 일부러 아무것도 틀지 않는다(기본 파티클도 없음) — 원작에 시전 이펙트가 없는 달팽이 세마리(b/skill-novice-snails).
+        if spec ~= nil and spec.none == true then return end
 
         if spec ~= nil then
             if spec.ruid ~= nil then
@@ -1776,12 +1948,22 @@ script SkillExecutors extends Logic
                     local s = spec.scale or 1
                     -- flipWithFacing(b/skill-magician-effects 2026-09-26 · 텔레포트 도착): 원작 클립은 왼쪽 기준이라 오른쪽을 볼 때 그림 무게가 캐릭터 뒤로 빠졌다
                     -- (측정: 그림 −7px vs 몸 +5px → 12px 어긋남). 오른쪽을 볼 때 좌우로 뒤집는다(사용자 Play 선택 "3 = 뒤집기"). 없으면 예전 그대로(뒤집지 않음).
+                    -- flipByFacing / frontOfPlayer(b/skill-archer-effects · 닷지 출발): 고정 위치 이펙트도 바라보는 쪽으로 뒤집고(왼쪽 기준 그림) 플레이어 층 앞에 그린다.
+                    --   플래그가 하나도 없으면 예전 그대로(옵션 없음 = Default 층 · 뒤집기 없음).
                     local opt = nil
                     if spec.flipWithFacing and self:GetFacingX(casterEntity) > 0 then
                         opt = {}
                         opt["FlipX"] = true
                     end
+                    if spec.flipByFacing or spec.frontOfPlayer then
+                        if opt == nil then opt = {} end
+                        if spec.flipByFacing then opt["FlipX"] = (self:GetFacingX(casterEntity) > 0) end
+                        if spec.frontOfPlayer then self:ApplyFrontSorting(opt, casterEntity, pos) end
+                    end
                     _EffectService:PlayEffect(spec.ruid, casterEntity, Vector3(pos.x, pos.y + (spec.offsetY or 0), pos.z), 0, Vector3(s, s, 1), false, opt)
+                    if opt ~= nil then
+                        log("SkillExecutors: " .. stage .. " effect " .. skillId .. " fixed · flipX=" .. tostring(opt["FlipX"]) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]))
+                    end
                 end
             else
                 self:PlayParticle(spec.particle, stage, casterEntity, pos)
@@ -2211,6 +2393,37 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void ApplyFrontSorting(table opt, Entity player, Vector3 at)
+        -- 고정 위치 이펙트를 플레이어 앞에 그리는 렌더 층(b/skill-archer-effects · 닷지 출발): at(이펙트 자리) 아래 발판의 SortingLayer + FrontEffectOrderInLayer(5 > 플레이어 4).
+        -- 발판을 못 찾으면(발 아래 3유닛 안에 없음 · 높은 공중) 옵션을 안 넣어 예전처럼 기본 층에 그린다. ApplyShadowSorting 의 반대(뒤 → 앞).
+        if _LaneFacilityService == nil or not isvalid(player) then return end
+        local layer = _LaneFacilityService:SortingLayerBelow(player.CurrentMap, at.x, at.y)
+        if layer == nil or layer == "" then return end
+        opt["SortingLayer"] = layer
+        opt["OrderInLayer"] = self.FrontEffectOrderInLayer
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyOrderAt(table opt, Entity inMap, Vector3 at, integer order)
+        -- 이펙트를 at 아래 발판의 SortingLayer + order 에 그린다(b/skill-archer-effects · 스나이핑 VI: 표식 HitMarkOrderInLayer 3 < 명중 폭발 FrontEffectOrderInLayer 5).
+        -- ApplyFrontSorting 의 일반형(플레이어가 아닌 몬스터 · 순서 지정). 발판을 못 찾으면 옵션을 안 넣어 예전처럼 기본 층.
+        if _LaneFacilityService == nil or not isvalid(inMap) then return end
+        local layer = _LaneFacilityService:SortingLayerBelow(inMap.CurrentMap, at.x, at.y)
+        if layer == nil or layer == "" then return end
+        opt["SortingLayer"] = layer
+        opt["OrderInLayer"] = order
+    end
+
+    @ExecSpace("ServerOnly")
+    method void RemoveEffectLater(integer serial, number seconds)
+        -- 반복 재생으로 건 이펙트를 seconds 뒤에 지운다(스나이핑 VI 명중 폭발 hold · SkillProjectile.PlayHitEffect).
+        -- 투사체 엔티티는 명중 뒤 사라지므로 타이머는 오래 사는 Logic 에 건다.
+        _TimerService:SetTimerOnce(function()
+            _EffectService:RemoveEffect(serial)
+        end, seconds)
+    end
+
+    @ExecSpace("ServerOnly")
     method void ScheduleShadowRestore(string uid, number seconds)
         -- seconds 뒤 쉐도우 파트너 버프가 아직 켜져 있으면 남은 시간만큼 서 있기 루프를 다시 건다(PlayBuffLoop). 이전 복귀 예약은 취소(가장 최근 것만).
         -- PlayShadowMimic(동작 클립 뒤) · HideShadowFor(컷신 뒤) 가 부른다.
@@ -2283,7 +2496,25 @@ script SkillExecutors extends Logic
         if not isvalid(mob) then return end
         local spec = entry.mob
         local s = spec.scale or 1
-        _EffectService:PlayEffectAttached(spec.ruid, mob, Vector3(0, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false)
+        local oy = spec.offsetY or 0
+        -- atHead(b/skill-archer-effects · 스나이핑 표식 = 대상 머리 위): 콜라이더 위쪽 끝(발 + ColliderOffset.y + BoxSize.y / 2) + offsetY. 콜라이더가 없으면 발 기준 그대로.
+        if spec.atHead then
+            local hit = mob.HitComponent
+            if isvalid(hit) and hit.BoxSize ~= nil and hit.BoxSize.y > 0 then
+                local off = hit.ColliderOffset
+                local cy = 0
+                if off ~= nil then cy = off.y end
+                oy = cy + hit.BoxSize.y / 2 + (spec.offsetY or 0)
+            end
+        end
+        -- sortOnMob(2026-09-29 사용자 눈 확인 W): 몬스터 발판 층 + HitMarkOrderInLayer(3) → 명중 폭발(5) 아래에 그린다. 없으면 예전 그대로(옵션 없음).
+        local opt = nil
+        if spec.sortOnMob and isvalid(mob.TransformComponent) then
+            opt = {}
+            self:ApplyOrderAt(opt, mob, mob.TransformComponent.WorldPosition, self.HitMarkOrderInLayer)
+            log("SkillExecutors: mob mark " .. skillId .. " scale=" .. tostring(s) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]))
+        end
+        _EffectService:PlayEffectAttached(spec.ruid, mob, Vector3(0, oy, 0), 0, Vector3(s, s, 1), false, opt)
     end
 
     @ExecSpace("ServerOnly")
@@ -2305,14 +2536,28 @@ script SkillExecutors extends Logic
         -- b/skill-archer-motion (2026-09-13 · 원작 스나이핑 팩): 선딜 스킬은 **시전 순간**에 조준 연출(aim · 시전자 부착) + Use 사운드 + 조준 대상 표시(mob · PlayAimMarker)를 내고,
         -- Duration 뒤에는 화살만 쏜다(FireProjectile withCastBeat=false). 원작 = 키 입력에 조준 이펙트·소리 → 선딜 뒤 화살. 예전엔 연출·소리도 1초 뒤에 났다.
         local delay = 0
-        if self.projectileDelayFromDuration[skillId] then delay = skillData.duration end
+        if self.projectileDelayFromDuration[skillId] then delay = skillData.duration + (self.projectileReleaseExtra[skillId] or 0) end
         if delay <= 0 then
             self:FireProjectile(skillId, skillData, casterEntity, level, true)
             return
         end
         local pos = casterEntity.TransformComponent.WorldPosition
-        self:PlayStageEffect(skillId, "aim", casterEntity, pos, nil)
-        self:PlayCastSound(skillId, casterEntity)
+        -- aim.delay(b/skill-archer-effects · 스나이핑 VI): 조준 클립을 이만큼 늦게 켜 클립 속 발사 섬광이 선딜 끝(발사)과 맞게 한다.
+        -- Use 사운드도 조준 클립과 같이 +aimDelay 에 튼다(2026-10-01 Play: 키 입력 순간에 나면 그림보다 0.43s 일렀다 · 사용자 선택 (a)).
+        local aimEntry = self.effectOverrides[skillId]
+        local aimDelay = 0
+        if aimEntry ~= nil and aimEntry.aim ~= nil and aimEntry.aim.delay ~= nil then aimDelay = aimEntry.aim.delay end
+        if aimDelay > 0 and aimDelay < delay then
+            _TimerService:SetTimerOnce(function()
+                if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
+                self:PlayStageEffect(skillId, "aim", casterEntity, casterEntity.TransformComponent.WorldPosition, nil)
+                self:PlayCastSound(skillId, casterEntity)
+                log("SkillExecutors: PROJECTILE " .. skillId .. " aim clip + Use sound at +" .. tostring(aimDelay) .. "s")
+            end, aimDelay)
+        else
+            self:PlayStageEffect(skillId, "aim", casterEntity, pos, nil)
+            self:PlayCastSound(skillId, casterEntity)
+        end
         self:PlayAimMarker(skillId, skillData, casterEntity)
         log("SkillExecutors: PROJECTILE " .. skillId .. " aiming " .. tostring(delay) .. "s")
         _TimerService:SetTimerOnce(function()
@@ -2327,6 +2572,8 @@ script SkillExecutors extends Logic
         -- 대상에 한 번 붙인다(PlayMobEffect). 발사 시점의 대상은 SpawnProjectile 이 다시 고른다 — 그 사이 죽거나 움직이면 달라질 수 있는 표시일 뿐이다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.mob == nil or entry.mob.ruid == nil then return end
+        -- mob.onHit(b/skill-archer-effects · 스나이핑 VI): 표식은 맞을 때 SkillProjectile.PlayHitEffect 가 새긴다 → 선딜 중에는 안 붙인다.
+        if entry.mob.onHit then return end
         local skillAttack = casterEntity:GetComponent("script.SkillAttack")
         if not isvalid(skillAttack) then return end
         local pos = casterEntity.TransformComponent.WorldPosition
@@ -2391,9 +2638,10 @@ script SkillExecutors extends Logic
         end
         local function spawnNow()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            -- 레벨별 그림(effectOverrides[skill].levels · 달팽이 세마리 레벨마다 다른 껍질)이 있으면 그 칸, 없으면 예전과 같은 impact · ball.
             skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
-                skillData.range, skillData.speed, skillData.hitCount, self:GetImpactEffectRuid(skillId),
-                spawnY, self:GetSpecRuid(skillId, "ball"), self:GetExtraSound(skillId, "hit"),
+                skillData.range, skillData.speed, skillData.hitCount, self:GetLevelSpecRuid(skillId, "impact", level),
+                spawnY, self:GetLevelSpecRuid(skillId, "ball", level), self:GetExtraSound(skillId, "hit"),
                 self.projectilePreferBoss[skillId] == true, spawnX, spriteScale, self:GetProjectileExplode(skillId))
         end
         if spawnDelay > 0 then
@@ -2411,6 +2659,8 @@ script SkillExecutors extends Logic
         -- pattern), not ParticleService, so a particle-only override has no equivalent yet.
         local entry = self.effectOverrides[skillId]
         if entry == nil then return "" end
+        -- impactFrames(b/skill-archer-effects · 더블 샷 분홍 sprite)가 다 RUID 면 명중 클립은 없다 — 먼저 맞힌 발이 sprite 순서로 튼다(SkillProjectile.PlayFollowImpact).
+        if self:HasValidFrames(entry.impactFrames) then return "" end
         local spec = entry.impact
         if spec == nil or spec.ruid == nil then return "" end
         return spec.ruid
@@ -2439,6 +2689,22 @@ script SkillExecutors extends Logic
         return v
     end
 
+    method string GetLevelSpecRuid(string skillId, string stage, number level)
+        -- effectOverrides[skillId].levels[레벨][stage].ruid(레벨별 그림 · b/skill-novice-snails) 또는 GetSpecRuid(레벨 무관). 표 끝을 넘는 레벨은 마지막 칸.
+        local entry = self.effectOverrides[skillId]
+        if entry ~= nil and entry.levels ~= nil and #entry.levels > 0 then
+            local i = math.floor(level)
+            if i < 1 then i = 1 end
+            if i > #entry.levels then i = #entry.levels end
+            local spec = entry.levels[i][stage]
+            if spec ~= nil and spec.ruid ~= nil then return spec.ruid end
+        end
+        -- 2026-10-05 고침(공유 빌드 RELOOK E-1): 레벨 칸이 없을 때 impact 는 예전처럼 GetImpactEffectRuid 로 — 그쪽 규칙(#102 더블 샷: impactFrames 가 있으면 "" =
+        --   명중 클립 없음)을 그대로 따른다. GetSpecRuid 로 가면 더블 샷이 옛 파란 불꽃 ebbf2a13 을 분홍 그림 옆에 같이 틀었다. ball 은 예전과 같은 GetSpecRuid.
+        if stage == "impact" then return self:GetImpactEffectRuid(skillId) end
+        return self:GetSpecRuid(skillId, stage)
+    end
+
     method void ExecuteBlink(string skillId, table skillData, Entity casterEntity, number level)
         -- 텔레포트(SK_M13) · 텔레포트 강화(SK_M21) · 닷지(SK_A22). 이동 자체는 소유 클라가 RequestCast 전에 끝냈다(SkillMovement · 클라 우선).
         -- 서버는 출발 이펙트·사운드를 지금 재생하고, BlinkArrivalDelay 뒤(위치 동기화 후) 도착 이펙트와
@@ -2452,6 +2718,16 @@ script SkillExecutors extends Logic
         local departName = self.TeleportDepartParticle
         if dealsArrivalDamage then departName = self.TeleportEnhancedDepartParticle end
         local entry = self.effectOverrides[skillId]
+        -- depart.atOrigin(b/skill-archer-effects 2026-09-28 Play · 닷지): 클라가 먼저 옮겨서 여기의 from 은 이미 도착점이었다 →
+        --   클라가 옮기기 전에 보낸 출발 좌표(SkillMovement.ReportBlinkOrigin)를 쓴다. 없거나 늦으면 예전처럼 지금 위치.
+        if entry ~= nil and entry.depart ~= nil and entry.depart.atOrigin == true and _SkillMovement ~= nil and isvalid(casterEntity.PlayerComponent) then
+            local o = _SkillMovement:TakeBlinkOrigin(casterEntity.PlayerComponent.UserId, skillId)
+            if o ~= nil then
+                from = Vector3(o.x, o.y, from.z)
+            else
+                log_warning("SkillExecutors: BLINK " .. skillId .. " no reported origin — depart effect at the current position")
+            end
+        end
         if entry ~= nil and entry.depart ~= nil and entry.depart.ruid ~= nil then
             self:PlayStageEffect(skillId, "depart", casterEntity, from, nil)
             departName = "ruid"
@@ -3072,12 +3348,30 @@ script SkillExecutors extends Logic
             local hitCount = skillData.hitCount
             if hitCount <= 0 then hitCount = 1 end
             local hitRuid = self:GetSpecRuid(skillId, "impact")
-            skillAttack.PendingImpactRuid = hitRuid
-            skillAttack:DealSkillDamage(skillId, level, {
+            local box = {
                 posX = p.x + dirX * range / 2, posY = p.y + self.LineHeight / 2,
                 sizeX = range, sizeY = self.LineHeight,
                 hitCount = hitCount,
-            })
+            }
+            -- 명중 사운드(extraSounds[skill].hit · 폭풍의 화살 = 트루 스나이핑 · 2026-10-01 사용자 선택): 시전 한 번에 한 번, 첫 대상(시전자에게 가장 가까운 대상) 자리에서.
+            --   관통이라 대상마다 틀면 수십 겹이 된다 → SkillAttack.PendingHitSound(대상마다) 대신 여기서 한 번.
+            local hitSound = self:GetExtraSound(skillId, "hit")
+            local first = nil
+            if hitSound ~= "" then
+                local best = math.huge
+                for _, e in ipairs(skillAttack:FindSkillTargets(skillId, box)) do
+                    if isvalid(e) and isvalid(e.TransformComponent) then
+                        local d = math.abs(e.TransformComponent.WorldPosition.x - p.x)
+                        if d < best then best = d; first = e end
+                    end
+                end
+            end
+            skillAttack.PendingImpactRuid = hitRuid
+            skillAttack:DealSkillDamage(skillId, level, box)
+            if first ~= nil and isvalid(first) and isvalid(first.TransformComponent) then
+                self:PlaySoundRuid(hitSound, casterEntity, first.TransformComponent.WorldPosition)
+                log("SkillExecutors: LINE " .. skillId .. " hit sound once (" .. hitSound .. ") at first target " .. tostring(first.Name))
+            end
             if hitRuid ~= "" then
                 local n = self.LineHitEffects
                 for k = 1, n do
@@ -3584,6 +3878,12 @@ script SkillExecutors extends Logic
                     _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
                     layers = layers + 1
                 end
+                -- 명중 사운드(extraSounds.SK_W11.hit · 비어 있으면 몬스터 기본 소리만): 명중 한 번에 한 번(1 대상 · 1타).
+                local hitSound = self:GetExtraSound(skillId, "hit")
+                if hitSound ~= "" then
+                    self:PlaySoundRuid(hitSound, casterEntity, fxPos)
+                    log("SkillExecutors: POWER STRIKE hit sound once (" .. hitSound .. ")")
+                end
             end
             log("SkillExecutors: POWER STRIKE contact target=" .. targetName .. " hit=" .. tostring(hit) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
         end, hitAt)
@@ -3689,6 +3989,55 @@ script SkillExecutors extends Logic
             .. " offset=(" .. tostring(offsetX * facing) .. ", " .. tostring(offsetY) .. ") hidden until +" .. tostring(delay) .. "s then " .. tostring(seconds) .. "s")
     end
 
+    method boolean HasValidFrames(any frames)
+        -- sprite 순서 표(b/skill-archer-effects · 더블 샷 분홍)가 쓸 수 있는가: 1개 이상이고 모든 ruid 가 32자 소문자 16진(올린 RUID). 자리표시자 "<<…>>" 가 하나라도 있으면 false.
+        if frames == nil or #frames < 1 then return false end
+        for _, f in ipairs(frames) do
+            local r = f.ruid
+            if r == nil or #r ~= 32 or string.match(r, "^[0-9a-f]+$") == nil then return false end
+        end
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean PlaySpriteSequence(table frames, Entity instigator, Vector3 pos, string tag)
+        -- sprite 여러 장을 한 자리에서 차례로 보여 준다(b/skill-archer-effects · 더블 샷 분홍 불꽃 · 폭발 — 색만 바꿔 올린 sprite 는 animationclip 이 아니라 EffectService 가 못 튼다).
+        -- PlaySpriteFlash 처럼 투사체 모델(model://skillprojectile · VisualOnly · Speed 0)을 하나 빌려 pos 에 두고 frames[i].delay 마다 SpriteRUID 만 바꾼다(@Sync) · 다 돌면 스스로 사라진다.
+        -- 뒤집지 않는다(SetDirection(-1) = 그린 그대로 · 명중 클립과 같다). pivot 은 sprite 자산의 것. frames 가 RUID 가 아니면(자리표시자) false · 아무것도 안 한다.
+        if not self:HasValidFrames(frames) or not isvalid(instigator) then return false end
+        local map = instigator.CurrentMap
+        if not isvalid(map) then return false end
+        local total = 0
+        for _, f in ipairs(frames) do total = total + (f.delay or 0.06) end
+        self.spriteFlashCount = self.spriteFlashCount + 1
+        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", "SkillFxSeq_" .. tostring(tag) .. "_" .. tostring(self.spriteFlashCount), pos, map)
+        if not isvalid(fx) then
+            log_warning("SkillExecutors: sprite sequence spawn failed " .. tostring(tag))
+            return false
+        end
+        local mover = fx:GetComponent("script.SkillProjectile")
+        if isvalid(mover) then
+            mover.VisualOnly = true
+            mover.Speed = 0
+            mover.MaxLifetime = total
+            mover.SkillId = tag
+            mover:SetDirection(-1)
+        end
+        local sprite = fx.SpriteRendererComponent
+        if not isvalid(sprite) then return false end
+        sprite.SpriteRUID = frames[1].ruid
+        local at = 0
+        for i = 2, #frames do
+            at = at + (frames[i - 1].delay or 0.06)
+            local ruid = frames[i].ruid
+            _TimerService:SetTimerOnce(function()
+                if isvalid(fx) and isvalid(fx.SpriteRendererComponent) then fx.SpriteRendererComponent.SpriteRUID = ruid end
+            end, at)
+        end
+        log("SkillExecutors: sprite sequence " .. tostring(tag) .. " frames=" .. tostring(#frames) .. " " .. string.format("%.2f", total) .. "s at (" .. string.format("%.2f,%.2f", pos.x, pos.y) .. ")")
+        return true
+    end
+
     @ExecSpace("ServerOnly")
     method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
         -- 도발(SK_W22 · 추가기획1 전사 D "주변 몬스터를 한곳에 모음"): 반경(BaseEffect 3→5 · RatioAt) 상자 안의 적 몬스터를
@@ -3785,6 +4134,43 @@ script SkillExecutors extends Logic
         local soundId = self.castSounds[skillId] or self.defaultCastSound
         local pos = casterEntity.TransformComponent.WorldPosition
         _SoundService:PlaySoundAtPos(soundId, pos, casterEntity, 1.0)
+    end
+
+    @ExecSpace("Server")
+    method void RequestDoubleJump(number dirX)
+        -- 더블 점프(SK_N02) 서버 몫: 레벨 · 직업 확인 → MP(있으면 · 지금 0) → 뛴 자리에 레벨별 그림 + Use 소리 · 로그. 밀기는 이미 소유 클라가 했다(SkillMovement.TryDoubleJump).
+        -- 마법사는 공중 점프가 텔레포트라 여기 오지 않는다(SkillHotbar) — 와도 무시. 전직 뒤 유지 = B 기본값(#40 5954262491 → A 결정 5977728018 · 2026-10-04 기본값 OK · SkillHotbar.DoubleJumpKeepAfterJob).
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        local uid = senderUserId
+        local skillId = "SK_N02"
+        local level = _PlayerSkillState:GetSkillLevel(uid, skillId)
+        if level <= 0 then
+            log_warning("SkillExecutors: DOUBLE JUMP rejected - not learned (" .. tostring(uid) .. ")")
+            return
+        end
+        if _PlayerSkillState:GetJobId(uid) == "MAGICIAN" then return end
+        local player = _UserService:GetUserEntityByUserId(uid)
+        if not isvalid(player) then return end
+        local mp = _SkillDatabase:MpCostAt(skillId, level)
+        if mp > 0 and (_SummonManager == nil or not _SummonManager:SpendMp(uid, math.floor(mp))) then
+            log("SkillExecutors: DOUBLE JUMP lv=" .. tostring(level) .. " MP " .. tostring(mp) .. " not paid (" .. uid .. ")")
+            return
+        end
+        local pos = player.TransformComponent.WorldPosition
+        local entry = self.effectOverrides[skillId]
+        if entry ~= nil and entry.levels ~= nil and #entry.levels > 0 then
+            local i = math.floor(level)
+            if i < 1 then i = 1 end
+            if i > #entry.levels then i = #entry.levels end
+            local spec = entry.levels[i]
+            local opt = {}
+            opt["FlipX"] = (dirX > 0)
+            local s = spec.scale or 1
+            if spec.back ~= nil and spec.back ~= "" then _EffectService:PlayEffect(spec.back, player, pos, 0, Vector3(s, s, 1), false, opt) end
+            if spec.front ~= nil and spec.front ~= "" then _EffectService:PlayEffect(spec.front, player, pos, 0, Vector3(s, s, 1), false, opt) end
+        end
+        self:PlaySoundRuid(self.castSounds[skillId] or "", player, pos)
+        log("SkillExecutors: DOUBLE JUMP lv=" .. tostring(level) .. " dir=" .. tostring(dirX) .. " mp=" .. tostring(mp) .. " at (" .. tostring(pos.x) .. "," .. tostring(pos.y) .. ") (" .. uid .. ")")
     end
 
     @ExecSpace("ServerOnly")

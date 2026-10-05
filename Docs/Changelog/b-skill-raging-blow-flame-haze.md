@@ -158,3 +158,21 @@
 15. 매직 가드 → Q(양쪽 방향 · 대상 있음/없음): 몸이 지팡이 든 자세 0.81 s → 앞으로 내밂 0.63 s · 공이 번쩍임과 함께 키 +0.81 s 에 나간다 · 폭발 그림이 몸 중심 · 불꽃이 머리 위에서 ≈2 s 타다 사라진다 · 로그 `variant motion SK_M11_FH -> body frames x2` · `FLAME HAZE … delay=0.81` · `mob flame SK_M11_FH`.
 16. 시전 0.4 s 뒤 바로 걷기: 몸이 걷기로 돌아오고 찌르기 자세로 미끄러지지 않는다(`body frames cut (moved)`).
 - 2026-10-05 사용자 선택(키트 pfhv 후보 A): 플레임 헤이즈 시전 락 **0.4 그대로**(인계 표 값 · 0.4 뒤 걸으면 몸 동작이 멈춘다) · 영상 맞춤 그림은 269d50f 그대로 · 폭발 수는 지금처럼 맞은 대상마다(#40 결정 질문 중)
+
+## 2026-10-05 (2) — main 1d518c6 합침 · A 답 3건 반영
+
+- **main 병합**(#102 · #134 · #135 · #142 · #156 · #159 · #160 · #163 · #164 이후): 충돌 4곳.
+  - `SkillAttack.mlua` `SpawnProjectile`: 이 브랜치의 플레임 헤이즈 배율 · 연출 키 블록과 main 의 `HomingTargetOnly` · 더블 샷 볼리 블록 — 둘 다 둔다.
+  - `SkillExecutors.mlua` `effectOverrides`: `SK_W11_RB` · `SK_M11_FH` 와 main 의 `SK_N01` · `SK_N02` — 둘 다. `castSounds`: `SK_M11_FH` 와 `SK_N02` · `SK_N01` — 둘 다.
+  - `SkillProjectile.mlua` `CalcDamage`: 이 브랜치의 `BaseDamageMul`(매직 가드 추가 피해는 배율 밖) 그대로 + main 주석.
+  - `SkillCaster.mlua`: MP 식 — main 의 `MpCostAt`(달팽이 세마리 레벨별 MP) 위에 변형 MP(`vspec.mpCost`) 덮어쓰기(git rerere 가 앞서 night-capture 에서 같은 해결을 기억 · 확인함).
+  - `SkillInfo.csv`(merge=union): SK_W11 이 두 줄이 됐다(이 브랜치 = 쿨 3 · 새 설명 / main = 쿨 0 · 옛 설명) → **한 줄**: 쿨타임 0(#135) · 이 브랜치 설명 · 사거리 2 → **2.5**(아래).
+- **파워 스트라이크 사거리 2 → 2.5** — #40 5988187875 "사거리를 2 → 2.5 로 올린다. 넉백은 그대로". `SkillInfo.csv` SK_W11 Range 만(넉백 · 배율 그대로).
+- **플레임 헤이즈 폭발 그림 시전당 한 번** — #40 5988186874 "(1) 시전당 폭발 그림 한 번(원작 onlyOnce)". `effectOverrides.SK_M11_FH.explode.impactOnce = true` →
+  `SkillAttack.SpawnProjectile` → `SkillProjectile.ExplodeImpactOnce`: `Explode` 가 첫 대상 몸 중심에 한 번 그리고, 폭발 패스의 `OnAttack` 은 대상마다 그리지 않는다.
+  피해 · 숫자 · 불꽃(대상마다 무작위 하나) · 소리(폭발당 한 번)는 그대로. 에너지볼트(SK_M11)는 예전대로 대상마다.
+- **레이징 블로우는 불굴의 진 컷신이 끝난 뒤에만** — #40 5988186219 "(b) 컷신이 끝난 뒤 8초만 레이징 블로우 · 컷신 중엔 막는다". `SkillBuffs.VariantSpec(SK_W11).afterCutscene`:
+  불굴의 진 버프 = 컷신 + Duration 8 s(`buffExtendsByCutscene`) → 남은 시간이 Duration(+0.05)보다 길면 컷신 중. 그동안 `VariantOf` / `LocalVariantOf` = ""(아이콘도 파워 스트라이크)이고
+  `SkillCaster` 가 클라 · 서버 모두 파워 스트라이크 키를 거절한다("variant waits for the cutscene to end"). #166(영상 전체 시전 락 = 영상 + 0.15)과 함께면 락이 먼저 막고,
+  서버 락 검사(×0.9 여유)로 영상 끝 ≈0.7 s 전에 들어온 요청도 이 검사가 막는다 — 영상이 끝나는 순간부터 8 s.
+- 점검: LSP(바뀐 .mlua 5개) 오류 0 · `check-integrity` 전부 통과(경고 3 = main) · SkillInfo 중복 id 0 · CRLF 유지. **Play 안 함** — RELOOK R12 · R13 · R14 (pirate-check/RELOOK.md).
