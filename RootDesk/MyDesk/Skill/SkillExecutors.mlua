@@ -707,8 +707,7 @@ script SkillExecutors extends Logic
         -- b/skill-pirate-effects 2026-09-27: 기획 표가 "다수" 로만 적은 해적 스킬은 원작 mobCount 를 기본값으로 둔다(#40 기획 질문 · 답이 오면 여기만 고친다).
         self.skillTargetCaps = {
             -- 근거 = design-handoff/pirate-refs/research-original.md(WZ 데이터 경로 · 나무위키 현재판 인용).
-            SK_P11 = 6,    -- 섬머솔트 킥: 원작 최신(KMS 360~389 · 라이브) mobCount 6. 사용자 영상 툴팁 "최대 4마리" 는 빅뱅 이전 Lv7 행(비공식 클래식 클라)이라 쓰지 않았다.
-            SK_P21 = 4,    -- 피스트인레인지: 그림과 같은 판인 피스트 인레이지 VI(5141000 · 2023 뉴에이지) "4명을 10번 공격"(사용자 영상 64s · WZ mobCount 4). 기본 4차 피스트 인레이지(5121007) = 3.
+            -- 2026-10-05 b/skill-balance-x3(A 요청 · 기획): 섬머솔트 킥(예전 6) · 피스트인레인지(예전 4)는 상한을 뺐다 = 판정 상자 안 전부(상자 그대로).
             SK_P31 = 15,   -- 함포 사격: 원작 드레드노트(5241500) 풍랑 mobCount 15 (파마다). 뒤 이어지는 함선 폭격(5241501)은 7명.
         }
         -- 🔴 **레벨 구간 → 외형 티어. 이 표 한 곳이 구간을 정한다** (2026-09-16 요청: 구간 이동은 한 줄 수정).
@@ -759,7 +758,8 @@ script SkillExecutors extends Logic
                 -- 명중 5종: 시전 순번으로 하나를 골라 맞은 대상마다 4번(hitInterval 간격 · SkillAttack.PendingImpactRepeat).
                 hitClips = { "b79cbdf6d06b487382f03d625a1fc464", "a5fa2b779db14f93b881a873f36b7eac", "1ce3b9be19764a70a6229665e15adf42", "79132eeadd9b4ab090bf4845bfcfdbdb", "3720a775e9c241fbb547c81d76598843" },
                 -- 4타 · 타마다 파워 스트라이크 % × 0.8 · 앞 3.5 × 높이 2.5 · 최대 6명. hitAt 0.28 = 원작 첫 피해(영상 2013 실측 ≈ +0.28 s · 후보 E · 예전 0.12).
-                hits = 4, damageMul = 0.8, maxTargets = 6, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
+                --   2026-10-05 b/skill-balance-x3(A 요청): maxTargets 6 → 0 = 상자 안 전부(상자 그대로) · 피해는 파워 스트라이크 % 를 따라 ×3(SkillInfo.csv).
+                hits = 4, damageMul = 0.8, maxTargets = 0, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
             },
             SK_M11_FH = {   -- 플레임 헤이즈 — 원작 skill/212.img/skill/2121011: 몸 동작 flameHaze(기본 액션 2프레임) · 시전 · 투사체 · 폭발 hit/0 · 불꽃 5종(연출만) · 소리 Use · Hit
                 baseSkillId = "SK_M11",
@@ -4369,18 +4369,19 @@ script SkillExecutors extends Logic
         end
         local hitRuid = self:GetSpecRuid(skillId, "impact")
         local hitRuid2 = self:GetSpecRuid(skillId, "impact2")
-        ---@type Entity
-        local target = nil
-        if isvalid(skillAttack) then target = skillAttack:FindSkillTarget(skillId, box, false) end
+        -- 대상(2026-10-05 b/skill-balance-x3 · A 요청): 앞쪽 상자(box · 그대로) 안 **전부**를 시전 순간 고정한다(예전 = 최근접 하나 · FindSkillTarget).
+        --   피해 · 크리는 시전 순간 한 번 정해 모든 대상에 같게 · 접촉 순간 대상마다 한 번 · 타격 그림은 대상마다 · 명중음은 시전당 한 번.
+        local targets = {}
+        if isvalid(skillAttack) then targets = skillAttack:SnapshotTargets(skillId, box, 0) end
         local amount = 0
         if uid ~= "" then amount = math.floor(_SkillDatabase:DamageAt(skillId, level, uid)) end
         local crit = 0
         if uid ~= "" and _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(uid) then crit = 1 end
-        local targetName = "none"
-        if isvalid(target) then targetName = tostring(target.Name) end
-        log("SkillExecutors: POWER STRIKE locked target=" .. targetName .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " lv=" .. tostring(level) .. " motion=" .. motionName .. " hit@" .. tostring(hitAt))
+        local names = {}
+        for _, t in ipairs(targets) do if isvalid(t) then table.insert(names, tostring(t.Name)) end end
+        log("SkillExecutors: POWER STRIKE locked targets=" .. tostring(#names) .. " [" .. table.concat(names, ",") .. "] amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " lv=" .. tostring(level) .. " motion=" .. motionName .. " hit@" .. tostring(hitAt))
         self:ScheduleSwingTrail(skillId, casterEntity, motionName, hitAt)
-        if not isvalid(target) then
+        if #names == 0 then
             log("SkillExecutors: POWER STRIKE no target in front — swing only (cast consumed)")
             return
         end
@@ -4389,32 +4390,35 @@ script SkillExecutors extends Logic
                 log("SkillExecutors: POWER STRIKE caster gone before contact — no hit")
                 return
             end
-            if not isvalid(target) or not isvalid(target.TransformComponent) then
-                log("SkillExecutors: POWER STRIKE locked target " .. targetName .. " gone before contact — no hit")
-                return
-            end
-            local tp = target.TransformComponent.WorldPosition
-            local hit = skillAttack:DealSkillDamageToTargetAmount(skillId, level, target, amount, 1, crit)
+            local hits = 0
             local layers = 0
-            if hit then
-                -- hit/0 · hit/1 을 같은 자리에 겹쳐 한 번(시전당 1회 · 각 클립의 pivot 이 그림 자리를 잡는다).
-                local fxPos = Vector3(tp.x, tp.y + 0.5, tp.z)
-                if hitRuid ~= "" then
-                    _EffectService:PlayEffect(hitRuid, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
-                    layers = layers + 1
-                end
-                if hitRuid2 ~= "" then
-                    _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
-                    layers = layers + 1
-                end
-                -- 명중 사운드(extraSounds.SK_W11.hit · 비어 있으면 몬스터 기본 소리만): 명중 한 번에 한 번(1 대상 · 1타).
-                local hitSound = self:GetExtraSound(skillId, "hit")
-                if hitSound ~= "" then
-                    self:PlaySoundRuid(hitSound, casterEntity, fxPos)
-                    log("SkillExecutors: POWER STRIKE hit sound once (" .. hitSound .. ")")
+            local soundPos = nil
+            for _, target in ipairs(targets) do
+                if isvalid(target) and isvalid(target.TransformComponent) then
+                    local tp = target.TransformComponent.WorldPosition
+                    if skillAttack:DealSkillDamageToTargetAmount(skillId, level, target, amount, 1, crit) then
+                        hits = hits + 1
+                        -- hit/0 · hit/1 을 같은 자리에 겹쳐 대상마다 한 번(각 클립의 pivot 이 그림 자리를 잡는다).
+                        local fxPos = Vector3(tp.x, tp.y + 0.5, tp.z)
+                        if soundPos == nil then soundPos = fxPos end
+                        if hitRuid ~= "" then
+                            _EffectService:PlayEffect(hitRuid, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
+                            layers = layers + 1
+                        end
+                        if hitRuid2 ~= "" then
+                            _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
+                            layers = layers + 1
+                        end
+                    end
                 end
             end
-            log("SkillExecutors: POWER STRIKE contact target=" .. targetName .. " hit=" .. tostring(hit) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
+            -- 명중 사운드(extraSounds.SK_W11.hit · 비어 있으면 몬스터 기본 소리만): 시전당 한 번(맞은 대상이 있을 때 · 레이징 블로우와 같은 규칙).
+            local hitSound = self:GetExtraSound(skillId, "hit")
+            if hits > 0 and hitSound ~= "" then
+                self:PlaySoundRuid(hitSound, casterEntity, soundPos)
+                log("SkillExecutors: POWER STRIKE hit sound once (" .. hitSound .. ")")
+            end
+            log("SkillExecutors: POWER STRIKE contact targets=" .. tostring(hits) .. "/" .. tostring(#names) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
         end, hitAt)
     end
 
