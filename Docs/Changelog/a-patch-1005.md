@@ -68,8 +68,31 @@
 - 배선: `ruid-map.json` 의 `emblem_<마을>` 5키를 새 RUID 로 · `intro_grow` · `intro_defend` 추가 · `Npc/CommonNpcUIController.EmblemRuids` 5개 교체 · `ui/CommonNpcGroup`(차원문 · 택시 카드 · 파병 · NPC 비용) 15칸의 문장 그림을 `swap-emblems.cjs` 로 새 RUID 로 바꿨다(옛 RUID 참조 0 확인).
 - 소개: 1쪽 카드 아이콘 `ico_sword` → `intro_grow` · `ico_home` → `intro_defend`("쓰러뜨리기"는 그대로) · 5쪽(방어선) 그림 판을 260 → 340 으로 키워 아래에 마을 문장 5개 한 줄 + 마을 이름. 이 판에 맞춰 `apply-intro-coach.cjs` 를 고쳐 `.ui` 3개를 다시 만들었다(스크립트가 UUID 를 새로 매겨 `.ui` · 두 컨트롤러의 property UUID 가 같이 바뀜).
 
+### WO-050 §2 보완 요청 22건 (사용자 "보상 2배 · 자동 AP · 시작 장비 · 노틸러스 NPC · 신규 물약 · 명중 회피 · 로딩 화면 · 피격 넉백 등 고치자 / 다같이해" · 구현 = A · Codex gpt-6-luna 분담)
+- **2-1 사냥 보상 2배** — `SummonManager.HuntRewardMul = 2.0`(정식 밸런스 · 테스트 임시값 아님)을 `FarmReward`(일반 · 엘리트 메소 · 미니언 `MonsterId=0` 제외) · `DropTableLogic`(젬 · 몬스터 재료 · `REGION_*` 제외) · `EliteSpawner`(꿈 조각 · 영혼석)에서 한 번씩만 곱한다. `EliteSpawner.EliteDreamMul = 2`(엘리트 전용 꿈 조각 ×2 · 사냥 ×2 와 겹쳐 ×4).
+- **2-2 `REGION_LOCAL` 원복** — `DropTable.csv` GROUND 사냥터1/2/3 `REGION_LOCAL` 3행을 2배 변경 전 값(0.35×1 · 0.75×1 · 1.0×3~4)으로 손으로 되돌렸다. `MONSTER` 행 · ★5 `REGION_DROP_MUL` 은 그대로.
+- **2-3 자동 AP 분배** — 계정 저장 `account_autoApOff`(기본 `false` = 켬 · `AccountProfile.SchemaVersion` 4 → **5**) · `AccountData.IsAutoApOn/SetAutoApOn` · `StatService.AllocateByJob`(직업 주스탯 · 초보자 = 현재 최고 스탯) · `OnLevelUpAp`(레벨업 AP 를 즉시 분배) · `RequestSetAutoAp`(@Server) · 상태 CSV `;autoap=`. **1차 전직 환급은 초보자(`NOVICE`)에서 넘어갈 때만**(2차 이상 전직은 환급 없음 · 켜져 있으면 환급 AP 를 새 직업 주스탯으로 다시 분배). `SummonManager.ApplyLevelUpRewards` 가 AP 를 돌려주고 `GrantKillReward` 가 모아 `OnLevelUpAp` 호출. UI: `CharacterGroup`(스탯 탭 왼쪽 `AutoAp` 줄 · `Docs/tools/design-ui/apply-char.cjs` 재생성) · `StatUIController.btnAutoAp`.
+- **2-4 시작 장비 자동 착용** — `EquipService.AutoEquipMatchKit(userId)`: 매치 시작 킷으로 받은 장비를 슬롯별로 자동 착용(`RequestEquip` 과 같은 `EquipInstance(…, quiet)` 경로). `MatchResetService` 가 스탯 리셋(`ResetMatchState`) **뒤에** 호출해 장비 보너스가 지워지지 않는다.
+- **2-5 노틸러스 기능 NPC → 노틸러스 호 내부** — `VillageConfig` 에 열 `NpcMapName`(`Enabled` 뒤 · 헤더 변경 · `check-integrity` 고정 헤더 함께 갱신 · NAUTILUS 만 `Nautilus_Village_MinimiShip`) · `NpcCatalog.LoadVillages` 가 그 맵으로 `villageByMap` 을 만든다(마을 맵 쪽은 안 만든다 — 양쪽이면 NPC 가 두 곳에 선다) · `VillageNpcSector` NAUTILUS 4행 앵커 = 호 내부 갑판 바닥 y 0.30(Maker 에서 `FootholdComponent:RaycastAll` 로 실측) · 원본 NPC 가 없는 오른쪽 x 10.4~15.7 구간(간격 0.45). **`map/Nautilus_Village_MinimiShip` 에 `NpcSpawner` 엔티티가 없어(다른 마을 맵엔 다 있음) MapBuilder 로 추가** — 이제 이 맵의 `MapNpcs.csv` 원본 NPC 30명도 같이 선다. `MapNpcs` 장식 NPC 6명(`MinimiMain`)은 그대로 둔다(기능 NPC 만 이동).
+- **2-6 주인 없는 넥서스 "클릭하세요"** — `LaneFacilityService.SpawnClickHere/RemoveClickHere`(`SpawnAllNexus` 에서 주인 없는 넥서스마다 · 노틸러스 제외 `ClickHereExclude` · 주인이 생기면 `OnVillageClaimed` 에서 삭제 · `[Facility] clickhere +/-`). 그림 = 처음 안내의 `coach_ring` + `coach_finger`(저장소에 별도 "클릭" 그림이 없어서). 서버가 `auracircle` 모델로 스폰(모두에게 보임) · `Lane/ClickHereMarker`(신규 `@Component`)가 각 클라에서 `OrderInLayer` 를 맞추고 손가락을 대각선으로 흔든다. 위치 = 넥서스 슬롯 + 오프셋(`ClickHereOffset` "-0.8,2.2" · 마을별 `ClickHereOffsetByVillage`). 층 = `Default`/170(사용자 표기 "DamageSkin" 층 이름은 확인 못 함 → `ClickHereLayer` 로 바꿀 수 있게).
+- **2-7 재료 드롭 1/3 크기** — `Farm/ItemDrop.MaterialDropScale = 0.3333`(`MAT_*` 드롭 그림만 작게 · 개수 · 판정 그대로).
+- **2-8 원근 정렬** — `PlayerFrontLayer.BehindFacilityEnabled`: 시설보다 한 층 이상 위(`FloorGap` 1.0)에 땅을 딛고 서서 시설 그림과 겹치는 캐릭터는 시설 뒤(서버 `SortingLayer` → 시설 층 · 클라 `OrderInLayer` 1). `LaneFacility` 에 `@Sync ZoneHalfW/ZoneHeight` 추가(`LaneFacilityService.SpawnFacility` 가 채움 · 노틸러스 넥서스는 구역 없음 · `BehindZoneWidthMul`). 판정 주기 0.5 → 0.1 초. **Play 에서 볼 것**: 뒤 구역에선 MapLayer 층으로 내려가 더 높은 MapLayer 발판 타일이 발을 덮는지 — 보이면 끄거나 대안(시설 `Default/2` · 몬스터 `Default/3` · 뒤 구역 `Default/1`)으로.
+- **2-9 · 2-10 물약** — 신규 3종 `MANA_ELIXIR`(MP +600 · 300메소) · `PURE_WATER`(MP +1200 · 600) · `GRILLED_EEL`(HP +1000 · 650) → `ItemInfo` · `ConsumeInfo` · `ShopItem`(마을 물약 상인 `POTION` · 리스항구 초보 상점엔 없음). 회복량 상향: 빨강 +255 · 주황 +330 · 하양 +405 · 파랑 +200. MP 물약은 공용 쿨 키 `"MP"`(`InventoryService.CooldownKey`).
+- **2-11 마법사 MP** — "직업 MP 3배"는 구현하지 않음(원래 없음). 마법사 옷(상의 · 하의 · 한벌옷) `BaseMaxMp` 를 단계별 B(L)=100+20(L−1) 의 1배(한벌옷 2배)로 넣고 `ItemCatalog.ComputeEnhance` 가 강화 단계마다 `MagicianClothMpPerEnhance = 1/3` 씩 더해 +0 에서 3배 · +3 에서 5배(예: Lv20 한벌옷 1,440 → 2,400).
+- **2-12 명중 · 회피** — `DamageFormula`: `HitCheck(acc, lv, targetLv)` 에 몹 회피(`MobAvoidBase + MobAvoidPerLevel × 레벨`)를 반영하고 `DodgeCheck`(플레이어 회피 · 몹 명중 `MobAccBase + MobAccPerLevel × 레벨` · 레벨 차 보정 · 상한 `DodgeCap` 0.35) 신설. `MonsterAttack` · `FactionAttack`(미니언 · 수비대 · 시설은 `EnableFacilityDodge` 기본 꺼짐)이 플레이어 피격 전에 회피 판정 · MISS 글자는 `DamageFormula.ShowMiss`(Multicast · `DamageSkinTextType.Miss`). 몬스터 레벨은 `FarmReward.SpawnLevel`(`MonsterSpawner` 가 스폰 행 레벨 전달). **B 알림**: 스킬 경로(`SkillAttack.CalcDamage` → `SkillDatabase:DamageAt`)는 `StatService` 명중 판정을 안 거친다 — B 몫.
+- **2-13 빅토리아 주화 ×10** — `SummonManager.VictoriaCoinMul = 10`: 미니언 · 엘리트 주화의 확률 · 개수에 곱(미니언은 바닥 드롭 `GroundDrop`) · `MinionPhaseConfig` 주화 기본 확률 0.25/0.3/0.4 → 0.02/0.02/0.03(×10 로 0.2/0.2/0.3). 주화 수급이 늘어 주화 소비처 상대 가격이 낮아진다.
+- **2-14 노틸러스 미니언 정지** — `FactionAI`: 접근(`ApproachActive`) 미니언은 넥서스 표적을 잃어도 정지선을 넘지 않고(`HOLD`) 정지선 앞 적만 넥서스보다 먼저 친다 · 표적을 잃은 원인 로그 `[Approach] … lost core -> … reason=`.
+- **2-15 · 2-16** — `MinionWave` LIVE · TEST 2페이즈 HP −20% · 3페이즈 공격력 절반 · 수비대 스탯 = 티어 기본값에서 강화 레벨(1~5)별 기하 보간(`DefenderService.GuardHpAtMax 18300 · GuardAtkAtMax 3400 · GuardLv1Mul 0.9` · `SpawnOne/SpawnBundle` 에 `upgradeLevel` 인자 추가) · `BossReward` 5행 꿈 조각 60.
+- **2-18 레벨업 몸 빛남** — `StatusHUDController.PlayLevelUpGlow/TickGlows`(클라 로컬 `auracircle` · `Default/3` · 금빛 원이 1.5초 동안 2번 반짝) · `SummonManager.OnLevelUp` 이 방 안 모든 클라에 방송. 그림 = `Docs/tools/levelup-glow`(`make.py` · `upload.cjs` → 그룹 저장소 RUID `88733245…`).
+- **2-20 직업 장비 주 · 부스탯** — `ItemCatalog.JobStatFull`("10=3/1;15=6/2;20=13/4;25=28/9;30=60/20") · `JobStatAt`(+0 은 풀강의 절반 · +3 에 표의 값) · 두손무기 ×2 · 한벌옷 `PieceCount` → `ComputeEnhance` 고정치(주스탯 : 부스탯 = 3 : 1). `ItemInfo.csv` 직업 장비 169행에 적용(`Docs/tools/item-stats/apply.py`). 공방 미리보기도 `ComputeEnhance` 차이로.
+- **2-21 강화 보석 효과 2배** — `ItemCatalog.GemEffectMul = 2.0`(`GemAmount` · `ComputeEnhance` 보석 합산).
+- **2-22 피격 경직 → 넉백** — `PlayerHit`: `StateComponent:DisconnectHitEvent()` 로 HIT 상태 전이 해제(HitEvent 구독 · 불굴의 진 · 궁 무적 · 사전 피해 훅은 유지) + 맞은 플레이어의 클라에만 `AddForce`(`PlayerKnockbackX 2.0 · Y 1.2`).
+
+- **2-17 로딩 화면 · 도착 직후 0.5초 포탈 금지** — 로딩 그림 6장(`로딩창.zip` · 리스항구↔헤네시스 · 커닝시티↔페리온 · 엘리니아↔노틸러스 · 낮 · 밤)을 그룹 저장소에 올려 `ruid-map.json` 에 `dui_loading_*` 6키 · `ui/LoadingGroup`(전체 화면 · 순서 41 · 클릭을 막지 않음 · `apply-loading.cjs`) · `Map/LoadingScreenController`(신규 `@Logic` · 도착 맵 지역 · 서버 한국 시각 06~17시 낮 · 사전 로드 · 맵 감지 · 최소 `MinShowSeconds` 0.6초 후 페이드). 여섯 지역이 아닌 맵은 직전 그림 · 첫 로딩은 리스항구 · 헤네시스. 부르는 곳: 포탈(`PortalNetwork`) · 리스항구 · 보스 입장 · 발록 방 · 택시/차원문(`LaneStateService`) · 부활(`PlayerRespawnService`). 도착 직후 `PortalLockSeconds` 0.5초 동안 `PortalNetwork.TryMoveByUpArrow` · 엔진 `PortalComponent`(도착 포탈 로컬 `Enable=false`) · 서버 판정 입장(`IsServerArrivalLocked` — `RequestEnterLith` · `RequestEnterBoss` · `BalrogRoomService`)을 거절. 로그 `[Loading] …` · `[PortalNetwork] locked`.
+- **2-19 도감 해금 가능 반짝임** — `Npc/VillageRecordUIController`: 지금 해금할 수 있는 몬스터 도감 항목과 해금 버튼이 반짝이고, 창을 닫거나 라우트를 바꾸면 초기화.
+
 ## 확인 (사용자 · Maker)
-- [ ] Reimport All → 빌드 경고 0 · 새 `.codeblock` 없음(새 스크립트 없음).
+- [ ] Reimport All → 빌드 경고 0 (이 브랜치는 새 스크립트가 있다 — 아래 줄).
 - [ ] ① 초보자로 STR 에 AP 를 찍고 전직 → STR 원래대로 · AP 돌아옴 · 토스트.
 - [ ] ② 차원의 거울 창 판에 "순간이동".
 - [ ] ④ 다섯 마을 사냥터1/2/3 몬스터 Lv10/17/24 · 헤네시스 파란버섯 Lv24 · 노틸러스 파란버섯 Lv17.
@@ -86,3 +109,20 @@
 - [ ] ⑯ 외형 선택 뒤 게임 소개가 자동으로 뜨고 ← → 로 7쪽 · ESC 로 닫힘(안내 · 다른 창과 겹치면 최근 것부터 하나씩) · 채팅 입력 중 H 무시 · 도움말 버튼(캐릭터 버튼 왼쪽) · 게임 시작하기 → 안내 1→4.
 - [ ] ⑰ 차원문 · 택시 · 파병 카드의 마을 문장이 새 그림 · 소개 1쪽 카드 · 5쪽 마을 문장 5개 줄이 겹침 없이 보임.
 - [ ] ③ 출시본 콘솔에서 `[NameTag] plate preload failed` 경고가 나오는지.
+- [ ] **Reimport All(이 브랜치) → 새 스크립트 3개 · `.codeblock`**: `Lane/ClickHereMarker` · `Map/LoadingScreenController` · `Onboarding/*` — 빌드 경고 0. 새 `.codeblock` 은 머지 뒤 `chore: commit group-world Reimport output` PR 로.
+- [ ] 2-1/2-13 일반 · 엘리트 몬스터 메소 · 재료 2배 · 주화 확률 · 개수(`[Minion] coin drop=`).
+- [ ] 2-3 스탯창 "자동 분배" 토글(기본 켬) · 레벨업 AP 가 주스탯으로 · 끄면 직접 · 1차 전직 환급 후 재분배.
+- [ ] 2-4 매치 시작 때 시작 킷 장비가 자동 착용(스탯에 반영).
+- [ ] 2-5 노틸러스 소유자: 기능 NPC 11명이 노틸러스 호 내부 오른쪽 갑판에(겹침 · 높이) · 호 내부에 원본 NPC 30명도 섬 · 마을 맵(`MinimiMain`)엔 기능 NPC 없음.
+- [ ] 2-6 주인 없는 헤네시스 · 커닝 · 페리온 · 엘리니아 넥서스 왼쪽 위 고리 + 손가락 · 클릭해 주인이 되면 사라짐 · 노틸러스엔 없음 · 위치는 화면 보고 `ClickHereOffset` 조정.
+- [ ] 2-7 재료 드롭이 작다.
+- [ ] 2-8 위층에서 시설과 겹칠 때 캐릭터가 시설 뒤 · 같은 층은 앞 · 타일 가장자리가 발을 덮지 않는지(`[PlayerFrontLayer] behind`).
+- [ ] 2-9~2-11 물약 상인 신규 3종 · 회복량 · MP 물약 공용 쿨 · 마법사 옷 MP 3~5배.
+- [ ] 2-12 MISS 글자가 뜨는지(`[Stat] MISS` · `[Stat] DODGE`) · 몬스터 · 미니언 회피.
+- [ ] 2-14 노틸러스 넥서스를 치던 미니언이 정지선에서 멈춰 계속 침(`[Approach]`).
+- [ ] 2-15/2-16 수비대 강화별 HP · 공격(`[Defender] spawn`) · 보스 꿈 조각 60.
+- [ ] 2-17 첫 입장 · 포탈 · 택시 · 부활 로딩 그림 · 도착 직후 ↑ 연타 0.5초 무시.
+- [ ] 2-18 레벨업 금빛 반짝임(내 화면 · 남의 화면).
+- [ ] 2-19 도감 해금 가능 항목 반짝임.
+- [ ] 2-20/2-21 직업 장비 주 · 부스탯 · 보석 2배(공방 미리보기와 장착 후 스탯이 같은가).
+- [ ] 2-22 맞아도 굳지 않고 뒤로 밀림.
