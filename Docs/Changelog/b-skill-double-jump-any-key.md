@@ -21,3 +21,21 @@
 ### 점검
 
 - LSP 깨끗 · `check-integrity` 전부 통과(경고 3 = main). **Play 안 함** — RELOOK R18.
+
+## 2026-10-05 2차 — "Jump2" 도 (사용자 Play R18 FAIL · 기본 바인딩)
+
+### 찾은 것
+
+- 통합 빌드 `8efe928` Play(N2b `villagedefense-harness/pirate-check/sitting-8efe928/N2b-default-jump2.txt`): 엔진 기본 바인딩에서 LeftAlt = **"Jump2"**(Space = "Jump" 와 다른 액션) — `HOTBAR: key LeftAlt action='Jump2' jumpKey=false`.
+  "Jump" 에만 걸려 있어서 Alt 기본 바인딩에선 공중 Alt 가 더블 점프를 내지 않았다(Alt 를 "Jump" 로 다시 묶으면 30/30 · N2).
+- 사용자 결정: 다시 묶지 않고 기본 "Jump2" 로도 되게 — 판정(지상 무시 · 땅을 떠난 뒤 0.2 s 무시 · 점프당 1회 · 디바운스 · 꾹 누르기 = 1번)은 "Jump" 와 같게.
+
+### 바뀐 것 (B 파일 하나)
+
+| 파일 | 내용 |
+|---|---|
+| `Skill/SkillHotbar.mlua` | `JumpActionName2 = "Jump2"`("" = 끔). `TryWireKeys` 가 `AddCondition` 을 "Jump" 와 "Jump2" 둘 다에 건다 — 같은 `OnJumpActionAttempt`(JumpPressGap · FirstJumpGrace · airTeleportUsed · AirJumpTeleportDebounce 그대로). `OnJumpKeyDown` 도 키의 액션이 "Jump" 또는 "Jump2" 면 점프 키로 본다. 로그 `double jump follows the 'Jump' + 'Jump2' action(s)` |
+
+### 점검
+
+- LSP 깨끗 · `check-integrity` 전부 통과(경고 3 = main) — 로그 `villagedefense-harness/pirate-check/after-maker-free/172-*.txt`. **Play 안 함** — 다음 빌드 RELOOK R18(기본 바인딩 그대로 · 실제 Alt 가 빠지는지도 같이).
