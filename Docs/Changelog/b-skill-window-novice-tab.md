@@ -36,3 +36,9 @@
 - 서버가 거절해도(미러가 늦은 경우 등) 화면에는 `LearnReasonText` 의 한국어만 — 원문은 로그(`learn refused by server · …`). 띄운 뒤 `lastLearnReason` 을 비워 다음 갱신 때 다시 뜨지 않는다.
 - 영어로 화면에 뜰 수 있던 사유 → 한국어: `requires tier N` → "N차 전직 필요" · `requires level N` → "N레벨 필요" · `requires job line X` → "이 직업은 배울 수 없는 스킬입니다" · `already at max level` → "이미 최대 레벨입니다" · `no cast key for …` → "전직 뒤에는 쓸 키가 없어 올릴 수 없습니다"(툴팁과 같은 줄) · `per-tier SP: only tier …` → "지난 차수 스킬은 더 올릴 수 없습니다" · `not enough tier N SP (x)` · `not enough SP` → "스킬 포인트가 부족합니다" · `unknown skill: …` · 그 밖 → "지금은 배울 수 없습니다"(원문은 로그만).
 - 같이 고친 표시: 지난 차수 스킬(예: 2차인데 1차 스킬) 행의 "+" 가 켜져 보이던 것 — 미러 원장은 1차 SP 를 남은 것으로 세지만 서버는 차수 규칙으로 거절한다 → 이제 비활성.
+
+### 마법사 전직 = 텔레포트 Lv1 (A 확인 2026-10-05 · 사용자 전달)
+- 예전: 진짜 전직(`RequestChooseJob` → `ChangeJob`)도 F10(`DevSwitchJob`)도 스킬을 주지 않았다 → 텔레포트(SK_M13)는 1차 Lv0 · MaxLevel 5 · 1차 SP 로 배우는 스킬이었다. F10 이 다르게 보였다면 F9 / DEV 세팅(`DevLearnAll` = 지금 직업 스킬 전부 최대 레벨 · SP 없음)을 쓴 경우다 — F10 자체는 레벨을 전부 지운다.
+- 지금: `PlayerSkillState.GrantJobSkills` — 직업이 `SkillHotbar.AirTeleportJobId`(MAGICIAN)이 되면 `SkillHotbar.TeleportBaseSkillId`(SK_M13)를 그 스킬의 MaxLevel 로 SP 없이 준다. `ChangeJob`(진짜 전직 · 차수 상승)과 `DevSwitchJob`(F10)이 부른다. `spentByTier` · 지갑은 그대로(차수 SP 합계 변화 없음). 새 값 `GrantTeleportOnJob`(false = 예전).
+- `SkillInfo.csv` SK_M13 `MaxLevel` 5 → **1**(다른 열 그대로 · 레벨별 값이 전부 0 이라 효과 변화 없음). 그래서 텔레포트 행은 MAX 받침 · "+" 없음 · 서버 `RequestLearn` 은 `already at max level` 로 거절(화면 = "이미 최대 레벨입니다"). 텔레포트 강화(SK_M21 · 2차 · 최대 5)는 그대로 2차 SP 로 배운다.
+- A 파일 없음(SkillInfo 는 B 표).

@@ -59,6 +59,9 @@ script PlayerSkillState extends Logic
     --   패시브(더블 점프 SK_N02 = 공중 점프 키)는 대상이 아니다. 서버 RequestLearn 거절 + 스킬 창 "+" 비활성 그림(NoviceSkillHasNoKey 공용). false = 끔.
     property boolean NoviceActiveNeedsCastKey = true
 
+    -- 마법사 전직 = 텔레포트(SkillHotbar.TeleportBaseSkillId)를 SP 없이 그 스킬의 최대 레벨(1)로 준다(GrantJobSkills · A 확인 2026-10-05). false = 예전처럼 1차 SP 로 배운다.
+    property boolean GrantTeleportOnJob = true
+
     -- 초보자는 이 레벨까지만 SP 를 얻는다(A 결정 #40 5977728018 · 2026-10-04 "Lv2 ~ Lv6 레벨업마다 +1 · Lv7 ~ Lv9 는 0" · 이전 = A 답 5927820330 Lv7). 0 = 제한 없음.
     --   지갑(A 의 SummonManager.econ.sp)은 레벨업 때 LevelTable SP 를 그대로 받는다 — 표(A 파일 · A 허락)에서 6 ~ 8 행(→ Lv7 ~ 9) SP 를 0 으로 뒀다.
     --   표가 다시 바뀌어도 규칙이 지켜지도록 0 차 번 SP 를 이 레벨에서 끊고(TierSpEarned) 서버 타이머(NoviceSpCheckInterval)가
@@ -390,6 +393,8 @@ script PlayerSkillState extends Logic
         if self.TierSpEnabled and newTier > prevTier then
             self:ForfeitOldTierSp(userId, newTier)
         end
+        -- 직업 기본 스킬(마법사 텔레포트 · A 확인 2026-10-05): SP 없이 최대 레벨로. 차수 SP 원장은 건드리지 않는다.
+        self:GrantJobSkills(u, userId, newJobId)
 
         local evt = JobChangedEvent()
         evt.UserId = userId
@@ -399,6 +404,26 @@ script PlayerSkillState extends Logic
         self:SendEvent(evt)
 
         self:PushState(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void GrantJobSkills(any u, string userId, string jobId)
+        -- 그 직업이 전직하자마자 갖는 스킬을 SP 없이 준다(A 확인 2026-10-05: 마법사 전직 = 텔레포트 Lv1 · 기획 표 "특이사항 · 더블 점프가 텔레포트로 바뀜").
+        --   스킬 · 직업은 데이터에서: SkillHotbar.TeleportBaseSkillId(Shift "TELEPORT" 자리의 기본 텔레포트) · SkillHotbar.AirTeleportJobId(공중 점프 = 텔레포트인 직업).
+        --   레벨 = 그 스킬의 MaxLevel(SkillInfo.csv · 텔레포트 1) → "+" 는 MAX 받침 · 서버 RequestLearn 은 "already at max level" 로 거절.
+        --   spentByTier · 지갑은 건드리지 않는다(차수 SP 합계 그대로). 이미 그 레벨 이상이면 아무것도 안 한다(여러 번 불러도 같다).
+        --   ChangeJob(진짜 전직 · 차수 상승)과 DevSwitchJob(F10)이 부른다. GrantTeleportOnJob = false 면 끔.
+        if not self.GrantTeleportOnJob or u == nil or _SkillHotbar == nil then return end
+        if jobId ~= _SkillHotbar.AirTeleportJobId then return end
+        local skillId = _SkillHotbar.TeleportBaseSkillId
+        _SkillDatabase:EnsureLoaded()
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil then return end
+        local maxLevel = math.floor(skill.maxLevel)
+        local cur = u.skillLevels[skillId] or 0
+        if cur >= maxLevel then return end
+        u.skillLevels[skillId] = maxLevel
+        log("[Skill] job grant " .. skillId .. " Lv." .. tostring(maxLevel) .. " (" .. jobId .. " · no SP) (" .. tostring(userId) .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -641,6 +666,8 @@ script PlayerSkillState extends Logic
         -- 이전 직업의 버프(하이퍼 바디 최대 HP · 쉐도우 파트너 등)가 새 직업에 남지 않게. 매치 시작 초기화와 같은 경로(SkillBuffs · B).
         if _SkillBuffs ~= nil then _SkillBuffs:ResetMatchState(uid) end
         local level = self:GetLevel(uid)
+        -- 진짜 전직(ChangeJob)과 같이 직업 기본 스킬(마법사 텔레포트 Lv1)을 준다 — 예전엔 F10 은 레벨을 다 지워 텔레포트가 Lv0 이었다.
+        self:GrantJobSkills(u, uid, nextJob)
         self:DevSetJobState(uid, nextJob, self:TierForLevel(nextJob, level), true)
         log("[Skill] [DEV] job switch " .. prev .. " -> " .. nextJob .. "/" .. tostring(u.tier) .. " (level " .. tostring(level)
             .. ") skills cleared=" .. tostring(cleared) .. " · no JobChangedEvent (" .. uid .. ")")
