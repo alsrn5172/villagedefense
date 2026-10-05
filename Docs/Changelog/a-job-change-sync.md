@@ -14,7 +14,15 @@
 - 직업 제한 주석 갱신(이제 전직이 연결됐다).
 
 ### `ItemInfo.csv`
-- (그림 선택 뒤) 기본 무기 5행 — ReqLevel 10 · 공격력(마법사는 마력) 22 · 상점 · 제작 목록에는 없음.
+- 기본 무기 5행(행 추가만 · 헤더 그대로) — 사용자 2026-10-05 "외형은 같은데 약한 것 · (마모된) 수식어". 10제 행을 복사해 이름 · 수치만 바꿨다: ReqLevel 10 · 공격력(마법사는 마력) **22**(10제 27) · 내구 100(10제 150) · 판매 50 · 상점 · 제작 목록에는 없음.
+
+| ItemId | 이름 | 그림 |
+|---|---|---|
+| `WEAPON_WARRIOR_BASIC` | (마모된) 검 | 원작 검(`9edfb2ac…` · 후보 W1) |
+| `WEAPON_MAGICIAN_BASIC` | (마모된) 우드 완드 | 우드 완드와 같음 |
+| `WEAPON_ARCHER_BASIC` | (마모된) 워 보우 | 워 보우와 같음(두손) |
+| `WEAPON_THIEF_BASIC` | (마모된) 가니어 | 가니어와 같음(아대 · 두손 칸) |
+| `WEAPON_PIRATE_BASIC` | (마모된) 스틸 너클 | 스틸 너클과 같음(두손 칸) |
 
 ### 로그 확인 (Maker Play) — TODO
 - [ ] 초보자 → 도적 전직: `[Skill] JOB NOVICE -> THIEF/1` → `[Stat] job … NOVICE -> THIEF` → `[Item] job basic weapon WEAPON_THIEF_BASIC equipped (prev WEAPON_CLUB)` · 캐릭터 창 무기 = 기본 아대 · 몽둥이는 인벤토리.
