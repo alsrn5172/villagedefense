@@ -170,6 +170,16 @@ script SkillAttack extends AttackComponent
     -- 0.6 = 경사 발판(내리막 앞 몬스터 ≈0.3~0.5 낮음)은 허용 · 한 층 아래(≥1)는 제외. 원작 표창·화살도 아래층은 안 맞는다. 위쪽(높은 발판)은 상자 높이 그대로 허용.
     property number AimFloorTolerance = 0.6
 
+    -- 몸 띠 조준(b/skill-projectile-level-aim v2 · 사용자 결정 2026-10-05): 투사체 조준(shape.floorY 가 있는 탐색 = SpawnProjectile · 조준 표시 PlayAimMarker ·
+    --   기본 공격 FireBasicProjectile)은 앞쪽 상자 안에서 **몸 상자가 시전자의 몸 띠(발 ~ 머리 위끝)와 세로로 겹치는** 몬스터만 고른다.
+    --   머리보다 완전히 위 · 발보다 완전히 아래인 몬스터는 더 가까워도 고르지 않는다(예전 = 발 0.6 아래까지 · 위로는 상자 2.5 까지 누구든).
+    --   비행은 그대로(대상 유도 · #161 FlightFor). 명중도 같은 띠로 거른다(SkillProjectile.UseBodyBand). 궁(ORIGIN)은 이 길을 지나지 않는다. false = 예전 규칙.
+    property boolean AimBodyBand = true
+
+    -- 시전자 키(world unit) — 시전자의 몸 상자(PlayerHit · HitComponent)를 못 읽을 때만 쓴다.
+    --   값 출처: Global/DefaultPlayer.model script.PlayerHit BoxSize (0.45, 0.7) · ColliderOffset (0, 0.35) → 발 0 ~ 머리 0.7.
+    property number CasterBodyHeightFallback = 0.7
+
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
@@ -451,6 +461,35 @@ script SkillAttack extends AttackComponent
         return true
     end
 
+    method Vector2 BodyBoxBandOf(Entity e)
+        -- 엔티티 몸 상자(HitComponent · 없으면 script.PlayerHit)의 세로 범위(world) = Vector2(아래, 위). 못 읽으면 Vector2(발, 발) (점).
+        if not isvalid(e) or not isvalid(e.TransformComponent) then return Vector2(0, 0) end
+        local p = e.TransformComponent.WorldPosition
+        local hc = e.HitComponent
+        if not isvalid(hc) then hc = e:GetComponent("script.PlayerHit") end
+        if not isvalid(hc) or hc.BoxSize == nil then return Vector2(p.y, p.y) end
+        local sy = math.abs(e.TransformComponent.Scale.y)
+        local cy = p.y + hc.ColliderOffset.y * sy
+        local half = hc.BoxSize.y * sy / 2
+        return Vector2(cy - half, cy + half)
+    end
+
+    method Vector2 CasterBandOf(Entity caster)
+        -- 시전자 몸 띠(AimBodyBand) = Vector2(발, 머리 위끝). 머리 위끝 = 몸 상자 위끝(BodyBoxBandOf) · 못 읽으면 발 + CasterBodyHeightFallback(0.7).
+        if not isvalid(caster) or not isvalid(caster.TransformComponent) then return Vector2(0, 0) end
+        local feet = caster.TransformComponent.WorldPosition.y
+        local box = self:BodyBoxBandOf(caster)
+        local top = box.y
+        if top <= feet then top = feet + self.CasterBodyHeightFallback end
+        return Vector2(feet, top)
+    end
+
+    method boolean OverlapsBand(Entity e, Vector2 band)
+        -- 몬스터 몸 상자가 띠(Vector2(아래, 위))와 세로로 겹치는가(경계에 딱 닿는 것은 겹치지 않음).
+        local box = self:BodyBoxBandOf(e)
+        return box.y > band.x and box.x < band.y
+    end
+
     @ExecSpace("ServerOnly")
     method any FindSkillTarget(string skillId, table shape, boolean preferBoss)
         -- shape 상자(posX/posY/sizeX/sizeY) 안 몬스터 중 하나를 고른다: preferBoss 면 보스(script.BossSkillRunner 보유) 우선,
@@ -468,10 +507,17 @@ script SkillAttack extends AttackComponent
         local best = nil
         local bestScore = math.huge
         local belowFloor = 0
+        -- 몸 띠(AimBodyBand · 투사체 조준만): 시전자 발 ~ 머리 위끝. 몬스터 몸 상자가 이 띠와 겹치지 않으면 뺀다(offBand 로 센다).
+        local useBand = shape.floorY ~= nil and self.AimBodyBand
+        local band = Vector2(0, 0)
+        if useBand then band = self:CasterBandOf(self.Entity) end
+        local offBand = 0
         for _, cand in ipairs(self.Candidates) do
             if isvalid(cand) and isvalid(cand.TransformComponent) then
                 local p = cand.TransformComponent.WorldPosition
-                if shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
+                if useBand and not self:OverlapsBand(cand, band) then
+                    offBand = offBand + 1
+                elseif not useBand and shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
                     belowFloor = belowFloor + 1
                 else
                     local dx = p.x - origin.x
@@ -489,7 +535,9 @@ script SkillAttack extends AttackComponent
         end
         local bestName = "none"
         if isvalid(best) then bestName = tostring(best.Name) end
-        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
+        local bandText = ""
+        if useBand then bandText = " offBand=" .. tostring(offBand) .. " band=" .. string.format("%.2f..%.2f", band.x, band.y) end
+        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. bandText .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
         self.Candidates = {}
         return best
     end
