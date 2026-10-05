@@ -40,3 +40,14 @@
 - **첫 시전에 예전 클립이 잠깐 보였다**(마법사 R11 · 프레임 받는 1.33 s 동안 서버가 튼 예전 cast 클립) → 영상이 있는 궁은 cast 클립을 틀지 않는다(`PlayStageEffect` · 로그 `cast clip … skipped — cutscene video plays instead`). 다른 유저 화면에서도 예전 클립 없음.
 - **소리가 배경음악에 묻힌다** → 궁마다 볼륨(`CutsceneFrameSet.soundVolume` · `PlayUltimateCastSound`): 목표 −12.6 LUFS(다른 스킬 소리 −15.6 보다 3 dB 위 · 사용자 선택) · 파일 LUFS 전사 −17.4 · 마법사 −14.2 · 궁수 −18.3 · 도적 −18.0 · 해적 −18.0 → **전사 ×1.74 · 마법사 ×1.20 · 궁수 ×1.93 · 도적 ×1.86 · 해적 ×1.86**(상한 ×2.0). 배경음악 루프백 실측은 Maker 창 포커스가 없어 무음 → 귀로 RELOOK. `PlayCastSound` 줄(#158 이 고치는 줄)은 그대로 — #158 이 먼저 머지되면 이 호출도 유저별 경로로.
 - 참고: 서버 시전 게이트는 락 × 0.9(기존 여유)라 영상 끝 ≈0.7 s 전부터 서버는 새 시전을 받는다 — 클라 락이 끝까지 막는다(사용자 확인).
+
+## 2026-10-05 (4) — main 1d518c6 합침 · A 답 2건
+
+- main 병합: 충돌 없음(4ac2136).
+- **궁 합계 데미지** — #40 5988188679 "영상이 끝난 직후 합계 데미지를 한 번 보여 준다 · 영상 중 숫자는 그대로".
+  `SkillExecutors.OpenUltimateTally`(ExecuteOrigin · 영상이 있는 궁만) → 그 시전의 타격마다 `SkillAttack` / `SkillProjectile.CalcCritical` 이 최종 피해(CalcDamage × 크리 배율)를
+  `AddUltimateTally` 로 더한다 → 영상 끝 + `UltimateTotalDelay` 0.1 s 에 `CloseUltimateTally` → `ShowUltimateTotal`(Multicast · `_DamageSkinService:Play` · 시전자 DamageSkinSetting 스킨 ·
+  크기 ×`UltimateTotalScale` 1.4 · 발 위 `UltimateTotalOffsetY` 1.3). 피해 0(불굴의 진)이면 안 띄운다. 끄기 = `ShowUltimateTotalDamage = false`.
+- **메소 익스플로전 동전마다 소리** — #40 5988188093 "동전마다 · 한 번에 최대 10개 · 동시에 겹치지 않게 연쇄로". 동전이 터질 때 명중음(4210014/Hit) 하나 ·
+  시전당 `MesoCoinSoundMax` 10 개까지(앞 동전부터) · 앞 소리와 `MesoCoinSoundGap` 0.12 s 보다 가까우면 그만큼 늦춘다. 예전의 "중심 폭발 때 한 번"은 뺐다.
+- 점검: LSP(SkillExecutors · SkillAttack · SkillProjectile) 깨끗 · `check-integrity` 전부 통과(경고 3 = main) · CRLF 유지. **Play 안 함** — RELOOK R15 · R16.

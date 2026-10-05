@@ -204,6 +204,13 @@ script SkillExecutors extends Logic
     -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초).
     property number MesoExplodeInterval = 0.06
 
+    -- 메소 익스플로전 동전 소리(#40 5988188093 · 사용자 결정 2026-10-05 "동전마다 소리를 낸다 — 단 한 번에 최대 10개까지, 동시에 겹치지 않게 연쇄로"):
+    --   동전이 터질 때마다 명중음(4210014/Hit) 하나 · 시전당 MesoCoinSoundMax 개까지(앞 동전부터) · 앞 소리와 MesoCoinSoundGap 초보다 가까우면 그만큼 늦춰 튼다(겹치지 않게).
+    --   예전 = 중심 폭발 때 한 번(2026-10-03 사용자 A/B). 0 = 소리 없음.
+    property integer MesoCoinSoundMax = 10
+
+    property number MesoCoinSoundGap = 0.12
+
     -- 동전 하나의 폭발 반지름(world unit · B 기본값 · #40 5884390073 5번 "동전마다 그 자리에서 터져 그 주변 적만 때린다 · 반경은 B 기본값"):
     --   1.0 u = 100 px. 픽파켓 동전은 맞은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다(MesoCoin.ArcSpread) → 1.0 이면 동전을 떨군 몬스터가
     --   조금 움직여도 맞고, 옆 몬스터(≈1 u 떨어짐)는 가장자리만 걸친다. 모인 동전은 같은 적을 여러 번 때린다(동전 하나 = 50% 1타).
@@ -330,6 +337,26 @@ script SkillExecutors extends Logic
     -- 프레임마다 제 크기로 그리는 건 그대로다. 0 이하면 1. 1.08 = 사용자가 Play 에서 1.00/1.04/1.08/1.12 를 맵 끝에서 비교해 고른 값(5종 궁 모두 가득 참 · 2026-09-26).
     -- 디자이너가 컷신을 새로 넘겨주면(테두리 처리 포함) 이 값은 다시 정한다.
     property number CutsceneOverscan = 1.08
+
+    -- 궁 합계 데미지(#40 5988188679 · 사용자 결정 2026-10-05 "영상이 끝난 직후 합계 데미지를 한 번 보여 준다 · 영상 중 숫자는 그대로"):
+    --   영상이 있는 궁(CutsceneVideoSeconds > 0)을 쓰면 서버가 그 시전의 타격 피해(크리 포함)를 모아(OpenUltimateTally · SkillAttack / SkillProjectile.CalcCritical → AddUltimateTally)
+    --   영상 끝 + UltimateTotalDelay 에 시전자 머리 위에 숫자 하나로 띄운다(ShowUltimateTotal · DamageSkinService.Play · 시전자의 DamageSkinSetting 스킨).
+    --   피해가 없는 궁(불굴의 진)은 띄우지 않는다. false = 끈다.
+    property boolean ShowUltimateTotalDamage = true
+
+    property number UltimateTotalDelay = 0.1
+
+    -- 합계 숫자 크기 배율(보통 숫자 = 1) · 시전자 발 기준 높이(world unit).
+    property number UltimateTotalScale = 1.4
+
+    property number UltimateTotalOffsetY = 1.3
+
+    -- 서버: 유저 → { skillId, total, hits, serial } (열려 있는 궁 합계 · 영상이 끝나면 지운다).
+    @HideFromInspector
+    property table ultimateTally = {}
+
+    @HideFromInspector
+    property integer ultimateTallySerial = 0
 
     -- 클라: 가장 최근 UI 컷신 번호(새 시전이 오면 이전 것의 늦은 콜백 · 끄기 타이머를 무시한다) · 끄기 타이머 id · RUID → 프레임 크기(px · 가장 큰 가로 · 세로) 캐시.
     property integer cutsceneUiToken = 0
@@ -1788,6 +1815,65 @@ script SkillExecutors extends Logic
             end
         end, 1 / (fps * 2))
         log(string.format("SkillExecutors: cutscene video %s on — %d frames @ %d fps = %.2fs · rect %.0fx%.0f overscan %.2f", skillId, n, fps, n / fps, fw * scale, fh * scale, over))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OpenUltimateTally(string skillId, Entity casterEntity)
+        -- 궁 합계 데미지(#40 5988188679): 영상이 있는 궁이면 이 유저의 합계를 새로 열고, 영상 끝 + UltimateTotalDelay 에 닫아 띄운다(CloseUltimateTally).
+        --   같은 유저가 다시 궁을 쓰면(쿨 0 테스트) 새 합계로 바뀌고 예전 타이머는 serial 이 달라 아무것도 안 한다.
+        if not self.ShowUltimateTotalDamage then return end
+        if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
+        local video = self:CutsceneVideoSeconds(skillId)
+        if video <= 0 then return end
+        local uid = casterEntity.PlayerComponent.UserId
+        self.ultimateTallySerial = self.ultimateTallySerial + 1
+        local serial = self.ultimateTallySerial
+        self.ultimateTally[uid] = { skillId = skillId, total = 0, hits = 0, serial = serial }
+        _TimerService:SetTimerOnce(function()
+            self:CloseUltimateTally(uid, serial, casterEntity)
+        end, video + self.UltimateTotalDelay)
+        log(string.format("SkillExecutors: ultimate total %s open for %.2fs (%s)", skillId, video + self.UltimateTotalDelay, uid))
+    end
+
+    method boolean IsUltimateTallyOpen(string userId, string skillId)
+        -- 그 유저의 궁 합계가 이 스킬로 열려 있는가(SkillAttack / SkillProjectile.CalcCritical 이 부른다 · 서버에서만 채워진다 → 클라는 늘 false).
+        local t = self.ultimateTally[userId]
+        return t ~= nil and t.skillId == skillId
+    end
+
+    method void AddUltimateTally(string userId, string skillId, integer amount)
+        -- 한 대상 한 타의 최종 피해(크리 배율 포함)를 더한다. 열려 있지 않거나 다른 스킬이면 무시.
+        local t = self.ultimateTally[userId]
+        if t == nil or t.skillId ~= skillId or amount <= 0 then return end
+        t.total = t.total + amount
+        t.hits = t.hits + 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CloseUltimateTally(string userId, integer serial, Entity casterEntity)
+        -- 영상이 끝났다: 합계를 닫고 0 보다 크면 시전자 머리 위에 숫자 하나로 띄운다(그 맵 클라 전부 · ShowUltimateTotal).
+        local t = self.ultimateTally[userId]
+        if t == nil or t.serial ~= serial then return end
+        self.ultimateTally[userId] = nil
+        log("SkillExecutors: ultimate total " .. t.skillId .. " = " .. tostring(t.total) .. " over " .. tostring(t.hits) .. " hit(s) (" .. userId .. ")")
+        if t.total <= 0 or not isvalid(casterEntity) then return end
+        self:ShowUltimateTotal(casterEntity, math.floor(t.total))
+    end
+
+    @ExecSpace("Multicast")
+    method void ShowUltimateTotal(Entity casterEntity, integer total)
+        -- 클라: 시전자 머리 위에 합계 숫자 하나(시전자 DamageSkinSetting 스킨 · 크기 UltimateTotalScale · 높이 UltimateTotalOffsetY). 다른 맵 클라는 엔티티가 없어 건너뛴다.
+        if not isvalid(casterEntity) then return end
+        local skin = ""
+        local setting = casterEntity.DamageSkinSettingComponent
+        if isvalid(setting) and setting.DamageSkinId ~= nil then skin = setting.DamageSkinId.DataId end
+        if skin == nil or skin == "" then
+            log_warning("SkillExecutors: ultimate total " .. tostring(total) .. " — caster has no damage skin, not shown")
+            return
+        end
+        local s = self.UltimateTotalScale
+        _DamageSkinService:Play(casterEntity, skin, 0, { total }, DamageSkinTweenType.Default, false, Vector2(0, self.UltimateTotalOffsetY), Vector2(s, s))
+        log("SkillExecutors: ultimate total shown " .. tostring(total) .. " skin " .. string.sub(skin, 1, 8))
     end
 
     @ExecSpace("ClientOnly")
@@ -3258,6 +3344,8 @@ script SkillExecutors extends Logic
             self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
         end
         self:PlayUltimateCastSound(skillId, casterEntity)
+        -- 궁 합계 데미지(#40 5988188679): 영상이 있으면 이 시전의 타격 피해를 영상 끝까지 모은다.
+        self:OpenUltimateTally(skillId, casterEntity)
 
         -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 시전 즉시 버프를 Duration(8초) 동안 켠다.
         -- 컷신은 SkillCaster.castLockOverrides 가 만들고, 무적 판정은 SkillBuffs.IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
@@ -3541,6 +3629,28 @@ script SkillExecutors extends Logic
                 summonSerials[j] = _EffectService:PlayEffect(self.MesoSummonCoinRuid, casterEntity, Vector3(sp.x, sp.y + 0.2, sp.z), 0, Vector3(1, 1, 1), true)
             end
         end
+        -- 동전 소리(#40 5988188093): 시전 한 번의 상태 — 튼 개수 · 마지막 소리 시각(서버 시계). 터지는 순간 coinSound 를 부른다.
+        local hitSound = self:GetExtraSound(skillId, "hit")
+        local soundState = { played = 0, lastAt = -1 }
+        local function coinSound(sx, sy, sz, k)
+            if hitSound == "" or soundState.played >= self.MesoCoinSoundMax then return end
+            soundState.played = soundState.played + 1
+            local now = _UtilLogic.ServerElapsedSeconds
+            local at = now
+            if soundState.lastAt >= 0 and at < soundState.lastAt + self.MesoCoinSoundGap then at = soundState.lastAt + self.MesoCoinSoundGap end
+            soundState.lastAt = at
+            local nth = soundState.played
+            local play = function()
+                if not isvalid(casterEntity) then return end
+                self:PlaySoundRuid(hitSound, casterEntity, Vector3(sx, sy, sz))
+                log(string.format("SkillExecutors: MESO %s coin %d sound %d/%d (+%.2fs late)", skillId, k, nth, self.MesoCoinSoundMax, at - now))
+            end
+            if at - now > 0.001 then
+                _TimerService:SetTimerOnce(play, at - now)
+            else
+                play()
+            end
+        end
         local order = 0
         for i, coin in ipairs(coins) do
             order = order + 1
@@ -3565,6 +3675,7 @@ script SkillExecutors extends Logic
                 end
                 if isvalid(coin) then coin:Destroy() end
                 self:MesoCoinBlast(skillId, casterEntity, level, ex, ey + 0.3, k, n)
+                coinSound(ex, ey + 0.3, ez, k)
             end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
         for j, sp in ipairs(summonPoints) do
@@ -3579,6 +3690,7 @@ script SkillExecutors extends Logic
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(sp.x, sp.y + 0.3, sp.z), 0, Vector3(1, 1, 1), false)
                 end
                 self:MesoCoinBlast(skillId, casterEntity, level, sp.x, sp.y + 0.3, k, n)
+                coinSound(sp.x, sp.y + 0.3, sp.z, k)
             end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
         log("SkillExecutors: MESO " .. skillId .. " source floor=" .. tostring(#coins) .. " summoned=" .. tostring(#summonPoints)
@@ -3588,13 +3700,7 @@ script SkillExecutors extends Logic
             if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
             local p = casterEntity.TransformComponent.WorldPosition
             self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(p.x, p.y + 0.5, p.z), nil)
-            -- 명중 사운드(extraSounds[skill].hit · 메소 익스플로젼 4210014/Hit): 중심 폭발과 함께 시전 한 번에 한 번.
-            --   동전마다 틀면 N 겹 · 첫 동전 폭발(+1.15s 안팎)은 시전 사운드(2.0s)에 묻혀 안 들렸다(사용자 Play A/B 2026-10-03 → 중심 폭발 시점 선택).
-            local hitSound = self:GetExtraSound(skillId, "hit")
-            if hitSound ~= "" and n > 0 then
-                self:PlaySoundRuid(hitSound, casterEntity, Vector3(p.x, p.y + 0.5, p.z))
-                log("SkillExecutors: MESO " .. skillId .. " hit sound once (" .. hitSound .. ") with the center blast at +" .. tostring(delay) .. "s · " .. tostring(n) .. " coins")
-            end
+            -- 명중 사운드는 동전마다(coinSound · 최대 MesoCoinSoundMax · #40 5988188093). 예전 = 여기서 한 번(사용자 Play A/B 2026-10-03).
         end, delay)
         local timesText = ""
         if useVideoTimes then
