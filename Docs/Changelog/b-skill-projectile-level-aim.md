@@ -24,8 +24,15 @@
 ### 후보(사용자 Play 선택)
 
 - 높이 허용 `LevelAimTolerance`: **A 0.25 · B 0.5(기본) · C 0.8**. 0.5 = 경사 발판(≈0.3~0.5 낮음)은 허용 · 한 칸 위 발판(≥0.6)은 제외.
-- 키트: `villagedefense-harness/pirate-check/r12/level_aim_server.lua` + `level_aim_client.lua` — F6 = 다음 후보 · F7 = 예전 조준 켜기/끄기(비교). 토스트에 지금 값.
+- 키트: `villagedefense-harness/pirate-check/r12/level_aim_server.lua` + `level_aim_client.lua` — O = 다음 후보 · P = 예전 조준 켜기/끄기(비교) — F6/F7 은 #166 화질 비교 키트(r11)가 쓴다. 토스트에 지금 값.
 
 ### 점검
 
 - LSP(SkillAttack · SkillProjectile) 오류 0 · `check-integrity` 전부 통과(경고 3 = main). **Play 안 함** — RELOOK R17.
+
+## 2026-10-05 (2) — #161(FlightFor · ApplyReach)과 합칠 때
+
+- 시험 병합(`scratch-171x161` `84e77d5` · 푸시 안 함) · 통합 `local/integration-skills` `4bddaf9`: 충돌 1곳 `SkillAttack.SpawnProjectile` 비행 계산.
+  해결 = `FlightFor` 를 **대상과 함께** 불러 최소 비행 0.1 s(가까운 대상 → 느리게)는 그대로 받고, 같은 높이 조준이면 유도 없이(`target = nil`) 수명을 대상 없음과 같은
+  사거리 멈춤(`untargetedTravel = Range − ox` → `ApplyReach` 가 판정 상자 반을 뺀다)으로 바꾼다. 탐색 상자 앞 끝 = 발 + Range 그대로 → 탐색 끝과 직선 사거리가 같이 간다.
+- #161 이 main 에 먼저 들어가면 이 PR 은 main 을 합칠 때 같은 해결을 넣는다(git rerere 에 기록).
