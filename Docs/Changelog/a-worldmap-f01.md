@@ -12,3 +12,9 @@
 | `Docs/tools/design-ui/ruid-map.json` | `worldmap_f01` = 그룹 리소스 `dui_worldmap_f01`(`3cb8f91d35dc49f394d9c70fa7b32e93` · 원본 위아래 단색 여백 38px 씩 잘라 1647×1209) |
 
 코드 변경 없음 — `WorldMapController.SetDotHover` 는 `Dot` 이 없으면 건너뛰고(그림 점이 그대로 보인다), hover 점만 켰다 끈다. 안내창 · 내 위치 · 목표 핀은 노드 위치를 따라간다.
+
+## 2026-10-05 — '지금 위치' 칩 높이 (WO-041 4-1 · 사용자 "높이가 너무 작다 · 월드맵 폰트와 같은 높이")
+
+- `ui/WorldMapGroup` `Board/HereChip`: 124×25 · 글자 14 → **높이 34 · 글자 20**(제목 줄 "월드맵" 30 · 아이콘 34 와 같은 높이 · 가운데 y 421 그대로). UIBuilder 로 크기 · 글자만.
+- `WorldMap/WorldMapController.ShowOutsideChip`: 칩 · 글자 높이 25 → 34(폭 계산 `_UiChipText:Width(…, 11, 34, 0)` · 기본 폭 164).
+- `apply-worldmap.cjs`: 같은 값(`HERE_H` 34 · `HERE_FS` 20). 글자 폭 실측은 14 만 있어 파일 기본 폭은 비례 추정 — 칩을 열 때 컨트롤러가 다시 잰다.

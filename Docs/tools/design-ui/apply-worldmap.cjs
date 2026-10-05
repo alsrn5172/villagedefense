@@ -67,9 +67,12 @@ S.font(b, BD + '/CloseBtn', { text: '' });
 
 // 지도 밖(지금 위치: 로비) 칩: 스크립트가 글자 · 너비 · 켜고 끄기를 맡는다
 // 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측(Maple 14 "지금 위치: 로비" 90.61) + 2 × (테두리 11 + 여백 5 · 높이 25) = 124. 컨트롤러(ShowOutsideChip)가 맵 이름이 길면 같은 식으로 다시 잰다.
-const HEREW = S.chipWidth('chip_blue', 25, S.textW('Maple', 14, '지금 위치: 로비'));
-S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5, 25)], size: [HEREW, 25], enable: false });
-S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: 14, color: C.white, rect: [HEREW, 25], overflow: 0 });
+// '지금 위치' 칩 높이 = 제목 줄(월드맵 30 · 아이콘 34)과 같은 34 · 글자 20 (사용자 2026-10-05 "높이가 너무 작다 · 월드맵 폰트와 같은 높이" · WO-041 4-1)
+const HERE_H = 34, HERE_FS = 20;
+// 글자 폭 실측(chip-text-width.json)은 14 만 있다 → 20 은 비례 추정(파일 기본값일 뿐 · 칩은 꺼져 있고 열 때 컨트롤러가 GetPreferredWidth 로 다시 잰다).
+const HEREW = S.chipWidth('chip_blue', HERE_H, Math.ceil(S.textW('Maple', 14, '지금 위치: 로비') * HERE_FS / 14));
+S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5 - (HERE_H - 25) / 2, HERE_H)], size: [HEREW, HERE_H], enable: false });
+S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: HERE_FS, color: C.white, rect: [HEREW, HERE_H], overflow: 0 });
 
 // ═══ 범례 (번호 없음 · 시안 s0~s5 전부에 있음) ═══
 const LG = [119, 908, 457, 34];
