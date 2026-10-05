@@ -60,6 +60,10 @@ script SkillExecutors extends Logic
     -- skill_id -> { hit = RUID(투사체·타격 명중음), punch = RUID(변신 중 주먹), wave = RUID(폭격 파마다) }. 없으면 그 소리 없음.
     property table extraSounds = {}
 
+    -- 스킬 소리 전달 로그(b/skill-sound-per-user · PlaySkillSoundToMap): true 면 소리마다 "[Skill] sound … -> N user(s)" 한 줄. 타격마다 나서 기본은 끈다.
+    --   Play 확인 때 서버 Lua 로 켠다: _SkillExecutors.SkillSoundLog = true
+    property boolean SkillSoundLog = false
+
     -- EntryKey of the shared projectile model every behavior="PROJECTILE" skill spawns
     -- (RootDesk/MyDesk/Models/Skills/SkillProjectile.model). One model, one script.SkillProjectile
     -- component - per-skill damage/hit config is set on the spawned instance in
@@ -3817,7 +3821,7 @@ script SkillExecutors extends Logic
     method void PlayCastSound(string skillId, Entity casterEntity)
         local soundId = self.castSounds[skillId] or self.defaultCastSound
         local pos = casterEntity.TransformComponent.WorldPosition
-        _SoundService:PlaySoundAtPos(soundId, pos, casterEntity, 1.0)
+        self:PlaySkillSoundToMap(soundId, pos, casterEntity, 1.0)
     end
 
     @ExecSpace("Server")
@@ -3861,7 +3865,41 @@ script SkillExecutors extends Logic
     method void PlaySoundRuid(string soundId, Entity casterEntity, Vector3 pos)
         -- 임의 RUID 사운드(변신 중 주먹 · 폭격 파). "" 이면 없음.
         if soundId == nil or soundId == "" then return end
-        _SoundService:PlaySoundAtPos(soundId, pos, casterEntity, 1.0)
+        self:PlaySkillSoundToMap(soundId, pos, casterEntity, 1.0)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlaySkillSoundToMap(string ruid, Vector3 pos, Entity source, number volume)
+        -- 스킬 소리 하나를 source(시전자 · 투사체 · 맞은 몬스터)가 있는 맵의 유저에게만 보낸다(b/skill-sound-per-user · 2026-10-01).
+        -- 예전엔 서버에서 _SoundService:PlaySoundAtPos 를 대상 유저 없이 불러 룸의 모든 클라가 받았고, 듣는 사람이 시전자라 거리 감쇠도 시전자 기준이었다
+        -- (MSW 문서: Client 함수를 서버에서 UserId 없이 부르면 모든 클라에서 실행). A 의 Monster.PlaySoundToMap · #134 PlayerAttack 과 같은 방식:
+        -- 유저마다 Client RPC(마지막 인자 targetUserId) → 받는 클라가 자기 캐릭터를 듣는 사람으로 재생.
+        if ruid == nil or ruid == "" or not isvalid(source) then return end
+        local map = source.CurrentMap
+        if not isvalid(map) or not isvalid(map.MapComponent) then return end
+        local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+        if users == nil then return end
+        local n = 0
+        for _, u in ipairs(users) do
+            if isvalid(u) and isvalid(u.PlayerComponent) then
+                self:PlaySkillSoundLocal(ruid, volume, pos.x, pos.y, pos.z, u.PlayerComponent.UserId)
+                n = n + 1
+            end
+        end
+        if self.SkillSoundLog then
+            log("[Skill] sound " .. string.sub(ruid, 1, 8) .. " from " .. tostring(source.Name) .. " on " .. tostring(map.Name) .. " -> " .. tostring(n) .. " user(s)")
+        end
+    end
+
+    @ExecSpace("Client")
+    method void PlaySkillSoundLocal(string ruid, number volume, number x, number y, number z)
+        -- 받는 유저의 클라에서 재생. 인자는 원시 타입만(ExecSpace 너머 · Monster.PlaySoundLocal 과 같은 이유). 듣는 사람 = 이 클라의 로컬 플레이어.
+        local listener = _UserService.LocalPlayer
+        if not isvalid(listener) then
+            _SoundService:PlaySound(ruid, volume)
+            return
+        end
+        _SoundService:PlaySoundAtPos(ruid, Vector3(x, y, z), listener, volume)
     end
 
 end
