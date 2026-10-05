@@ -159,6 +159,10 @@ script CommonNpcUIController extends Logic
 	@HideFromInspector
 	property integer cores = 0
 
+	-- 택시(WO-046): 서버가 알려 준 "전직했나". 아니면 [이동]이 잠긴다(최종 판정은 서버 RequestTaxi).
+	@HideFromInspector
+	property boolean taxiJobOk = false
+
 	method void OnBeginPlay()
 		-- 클라만 배선.
 		if self:IsClient() then self:SetupClient() end
@@ -237,7 +241,7 @@ script CommonNpcUIController extends Logic
 			self:OpenTalk()
 			return
 		end
-		if route ~= "dispatch" and route ~= "dimensiongate" then route = "dispatch" end
+		if route ~= "dispatch" and route ~= "dimensiongate" and route ~= "taxi" then route = "dispatch" end
 		self.selVillage = ""
 		self.cart = 1
 		self.waiting = false
@@ -266,10 +270,14 @@ script CommonNpcUIController extends Logic
 	method void GoRoute(string route)
 		-- Content 하위 컨테이너 하나만. Footer 는 둘 다 쓴다(파병 / 이동).
 		self.route = route
-		local titles = { dispatch = "파병 접수", dimensiongate = "차원 관문" }
+		local titles = { dispatch = "파병 접수", dimensiongate = "차원 관문", taxi = "차원의 거울" }
 		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "공용" end
 		if isvalid(self.contentDispatch) then self.contentDispatch.Enable = (route == "dispatch") end
-		if isvalid(self.contentGate) then self.contentGate.Enable = (route == "dimensiongate") end
+		-- 택시(리스항구 차원의 거울 · WO-046)는 관문의 5마을 카드를 같이 쓴다. 에너지 코어 칩만 끈다(무료).
+		if isvalid(self.contentGate) then self.contentGate.Enable = (route == "dimensiongate" or route == "taxi") end
+		if isvalid(self.coreText) then self.coreText.Entity.Enable = (route == "dimensiongate") end
+		if isvalid(self.coreCount) then self.coreCount.Entity.Enable = (route == "dimensiongate") end
+		if isvalid(self.coreIcon) then self.coreIcon.Enable = (route == "dimensiongate") end
 		if isvalid(self.footer) then self.footer.Enable = true end
 		-- 제목 앞 아이콘: 파병 = 수비대 깃발 · 관문 = 에너지 코어
 		if isvalid(self.titleIconGuard) then self.titleIconGuard.Enable = (route == "dispatch") end
@@ -282,7 +290,8 @@ script CommonNpcUIController extends Logic
 		end
 		self:SetPrimaryEnabled(false)
 		self:SetFooterHint("불러오는 중...")
-		if _LaneStateService ~= nil then _LaneStateService:RequestView((route == "dispatch") and "dispatch" or "gate") end
+		local views = { dispatch = "dispatch", dimensiongate = "gate", taxi = "taxi" }
+		if _LaneStateService ~= nil then _LaneStateService:RequestView(views[route] or "dispatch") end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -380,7 +389,11 @@ script CommonNpcUIController extends Logic
 		if not self.isOpen then return end
 		local rows = _VillageNpcUIController:SplitRows(csv)
 		if kind == "dispatch" and self.route == "dispatch" then self:RenderDispatch(rows)
-		elseif kind == "gate" and self.route == "dimensiongate" then self:RenderGate(rows) end
+		elseif kind == "gate" and self.route == "dimensiongate" then self:RenderGate(rows)
+		elseif kind == "taxi" and self.route == "taxi" then
+			-- 이동 성공 = DONE → 창을 닫는다(곧 맵이 바뀐다).
+			if rows[1] ~= nil and rows[1][1] == "DONE" then self:Close() else self:RenderTaxi(rows) end
+		end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -692,19 +705,71 @@ script CommonNpcUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnGate(string vid)
-		-- 관문 카드 선택.
+		-- 관문 카드 선택 (택시도 같은 카드).
 		self.selVillage = vid
-		self:RenderGateCards()
+		if self.route == "taxi" then self:RenderTaxiCards() else self:RenderGateCards() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderTaxi(any rows)
+		-- 리스항구 택시(WO-046): JOB|1/0 · T|villageId|name|claimed|mine
+		self.gates = {}
+		self.taxiJobOk = false
+		for _, f in ipairs(rows) do
+			if f[1] == "JOB" then self.taxiJobOk = (f[2] == "1")
+			elseif f[1] == "T" then
+				table.insert(self.gates, { id = f[2], name = f[3], claimed = (f[4] == "1"), own = (f[5] == "1") })
+			end
+		end
+		self:RenderTaxiCards()
+		if isvalid(self.gateStatus) then self.gateStatus.Text = "무료 · 고른 마을의 넥서스 옆으로 순간이동합니다 · 전직한 뒤에 이용할 수 있습니다" end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderTaxiCards()
+		-- 카드 5장: 마을 이름 + 상태(내 마을 / 주인 있음 / 빈 마을). 재화 칸 · 잠금 그림은 쓰지 않는다(내 마을도 갈 수 있다).
+		if not isvalid(self.gateRoot) then return end
+		for _, g in ipairs(self.gates) do
+			local card = self.gateRoot:GetChildByName("Gate_" .. g.id)
+			if isvalid(card) then
+				self:SetText(card, "Village", g.name)
+				local state = g.own and "내 마을" or (g.claimed and "주인 있음" or "빈 마을")
+				self:SetText(card, "Boss", state)
+				self:SetText(card, "BossEn", "")
+				self:Show(card, "MatSlot", false)
+				self:Show(card, "MatLabel", false)
+				self:Show(card, "Mat", false)
+				self:Show(card, "MatIcon", false)
+				self:Show(card, "OwnChip", false)
+				if card.ButtonComponent ~= nil then card.ButtonComponent.Enable = true end
+				self:Show(card, "Sel", g.id == self.selVillage)
+				self:Show(card, "Locked", false)
+				self:SetColor(card, "Village", self.ColIvory)
+				self:SetColor(card, "Boss", self.ColBoss)
+				self:SetIcon(card, "Emblem", self:EmblemRuid(g.id), Color(1, 1, 1, 1))
+			end
+		end
+		local g = nil
+		for _, x in ipairs(self.gates) do if x.id == self.selVillage then g = x end end
+		if not self.taxiJobOk then
+			self:SetFooterHint("전직한 뒤에 이용할 수 있습니다")
+		elseif g == nil then
+			self:SetFooterHint("갈 마을을 고르세요")
+		else
+			self:SetFooterCost("<color=#E8B64C>" .. g.name .. "</color> 넥서스 옆으로 이동", g.id)
+		end
+		self:SetPrimaryEnabled(self.taxiJobOk and g ~= nil and not self.waiting)
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnPrimary()
-		-- dispatch = 파병 요청 · dimensiongate = 이동 요청. 응답이 올 때까지 버튼 잠금.
+		-- dispatch = 파병 요청 · dimensiongate = 이동 요청 · taxi = 택시 이동(WO-046). 응답이 올 때까지 버튼 잠금.
 		if self.waiting or self.selVillage == "" then return end
 		self.waiting = true
 		self:SetPrimaryEnabled(false)
 		if _LaneStateService == nil then return end
 		if self.route == "dispatch" then _LaneStateService:RequestDispatch(self.selVillage, self.cart)
+		elseif self.route == "taxi" then _LaneStateService:RequestTaxi(self.selVillage)
 		else _LaneStateService:RequestDimensionGate(self.selVillage) end
 	end
 

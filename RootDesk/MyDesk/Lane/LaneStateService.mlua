@@ -35,6 +35,11 @@ script LaneStateService extends Logic
 	-- 해금·모집 재화를 마을 지역재화(REGION_*)로 쓸지. false = 다이아몬드 임시 (사용자 2026-09-07).
 	property boolean UseRegionalMaterial = false
 
+	-- 리스항구 택시(차원의 거울 · WO-046): 이용할 수 있는 맵 · 도착 = 넥서스 자리에서 통로 안쪽으로 이만큼(유닛).
+	property string TaxiMapName = "LithHarbor_Village_MinimiMain"
+
+	property number TaxiSideOffset = 1.5
+
 	-- ── 침범 안정장치 (WO-016 · 추가기획2) — 잠정값은 전부 property (미정-값.md E-1·E-2). 값이 정해지면 여기만 바꾼다. ──
 	-- 수비대·포탑(공격하는 억제기 포함)이 **플레이어**를 때릴 때 곱하는 계수. 원문 "(계수-기본10)배" → 기본 10.0 (E-1 잠정).
 	-- 읽는 곳 = DefenderService.SpawnOne · LaneFacilityService.ApplyCombat 두 군데뿐. 미니언에는 안 붙는다(FactionAttack 기본 1.0).
@@ -1234,6 +1239,14 @@ script LaneStateService extends Logic
 				local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, vv.mat) or 0
 				add({ "G", vv.id, vv.name, bossName, vv.mat, tostring(have), "25", b2s(vv.id == own) })
 			end
+		elseif kind == "taxi" then
+			-- 리스항구 택시(차원의 거울 · WO-046): JOB|전직했나 · T|villageId|이름|주인 있음|내 마을
+			add({ "JOB", b2s(self:TaxiJobOk(userId)) })
+			local own = self:VillageOfUser(userId)
+			for _, vv in ipairs(self.villages) do
+				local claimed = (_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(vv.id) ~= "") or false
+				add({ "T", vv.id, vv.name, b2s(claimed), b2s(vv.id == own) })
+			end
 		elseif kind == "collection" then
 			-- 스폰 관리 몬스터(MapMonsters 에 있는 것)만 · 레벨은 MonsterInfo(기획 §3 게임 Lv).
 			-- C|id|name|level|monLv|icon|nextCost|mul|nextMul  ·  MAT|itemId|name|have|cost  ·  DREAM|have  (해금 = 재료 8 · Lv2~5 = 꿈의 조각)
@@ -1610,6 +1623,51 @@ script LaneStateService extends Logic
 		log("[Lane] gate -> " .. targetVillageId .. " core-1 (" .. uid .. ")")
 		self:Toast(uid, targetVillageId .. " 차원 관문 (에너지 코어 -1 · 이동은 포탈 연동 후)")
 		self:Push(uid, "gate")
+	end
+
+	-- ── 리스항구 택시 (차원의 거울 · WO-046 · 사용자 2026-10-05) ─────────────
+	-- 5마을 중 하나를 고르면 그 마을 넥서스 옆(통로 안쪽)으로 순간이동. 전직 후에만 · 무료 · 리스항구 마을 맵에서만.
+
+	@ExecSpace("ServerOnly")
+	method boolean TaxiJobOk(string userId)
+		-- 전직했나(B 의 직업 원장 · 초보자가 아니면). 원장이 없으면 못 탄다.
+		if _PlayerSkillState == nil then return false end
+		local job = _PlayerSkillState:GetJobId(userId)
+		return job ~= nil and job ~= "" and job ~= _PlayerSkillState.NoviceJobId
+	end
+
+	@ExecSpace("Server")
+	method void RequestTaxi(string targetVillageId)
+		-- 클라 택시 창 [이동]. 서버가 다시 검사한다: 관전 · 전직 · 리스항구에 있나 · 그 마을 넥서스 자리.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local uid = senderUserId
+		local player = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		if not self:TaxiJobOk(uid) then
+			self:Toast(uid, "전직한 뒤에 이용할 수 있습니다")
+			self:Push(uid, "taxi")
+			return
+		end
+		if player.CurrentMapName ~= self.TaxiMapName then
+			self:Toast(uid, "리스항구에서만 이용할 수 있습니다")
+			self:Push(uid, "taxi")
+			return
+		end
+		local row = (_LaneFacilityService ~= nil) and _LaneFacilityService:LaneRow(targetVillageId, "VILLAGE") or nil
+		if row == nil or row.mapName == "" then
+			log_warning("[Lane] taxi: no VILLAGE lane row for " .. tostring(targetVillageId))
+			self:Push(uid, "taxi")
+			return
+		end
+		-- 넥서스 옆 = 넥서스 자리에서 통로 가운데 쪽으로 TaxiSideOffset · 발판보다 조금 위(떨어져 선다).
+		local mid = (row.pathMinX + row.pathMaxX) / 2
+		local dir = (mid >= row.slotX) and 1 or -1
+		local x = math.max(row.pathMinX + 0.3, math.min(row.pathMaxX - 0.3, row.slotX + dir * self.TaxiSideOffset))
+		local pos = Vector2(x, row.slotY + 0.3)
+		player.PlayerComponent:MoveToMapPosition(row.mapName, pos)
+		log("[Lane] taxi " .. uid .. " -> " .. targetVillageId .. " " .. row.mapName .. " (" .. string.format("%.2f, %.2f", pos.x, pos.y) .. ")")
+		self:Toast(uid, self:VillageName(targetVillageId) .. " 넥서스로 이동합니다")
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:SetView("taxi", "DONE", uid) end
 	end
 
 	@ExecSpace("Server")
