@@ -49,9 +49,24 @@
   - `LaneConfig` PERION LANE2: `SpawnX` 10.1→-9.18 · `EndTriggerX` -9.8→10.72 · `TowerSlotX` -2.3→3.22(통로 중앙 기준 좌우 반전 → 출발~포탑 거리 12.4 · 포탑~끝 7.5 그대로 = 레인 보정 유지). 방향(`LaneDir`)은 끝 > 출발이면 좌→우라 수비대 자리도 자동으로 따라간다.
   - `FacilitySprite` PERION TOWER `FlipX` true→false(새 그림이 왼쪽을 봄). 투사체 발사 보정(`LaunchAdjX`)은 `ForwardSign` 이 FlipX 를 따라 자동.
 
-### ③ NPC 이름표 배경 — 미해결(Maker 연결 뒤 조사)
-- 코드(`WorldNameTag` · `NpcSpawner`)는 최근 변경이 없다. 원인은 Maker Play 로 판 엔티티(`SpriteRUID` · `Color.a` · 층 · 크기)를 읽어야 안다 — Maker 연결 뒤 조사.
+### ③ NPC 이름표 배경 — Maker 에선 정상 · 출시본 원인 미확정 (사용자 "내가 생각하는 원인은 order in layer")
+- Maker Play(2026-10-06 · 개인 월드)에서 `WorldNameTag` 를 직접 읽고 스크린샷으로 확인: 플레이어 종류 · **NPC 종류**(테스트로 스폰) 모두 판 켜짐 · 알파 1 · Sliced · 층 `Default/2`(글자 `Default/3`) · NPC 판 RUID `6f24a05e…` 로 초록 판이 화면에 그려진다. 로비 맵 기준이라 마을 맵 겹침(레이어)은 못 봤다 — 마을 NPC 는 매치 방(인스턴스)에서만 스폰돼 Play 로 바로 못 갔다(`MoveToMapPosition` 은 이 월드에서 맵을 옮기지 못했다).
+- 그래서 코드 로직 문제는 아니고, 출시본에서만 판 그림이 안 읽히거나(RUID 가 스크립트 문자열로만 있음) 마을 맵의 다른 그림과 겹치는 것이 남은 후보. `WorldNameTag.PreloadPlates`(클라 시작 때 판 3종을 미리 불러오고 실패하면 `[NameTag] plate preload failed: <RUID>=<상태>` 경고 + 불러온 뒤 다시 그림)를 넣었다 — 출시본 콘솔에서 이 경고가 나오는지 보면 리소스 문제인지 가려진다. 경고가 없는데도 안 보이면 마을 맵 겹침(층)이다.
 - ⑪(오른쪽 위 사람 · "…" 버튼)은 MSW 플랫폼 기본 UI 라 숨길 수 없다(공식 문서).
+
+### ④-b 엘리트 몬스터도 일반 몬스터대로 (사용자 "엘리트 몬스터도 당연히 바꿔야지 일반몹대로")
+- `EliteMonsterInfo` 12행 중 베이스 몬스터의 레벨이 바뀐 11행(`E210100` · `E2130103` · `E2220110` · `E2230100` · `E2230102` · `E2230112` · `E3230100` · `E3230101` · `E3230300` · `E4230100` · `E5130102`)을 표의 규칙대로 바꿨다 — 레벨 = 베이스 레벨 · `MaxHp` = 베이스 × 25 · `AttackPower` = 4 × `Attack` · `Exp` = 10 × `Exp` · `Meso` = 10 × `CoinMin` · 티어(`Tier` · `ScaleMul` · `CoinDrop` · `DreamDrop`)는 레벨 구간(10 → 1 · 17 → 2 · 24 → 3). 생성 `Docs/tools/monster-tier/apply-elite.py`(다시 돌려도 변경 0 · `--dry`).
+- 파란버섯 엘리트 `E2220100` 은 그대로 Lv17(노틸러스 사냥터2 기준) — 헤네시스(Lv24) 파란버섯에서 나오는 엘리트도 같은 Lv17 값이다(엘리트 표가 몬스터 ID 하나에 한 행이라 맵별로 못 나눔 · 필요하면 `EliteSpawner` 에 맵별 레벨 환산을 더해야 함).
+
+### ⑯ 게임 소개 · 처음 안내 · 도움말 UI 통합 (WO-050 §3 · 디자인팀 인계 `msw.zip` · 사용자 "추가 UI")
+- 디자이너 PC 산출물을 그대로 복사(모두 신규): `ui/GameIntroGroup`(소개 7쪽) · `ui/CoachMarkGroup`(처음 하는 사람 안내) · `ui/HelpHudGroup`(HUD 도움말 H 버튼) · `Onboarding/GameIntroController` · `CoachMarkController`(+ 디자이너 Maker 가 만든 `.codeblock` · `Onboarding.directory`) · `Docs/tools/design-ui/apply-intro-coach.cjs` · `gen-coach-art.cjs` · 디자인팀 기록 `Docs/Changelog/a-design-ui-intro-coach.md`(그대로 둠). `ruid-map.json` 에는 `coach_ring` · `coach_finger` 2키만 추가(덮어쓰지 않음).
+- 지금 `main` 에 맞춘 것: ① **Esc 는 `UIEscStack` 한 곳만 받는다** — `intro` · `coach` 를 창 목록에 넣고 두 컨트롤러의 자체 Esc 처리를 뺐다(다른 창까지 한 번에 닫히지 않게). ② **채팅 입력 중 H · ← →** 무시(`_ChatService.typing`). ③ 그림 순서는 디자이너 컨트롤러가 열 때마다 부활 팝업 바로 아래로 올린다(채팅 9 · 나가기 경고 40 은 그대로). ④ 도움말 버튼 자리는 HUD 의 캐릭터 · 스킬 버튼 왼쪽이고 친구 · 메뉴 버튼은 코드에서 꺼 둔 상태라 겹치지 않는다(`ruid`/좌표를 빌더로 비교).
+- 범위 밖(디자인팀 기록 그대로): 안내 5~9단계의 게임 시점 연결 · "봤음" 계정 저장 · 첫 매치 시작 시점 전환.
+
+### ⑰ 마을 앰블럼 교체 + 소개 카드 그림 (WO-050 §4 · drive 앰블럼 7장)
+- `Docs/tools/design-ui/prep-emblems.py`: 원본 1254×1254 7장의 투명 여백을 자르고 정사각으로 맞춰 마을 5장 168×168 · 키우기 · 지키기 144×144 로(`_upload/`). `upload-emblems.cjs`: 그룹 `mIYbC` 에 `dui_emblem_{henesys,kerning,ellinia,nautilus,perion}_v2` · `dui_intro_grow` · `dui_intro_defend` 로 올림(피벗 0.5 · Bilinear · Clamp · 옛 리소스는 지우지 않음 · 결과 `emblem-upload.json`).
+- 배선: `ruid-map.json` 의 `emblem_<마을>` 5키를 새 RUID 로 · `intro_grow` · `intro_defend` 추가 · `Npc/CommonNpcUIController.EmblemRuids` 5개 교체 · `ui/CommonNpcGroup`(차원문 · 택시 카드 · 파병 · NPC 비용) 15칸의 문장 그림을 `swap-emblems.cjs` 로 새 RUID 로 바꿨다(옛 RUID 참조 0 확인).
+- 소개: 1쪽 카드 아이콘 `ico_sword` → `intro_grow` · `ico_home` → `intro_defend`("쓰러뜨리기"는 그대로) · 5쪽(방어선) 그림 판을 260 → 340 으로 키워 아래에 마을 문장 5개 한 줄 + 마을 이름. 이 판에 맞춰 `apply-intro-coach.cjs` 를 고쳐 `.ui` 3개를 다시 만들었다(스크립트가 UUID 를 새로 매겨 `.ui` · 두 컨트롤러의 property UUID 가 같이 바뀜).
 
 ## 확인 (사용자 · Maker)
 - [ ] Reimport All → 빌드 경고 0 · 새 `.codeblock` 없음(새 스크립트 없음).
@@ -67,3 +82,7 @@
 - [ ] ⑬ 개척 단계(4분 안)에서 죽어도 비용 선택 창.
 - [ ] ⑭ 부활 직후 HP 최대치(가끔 안 차던 것 재현 안 됨).
 - [ ] ⑮ 페리온 사냥터2: 미니언이 왼쪽에서 오른쪽으로 · 포탑이 오른쪽에서 왼쪽을 봄 · 포탑 앞에서 싸움.
+- [ ] ④-b 엘리트: 사냥터 몬스터 25마리째마다 나오는 엘리트의 레벨 · HP · 공격이 새 단계(예: 헤네시스 골렘 엘리트 Lv17).
+- [ ] ⑯ 외형 선택 뒤 게임 소개가 자동으로 뜨고 ← → 로 7쪽 · ESC 로 닫힘(안내 · 다른 창과 겹치면 최근 것부터 하나씩) · 채팅 입력 중 H 무시 · 도움말 버튼(캐릭터 버튼 왼쪽) · 게임 시작하기 → 안내 1→4.
+- [ ] ⑰ 차원문 · 택시 · 파병 카드의 마을 문장이 새 그림 · 소개 1쪽 카드 · 5쪽 마을 문장 5개 줄이 겹침 없이 보임.
+- [ ] ③ 출시본 콘솔에서 `[NameTag] plate preload failed` 경고가 나오는지.

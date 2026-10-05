@@ -153,7 +153,7 @@ const BULLETS = [
   [`색이 칠해진 키만 써요. <b>어두운 키</b>는 지금 게임에서 쓰지 않아요.`,
     `이 소개는 오른쪽 위 <b>도움말</b> 버튼이나 <b>H</b> 키로 언제든 다시 열 수 있어요.`],
 ];
-const ILLU_H = [290, 290, 300, 340, 260, 290, 400];
+const ILLU_H = [290, 290, 300, 340, 340, 290, 400]; // 5쪽 260 → 340: 방어선 아래에 마을 문장 5개 줄(WO-050 §4)
 
 function buildIntro() {
   const b = new UIBuilder('GameIntroGroup', 17, true);
@@ -241,7 +241,7 @@ function buildIntro() {
 const card3 = (IN) => [0, 1, 2].map((c) => [IN[0] + c * (378 + 18), IN[1], 378, IN[3]]);
 
 function p1(K, base, IN) {
-  const cards = [['ico_sword', '키우기', '사냥으로 Lv 1 → 30. 10 · 20 · 30에 전직해 새 스킬'], ['ico_home', '지키기', '마을 하나를 차지하고 포탑 → 억제기 → 넥서스를 지킨다'], ['icon_balrog_heart', '쓰러뜨리기', '가장 먼저 발록을 쓰러뜨린 사람이 바로 승리']];
+  const cards = [['intro_grow', '키우기', '사냥으로 Lv 1 → 30. 10 · 20 · 30에 전직해 새 스킬'], ['intro_defend', '지키기', '마을 하나를 차지하고 포탑 → 억제기 → 넥서스를 지킨다'], ['icon_balrog_heart', '쓰러뜨리기', '가장 먼저 발록을 쓰러뜨린 사람이 바로 승리']];
   card3(IN).forEach((R, i) => {
     const P = `${base}/Card${i + 1}`; const cx = R[0] + R[2] / 2; const t = R[1] + 18;
     K.img(P, 'panel_row', R);
@@ -321,7 +321,7 @@ function p4(K, base, IN) {
 
 function p5(K, base, IN) {
   // 방어선: 미니언 웨이브 → 포탑 → 억제기 → 넥서스(부서지면 탈락)
-  const cy = IN[1] + IN[3] / 2; let x = IN[0] + (IN[2] - 834) / 2;
+  const cy = IN[1] + 90; let x = IN[0] + (IN[2] - 834) / 2; // 방어선은 위쪽 168 칸에 · 아래 줄에 마을 문장
   K.img(`${base}/Mon1`, 'mon_unknown', [x + 3, cy - 36, 44, 44]);
   K.img(`${base}/Mon2`, 'mon_unknown', [x + 53, cy - 36, 44, 44]);
   K.text(`${base}/MonLabel`, '미니언 웨이브', [x - 10, cy + 14, 120, 20], { font: 'Noto700', size: 14, color: CORAL });
@@ -337,6 +337,15 @@ function p5(K, base, IN) {
     K.text(P + '/Sub', f[2], [x, R[1] + 128, 150, 20], { font: 'Noto700', size: 14, color: i === 2 ? CORAL : C.sub });
     x += 150;
     if (i < 2) { x += 28; K.img(`${base}/ArrowS${i + 1}`, 'icon_arrow_right', [x, cy - 18, 36, 36], { alpha: 0.7 }); x += 36 + 28; }
+  });
+  // 마을 문장 5개(WO-050 §4 · 새 앰블럼): 한 줄 · 문장 72 + 아래 마을 이름. 방어선 아래 빈 자리.
+  const TOWNS = [['emblem_henesys', '헤네시스'], ['emblem_kerning', '커닝시티'], ['emblem_ellinia', '엘리니아'], ['emblem_nautilus', '노틸러스'], ['emblem_perion', '페리온']];
+  const GAP = 64; const EW = 72; const total = TOWNS.length * EW + (TOWNS.length - 1) * GAP;
+  const ex0 = IN[0] + (IN[2] - total) / 2; const ey = IN[1] + 192;
+  TOWNS.forEach((t, i) => {
+    const ex = ex0 + i * (EW + GAP);
+    K.img(`${base}/Town${i + 1}`, t[0], [ex, ey, EW, EW]);
+    K.text(`${base}/TownName${i + 1}`, t[1], [ex - 14, ey + EW + 4, EW + 28, 20], { font: 'Noto700', size: 14, color: C.sub });
   });
 }
 
