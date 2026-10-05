@@ -165,6 +165,17 @@ script SkillAttack extends AttackComponent
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
+    -- 대상 없는 직선 투사체가 Range 에서 멈추게(2026-10-05 숫자 줄 RB-1c · RB-2b · 스킬 투사체도 같은 원인): 예전 수명 Range/Speed 는 스폰 자리(ox 앞)부터 재서
+    -- 실제 도달 = ox + Range + 판정 상자 반(SkillProjectile.RangeX 0.8 → 0.4)이었다(활 5.5 · 아대 4.5 · 럭키 세븐 6.35 u). 이제 비행 거리 = Range − ox − 이 값
+    -- → 판정 상자 앞 끝이 시전자 발에서 Range 에 닿으면 사라진다(FlightFor). 유도(대상 있음) 수명은 그대로.
+    property number UntargetedReachMargin = 0.4
+
+    -- 최소 비행 시간(A #40 5988188261 · 사용자 결정 2026-10-05 "약 0.1초"): 붙어 선 대상(≈1 u 안)은 화살이 0.08초 만에 닿아 그려지기 전에 사라졌다.
+    -- 대상까지 비행이 이보다 짧으면 속도를 낮춰 이 시간 동안 날아가게 하고, 투사체는 이 시간 전엔 맞히지 않는다(SkillProjectile.MinFlightTime). 0 = 끔.
+    property number MinFlightTime = 0.1
+    -- 다음 SpawnOneProjectile 이 투사체에 넣을 최소 비행 시간(FlightFor 결과 · SpawnProjectile / FireBasicProjectile 이 스폰 직전에 넣는다).
+    property number pendingMinFlight = 0
+
     @ExecSpace("ServerOnly")
     method void OnBeginPlay()
         self:EnsureShape()
@@ -735,8 +746,9 @@ script SkillAttack extends AttackComponent
         --   예전엔 ox = 0 으로 시전자 몸에서 생겨 판정 상자가 뒤 몬스터와 겹쳐 그쪽이 맞았다(더블 샷 14번 중 6번). 이제 당기지 않고 대상을 버려(target = nil)
         --   바라보는 방향으로 곧게 쏜다 — 아래 수명(HomingLifetimeMul) · SetTarget · 볼리 2발째도 전부 대상 없음으로 간다. ahead >= 0 은 위 규칙 그대로.
         local oxWanted = ox
+        local ahead = 0
         if target ~= nil and isvalid(target.TransformComponent) then
-            local ahead = (target.TransformComponent.WorldPosition.x - pos.x) * dirX
+            ahead = (target.TransformComponent.WorldPosition.x - pos.x) * dirX
             if ahead < 0 then
                 log("SkillAttack: projectile " .. skillId .. " target " .. tostring(target.Name) .. " is " .. string.format("%.2f", -ahead) .. " behind — dropped (straight shot · offset " .. tostring(ox) .. ")")
                 target = nil
@@ -746,8 +758,11 @@ script SkillAttack extends AttackComponent
             end
         end
         local spawnPos = Vector3(pos.x + dirX * ox, pos.y + spawnOffsetY, pos.z)
-        local lifetime = range / speed
-        if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
+        local flight = self:FlightFor("projectile " .. skillId, range, speed, ox, target, ahead)
+        local lifetime = flight.lifetime
+        speed = flight.speed
+        local minFlight = flight.minFlight
+        self.pendingMinFlight = minFlight
 
         -- 발마다 1타 — 두 길(둘 다 몬스터 피격 무적이 없어진 뒤 · #120 · #40 5884388966 (a)):
         --   · 더블 샷(b/skill-archer-effects · IsPerArrowVolley): 모든 발이 실제 투사체 · 피해 ×1 · 표시 1타 · 같은 Volley 표(둘째 명중 FollowHitDelay 늦춤).
@@ -760,6 +775,7 @@ script SkillAttack extends AttackComponent
         local firstMul = hitCount
         if perArrow or perShot then firstMul = 1 end
         local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, firstMul, false, sc)
+        self.pendingMinFlight = 0
         if mover == nil then return end
         -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요(perProjectileHit 면 2발째도 넣는다).
         mover.SameFloorOnly = true
@@ -804,6 +820,7 @@ script SkillAttack extends AttackComponent
                 local sp2 = Vector3(p2.x + dirX * ox, p2.y + spawnOffsetY + volleyGapY * (k - 1), p2.z)
                 local t2 = target
                 if not isvalid(t2) then t2 = nil end
+                self.pendingMinFlight = minFlight
                 if volley ~= nil then
                     local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, 1, false, sc)
                     if m2 ~= nil then
@@ -824,6 +841,7 @@ script SkillAttack extends AttackComponent
                 else
                     self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc)
                 end
+                self.pendingMinFlight = 0
             end, (k - 1) * volleyDelay)
         end
 
@@ -894,6 +912,7 @@ script SkillAttack extends AttackComponent
         mover.DamageMul = damageMul
         mover.DisplayHits = damageMul
         mover.VisualOnly = visualOnly
+        mover.MinFlightTime = self.pendingMinFlight
         -- 궁수 화살(더블 샷 · 스나이핑 · IsFrameCheckedProjectile): 판정을 매 프레임 · 맞는 순간 그림을 지운다(2026-10-01 Play: 0.1s 간격 × 초속 12 = 1.2 유닛씩 건너뛰어
         --   대상 앞에서 사라지거나 지나쳐 날아간 뒤 사라졌다 · 0.05s 파괴 지연 동안 0.6 유닛 더 감). 다른 투사체(에너지볼트 · 럭키 세븐)는 예전 그대로.
         if self:IsFrameCheckedProjectile(skillId) then
@@ -917,6 +936,31 @@ script SkillAttack extends AttackComponent
             mover:SetTarget(target)
         end
         return mover
+    end
+
+    @ExecSpace("ServerOnly")
+    method table FlightFor(string tag, number range, number speed, number ox, any target, number ahead)
+        -- 스킬 투사체(SpawnProjectile) · 기본 공격(FireBasicProjectile) 공통 비행 계산. 반환 { speed, lifetime, minFlight }.
+        --   대상 없음: 비행 거리 = Range − ox − UntargetedReachMargin → Range 에서 멈춘다(사거리 밖 몬스터를 맞히지 않는다).
+        --   대상 있음: 수명 = Range/Speed × HomingLifetimeMul(예전 그대로) · 대상까지(ahead − ox) 비행이 MinFlightTime 보다 짧으면 속도를 낮춰 그 시간 동안 날아간다.
+        if target == nil then
+            local travel = math.max(0, range - ox - self.UntargetedReachMargin)
+            local life = travel / speed
+            log("SkillAttack: " .. tag .. " no target — flies " .. string.format("%.2f", travel) .. " (range " .. tostring(range) .. " − offset " .. string.format("%.2f", ox) .. " − margin " .. tostring(self.UntargetedReachMargin) .. ") · lifetime " .. string.format("%.2f", life))
+            return { speed = speed, lifetime = life, minFlight = 0 }
+        end
+        local life = range / speed * self.HomingLifetimeMul
+        local useSpeed = speed
+        local minFlight = 0
+        if self.MinFlightTime > 0 then
+            minFlight = self.MinFlightTime
+            local dist = math.max(0, ahead - ox)
+            if dist / speed < self.MinFlightTime then
+                useSpeed = dist / self.MinFlightTime
+                log("SkillAttack: " .. tag .. " close target " .. string.format("%.2f", dist) .. " from the spawn — speed " .. tostring(speed) .. " -> " .. string.format("%.2f", useSpeed) .. " (min flight " .. tostring(self.MinFlightTime) .. "s)")
+            end
+        end
+        return { speed = useSpeed, lifetime = life, minFlight = minFlight }
     end
 
     @ExecSpace("ServerOnly")
@@ -964,9 +1008,10 @@ script SkillAttack extends AttackComponent
         -- 바로 앞 · 뒤 대상(F12 · 2026-10-05 · #163 SpawnProjectile 과 같은 규칙): 조준 탐색이 시전자보다 살짝 뒤(Play 로그 0.07~0.11 뒤)의 몬스터를 고르거나
         --   대상이 ox(0.5)보다 가까우면(붙어 선 달팽이 0.3) 화살이 대상 너머에서 생겼다.
         --   ahead < 0 → 대상을 버리고(target = nil) 바라보는 방향으로 곧게 · 보통 앞 거리 / 0 <= ahead < ox → 스폰을 대상 자리까지 당긴다(ox = ahead).
+        local ahead = 0
         if target ~= nil and isvalid(target.TransformComponent) then
             local oxWanted = ox
-            local ahead = (target.TransformComponent.WorldPosition.x - pos.x) * dirX
+            ahead = (target.TransformComponent.WorldPosition.x - pos.x) * dirX
             if ahead < 0 then
                 log("SkillAttack: basic projectile " .. weaponType .. " target " .. tostring(target.Name) .. " is " .. string.format("%.2f", -ahead) .. " behind — dropped (straight shot · offset " .. tostring(ox) .. ")")
                 target = nil
@@ -976,13 +1021,16 @@ script SkillAttack extends AttackComponent
             end
         end
         local spawnPos = Vector3(pos.x + dirX * ox, pos.y + (spec.offsetY or 0.5), pos.z)
-        local lifetime = range / speed
-        if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
+        local flight = self:FlightFor("basic projectile " .. weaponType, range, speed, ox, target, ahead)
+        local lifetime = flight.lifetime
+        speed = flight.speed
         local modelId = "skillprojectile"
         if _SkillExecutors ~= nil and _SkillExecutors.ProjectileModelId ~= "" then modelId = _SkillExecutors.ProjectileModelId end
         local mul = spec.damageMul or 1
         if mul <= 0 then mul = 1 end
+        self.pendingMinFlight = flight.minFlight
         local mover = self:SpawnOneProjectile("BASIC", 1, modelId, spawnPos, map, dirX, target, speed, lifetime, spec.hitEffect or "", spec.sprite or "", spec.hitSound or "", userId, mul, false, spec.scale or 1)
+        self.pendingMinFlight = 0
         if mover == nil then return end
         mover.BasicAttack = true
         mover.DisplayHits = 1

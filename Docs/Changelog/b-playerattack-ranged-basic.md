@@ -85,3 +85,10 @@ B 기본값(한 표 `PlayerAttack.BuildRangedBasic`) — **A 답 #40 5927315886(
 3. 화살 높이가 더블 샷 화살과 같은 손 높이(0.28)인지 · 표창이 럭키 세븐(0.26)과 같은지 — 나란히 캡처.
 4. 달팽이 0.3 앞: 화살이 달팽이 너머가 아니라 그 자리에서 생긴다(`spawn pulled back … 0.30 ahead`) · 달팽이 0.3 뒤: 뒤를 맞히지 않고 앞으로 곧게(`… behind — dropped`).
 5. 검 · 완드: 예전과 같다(`facing refresh` · `table motion sent` 줄 없음).
+
+## 2026-10-05 (2) — main 1d518c6 병합 · 대상 없는 투사체 사거리 · 최소 비행 시간
+
+- main `1d518c6` 병합(`2a21656`) — `SkillProjectile.CalcDamage` 주석 충돌만(양쪽 합침).
+- 숫자 줄 RB-1c · RB-2b FAIL 의 원인 고침: 대상 없는 직선 투사체 수명이 스폰 자리(ox)부터 재서 실제 도달 = ox + Range + 판정 상자 반이었다(활 5.5 · 아대 4.5 · 럭키 세븐 6.35 u). `SkillAttack.FlightFor` 하나에서 스킬 투사체(SpawnProjectile)와 기본 공격(FireBasicProjectile) 모두: 비행 거리 = Range − ox − `UntargetedReachMargin`(0.4) → Range 에서 멈춘다.
+- A #40 5988188261(사용자 결정): 최소 비행 시간 `MinFlightTime` 0.1초 — 대상까지 비행이 이보다 짧으면 속도를 낮추고, 투사체는 0.1초 전엔 맞히지 않는다(`SkillProjectile.MinFlightTime` · 볼리 2발째도).
+- 숫자 줄 재실행 · RELOOK R25(사용자 눈) 대기.
