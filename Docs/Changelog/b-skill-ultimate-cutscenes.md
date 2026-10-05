@@ -51,3 +51,17 @@
 - **메소 익스플로전 동전마다 소리** — #40 5988188093 "동전마다 · 한 번에 최대 10개 · 동시에 겹치지 않게 연쇄로". 동전이 터질 때 명중음(4210014/Hit) 하나 ·
   시전당 `MesoCoinSoundMax` 10 개까지(앞 동전부터) · 앞 소리와 `MesoCoinSoundGap` 0.12 s 보다 가까우면 그만큼 늦춘다. 예전의 "중심 폭발 때 한 번"은 뺐다.
 - 점검: LSP(SkillExecutors · SkillAttack · SkillProjectile) 깨끗 · `check-integrity` 전부 통과(경고 3 = main) · CRLF 유지. **Play 안 함** — RELOOK R15 · R16.
+
+## 2026-10-05 통합 Play(`8efe928`) 뒤 — 배경음악 낮추기 · 궁 소리 예열 · 동전 소리 ×2.0 시전자 자리
+
+- **main 합침**(`4990a3c` · 충돌 없음): #158 유저별 소리 경로(`PlaySkillSoundToMap` · 크기 인자)를 동전 소리에 쓰려고.
+- **궁 영상 동안 배경음악 낮추기**(사용자 결정 · R11b "궁 소리를 더 키우지 말고 배경음악을 낮춘다" · 궁 소리 배율 그대로):
+  - 시전자 = 영상이 켜질 때(`StartCutsceneFramesUI`) `BeginUltimateBgmDuck` → 꺼질 때(`HideCutsceneUI`) `EndUltimateBgmDuck`. 다른 클라 = 서버가 영상 소리를 틀 때(`PlayUltimateCastSound`) 대상 없이 `DuckBgmForUltimateSound`(Client · 모든 클라 = 그 소리를 받는 클라 · 시전자는 건너뜀) → 영상 길이만큼.
+  - 크기 = 맵 배경음악 원래 크기(맵 `SoundComponent`(Bgm) `Volume` · 없으면 1) × `UltimateBgmDuckRatio`(기본 **0.1** · 후보 0.2 / 0.1 / 0.03 · 다음 Play 에서 하네스 키로 고름) → `_SoundService:SetBGMVolume`. 내릴 때 `UltimateBgmFadeDownSeconds` 0.25 · 올릴 때 `UltimateBgmFadeUpSeconds` 0.5.
+  - 끊김: 낮춘 동안 0.2 s 마다 맵이 바뀌었거나(매치 나가기 포함) 로컬 플레이어가 죽었으면 곧바로 되돌린다(맵 바뀜은 페이드 없이) · 룸을 떠날 때(`OnEndPlay` 클라 몫 — ExecSpace 를 빼고 서버/클라로 가름). 내 영상이 일찍 꺼져도 다른 유저 영상 소리 몫이 남았으면 그때까지.
+  - 엔진 설정 · A 파일 변경 없음(엔진 API `SetBGMVolume` 만). 🟡 `SetBGMVolume` 이 맵 SoundComponent 배경음악에 먹는지 · 룸을 떠날 때 클라 `OnEndPlay` 가 오는지는 Play 로 확인(로그 `BGM duck …` · `BGM restore (…)`).
+- **궁 영상 소리 예열**: 직업 예열(`PrewarmCutscenesFor` · 전직 / 입장 3 s 뒤)에 그 직업 궁 소리를 더함 — `PrewarmUltimateSoundsFor` → `PreloadSoundsOnClient`(그 유저 클라 `_SoundService:LoadSound` · 로그 `client sound preload`). 프레임은 이미 `PrewarmRuidsFor` 에 있었다.
+  - 참고: 통합 Play 의 첫 시전 지연(궁수 0.62 · 도적 0.50 · 해적 0.55 s · 640)은 하네스가 `DevSetJobState`(이벤트 없음)로 직업을 바꿔 예열이 안 돈 값이다 — 실제 전직은 `JobChangedEvent` 로 예열한다. 다음 빌드에서 하네스가 예열을 부른 뒤 다시 잰다.
+- **동전 소리 ×2.0 · 시전자 자리**(사용자 결정 · R16 "영상 소리에 살짝 묻힌다" → A + B): `MesoCoinSoundVolume` 2.0 · `MesoCoinSoundAtCaster` true → `PlaySkillSoundToMap(hit, 시전자 자리, 시전자, 2.0)`. 개수 10 · 간격 0.12 s · 터지는 시각 그대로. 영상 소리 낮추기(D) 없음.
+  - 파일 실측으로 남는 차이: 8번째(+5.28 s) ≈0.6 dB · 10번째(+5.94 s) ≈1.7 dB 아직 영상 소리 아래 · 9번째 ≈같음 · 나머지 0.6~3.1 dB 위.
+- 점검: LSP(SkillExecutors) 깨끗 · `check-integrity` 전부 통과(경고 3 = main) · CRLF 유지 — 로그 `villagedefense-harness/pirate-check/after-maker-free/166-*.txt`. **Play 안 함** — 다음 빌드 RELOOK R11d(배경음악 · 비율 고르기) · R16b · N8(첫 시전 지연).

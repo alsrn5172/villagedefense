@@ -227,6 +227,13 @@ script SkillExecutors extends Logic
 
     property number MesoCoinSoundGap = 0.12
 
+    -- 동전 소리 크기 · 자리(사용자 결정 2026-10-05 통합 Play R16 "영상 소리에 살짝 묻힌다" → A + B): 크기 ×2.0(+6 dB · 궁 소리와 같은 상한) · 동전 자리가 아니라 **시전자 자리**에서
+    --   (동전이 시전자에서 최대 ≈4.7 떨어져 거리만큼 작아졌다). 개수 상한 · 간격 · 터지는 시각은 그대로. 파일 실측: 동전 −17.2 → −11.2 LUFS(×2.0) ↔ 영상 소리 −9.5…−14.3 —
+    --   8번째(+5.28 s) ≈0.6 dB · 10번째(+5.94 s) ≈1.7 dB 아직 아래(`pirate-check/sitting-8efe928/R16-loudness.txt`). 영상 소리 낮추기(D)는 하지 않는다.
+    property number MesoCoinSoundVolume = 2.0
+
+    property boolean MesoCoinSoundAtCaster = true
+
     -- 동전 하나의 폭발 반지름(world unit · B 기본값 · #40 5884390073 5번 "동전마다 그 자리에서 터져 그 주변 적만 때린다 · 반경은 B 기본값"):
     --   1.0 u = 100 px. 픽파켓 동전은 맞은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다(MesoCoin.ArcSpread) → 1.0 이면 동전을 떨군 몬스터가
     --   조금 움직여도 맞고, 옆 몬스터(≈1 u 떨어짐)는 가장자리만 걸친다. 모인 동전은 같은 적을 여러 번 때린다(동전 하나 = 50% 1타).
@@ -389,6 +396,44 @@ script SkillExecutors extends Logic
     --   한 장씩 sprite 로. 프레임 세트가 있는 궁은 이 경로 · 없으면 예전 클립 경로. false = 예전 클립 경로로 되돌림.
     property boolean CutsceneVideoFrames = true
 
+    -- 궁 영상 동안 배경음악 낮추기(사용자 결정 2026-10-05 통합 Play R11b · "궁 소리를 더 키우지 말고 배경음악을 낮춘다" · 궁 소리 배율은 그대로):
+    --   시전자 = 영상이 켜질 때(StartCutsceneFramesUI) 내리고 꺼질 때(HideCutsceneUI · 영상 끝) 되돌린다. 다른 클라 = 서버가 영상 소리를 틀 때(PlayUltimateCastSound →
+    --   DuckBgmForUltimateSound · 모든 클라 = 그 소리를 듣는 클라) 영상 길이만큼. 끊기면 곧바로 되돌린다: 맵이 바뀜(매치 나가기 포함) · 로컬 플레이어 사망 · 룸을 떠남(OnEndPlay).
+    --   크기 = 맵 배경음악 원래 크기(맵 SoundComponent · Bgm 의 Volume · 없으면 1) × UltimateBgmDuckRatio → _SoundService:SetBGMVolume(클라). 페이드 = 내릴 때 · 올릴 때 따로.
+    --   비율 후보 20 % · 10 % · 3 %(사용자 · 다음 Play 에서 하네스 키로 고름) — 기본 10 %. false = 끔.
+    property boolean UltimateBgmDuck = true
+
+    property number UltimateBgmDuckRatio = 0.1
+
+    property number UltimateBgmFadeDownSeconds = 0.25
+
+    property number UltimateBgmFadeUpSeconds = 0.5
+
+    -- 클라: 낮추기 상태(BeginUltimateBgmDuck · EndUltimateBgmDuck). until = 되돌릴 시각(ElapsedSeconds) · soundUntil = 다른 유저 영상 소리 몫(내 영상이 일찍 꺼져도 그때까지는 낮춘 채).
+    @HideFromInspector
+    property boolean bgmDuckActive = false
+
+    @HideFromInspector
+    property number bgmDuckLevel = 1
+
+    @HideFromInspector
+    property number bgmDuckUntil = 0
+
+    @HideFromInspector
+    property number bgmDuckSoundUntil = 0
+
+    @HideFromInspector
+    property any bgmDuckMap = nil
+
+    @HideFromInspector
+    property integer bgmDuckFadeTimer = 0
+
+    @HideFromInspector
+    property integer bgmDuckEndTimer = 0
+
+    @HideFromInspector
+    property integer bgmDuckPollTimer = 0
+
     -- 클라: 영상 프레임 넘기기 타이머 id(새 컷신 · 끄기 때 지운다).
     property integer cutsceneFrameTimer = 0
 
@@ -425,8 +470,12 @@ script SkillExecutors extends Logic
         end, self.CutsceneMeasureDelay)
     end
 
-    @ExecSpace("ServerOnly")
     method void OnEndPlay()
+        -- 서버: 예열 이벤트 · 숫자 간격 타이머 정리. 클라(UltimateBgmDuck · 2026-10-05): 룸을 떠날 때 낮춘 배경음악을 원래 크기로 — 그래서 ExecSpace 를 두지 않고 갈라 쓴다.
+        if self:IsClient() then
+            self:EndUltimateBgmDuck("end play")
+            return
+        end
         if self.prewarmEnterHandler ~= nil then
             _UserService:DisconnectEvent(UserEnterEvent, self.prewarmEnterHandler)
             self.prewarmEnterHandler = nil
@@ -524,6 +573,9 @@ script SkillExecutors extends Logic
             local ruids = self:PrewarmRuidsFor(jobId)
             -- b/skill-archer-effects(2026-09-28 Play): prewarmFrames = true 인 스킬의 sprite 순서표(더블 샷 분홍 불꽃 · 폭발: 첫 시전만 sprite 로드 전이라 흰 공처럼 보였다).
             local frameRuids = self:PrewarmFrameRuidsFor(jobId)
+            -- 궁 영상 소리도 미리(2026-10-05 사용자 요청 · #166): 그 직업 궁의 프레임 세트 sound 를 그 유저 클라에서 LoadSound(프레임은 위 PrewarmRuidsFor 에 이미 있다).
+            local soundIds = self:PrewarmUltimateSoundsFor(jobId)
+            if #soundIds > 0 then self:PreloadSoundsOnClient(table.concat(soundIds, ","), userId) end
             if #ruids == 0 and #frameRuids == 0 then
                 log("SkillExecutors: prewarm " .. jobId .. " — nothing to prewarm (" .. userId .. ")")
                 return
@@ -624,6 +676,35 @@ script SkillExecutors extends Logic
             end
         end
         return ruids
+    end
+
+    @ExecSpace("ServerOnly")
+    method table PrewarmUltimateSoundsFor(string jobId)
+        -- 그 직업(SkillInfo.ReqJob = jobId) 궁 중 영상이 있는 것의 소리 RUID(CutsceneFrameSet.sound · 같은 RUID 는 한 번). 영상이 꺼져 있으면 빈 표.
+        _SkillDatabase:EnsureLoaded()
+        local out = {}
+        if not self.CutsceneVideoFrames then return out end
+        local seen = {}
+        for _, skillId in ipairs({ "SK_W31", "SK_M31", "SK_A31", "SK_T31", "SK_P31" }) do
+            local skill = _SkillDatabase:GetSkill(skillId)
+            local fs = self:CutsceneFrameSet(skillId)
+            if skill ~= nil and skill.requiredJobLine == jobId and fs ~= nil and fs.sound ~= nil and fs.sound ~= "" and not seen[fs.sound] then
+                seen[fs.sound] = true
+                table.insert(out, fs.sound)
+            end
+        end
+        return out
+    end
+
+    @ExecSpace("Client")
+    method void PreloadSoundsOnClient(string soundCsv)
+        -- 서버(PrewarmCutscenesFor)가 그 유저 클라에만 보낸다: 궁 영상 소리를 _SoundService:LoadSound 로 받아 둔다(재생하지 않는다).
+        local n = 0
+        for id in string.gmatch(soundCsv, "[^,]+") do
+            _SoundService:LoadSound(id)
+            n = n + 1
+        end
+        log("SkillExecutors: client sound preload x" .. tostring(n) .. " [" .. soundCsv .. "]")
     end
 
     @ExecSpace("Client")
@@ -2135,6 +2216,8 @@ script SkillExecutors extends Logic
             end
         end, 1 / (fps * 2))
         log(string.format("SkillExecutors: cutscene video %s on — %d frames @ %d fps = %.2fs · rect %.0fx%.0f overscan %.2f", skillId, n, fps, n / fps, fw * scale, fh * scale, over))
+        -- 영상이 켜지는 순간 배경음악을 낮춘다(UltimateBgmDuck · 시전자 클라). 되돌리기 = HideCutsceneUI · 영상 길이 타이머 · 끊김 감시.
+        self:BeginUltimateBgmDuck(skillId, n / fps, "video")
     end
 
     @ExecSpace("ServerOnly")
@@ -2344,6 +2427,10 @@ script SkillExecutors extends Logic
         local soundId = self.castSounds[skillId] or self.defaultCastSound
         _SoundService:PlaySoundAtPos(soundId, casterEntity.TransformComponent.WorldPosition, casterEntity, fs.soundVolume)
         log("SkillExecutors: ultimate cast sound " .. skillId .. " " .. tostring(soundId) .. " x" .. tostring(fs.soundVolume))
+        -- 이 소리를 받는 클라(대상 없이 = 모두)가 영상 길이만큼 배경음악을 낮춘다(UltimateBgmDuck · 시전자 본인은 영상 켜기/끄기가 맡는다).
+        if self.UltimateBgmDuck and isvalid(casterEntity.PlayerComponent) then
+            self:DuckBgmForUltimateSound(skillId, casterEntity.PlayerComponent.UserId, self:CutsceneVideoSeconds(skillId))
+        end
     end
 
     method number CutsceneVideoSeconds(string skillId)
@@ -2498,6 +2585,129 @@ script SkillExecutors extends Logic
         end
         self:ResetCutsceneUIAlpha()
         log("SkillExecutors: cutscene UI " .. skillId .. " off")
+        -- 영상이 꺼지면(끝 · 일찍 끊김) 배경음악을 되돌린다 — 다른 유저 영상 소리 몫(bgmDuckSoundUntil)이 남았으면 그때까지(EndUltimateBgmDuck).
+        self:EndUltimateBgmDuck("video off")
+    end
+
+    @ExecSpace("ClientOnly")
+    method number UltimateBgmBaseVolume()
+        -- 지금 맵 배경음악의 원래 크기 = 로컬 플레이어 맵 엔티티 SoundComponent(Bgm = true) 의 Volume. 못 찾으면 1.
+        local p = _UserService.LocalPlayer
+        if isvalid(p) and isvalid(p.CurrentMap) then
+            local sc = p.CurrentMap.SoundComponent
+            if isvalid(sc) and sc.Bgm then return sc.Volume end
+        end
+        return 1
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyUltimateBgmLevel(number level)
+        -- 배경음악 = 원래 크기 × level(1 = 원래대로). 맵이 바뀌어도 그 맵의 원래 크기를 다시 읽는다.
+        self.bgmDuckLevel = level
+        _SoundService:SetBGMVolume(self:UltimateBgmBaseVolume() * level)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void FadeUltimateBgmTo(number target, number seconds)
+        -- 지금 level 에서 target 으로 seconds 동안 1/30 s 마다 선형으로. 0 이하면 곧바로. 앞 페이드는 멈춘다.
+        if self.bgmDuckFadeTimer ~= 0 then
+            _TimerService:ClearTimer(self.bgmDuckFadeTimer)
+            self.bgmDuckFadeTimer = 0
+        end
+        if seconds <= 0 then
+            self:ApplyUltimateBgmLevel(target)
+            return
+        end
+        local from = self.bgmDuckLevel
+        local t0 = _UtilLogic.ElapsedSeconds
+        self.bgmDuckFadeTimer = _TimerService:SetTimerRepeat(function()
+            local f = (_UtilLogic.ElapsedSeconds - t0) / seconds
+            if f >= 1 then
+                if self.bgmDuckFadeTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckFadeTimer) end
+                self.bgmDuckFadeTimer = 0
+                self:ApplyUltimateBgmLevel(target)
+                return
+            end
+            self:ApplyUltimateBgmLevel(from + (target - from) * f)
+        end, 1 / 30)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BeginUltimateBgmDuck(string skillId, number seconds, string source)
+        -- 배경음악을 UltimateBgmDuckRatio 로 내리고 seconds 뒤 되돌린다(source "video" = 내 영상 · "sound" = 다른 유저 영상 소리). 이미 낮춘 중이면 되돌릴 시각만 늦춘다.
+        --   낮춘 동안 0.2 s 마다: 맵이 바뀌었거나(매치 나가기 포함) 로컬 플레이어가 죽었으면 곧바로 되돌린다.
+        if not self.UltimateBgmDuck or seconds <= 0 then return end
+        local now = _UtilLogic.ElapsedSeconds
+        local untilAt = now + seconds
+        if source == "sound" and untilAt > self.bgmDuckSoundUntil then self.bgmDuckSoundUntil = untilAt end
+        if self.bgmDuckActive and self.bgmDuckUntil > untilAt then untilAt = self.bgmDuckUntil end
+        self.bgmDuckUntil = untilAt
+        if not self.bgmDuckActive then
+            self.bgmDuckActive = true
+            local p = _UserService.LocalPlayer
+            self.bgmDuckMap = nil
+            if isvalid(p) then self.bgmDuckMap = p.CurrentMap end
+            self:FadeUltimateBgmTo(self.UltimateBgmDuckRatio, self.UltimateBgmFadeDownSeconds)
+            if self.bgmDuckPollTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckPollTimer) end
+            self.bgmDuckPollTimer = _TimerService:SetTimerRepeat(function()
+                local lp = _UserService.LocalPlayer
+                if not isvalid(lp) then
+                    self:EndUltimateBgmDuck("no player")
+                    return
+                end
+                if lp.CurrentMap ~= self.bgmDuckMap then
+                    self:EndUltimateBgmDuck("map change")
+                    return
+                end
+                if isvalid(lp.PlayerComponent) and lp.PlayerComponent:IsDead() then self:EndUltimateBgmDuck("death") end
+            end, 0.2)
+        end
+        if self.bgmDuckEndTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckEndTimer) end
+        self.bgmDuckEndTimer = _TimerService:SetTimerOnce(function()
+            self.bgmDuckEndTimer = 0
+            self:EndUltimateBgmDuck("end")
+        end, untilAt - now)
+        log(string.format("SkillExecutors: BGM duck %s (%s) to %d%% of %.2f for %.2fs", skillId, source, math.floor(self.UltimateBgmDuckRatio * 100 + 0.5), self:UltimateBgmBaseVolume(), untilAt - now))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EndUltimateBgmDuck(string reason)
+        -- 낮춘 배경음악을 되돌린다. "video off"(내 영상이 꺼짐)인데 다른 유저 영상 소리 몫이 남았으면 그때까지 미룬다.
+        --   맵 바뀜 · 플레이어 없음 · 룸 떠남은 페이드 없이 곧바로(새 맵 배경음악이 낮은 채로 시작하지 않게) · 그 밖은 UltimateBgmFadeUpSeconds.
+        if not self.bgmDuckActive then return end
+        local now = _UtilLogic.ElapsedSeconds
+        if reason == "video off" and self.bgmDuckSoundUntil > now + 0.05 then
+            self.bgmDuckUntil = self.bgmDuckSoundUntil
+            if self.bgmDuckEndTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckEndTimer) end
+            self.bgmDuckEndTimer = _TimerService:SetTimerOnce(function()
+                self.bgmDuckEndTimer = 0
+                self:EndUltimateBgmDuck("end")
+            end, self.bgmDuckSoundUntil - now)
+            log(string.format("SkillExecutors: BGM duck kept %.2fs more (another ultimate sound)", self.bgmDuckSoundUntil - now))
+            return
+        end
+        self.bgmDuckActive = false
+        self.bgmDuckMap = nil
+        if self.bgmDuckEndTimer ~= 0 then
+            _TimerService:ClearTimer(self.bgmDuckEndTimer)
+            self.bgmDuckEndTimer = 0
+        end
+        if self.bgmDuckPollTimer ~= 0 then
+            _TimerService:ClearTimer(self.bgmDuckPollTimer)
+            self.bgmDuckPollTimer = 0
+        end
+        local fade = self.UltimateBgmFadeUpSeconds
+        if reason == "map change" or reason == "no player" or reason == "end play" then fade = 0 end
+        self:FadeUltimateBgmTo(1, fade)
+        log(string.format("SkillExecutors: BGM restore (%s) to %.2f fade %.2fs", reason, self:UltimateBgmBaseVolume(), fade))
+    end
+
+    @ExecSpace("Client")
+    method void DuckBgmForUltimateSound(string skillId, string casterUserId, number seconds)
+        -- 서버(PlayUltimateCastSound)가 궁 영상 소리를 틀 때 대상 없이 부른다 = 그 소리를 받는 모든 클라. 시전자 본인은 영상 켜기 · 끄기가 맡으므로 건너뛴다.
+        local p = _UserService.LocalPlayer
+        if isvalid(p) and isvalid(p.PlayerComponent) and p.PlayerComponent.UserId == casterUserId then return end
+        self:BeginUltimateBgmDuck(skillId, seconds, "sound")
     end
 
     @ExecSpace("ClientOnly")
@@ -3962,8 +4172,11 @@ script SkillExecutors extends Logic
             local nth = soundState.played
             local play = function()
                 if not isvalid(casterEntity) then return end
-                self:PlaySoundRuid(hitSound, casterEntity, Vector3(sx, sy, sz))
-                log(string.format("SkillExecutors: MESO %s coin %d sound %d/%d (+%.2fs late)", skillId, k, nth, self.MesoCoinSoundMax, at - now))
+                -- 시전자 자리(MesoCoinSoundAtCaster · 터지는 순간의 자리) · ×MesoCoinSoundVolume. 유저별 경로(PlaySkillSoundToMap · #158) — 듣는 사람 = 각 클라의 자기 캐릭터.
+                local spos = Vector3(sx, sy, sz)
+                if self.MesoCoinSoundAtCaster and isvalid(casterEntity.TransformComponent) then spos = casterEntity.TransformComponent.WorldPosition end
+                self:PlaySkillSoundToMap(hitSound, spos, casterEntity, self.MesoCoinSoundVolume)
+                log(string.format("SkillExecutors: MESO %s coin %d sound %d/%d (+%.2fs late) x%.1f at %s", skillId, k, nth, self.MesoCoinSoundMax, at - now, self.MesoCoinSoundVolume, self.MesoCoinSoundAtCaster and "caster" or "coin"))
             end
             if at - now > 0.001 then
                 _TimerService:SetTimerOnce(play, at - now)
