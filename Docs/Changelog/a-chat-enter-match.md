@@ -26,6 +26,11 @@
 ### 잃는 것
 - 엔진 월드 채팅 · 채팅 감정 표현 · 음성 채팅.
 
+### Codex 검토 반영
+- 입력칸 속성 타입 `TextInputComponent` → `TextGUIRendererInputComponent`(UI 의 `Field` 엔티티가 가진 실제 컴포넌트 · 틀린 타입이면 Enter 로 입력칸이 안 잡힌다).
+- 클라 `OnBeginPlay` 가 그 전에 도착한 채팅 줄을 지우지 않게(`lines` 가 비었을 때만 새로 만든다).
+- (확인만) 말풍선 `ChatBalloonComponent.Message` 는 엔진 정의상 `@Sync` 라 서버에서 쓰면 모두에게 보인다 — 바꾸지 않음.
+
 ### 확인 (사용자 · Maker)
 - [ ] Reimport All(새 `Chat/` 폴더 · `ChatService` · `ChatGroup`) → 빌드 경고 0 · `[Chat] ChatService ready` 서버 · 클라 둘 다.
 - [ ] Enter → 펼쳐지고 입력칸에 커서 · 글 쓰고 Enter → 기록 · 말풍선 · 다시 접힘. `/` 토글. ESC 취소.
