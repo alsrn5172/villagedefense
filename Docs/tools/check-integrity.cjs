@@ -116,7 +116,7 @@ const CANONICAL = {
   GemInfo: "GemId,StatId,AddPerLevel,DisplayName,IconRUID,Enabled,#Note",
   GemDropTable: "SourceId,SourceKind,GemId,Chance,CountMin,CountMax,Enabled,#Note",
   VillageNpcSector: "VillageId,SectorId,AnchorX,AnchorY,SlotDX,SlotDY,SlotPerRow,FlipX,Enabled,#Note",
-  VillageConfig: "VillageId,VillageMapName,Lane2MapName,Lane1MapName,RearMapName,BossMapName,ThemeId,CoreX,CoreY,Enabled,#Note",
+  VillageConfig: "VillageId,VillageMapName,Lane2MapName,Lane1MapName,RearMapName,BossMapName,ThemeId,CoreX,CoreY,Enabled,NpcMapName,#Note",
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
   LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
   TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
