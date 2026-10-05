@@ -1,0 +1,63 @@
+@Logic
+script ExitWarnController extends Logic
+
+	-- 게임 종료 경고 (WO-046 · 사용자 2026-10-05 "매치 중에 종료하면 불이익 받는다고 뜨고 종료는 할 수 있게").
+	-- MSW 는 스크립트로 게임을 끄는 API 가 없다 → 종료는 엔진 나가기 창(ESC 등)이 하고, 우리는 그 창이 열릴 때 경고 띠(ExitWarnGroup)를 위에 같이 띄운다.
+	-- 매치 참가 중(진행 중 · 탈락 · 이탈 아님)인지는 서버가 판단한다. 나가면 MatchSessionLogic.OnUserLeave 가 포기(넥서스 0 · 탈락 · 이탈 기록)로 처리한다.
+
+	property Entity panel = "e654c21c-f306-4946-96e1-c1f84b1d0a06"
+
+	@HideFromInspector
+	property any hOpen = nil
+
+	@HideFromInspector
+	property any hClose = nil
+
+	method void OnBeginPlay()
+		-- 클라: 엔진 나가기 창 열림/닫힘을 듣고, 경고 띠는 처음엔 끈다.
+		if not self:IsClient() then return end
+		if isvalid(self.panel) then self.panel.Enable = false end
+		self.hOpen = _InputService:ConnectEvent(ExitPopupOpenedEvent, self.OnExitOpened)
+		self.hClose = _InputService:ConnectEvent(ExitPopupClosedEvent, self.OnExitClosed)
+		log("[ExitWarn] ready (client)")
+	end
+
+	method void OnEndPlay()
+		-- 이벤트 연결 해제.
+		if not self:IsClient() then return end
+		if self.hOpen ~= nil then _InputService:DisconnectEvent(ExitPopupOpenedEvent, self.hOpen) end
+		if self.hClose ~= nil then _InputService:DisconnectEvent(ExitPopupClosedEvent, self.hClose) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnExitOpened(ExitPopupOpenedEvent event)
+		-- 나가기 창이 열렸다 → 서버에 "지금 매치 중이냐" 를 묻는다.
+		log("[ExitWarn] exit popup opened")
+		self:RequestExitWarn()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnExitClosed(ExitPopupClosedEvent event)
+		-- 나가기 창이 닫혔다(취소) → 경고 띠도 내린다.
+		if isvalid(self.panel) then self.panel.Enable = false end
+	end
+
+	@ExecSpace("Server")
+	method void RequestExitWarn()
+		-- 매치가 진행 중이고, 보낸 사람이 아직 남아 있는 참가자(탈락 · 이탈 아님)면 경고 띠를 켠다.
+		local uid = senderUserId
+		local m = _MatchSessionLogic
+		if m == nil or not m.Running or not m:IsParticipant(uid) then return end
+		if m.leftUsers ~= nil and m.leftUsers[uid] then return end
+		if _VillageOwnership ~= nil and _VillageOwnership:IsEliminated(uid) then return end
+		log("[ExitWarn] in-match exit warning -> " .. uid)
+		self:ShowWarn(true, uid)
+	end
+
+	@ExecSpace("Client")
+	method void ShowWarn(boolean on)
+		-- 서버 → 그 클라: 경고 띠 켜고 끄기.
+		if isvalid(self.panel) then self.panel.Enable = on end
+	end
+
+end

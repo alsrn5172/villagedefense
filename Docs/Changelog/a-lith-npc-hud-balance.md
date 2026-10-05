@@ -43,6 +43,28 @@
 - 맵 11개: 헤네시스 HillNorth · GolemsTemple · 마을 / 커닝 ConstructionSite · 마을 / 페리온 NorthernRidge · WildBoarLand · 마을 / 엘리니아 GreenTreeTrunk · TreeTrunkNest2 / `Test_Lane_Fx`(4줄).
 - 계약서 A-2-4b 층 문장 갱신(사용자 직접 지시 작업 → #40 공지 생략).
 
+### 캐릭터 창(C) "스킬" 버튼 · SP 알림 "!" (사용자 2026-10-05 "눌러도 스킬창 안 열림")
+- 원인: 스킬 창 그룹(`SkillWindow` 순위 6 · B)이 캐릭터 창(`CharacterGroup` 11)보다 뒤라, 열려도 캐릭터 창에 가려졌다. "!" 는 버튼의 자식이고 클릭을 막지 않는다(RaycastTarget false).
+- `Stat/StatUIController.OnClickSkill`: 캐릭터 창을 닫고 스킬 창을 연다(이미 열려 있으면 그대로). B 파일 · .ui 순위는 건드리지 않았다.
+
+### ESC = 최근에 연 창부터 하나씩 (사용자 2026-10-05)
+- 새 `Summon/UIEscStack`(@Logic · 클라): 0.1초마다 창 10개(캐릭터 · 스킬(B) · 공방 · 로비 · 공용 NPC · 방어 · 생활 · 기록 · 계정 기록 · 월드맵)의 열림 플래그를 보고 "닫힘 → 열림" 이 된 창을 맨 위로 기록 → ESC 는 맨 위 창 하나만 그 창의 닫기 메서드로 닫는다. 결과 · 부활 · 관전 · 외형 고르기는 안 넣었다(골라야 닫힘).
+- 예전 창별 ESC 처리(`StatUIController` · `WorkshopUIController`)는 지웠다 — 한 번에 같이 닫혔다.
+
+### 게임 종료 경고 (사용자 2026-10-05 · 방식 = 엔진 나가기 창 + 경고)
+- MSW 는 스크립트로 게임을 끄는 API 가 없다(나가기 = 엔진 창 · `ExitPopupOpenedEvent` / `ExitPopupClosedEvent` 만 들을 수 있다 · `KickUser` 는 "추방" 문구).
+- 새 `Match/ExitWarnController`(@Logic): 나가기 창이 열리면 서버에 물어 **매치 진행 중 · 남아 있는 참가자**면 경고 띠를 켠다 · 창이 닫히면 끈다. 나가면 지금처럼 `OnUserLeave` → 포기(넥서스 0 · 탈락 · 이탈 기록).
+- 새 `ui/ExitWarnGroup`(`Docs/tools/design-ui/apply-exit-warn.cjs` · 순위 40 · 클릭 안 막음): 화면 위쪽 700×196 띠 — 부활 창과 같은 판 · 제목 띠 · 경고 아이콘 · 글자 색 재사용. "매치 중에 나가면 불이익이 있어요" / "지금 나가면 포기로 처리됩니다 — 넥서스가 0 이 되어 탈락하고 순위 보상을 받을 수 없어요." / "그래도 나가려면 나가기 창에서 계속 진행하세요".
+
+### 몬스터 도감 해금 재료 (사용자 2026-10-05 "다이아몬드가 아니라 몬스터 재료")
+- `LaneStateService.CollectionMaterialOf(villageId, monsterId)`: 그 몬스터의 재료(`MonsterRecruit.MaterialItemId` × `MaterialCount` = 모집과 같은 `MAT_<id>` 8개). 모집 표에 없으면 `MAT_<id>` → 그것도 없으면 예전 `MaterialOf`(다이아몬드).
+- 도감 뷰 `C` 행 뒤에 재료 4칸(itemId · 이름 · 보유 · 필요) · `RequestUnlockCollection` 도 같은 재료를 받는다.
+- `Npc/VillageRecordUIController`: 고른 몬스터의 재료로 비용 칩을 그리고, 고르기 전 보유 칩의 공용 재화(다이아몬드) 칸은 감춘다.
+
+### 몬스터가 죽어도 쫓아옴 (사용자 2026-10-05)
+- 원인: `Monster.Dead()` 는 `IsDead` 만 세우고 DEAD 전이는 다음 틱이라, 그 사이 추격 상태(`StateTypeChase`)가 계속 밀고 붙은 속도도 남았다.
+- `Monster.Dead()`: 즉시 `MovementComponent:Stop()`. `StateTypeChase.OnUpdate`: `IsDead` 면 멈추고 아무것도 안 한다. (미니언 `FactionAI` 는 원래 멈춘다.)
+
 ### 로그 확인 (Maker Play) — TODO
 - [ ] Reimport All(새 `JobMarkController` · 새 모델 등록) → 빌드 경고 0.
 - [ ] Lv9 → 전구 없음 · Lv10 → 5명 머리 위 전구 · 전직하면 사라짐(눈 확인 · 높이 조정 필요할 수 있음).
