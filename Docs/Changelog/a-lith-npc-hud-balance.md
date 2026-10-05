@@ -33,8 +33,8 @@
 - 새 `Npc/JobMarkController`(@Logic · 클라): 0.5초마다 지금 맵의 `Npc_VD_JOB_<직업>_*` 의 `JobMark` 를 **초보자 · 레벨 ≥ 그 직업 1차 요구 레벨**(JobDatabase)일 때만 내 화면에서 켠다. 로그 `[JobMark] <맵> shown=5 job=NOVICE lv=10`.
 
 ### 리스항구 마을 포탈 높이 (사용자 2026-10-05 "들어올 때 밑으로 떨어짐")
-- `LithHarbor_Village_MinimiMain` 포탈 2개(`P_To_LithHarbor_Hunt_ForestTrail1` · `P_To_LithHarbor_Hunt_RightAroundLithHarbor`) y 0.392 → **0.45**. 바닥 발판이 0.43 이라 포탈이 바닥보다 0.038 아래였다 → 도착하면 바닥 밑에 나타나 떨어졌다. x 는 그대로(MapBuilder patch).
-- 같은 식으로 바닥보다 조금 아래(0.005 ~ 0.074)에 있는 포탈이 다른 맵에 13개 있다(목록은 PR 보고 · 사용자 확인 뒤).
+- `LithHarbor_Village_MinimiMain` 포탈 2개 y 0.392 → **0.44**. 바닥 발판이 0.43 이라 포탈이 바닥보다 0.038 아래였다 → 도착하면 바닥 밑에 나타나 떨어졌다.
+- 규칙(사용자 2026-10-05 "확 올리면 안 되고 바닥에 닿아 있는 채로 텔포 때 안 떨어질 정도로만"): **포탈 y = 그 x 의 발판 y + 0.01**. 같은 상태(바닥보다 0.005 ~ 0.074 아래)였던 다른 맵 포탈 13개도 같이: 헤네시스 BlueMushroomTrail `Portal` · 커닝 ConstructionSite `Portal_3` · 커닝 마을 `P_To_KerningCity_Hunt_SewerApproach` · 노틸러스 마을 `Portal_10` · `Portal_11` · `Portal_16` · 페리온 NorthernRidge `P_To_Perion_Hunt_WildBoarLand` · `P_To_SixPathCrossway` · `Portal_2` · `Portal_3` · SouthernRidge `P_To_Perion_Village_MinimiMain` · WildBoarLand `P_To_Perion_Village_MinimiMain` · `Portal_3`. x · z 그대로(MapBuilder patch).
 
 ### 레인 바닥 그림 교체 (WO-047 · 사용자 "같은 브랜치로")
 - 사용자 그림 12장(`리소스파일/레인-발판/` · 헤네시스 · 커닝시티 · 페리온 · 엘리니아 × 왼끝 · 중간 · 오른끝) → `Docs/tools/lane-floor/prep.py`(엘리니아만 37% · 이름 `lfl_<마을>_<left|mid|right>`) → `upload.cjs` 그룹 리소스 `mIYbC` 12장(`ruid-map.json`). **피벗은 올릴 때**: 중간 x 0.5 · 왼끝 x 1.0 · 오른끝 x 0.0 · y = 걷는 선(헤네시스 풀 중간 · 커닝 판석 윗면 · 페리온 돌 윗면 · 엘리니아 잎 중간 · 엘리니아 끝 조각은 21px 어긋남 반영).
