@@ -16,6 +16,8 @@
 - `TierSpEarned` 계산 본체를 `TierSpEarnedFor(jobId, level, startSp, tier)` 로 뺐다(서버 · 클라 공용 · 값은 그대로). `TierStartLevel` 은 ServerOnly 표시를 뗐다(표만 읽는다 · `_JobDatabase:EnsureLoaded()` 를 먼저 부른다).
 - 미러: `PushState` 줄에 `spent=<차수>:<쓴 SP>,…;nstart=<매치 시작 SP>` 를 붙이고 `SyncState` 가 `mirrorSpentByTier` · `mirrorNoviceStartSp` 로 받는다 → `LocalTierSpLeft(tier)`(클라 · 표시용 · 지갑보다 크게 안 보인다).
 - 🟡 시전: `CheckRequirements` 가 `CanUse` 와 공용이라 전직 뒤에도 서버는 초보자 스킬 시전을 막지 않는다. 다만 Q 는 `SkillHotbar.byJob` 이 직업 스킬로 바꾸므로 전직 뒤 달팽이 세마리를 누를 키가 없다 — 시전 가능 여부는 이 PR 범위 밖(사용자 지시).
+- **키 없는 초보자 액티브 스킬은 못 올린다**(사용자 2026-10-05): 초보자 스킬(ReqTier 0) 중 Behavior ≠ PASSIVE 이고 지금 직업 슬롯 표(`SkillHotbar.slots` byJob)에 키가 없으면 `RequestLearn` 이 거절(`no cast key for <직업>`)하고 스킬 창 "+" 는 비활성 그림 + 툴팁 한 줄. 스킬 id 를 적지 않았다 — 표(Behavior · ReqTier) + 슬롯 표로 정한다(`PlayerSkillState.NoviceSkillHasNoKey` · 새 값 `NoviceActiveNeedsCastKey` · `SkillHotbar.HasCastKey` 새 공용 메서드 · `BuildSlotTable` 은 ClientOnly 표시를 떼 서버에서도 표를 만든다). 지금 걸리는 스킬 = 달팽이 세마리(전직 뒤 Q 가 직업 스킬).
+- **더블 점프(SK_N02 · PASSIVE · 공중 점프 키)는 전직 뒤에도 초보자 탭에서 초보자 SP 로 배운다** — 이 PR 의 이유. 배운 즉시 `SkillHotbar.TryAirDoubleJump` 가 미러 레벨(`LocalSkillLevel`)을 보고 뛴다(`DoubleJumpKeepAfterJob = true` · A 결정 5977728018). 🟡 마법사는 공중 점프가 텔레포트라 배워도 더블 점프가 나가지 않는다(`SkillExecutors.RequestDoubleJump` 의 MAGICIAN 제외 · 예전과 같음 · 바꾸지 않았다).
 
 ### 스킬 창 — 탭 4개
 - `ui/SkillWindow.ui`(UIBuilder · 스크립트 `villagedefense-harness/novice-tab/apply-novice-tab.cjs`): `TabRow/TabBtnNovice` 새 버튼(On · Locked · Label "초보자" · 그림 · 버튼 전환은 TabBtn0 복사). 탭 그림이 Simple(288x142)이라 네 탭을 폭 107 · 높이 53(그림 비율)으로 줄이고 간격 4 로 다시 놓았다(x −166.5 / −55.5 / 55.5 / 166.5).
