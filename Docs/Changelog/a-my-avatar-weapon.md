@@ -10,9 +10,13 @@
 - `OnJobChanged`: MY 이고 직업 무기를 채운 사람만 새 직업 무기로 다시 입힌다(예전엔 MY 는 건너뛰었다).
 - 로그: `[Look] applied MY weapon=<nil|asking|has|none>` · `[Look] account weapon check one=… two=…` · `[Look] MY account weapon=<bool>` · `[Look] MY job weapon -> <직업>`.
 
+### `Item/AvatarSelectUIController.mlua` (사용자 2026-10-05 "로비 캐릭터 외형 무기")
+- 로비의 내 캐릭터는 위 `ApplyTo` 가 룸 구분 없이 처리한다. 따로 그리는 **접속 외형 고르기 창의 "내 아바타" 미리보기 카드**도 같은 규칙: 1초 뒤 그 카드의 `GetEquip` 으로 계정 무기를 보고(머리까지 비었으면 1초씩 두 번 더) 없으면 모험가 무기를 쥐여 준다. 로그 `[LookUI] MY preview: no account weapon -> explorer weapon`.
+
 ### 문서
 - 계약서 A-2-27 `MY` 설명 한 줄(A 자기 항목 · 새 표 · 열 · 이벤트 없음).
 
 ### 로그 확인 (Maker Play) — TODO
 - [ ] 내 아바타 · 계정 무기 있음 → `account weapon=true` · 무기 그대로.
 - [ ] 계정 무기 없음 → `account weapon=false` → 모험가 무기(초보자) · 전직하면 그 직업 무기 · 다른 칸은 계정 아바타 그대로.
+- [ ] 로비(승강장 · 배)에서도 같은지 · 접속 외형 고르기 창 "내 아바타" 카드에도 무기.
