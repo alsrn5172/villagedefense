@@ -6,10 +6,9 @@
 //   Tooltip/Caption · Tooltip/Divider · Tooltip/BossBand · Tooltip/BossChip/Text · Tooltip/KindDot_Hub|Town|Hunt|Boss
 //   Tooltip/Row1~5/{Badge · Icon · Name · LvChip/Text} · HereMarker·GoalMarker_*/{Flag · Label}
 //
-// 🔴 미리 정해 둔 것(지시): 지도 판 그림은 시안에서도 임시 그림이라 **지금 그림 · 크기 · 위치를 그대로** 두고 노드 좌표도 옮기지 않는다
-//    (WorldMapNodes 의 X,Y 변경 없음). 그래서 Board 가 들고 있는 지도 그림(1294x950)은 손대지 않고,
-//    창 테두리(panel_window)는 가운데를 비운 테두리 고리(FillCenter=false)로 그림 위에 얹는다.
-//    새 지도 그림을 받으면(1098x806 · 0,-28) 그때 Board 그림을 판으로 바꾸고 MapArt 를 새로 놓고 노드 좌표를 x0.8485 · y-28 로 옮긴다.
+// 지도 판 = 새 지도 그림 f01(WO-041 · 2026-10-04 · 사용자 결정 "그림의 점을 그대로 쓴다").
+//    점 · 길 · 마을 이름이 그림에 박혀 있다 → Board 자체 그림(옛 지도)은 투명, MapArt 를 시안 지도 칸 1098x806 · (0,-28) 에 깔고,
+//    노드 위치는 WorldMapNodes 의 X,Y(그림 점 중심 실측값)로 맞춘다. 창 테두리(panel_window)는 가운데를 비운 고리(FillCenter=false)로 그 위에 얹는다.
 const fs = require('fs');
 const path = require('path');
 const S = require('./skin.cjs');
@@ -39,6 +38,13 @@ const ctr = (p, x, y, w, h) => S.place(b, p, { anchor: 'middle-center', pivot: [
 S.tint(b, 'MapPanel/Dimmer', '#000000', 0);
 b.patchComponent('MapPanel/Dimmer', S.SPR, { Type: 1 });
 
+// ═══ 지도 판: 새 지도 그림 f01 ═══
+// 원본 2095x1614 의 위아래 단색 여백만 38px 씩 잘라(2095x1538 · 비율 = 시안 칸 1098x806) 1647x1209 로 줄여 올렸다(dui_worldmap_f01).
+// 테두리 안쪽(1206x806)에서 좌우 54px 씩 남는 칸은 그림 가장자리와 같은 색(#E8D2B8) 판으로 채운다(테두리 밑으로 숨게 조금 크게).
+b.patchComponent(BD, S.SPR, { Color: S.C('#FFFFFF', 0) });
+round(BD + '/MapBg', { pos: [0, -28], size: [1216, 816], color: '#E8D2B8' });
+S.newImage(b, BD + '/MapArt', 'worldmap_f01', { pos: [0, -28], size: [1098, 806] });
+
 // ═══ 창 테두리(고리) · 문장 · 제목 띠 · 지도 아이콘 · 제목 · 닫기 ═══
 // 테두리: 1294x950 panel_window 를 가운데 비워서 지도 그림 위에 얹는다. 위 100 · 좌우/아래 44 가 테두리다.
 S.newImage(b, BD + '/Frame', 'panel_window', { size: [1294, 950], pos: [0, 0] });
@@ -61,9 +67,12 @@ S.font(b, BD + '/CloseBtn', { text: '' });
 
 // 지도 밖(지금 위치: 로비) 칩: 스크립트가 글자 · 너비 · 켜고 끄기를 맡는다
 // 🔴 칩 크기 규칙(5차 · skin.cjs): 칩 폭 = 글자 실측(Maple 14 "지금 위치: 로비" 90.61) + 2 × (테두리 11 + 여백 5 · 높이 25) = 124. 컨트롤러(ShowOutsideChip)가 맵 이름이 길면 같은 식으로 다시 잰다.
-const HEREW = S.chipWidth('chip_blue', 25, S.textW('Maple', 14, '지금 위치: 로비'));
-S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5, 25)], size: [HEREW, 25], enable: false });
-S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: 14, color: C.white, rect: [HEREW, 25], overflow: 0 });
+// '지금 위치' 칩 높이 = 제목 줄(월드맵 30 · 아이콘 34)과 같은 34 · 글자 20 (사용자 2026-10-05 "높이가 너무 작다 · 월드맵 폰트와 같은 높이" · WO-041 4-1)
+const HERE_H = 34, HERE_FS = 20;
+// 글자 폭 실측(chip-text-width.json)은 14 만 있다 → 20 은 비례 추정(파일 기본값일 뿐 · 칩은 꺼져 있고 열 때 컨트롤러가 GetPreferredWidth 로 다시 잰다).
+const HEREW = S.chipWidth('chip_blue', HERE_H, Math.ceil(S.textW('Maple', 14, '지금 위치: 로비') * HERE_FS / 14));
+S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5 - (HERE_H - 25) / 2, HERE_H)], size: [HEREW, HERE_H], enable: false });
+S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: HERE_FS, color: C.white, rect: [HEREW, HERE_H], overflow: 0 });
 
 // ═══ 범례 (번호 없음 · 시안 s0~s5 전부에 있음) ═══
 const LG = [119, 908, 457, 34];
@@ -84,28 +93,36 @@ const at = (x, y, w, h) => S.at(x, y, w, h, LG);
   S.newText(b, `${LGN}/Text${name}`, label, { font: 'Noto700', size: 14, color: C.ivory, h: 'left', pos: at(tx, 915, tw, 20), rect: [tw, 20] });
 });
 
-// ═══ 지도 점 33개: 노드(크기 · 터치)는 그대로 두고 자식으로 그림만 얹는다 ═══
-// 종류는 WorldMapNodes.csv 의 Type 열(NodeEntity 이름으로 찾는다).
+// ═══ 지도 점 33개: 노드(크기 · 터치)는 그대로 두고 위치만 CSV X,Y 로 · 자식으로 hover 점만 얹는다 ═══
+// 종류 · 지역 · 위치는 WorldMapNodes.csv(NodeEntity 이름으로 찾는다).
+// 🔴 새 지도(f01)는 점이 그림에 박혀 있다 → 평소 점(Dot)은 그리지 않고, 마우스를 올렸을 때 hover 점(DotHover)만 그림 점 위에 겹친다
+//    (WorldMapController.SetDotHover 는 Dot 이 없으면 건너뛴다). hover 점 크기 = 그림 점 지름(화면 기준 허브 32 · 마을/보스 28 · 사냥터 18)의 약 1.15배가 되게.
+//    여섯갈래길은 그림이 분홍이라 보스 hover 점 · 리스항구 길은 그림이 별이라 hover 점도 없다(안내창만).
+//    노틸러스호만 그림에 점이 없어 게임이 마을 점을 그린다(사용자 결정 2026-10-04).
 const csv = fs.readFileSync(path.join(WORLD, 'RootDesk/MyDesk/WorldMapNodes.csv'), 'utf8').replace(/^﻿/, '').split(/\r?\n/).filter(Boolean);
 const head = csv[0].split(',');
-const iEnt = head.indexOf('NodeEntity'), iType = head.indexOf('Type');
-const kindOf = {};
-csv.slice(1).forEach((ln) => { const c = ln.split(','); if (c[iEnt]) kindOf[c[iEnt]] = c[iType]; });
-const DOT = {
-  Hub: ['map_dot_hub', 'map_dot_hub_hover', 42, 54],
-  Village: ['map_dot_town', 'map_dot_town_hover', 38, 50],
-  Hunt: ['map_dot_hunt', 'map_dot_hunt_hover', 26, 38],
-  Boss: ['map_dot_boss', 'map_dot_boss_hover', 38, 50],
+const iEnt = head.indexOf('NodeEntity'), iType = head.indexOf('Type'), iReg = head.indexOf('Region'), iX = head.indexOf('X'), iY = head.indexOf('Y');
+const kindOf = {}, regionOf = {}, xyOf = {};
+csv.slice(1).forEach((ln) => { const c = ln.split(','); if (c[iEnt]) { kindOf[c[iEnt]] = c[iType]; regionOf[c[iEnt]] = c[iReg]; xyOf[c[iEnt]] = [Number(c[iX]), Number(c[iY])]; } });
+const DRAWN_BY_GAME = { Node_Nautilus_Village_MinimiShip: ['map_dot_town', 30] };
+const HOVER = {
+  Hub: ['map_dot_boss_hover', 49],
+  Village: ['map_dot_town_hover', 42],
+  Hunt: ['map_dot_hunt_hover', 31],
+  Boss: ['map_dot_boss_hover', 42],
 };
 let dots = 0;
 b.entities.filter((e) => e.path.startsWith('/ui/WorldMapGroup/' + NODES + '/') && e.path.split('/').length === 4 + NODES.split('/').length).forEach((e) => {
   const name = e.path.split('/').pop();
   const kind = kindOf[name] || 'Hunt';
-  const d = DOT[kind] || DOT.Hunt; // Temp 등 모르는 종류는 사냥터 점
   const np = `${NODES}/${name}`;
-  S.newImage(b, `${np}/Dot`, d[0], { size: [d[2], d[2]], pos: [0, 0] });
-  S.newImage(b, `${np}/DotHover`, d[1], { size: [d[3], d[3]], pos: [0, 0], enable: false });
-  dots++;
+  if (xyOf[name] && xyOf[name].every(Number.isFinite)) S.place(b, np, { pos: xyOf[name] });
+  const own = DRAWN_BY_GAME[name];
+  if (own) { S.newImage(b, `${np}/Dot`, own[0], { size: [own[1], own[1]], pos: [0, 0] }); dots++; }
+  else if (b.find(`${np}/Dot`)) b.remove(`${np}/Dot`);
+  if (regionOf[name] === 'LithHarbor') { if (b.find(`${np}/DotHover`)) b.remove(`${np}/DotHover`); return; }
+  const h = HOVER[kind] || HOVER.Hunt; // Temp 등 모르는 종류는 사냥터 점
+  S.newImage(b, `${np}/DotHover`, h[0], { size: [h[1], h[1]], pos: [0, 0], enable: false });
 });
 
 // ═══ 내 위치 · 목표 핀 ═══
@@ -188,8 +205,10 @@ S.newText(b, OB + '/OpenLabel', '월드맵', { font: 'Maple', size: 24, color: C
 round(OB + '/KeyChip', { pos: [62, 0], size: [24, 24], color: C.goldInk, alpha: 0.75 });
 S.newText(b, OB + '/KeyChip/Text', 'M', { font: 'Maple', size: 13, color: C.title, pos: [0, 0], rect: [24, 24] });
 
-// ═══ 그리기 순서(Board 자식): 테두리 < 범례 < 문장 < 제목 띠 < 지도 아이콘 < 제목 글자 < 지도 밖 칩 < 선택 링 < 노드 … ═══
+// ═══ 그리기 순서(Board 자식): 바탕 판 < 지도 그림 < 테두리 < 범례 < 문장 < 제목 띠 < 지도 아이콘 < 제목 글자 < 지도 밖 칩 < 선택 링 < 노드 … ═══
 S.before(b, BD + '/Frame', BD + '/Title');
+S.before(b, BD + '/MapArt', BD + '/Frame');
+S.before(b, BD + '/MapBg', BD + '/MapArt');
 S.before(b, BD + '/Legend', BD + '/Title');
 S.before(b, BD + '/Crest', BD + '/Title');
 S.before(b, BD + '/TitleBand', BD + '/Title');
@@ -200,4 +219,4 @@ S.before(b, BD + '/HereChip', BD + '/SelectedMarker');
 console.log('chipText', JSON.stringify(S.chipText(b).map((x) => x.path.split('/').slice(-3).join('/') + ':' + x.kind)));
 
 b.write(path.join(WORLD, 'ui', 'WorldMapGroup.ui'), { lint_verbose: !!process.env.LINT_V });
-console.log(`WorldMapGroup(월드맵) 적용 끝 — 점 ${dots}개 · 새 엔티티 ${b.listEntities().length - before}개`);
+console.log(`WorldMapGroup(월드맵) 적용 끝 — 게임이 그리는 점 ${dots}개 · 엔티티 수 변화 ${b.listEntities().length - before}개`);
