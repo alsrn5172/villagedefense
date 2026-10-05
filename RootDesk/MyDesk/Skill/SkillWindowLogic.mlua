@@ -7,6 +7,8 @@ script SkillWindowLogic extends Logic
     property ButtonComponent tabBtn0 = "1a2a6d79-d8a4-43eb-a783-cb585ba7b730"
     property ButtonComponent tabBtn1 = "aece25b1-a0f2-4979-9988-240e97aa241d"
     property ButtonComponent tabBtn2 = "d3127ae7-6feb-46dc-8c35-37cd52d6a5b7"
+    -- 초보자 탭(b/skill-window-novice-tab · 모든 직업 · 1차/2차/3차 앞). UI 탭 번호 0 = 이 버튼 · 1 · 2 · 3 = tabBtn0 · tabBtn1 · tabBtn2(.ui 이름 그대로).
+    property ButtonComponent tabBtnNovice = "48d2917c-4a74-4e7e-9015-32c0dbbd7d60"
     property Entity rowTemplate = "58446f43-ef5d-4ef0-952f-be8da68d0b32"
     property ScrollLayoutGroupComponent listLayout = "daf3ad59-0e28-490e-be7d-da1235feeb2b"
     property TextGUIRendererComponent descText = "f9c386bb-de47-407c-903e-ea48626aa2fd"
@@ -64,12 +66,11 @@ script SkillWindowLogic extends Logic
     -- runtime state (client-only, not persisted)
     property integer currentTab = 0
 
-    -- 초보자 탭(b/skill-novice-snails · A 답 #40 5927315602 Q1 "초보자 스킬 창 — 넣는다"): 초보자면 탭 세 개가 0 · 1 · 2 차(첫 탭 = 초보자 스킬),
-    --   전직하면 예전처럼 1 · 2 · 3 차. 탭 글자는 .ui 를 고치지 않고 런타임에 바꾼다 — .ui 원래 글자는 처음 한 번 기억해 두었다가 전직 뒤 되돌린다(ApplyTabLabels).
+    -- 탭 4개(b/skill-window-novice-tab · A 구두 승인 2026-10-05): UI 탭 번호 = 차수 — 0 초보자 · 1 · 2 · 3 차. 모든 직업이 같다.
+    --   초보자 탭은 전직 뒤에도 초보자 스킬을 보여 주고, 초보자 SP 가 남아 있으면 "+" 가 켜진다(PlayerSkillState.NoviceSpKeptAcrossJobs).
+    --   (예전 b/skill-novice-snails: 탭 3개 — 초보자면 0 · 1 · 2 차 · 전직하면 1 · 2 · 3 차로 글자를 런타임에 바꿨다.)
     property string NoviceTabLabel = "초보자"
 
-    @HideFromInspector
-    property table tabLabelBase = {}
     property table rowEntities = {}
     property table rowHandlers = {}
 
@@ -181,6 +182,7 @@ script SkillWindowLogic extends Logic
     property any tabBtn0Handler = nil
     property any tabBtn1Handler = nil
     property any tabBtn2Handler = nil
+    property any tabBtnNoviceHandler = nil
     property any keyDownHandler = nil
     property any skillStateChangedHandler = nil
 
@@ -188,6 +190,13 @@ script SkillWindowLogic extends Logic
     property any tabBtn0StateHandler = nil
     property any tabBtn1StateHandler = nil
     property any tabBtn2StateHandler = nil
+    property any tabBtnNoviceStateHandler = nil
+
+    -- 툴팁 글 단어 단위 줄바꿈(#40 5988187393 A 확인 · B 가 스킬 창에 넣는다). 엔진 줄바꿈은 글자 단위라 "스트/라이크" 처럼 단어 중간이 끊긴다
+    --   → 띄어쓰기 자리에서 미리 "\n" 을 넣는다(WrapWords). 폭 여유(px) = 측정과 실제 그리기 차이 흡수. false = 예전처럼 엔진에 맡긴다.
+    property boolean TooltipWordWrap = true
+
+    property number TooltipWrapSlack = 6
 
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
@@ -213,6 +222,13 @@ script SkillWindowLogic extends Logic
         self.tabBtn1StateHandler = tabBtn1.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyTabPressVisual(tabBtn1, 1, event) end)
         local tabBtn2 = self.tabBtn2
         self.tabBtn2StateHandler = tabBtn2.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyTabPressVisual(tabBtn2, 2, event) end)
+        local tabBtnNovice = self.tabBtnNovice
+        if tabBtnNovice ~= nil and isvalid(tabBtnNovice.Entity) then
+            self.tabBtnNoviceHandler = tabBtnNovice.Entity:ConnectEvent(ButtonClickEvent, self.OnTabNoviceClicked)
+            self.tabBtnNoviceStateHandler = tabBtnNovice.Entity:ConnectEvent(ButtonStateChangeEvent, function(event) self:ApplyTabPressVisual(tabBtnNovice, 0, event) end)
+        else
+            log_warning("SkillWindowLogic: tabBtnNovice binding missing - novice tab disabled")
+        end
 
         -- K hotkey: connected on _InputService (a Logic, not a UI-tree entity), so it fires
         -- regardless of rootGroup.Enable. Shares the exact Toggle() the HUD button also calls.
@@ -522,7 +538,7 @@ script SkillWindowLogic extends Logic
             if jobLine ~= self.builtJobLine or tier ~= self.builtTier then
                 log("SkillWindowLogic: rows built for " .. self.builtJobLine .. "/" .. tostring(self.builtTier)
                     .. " -> rebuild for " .. jobLine .. "/" .. tostring(tier))
-                self:ShowTab(self.currentTab)
+                self:ShowTab(self:TabAfterBuild())
             end
             self:RefreshFromState()
         else
@@ -537,7 +553,7 @@ script SkillWindowLogic extends Logic
     method void OnSkillStateChanged(SkillStateChangedEvent event)
         -- "sp"/"skill" → 값 갱신. "job" → 직업·차수가 바뀌었으니 탭을 다시 만든다(다른 직업 스킬은 아예 안 보이므로).
         if event.What == "job" then
-            if self.rootGroup.Enable then self:ShowTab(self.currentTab) end
+            if self.rootGroup.Enable then self:ShowTab(self:TabAfterBuild()) end
             return
         end
         if event.What == "sp" or event.What == "skill" then
@@ -594,11 +610,39 @@ script SkillWindowLogic extends Logic
 
     @ExecSpace("ClientOnly")
     method void RefreshTabs()
-        -- 차수 탭 세 개의 선택 · 잠김 그림을 지금 탭과 플레이어 차수로 다시 맞춘다.
+        -- 차수 탭 네 개의 선택 · 잠김 그림을 지금 탭과 플레이어 차수로 다시 맞춘다.
         self:ApplyTabLabels()
-        self:SetTabHighlight(self.tabBtn0, self.currentTab == 0)
-        self:SetTabHighlight(self.tabBtn1, self.currentTab == 1)
-        self:SetTabHighlight(self.tabBtn2, self.currentTab == 2)
+        self:HighlightTabs(self.currentTab)
+    end
+
+    @ExecSpace("ClientOnly")
+    method table TabButtons()
+        -- UI 탭 번호 순서(0 초보자 · 1 · 2 · 3 차)의 버튼 목록. 초보자 버튼 바인딩이 없으면 그 칸은 nil(나머지는 그대로 동작).
+        return { self.tabBtnNovice, self.tabBtn0, self.tabBtn1, self.tabBtn2 }
+    end
+
+    @ExecSpace("ClientOnly")
+    method void HighlightTabs(integer tab)
+        -- 네 탭의 선택 · 잠김 그림을 한 번에(ShowTab · RefreshTabs 공용).
+        local btns = self:TabButtons()
+        for i = 1, 4 do
+            local btn = btns[i]
+            if btn ~= nil and isvalid(btn.Entity) then self:SetTabHighlight(btn, i - 1, tab == i - 1) end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method integer TabAfterBuild()
+        -- 직업 · 차수가 바뀌어 행을 다시 만들 때 고를 탭: 바뀌었으면 지금 차수 탭(전직하면 1차 탭 · 예전 3탭 때 첫 탭이 지금 차수였던 것과 같다),
+        -- 같으면(배우기 뒤 SyncState 등) 보던 탭 그대로.
+        local jobLine = _PlayerSkillState:LocalJobId()
+        local tier = math.floor(_PlayerSkillState:LocalTier())
+        if self.builtJobLine ~= "" and (jobLine ~= self.builtJobLine or tier ~= self.builtTier) then
+            if tier < 0 then tier = 0 end
+            if tier > 3 then tier = 3 end
+            return tier
+        end
+        return self.currentTab
     end
 
     @ExecSpace("ClientOnly")
@@ -638,21 +682,27 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void OnTab0Clicked()
-        -- Switches to the Beginner tab (0).
+    method void OnTabNoviceClicked()
+        -- 초보자 탭(UI 탭 0 · 0 차).
         self:ShowTab(0)
     end
 
     @ExecSpace("ClientOnly")
-    method void OnTab1Clicked()
-        -- Switches to the 1st tab (1).
+    method void OnTab0Clicked()
+        -- TabBtn0 = 1차 탭(UI 탭 1).
         self:ShowTab(1)
     end
 
     @ExecSpace("ClientOnly")
-    method void OnTab2Clicked()
-        -- Switches to the 2nd tab (2).
+    method void OnTab1Clicked()
+        -- TabBtn1 = 2차 탭(UI 탭 2).
         self:ShowTab(2)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnTab2Clicked()
+        -- TabBtn2 = 3차 탭(UI 탭 3).
+        self:ShowTab(3)
     end
 
     @ExecSpace("ClientOnly")
@@ -665,18 +715,14 @@ script SkillWindowLogic extends Logic
         self:ClearRows()
 
         self:ApplyTabLabels()
-        self:SetTabHighlight(self.tabBtn0, tab == 0)
-        self:SetTabHighlight(self.tabBtn1, tab == 1)
-        self:SetTabHighlight(self.tabBtn2, tab == 2)
+        self:HighlightTabs(tab)
 
-        -- SkillInfo's tab column is now 1-based (tab = required_tier: 1/2/3), while `tab`
-        -- here is still the 0-based UI tab index (tabBtn0/1/2, unchanged above) - convert only
-        -- at the query boundary, in this file. Filtering by (playerJobLine, tier) - not just
+        -- UI 탭 번호 = 차수(0 초보자 · 1 · 2 · 3 차 · TabTier). Filtering by (job line, tier) - not just
         -- tier - lives in SkillDatabase.GetSkillsByJobLineAndTier, not here: a different job
         -- line is hidden entirely (a warrior never sees mage skills), while a tier ahead of
         -- the player's own tier still shows up in its tab, just drawn locked/greyed in
         -- CreateRow below - do not collapse those two cases into one filter.
-        -- 초보자는 첫 탭이 0 차(초보자 스킬) — TabTier.
+        -- 초보자 탭(0 차)은 직업과 무관하게 초보자 줄(NOVICE) 스킬을 보여 준다(b/skill-window-novice-tab).
         local tier = self:TabTier(tab)
         -- 서버가 SyncState 로 밀어 준 미러 + HUD 가 받은 레벨 (Phase 7a/7e). 캐시 없음.
         local playerJobLine = _PlayerSkillState:LocalJobId()
@@ -684,20 +730,22 @@ script SkillWindowLogic extends Logic
         local playerLevel = _PlayerSkillState:LocalLevel()
         self.builtJobLine = playerJobLine
         self.builtTier = playerTier
+        local tabJobLine = playerJobLine
+        if tier == 0 then tabJobLine = _PlayerSkillState.NoviceJobId end
 
         -- GetSkillsByJobLineAndTier iterates a dictionary internally, so its result order is
         -- not guaranteed - still sort by slot_order here, same as before.
-        local filtered = _SkillDatabase:GetSkillsByJobLineAndTier(playerJobLine, tier)
+        local filtered = _SkillDatabase:GetSkillsByJobLineAndTier(tabJobLine, tier)
         table.sort(filtered, function(a, b) return a.order < b.order end)
 
         for _, skill in ipairs(filtered) do
             self:CreateRow(skill, playerJobLine, playerTier, playerLevel)
         end
 
-        -- 초보자의 1 · 2 차 탭은 직업 줄이 없어 비어 있다(첫 탭 = 초보자 스킬) - show why,
+        -- 초보자의 1 · 2 · 3 차 탭은 직업 줄이 없어 비어 있다 - show why,
         -- instead of a silent blank list. 예전에는 아래 설명 칸에 적었지만 그 칸이 툴팁으로 바뀌었으니
         -- (커서를 올릴 행 자체가 없어 툴팁으로는 못 보여 준다) 목록 안에 안내 행 하나로 넣는다.
-        if #filtered == 0 and playerJobLine == "NOVICE" then
+        if #filtered == 0 and playerJobLine == _PlayerSkillState.NoviceJobId then
             self:CreateNoticeRow("직업을 선택하면 스킬이 표시됩니다.")
         end
 
@@ -705,48 +753,33 @@ script SkillWindowLogic extends Logic
             self.listLayout:ResetScrollPosition(UITransformAxis.Vertical)
         end
 
-        log("SkillWindowLogic: ShowTab(" .. tostring(tab) .. ") jobLine=" .. playerJobLine .. " tier=" .. tostring(tier) .. " rows=" .. tostring(#filtered)
-            .. " labels=" .. tostring(self.tabLabelBase[1]) .. "/" .. tostring(self.tabLabelBase[2]) .. "/" .. tostring(self.tabLabelBase[3]))
+        log("SkillWindowLogic: ShowTab(" .. tostring(tab) .. ") jobLine=" .. playerJobLine .. " tabLine=" .. tabJobLine .. " tier=" .. tostring(tier)
+            .. " playerTier=" .. tostring(playerTier) .. " rows=" .. tostring(#filtered))
     end
 
     @ExecSpace("ClientOnly")
     method integer TabTier(integer tab)
-        -- UI 탭 번호(0 · 1 · 2) → 그 탭이 보여 줄 차수. 초보자 = 0 · 1 · 2 차(첫 탭 = 초보자 스킬 · ReqTier 0) · 그 밖 = 1 · 2 · 3 차(예전 그대로).
-        if _PlayerSkillState:LocalJobId() == _PlayerSkillState.NoviceJobId then return tab end
-        return tab + 1
+        -- UI 탭 번호(0 · 1 · 2 · 3) → 그 탭이 보여 줄 차수. 모든 직업이 같다(0 = 초보자 스킬 · ReqTier 0).
+        return tab
     end
 
     @ExecSpace("ClientOnly")
     method void ApplyTabLabels()
-        -- 탭 글자를 지금 차수 배치에 맞춘다(초보자 = "초보자" · 원래 첫 탭 글 · 둘째 탭 글 / 전직 뒤 = .ui 원래 글자 그대로).
-        local btns = { self.tabBtn0, self.tabBtn1, self.tabBtn2 }
-        local labels = {}
-        for i, btn in ipairs(btns) do
-            local label = btn.Entity:GetChildByName("Label")
-            if isvalid(label) and isvalid(label.TextGUIRendererComponent) then
-                labels[i] = label.TextGUIRendererComponent
-                if self.tabLabelBase[i] == nil then self.tabLabelBase[i] = label.TextGUIRendererComponent.Text end
-            end
-        end
-        local novice = _PlayerSkillState:LocalJobId() == _PlayerSkillState.NoviceJobId
-        for i = 1, 3 do
-            local text = self.tabLabelBase[i]
-            if novice then
-                if i == 1 then text = self.NoviceTabLabel else text = self.tabLabelBase[i - 1] end
-            end
-            if labels[i] ~= nil and text ~= nil and labels[i].Text ~= text then labels[i].Text = text end
+        -- 초보자 탭 글자 = NoviceTabLabel(.ui 에도 같은 글자가 있다 · 여기서 한 번 더 맞춘다). 1차 · 2차 · 3차 탭 글자는 .ui 그대로.
+        local btn = self.tabBtnNovice
+        if btn == nil or not isvalid(btn.Entity) then return end
+        local label = btn.Entity:GetChildByName("Label")
+        if isvalid(label) and label.TextGUIRendererComponent ~= nil and label.TextGUIRendererComponent.Text ~= self.NoviceTabLabel then
+            label.TextGUIRendererComponent.Text = self.NoviceTabLabel
         end
     end
 
     @ExecSpace("ClientOnly")
-    method void SetTabHighlight(ButtonComponent btn, boolean active)
+    method void SetTabHighlight(ButtonComponent btn, integer tabIndex, boolean active)
         -- 차수 탭 한 개의 그림 상태(디자이너 시안 08-skill #4). 선택됨 = On 그림 + 어두운 글자 · 잠김 = Locked 그림(자물쇠가
         -- 그림에 들어 있어 글자는 숨김) · 나머지 = 기본(off) 그림 + 밝은 글자. 기본 그림의 올림/누름은 버튼 전환이 한다.
-        -- 잠김 = 그 차수가 플레이어 차수보다 높고 지금 고른 탭이 아닐 때(고른 탭은 잠겨 있어도 On 으로 보인다).
+        -- 잠김 = 그 차수가 플레이어 차수보다 높고 지금 고른 탭이 아닐 때(고른 탭은 잠겨 있어도 On 으로 보인다). 초보자 탭(0 차)은 잠기지 않는다.
         -- 선택 상태는 ShowTab 의 currentTab 에서만 온다 — 네이티브 Selected 상태가 없어 겹친 그림을 켜고 끈다.
-        local tabIndex = 0
-        if btn.Entity.Id == self.tabBtn1.Entity.Id then tabIndex = 1 end
-        if btn.Entity.Id == self.tabBtn2.Entity.Id then tabIndex = 2 end
         local locked = (not active) and (self:TabTier(tabIndex) > _PlayerSkillState:LocalTier())
         self:SetChildEnable(btn.Entity, "On", active)
         self:SetChildEnable(btn.Entity, "Locked", locked)
@@ -848,7 +881,10 @@ script SkillWindowLogic extends Logic
         local requirements = _SkillDatabase:CanLearn(skill.id, playerJobLine, playerTier, playerLevel)
         local locked = not requirements.ok
         local maxed = (not locked) and level >= skill.maxLevel
+        -- 포인트 = 그 스킬 차수의 남은 SP(차수별 SP · 서버 RequestLearn 과 같은 기준). 전직 뒤 지갑에 초보자 SP 가 남아 있어도
+        -- 1 차 행의 "+" 는 1 차 SP 로만 켜진다(b/skill-window-novice-tab). 차수별 SP 를 끄면 예전처럼 지갑 전체.
         local noPoints = _PlayerSkillState:LocalSp() <= 0
+        if _PlayerSkillState.TierSpEnabled then noPoints = _PlayerSkillState:LocalTierSpLeft(skill.requiredTier) < math.max(skill.spCost, 1) end
         local isPassive = skill.behavior == "PASSIVE"
         self.rowLocked[skill.id] = locked
 
@@ -1248,10 +1284,18 @@ script SkillWindowLogic extends Logic
         local bodyX = padX + slotSize + 16
         local bodyWidth = width - bodyX - padX
 
+        -- 단어 단위 줄바꿈(TooltipWordWrap · #40 5988187393): 아래에서 쓸 폭과 같은 폭으로 미리 줄을 나눈다.
+        local topText = parts.top
+        local bottomText = parts.bottom
+        local topWrapWidth = bodyWidth
+        if parts.icon == nil or parts.icon == "" or not isvalid(self.tipIconEntity) then topWrapWidth = innerWidth end
+        topText = self:WrapWords(self.descText, topText, topWrapWidth)
+        if self.tipBottomText ~= nil then bottomText = self:WrapWords(self.tipBottomText, bottomText, innerWidth - 32) end
+
         -- 글을 먼저 넣고 켠다 — 아래 계산 중 한 줄이 막혀도 툴팁은 이미 화면에 있다.
         if isvalid(self.tipTitleEntity) then self.tipTitleEntity.TextGUIRendererComponent.Text = parts.title end
-        self.descText.Text = parts.top
-        if self.tipBottomText ~= nil then self.tipBottomText.Text = parts.bottom end
+        self.descText.Text = topText
+        if self.tipBottomText ~= nil then self.tipBottomText.Text = bottomText end
         self.tipPanel.Enable = true
 
         -- 비는 칸은 접는다.
@@ -1268,13 +1312,13 @@ script SkillWindowLogic extends Logic
             textWidth = innerWidth
         end
 
-        local topHeight = self.descText:GetPreferredHeight(parts.top, textWidth)
+        local topHeight = self.descText:GetPreferredHeight(topText, textWidth)
         local bodyHeight = topHeight
         if hasIcon and bodyHeight < slotSize then bodyHeight = slotSize end
         local bottomHeight = 0
         local plateHeight = 0
         if hasBottom then
-            bottomHeight = self.tipBottomText:GetPreferredHeight(parts.bottom, innerWidth - 32)
+            bottomHeight = self.tipBottomText:GetPreferredHeight(bottomText, innerWidth - 32)
             plateHeight = bottomHeight + 24
         end
 
@@ -1333,6 +1377,46 @@ script SkillWindowLogic extends Logic
         end
 
         self:PlaceTooltip(panelTransform, height)
+    end
+
+    @ExecSpace("ClientOnly")
+    method string WrapWords(any textComponent, string text, number width)
+        -- 여러 줄 글을 띄어쓰기 자리에서 줄바꿈해 각 줄이 width 안에 들게 한다(엔진은 글자 단위로 꺾어 "스트/라이크" 가 된다).
+        -- 폭 재기 = 그 글자 컴포넌트의 GetPreferredWidth(같은 글꼴 · 크기). 색 태그는 재기 전에 뺀다. 한 단어가 폭보다 길면 그 단어만 엔진에 맡긴다.
+        if not self.TooltipWordWrap or textComponent == nil or text == nil or text == "" then return text end
+        local limit = width - self.TooltipWrapSlack
+        local out = {}
+        for line in string.gmatch(text .. "\n", "([^\n]*)\n") do
+            table.insert(out, self:WrapLine(textComponent, line, limit))
+        end
+        return table.concat(out, "\n")
+    end
+
+    @ExecSpace("ClientOnly")
+    method string WrapLine(any textComponent, string line, number limit)
+        -- 한 줄(줄바꿈 없음)을 단어 단위로 나눈다. 들어가면 그대로 돌려준다(띄어쓰기 모양 유지).
+        if textComponent:GetPreferredWidth(self:StripTags(line)) <= limit then return line end
+        local lines = {}
+        local cur = ""
+        for word in string.gmatch(line, "%S+") do
+            local candidate = word
+            if cur ~= "" then candidate = cur .. " " .. word end
+            if cur ~= "" and textComponent:GetPreferredWidth(self:StripTags(candidate)) > limit then
+                table.insert(lines, cur)
+                cur = word
+            else
+                cur = candidate
+            end
+        end
+        if cur ~= "" then table.insert(lines, cur) end
+        return table.concat(lines, "\n")
+    end
+
+    @ExecSpace("ClientOnly")
+    method string StripTags(string text)
+        -- 폭 재기용: <color=…> · </color> 같은 서식 태그를 뺀 보이는 글자만.
+        local plain = string.gsub(text, "<[^>]*>", "")
+        return plain
     end
 
     @ExecSpace("ClientOnly")
@@ -1689,6 +1773,8 @@ script SkillWindowLogic extends Logic
         if self.tabBtn0StateHandler ~= nil then self.tabBtn0.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtn0StateHandler) end
         if self.tabBtn1StateHandler ~= nil then self.tabBtn1.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtn1StateHandler) end
         if self.tabBtn2StateHandler ~= nil then self.tabBtn2.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtn2StateHandler) end
+        if self.tabBtnNoviceHandler ~= nil then self.tabBtnNovice.Entity:DisconnectEvent(ButtonClickEvent, self.tabBtnNoviceHandler) end
+        if self.tabBtnNoviceStateHandler ~= nil then self.tabBtnNovice.Entity:DisconnectEvent(ButtonStateChangeEvent, self.tabBtnNoviceStateHandler) end
         if self.keyDownHandler ~= nil then
             _InputService:DisconnectEvent(KeyDownEvent, self.keyDownHandler)
             self.keyDownHandler = nil
