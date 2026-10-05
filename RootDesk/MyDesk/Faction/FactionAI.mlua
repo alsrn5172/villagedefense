@@ -79,6 +79,20 @@ script FactionAI extends Component
 	@HideFromInspector
 	property boolean TargetWasCore = false
 
+	-- 정지선 탐색 비용 절감: 적 넥서스 캐시 수명 · 정지선 앞 적 재탐색 주기(초)
+	property number ApproachCoreCacheSeconds = 2.0
+
+	property number FrontScanInterval = 0.9
+
+	@HideFromInspector
+	property any ApproachCoreCache = nil
+
+	@HideFromInspector
+	property number ApproachCoreCacheAt = -100
+
+	@HideFromInspector
+	property number FrontScanAt = -100
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 팀에 따라 전진 방향을 정하고 전진 상태로 시작한다.
@@ -313,6 +327,18 @@ script FactionAI extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method Entity CachedApproachCore()
+		-- 적 넥서스를 ApproachCoreCacheSeconds 동안 기억한다(죽었거나 사라지면 바로 다시 찾는다).
+		local now = _UtilLogic.ElapsedSeconds
+		local c = self.ApproachCoreCache
+		if isvalid(c) and not self:IsDeadEntity(c) and now - self.ApproachCoreCacheAt < self.ApproachCoreCacheSeconds then return c end
+		c = self:FindApproachCore()
+		self.ApproachCoreCache = c
+		self.ApproachCoreCacheAt = now
+		return c
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean IsAtApproachStopLine(number myX)
 		-- 정지선은 관성 보정(ApproachSlide)을 반영한 전진 시작 지점이다.
 		if not self.ApproachActive or self.ResolvedDir == 0 then return false end
@@ -456,9 +482,16 @@ script FactionAI extends Component
 			local nextTarget = self:FindNearestEnemy()
 			local myX = self.Entity.TransformComponent.WorldPosition.x
 			if self.ApproachActive and self:IsAtApproachStopLine(myX) then
-				local core = self:FindApproachCore()
+				local core = self:CachedApproachCore()
 				if isvalid(core) then
-					nextTarget = self:FindFrontApproachEnemy(core)
+					local now = _UtilLogic.ElapsedSeconds
+					local keep = self.TargetEntity
+					if isvalid(keep) and not self:IsDeadEntity(keep) and now - self.FrontScanAt < self.FrontScanInterval then
+						nextTarget = keep
+					else
+						nextTarget = self:FindFrontApproachEnemy(core)
+						self.FrontScanAt = now
+					end
 				else
 					nextTarget = nil
 				end
