@@ -68,6 +68,12 @@
 - 배선: `ruid-map.json` 의 `emblem_<마을>` 5키를 새 RUID 로 · `intro_grow` · `intro_defend` 추가 · `Npc/CommonNpcUIController.EmblemRuids` 5개 교체 · `ui/CommonNpcGroup`(차원문 · 택시 카드 · 파병 · NPC 비용) 15칸의 문장 그림을 `swap-emblems.cjs` 로 새 RUID 로 바꿨다(옛 RUID 참조 0 확인).
 - 소개: 1쪽 카드 아이콘 `ico_sword` → `intro_grow` · `ico_home` → `intro_defend`("쓰러뜨리기"는 그대로) · 5쪽(방어선) 그림 판을 260 → 340 으로 키워 아래에 마을 문장 5개 한 줄 + 마을 이름. 이 판에 맞춰 `apply-intro-coach.cjs` 를 고쳐 `.ui` 3개를 다시 만들었다(스크립트가 UUID 를 새로 매겨 `.ui` · 두 컨트롤러의 property UUID 가 같이 바뀜).
 
+### ⑱ 디자인팀 2차 통합 — 도움말 탭 · 재화 · 아이템 도감 · 알림 카드 · 안내 재배치 (사용자 "재화 아이템 도감 · 처음부터 구현 · 켰던 것 이어 켜기" · 디자이너 PC 산출물 `리소스파일/msw (2)/msw/강화하고살아남기`)
+- 디자이너 2차 파일을 3-way 병합(기준 = 1차 ZIP · 우리 = ⑯⑰ 반영본 · 상대 = 2차): `Onboarding/GameIntroController` · `CoachMarkController` 병합, `OnboardingService` · `TipController`(+ `.codeblock`) · `ui/TipGroup` 새로, `Docs/tools/design-ui/apply-intro-coach.cjs`(인자 `intro` · `coach` · `hud` · `tip`) 2차본 + 우리 §4(앰블럼 · 소개 카드 그림) 유지, `Docs/Changelog/a-design-ui-intro-coach.md` 2차본. 디자이너 `.ui` 4개는 생성기 출력과 UUID 만 다르다(정규화 비교로 확인) → 이 저장소에서 생성기를 다시 돌려 만들었다.
+- 내용(디자이너 2차): 도움말(H) 창 탭 4개 = 게임 소개 7쪽 · **재화 · 아이템 11칸**(메소 · 보석 12종 · 빅토리아 주화 · 지역 재화 5종 · 몬스터 재료 14종 · 꿈의 조각 · 낙인의 영혼석 · 에너지 코어 · 단풍 봉인석 · 발록의 심장 · 누가 무엇을 주나) · 마을 NPC(4구역 10명 + 리스항구 · 로비) · 조작키 + '안내 다시 보기'. **H 로 다시 열면 마지막에 본 탭 · 쪽으로 열린다**(휘발성 · 클라 메모리). 처음 하는 사람(계정 경험치 0)에게만 자동으로 열림. 알림 카드 8종(`TipController` · `ui/TipGroup`) · 안내 재배치(로비 매치 안내원 1 · 매치 시작 · 마을 자동 3) · `OnboardingService`(서버 반쪽 · `MatchPhaseChangedEvent` · `VillageClaimedEvent`).
+- **이 브랜치 규칙에 맞게 고친 것**: ① Esc 는 `UIEscStack` 한 곳만 받는다(디자이너 `OnKeyDown` 의 Esc 처리 · `CoachMarkController.OnKeyDown` 제거 · 안내가 다른 창에 비켜 선 동안(`paused`)은 Esc 대상 아님) ② 채팅 입력 중 H · ← → 무시 유지 ③ 시작 킷 자동 착용(§2-4)이 들어왔으므로 안내 매치 시작 묶음에서 '장비' 단계를 뺐다(디자이너 인계 사항 · 무기 카드는 무기 칸이 비었을 때만 뜨므로 그대로) ④ 도감 · 소개 글을 이 브랜치 규칙에 맞춤: 사망은 언제나 메소 5,000 / 경험치 50% 선택(⑬) · 물약 9가지 30 ~ 900(§2-9) · 빅토리아 주화 엘리트 20 · 40 · 60개 + 웨이브 미니언 20 ~ 30% 로 10개(§2-13) · 꿈의 조각 지역 보스 60개 · 엘리트 8 · 16 · 24개(§2-1 · §2-16) · 자동 AP 분배 문장(§2-3).
+- 내가 읽은 디자이너 보고서(Artifact)는 Chrome 으로 열어서 봤다(Artifact 도구가 남의 글 읽기 승인을 요구하는데 이 세션은 승인 창을 못 띄워서).
+
 ### WO-050 §2 보완 요청 22건 (사용자 "보상 2배 · 자동 AP · 시작 장비 · 노틸러스 NPC · 신규 물약 · 명중 회피 · 로딩 화면 · 피격 넉백 등 고치자 / 다같이해" · 구현 = A · Codex gpt-6-luna 분담)
 - **2-1 사냥 보상 2배** — `SummonManager.HuntRewardMul = 2.0`(정식 밸런스 · 테스트 임시값 아님)을 `FarmReward`(일반 · 엘리트 메소 · 미니언 `MonsterId=0` 제외) · `DropTableLogic`(젬 · 몬스터 재료 · `REGION_*` 제외) · `EliteSpawner`(꿈 조각 · 영혼석)에서 한 번씩만 곱한다. `EliteSpawner.EliteDreamMul = 2`(엘리트 전용 꿈 조각 ×2 · 사냥 ×2 와 겹쳐 ×4).
 - **2-2 `REGION_LOCAL` 원복** — `DropTable.csv` GROUND 사냥터1/2/3 `REGION_LOCAL` 3행을 2배 변경 전 값(0.35×1 · 0.75×1 · 1.0×3~4)으로 손으로 되돌렸다. `MONSTER` 행 · ★5 `REGION_DROP_MUL` 은 그대로.
@@ -111,6 +117,9 @@
 - [ ] ⑯ 외형 선택 뒤 게임 소개가 자동으로 뜨고 ← → 로 7쪽 · ESC 로 닫힘(안내 · 다른 창과 겹치면 최근 것부터 하나씩) · 채팅 입력 중 H 무시 · 도움말 버튼(캐릭터 버튼 왼쪽) · 게임 시작하기 → 안내 1→4.
 - [ ] ⑰ 차원문 · 택시 · 파병 카드의 마을 문장이 새 그림 · 소개 1쪽 카드 · 5쪽 마을 문장 5개 줄이 겹침 없이 보임.
 - [ ] ③ 출시본 콘솔에서 `[NameTag] plate preload failed` 경고가 나오는지.
+- [ ] ⑱ 로비: 처음 하는 사람(계정 경험치 0)이 외형을 고르면 도움말이 자동으로 열림 · 탭 4개 · 재화 11칸을 ← → 로 · H 로 닫았다 다시 열면 마지막 탭 · 쪽 · '안내 다시 보기'.
+- [ ] ⑱ 도움말이 열린 동안 ← → ↑ ↓ · 점프 · 공격이 캐릭터를 움직이지 않음 · Esc 한 번에 창 하나만 닫힘 · 채팅 입력 중 H 무시.
+- [ ] ⑱ 매치 시작 안내(시계 → 목표 바 → 월드맵 → 사냥터 점 · 장비 단계 없음) · 알림 카드 8종(무기 카드는 안 떠야 정상) · 마을 차지 직후 안내.
 - [ ] **Reimport All(이 브랜치) → 새 스크립트 3개 · `.codeblock`**: `Lane/ClickHereMarker` · `Map/LoadingScreenController` · `Onboarding/*` — 빌드 경고 0. 새 `.codeblock` 은 머지 뒤 `chore: commit group-world Reimport output` PR 로.
 - [ ] 2-1/2-13 일반 · 엘리트 몬스터 메소 · 재료 2배 · 주화 확률 · 개수(`[Minion] coin drop=`).
 - [ ] 2-3 스탯창 "자동 분배" 토글(기본 켬) · 레벨업 AP 가 주스탯으로 · 끄면 직접 · 1차 전직 환급 후 재분배.
