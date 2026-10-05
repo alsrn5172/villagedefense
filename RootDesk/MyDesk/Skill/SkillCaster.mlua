@@ -101,6 +101,11 @@ script SkillCaster extends Logic
         -- 양쪽 인스턴스 모두. 스킬별 락 길이 (초).
         self.castLockOverrides = {
             SK_M11 = 0.4,
+            -- 버프 변형(b/skill-raging-blow-flame-haze · 락 키 = 변형 키): 레이징 블로우 = 원작 1120017 동작 ragingBlowNew ~ New4 한 번 길이
+            --   (maplestory.io KMS 389 Character/00002000.img 프레임 지연 합 · 네 동작 모두 780ms) · 플레임 헤이즈 = 에너지볼트와 같은 0.4(사용자 결정 · 원작 flameHaze 동작은 KMS 359 = 1.44s(0.81 + 0.63 · 영상 레드/2020 과 같은 판) · KMS 389 = 1.17s).
+            --   2026-10-05: 몸 동작 1.44s 를 붙였다(effectOverrides.SK_M11_FH.bodyFrames) — 락 0.4 / 0.81 / 1.44 는 후보 키트 pfhv 로 사용자가 고른다.
+            SK_W11_RB = 0.78,
+            SK_M11_FH = 0.4,
             -- b/skill-magician: 매직 가드(버프 시전 모션) · 대마법(원작 오리진 스킬처럼 컷신이 끝날 때까지 못 움직인다:
             -- Duration 1.0 텔레그래프 + 낙뢰 임팩트 파티클 ≈1.5s → 2.5s. 2026-09-09 "이펙트 중 움직인다" 제보로 1.2 → 2.5).
             -- 이동 스킬(SK_M13 텔레포트 · SK_M21 텔레포트 강화)은 락 없음(IsMovementSkill).
@@ -245,7 +250,17 @@ script SkillCaster extends Logic
         end
         -- 재시전 스킬(에너지 차지): 그 버프가 미러에 켜져 있으면 쿨다운 게이트를 건너뛴다(서버가 다시 판정).
         local isRecast = _SkillBuffs ~= nil and _SkillBuffs:LocalIsRecastActive(skillId)
-        if not isRecast and _PlayerSkillState:LocalIsOnCooldown(skillId) then
+        -- 버프 변형(b/skill-raging-blow-flame-haze): 불굴의 진 중 파워 스트라이크 = 레이징 블로우 · 매직 가드 중 에너지볼트 = 플레임 헤이즈.
+        --   변형은 원래 스킬 쿨다운을 보지 않고(자기 쿨 0) · MP 는 변형 값 · 시전 락 키는 변형 키. 서버 RequestCast 와 같은 규칙.
+        local variant = ""
+        if _SkillBuffs ~= nil then variant = _SkillBuffs:LocalVariantOf(skillId) end
+        -- 레이징 블로우는 불굴의 진 컷신이 끝난 뒤에만(#40 5988186219): 컷신 중엔 파워 스트라이크 키 자체를 막는다(SkillBuffs.LocalVariantBlockedNow). 서버 RequestCast 와 같은 규칙.
+        if _SkillBuffs ~= nil and _SkillBuffs:LocalVariantBlockedNow(skillId) then
+            return self:FinishCast(skillId, { ok = false, reason = "variant waits for the cutscene to end" })
+        end
+        local vspec = nil
+        if variant ~= "" then vspec = _SkillBuffs:VariantSpec(skillId) end
+        if not isRecast and variant == "" and _PlayerSkillState:LocalIsOnCooldown(skillId) then
             local remaining = _PlayerSkillState:LocalCooldownRemaining(skillId)
             return self:FinishCast(skillId, { ok = false, reason = "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)" })
         end
@@ -255,6 +270,7 @@ script SkillCaster extends Logic
         --    내림 위치도 맞췄다 — 예전엔 클라만 내림 없이 비교해서(예: 7.5 vs 7) 서버보다 미세하게 엄했다.
         -- 레벨별 MP(b/skill-novice-snails · 달팽이 세마리 10/15/20): SkillDatabase.MpCostAt = levelValues.mp 가 있으면 그 값, 없으면 CSV MpCost(예전과 같다).
         local mpBase = _SkillDatabase:MpCostAt(skillId, level)
+        if vspec ~= nil and vspec.mpCost >= 0 then mpBase = vspec.mpCost end
         if isRecast then mpBase = mpBase * skill.recastMpCostMul end
         local mpCost = math.floor(mpBase)
         if _SkillBuffs ~= nil then mpCost = math.floor(mpBase * _SkillBuffs:LocalMpCostMul()) end
@@ -289,7 +305,9 @@ script SkillCaster extends Logic
             self:RequestCast(skillId, castId)
             return self:FinishCast(skillId, { ok = true, reason = "requested (cast #" .. tostring(castId) .. ", movement " .. tostring(moved.branch) .. ", no lock)" })
         end
-        local lockSeconds = self:GetCastLockSeconds(self:CastLockKey(skillId, isRecast))
+        local lockKey = self:CastLockKey(skillId, isRecast)
+        if variant ~= "" then lockKey = variant end
+        local lockSeconds = self:GetCastLockSeconds(lockKey)
         self.castLockActive = true
         self.activeCastId = castId
         self:LockPresentation(castId, skillId)
@@ -498,7 +516,17 @@ script SkillCaster extends Logic
         end
         -- 4. 쿨다운 — 재시전 스킬(에너지 차지 SK_P21)은 그 버프가 켜져 있는 동안 건너뛴다(SkillBuffs.IsRecastActive).
         local isRecast = _SkillBuffs ~= nil and _SkillBuffs:IsRecastActive(uid, skillId)
-        if not isRecast and _PlayerSkillState:IsOnCooldown(uid, skillId) then
+        -- 버프 변형(b/skill-raging-blow-flame-haze · SkillBuffs.VariantOf): 원래 스킬 쿨다운을 보지 않고 · MP 는 변형 값 · 락 키 · 모션 · 실행기는 변형으로.
+        local variant = ""
+        if _SkillBuffs ~= nil then variant = _SkillBuffs:VariantOf(uid, skillId) end
+        -- 레이징 블로우는 불굴의 진 컷신이 끝난 뒤에만(#40 5988186219 · SkillBuffs.VariantBlockedNow): 컷신 중엔 파워 스트라이크도 레이징 블로우도 안 나간다.
+        if _SkillBuffs ~= nil and _SkillBuffs:VariantBlockedNow(uid, skillId) then
+            self:CastResult(skillId, false, "variant waits for the cutscene to end", 0, castId, uid)
+            return
+        end
+        local vspec = nil
+        if variant ~= "" then vspec = _SkillBuffs:VariantSpec(skillId) end
+        if not isRecast and variant == "" and _PlayerSkillState:IsOnCooldown(uid, skillId) then
             local remaining = _PlayerSkillState:GetCooldownRemaining(uid, skillId)
             self:CastResult(skillId, false, "on cooldown (" .. tostring(math.floor(remaining * 10) / 10) .. "s left)", 0, castId, uid)
             return
@@ -559,6 +587,7 @@ script SkillCaster extends Logic
         -- 매직 가드(SK_M22) 활성 중엔 소모 ×1.5 (SkillBuffs.GetMpCostMul · 추가기획1 "스킬 사용 시 소모 MP 가 50% 증가").
         -- 레벨별 MP(b/skill-novice-snails · 달팽이 세마리 10/15/20): SkillDatabase.MpCostAt = levelValues.mp 가 있으면 그 값, 없으면 CSV MpCost(예전과 같다).
         local mpBase = _SkillDatabase:MpCostAt(skillId, level)
+        if vspec ~= nil and vspec.mpCost >= 0 then mpBase = vspec.mpCost end
         if isRecast then mpBase = mpBase * skill.recastMpCostMul end
         local mpCost = math.floor(mpBase)
         if _SkillBuffs ~= nil then mpCost = math.floor(mpBase * _SkillBuffs:GetMpCostMul(uid)) end
@@ -577,7 +606,9 @@ script SkillCaster extends Logic
         end
 
         -- 게이트 통과 — 상태 확정 순서: 시전 락 → 쿨다운 → 사용 횟수 → 모션(시전당 1회) → 실행기 → 이벤트.
-        local lockSeconds = self:GetCastLockSeconds(self:CastLockKey(skillId, isRecast))
+        local lockKey = self:CastLockKey(skillId, isRecast)
+        if variant ~= "" then lockKey = variant end
+        local lockSeconds = self:GetCastLockSeconds(lockKey)
         if isMove then
             lockSeconds = 0   -- 이동 스킬은 락을 걸지도, 진행 중 락을 늘리지도 않는다.
         else
@@ -609,7 +640,10 @@ script SkillCaster extends Logic
         --      (차지 중에는 같은 키를 계속 눌러야 하므로 쿨다운 표시가 뜨면 안 된다).
         --   ③ 나머지: 예전대로 시전 즉시 시작.
         local cooldown = _SkillDatabase:CooldownAt(skillId, level)
-        if isRecast then
+        if vspec ~= nil then
+            -- 변형: 원래 스킬 쿨다운은 시작하지 않는다(버프가 끝나면 원래 스킬을 바로 쓸 수 있다) · 변형 자체 쿨타임(지금 둘 다 0)은 슬롯 표시용으로만 돌려준다.
+            cooldown = vspec.cooldown
+        elseif isRecast then
             cooldown = _PlayerSkillState:GetCooldownRemaining(uid, skillId)
         elseif self.cooldownStartsAtBuffEnd[skillId] then
             cooldown = 0
@@ -629,6 +663,7 @@ script SkillCaster extends Logic
             -- 재시전(변신 중 주먹)은 WeaponMotion 의 "<SkillId>_RECAST" 행(스크류 펀치 = swingP2)을 먼저 찾고, 없으면 무기 기본 행으로 폴백한다(PlayerMotion.Find).
             local motionId = skillId
             if isRecast then motionId = skillId .. "_RECAST" end
+            if variant ~= "" then motionId = variant end   -- 변형 모션(SkillExecutors.PlayMotion 이 변형 키를 따로 푼다)
             -- 이동 스킬은 전용 행만(ownRowOnly = isMove) · 나머지는 전용 행 → 무기 기본 공격 행.
             _SkillExecutors:PlayMotion(uid, motionId, isMove)
         end
@@ -659,7 +694,7 @@ script SkillCaster extends Logic
         end
         self:SendEvent(evt)
 
-        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " recast=" .. tostring(isRecast) .. " (" .. uid .. ")")
+        log("SkillCaster: cast " .. skillId .. " ok=true lv=" .. tostring(level) .. " cd=" .. tostring(cooldown) .. " lock=" .. tostring(lockSeconds) .. " mp=" .. tostring(mp) .. " mpCost=" .. tostring(mpCost) .. " recast=" .. tostring(isRecast) .. " variant=" .. (variant ~= "" and variant or "-") .. " (" .. uid .. ")")
         self:CastResult(skillId, true, "ok", cooldown, castId, uid)
     end
 

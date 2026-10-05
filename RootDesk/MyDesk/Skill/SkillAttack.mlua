@@ -87,6 +87,14 @@ script SkillAttack extends AttackComponent
     @HideFromInspector
     property number PendingImpactScale = 1
 
+    -- 다음 SpawnProjectile 한 번에만(b/skill-raging-blow-flame-haze · 플레임 헤이즈): 스킬 자체 피해 배율(매직 가드 추가 피해는 빼고 · SkillProjectile.BaseDamageMul) · 맞은 자리마다 더 트는 그림(쉼표 구분 RUID · 연출만).
+    --   호출자(SkillExecutors.ExecuteFlameHaze)가 호출 직전에 넣고 SpawnProjectile 첫 줄이 읽고 비운다(다른 스킬로 새지 않게).
+    property number PendingProjectileDamageMul = 1
+    property string PendingProjectileExtraHitCsv = ""
+    -- 다음 SpawnProjectile 한 번에만(2026-10-05 · 플레임 헤이즈): 연출 값을 볼 effectOverrides 키(SK_M11_FH). 폭발 그림 높이(GetImpactOffsetY) · 불꽃 붙이기(SkillProjectile.EffectKey → PlayMobFlame).
+    --   빈 값 = 예전대로 스킬 id(SK_M11 = 에너지볼트 값). 호출자가 넣고 SpawnProjectile 첫 줄이 읽고 비운다.
+    property string PendingProjectileEffectKey = ""
+
     -- 연속 타격 표식(b/skill-pirate-effects 2026-09-27 · 피스트인레인지 10타): 2타째부터 attackInfo = 스킬 id .. 이 표식 .. 번호("SK_P21#2").
     -- 몬스터 무적 0.4s(A 의 Faction/MonsterHit.IsHitTarget)를 "같은 시전의 다음 타격" 만 건너뛰게 할 때 A 가 이 표식을 본다(#40 제안). 피해 값은 BaseSkillId 로 원래 id.
     property string SequenceHitTag = "#"
@@ -627,6 +635,25 @@ script SkillAttack extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
+    method integer DealSkillDamageScaled(string skillId, number level, table shape, number mul, number displayHits)
+        -- DealSkillDamage 와 같은 상자 판정에 피해 배율 · 표시 타수를 따로 준다(b/skill-raging-blow-flame-haze · 레이징 블로우 = 파워 스트라이크 % × 0.8 × 4타 · 표시 4).
+        -- 한 번의 AttackFast 라 4타가 같은 대상에 들어가고 넉백 · 경직은 한 번(몬스터 쪽 0.4s 간격 규칙 그대로). 대상 상한 = PendingMaxTargets.
+        -- 돌려주는 값 = 상한으로 고른 대상 수(상한이 없으면 -1). 실행기가 "시전당 한 번" 명중음을 낼지 정한다.
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        self:CapTargetsByShape(skillId, self.Shape, self.PendingMaxTargets)
+        local chosen = -1
+        if self.CappedTargets ~= nil then chosen = #self.CappedTargets end
+        self:BeginPass(skillId, level, mul, displayHits)
+        self:AttackFast(self.Shape, skillId, CollisionGroups.Monster)
+        self:EndPass()
+        log("SkillAttack: dealt scaled " .. skillId .. " lv=" .. tostring(level) .. " mul=" .. tostring(mul) .. " display=" .. tostring(displayHits) .. " targets=" .. tostring(chosen))
+        return chosen
+    end
+
+    @ExecSpace("ServerOnly")
     method boolean DealSkillDamageToTargetAmount(string skillId, number level, Entity target, integer amount, number displayHits, integer critLocked)
         -- 단일 대상 타격 · 피해 = amount 그대로(정수) · 크리 = critLocked(-1 = 타격 시점 판정 · 0 = 아님 · 1 = 크리).
         -- 시전 순간에 대상 · 피해 · 크리를 고정해 두고 타격 시점에 한 번만 넣는 스킬이 쓴다(파워 스트라이크 · skill-maker 원장 PAJ-01/02 (a)).
@@ -688,6 +715,13 @@ script SkillAttack extends AttackComponent
     --   실행기 effectOverrides[skill].explode 에서 온다. 빈 표 / 크기 0 = 폭발 없음(예전처럼 닿은 것만).
     @ExecSpace("Server")
     method void SpawnProjectile(string skillId, number level, string projectileModelId, number range, number speed, number hitCount, string hitEffectRuid, number spawnOffsetY, string spriteRuid, string hitSoundRuid, boolean preferBoss, number spawnOffsetX, number spriteScale, table explode)
+        -- 한 번짜리 덮기 값(PendingProjectile*)을 먼저 받아 두고 비운다 — 관전자 차단 등으로 일찍 끝나도 다음 시전으로 새지 않게.
+        local extraMul = self.PendingProjectileDamageMul
+        local extraHitCsv = self.PendingProjectileExtraHitCsv
+        local effectKey = self.PendingProjectileEffectKey
+        self.PendingProjectileDamageMul = 1
+        self.PendingProjectileExtraHitCsv = ""
+        self.PendingProjectileEffectKey = ""
         -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
         if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local caster = self.Entity
@@ -773,10 +807,21 @@ script SkillAttack extends AttackComponent
             mover.ExplodeSizeY = explode.sizeY
             mover.ExplodeCenterY = explode.centerY or 0
             mover.ExplodeMaxTargets = math.floor(explode.maxTargets or 0)
-            explodeText = tostring(explode.sizeX) .. "x" .. tostring(explode.sizeY) .. "@" .. tostring(mover.ExplodeCenterY) .. " max=" .. tostring(mover.ExplodeMaxTargets)
+            -- 폭발 그림 한 번(플레임 헤이즈 · #40 5988186874): explode.impactOnce 면 대상마다 그리지 않고 폭발당 한 번(SkillProjectile.ExplodeImpactOnce).
+            mover.ExplodeImpactOnce = explode.impactOnce == true
+            explodeText = tostring(explode.sizeX) .. "x" .. tostring(explode.sizeY) .. "@" .. tostring(mover.ExplodeCenterY) .. " max=" .. tostring(mover.ExplodeMaxTargets) .. " impactOnce=" .. tostring(mover.ExplodeImpactOnce)
         end
         -- 럭키 세븐 1 대상(b/skill-thief-effects · effectOverrides spawn.singleTarget): 판정마다 상자 안 몬스터 하나만(조준 대상 우선).
         mover.SingleTargetOnly = single
+        -- 플레임 헤이즈(b/skill-raging-blow-flame-haze): 스킬 몫만 × extraMul(에너지볼트 % × 2 · 매직 가드 추가 피해는 그대로 · 사용자 2026-10-02) · 표시 타수는 그대로 · 맞은 자리 추가 그림.
+        mover.BaseDamageMul = 1
+        if extraMul ~= nil and extraMul > 0 and extraMul ~= 1 then mover.BaseDamageMul = extraMul end
+        if extraHitCsv ~= nil and extraHitCsv ~= "" then mover.ExtraHitEffectCsv = extraHitCsv end
+        -- 연출 키(플레임 헤이즈 SK_M11_FH · 2026-10-05): 폭발 그림 높이를 그 키의 impact.offsetY 로(에너지볼트 0.20 을 물려받지 않게) · 불꽃은 그 키로 PlayMobFlame.
+        if effectKey ~= nil and effectKey ~= "" then
+            mover.EffectKey = effectKey
+            if _SkillExecutors ~= nil and mover.HitEffectRUID ~= "" then mover.HitEffectOffsetY = _SkillExecutors:GetImpactOffsetY(effectKey) end
+        end
         -- 유도 대상만(b/skill-archer-effects · 스나이핑): 유도 대상(보스 우선)만 맞는다 — 판정 상자에 겹친 다른 몬스터는 제외 · 대상이 사라지면 화살도 사라진다.
         --   #115 의 SingleTargetOnly(럭키 세븐)와 뜻이 달라 이름을 HomingTargetOnly 로 나눴다(main 6519369 병합 · 2026-10-04).
         mover.HomingTargetOnly = self:IsSingleTargetProjectile(skillId)
@@ -833,7 +878,7 @@ script SkillAttack extends AttackComponent
         log("SkillAttack: spawned projectile " .. skillId .. " speed=" .. tostring(speed)
             .. " lifetime=" .. tostring(lifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName .. " volley=" .. tostring(hitCount)
             .. " sprite=" .. tostring(spriteRuid ~= "") .. " scale=" .. tostring(sc) .. " preferBoss=" .. tostring(preferBoss) .. " explode=" .. explodeText
-            .. " perShot=" .. tostring(perShot) .. " single=" .. tostring(single)
+            .. " perShot=" .. tostring(perShot) .. " single=" .. tostring(single) .. " dmgMul=" .. tostring(mover.DamageMul) .. " baseMul=" .. tostring(mover.BaseDamageMul)
             .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
             .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * ox) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end
