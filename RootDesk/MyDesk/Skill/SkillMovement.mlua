@@ -30,6 +30,9 @@ script SkillMovement extends Logic
     -- 벽·발판 끝 착지 때 안쪽으로 물러나는 여유. 발판 선 위에 정확히 놓이지 않게만 한다.
     property number LandingClearance = 0.03
 
+    -- 닷지 착지: 스폰 지점에서 아래로 바닥(수평 발판)을 찾는 거리(world unit). 이 안에 없으면 스폰 지점 그대로.
+    property number DodgeFloorSearch = 5
+
     -- 상하 텔레포트: 현재 서 있는 발판 자체를 후보에서 빼기 위한 최소 이동량.
     property number VerticalMinTravel = 0.2
 
@@ -39,6 +42,13 @@ script SkillMovement extends Logic
 
     -- 발판 체인 추적 상한(무한 루프 방지).
     property integer MaxChainSteps = 64
+
+    -- 더블 점프(SK_N02 · 초보자 스킬 · b/skill-novice-double-jump 2026-10-02 · A 답 #40 5927820330 Q6). SkillHotbar 가 공중 점프 키에서 부른다.
+    --   플레이어 위치의 소유자는 그 클라다(위 텔레포트와 같은 원칙) → 소유 클라가 RigidbodyComponent:SetForce 로 바로 민다. 서버는 이펙트 · 소리 · MP · 로그만(SkillExecutors.RequestDoubleJump).
+    --   앞 힘 = 스킬 거리값(SkillDatabase.RatioAt · CSV BaseEffect 1.5 + 0.5/레벨) × DoubleJumpForceScale · 위 힘 = DoubleJumpLift. 둘 다 임시값 — Play 에서 착지 거리를 재서 맞춘다.
+    property number DoubleJumpForceScale = 2.0
+
+    property number DoubleJumpLift = 1.4
 
     -- 스폰 로케이션으로 가는 BLINK 행(skillId -> true). BuildTables 에서 채운다. 닷지 SK_A22.
     property table spawnBlinkSkills = {}
@@ -55,6 +65,13 @@ script SkillMovement extends Logic
 
     @HideFromInspector
     property boolean hasEntryPos = false
+
+    -- [서버] 이동 스킬의 출발 좌표(userId -> { skillId, x, y, at }). 클라가 옮기기 전에 ReportBlinkOrigin 으로 보낸다 · TakeBlinkOrigin 이 한 번 꺼내고 지운다.
+    @HideFromInspector
+    property table blinkOrigins = {}
+
+    -- 출발 좌표를 믿는 시간(초). 이보다 오래된 보고는 버린다(시전이 서버에서 거절된 경우의 찌꺼기).
+    property number BlinkOriginMaxAge = 2
 
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
@@ -81,6 +98,31 @@ script SkillMovement extends Logic
                 log("SkillMovement: map entry recorded " .. map.Name .. " at (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
             end
         end
+    end
+
+    @ExecSpace("ClientOnly")
+    method table TryDoubleJump(string skillId, number level)
+        -- 로컬 플레이어를 공중에서 한 번 더 민다. 반환 { ok, reason, dirX, fx, fy, fromX, fromY }. ok=false 면 아무것도 안 바꿨다.
+        -- 방향 = 누른 좌우 방향키 → 없으면 바라보는 쪽(ResolveDirection 의 좌우 · 위/아래만 눌렸으면 바라보는 쪽).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return { ok = false, reason = "no local player" } end
+        local body = player.RigidbodyComponent
+        if not isvalid(body) then return { ok = false, reason = "no rigidbody" } end
+        if body:IsOnGround() then return { ok = false, reason = "on ground" } end
+        local controller = player.PlayerControllerComponent
+        local dir = self:ResolveDirection(controller)
+        local dirX = dir.x
+        if dirX == 0 then
+            dirX = 1
+            if isvalid(controller) and controller.LookDirectionX < 0 then dirX = -1 end
+        end
+        local dist = _SkillDatabase:RatioAt(skillId, level)
+        local fx = dirX * dist * self.DoubleJumpForceScale
+        local fy = self.DoubleJumpLift
+        local p = player.TransformComponent.WorldPosition
+        body:SetForce(Vector2(fx, fy))
+        log("SkillMovement: DOUBLE JUMP " .. skillId .. " lv=" .. tostring(level) .. " dist=" .. tostring(dist) .. " force=(" .. tostring(fx) .. "," .. tostring(fy) .. ") from (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
+        return { ok = true, reason = "ok", dirX = dirX, fx = fx, fy = fy, fromX = p.x, fromY = p.y }
     end
 
     @ExecSpace("ClientOnly")
@@ -134,6 +176,23 @@ script SkillMovement extends Logic
                  dirX = dir.x, dirY = dir.y, branch = dest.branch }
     end
 
+    @ExecSpace("Server")
+    method void ReportBlinkOrigin(string skillId, number x, number y)
+        -- 클라 → 서버: 이동 직전의 발 위치. 이펙트 자리에만 쓴다(위치·판정은 바꾸지 않는다).
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        self.blinkOrigins[senderUserId] = { skillId = skillId, x = x, y = y, at = _UtilLogic.ServerElapsedSeconds }
+    end
+
+    @ExecSpace("ServerOnly")
+    method any TakeBlinkOrigin(string userId, string skillId)
+        -- ExecuteBlink 가 부른다: 같은 스킬의 최근(BlinkOriginMaxAge 안) 출발 좌표 { x, y } 를 한 번 돌려주고 지운다. 없으면 nil.
+        local o = self.blinkOrigins[userId]
+        self.blinkOrigins[userId] = nil
+        if o == nil or o.skillId ~= skillId then return nil end
+        if _UtilLogic.ServerElapsedSeconds - o.at > self.BlinkOriginMaxAge then return nil end
+        return { x = o.x, y = o.y }
+    end
+
     @ExecSpace("ClientOnly")
     method table TryDodge(string skillId, table skill)
         -- 닷지(SK_A22): 현재 맵의 SpawnLocation(이 맵에 들어온 지점에 가장 가까운 것)으로 즉시 이동. 없으면 맵 입장 위치. 그것도 없으면 취소.
@@ -160,6 +219,16 @@ script SkillMovement extends Logic
             log("SkillMovement: " .. skillId .. " cancelled — no SpawnLocation in " .. tostring(map.Name))
             return { ok = false, reason = "no spawn location" }
         end
+        -- 착지(b/skill-archer-effects 2026-09-29 사용자 결정): 목적지는 표 그대로 스폰 로케이션이지만, 로비 등은 스폰 지점이 바닥보다 1.2 유닛 위라
+        --   도착 뒤 떨어지는 모습이 "뛰는 것" 처럼 보였다 → 스폰 지점 바로 아래 첫 수평 발판(아래로 DodgeFloorSearch 안)에 바로 세운다. 없으면 예전처럼 그 자리.
+        local floorY = self:FindFloorBelow(map.FootholdComponent, dest.x, dest.y)
+        if floorY ~= nil then
+            log("SkillMovement: " .. skillId .. " landing snapped y " .. string.format("%.2f", dest.y) .. " -> " .. string.format("%.2f", floorY) .. " (floor below the spawn point)")
+            dest.y = floorY
+        end
+        -- 출발 이펙트 자리(b/skill-archer-effects 2026-09-28 Play): 서버는 옮겨진 뒤의 위치만 봐서 "출발" 이펙트가 도착점에 떴다 →
+        --   옮기기 전에 출발 좌표를 서버에 먼저 알린다(RequestCast 보다 먼저 가는 Server 호출 · ExecuteBlink 가 depart.atOrigin 일 때 읽는다).
+        self:ReportBlinkOrigin(skillId, origin.x, origin.y)
         movement:SetWorldPosition(Vector2(dest.x, dest.y))
         log("SkillMovement: " .. skillId .. " dodge from=(" .. tostring(origin.x) .. "," .. tostring(origin.y)
             .. ") to=(" .. tostring(dest.x) .. "," .. tostring(dest.y) .. ") branch=" .. dest.branch .. " map=" .. tostring(map.Name))
@@ -340,6 +409,29 @@ script SkillMovement extends Logic
         local branch = "down"
         if dirY > 0 then branch = "up" end
         return { x = origin.x, y = bestY, branch = branch }
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindFloorBelow(any foothold, number x, number y)
+        -- 닷지 착지: (x, y) 에서 아래로 DodgeFloorSearch 안의 가장 가까운 수평 발판 표면 Y(ResolveVertical 과 같은 RaycastAll 방식). 없으면 nil.
+        -- 시작은 y 바로 위(ProbeHeight) — 스폰 지점이 이미 발판 위에 있으면 그 발판(변화 없음)을 잡는다.
+        if not isvalid(foothold) then return nil end
+        local startY = y + self.ProbeHeight
+        local hits = foothold:RaycastAll(Vector2(x, startY), Vector2(0, -1), self.DodgeFloorSearch + self.ProbeHeight)
+        if hits == nil then return nil end
+        local best = nil
+        local bestDist = math.huge
+        for _, fh in ipairs(hits) do
+            if fh ~= nil and not fh:IsVertical() then
+                local fy = fh:GetYByX(x)
+                local d = startY - fy
+                if d >= 0 and d < bestDist then
+                    best = fy
+                    bestDist = d
+                end
+            end
+        end
+        return best
     end
 
     @ExecSpace("ClientOnly")

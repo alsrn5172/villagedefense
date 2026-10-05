@@ -27,6 +27,10 @@ script SkillDatabase extends Logic
 
     property boolean isMotionSetsLoaded = false
 
+    -- 레벨별 값 덮기(b/skill-novice-snails · 2026-10-01): CSV 공식(BaseEffect + EffectPerLevel × (레벨−1))으로 안 나오는 값만 여기 둔다.
+    --   skillId → { effect = { 레벨1, 레벨2, … }, mp = { … } }. 없는 칸은 CSV 그대로. BuildLevelValues 가 채운다(서버 · 클라 양쪽).
+    property table levelValues = {}
+
     method void OnBeginPlay()
         -- Loads every SkillInfo + JobTier row once, into skillsById / jobsByKey.
         self:EnsureLoaded()
@@ -111,7 +115,36 @@ script SkillDatabase extends Logic
         end
 
         self.isLoaded = true
+        self:BuildLevelValues()
         log("SkillDatabase: resolved dataset '" .. self.datasetName .. "', loaded " .. tostring(count) .. " rows")
+    end
+
+    method void BuildLevelValues()
+        -- CSV 공식으로 안 나오는 레벨별 값(levelValues). 달팽이 세마리(SK_N01 · A 답 #40 5891464912 + 5898022370 · 2026-10-01):
+        --   고정 피해 10 / 20 / 40(3레벨이 공식 10 + 10 × 2 = 30 이 아니다) · MP 10 / 15 / 20(SkillInfo 에 레벨별 MP 열이 없다). CSV 행에는 레벨 1 값이 있다.
+        self.levelValues = {
+            SK_N01 = { effect = { 10, 20, 40 }, mp = { 10, 15, 20 } },
+        }
+    end
+
+    method any LevelValue(string skillId, string key, number level)
+        -- levelValues[skillId][key][레벨] 또는 nil(= CSV 공식을 쓴다). 표 끝을 넘는 레벨은 마지막 값.
+        local entry = self.levelValues[skillId]
+        if entry == nil or entry[key] == nil then return nil end
+        local list = entry[key]
+        local i = math.floor(level)
+        if i < 1 then i = 1 end
+        if i > #list then i = #list end
+        return list[i]
+    end
+
+    method number MpCostAt(string skillId, number level)
+        -- 그 레벨의 MP 소모(재시전 배율 · 매직 가드 배율 전). levelValues.mp 가 있으면 그 값, 없으면 CSV MpCost(레벨 무관 · 예전과 같다).
+        local skill = self.skillsById[skillId]
+        if skill == nil then return 0 end
+        local v = self:LevelValue(skillId, "mp", level)
+        if v ~= nil then return v end
+        return skill.mpCost
     end
 
     method void LoadJobs()
@@ -336,6 +369,8 @@ script SkillDatabase extends Logic
             log_warning("SkillDatabase: RatioAt called with unknown skill_id=" .. tostring(skillId))
             return 0
         end
+        local fixed = self:LevelValue(skillId, "effect", level)
+        if fixed ~= nil then return fixed end
         return skill.baseEffect + (level - 1) * skill.effectPerLevel
     end
 
@@ -394,6 +429,13 @@ script SkillDatabase extends Logic
         if skill == nil then
             log_warning("SkillDatabase: DamageAt called with unknown skill_id=" .. tostring(skillId))
             return 0
+        end
+        -- FLAT(b/skill-novice-snails · 2026-10-01): 고정 피해 = RatioAt 그대로(공격력 · 버프 배율 없음). 달팽이 세마리(SK_N01) 10/20/40 — A 답 #40 5898022370 "% 가 아니다".
+        --   다른 FLAT 행(도발 SK_W22 반경 · 텔레포트 SK_M13 · 픽파켓 SK_T12)은 DealSkillDamage 경로를 안 타서 여기 오지 않는다.
+        if skill.effectUnit == "FLAT" then
+            local flat = math.floor(self:RatioAt(skillId, level))
+            log("SkillDatabase: DamageAt " .. skillId .. " lv=" .. tostring(level) .. " FLAT " .. tostring(flat))
+            return flat
         end
         if skill.effectUnit ~= "ATK_PCT" then
             log_warning("SkillDatabase: DamageAt called for skill_id=" .. skillId .. " whose effect_unit is '" .. skill.effectUnit .. "', not ATK_PCT")
