@@ -74,6 +74,13 @@
 - 원인: `Monster.Dead()` 는 `IsDead` 만 세우고 DEAD 전이는 다음 틱이라, 그 사이 추격 상태(`StateTypeChase`)가 계속 밀고 붙은 속도도 남았다.
 - `Monster.Dead()`: 즉시 `MovementComponent:Stop()`. `StateTypeChase.OnUpdate`: `IsDead` 면 멈추고 아무것도 안 한다. (미니언 `FactionAI` 는 원래 멈춘다.)
 
+### 시설 오라 띠 애니메이션 (WO-048 · 사용자 "오라 띠도 넣자 · 크기는 그대로")
+- 고른 안 = 3번 "떠오르는 안개"(24프레임 · 10fps · 2.4초 반복). 크기는 지금 띠와 같은 1200×600 · 가운데 피벗이라 `ApplySize` · 판정 크기 · 위치 · 층(`Default/2`)은 그대로다.
+- 프레임 96장(종류 4 × 24) = 디자이너 정지 띠(투명도 0.9) + 종류 색으로 물들인 안개 겹(투명도 0.9)을 미리 합친 그림 — `Docs/tools/aura-anim/prep.py`(다시 돌려도 바이트 동일 · 장당 최대 201KB · 원본 미리보기와 색 차이 약 1/255) → `upload.cjs`(그룹 `mIYbC` · `aura_mist_<종류>_NN` · 피벗 가운데 · 96장 · 속성 실패 0) → `gen-rows.cjs`.
+- 새 표 `AuraBandArt`(+ `.userdataset` · 행 4: `BASE` · `SPEED` · `ATTACK` · `HEAL` · `Frames` = RUID 24개 `|` · `FrameSec 0.1`) — 계약서 A-2-4d · `check-integrity` 등록(사용자 직접 지시라 #40 공지 생략).
+- `Faction/AuraEmitter`: 서버 `@Sync BandKind`(시설 띠 = 스폰 때 `BASE` → 특성 값이 들어오면 그 종류 · 팀 오라는 `""`) · 서버 그림은 지금처럼 정지 띠. 클라가 표를 읽어 그 종류 프레임을 `PreloadAsync` 로 다 불러온 뒤 0.1초마다 자식 `AuraRect` 의 `SpriteRUID` 를 넘긴다(재생 중 알파 1 · 불러오기 전 · 표가 없을 때는 정지 띠 0.9).
+- 메모리 참고: 한 종류 = 1200×600 × 24장. 실제 판에선 한 맵에 오라 시설이 하나라 한 종류만 불러온다(세 종류가 한 화면에 모이는 건 테스트맵뿐 · 사용자 판단 2026-10-05).
+
 ### 로그 확인 (Maker Play) — TODO
 - [ ] Reimport All(새 `JobMarkController` · 새 모델 등록) → 빌드 경고 0.
 - [ ] Lv9 → 전구 없음 · Lv10 → 5명 머리 위 전구 · 전직하면 사라짐(눈 확인 · 높이 조정 필요할 수 있음).
@@ -81,3 +88,4 @@
 - [ ] 새 판 시작: HP 400/400 · 달팽이 접촉 피해 1~3 · 빨간 달팽이 16 안쪽.
 - [ ] 걷기 속도 절반 · 두 판 연속으로 해도 빨라지지 않는다(`[Stat]` 걷기 속도 로그).
 - [ ] 오른쪽 위 친구 · 메뉴 버튼이 안 보인다.
+- [ ] (WO-048) Reimport All 로 새 표 `AuraBandArt` 등록 → `Test_Lane_Fx` 에서 커닝 · 엘리니아 · 노틸러스 억제기 띠가 안개로 움직임(2.4초 반복 이음매 튐 없음) · 색(하늘 · 주황 · 초록 · 값 들어오기 전 흰색) · 크기 · 위치가 전과 같음 · 플레이어 · 미니언 · 이름표가 띠 앞 · 첫 표시 빈 칸 · 깜빡임 없음(`[AuraEmitter] band table rows=4` · `band preload done` 로그).
