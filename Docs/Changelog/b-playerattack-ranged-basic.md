@@ -92,3 +92,4 @@ B 기본값(한 표 `PlayerAttack.BuildRangedBasic`) — **A 답 #40 5927315886(
 - 숫자 줄 RB-1c · RB-2b FAIL 의 원인 고침: 대상 없는 직선 투사체 수명이 스폰 자리(ox)부터 재서 실제 도달 = ox + Range + 판정 상자 반이었다(활 5.5 · 아대 4.5 · 럭키 세븐 6.35 u). `SkillAttack.FlightFor` 하나에서 스킬 투사체(SpawnProjectile)와 기본 공격(FireBasicProjectile) 모두: 비행 거리 = Range − ox − `UntargetedReachMargin`(0.4) → Range 에서 멈춘다.
 - A #40 5988188261(사용자 결정): 최소 비행 시간 `MinFlightTime` 0.1초 — 대상까지 비행이 이보다 짧으면 속도를 낮추고, 투사체는 0.1초 전엔 맞히지 않는다(`SkillProjectile.MinFlightTime` · 볼리 2발째도).
 - 숫자 줄 재실행 · RELOOK R25(사용자 눈) 대기.
+- 판정 상자 반(0.4)은 상수 복사 대신 스폰된 투사체의 `RangeX ÷ 2` 로 뺀다(`SkillAttack.ApplyReach` · 모델 값이 바뀌어도 맞음).

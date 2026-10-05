@@ -166,9 +166,9 @@ script SkillAttack extends AttackComponent
     property number HomingLifetimeMul = 1.5
 
     -- 대상 없는 직선 투사체가 Range 에서 멈추게(2026-10-05 숫자 줄 RB-1c · RB-2b · 스킬 투사체도 같은 원인): 예전 수명 Range/Speed 는 스폰 자리(ox 앞)부터 재서
-    -- 실제 도달 = ox + Range + 판정 상자 반(SkillProjectile.RangeX 0.8 → 0.4)이었다(활 5.5 · 아대 4.5 · 럭키 세븐 6.35 u). 이제 비행 거리 = Range − ox − 이 값
-    -- → 판정 상자 앞 끝이 시전자 발에서 Range 에 닿으면 사라진다(FlightFor). 유도(대상 있음) 수명은 그대로.
-    property number UntargetedReachMargin = 0.4
+    -- 실제 도달 = ox + Range + 판정 상자 반(SkillProjectile.RangeX ÷ 2)이었다(활 5.5 · 아대 4.5 · 럭키 세븐 6.35 u).
+    -- 이제 비행 거리 = Range − ox − (그 투사체의 RangeX ÷ 2) → 판정 상자 앞 끝이 시전자 발에서 Range 에 닿으면 사라진다(FlightFor + ApplyReach).
+    -- 조준 탐색도 발~Range 상자와 몬스터 충돌 상자의 겹침이라, "조준 안 되는 몬스터는 곧은 투사체도 못 맞힌다" 가 몬스터 크기와 상관없이 맞아떨어진다. 유도(대상 있음) 수명은 그대로.
 
     -- 최소 비행 시간(A #40 5988188261 · 사용자 결정 2026-10-05 "약 0.1초"): 붙어 선 대상(≈1 u 안)은 화살이 0.08초 만에 닿아 그려지기 전에 사라졌다.
     -- 대상까지 비행이 이보다 짧으면 속도를 낮춰 이 시간 동안 날아가게 하고, 투사체는 이 시간 전엔 맞히지 않는다(SkillProjectile.MinFlightTime). 0 = 끔.
@@ -777,6 +777,7 @@ script SkillAttack extends AttackComponent
         local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, firstMul, false, sc)
         self.pendingMinFlight = 0
         if mover == nil then return end
+        self:ApplyReach(mover, flight)
         -- 같은 층 판정: 시전자 발 높이를 넘겨 아래층 몬스터는 명중에서 뺀다(SkillProjectile.IsAttackTarget · 조준은 위 floorY 로 이미 뺐다). 볼리 2발째는 VisualOnly 라 불필요(perProjectileHit 면 2발째도 넣는다).
         mover.SameFloorOnly = true
         mover.FloorY = pos.y
@@ -823,6 +824,7 @@ script SkillAttack extends AttackComponent
                 self.pendingMinFlight = minFlight
                 if volley ~= nil then
                     local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, 1, false, sc)
+                    self:ApplyReach(m2, flight)
                     if m2 ~= nil then
                         m2.Volley = volley
                         table.insert(volley.members, m2)
@@ -832,6 +834,7 @@ script SkillAttack extends AttackComponent
                     end
                 elseif perShot then
                     local m2 = self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, 1, false, sc)
+                    self:ApplyReach(m2, flight)
                     if m2 ~= nil then
                         m2.SameFloorOnly = true
                         m2.FloorY = pos.y
@@ -839,7 +842,7 @@ script SkillAttack extends AttackComponent
                         m2.SingleTargetOnly = single
                     end
                 else
-                    self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc)
+                    self:ApplyReach(self:SpawnOneProjectile(skillId, level, projectileModelId, sp2, map, dirX, t2, speed, lifetime, "", spriteRuid, "", userId, 1, true, sc), flight)
                 end
                 self.pendingMinFlight = 0
             end, (k - 1) * volleyDelay)
@@ -941,13 +944,12 @@ script SkillAttack extends AttackComponent
     @ExecSpace("ServerOnly")
     method table FlightFor(string tag, number range, number speed, number ox, any target, number ahead)
         -- 스킬 투사체(SpawnProjectile) · 기본 공격(FireBasicProjectile) 공통 비행 계산. 반환 { speed, lifetime, minFlight }.
-        --   대상 없음: 비행 거리 = Range − ox − UntargetedReachMargin → Range 에서 멈춘다(사거리 밖 몬스터를 맞히지 않는다).
+        --   대상 없음: 비행 거리 = Range − ox − (투사체 RangeX ÷ 2 · ApplyReach) → Range 에서 멈춘다(사거리 밖 몬스터를 맞히지 않는다).
         --   대상 있음: 수명 = Range/Speed × HomingLifetimeMul(예전 그대로) · 대상까지(ahead − ox) 비행이 MinFlightTime 보다 짧으면 속도를 낮춰 그 시간 동안 날아간다.
         if target == nil then
-            local travel = math.max(0, range - ox - self.UntargetedReachMargin)
-            local life = travel / speed
-            log("SkillAttack: " .. tag .. " no target — flies " .. string.format("%.2f", travel) .. " (range " .. tostring(range) .. " − offset " .. string.format("%.2f", ox) .. " − margin " .. tostring(self.UntargetedReachMargin) .. ") · lifetime " .. string.format("%.2f", life))
-            return { speed = speed, lifetime = life, minFlight = 0 }
+            -- 비행 거리의 앞부분(Range − ox). 판정 상자 반은 스폰된 투사체의 RangeX 로 ApplyReach 가 뺀다(모델 값 그대로 · 상수 복사 없음).
+            local travel = math.max(0, range - ox)
+            return { speed = speed, lifetime = travel / speed, minFlight = 0, untargetedTravel = travel, tag = tag, range = range, ox = ox }
         end
         local life = range / speed * self.HomingLifetimeMul
         local useSpeed = speed
@@ -961,6 +963,18 @@ script SkillAttack extends AttackComponent
             end
         end
         return { speed = useSpeed, lifetime = life, minFlight = minFlight }
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyReach(any mover, table flight)
+        -- 대상 없는 투사체: 수명 = (Range − ox − 이 투사체의 RangeX ÷ 2) ÷ Speed → 판정 상자 앞 끝이 Range 에서 멈춘다. 대상 있음이면 아무것도 안 한다.
+        if mover == nil or flight == nil or flight.untargetedTravel == nil then return end
+        local half = mover.RangeX / 2
+        local travel = math.max(0, flight.untargetedTravel - half)
+        local spd = mover.Speed
+        if spd <= 0 then return end
+        mover.MaxLifetime = travel / spd
+        log("SkillAttack: " .. tostring(flight.tag) .. " no target — flies " .. string.format("%.2f", travel) .. " (range " .. tostring(flight.range) .. " − offset " .. string.format("%.2f", flight.ox) .. " − hit box half " .. tostring(half) .. ") · lifetime " .. string.format("%.2f", mover.MaxLifetime))
     end
 
     @ExecSpace("ServerOnly")
@@ -1032,6 +1046,8 @@ script SkillAttack extends AttackComponent
         local mover = self:SpawnOneProjectile("BASIC", 1, modelId, spawnPos, map, dirX, target, speed, lifetime, spec.hitEffect or "", spec.sprite or "", spec.hitSound or "", userId, mul, false, spec.scale or 1)
         self.pendingMinFlight = 0
         if mover == nil then return end
+        self:ApplyReach(mover, flight)
+        lifetime = mover.MaxLifetime
         mover.BasicAttack = true
         mover.DisplayHits = 1
         mover.SingleTargetOnly = spec.single ~= false
