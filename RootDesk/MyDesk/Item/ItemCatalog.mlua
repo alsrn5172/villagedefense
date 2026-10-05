@@ -13,6 +13,15 @@ script ItemCatalog extends Logic
 	-- ⑫ 부위 × 요구레벨 티어 × 강화 단계 고정 상승치 (사용자 결정 2026-09-05)
 	property string SlotBonusTableName = "EnhanceSlotBonus"
 
+	-- 강화 보석 능력치 배율 (WO-050 §2-21)
+	property number GemEffectMul = 2.0
+
+	-- 직업 장비 +3 주/부스탯 기준표 (WO-050 §2-20)
+	property string JobStatFull = "10=3/1;15=6/2;20=13/4;25=28/9;30=60/20"
+
+	-- 마법사 옷의 단계별 고정 최대 MP 증가 비율 (WO-050 §2-11)
+	property number MagicianClothMpPerEnhance = 1 / 3
+
 	@HideFromInspector
 	property any items = nil
 
@@ -475,7 +484,17 @@ script ItemCatalog extends Logic
 		if gem == nil or row == nil then
 			return 0
 		end
-		return row[gem.statKey] or 0
+		return (row[gem.statKey] or 0) * self.GemEffectMul
+	end
+
+	method integer JobStatAt(integer fullValue, integer level)
+		-- 직업 장비 스탯의 강화 단계별 값. +0 은 풀강의 절반이며 +3 에서 표의 풀강 값에 도달한다.
+		local base = math.floor(fullValue / 2 + 0.5)
+		-- 10제 표는 +0~+2 가 2/1 로 같으므로 일반 반올림의 +2 경계만 표에 맞춘다.
+		if fullValue == 3 and level < 3 then
+			return base
+		end
+		return base + math.floor((fullValue - base) * level / 3 + 0.5)
 	end
 
 	method any ComputeEnhance(any def, integer enh, any gems)
@@ -491,6 +510,37 @@ script ItemCatalog extends Logic
 		local gi = 1
 		-- 한벌옷(2026-09-30 · 사용자 결정 "상의 + 하의를 합친 가격 · 능력치 · 방어력 등등"): 강화 상승치도 두 벌 몫(×2). 강화 비용도 EnhanceService 가 ×2 로 받는다.
 		local mul = self:PieceCount(def)
+		local primaryKey = nil
+		local secondaryKey = nil
+		if def.reqJob == "WARRIOR" or def.reqJob == "PIRATE" then
+			primaryKey = "str"
+			secondaryKey = "dex"
+		elseif def.reqJob == "MAGICIAN" then
+			primaryKey = "int"
+			secondaryKey = "luk"
+		elseif def.reqJob == "ARCHER" then
+			primaryKey = "dex"
+			secondaryKey = "str"
+		elseif def.reqJob == "THIEF" then
+			primaryKey = "luk"
+			secondaryKey = "dex"
+		end
+		local jobStatMul = mul
+		if def.weaponType == "SWORD_2H" then
+			jobStatMul = jobStatMul * 2
+		end
+		local fullPrimary = 0
+		local fullSecondary = 0
+		if primaryKey ~= nil and secondaryKey ~= nil then
+			local tier = tonumber(def.enhanceTier) or tonumber(def.reqLevel) or 0
+			for levelText, primaryText, secondaryText in string.gmatch(self.JobStatFull, "(%d+)=([%d]+)/([%d]+)") do
+				if tonumber(levelText) == tier then
+					fullPrimary = tonumber(primaryText) or 0
+					fullSecondary = tonumber(secondaryText) or 0
+					break
+				end
+			end
+		end
 		for lv = 1, (enh or 0) do
 			local row = self:GetSlotBonus(def.slot, def.enhanceTier, lv)
 			local er = self:GetEnhanceRow(lv)
@@ -502,6 +552,16 @@ script ItemCatalog extends Logic
 			if row ~= nil and (row.fixedattack or 0) ~= 0 then
 				fixed.attack = (fixed.attack or 0) + row.fixedattack * mul
 			end
+			if fullPrimary > 0 and fullSecondary > 0 then
+				local primaryGain = self:JobStatAt(fullPrimary, lv) - self:JobStatAt(fullPrimary, lv - 1)
+				local secondaryGain = self:JobStatAt(fullSecondary, lv) - self:JobStatAt(fullSecondary, lv - 1)
+				fixed[primaryKey] = (fixed[primaryKey] or 0) + primaryGain * jobStatMul
+				fixed[secondaryKey] = (fixed[secondaryKey] or 0) + secondaryGain * jobStatMul
+			end
+			if def.reqJob == "MAGICIAN" and (def.slot == "TOP" or def.slot == "BOTTOM") and (def.stats.maxmp or 0) > 0 then
+				local mpGain = math.floor(def.stats.maxmp * self.MagicianClothMpPerEnhance + 0.5)
+				fixed.maxmp = (fixed.maxmp or 0) + mpGain
+			end
 			for _n = 1, cnt do
 				local gid = nil
 				if gems ~= nil then gid = gems[gi] end
@@ -509,7 +569,7 @@ script ItemCatalog extends Logic
 				if gid ~= nil and row ~= nil then
 					local gem = self:GetGem(gid)
 					if gem ~= nil then
-						local amt = (row[gem.statKey] or 0) * mul
+						local amt = (row[gem.statKey] or 0) * mul * self.GemEffectMul
 						if amt ~= 0 then
 							gemSum[gem.statKey] = (gemSum[gem.statKey] or 0) + amt
 						end
