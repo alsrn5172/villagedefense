@@ -2,8 +2,7 @@
 script PlayerRespawnService extends Logic
 	-- 플레이어 사망·리스폰 (9/14 기획 · WO-027 §9-0 3차 ④ · WO-028 T17 · a/plan-0914 B9).
 	--   · 감지 = 매치 참가자의 PlayerComponent:IsDead() 폴링(PollInterval) — 엔진 사망(= A 쪽 피해 적용점 뒤 HP≤0) 그대로. PlayerHit(B) 손대지 않음.
-	--   · 1P 이전(FreePhases: PHASE0-1·0-2·PHASE1) 사망 = 리스항구 리스폰 · 페널티 0.
-	--   · 2P 이후 사망 = 내 마을 리스폰 + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
+	--   · 매치 중 사망 = 내 마을 리스폰 + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
 	--     선택 창 = RespawnDuration(ChoiceSeconds) 동안. 고르면 즉시 부활(ProcessRevive) · 안 고르면 엔진 자동 부활 뒤 기본(경험치) 적용. 메소가 모자라면 경험치만.
 	--   · 발록 방 사망은 기존(BalrogRoomService) · 매치 밖 사망은 손대지 않는다. 사망 횟수는 서버 메모리(저장 안 함).
 
@@ -15,8 +14,6 @@ script PlayerRespawnService extends Logic
 	property number ChoiceSeconds = 15
 
 	property number DefaultRespawnSeconds = 5
-
-	property string FreePhases = "PHASE0-1,PHASE0-2,PHASE1"
 
 	property string BalrogMapPrefix = "Sleepywood_Boss_JrBalrog"
 
@@ -115,14 +112,6 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean IsFreePhase()
-		-- 지금 페이즈가 페널티 없는 구간(1P 이전)인가.
-		local phase = ""
-		if _MatchSessionLogic ~= nil then phase = tostring(_MatchSessionLogic.CurrentPhaseName or "") end
-		return string.find("," .. self.FreePhases .. ",", "," .. phase .. ",", 1, true) ~= nil
-	end
-
-	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- 참가자 사망/부활 엣지 감지.
 		if self.participants == nil then return end
@@ -170,7 +159,7 @@ script PlayerRespawnService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnDeath(string userId, Entity player)
-		-- 사망 1건: 발록 방·매치 밖은 손대지 않음. 1P 이전 = 무료 안내 · 2P 이후 = 팝업.
+		-- 사망 1건: 발록 방·매치 밖은 손대지 않는다. 매치 페이즈와 무관하게 비용을 선택하는 팝업을 연다.
 		local mapName = ""
 		if isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
 		if string.find(mapName, self.BalrogMapPrefix, 1, true) == 1 then
@@ -180,12 +169,6 @@ script PlayerRespawnService extends Logic
 		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then return end
 		self.deaths[userId] = (self.deaths[userId] or 0) + 1
 		local phase = tostring(_MatchSessionLogic.CurrentPhaseName or "")
-		if self:IsFreePhase() then
-			self.pending[userId] = { penalty = false, choice = "", phase = phase, map = mapName, expCut = 0 }
-			if _UIToast ~= nil then _UIToast:ShowMessage("쓰러졌습니다. 리스항구에서 다시 시작합니다 (페널티 없음)", userId) end
-			log("[Death] user=" .. userId .. " phase=" .. phase .. " map=" .. mapName .. " free (deaths=" .. tostring(self.deaths[userId]) .. ")")
-			return
-		end
 		local cut = self:ExpCutOf(userId)
 		local meso = 0
 		if _SummonManager ~= nil then
@@ -367,6 +350,8 @@ script PlayerRespawnService extends Logic
 		local destMap = ""
 		local destPos = nil
 		local pc = player.PlayerComponent
+		-- 시간 만료 부활은 엔진이 HP를 채운다고 보장하지 않는다. 선택 부활과 같은 지점에서 항상 최대 HP로 보정한다.
+		pc.Hp = pc.MaxHp
 		if p.penalty then
 			local vid = ""
 			if _LaneStateService ~= nil then vid = _LaneStateService:VillageOfUser(userId) end
