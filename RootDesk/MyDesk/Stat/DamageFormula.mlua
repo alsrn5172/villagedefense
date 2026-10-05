@@ -7,19 +7,32 @@ script DamageFormula extends Logic
 	--   DamageMin = DamageMax × 숙련도(0.15~0.9)
 	--   Raw       = [Min, Max] 균등 랜덤   ← "범위 랜덤 공격력"
 	--   방어 감산  = Raw × (1 − Def ÷ (Def + DefenseK)),  최소 1
-	--   B4(2026-09-23): 명중 = 레벨 차 직접식(HitCheck) · 치명 상한 100% · 플레이어가 받는 피해는 ApplyPlayerDefense 한 곳(몹·보스·투사체·시설·수비대)
+	--   B4/WO-050: 명중 = HitCheck · 회피 = DodgeCheck · 치명 상한 100% · 받는 피해 방어는 ApplyPlayerDefense
 	-- ⚠ 난이도(DifficultyConfig) 배수는 여기서 곱하지 않는다 — 서버 단일 적용점(Economy/CostResolver, WP0)에서만.
 
 	-- 방어력 감산 상수. 방어 100 이면 50% 감산.
 	property number DefenseK = 100
 
-	-- 명중 (B4 · 사용자 2026-09-19): 레벨 차 직접식. 몹이 나보다 높은 레벨 1당 −HitPenaltyPerLevel, 같은 레벨 이하 100%.
-	-- 명중 스탯이 레벨 차를 상쇄한다(AccuracyPerLevel 당 1레벨). 바닥 HitFloor. 회피(targetAvoid)는 후순위 — 지금은 안 쓴다.
-	property number HitPenaltyPerLevel = 0.10
+	-- 명중·회피 공식 튜닝값(WO-050 §2-12). 몹 회피와 명중은 레벨에서 파생한다.
+	property number MobAvoidBase = 4
 
-	property number AccuracyPerLevel = 15
+	property number MobAvoidPerLevel = 1.0
+
+	property number AvoidWeight = 0.2
+
+	property number HitPenaltyPerLevel = 0.05
 
 	property number HitFloor = 0.10
+
+	property number MobAccBase = 10
+
+	property number MobAccPerLevel = 4
+
+	property number AccWeight = 3.9
+
+	property number DodgeGapPerLevel = 0.02
+
+	property number DodgeCap = 0.35
 
 	-- 크리티컬 확률 = CritBase + LUK × CritPerLuk, 상한 CritCap
 	property number CritBase = 0.05
@@ -53,15 +66,28 @@ script DamageFormula extends Logic
 		return minDmg + math.floor(_UtilLogic:RandomDouble() * (maxDmg - minDmg + 1))
 	end
 
-	method boolean HitCheck(number accuracy, integer attackerLevel, integer targetLevel, number targetAvoid)
-		-- 명중 판정 (B4 · 레벨 차 직접식): gap = 대상 레벨 − 내 레벨 − floor(명중 ÷ AccuracyPerLevel). gap ≤ 0 이면 100%,
-		-- 아니면 1 − HitPenaltyPerLevel × gap (바닥 HitFloor). targetAvoid 는 후순위라 받기만 하고 안 쓴다.
-		local gap = targetLevel - attackerLevel - math.floor(accuracy / math.max(1, self.AccuracyPerLevel))
-		if gap <= 0 then
-			return true
-		end
-		local rate = 1 - self.HitPenaltyPerLevel * gap
+	method boolean HitCheck(number accuracy, integer attackerLevel, integer targetLevel)
+		-- 몹 회피를 반영한 명중률에 레벨 차 페널티를 적용한다.
+		local mobAvoid = self.MobAvoidBase + self.MobAvoidPerLevel * targetLevel
+		local denom = accuracy + mobAvoid * self.AvoidWeight
+		local base = 1
+		if denom > 0 then base = accuracy / denom end
+		local gap = math.max(0, targetLevel - attackerLevel)
+		local rate = base - self.HitPenaltyPerLevel * gap
 		if rate < self.HitFloor then rate = self.HitFloor end
+		if rate > 1 then rate = 1 end
+		return _UtilLogic:RandomDouble() < rate
+	end
+
+	method boolean DodgeCheck(number avoid, integer playerLevel, integer mobLevel)
+		-- 몹 명중을 기준으로 회피율을 계산하고, 레벨 차 보정을 적용한다.
+		local mobAcc = self.MobAccBase + self.MobAccPerLevel * mobLevel
+		local denom = avoid + mobAcc * self.AccWeight
+		local base = 0
+		if denom > 0 then base = avoid / denom end
+		local rate = base + self.DodgeGapPerLevel * (playerLevel - mobLevel)
+		if rate < 0 then rate = 0 end
+		if rate > self.DodgeCap then rate = self.DodgeCap end
 		return _UtilLogic:RandomDouble() < rate
 	end
 
@@ -102,6 +128,16 @@ script DamageFormula extends Logic
 	method integer DerivedAvoid(integer dex, integer luk)
 		-- 스탯에서 파생되는 회피율 (메이플 원본: DEX×0.25 + LUK×0.5).
 		return math.floor(dex * 0.25 + luk * 0.5)
+	end
+
+	-- MISS 글자를 띄울 데미지 스킨 ID(몬스터가 쓰는 스킨과 같은 것 · Monster.DamageSkinRUID). 스킨에 MISS 모양이 없으면 글자가 안 보일 수 있다.
+	property string MissSkinId = "02c22d93421b4038b3c413b3e40b57ec"
+
+	@ExecSpace("Multicast")
+	method void ShowMiss(Entity target)
+		-- 서버(명중 · 회피 판정)가 부르면 방 안 모든 클라가 target 머리 위에 MISS 글자를 띄운다.
+		if not isvalid(target) or _DamageSkinService == nil then return end
+		_DamageSkinService:PlayTextDamage(target, self.MissSkinId, DamageSkinTextType.Miss, DamageSkinTweenType.Default)
 	end
 
 end
