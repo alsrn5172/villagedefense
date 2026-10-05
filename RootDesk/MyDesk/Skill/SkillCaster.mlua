@@ -97,6 +97,29 @@ script SkillCaster extends Logic
     -- 맨손 거절 토스트(#40 5813570100 · RequestCast 게이트 4-2). 기본 공격(PlayerAttack)도 같은 문구를 쓴다.
     property string UnarmedToast = "무기를 장착해야 공격할 수 있습니다"
 
+    -- ───────────── 줄 · 사다리 위 공격 금지 (2026-10-05 · 사용자 결정 · b/skill-no-attack-on-rope) ─────────────
+    -- 줄 · 사다리에 매달린 캐릭터는 피격되지 않는다 → 거기서 공격하면 일방적으로 때리는 악용이 된다.
+    -- 규칙: 매달린 동안 공격(모든 직업의 피해 스킬 · 궁 · 기본 공격)은 시전되지 않고 피해도 들어가지 않는다. 버프 · 이동 스킬은 그대로.
+    --   시전 게이트 = 클라 Cast · 서버 RequestCast(IsAttackCast) · 기본 공격 = 클라 "Attack" 입력 조건 + 서버 PlayerAttack.AttackNormal.
+    --   피해 게이트 = SkillAttack · SkillProjectile · PlayerAttack 의 IsAttackTarget → BlocksDamageWhileClimbing(시전 뒤 매달린 경우 · 날아가는 투사체 · 궁 후속 파).
+    -- 판정: 클라 = 로컬 플레이어 StateComponent.CurrentStateName 이 CLIMB(줄) / LADDER(사다리)(PlayerControllerComponent 가 넣는 자동 상태).
+    --        서버 = 클라가 바뀔 때마다 알리는 값(ReportClimbing · 위치를 가진 그 클라와 같은 신뢰) 또는 서버 쪽 상태기가 같은 상태일 때.
+    --        매달림 이벤트(RigidbodyClimbableAttachStart / DetachEnd)는 클라에서만 나서 서버가 스스로 알 길이 없다.
+    property table climbStateNames = { CLIMB = true, LADDER = true }
+
+    -- 서버 전용: userId → true(매달림). ReportClimbing 이 쓴다.
+    property table climbingUsers = {}
+
+    -- 서버 전용: userId → 마지막 "피해 막음" 로그 시각(판정마다 찍지 않게 0.5s 에 한 줄).
+    property table climbBlockLogAt = {}
+
+    -- 클라 전용: 마지막으로 서버에 알린 값과 그 플레이어 엔티티(룸 · 엔티티가 바뀌면 다시 알린다) · 기본 공격 입력 조건을 건 엔티티.
+    property boolean localClimbReported = false
+
+    property any localClimbReportedFor = nil
+
+    property any attackGateInstalledFor = nil
+
     method void OnBeginPlay()
         -- 양쪽 인스턴스 모두. 스킬별 락 길이 (초).
         self.castLockOverrides = {
@@ -191,6 +214,87 @@ script SkillCaster extends Logic
         return false
     end
 
+    method boolean IsAttackCast(table skill, boolean isRecast)
+        -- 줄 · 사다리 게이트 대상(b/skill-no-attack-on-rope): 피해를 주는 시전(IsDamagingCast) + 궁 전부(ORIGIN · 피해 없는 불굴의 진 포함 · 사용자 "궁도").
+        -- 버프 · 이동(BLINK) · 도발 · 패시브는 false — 매달린 채로 그대로 쓴다. 양쪽 인스턴스 공용.
+        if skill == nil then return false end
+        if self:IsDamagingCast(skill, isRecast) then return true end
+        return skill.behavior == "ORIGIN"
+    end
+
+    method boolean IsClimbingEntity(any player)
+        -- 그 플레이어의 상태기가 CLIMB(줄) / LADDER(사다리)인가. 양쪽 인스턴스 공용(서버는 상태기 값이 넘어와 있을 때만 맞는다 — 서버 판정은 IsUserClimbing).
+        if player == nil or not isvalid(player) then return false end
+        local state = player.StateComponent
+        if not isvalid(state) then return false end
+        return self.climbStateNames[state.CurrentStateName] == true
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalIsClimbing()
+        -- 로컬 플레이어가 줄 · 사다리에 매달려 있는가(클라 시전 게이트 · 기본 공격 입력 조건).
+        return self:IsClimbingEntity(_UserService.LocalPlayer)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- 로컬 플레이어를 매 프레임 본다(상태 이름 하나 읽기): ① 기본 공격(Ctrl) 입력에 "매달리지 않았을 때만" 조건을 한 번 건다(엔티티가 바뀌면 다시)
+        -- ② 매달림이 바뀌면 서버에 알린다(ReportClimbing). 엔티티가 바뀌면(룸 이동 등) 지금 값을 다시 알린다.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        if self.attackGateInstalledFor ~= player then
+            local controller = player.PlayerControllerComponent
+            if isvalid(controller) then
+                self.attackGateInstalledFor = player
+                controller:AddCondition("Attack", function() return not self:LocalIsClimbing() end)
+                log("SkillCaster: rope/ladder gate installed on the basic attack (Attack action condition)")
+            end
+        end
+        local climbing = self:IsClimbingEntity(player)
+        if climbing ~= self.localClimbReported or self.localClimbReportedFor ~= player then
+            self.localClimbReported = climbing
+            self.localClimbReportedFor = player
+            self:ReportClimbing(climbing)
+            local state = player.StateComponent
+            log("SkillCaster: climbing=" .. tostring(climbing) .. " (state " .. (isvalid(state) and state.CurrentStateName or "?") .. ") — reported to server")
+        end
+    end
+
+    @ExecSpace("Server")
+    method void ReportClimbing(boolean climbing)
+        -- 클라가 매달림이 바뀔 때 알린다(OnUpdate). 서버 판정(IsUserClimbing)의 기본 근거.
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        self.climbingUsers[senderUserId] = climbing
+        log("[Skill] climbing=" .. tostring(climbing) .. " (" .. senderUserId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsUserClimbing(string userId)
+        -- 서버: 그 유저가 줄 · 사다리에 매달려 있는가 = 클라가 알린 값 · 또는 서버 쪽 상태기가 CLIMB / LADDER.
+        if userId == nil or userId == "" then return false end
+        if self.climbingUsers[userId] == true then return true end
+        return self:IsClimbingEntity(_UserService:GetUserEntityByUserId(userId))
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean BlocksDamageWhileClimbing(string userId, string skillId)
+        -- 피해 게이트(SkillAttack · SkillProjectile · PlayerAttack.IsAttackTarget): 시전자가 매달려 있으면 true = 이 타격은 안 들어간다.
+        -- 시전 뒤에 매달린 경우(날아가는 투사체 · 궁 후속 파 · 늦은 접촉 타격)까지 막는다. skillId = 기본 스킬 id(기본 공격은 "BASIC").
+        -- 이동 스킬(BLINK · 텔레포트 강화 SK_M21 도착 광역)은 예외 — 이동 스킬은 바꾸지 않는다(사용자 결정).
+        if not self:IsUserClimbing(userId) then return false end
+        if skillId ~= nil and skillId ~= "" and _SkillDatabase ~= nil then
+            local skill = _SkillDatabase:GetSkill(skillId)
+            if skill ~= nil and self:IsMovementSkill(skill) then return false end
+        end
+        local now = _UtilLogic.ServerElapsedSeconds
+        local last = self.climbBlockLogAt[userId] or -100
+        if now - last >= 0.5 then
+            self.climbBlockLogAt[userId] = now
+            log("[Skill] on rope/ladder — hit refused (" .. tostring(skillId) .. ") (" .. userId .. ")")
+        end
+        return true
+    end
+
     @ExecSpace("ServerOnly")
     method boolean HasWeapon(string userId)
         -- 무기 슬롯에 장착한 아이템이 있는가 — A 의 EquipService.EquippedItemId(:249 · 호출만). 장비 서비스가 없으면(테스트 월드) 막지 않는다.
@@ -250,6 +354,10 @@ script SkillCaster extends Logic
         end
         -- 재시전 스킬(에너지 차지): 그 버프가 미러에 켜져 있으면 쿨다운 게이트를 건너뛴다(서버가 다시 판정).
         local isRecast = _SkillBuffs ~= nil and _SkillBuffs:LocalIsRecastActive(skillId)
+        -- 줄 · 사다리(b/skill-no-attack-on-rope): 매달린 동안 공격 시전(피해 스킬 · 궁 · 재시전 주먹)은 키가 아무것도 안 한다 — 서버에 보내지도 않는다. 버프 · 이동 스킬은 그대로.
+        if self:IsAttackCast(skill, isRecast) and self:LocalIsClimbing() then
+            return self:FinishCast(skillId, { ok = false, reason = "on a rope or ladder" })
+        end
         -- 버프 변형(b/skill-raging-blow-flame-haze): 불굴의 진 중 파워 스트라이크 = 레이징 블로우 · 매직 가드 중 에너지볼트 = 플레임 헤이즈.
         --   변형은 원래 스킬 쿨다운을 보지 않고(자기 쿨 0) · MP 는 변형 값 · 시전 락 키는 변형 키. 서버 RequestCast 와 같은 규칙.
         local variant = ""
@@ -538,6 +646,13 @@ script SkillCaster extends Logic
         local isMove = self:IsMovementSkill(skill)
         if lockedUntil > now and not isMove then
             self:CastResult(skillId, false, "casting (" .. tostring(math.floor((lockedUntil - now) * 100) / 100) .. "s left)", 0, castId, uid)
+            return
+        end
+        -- 4-1b. 줄 · 사다리(b/skill-no-attack-on-rope · 사용자 결정 2026-10-05): 매달린 동안 공격 시전(피해 스킬 · 궁 · 재시전 주먹)은 거절. 버프 · 이동 스킬은 그대로.
+        --       MP · 쿨다운 · 사용 횟수 · 영혼석 앞이라 아무것도 소모하지 않는다. 클라 Cast 가 먼저 막고, 여기는 서버 판정본.
+        if self:IsAttackCast(skill, isRecast) and self:IsUserClimbing(uid) then
+            log("[Skill] on rope/ladder — " .. skillId .. " refused (" .. uid .. ")")
+            self:CastResult(skillId, false, "on a rope or ladder", 0, castId, uid)
             return
         end
         -- 4-2. 맨손 거절(#40 5813570100 · A 결정 · 사용자 확정 2026-09-24): 무기가 없으면 피해를 주는 스킬은 거절 + 토스트. 버프 · 이동 스킬은 해당 없음.
