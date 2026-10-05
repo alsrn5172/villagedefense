@@ -26,6 +26,11 @@
 ### 잃는 것
 - 엔진 월드 채팅 · 채팅 감정 표현 · 음성 채팅.
 
+### 입력 중 키 막기 · ESC = 채팅 접기 (사용자 2026-10-05 "c q w e r k 다 안 먹히게 · ESC 누르면 채팅 토글 off")
+- 입력을 시작할 때 지금 키(A~Z · 숫자 · Space · Shift · Ctrl · Alt · Insert/Delete/Home/End/PageUp/PageDown)에 걸린 **플레이어 액션마다** 엔진 `PlayerController.AddCondition` 으로 "입력 중이 아닐 때만" 조건을 단다 → 스킬 Q W E R …(B `SkillHotbar` 의 액션 키) · 공격 · 점프 · 줍기가 입력 중엔 안 나간다. 스킬 파일(B)은 안 건드린다. 액션마다 한 번 · 플레이어가 바뀌면 다시.
+- ESC: 펼쳐져 있거나 입력 중이면 쓰던 글을 지우고 **접는다**(예전엔 입력 중일 때만 입력 취소). 접은 시각 `escAt` 을 남긴다 — 머지 뒤 ESC 창 스택(`UIEscStack` · #170)이 같은 ESC 로 다른 창까지 닫지 않게 본다.
+- 남은 것(머지 뒤): C(`StatUIController` · #170) · ESC 창 스택에 입력 중 가드. K(스킬 창 `SkillWindowLogic`)와 공중 Space 텔레포트(`SkillHotbar` 의 KeyDown)는 B 파일.
+
 ### Codex 검토 반영
 - 입력칸 속성 타입 `TextInputComponent` → `TextGUIRendererInputComponent`(UI 의 `Field` 엔티티가 가진 실제 컴포넌트 · 틀린 타입이면 Enter 로 입력칸이 안 잡힌다).
 - 클라 `OnBeginPlay` 가 그 전에 도착한 채팅 줄을 지우지 않게(`lines` 가 비었을 때만 새로 만든다).

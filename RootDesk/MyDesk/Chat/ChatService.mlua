@@ -49,6 +49,17 @@ script ChatService extends Logic
 	@HideFromInspector
 	property number submitAt = -10
 
+	-- ESC 로 채팅을 접은 시각(클라). 같은 ESC 로 다른 창까지 닫히지 않게 ESC 창 스택이 본다.
+	@HideFromInspector
+	property number escAt = -10
+
+	-- 입력 중 막을 플레이어 액션(이름 → true)과 그 컨트롤러(바뀌면 다시 단다).
+	@HideFromInspector
+	property any guardedActions = nil
+
+	@HideFromInspector
+	property any guardedPc = nil
+
 	@HideFromInspector
 	property any lines = nil
 
@@ -128,7 +139,41 @@ script ChatService extends Logic
 		self.restoreCollapsed = not self.expanded
 		if not self.expanded then self:SetExpanded(true) end
 		self.typing = true
+		self:GuardActionKeys()
 		self.inputField:ActivateInputField()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GuardActionKeys()
+		-- 입력 중엔 플레이어 액션 키(스킬 Q W E R … · 공격 · 점프 · 줍기)가 안 나가게, 지금 키에 걸린 액션마다 "입력 중이 아닐 때만" 조건을 단다.
+		-- 엔진 PlayerController.AddCondition 이라 스킬 파일(B)은 건드리지 않는다. 조건은 남으므로 액션마다 한 번만 · 플레이어가 바뀌면 다시.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.PlayerControllerComponent) then return end
+		local pc = p.PlayerControllerComponent
+		if self.guardedPc ~= pc then
+			self.guardedPc = pc
+			self.guardedActions = {}
+		end
+		local keys = {
+			KeyboardKey.A, KeyboardKey.B, KeyboardKey.C, KeyboardKey.D, KeyboardKey.E, KeyboardKey.F, KeyboardKey.G, KeyboardKey.H, KeyboardKey.I,
+			KeyboardKey.J, KeyboardKey.K, KeyboardKey.L, KeyboardKey.M, KeyboardKey.N, KeyboardKey.O, KeyboardKey.P, KeyboardKey.Q, KeyboardKey.R,
+			KeyboardKey.S, KeyboardKey.T, KeyboardKey.U, KeyboardKey.V, KeyboardKey.W, KeyboardKey.X, KeyboardKey.Y, KeyboardKey.Z,
+			KeyboardKey.Alpha0, KeyboardKey.Alpha1, KeyboardKey.Alpha2, KeyboardKey.Alpha3, KeyboardKey.Alpha4,
+			KeyboardKey.Alpha5, KeyboardKey.Alpha6, KeyboardKey.Alpha7, KeyboardKey.Alpha8, KeyboardKey.Alpha9,
+			KeyboardKey.Space, KeyboardKey.LeftShift, KeyboardKey.RightShift, KeyboardKey.LeftControl, KeyboardKey.RightControl,
+			KeyboardKey.LeftAlt, KeyboardKey.RightAlt, KeyboardKey.Insert, KeyboardKey.Delete, KeyboardKey.Home, KeyboardKey.End,
+			KeyboardKey.PageUp, KeyboardKey.PageDown,
+		}
+		local added = 0
+		for _, key in ipairs(keys) do
+			local name = pc:GetActionName(key)
+			if name ~= nil and name ~= "" and self.guardedActions[name] ~= true then
+				self.guardedActions[name] = true
+				pc:AddCondition(name, function() return not self.typing end)
+				added = added + 1
+			end
+		end
+		if added > 0 then log("[Chat] guarded " .. tostring(added) .. " player actions while typing") end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -141,7 +186,7 @@ script ChatService extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnKeyDown(KeyDownEvent event)
-		-- Enter = 입력 시작 · `/` = 토글 · ESC = 입력 취소. 입력칸에 커서가 있을 땐 Enter · `/` 는 입력칸 몫이다.
+		-- Enter = 입력 시작 · `/` = 토글 · ESC = 채팅 접기(입력 중이면 쓰던 글도 지움). 입력칸에 커서가 있을 땐 Enter · `/` 는 입력칸 몫이다.
 		local focused = isvalid(self.inputField) and self.inputField.IsFocused
 		local key = event.key
 		if key == KeyboardKey.Return or key == KeyboardKey.KeypadEnter then
@@ -152,9 +197,14 @@ script ChatService extends Logic
 			if focused or self.typing then return end
 			self:Toggle()
 		elseif key == KeyboardKey.Escape then
-			if self.typing then
+			-- 펼쳐져 있거나 입력 중이면 접는다(사용자 2026-10-05 "ESC 누르면 채팅 토글 off"). 입력칸이 ESC 로 먼저 풀려 typing 이 꺼졌어도 펼침을 보고 접는다.
+			if self.expanded or self.typing then
 				if isvalid(self.inputField) then self.inputField.Text = "" end
-				self:EndTyping(true)
+				self.typing = false
+				self.restoreCollapsed = false
+				self:SetExpanded(false)
+				self.escAt = _UtilLogic.ElapsedSeconds
+				log("[Chat] esc -> collapsed")
 			end
 		end
 	end
