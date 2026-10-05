@@ -32,6 +32,47 @@ script Monster extends Component
 	@MaxValue(1)
 	property number SoundVolume = 1.0
 
+	-- ── 몹마다 원작 피격 · 사망 소리 (b/monster-sounds · #40 5927315317 · 정정 5927819993 · 사용자 강민구 2026-10-01) ──
+	-- 위 두 값이 비어 있으면 MonsterInfo 의 DamagedSoundRUID · DieSoundRUID 로 채운다(ResolveInfoSounds). 보스(BossInfo · BossSpawner 가 넣음)와
+	-- 모델에 값이 박힌 몹은 그대로. 이 몹의 MonsterInfo.Id = 레인 미니언 MinionUnit.MonsterId → 수비대 DefenderUnit.MonsterId → 사냥터 FarmReward.MonsterId
+	-- → 자이언트 FarmReward.EliteId 의 베이스 몹(EliteMonsterInfo.BaseMonsterId) 순서로 찾는다. 스포너는 손대지 않는다.
+	-- 몬스터끼리 때린 피격(수비대 ↔ 미니언)은 피격 소리를 안 낸다 — 레인 싸움이 끊임없이 겹치지 않게. 사망 소리는 누가 죽였든 낸다.
+	property boolean MonsterVsMonsterHitSound = false
+
+	-- 같은 몹의 피격 소리 최소 간격(초). 한 프레임에 여러 타격이 와도 한 번만(여러 줄 스킬 · 볼리).
+	property number HitSoundMinInterval = 0.08
+
+	-- 같은 맵에서 같은 사망 소리의 최소 간격(초 · 몹을 가리지 않음). 억제기 폭발(LaneStateService)처럼 여러 마리가 한꺼번에 죽어도 한 번만.
+	-- PlaySoundToMap 이 DieSoundRUID 를 낼 때 _MonsterCatalog.TakeDieSoundSlot 으로 거른다 — 그래서 LaneStateService 는 손대지 않는다.
+	-- 0.05s(2026-10-03 사용자 결정 · 0.1 → 0.05): 같은 프레임 몰살(억제기 폭발)은 그대로 한 번, 0.10s 간격의 따로 난 처치(더블 샷 두 발)는 둘 다 들린다.
+	property number DieSoundMapWindow = 0.05
+
+	-- 소리를 낼 때 · 규칙으로 안 낼 때마다 로그(검증용 · 기본 꺼짐 — 켜면 타격마다 한 줄). Play 확인 때 스크립트로 테스트 몹에만 켠다.
+	@HideFromInspector
+	property boolean LogSounds = false
+
+	-- 원작 소리 배율(MonsterInfo.DamagedSoundVolume · DieSoundVolume · ResolveInfoSounds 가 채움). 원작 파일마다 음량이 -10 ~ -29 LUFS 로 제각각이라
+	-- 크기를 맞춘 값(사망 목표 = 레이스 사망 ×6 = -8.4 LUFS · 피격은 6dB 낮은 -14.4 LUFS — 사망이 피격에 묻히지 않게 · 2026-10-03 사용자 결정). PlaySoundToMap 이 그 RUID 를 낼 때 넘어온 volume 에 곱한다 —
+	-- 그래서 억제기 폭발(LaneStateService)처럼 SoundVolume 을 넘기는 호출도 같은 크기가 된다. 보스 · 모델에 소리가 박힌 몹은 1.0 그대로.
+	@HideFromInspector
+	property number DamagedSoundVolume = 1.0
+
+	@HideFromInspector
+	property number DieSoundVolume = 1.0
+
+	@HideFromInspector
+	property boolean infoSoundsResolved = false
+
+	-- ResolveInfoSounds 재시도 횟수(RetryResolveInfoSounds · 0.25s 간격 · InfoSoundRetryMax 번까지).
+	@HideFromInspector
+	property integer infoSoundRetries = 0
+
+	@HideFromInspector
+	property integer InfoSoundRetryMax = 20
+
+	@HideFromInspector
+	property number lastHitSoundAt = -1000
+
 	-- ── 피격 반응 (WO-011 ⑨-1 · 사용자 요청 2026-09-05) ─────────────────────
 	-- 공격 반대 방향(공격자에게서 멀어지는 쪽)으로 아주 살짝 미끄러지고, 잠깐 AI 이동을 멈추고, 스프라이트를 잠깐 붉게.
 	-- 보스: 패턴(스킬 시전) 중엔 반응 없음 · 최대 HP 의 BossKnockbackHpRatio 이상 피해일 때만 밀림 · 고정형(AiType static, 피아누스) 은 절대 안 밀림.
@@ -110,7 +151,122 @@ script Monster extends Component
 			if self.FitHitbox then
 				self:FitHitboxToSprite()
 			end
+			-- 원작 피격 · 사망 소리: 스포너가 스폰 직후 MonsterId 를 넣으니 한 박자 뒤에 찾는다(못 찾으면 0.25s 마다 다시 · 피격 때도 다시 시도 · HandleHitEvent).
+			_TimerService:SetTimerOnce(function()
+				if isvalid(self.Entity) then self:RetryResolveInfoSounds() end
+			end, 0.1)
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResolveInfoSounds()
+		-- 비어 있는 DamagedSoundRUID · DieSoundRUID 를 이 몹의 MonsterInfo 행 값으로 채운다(한 번). Id 를 아직 모르면 다음에 다시 시도한다.
+		if self.infoSoundsResolved then return end
+		if self.DamagedSoundRUID ~= "" or self.DieSoundRUID ~= "" or isvalid(self.Entity.BossSkillRunner) then
+			self.infoSoundsResolved = true
+			return
+		end
+		local id = self:InfoMonsterId()
+		if id <= 0 or _MonsterCatalog == nil then return end
+		self.infoSoundsResolved = true
+		self.DamagedSoundRUID = _MonsterCatalog:GetDamagedSoundRuid(id)
+		self.DieSoundRUID = _MonsterCatalog:GetDieSoundRuid(id)
+		self.DamagedSoundVolume = _MonsterCatalog:GetDamagedSoundVolume(id)
+		self.DieSoundVolume = _MonsterCatalog:GetDieSoundVolume(id)
+		log("[Monster] sounds " .. tostring(self.Entity.Name) .. " id=" .. tostring(id) .. " damage=" .. self.DamagedSoundRUID .. " x" .. tostring(self.DamagedSoundVolume) .. " die=" .. self.DieSoundRUID .. " x" .. tostring(self.DieSoundVolume) .. (self.infoSoundRetries > 0 and (" (retry " .. tostring(self.infoSoundRetries) .. ")") or ""))
+		self:PreloadSoundsToMap()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RetryResolveInfoSounds()
+		-- ResolveInfoSounds 를 Id 를 알 때까지 0.25s 마다 다시(최대 InfoSoundRetryMax 번 ≈ 5s · b/monster-sounds 2026-10-03).
+		-- 레인 미니언은 SpawnMinion 이 몹을 스폰한 뒤 MinionUnit 을 붙이는데 그 사이가 0.1s 를 넘기도 해서(실측 1마리 0.16s) 첫 시도가 Id 0 으로 끝났다.
+		-- 그 미니언은 맞아야 소리가 채워졌고, 피격 없이 죽이는 억제기 폭발(LaneStateService.SuppressorBoom)에서는 사망 소리 없이 죽었다.
+		if self.infoSoundsResolved or not isvalid(self.Entity) then
+			return
+		end
+		self:ResolveInfoSounds()
+		if self.infoSoundsResolved then
+			return
+		end
+		self.infoSoundRetries = self.infoSoundRetries + 1
+		if self.infoSoundRetries >= self.InfoSoundRetryMax then
+			if self.LogSounds then log("[Monster] sounds " .. tostring(self.Entity.Name) .. " — no MonsterInfo id after " .. tostring(self.infoSoundRetries) .. " tries") end
+			return
+		end
+		_TimerService:SetTimerOnce(function()
+			if isvalid(self.Entity) then self:RetryResolveInfoSounds() end
+		end, 0.25)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PreloadSoundsToMap()
+		-- 같은 맵 플레이어에게 이 몹의 피격 · 사망 소리를 미리 읽혀 둔다. 처음 낼 때 읽느라 늦게 들리지 않게(b/monster-sounds · 2026-10-03).
+		-- 스폰마다 한 번 · 이미 읽힌 소리는 LoadSound 가 다시 읽지 않는다.
+		if self.DamagedSoundRUID == "" and self.DieSoundRUID == "" then
+			return
+		end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then
+			return
+		end
+		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		if users == nil then
+			return
+		end
+		for _, u in ipairs(users) do
+			if isvalid(u) and isvalid(u.PlayerComponent) then
+				self:PreloadSoundsLocal(self.DamagedSoundRUID, self.DieSoundRUID, self.LogSounds, u.PlayerComponent.UserId)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PreloadSoundsLocal(string damagedRuid, string dieRuid, boolean logIt)
+		-- 클라에서 소리를 읽어 둔다(_SoundService.LoadSound 는 ClientOnly). logIt = 서버의 LogSounds(동기화 안 되는 값이라 인자로 받는다).
+		if damagedRuid ~= "" then
+			_SoundService:LoadSound(damagedRuid)
+		end
+		if dieRuid ~= "" then
+			_SoundService:LoadSound(dieRuid)
+		end
+		if logIt then
+			log("[Monster] sounds preloaded " .. tostring(self.Entity.Name) .. " damage=" .. damagedRuid .. " die=" .. dieRuid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer InfoMonsterId()
+		-- 이 몹의 MonsterInfo.Id(모르면 0). 레인 미니언 → 수비대 → 사냥터 몹 → 자이언트(베이스 몹) 순서.
+		local minion = self.Entity.MinionUnit
+		if isvalid(minion) and minion.MonsterId > 0 then return minion.MonsterId end
+		local defender = self.Entity.DefenderUnit
+		if isvalid(defender) and defender.MonsterId > 0 then return defender.MonsterId end
+		local reward = self.Entity.FarmReward
+		if isvalid(reward) then
+			if reward.MonsterId > 0 then return reward.MonsterId end
+			if reward.EliteId ~= "" and _EliteCatalog ~= nil then
+				local info = _EliteCatalog:GetInfo(reward.EliteId)
+				if info ~= nil then return math.floor(tonumber(info.baseMonsterId) or 0) end
+			end
+		end
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ShouldPlayHitSound(Entity attacker)
+		-- 살아 있는 피격 소리를 낼지: 몬스터끼리 때린 타격은 끔(MonsterVsMonsterHitSound) · 같은 몹은 HitSoundMinInterval 안에 한 번.
+		if not self.MonsterVsMonsterHitSound and isvalid(attacker) and isvalid(attacker.Monster) then
+			if self.LogSounds then log("[Monster] hit sound skipped " .. tostring(self.Entity.Name) .. " — monster attacker " .. tostring(attacker.Name)) end
+			return false
+		end
+		local now = _UtilLogic.ServerElapsedSeconds
+		if now - self.lastHitSoundAt < self.HitSoundMinInterval then
+			if self.LogSounds then log("[Monster] hit sound skipped " .. tostring(self.Entity.Name) .. " — within " .. tostring(self.HitSoundMinInterval) .. "s") end
+			return false
+		end
+		self.lastHitSoundAt = now
+		return true
 	end
 
 	@ExecSpace("ServerOnly")
@@ -378,11 +534,29 @@ script Monster extends Component
 		if not isvalid(map) or not isvalid(tr) then
 			return
 		end
+		-- 사망 소리는 같은 맵 · 같은 소리 DieSoundMapWindow 안에 한 번(여러 마리 동시 사망 겹침 방지 · b/monster-sounds). 피격 소리와 같은 RUID 면 거르지 않는다.
+		if ruid == self.DieSoundRUID and ruid ~= self.DamagedSoundRUID and _MonsterCatalog ~= nil then
+			if not _MonsterCatalog:TakeDieSoundSlot(self.Entity.CurrentMapName, ruid, self.DieSoundMapWindow) then
+				if self.LogSounds then log("[Monster] die sound skipped " .. tostring(self.Entity.Name) .. " — same die sound on " .. tostring(self.Entity.CurrentMapName) .. " within " .. tostring(self.DieSoundMapWindow) .. "s") end
+				return
+			end
+		end
 		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
 		if users == nil then
 			return
 		end
+		-- 원작 소리면 그 소리의 배율을 곱한다(DamagedSoundVolume · DieSoundVolume — 같은 RUID 면 같은 파일이라 배율도 같다).
+		if ruid == self.DamagedSoundRUID then
+			volume = volume * self.DamagedSoundVolume
+		elseif ruid == self.DieSoundRUID then
+			volume = volume * self.DieSoundVolume
+		end
 		local p = tr.WorldPosition
+		if self.LogSounds then
+			local kind = "sound"
+			if ruid == self.DamagedSoundRUID then kind = "hit sound" elseif ruid == self.DieSoundRUID then kind = "die sound" end
+			log("[Monster] " .. kind .. " played " .. tostring(self.Entity.Name) .. " " .. ruid .. " vol=" .. string.format("%.2f", volume) .. " users=" .. tostring(#users))
+		end
 		for _, u in ipairs(users) do
 			if isvalid(u) and isvalid(u.PlayerComponent) then
 				self:PlaySoundLocal(ruid, volume, p.x, p.y, p.z, u.PlayerComponent.UserId)
@@ -415,10 +589,13 @@ script Monster extends Component
 
 		local originalHp = self.Hp
 		self.Hp = self.Hp - TotalDamage
-		
+		self:ResolveInfoSounds()
+
 		if self.Hp > 0 or originalHp <= 0 then
 			if self.Hp > 0 and originalHp > 0 then
-				self:PlaySoundToMap(self.DamagedSoundRUID, self.SoundVolume)
+				if self:ShouldPlayHitSound(event.AttackerEntity) then
+					self:PlaySoundToMap(self.DamagedSoundRUID, self.SoundVolume)
+				end
 				self:ReactToHit(event.AttackerEntity, TotalDamage)
 			end
 			return

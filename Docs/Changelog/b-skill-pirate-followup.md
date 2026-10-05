@@ -81,3 +81,9 @@ P18b: 들어올림 세트 c · c1 · c2 · c3 어느 것도 후반(거꾸로 →
 - 원인(Play 시험 · `villagedefense-harness/pirate-check/r11/`): 같은 순간 스폰한 방울 셋(그대로 · 서버 FlipX 뒤집기 · 서버 Scale.x 뒤집기 · 구간 프레임 13–20)을 녹화해 비교 — **서버에서 FlipX 를 바꾼 방울만 위상이 어긋났다**(렌더러가 구간을 처음부터 다시 돈다) · Scale.x 로 뒤집은 방울은 그대로와 끝까지 같은 프레임(`R10_server_sheet.png` · `R10_test_server.mkv`). 앞 offsetX 0.06 을 0 으로 해도 그대로 재시작(메모리 시험) → 위치 변경은 원인이 아님. 차지 겹은 구간 프레임이 없어 티가 안 났다.
 - 수정(`SkillExecutors.mlua`): 루프 sprite 의 뒤집기를 **엔티티 Scale.x 부호**로(`LoopSpriteMirrorSign`) — 스폰(`PlayLoopSprite` · DirectionX 도 같은 쪽이라 ApplyFacing 이 되돌리지 않는다) · 서버 돌아섬(`TurnLoopSprite`) · 클라 매 프레임(`OnUpdate`). FlipX 는 늘 false. 모든 루프 sprite(차지 세 티어 loop + 불꽃 · 쉴드)에 같은 경로.
 - 점검: LSP 0 · integrity. **이 커밋으로는 Play 안 함**(공용 빌드에 없음 · 메인 폴더 전환은 사용자 Reimport All) → RELOOK R10b.
+
+## 2026-10-05 (3) — main 1d518c6 합침
+
+- 충돌 1곳: `SkillExecutors.mlua` 직업 예열(`PrewarmJob…`) — 이 브랜치의 소리 예열(`PrewarmSoundsFor` · `PreloadSoundsOnClient`)과 main(#102)의 프레임 예열(`PrewarmFrameRuidsFor`) 둘 다 둔다
+  (git rerere 가 night-capture 합칠 때의 같은 해결을 다시 썼다 · 확인함).
+- 점검: LSP(바뀐 .mlua 2개) 오류 0 · `check-integrity` 전부 통과(경고 3 = main) · SkillInfo 중복 id 0 · CRLF 유지. Play 안 함 — RELOOK R10b(쉴드 방울) 그대로.
