@@ -162,6 +162,15 @@ script SkillAttack extends AttackComponent
     -- 0.6 = 경사 발판(내리막 앞 몬스터 ≈0.3~0.5 낮음)은 허용 · 한 층 아래(≥1)는 제외. 원작 표창·화살도 아래층은 안 맞는다. 위쪽(높은 발판)은 상자 높이 그대로 허용.
     property number AimFloorTolerance = 0.6
 
+    -- 같은 높이 직선 조준(b/skill-projectile-level-aim · 사용자 요청 2026-10-05): 이 스킬들은 **앞쪽 · 같은 높이**의 적만 노리고 **곧게** 난다(유도 없음).
+    --   같은 높이 = 발 높이 차이 |dy| ≤ LevelAimTolerance(world unit). 위 · 아래 적은 더 가까워도 고르지 않고, 날아가다 닿아도 맞지 않는다(SkillProjectile.LevelOnly).
+    --   예전(다른 투사체는 그대로) = 발부터 위로 AimSearchHeight 2.5 · 아래 AimFloorTolerance 0.6 상자 안 최근접을 유도.
+    --   달팽이 세마리 · 에너지볼트(플레임 헤이즈는 에너지볼트 키로 쏜다 → 같이 적용). 쉼표 목록.
+    property string LevelAimSkillIds = "SK_N01,SK_M11"
+
+    -- 후보(사용자 Play 선택 전 · 키트 r12/level_aim_*.lua): 0.25 / 0.5 / 0.8. 0.5 = 경사 발판(내리막 앞 몬스터 ≈0.3~0.5 낮음)은 허용 · 한 칸 위 발판(≥0.6)은 제외.
+    property number LevelAimTolerance = 0.5
+
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
@@ -435,6 +444,7 @@ script SkillAttack extends AttackComponent
         -- shape 상자(posX/posY/sizeX/sizeY) 안 몬스터 중 하나를 고른다: preferBoss 면 보스(script.BossSkillRunner 보유) 우선,
         -- 그다음 시전자에게 가장 가까운 것. 없으면 nil. 피해 없음(probe 패스).
         -- shape.floorY 가 있으면(투사체 조준 · 조준 표시) 발이 floorY − AimFloorTolerance 보다 낮은 후보는 뺀다(아래층 제외 · b/skill-thief-motion).
+        -- shape.maxDy 가 있으면(같은 높이 직선 조준 · LevelAimSkillIds) 발 높이 차이 |dy| 가 그보다 큰 후보는 뺀다(위 · 아래 모두 · offLevel 로 센다).
         self:EnsureShape()
         self.Shape.Position = Vector2(shape.posX, shape.posY)
         self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
@@ -447,10 +457,13 @@ script SkillAttack extends AttackComponent
         local best = nil
         local bestScore = math.huge
         local belowFloor = 0
+        local offLevel = 0
         for _, cand in ipairs(self.Candidates) do
             if isvalid(cand) and isvalid(cand.TransformComponent) then
                 local p = cand.TransformComponent.WorldPosition
-                if shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
+                if shape.maxDy ~= nil and math.abs(p.y - origin.y) > shape.maxDy then
+                    offLevel = offLevel + 1
+                elseif shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
                     belowFloor = belowFloor + 1
                 else
                     local dx = p.x - origin.x
@@ -468,7 +481,9 @@ script SkillAttack extends AttackComponent
         end
         local bestName = "none"
         if isvalid(best) then bestName = tostring(best.Name) end
-        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
+        local levelText = ""
+        if shape.maxDy ~= nil then levelText = " offLevel=" .. tostring(offLevel) .. " (|dy|>" .. tostring(shape.maxDy) .. ")" end
+        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. levelText .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
         self.Candidates = {}
         return best
     end
@@ -721,11 +736,21 @@ script SkillAttack extends AttackComponent
         -- 조준(2026-09-10 3차 · 사용자 결정): 바라보는 방향 앞쪽 Range 상자(발부터 위로 AimSearchHeight) 안 최근접 몬스터 — 뒤쪽은 제외.
         -- 대상이 있으면 그쪽으로 유도 발사, 없으면 바라보는 방향 직선. 스나이핑(preferBoss)은 보스가 있으면 보스.
         local target = nil
+        -- 같은 높이 직선 조준(LevelAimSkillIds · b/skill-projectile-level-aim): 상자 = 앞으로 Range · 발 − tol ~ 발 + AimSearchHeight(키 큰 몬스터도 잡히게) · 고르는 건 발 높이 |dy| ≤ tol 만.
+        local levelAim = self:IsLevelAimSkill(skillId)
+        local tol = self.LevelAimTolerance
         if self.AimProjectileAtTarget then
-            target = self:FindSkillTarget(skillId, {
-                posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
-                sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
-            }, preferBoss)
+            if levelAim then
+                target = self:FindSkillTarget(skillId, {
+                    posX = pos.x + dirX * range / 2, posY = pos.y + (self.AimSearchHeight - tol) / 2,
+                    sizeX = range, sizeY = self.AimSearchHeight + tol, maxDy = tol,
+                }, preferBoss)
+            else
+                target = self:FindSkillTarget(skillId, {
+                    posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
+                    sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
+                }, preferBoss)
+            end
             if not isvalid(target) then target = nil end
         end
         -- x: 대상 쪽(없으면 바라보는 방향)으로 ox(ProjectileSpawnOffsetX · 스킬별 spawnOffsetX 가 있으면 그것) 만큼 앞(시전 이펙트가 뜨는 자리). y: CSV SpawnOffsetY(발 → 손 높이 · 스킬별 덮어쓰기는 실행기가 넘긴다).
@@ -747,6 +772,11 @@ script SkillAttack extends AttackComponent
         end
         local spawnPos = Vector3(pos.x + dirX * ox, pos.y + spawnOffsetY, pos.z)
         local lifetime = range / speed
+        -- 같은 높이 직선 조준: 대상은 스폰 당기기(바로 앞 대상 · 위)에만 쓰고 유도하지 않는다 — 바라보는 방향으로 곧게 · 수명 = 직선 수명(Range / Speed).
+        if levelAim and target ~= nil then
+            log("SkillAttack: projectile " .. skillId .. " level aim → " .. tostring(target.Name) .. " · straight (no homing) · tol " .. tostring(tol))
+            target = nil
+        end
         if target ~= nil then lifetime = lifetime * self.HomingLifetimeMul end
 
         -- 발마다 1타 — 두 길(둘 다 몬스터 피격 무적이 없어진 뒤 · #120 · #40 5884388966 (a)):
@@ -765,6 +795,9 @@ script SkillAttack extends AttackComponent
         mover.SameFloorOnly = true
         mover.FloorY = pos.y
         mover.FloorTolerance = self.AimFloorTolerance
+        -- 같은 높이 직선 조준: 날아가다 닿아도 발 높이 |dy| ≤ tol 인 적만 맞는다(위 · 아래 모두 · SkillProjectile.LevelOnly). 폭발(에너지볼트)은 첫 대상만 이 규칙 · 주변은 예전대로.
+        mover.LevelOnly = levelAim
+        mover.LevelTolerance = tol
         -- 폭발형(에너지볼트): 첫 발에만. 볼리 2발째부터는 VisualOnly 라 판정이 없다.
         local explodeText = "none"
         if explode ~= nil and explode.sizeX ~= nil and explode.sizeY ~= nil and explode.sizeX > 0 and explode.sizeY > 0 then
@@ -841,6 +874,14 @@ script SkillAttack extends AttackComponent
         -- 발마다 1타 볼리(b/skill-archer-effects · #40 5884388966 (a) "무적이 빠지면 화살마다 1발 피해로"): 더블 샷 SK_A11 만.
         -- 럭키 세븐(SK_T11)은 도적 창(#115) 몫 — 여기선 예전 그대로(첫 발 ×N · 둘째 발 VisualOnly). 넣으려면 이 목록에 한 줄.
         return skillId == "SK_A11"
+    end
+
+    method boolean IsLevelAimSkill(string skillId)
+        -- 같은 높이 직선 조준 스킬인가(LevelAimSkillIds 쉼표 목록 · b/skill-projectile-level-aim).
+        for id in string.gmatch(self.LevelAimSkillIds, "[^,]+") do
+            if id == skillId then return true end
+        end
+        return false
     end
 
     method boolean IsFrameCheckedProjectile(string skillId)
