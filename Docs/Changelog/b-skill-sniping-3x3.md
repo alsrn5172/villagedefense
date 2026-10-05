@@ -27,3 +27,7 @@
 - 툴팁 "선딜 {v}초" 는 Duration 을 읽어 0.5 로 바뀐다(코드 변경 없음).
 - 점검: LSP · `check-integrity` — 로그 `villagedefense-harness/pirate-check/after-maker-free/sniping-3x3-v2-*.txt`. **Play 안 함.**
 - **겹쳐 쏘기(A 요청 3 · 사용자 선택 "락 0.675 그대로")**: 다음 시전을 막는 것은 모든 스킬에서 시전 락 하나뿐이다(클라 `castLockActive` · 서버 `castLockUntil` ×0.9 · 날아가는 투사체를 보는 게이트는 없다). 더블 샷 · 에너지볼트 · 럭키 세븐은 0~0.15 s 에 쏘고 락 0.4 s 가 끝날 때 투사체가 아직 날아간다 → 다음 시전이 겹친다. 스나이핑도 같은 방식 — 발사 0.575 s · 락 0.675 s(발사 + 0.1)라 화살(속도 20)이 2 유닛보다 먼 대상으로 날아가는 동안 다음 스나이핑이 나간다. 예전(발사 1.15 · 락 1.35)은 4 유닛보다 먼 대상일 때만 겹쳤다. 코드 추가 없음.
+
+## 2026-10-05 3차 — 보스 우선 유지 (사용자)
+
+- 3명 고르기 = **보스가 상자 안이면 보스 먼저 한 자리 · 나머지 가까운 순 · 모두 3명**(사용자 "keep boss first, then nearest, 3 targets total"). `FindSkillTargetsNearest(…, preferBoss)` — FindSkillTarget 과 같은 보스 점수(−1000000) · 호출 = `projectilePreferBoss.SK_A21`. 위 1차의 "보스 우선 대신 가까운 순"을 대체한다.
