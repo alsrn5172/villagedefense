@@ -32,6 +32,17 @@
 - 전직관 모델 5종(`VD_JOB_*`)에 꺼진 자식 `JobMark`(원작 퀘스트 전구 `25076964…` · 후보 K5 · 머리 높이 = 그림 실측 0.80~1.52 · Default/3 = 플레이어 뒤).
 - 새 `Npc/JobMarkController`(@Logic · 클라): 0.5초마다 지금 맵의 `Npc_VD_JOB_<직업>_*` 의 `JobMark` 를 **초보자 · 레벨 ≥ 그 직업 1차 요구 레벨**(JobDatabase)일 때만 내 화면에서 켠다. 로그 `[JobMark] <맵> shown=5 job=NOVICE lv=10`.
 
+### 리스항구 마을 포탈 높이 (사용자 2026-10-05 "들어올 때 밑으로 떨어짐")
+- `LithHarbor_Village_MinimiMain` 포탈 2개(`P_To_LithHarbor_Hunt_ForestTrail1` · `P_To_LithHarbor_Hunt_RightAroundLithHarbor`) y 0.392 → **0.45**. 바닥 발판이 0.43 이라 포탈이 바닥보다 0.038 아래였다 → 도착하면 바닥 밑에 나타나 떨어졌다. x 는 그대로(MapBuilder patch).
+- 같은 식으로 바닥보다 조금 아래(0.005 ~ 0.074)에 있는 포탈이 다른 맵에 13개 있다(목록은 PR 보고 · 사용자 확인 뒤).
+
+### 레인 바닥 그림 교체 (WO-047 · 사용자 "같은 브랜치로")
+- 사용자 그림 12장(`리소스파일/레인-발판/` · 헤네시스 · 커닝시티 · 페리온 · 엘리니아 × 왼끝 · 중간 · 오른끝) → `Docs/tools/lane-floor/prep.py`(엘리니아만 37% · 이름 `lfl_<마을>_<left|mid|right>`) → `upload.cjs` 그룹 리소스 `mIYbC` 12장(`ruid-map.json`). **피벗은 올릴 때**: 중간 x 0.5 · 왼끝 x 1.0 · 오른끝 x 0.0 · y = 걷는 선(헤네시스 풀 중간 · 커닝 판석 윗면 · 페리온 돌 윗면 · 엘리니아 잎 중간 · 엘리니아 끝 조각은 21px 어긋남 반영).
+- `apply.cjs`(MapBuilder · 다시 돌려도 같음): 레인마다 `LaneFloor_L` · `LaneFloor_R` · `LaneFloor_Mid_i` — 레인 = 옛 발판 조각의 `CustomFootholdComponent` 범위. 중간은 n 장을 이어 붙이고 **가로만 늘이거나 줄여 밟는 선 길이에 딱 맞췄다**(n = 늘임이 가장 적은 정수 · 0.75 ~ 1.25배). 엘리니아 `TreeTrunkNest2`(레인 5.45)만 중간 1장을 Tiled 로 잘라 폭 1.73. 층 = 발판 조각과 같은 SortingLayer · `OrderInLayer 1`. 결과 `apply-report.json`.
+- 옛 `LaneGround_*` 조각: 그림(`SpriteRendererComponent.Enable`)만 끔 · Transform · 발판 그대로 → 다시 굽기 없음. 노틸러스 맵 · 테스트맵 노틸러스 줄은 그대로.
+- 맵 11개: 헤네시스 HillNorth · GolemsTemple · 마을 / 커닝 ConstructionSite · 마을 / 페리온 NorthernRidge · WildBoarLand · 마을 / 엘리니아 GreenTreeTrunk · TreeTrunkNest2 / `Test_Lane_Fx`(4줄).
+- 계약서 A-2-4b 층 문장 갱신(사용자 직접 지시 작업 → #40 공지 생략).
+
 ### 로그 확인 (Maker Play) — TODO
 - [ ] Reimport All(새 `JobMarkController` · 새 모델 등록) → 빌드 경고 0.
 - [ ] Lv9 → 전구 없음 · Lv10 → 5명 머리 위 전구 · 전직하면 사라짐(눈 확인 · 높이 조정 필요할 수 있음).
