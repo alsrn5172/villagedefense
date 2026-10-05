@@ -144,6 +144,10 @@ script SkillExecutors extends Logic
     -- PROJECTILE 중 보스 우선 조준 (skillId -> true). 스나이핑 SK_A21.
     property table projectilePreferBoss = {}
 
+    -- PROJECTILE 다중 대상 (skillId -> N): 앞쪽 상자 안 가까운 순 N명에게 화살 한 발씩(발마다 CSV HitCount 타 · SkillAttack.FindSkillTargetsNearest).
+    --   스나이핑 SK_A21 = 3(2026-10-05 b/skill-sniping-3x3 · A 요청). 대상이 없으면 예전처럼 한 발(바라보는 방향).
+    property table projectileTargetCount = {}
+
     -- BUFF_SELF 중 "그 버프가 켜져 있는 동안의 재시전 = 공격" 인 스킬 (skillId -> true). 에너지 차지 SK_P21.
     property table recastAttack = {}
 
@@ -633,6 +637,9 @@ script SkillExecutors extends Logic
         }
         self.projectilePreferBoss = {
             SK_A21 = true,
+        }
+        self.projectileTargetCount = {
+            SK_A21 = 3,           -- 스나이핑: 가까운 3명 · 발마다 3타(CSV HitCount 3 · 타당 피해 그대로 = 합계 ×3) · A 요청 2026-10-05
         }
         self.recastAttack = {
             SK_P21 = true,        -- 에너지 차지: 차지 중 재입력 = 10연타 주먹
@@ -2322,6 +2329,35 @@ script SkillExecutors extends Logic
         end
         local function spawnNow()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            -- 다중 대상(projectileTargetCount · 스나이핑 3명): 앞쪽 상자(SpawnProjectile 조준과 같은 Range × AimSearchHeight · 몸 띠) 안 가까운 순 N명에게 한 발씩.
+            --   발마다 CSV HitCount 타(첫 발 ×hitCount · 표시 hitCount 타) · 화살은 한 발(PendingProjectileSingleArrow) · 대상 고정(PendingProjectileTarget).
+            local wanted = self.projectileTargetCount[skillId]
+            if wanted ~= nil and wanted > 1 then
+                local cp = casterEntity.TransformComponent.WorldPosition
+                local dirX = self:GetFacingX(casterEntity)
+                local range = skillData.range
+                if range <= 0 then range = 1 end
+                local h = skillAttack.AimSearchHeight
+                if h == nil or h <= 0 then h = 2.5 end
+                local targets = skillAttack:FindSkillTargetsNearest(skillId, {
+                    posX = cp.x + dirX * range / 2, posY = cp.y + h / 2,
+                    sizeX = range, sizeY = h, floorY = cp.y,
+                }, math.floor(wanted))
+                if #targets > 0 then
+                    for _, t in ipairs(targets) do
+                        skillAttack.PendingProjectileTarget = t
+                        skillAttack.PendingProjectileSingleArrow = true
+                        skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
+                            skillData.range, skillData.speed, skillData.hitCount, self:GetLevelSpecRuid(skillId, "impact", level),
+                            spawnY, self:GetLevelSpecRuid(skillId, "ball", level), self:GetExtraSound(skillId, "hit"),
+                            self.projectilePreferBoss[skillId] == true, spawnX, spriteScale, self:GetProjectileExplode(skillId))
+                    end
+                    log("SkillExecutors: PROJECTILE " .. skillId .. " multi-target " .. tostring(#targets) .. "/" .. tostring(wanted) .. " x" .. tostring(skillData.hitCount) .. " hits each")
+                    return
+                end
+                log("SkillExecutors: PROJECTILE " .. skillId .. " multi-target: none in front — one straight shot")
+                skillAttack.PendingProjectileSingleArrow = true
+            end
             -- 레벨별 그림(effectOverrides[skill].levels · 달팽이 세마리 레벨마다 다른 껍질)이 있으면 그 칸, 없으면 예전과 같은 impact · ball.
             skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
                 skillData.range, skillData.speed, skillData.hitCount, self:GetLevelSpecRuid(skillId, "impact", level),

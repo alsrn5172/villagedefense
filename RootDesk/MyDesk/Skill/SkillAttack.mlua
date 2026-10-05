@@ -172,6 +172,15 @@ script SkillAttack extends AttackComponent
     --   값 출처: Global/DefaultPlayer.model script.PlayerHit BoxSize (0.45, 0.7) · ColliderOffset (0, 0.35) → 발 0 ~ 머리 0.7.
     property number CasterBodyHeightFallback = 0.7
 
+    -- 다음 SpawnProjectile 한 번에만(2026-10-05 b/skill-sniping-3x3 · 스나이핑 3명): 호출자(SkillExecutors.FireProjectile)가 고른 대상으로 쏜다 — 탐색(FindSkillTarget)을 건너뛴다.
+    --   SpawnProjectile 이 조준 직전에 읽고 비운다(다른 스킬로 새지 않게). nil = 예전처럼 탐색.
+    @HideFromInspector
+    property any PendingProjectileTarget = nil
+
+    -- 다음 SpawnProjectile 한 번에만: 화살 한 발(첫 발이 ×hitCount · 표시 hitCount 타를 그대로 진다 · 2발째부터 VisualOnly 화살을 띄우지 않는다). 스나이핑 3명 × 3타.
+    @HideFromInspector
+    property boolean PendingProjectileSingleArrow = false
+
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
@@ -522,6 +531,50 @@ script SkillAttack extends AttackComponent
     end
 
     @ExecSpace("ServerOnly")
+    method table FindSkillTargetsNearest(string skillId, table shape, integer count)
+        -- shape 상자 안 몬스터 중 시전자에게 가까운 순 count 개(2026-10-05 b/skill-sniping-3x3 · 스나이핑 3명). 거름은 FindSkillTarget 과 같다:
+        --   shape.floorY 가 있으면 몸 띠(AimBodyBand · OverlapsBand) — 띠가 꺼져 있으면 아래층(AimFloorTolerance) — 그리고 시전자보다 뒤(바라보는 쪽 반대)는 뺀다. 보스 우선 없음. 피해 없음(probe).
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        self.Candidates = {}
+        self.SingleTarget = nil
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local origin = self.Entity.TransformComponent.WorldPosition
+        local dirX = 1
+        if isvalid(self.Entity.PlayerControllerComponent) and self.Entity.PlayerControllerComponent.LookDirectionX < 0 then dirX = -1 end
+        local useBand = shape.floorY ~= nil and self.AimBodyBand
+        local band = Vector2(0, 0)
+        if useBand then band = self:CasterBandOf(self.Entity) end
+        local scored = {}
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) then
+                local p = cand.TransformComponent.WorldPosition
+                local ok = true
+                if useBand and not self:OverlapsBand(cand, band) then ok = false end
+                if ok and not useBand and shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then ok = false end
+                if ok and (p.x - origin.x) * dirX < 0 then ok = false end
+                if ok then
+                    local dx = p.x - origin.x
+                    local dy = p.y - origin.y
+                    table.insert(scored, { e = cand, d = dx * dx + dy * dy })
+                end
+            end
+        end
+        self.Candidates = {}
+        table.sort(scored, function(a, b) return a.d < b.d end)
+        local out = {}
+        local names = {}
+        for i = 1, math.min(count, #scored) do
+            table.insert(out, scored[i].e)
+            table.insert(names, tostring(scored[i].e.Name))
+        end
+        log("SkillAttack: FindSkillTargetsNearest " .. skillId .. " in=" .. tostring(#scored) .. " -> " .. tostring(#out) .. " [" .. table.concat(names, ",") .. "]")
+        return out
+    end
+
+    @ExecSpace("ServerOnly")
     method table FindSkillTargets(string skillId, table shape)
         -- shape 상자 안 몬스터 전부(probe 패스 · 피해 없음). 도발(SK_W22)처럼 "여러 대상에게 피해 아닌 효과" 를 줄 때 쓴다. 정렬 없음.
         self:EnsureShape()
@@ -769,7 +822,14 @@ script SkillAttack extends AttackComponent
         -- 조준(2026-09-10 3차 · 사용자 결정): 바라보는 방향 앞쪽 Range 상자(발부터 위로 AimSearchHeight) 안 최근접 몬스터 — 뒤쪽은 제외.
         -- 대상이 있으면 그쪽으로 유도 발사, 없으면 바라보는 방향 직선. 스나이핑(preferBoss)은 보스가 있으면 보스.
         local target = nil
-        if self.AimProjectileAtTarget then
+        -- 고른 대상(PendingProjectileTarget · 스나이핑 3명)이 있으면 그 대상으로 · 화살 한 발(PendingProjectileSingleArrow). 둘 다 이 호출에서 비운다.
+        local forcedTarget = self.PendingProjectileTarget
+        local singleArrow = self.PendingProjectileSingleArrow
+        self.PendingProjectileTarget = nil
+        self.PendingProjectileSingleArrow = false
+        if forcedTarget ~= nil and isvalid(forcedTarget) then
+            target = forcedTarget
+        elseif self.AimProjectileAtTarget then
             target = self:FindSkillTarget(skillId, {
                 posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
                 sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
@@ -844,7 +904,9 @@ script SkillAttack extends AttackComponent
             if vt.delay ~= nil and vt.delay >= 0 then volleyDelay = vt.delay end
             if vt.gapY ~= nil then volleyGapY = vt.gapY end
         end
-        for i = 2, math.floor(hitCount) do
+        local volleyCount = math.floor(hitCount)
+        if singleArrow then volleyCount = 1 end
+        for i = 2, volleyCount do
             local k = i
             _TimerService:SetTimerOnce(function()
                 if not isvalid(caster) or not isvalid(caster.TransformComponent) then return end
