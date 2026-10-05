@@ -46,6 +46,18 @@ script SkillHotbar extends Logic
 
     property string JumpActionName = "Jump"
 
+    -- 더블 점프(SK_N02 · b/skill-novice-double-jump 2026-10-02): 공중 점프 키 = 마법사면 텔레포트(위 TeleportOnAirJump · 기획 "초보자 스킬의 더블 점프가 텔레포트로 바뀜"),
+    --   그 밖(초보자 · 전사 · 궁수 · 도적 · 해적)은 SK_N02 를 배웠으면 더블 점프(SkillMovement.TryDoubleJump → SkillExecutors.RequestDoubleJump).
+    --   전직 뒤에도 남는다 = B 기본값(#40 5954262491 → A 결정 5977728018 · 2026-10-04 기본값 OK · DoubleJumpKeepAfterJob 으로 끈다 — false 면 초보자만).
+    --   ⚠ 모바일 점프 버튼은 KeyDownEvent 를 안 줄 수 있다(텔레포트 공중 점프와 같은 위험 · 받아들임 · PR 본문에 적는다).
+    property boolean DoubleJumpOnAirJump = true
+
+    property string DoubleJumpSkillId = "SK_N02"
+
+    property boolean DoubleJumpKeepAfterJob = true
+
+    property string AirTeleportJobId = "MAGICIAN"
+
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
         self:BuildSlotTable()
@@ -65,7 +77,8 @@ script SkillHotbar extends Logic
         --   도적: Q 럭키 세븐 · W 다크 사이트 · E 쉐도우 파트너 · R 메소 익스플로전. 픽파켓은 패시브.
         --   해적: Q 섬머솔트 킥 · W 에너지 차지(차지 중 W 재입력 = 10연타 주먹) · E 에너지 쉴드 · R 함포 사격. 선원 관리는 패시브.
         self.slots = {
-            { slot = 1, key = KeyboardKey.Q, keyName = "Q", action = "Skill1", byJob = { MAGICIAN = "SK_M11", WARRIOR = "SK_W11", ARCHER = "SK_A11", THIEF = "SK_T11", PIRATE = "SK_P11" } },
+            -- NOVICE = 달팽이 세마리(b/skill-novice-snails · A 요청 #40 5875058360 4번 "초보자일 땐 Q 에 자동 등록"). 전직하면 byJob 이 직업 스킬로 바꾼다(요청 5번 · 구조는 그대로).
+            { slot = 1, key = KeyboardKey.Q, keyName = "Q", action = "Skill1", byJob = { NOVICE = "SK_N01", MAGICIAN = "SK_M11", WARRIOR = "SK_W11", ARCHER = "SK_A11", THIEF = "SK_T11", PIRATE = "SK_P11" } },
             { slot = 2, key = KeyboardKey.LeftShift, altKey = KeyboardKey.RightShift, keyName = "Shift", action = "Skill2", byJob = { MAGICIAN = "TELEPORT", ARCHER = "SK_A22" } },
             { slot = 3, key = KeyboardKey.E, keyName = "E", action = "Skill3", byJob = { MAGICIAN = "SK_M22", WARRIOR = "SK_W22", ARCHER = "SK_A22", THIEF = "SK_T22", PIRATE = "SK_P22" } },
             { slot = 4, key = KeyboardKey.R, keyName = "R", action = "Skill4", byJob = { MAGICIAN = "SK_M31", WARRIOR = "SK_W31", ARCHER = "SK_A31", THIEF = "SK_T31", PIRATE = "SK_P31" } },
@@ -198,7 +211,7 @@ script SkillHotbar extends Logic
     @ExecSpace("ClientOnly")
     method void OnJumpKeyDown(KeyDownEvent event)
         -- 점프 키 원시 입력 → 더블 점프 판정(TryAirJumpTeleport). 어느 키가 점프인지는 컨트롤러 액션 매핑(GetActionName)으로 보고, 매핑 조회가 비면 Space 로 폴백.
-        if not self.TeleportOnAirJump then return end
+        if not self.TeleportOnAirJump and not self.DoubleJumpOnAirJump then return end
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
         local controller = player.PlayerControllerComponent
@@ -219,6 +232,12 @@ script SkillHotbar extends Logic
         if not isvalid(player) then return end
         local body = player.RigidbodyComponent
         if isvalid(body) and body:IsOnGround() then return end
+        -- 마법사가 아니면 더블 점프 쪽으로(TryAirDoubleJump). 마법사는 아래 텔레포트 그대로.
+        if _PlayerSkillState:LocalJobId() ~= self.AirTeleportJobId then
+            self:TryAirDoubleJump()
+            return
+        end
+        if not self.TeleportOnAirJump then return end
         local skillId = self:ResolveTeleportSkillId()
         if _PlayerSkillState:LocalSkillLevel(skillId) <= 0 then return end
         local now = _UtilLogic.ElapsedSeconds
@@ -233,6 +252,35 @@ script SkillHotbar extends Logic
         local resultText = tostring(result.ok)
         if not result.ok then resultText = resultText .. " reason='" .. result.reason .. "'" end
         log("HOTBAR: air-jump(double) -> " .. skillId .. " cast ok=" .. resultText .. " airborne=" .. tostring(math.floor((now - self.lastGroundedAt) * 100) / 100) .. "s")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TryAirDoubleJump()
+        -- 공중 점프 키 → 더블 점프(SK_N02). 판정은 텔레포트 공중 점프와 같다: 첫(지상) 점프 이벤트는 FirstJumpGrace 안이면 무시 · 공중 1회 · 디바운스.
+        -- 안 배웠으면 · 초보자가 아닌데 DoubleJumpKeepAfterJob=false 면 조용히 무시(엔진 점프 그대로). MP 는 클라가 먼저 보고(예측) 서버가 낸다.
+        if not self.DoubleJumpOnAirJump then return end
+        local skillId = self.DoubleJumpSkillId
+        local level = _PlayerSkillState:LocalSkillLevel(skillId)
+        if level <= 0 then return end
+        if not self.DoubleJumpKeepAfterJob and _PlayerSkillState:LocalJobId() ~= _PlayerSkillState.NoviceJobId then return end
+        local now = _UtilLogic.ElapsedSeconds
+        if now - self.lastGroundedAt < self.FirstJumpGrace then return end
+        if self.airTeleportUsed then return end
+        if now - self.lastAirJumpTeleportAt < self.AirJumpTeleportDebounce then return end
+        local mp = _SkillDatabase:MpCostAt(skillId, level)
+        if mp > 0 and _PlayerSkillState:LocalMp() < mp then
+            log("HOTBAR: air-jump(double) -> " .. skillId .. " rejected: MP " .. tostring(_PlayerSkillState:LocalMp()) .. " < " .. tostring(mp))
+            return
+        end
+        self.lastAirJumpTeleportAt = now
+        local result = _SkillMovement:TryDoubleJump(skillId, level)
+        if not result.ok then
+            log("HOTBAR: air-jump(double) -> " .. skillId .. " skipped: " .. tostring(result.reason))
+            return
+        end
+        self.airTeleportUsed = true
+        _SkillExecutors:RequestDoubleJump(result.dirX)
+        log("HOTBAR: air-jump(double) -> " .. skillId .. " lv=" .. tostring(level) .. " dir=" .. tostring(result.dirX) .. " airborne=" .. tostring(math.floor((now - self.lastGroundedAt) * 100) / 100) .. "s")
     end
 
     @ExecSpace("ClientOnly")
