@@ -36,6 +36,26 @@ script PortalNetwork extends Logic
 	@HideFromInspector
 	property any bossConfirm = nil
 
+	property number PortalLockSeconds = 0.5
+
+	@HideFromInspector
+	property number arrivedAt = 0
+
+	@HideFromInspector
+	property string arrivalMapName = ""
+
+	@HideFromInspector
+	property any arrivalPortals = nil
+
+	@HideFromInspector
+	property number serverArrivalPollElapsed = 0
+
+	@HideFromInspector
+	property any serverArrivalMaps = nil
+
+	@HideFromInspector
+	property any serverArrivalTimes = nil
+
 	@HideFromInspector
 	property number serverClock = 0
 
@@ -116,12 +136,21 @@ script PortalNetwork extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
+		-- 서버 도착 기록표를 준비하고 포탈 노선을 읽는다.
+		self.serverArrivalMaps = {}
+		self.serverArrivalTimes = {}
 		self:LoadRoutes()
 		self:AttemptBindings()
 	end
 
 	@ExecSpace("ClientOnly")
 	method void TryMoveByUpArrow()
+		-- 도착 직후 0.5초는 되돌아가는 포탈 이동을 막는다.
+		local now = _UtilLogic.ElapsedSeconds
+		if self.arrivedAt > 0 and now - self.arrivedAt < self.PortalLockSeconds then
+			log("[PortalNetwork] locked (arrived " .. string.format("%.1f", now - self.arrivedAt) .. "s ago)")
+			return
+		end
 		local player = _UserService.LocalPlayer
 		if not isvalid(player) or not isvalid(player.PlayerComponent) or not isvalid(player.CurrentMap) then
 			return
@@ -195,6 +224,7 @@ script PortalNetwork extends Logic
 				return
 			end
 			log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> " .. closestToMap .. "/" .. closestToPortal)
+			if _LoadingScreenController ~= nil then _LoadingScreenController:Show(closestToMap) end
 			player.PlayerComponent:MoveToEntityByPath("/maps/" .. closestToMap .. "/" .. closestToPortal)
 		end
 	end
@@ -223,6 +253,10 @@ script PortalNetwork extends Logic
 		local player = _UserService:GetUserEntityByUserId(uid)
 		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
 		local fromMap = isvalid(player.CurrentMap) and player.CurrentMap.Name or ""
+		if self:IsServerArrivalLocked(uid, fromMap) then
+			log("[PortalNetwork] locked (server arrived " .. uid .. ")")
+			return
+		end
 		if not self:IsLithEntry(fromMap, toMap) then
 			log_warning("[PortalNetwork] RequestEnterLith rejected: not a lith entry " .. fromMap .. " -> " .. tostring(toMap) .. " (" .. uid .. ")")
 			return
@@ -234,6 +268,7 @@ script PortalNetwork extends Logic
 			return
 		end
 		log("[PortalNetwork] lith entry ok -> " .. toMap .. "/" .. toPortal .. " (" .. uid .. ")")
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(toMap, uid) end
 		player.PlayerComponent:MoveToEntityByPath("/maps/" .. toMap .. "/" .. toPortal)
 	end
 
@@ -292,6 +327,10 @@ script PortalNetwork extends Logic
 		local player = _UserService:GetUserEntityByUserId(uid)
 		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
 		local fromMap = isvalid(player.CurrentMap) and player.CurrentMap.Name or ""
+		if self:IsServerArrivalLocked(uid, fromMap) then
+			log("[PortalNetwork] locked (server arrived " .. uid .. ")")
+			return
+		end
 		local route = nil
 		if self:IsBossEntry(toMap) then route = self:RouteFor(fromMap, toMap) end
 		if route == nil then
@@ -344,7 +383,93 @@ script PortalNetwork extends Logic
 			if _UIToast ~= nil then _UIToast:ShowMessage(itemName .. " " .. tostring(cost) .. "개를 냈습니다", uid) end
 		end
 		log("[PortalNetwork] boss entry ok -> " .. toMap .. "/" .. toPortal .. " cost=" .. tostring(cost) .. " item=" .. item .. " (" .. uid .. ")")
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(toMap, uid) end
 		player.PlayerComponent:MoveToEntityByPath("/maps/" .. toMap .. "/" .. toPortal)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsServerArrivalLocked(string userId, string mapName)
+		-- 서버 도착 시각으로 서버 판정 입장의 0.5초 재진입을 막는다.
+		if self.serverArrivalMaps == nil then self.serverArrivalMaps = {} end
+		if self.serverArrivalTimes == nil then self.serverArrivalTimes = {} end
+		if mapName == nil or mapName == "" then return false end
+		local knownMap = self.serverArrivalMaps[userId]
+		if knownMap == nil then
+			self.serverArrivalMaps[userId] = mapName
+			return false
+		end
+		if knownMap ~= mapName then
+			self.serverArrivalMaps[userId] = mapName
+			self.serverArrivalTimes[userId] = self.serverClock
+			return true
+		end
+		local arrived = self.serverArrivalTimes[userId] or -1000
+		return self.serverClock - arrived < self.PortalLockSeconds
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PollServerArrivals(number delta)
+		-- 서버에서 각 플레이어의 현재 맵을 확인해 도착 시각을 기록한다.
+		self.serverArrivalPollElapsed = self.serverArrivalPollElapsed + delta
+		if self.serverArrivalPollElapsed < 0.1 then return end
+		self.serverArrivalPollElapsed = 0
+		if self.serverArrivalMaps == nil then self.serverArrivalMaps = {} end
+		if self.serverArrivalTimes == nil then self.serverArrivalTimes = {} end
+		if _UserService == nil or _UserService.UserEntities == nil then return end
+		for _, player in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(player) and isvalid(player.PlayerComponent) and isvalid(player.CurrentMap) then
+				local uid = player.PlayerComponent.UserId
+				local mapName = player.CurrentMap.Name
+				local knownMap = self.serverArrivalMaps[uid]
+				if knownMap == nil then
+					self.serverArrivalMaps[uid] = mapName
+				elseif knownMap ~= mapName then
+					self.serverArrivalMaps[uid] = mapName
+					self.serverArrivalTimes[uid] = self.serverClock
+					log("[PortalNetwork] server arrived " .. uid .. " " .. mapName)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnLocalMapChanged(string mapName)
+		-- 로컬 플레이어 도착 시각을 기록하고 엔진 포탈을 0.5초 동안 막는다.
+		if mapName == self.arrivalMapName and self.arrivedAt > 0 then return end
+		self.arrivalMapName = mapName
+		self.arrivedAt = _UtilLogic.ElapsedSeconds
+		self:DisableArrivalPortals(mapName)
+		log("[PortalNetwork] local arrived " .. mapName)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisableArrivalPortals(string mapName)
+		-- 목적지 맵의 엔진 PortalComponent를 잠시 비활성화해 ↑키 외 이동 경로도 보호한다.
+		self.arrivalPortals = {}
+		local tableData = _DataService:GetTable(self.TableName)
+		if tableData == nil then return end
+		for i = 1, tableData:GetRowCount() do
+			local toMap = tableData:GetCell(i, "ToMap") or ""
+			local portalName = tableData:GetCell(i, "ToPortal") or ""
+			if toMap == mapName and portalName ~= "" then
+				local entity = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. portalName)
+				if isvalid(entity) and isvalid(entity.PortalComponent) and entity.PortalComponent.Enable then
+					entity.PortalComponent.Enable = false
+					table.insert(self.arrivalPortals, entity.PortalComponent)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RestoreArrivalPortals()
+		-- 잠금 시간이 지난 포탈만 다시 켠다.
+		if self.arrivalPortals ~= nil then
+			for _, portal in ipairs(self.arrivalPortals) do
+				if isvalid(portal) then portal.Enable = true end
+			end
+		end
+		self.arrivalPortals = nil
 	end
 
 	@EventSender("Service", "InputService")
@@ -497,6 +622,7 @@ script PortalNetwork extends Logic
 		if self:IsServer() then
 			self.serverClock = self.serverClock + delta
 			self:UpdateServerBinding(delta)
+			self:PollServerArrivals(delta)
 		else
 			self:UpdateClientPortalLayer(delta)
 		end
@@ -541,6 +667,7 @@ script PortalNetwork extends Logic
 	@ExecSpace("ClientOnly")
 	method void UpdateClientPortalLayer(number delta)
 		-- 맵이 바뀐 프레임에만 1회 칠한다. @Logic 은 OnMapEnter 를 못 받으므로 CurrentMap 을 폴링한다.
+		if self.arrivedAt > 0 and _UtilLogic.ElapsedSeconds - self.arrivedAt >= self.PortalLockSeconds then self:RestoreArrivalPortals() end
 		self.layerPollElapsed = self.layerPollElapsed + delta
 		if self.layerPollElapsed < 0.3 then
 			return
@@ -557,6 +684,7 @@ script PortalNetwork extends Logic
 			return
 		end
 		self.layerAppliedMap = mapName
+		self:OnLocalMapChanged(mapName)
 		self:ApplyPortalLayer(mapName)
 	end
 
