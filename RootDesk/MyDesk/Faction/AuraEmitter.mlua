@@ -38,8 +38,29 @@ script AuraEmitter extends Component
 
 	property number BandPixelsPerUnit = 100
 
+	-- 시설 띠의 지금 종류(WO-048). 서버가 정하고 클라가 이 값으로 표 AuraBandArt 의 프레임을 골라 재생한다.
+	-- "" = 띠가 아닌 팀 오라(재생 안 함) · 시설 띠는 스폰 때 "BASE" 로 시작해 특성 값이 들어오면 SPEED / ATTACK / HEAL.
+	@Sync
+	property string BandKind = ""
+
+	-- 클라 재생 상태(WO-048 · 클라마다 따로 · 시작 시점을 맞추지 않는다).
 	@HideFromInspector
-	property string bandKind = ""
+	property any bandDefs = nil
+
+	@HideFromInspector
+	property string animKind = ""
+
+	@HideFromInspector
+	property boolean animReady = false
+
+	@HideFromInspector
+	property integer animIdx = 1
+
+	@HideFromInspector
+	property number animAt = 0
+
+	@HideFromInspector
+	property any clientAura = nil
 
 	property Color TeamAColor = Color(0.3, 0.65, 1.0, 0.75)
 
@@ -110,22 +131,31 @@ script AuraEmitter extends Component
 	@ExecSpace("ServerOnly")
 	method void ApplyBandSkin(Entity aura, string kind)
 		-- 띠 그림 RUID 를 특성에 맞게 바꾼다(kind 가 "" 이면 흰 원본). 크기 · 층은 그대로(같은 규격 그림).
+		-- 서버 값은 정지 그림 하나다 — 움직이는 프레임은 클라가 BandKind 를 보고 표에서 골라 덮는다(TickBand). 표가 없으면 이 정지 그림이 그대로 보인다.
 		local renderer = aura.SpriteRendererComponent
 		if not isvalid(renderer) then return end
-		local ruid = self.BandRUID
-		if kind == "SPEED" then ruid = self.BandSpeedRUID
-		elseif kind == "ATTACK" then ruid = self.BandAttackRUID
-		elseif kind == "HEAL" then ruid = self.BandHealRUID end
-		renderer.SpriteRUID = ruid
+		if kind == "" then kind = "BASE" end
+		renderer.SpriteRUID = self:BandStillRuid(kind)
 		renderer.Color = Color(1, 1, 1, self.BandAlpha)
-		self.bandKind = kind
-		log("[AuraEmitter] band skin " .. self.Entity.Name .. " kind=" .. ((kind ~= "") and kind or "BASE"))
+		self.BandKind = kind
+		log("[AuraEmitter] band skin " .. self.Entity.Name .. " kind=" .. kind)
+	end
+
+	method string BandStillRuid(string kind)
+		-- 종류별 정지 띠 그림(디자이너 시안). 서버 · 클라 둘 다 쓴다(같은 기본값).
+		if kind == "SPEED" then return self.BandSpeedRUID end
+		if kind == "ATTACK" then return self.BandAttackRUID end
+		if kind == "HEAL" then return self.BandHealRUID end
+		return self.BandRUID
 	end
 
 	method void OnUpdate(number delta)
 		-- 서버: 시설 오라의 특성 값은 스폰 뒤 Lv 에 맞춰 들어오므로 바뀌면(한 번) 띠 그림을 갈아 끼운다.
-		-- 클라: OrderInLayer 는 동기화되지 않으므로 자식 "AuraRect" 의 층 순서를 1초마다 확인해 맞춘다.
+		-- 클라: 시설 띠면 안개 프레임을 넘기고(TickBand · WO-048), OrderInLayer 는 동기화되지 않으므로 자식 "AuraRect" 의 층 순서를 1초마다 확인해 맞춘다.
 		if self:IsClient() then
+			if self.BandKind ~= "" then
+				self:TickBand(delta)
+			end
 			self.clientLayerCheckAt = self.clientLayerCheckAt + delta
 			if self.clientLayerCheckAt < 1.0 then return end
 			self.clientLayerCheckAt = 0
@@ -135,8 +165,104 @@ script AuraEmitter extends Component
 		if not isvalid(self.AuraEntity) then return end
 		if not self:IsBandAura() then return end
 		local kind = self:ResolveBandKind()
-		if kind ~= "" and kind ~= self.bandKind then
+		if kind ~= "" and kind ~= self.BandKind then
 			self:ApplyBandSkin(self.AuraEntity, kind)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method any ClientAura()
+		-- 클라: 자식 오라 그림 엔티티(서버가 스폰 · 클라에 늦게 보일 수 있어 없으면 다음 프레임에 다시 찾는다).
+		if isvalid(self.clientAura) then return self.clientAura end
+		local child = self.Entity:GetChildByName("AuraRect", false)
+		if not isvalid(child) then return nil end
+		self.clientAura = child
+		return child
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LoadBandDefs()
+		-- 클라: 표 AuraBandArt 를 한 번 읽는다(종류 → 프레임 목록 · 프레임 시간). 🔴 표 행은 1-based. 표가 없으면 빈 정의 → 정지 그림 그대로.
+		if self.bandDefs ~= nil then return end
+		self.bandDefs = {}
+		local t = _DataService:GetTable("AuraBandArt")
+		if t == nil then
+			log_warning("[AuraEmitter] AuraBandArt dataset not found on client → still band")
+			return
+		end
+		local rows = t:GetRowCount()
+		for i = 1, rows do
+			local kind = string.upper(tostring(t:GetCell(i, "Kind") or ""))
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+			if kind ~= "" and enabled then
+				local frames = {}
+				for ruid in string.gmatch(t:GetCell(i, "Frames") or "", "[^|]+") do
+					local r = string.match(ruid, "^%s*(.-)%s*$") or ""
+					if r ~= "" then table.insert(frames, r) end
+				end
+				if #frames > 0 then
+					self.bandDefs[kind] = { frames = frames, frameSec = math.max(0.02, tonumber(t:GetCell(i, "FrameSec")) or 0.1) }
+				end
+			end
+		end
+		log(string.format("[AuraEmitter] band table rows=%d %s", rows, self.Entity.Name))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BeginBandKind(string kind, SpriteRendererComponent sr)
+		-- 클라: 종류가 바뀌면 우선 그 종류의 정지 그림(투명도 0.9)을 보이고, 프레임을 미리 다 불러온 뒤에야 재생을 시작한다(첫 표시 빈 칸 · 깜빡임 방지).
+		self.animKind = kind
+		self.animReady = false
+		self.animIdx = 1
+		self.animAt = 0
+		self:LoadBandDefs()
+		self:PaintBand(sr, self:BandStillRuid(kind), self.BandAlpha)
+		local d = self.bandDefs[kind]
+		if d == nil then
+			log("[AuraEmitter] band kind " .. kind .. " has no frames → still " .. self.Entity.Name)
+			return
+		end
+		local t0 = _UtilLogic.ElapsedSeconds
+		_ResourceService:PreloadAsync(d.frames, function(result)
+			if self.animKind ~= kind then return end
+			self.animReady = true
+			log(string.format("[AuraEmitter] band preload done %s kind=%s %d frames in %.2fs", self.Entity.Name, kind, #d.frames, _UtilLogic.ElapsedSeconds - t0))
+		end)
+		log("[AuraEmitter] band kind -> " .. kind .. " " .. self.Entity.Name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TickBand(number delta)
+		-- 클라: FrameSec 마다 다음 프레임으로(마지막 → 첫 프레임 반복). 프레임 그림에 투명도 0.9 가 이미 들어 있어 재생 중엔 렌더러 알파 1.
+		local aura = self:ClientAura()
+		if aura == nil then return end
+		local sr = aura.SpriteRendererComponent
+		if not isvalid(sr) then return end
+		if self.animKind ~= self.BandKind then
+			self:BeginBandKind(self.BandKind, sr)
+		end
+		if not self.animReady then return end
+		local d = self.bandDefs[self.animKind]
+		if d == nil then return end
+		local n = #d.frames
+		self.animAt = self.animAt + delta
+		local steps = math.floor(self.animAt / d.frameSec)
+		if steps > 0 then
+			self.animAt = self.animAt - steps * d.frameSec
+			self.animIdx = (self.animIdx - 1 + steps) % n + 1
+		end
+		self:PaintBand(sr, d.frames[self.animIdx], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintBand(SpriteRendererComponent sr, string ruid, number alpha)
+		-- 같은 그림 · 같은 알파면 다시 대입하지 않는다(재대입 = 불필요한 갱신 · 깜빡임 위험). 서버 동기화가 값을 되돌려도 다음 프레임에 다시 맞춘다.
+		if ruid ~= nil and ruid ~= "" and sr.SpriteRUID ~= ruid then
+			sr.SpriteRUID = ruid
+		end
+		local c = sr.Color
+		if math.abs(c.a - alpha) > 0.001 then
+			sr.Color = Color(c.r, c.g, c.b, alpha)
 		end
 	end
 
