@@ -2102,8 +2102,8 @@ script SkillExecutors extends Logic
         if isvalid(mover) then
             mover.VisualOnly = true
             mover.Speed = 0
-            -- DirectionX −1: SkillProjectile.ApplyFacing 이 Scale.x 를 양수로 둔다(뒤집기는 아래 FlipX 가 한다 · 두 번 뒤집지 않게).
-            mover.DirectionX = -1
+            -- DirectionX: SkillProjectile.ApplyFacing(OnBeginPlay)이 Scale.x 부호를 DirectionX 로 다시 정한다 → 아래 거울(Scale.x 부호)과 같은 쪽으로 맞춘다(+1 = 음수 = 뒤집힘).
+            mover.DirectionX = self:LoopSpriteMirrorSign(spec, facing) * -1
             mover.DirectionY = 0
             local life = duration
             if life == nil or life <= 0 then life = 100000 end
@@ -2112,7 +2112,9 @@ script SkillExecutors extends Logic
         end
         local s = spec.scale or 1
         fx.TransformComponent.Position = Vector3(ox * facing, oy, 0)
-        fx.TransformComponent.Scale = Vector3(s, s, 1)
+        -- 뒤집기 = 엔티티 Scale.x 부호(FIXES §8 2차 · 2026-10-05 R10): 서버에서 FlipX 를 바꾸면 렌더러가 구간 프레임(에너지 쉴드 13–20)을 처음부터 다시 돌았다
+        --   (같은 순간 스폰한 방울 셋 비교 · 서버 FlipX 만 위상이 어긋남 · 서버 Scale.x 는 그대로 · r11/R10_server_sheet.png). FlipX 는 늘 false.
+        fx.TransformComponent.Scale = Vector3(s * self:LoopSpriteMirrorSign(spec, facing), s, 1)
         local sr = fx.SpriteRendererComponent
         if isvalid(sr) then
             if _PlayerFrontLayer ~= nil then
@@ -2125,7 +2127,7 @@ script SkillExecutors extends Logic
             end
             if spec.startFrame ~= nil then sr.StartFrameIndex = spec.startFrame end
             if spec.endFrame ~= nil then sr.EndFrameIndex = spec.endFrame end
-            sr.FlipX = (facing > 0) and not spec.noFlip
+            sr.FlipX = false
             -- 그림은 맨 마지막(배율 · 층이 먼저 가야 첫 프레임에 기본 배율 · 층으로 번쩍이지 않는다 · LaneAttackFx 와 같은 순서).
             sr.SpriteRUID = spec.ruid
         end
@@ -2137,7 +2139,7 @@ script SkillExecutors extends Logic
         perUser[key] = fx
         self:FollowLoopSprite(uid, name, ox, spec.noFlip == true)
         log("SkillExecutors: loop sprite " .. key .. " " .. name .. " ruid=" .. string.sub(spec.ruid, 1, 8) .. " facing=" .. tostring(facing)
-            .. " flipX=" .. tostring(isvalid(sr) and sr.FlipX) .. " frames=" .. tostring(spec.startFrame or 0) .. "-" .. tostring(spec.endFrame or "end")
+            .. " mirror=" .. tostring(self:LoopSpriteMirrorSign(spec, facing) < 0) .. " frames=" .. tostring(spec.startFrame or 0) .. "-" .. tostring(spec.endFrame or "end")
             .. " behind=" .. tostring(spec.sortBehind == true or spec.behindPlayer == true) .. " for " .. tostring(duration) .. "s (" .. uid .. ")")
         return fx
     end
@@ -2170,15 +2172,25 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void TurnLoopSprite(Entity fx, table spec, number facing)
-        -- 돌아섰을 때(EnsureLoopTurnPoll): 다시 걸지 않고 FlipX · 앞 offsetX 만 바꾼다 — 프레임이 그대로 이어진다. 클라는 이미 매 프레임 맞추고 있고, 이 값은 늦게 들어온 클라용.
+        -- 돌아섰을 때(EnsureLoopTurnPoll): 다시 걸지 않고 거울(Scale.x 부호) · 앞 offsetX 만 바꾼다 — 프레임이 그대로 이어진다(FlipX 는 안 건드린다 · 구간 프레임이 처음부터 돈다).
+        --   클라는 이미 매 프레임 맞추고 있고, 이 값은 늦게 들어온 클라용.
         if not isvalid(fx) then return end
-        local sr = fx.SpriteRendererComponent
-        if isvalid(sr) then sr.FlipX = (facing > 0) and not spec.noFlip end
         local t = fx.TransformComponent
         if isvalid(t) then
             local cur = t.Position
             t.Position = Vector3((spec.offsetX or 0) * facing, cur.y, cur.z)
+            local sc = t.Scale
+            t.Scale = Vector3(math.abs(sc.x) * self:LoopSpriteMirrorSign(spec, facing), sc.y, sc.z)
         end
+        local mover = fx:GetComponent("script.SkillProjectile")
+        if isvalid(mover) then mover.DirectionX = self:LoopSpriteMirrorSign(spec, facing) * -1 end
+    end
+
+    method number LoopSpriteMirrorSign(table spec, number facing)
+        -- 루프 sprite 거울 부호: 오른쪽을 보면(원작 그림은 왼쪽 기준) −1(뒤집힘) · noFlip 이면 늘 +1. 서버 · 클라 공용.
+        if spec ~= nil and spec.noFlip then return 1 end
+        if facing > 0 then return -1 end
+        return 1
     end
 
     @ExecSpace("Multicast")
@@ -2189,7 +2201,7 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ClientOnly")
     method void OnUpdate(number delta)
-        -- 클라: 루프 sprite 따라가기(FIXES §8). 주인 LookDirectionX 가 바뀐 프레임에만 FlipX · 앞 offsetX 를 고친다. 주인 · 엔티티가 사라지면 목록에서 뺀다.
+        -- 클라: 루프 sprite 따라가기(FIXES §8). 주인 LookDirectionX 가 바뀐 프레임에만 거울(Scale.x 부호) · 앞 offsetX 를 고친다. 주인 · 엔티티가 사라지면 목록에서 뺀다.
         local list = self.loopSpriteFollow
         if #list == 0 then return end
         local now = _UtilLogic.ElapsedSeconds
@@ -2215,12 +2227,15 @@ script SkillExecutors extends Logic
                     if facing == 0 then facing = 1 end
                     if facing ~= f.lastFacing then
                         f.lastFacing = facing
-                        local sr = f.fx.SpriteRendererComponent
-                        if isvalid(sr) then sr.FlipX = (facing > 0) and not f.noFlip end
                         local t = f.fx.TransformComponent
                         if isvalid(t) then
                             local cur = t.Position
                             t.Position = Vector3(f.offsetX * facing, cur.y, cur.z)
+                            -- 거울 = Scale.x 부호(FlipX 를 바꾸면 구간 프레임이 처음부터 돈다 · FIXES §8 2차).
+                            local sign = 1
+                            if facing > 0 and not f.noFlip then sign = -1 end
+                            local sc = t.Scale
+                            t.Scale = Vector3(math.abs(sc.x) * sign, sc.y, sc.z)
                         end
                     end
                 end
