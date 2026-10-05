@@ -87,3 +87,22 @@ P18b: 들어올림 세트 c · c1 · c2 · c3 어느 것도 후반(거꾸로 →
 - 충돌 1곳: `SkillExecutors.mlua` 직업 예열(`PrewarmJob…`) — 이 브랜치의 소리 예열(`PrewarmSoundsFor` · `PreloadSoundsOnClient`)과 main(#102)의 프레임 예열(`PrewarmFrameRuidsFor`) 둘 다 둔다
   (git rerere 가 night-capture 합칠 때의 같은 해결을 다시 썼다 · 확인함).
 - 점검: LSP(바뀐 .mlua 2개) 오류 0 · `check-integrity` 전부 통과(경고 3 = main) · SkillInfo 중복 id 0 · CRLF 유지. Play 안 함 — RELOOK R10b(쉴드 방울) 그대로.
+
+## 2026-10-05 통합 Play(`8efe928`) 뒤 — 에너지 쉴드 방울 구간 · 울트라 진입 원 배율
+
+### 찾은 것 (R10b · `villagedefense-harness/pirate-check/sitting-8efe928/R10b-findings.txt`)
+
+- 사용자: "가만히 서 있어도 방울이 처음부터 다시 돈다". 렌더러 값(서버 · 클라) = StartFrameIndex 0 · EndFrameIndex 최대 — 13~20 구간이 사라져 있었다.
+- 캡처(r11/R10b_still_8efe928.mkv): 1.83 s 주기 = 클립 21프레임 전체(0~12 방울이 생기는 장면 포함). 원인 = `PlayLoopSprite` 가 구간을 `SpriteRUID` **앞**에 넣었고, 그림을 넣는 순간 렌더러가 구간을 기본값으로 되돌린다.
+- 런타임 프로브(그림 뒤에 구간을 다시 넣음 · 코드 변경 없음): 0.72 s 주기(13~20)로 끊김 없이 돈다(r11/R10b_range13_20_probe.mkv). 원작 = 0~12 한 번 → 13~20 반복.
+
+### 바뀐 것 (B 파일 하나)
+
+| 파일 | 내용 |
+|---|---|
+| `Skill/SkillExecutors.mlua` | `PlayLoopSprite`: Start/EndFrameIndex 를 `SpriteRUID` **뒤**로(층 · 배율 · FlipX 는 그대로 그림 앞). 같은 순서 문제는 다른 곳에 없다(4288 줄 근처 고정 프레임은 이미 그림 먼저) |
+| 〃 | `effectOverrides.SK_P21.tiers.ULTRA.cast.scale` 1.0 → **1.15**(사용자 결정 2026-10-05 · P18b 의 배율만 대체 · 다른 두 티어와 같게). 뒤집기 · offsetY −0.10 · startFrame 4 그대로 |
+
+### 점검
+
+- LSP 깨끗 · `check-integrity` 전부 통과(경고 3 = main) — 로그 `villagedefense-harness/pirate-check/after-maker-free/165-*.txt`. **Play 안 함** — 다음 빌드 RELOOK R10b · R21.
