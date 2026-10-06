@@ -1,0 +1,381 @@
+@Logic
+script BoostShopUIController extends Logic
+
+	-- 이용권 상점 창(BoostShopGroup.ui · WO-053) 클라 컨트롤러. 디자이너 시안 "이용권 상점 (월드코인)".
+	--   · 열기 = 로비 이용권 상인(VillageNpcInteractor → BoostShopGroup/boostshop) · 다른 NPC 창과 같은 Pending 소비 방식.
+	--   · 카드 3장(1/3/7일) = BoostProduct 표(클라에서 직접 읽는다 · 표시용). 구매 → 확인 창 → _WorldShopService:PromptPurchase(플랫폼 결제 창).
+	--   · 남은 시간은 서버 BoostPassService 가 밀어 준다(SetState). 결제 결과는 클라가 직접 못 받는다 → 지급 뒤 서버가 boughtDays 를 실어 보내면 시작 알림.
+	--   · 🔴 시안의 "내 월드코인" · 충전 · 잔액 변화 · 코인 부족 창은 없다 — MSW 에 잔액 · 충전 API 가 없다. 부족 안내는 플랫폼 결제 창이 한다.
+	-- UUID 는 UIBuilder write({bind}) 주입(Docs/tools/design-ui/apply-boostshop.cjs).
+
+	property Entity dimmer = "1063269c-9c2a-4b45-ba9d-07550d8924f1"
+
+	property Entity window = "90e9fc7b-c3f5-47d3-8694-9530b0a6c4f2"
+
+	property ButtonComponent btnClose = "d94143fc-1e78-4212-b6b1-59e32026fe13"
+
+	-- 효과 띠(기본) · 사용 중 띠
+	property Entity effectBand = "d83801dc-ba7f-451e-96d9-17b19b87d01a"
+
+	property Entity useBand = "46f1c1cd-3281-4d80-b77a-45e94c0b3474"
+
+	property TextGUIRendererComponent useLeft = "ad66b320-f65a-4de3-a0c3-e8f4f488527a"
+
+	property SpriteGUIRendererComponent useFill = "8130f8f3-4d9b-4764-8e66-7b2488927cd6"
+
+	-- 카드 3장의 부모(자식 Card_1~3 · 각 카드 아래 Coupon · Name · Daily · Price · BtnBuy · Best)
+	property Entity cardRoot = "0fa79cdf-4ab1-4c1c-9866-b781120574fd"
+
+	-- 구매 확인 창
+	property Entity confirmDim = "087eca81-c1ac-40c3-9295-4f0a6cb3dd65"
+
+	property Entity confirm = "4fdf6143-d587-4bc1-a1bd-916c9490f45b"
+
+	property SpriteGUIRendererComponent confirmCoupon = "fda30b3f-3431-4ca5-b94c-17e3c18d8a57"
+
+	property TextGUIRendererComponent confirmName = "a534ffae-3578-4f76-ab1d-80bdb988c9d2"
+
+	property TextGUIRendererComponent confirmDesc = "7d7b1107-1d6c-41ea-b6c8-11d029954973"
+
+	property TextGUIRendererComponent confirmPrice = "2b5c314d-8ff8-4a4f-a138-6e3e282ee87f"
+
+	property ButtonComponent btnCancel = "59e8549f-b63b-4517-b316-ba2ad9c000ec"
+
+	property ButtonComponent btnBuy = "266f4516-e1b6-472d-b297-262783621367"
+
+	-- 시작 알림
+	property Entity toast = "5762bef6-7d71-4061-ae77-f01bef30610a"
+
+	property TextGUIRendererComponent toastText = "bab5c675-9e0e-419b-b732-3ce8554cf7a7"
+
+	-- 쿠폰 그림(Docs/tools/design-ui/boost-ruids.json · 2x · 그룹 리소스 mIYbC). 표에 없는 일수는 1일 그림.
+	property string coupon1Ruid = "65f6cae9e1d64eb99bf8ae61bce6897a"
+
+	property string coupon3Ruid = "943ccfe6cc6e4595b65bc22472dbaceb"
+
+	property string coupon7Ruid = "05899878538c45d4858a66e6632030ed"
+
+	property string TableName = "BoostProduct"
+
+	property number ToastSec = 2.0
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	-- rows[i] = { productId, days, price, enabled } (일수 오름차순 · 최대 3)
+	@HideFromInspector
+	property any rows = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property integer pick = 0
+
+	-- 서버가 보낸 남은 ms 를 클라에서 깎는다(표시용)
+	@HideFromInspector
+	property number leftMs = 0
+
+	@HideFromInspector
+	property number maxDays = 7
+
+	@HideFromInspector
+	property number redrawAcc = 0
+
+	@HideFromInspector
+	property integer toastTimer = 0
+
+	method void OnBeginPlay()
+		-- 클라만 배선.
+		if self:IsClient() then self:SetupClient() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetupClient()
+		-- 표 읽기 → 카드 채우기 → 버튼 배선 → 닫아 둔다.
+		self:LoadRows()
+		self.handlers = {}
+		local function bind(ent, fn)
+			if isvalid(ent) then table.insert(self.handlers, { e = ent, h = ent:ConnectEvent(ButtonClickEvent, fn) }) end
+		end
+		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
+		if isvalid(self.btnCancel) then bind(self.btnCancel.Entity, function() self:CloseConfirm() end) end
+		if isvalid(self.btnBuy) then bind(self.btnBuy.Entity, function() self:Purchase() end) end
+		for i = 1, 3 do
+			local card = self:Card(i)
+			local idx = i
+			if card ~= nil then
+				bind(card, function() self:OpenConfirm(idx) end)
+				local b = card:GetChildByName("BtnBuy")
+				if isvalid(b) then bind(b, function() self:OpenConfirm(idx) end) end
+			end
+		end
+		self:FillCards()
+		self:SetOpen(false)
+		log("[BoostShop] ready (client) rows=" .. tostring(#self.rows) .. " handlers=" .. tostring(#self.handlers))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 버튼 연결 해제.
+		if self.handlers ~= nil then
+			for _, x in ipairs(self.handlers) do
+				if isvalid(x.e) then x.e:DisconnectEvent(ButtonClickEvent, x.h) end
+			end
+		end
+		self.handlers = nil
+		if self.toastTimer ~= 0 then _TimerService:ClearTimer(self.toastTimer) end
+		self.toastTimer = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LoadRows()
+		-- BoostProduct(1-based) — Days ≥ 1 인 행을 일수 순으로 최대 3개. ProductId 빈칸 · Enabled=false 행도 카드는 보이되 구매는 막는다.
+		self.rows = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[BoostShop] dataset not found: " .. self.TableName)
+			return
+		end
+		for i = 1, t:GetRowCount() do
+			local days = math.floor(tonumber(tostring(t:GetCell(i, "Days") or "")) or 0)
+			if days >= 1 then
+				table.insert(self.rows, {
+					productId = tostring(t:GetCell(i, "ProductId") or ""),
+					days = days,
+					price = math.floor(tonumber(tostring(t:GetCell(i, "Price") or "")) or 0),
+					enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "false")) == "true",
+				})
+			end
+		end
+		table.sort(self.rows, function(a, b) return a.days < b.days end)
+		while #self.rows > 3 do table.remove(self.rows) end
+		self.maxDays = 1
+		for _, r in ipairs(self.rows) do self.maxDays = math.max(self.maxDays, r.days) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity Card(integer i)
+		-- i 번째 카드 엔티티.
+		if not isvalid(self.cardRoot) then return nil end
+		local c = self.cardRoot:GetChildByName("Card_" .. tostring(i))
+		if not isvalid(c) then return nil end
+		return c
+	end
+
+	@ExecSpace("ClientOnly")
+	method string CouponOf(integer days)
+		-- 일수 → 쿠폰 그림.
+		if days >= 7 then return self.coupon7Ruid end
+		if days >= 3 then return self.coupon3Ruid end
+		return self.coupon1Ruid
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Comma(integer n)
+		-- 1250 → "1,250"
+		local s = tostring(math.floor(n))
+		local out = s
+		while true do
+			local k
+			out, k = string.gsub(out, "^(-?%d+)(%d%d%d)", "%1,%2")
+			if k == 0 then break end
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillCards()
+		-- 카드 3장: 쿠폰 · 이름 · 하루 값 · 가격 · "가장 이득"(하루 값이 가장 싼 카드 하나).
+		local best = 0
+		local bestDaily = 0
+		for i, r in ipairs(self.rows) do
+			local daily = r.price / r.days
+			if best == 0 or daily < bestDaily or (daily == bestDaily and r.days > self.rows[best].days) then best = i; bestDaily = daily end
+		end
+		if #self.rows < 2 then best = 0 end
+		for i = 1, 3 do
+			local card = self:Card(i)
+			local r = self.rows[i]
+			if card ~= nil then
+				card.Enable = (r ~= nil)
+				if r ~= nil then
+					local cp = card:GetChildByName("Coupon")
+					if isvalid(cp) and cp.SpriteGUIRendererComponent ~= nil then cp.SpriteGUIRendererComponent.ImageRUID = DataRef(self:CouponOf(r.days)) end
+					self:SetText(card, "Name", tostring(r.days) .. "일 이용권")
+					local daily = r.price / r.days
+					local dailyText = (math.abs(daily - math.floor(daily + 0.5)) < 0.001) and tostring(math.floor(daily + 0.5)) or ("약 " .. tostring(math.floor(daily + 0.5)))
+					self:SetText(card, "Daily", "하루 " .. dailyText .. " 코인")
+					self:SetText(card, "Price/Value", self:Comma(r.price))
+					local bc = card:GetChildByName("Best")
+					if isvalid(bc) then bc.Enable = (i == best) end
+				end
+			end
+		end
+		self:RefreshButtons()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshButtons()
+		-- 사용 중이면 "기간 연장", 아니면 "구매".
+		local label = (self.leftMs > 0) and "기간 연장" or "구매"
+		for i = 1, 3 do
+			local card = self:Card(i)
+			if card ~= nil then self:SetText(card, "BtnBuy", label) end
+		end
+		if isvalid(self.btnBuy) then self:SetText(self.btnBuy.Entity, "", label) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		-- 자식 글자 한 줄(childName "" = parent 자신 · "A/B" 경로도 된다).
+		if not isvalid(parent) then return end
+		local cur = parent
+		for seg in string.gmatch(childName, "[^/]+") do
+			cur = cur:GetChildByName(seg)
+			if not isvalid(cur) then return end
+		end
+		if cur.TextGUIRendererComponent ~= nil then cur.TextGUIRendererComponent.Text = text end
+	end
+
+	-- ── 열고 닫기 ────────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- NPC 라우터 Pending 소비 · 다른 창이 열리면 닫기 · 남은 시간 카운트다운.
+		local r = _VillageNpcUIController
+		if r ~= nil and r.HasPendingRequest then
+			if r.PendingUiGroupName == "BoostShopGroup" then
+				self:Open(r.PendingUiRoute)
+				r:ClearPendingRequest()
+			elseif self.isOpen then
+				self:Close()
+			end
+		end
+		if self.isOpen and _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen then self:Close() end
+		if self.leftMs > 0 then
+			self.leftMs = math.max(0, self.leftMs - delta * 1000)
+			self.redrawAcc = self.redrawAcc + delta
+			if self.leftMs <= 0 or self.redrawAcc >= 1 then
+				self.redrawAcc = 0
+				if self.isOpen then self:RenderState() end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string route)
+		-- 다른 NPC 창을 닫고 연다. 서버에 남은 시간을 묻는다.
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("BoostShopGroup") end
+		self:SetOpen(true)
+		self:CloseConfirm()
+		self:RenderState()
+		if _BoostPassService ~= nil then _BoostPassService:RequestState() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기(확인 창까지).
+		self:CloseConfirm()
+		self:SetOpen(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOpen(boolean open)
+		-- 화면 막 + 창.
+		self.isOpen = open
+		if isvalid(self.dimmer) then self.dimmer.Enable = open end
+		if isvalid(self.window) then self.window.Enable = open end
+		log("[BoostShop] open=" .. tostring(open))
+	end
+
+	-- ── 구매 ─────────────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OpenConfirm(integer i)
+		-- 카드 → 확인 창(이용권 이름 · 효과 · 가격). 유료 화폐라 한 번 더 묻는다(그 뒤 플랫폼 결제 창이 또 묻는다).
+		local r = (self.rows ~= nil) and self.rows[i] or nil
+		if r == nil then return end
+		self.pick = i
+		if isvalid(self.confirmCoupon) then self.confirmCoupon.ImageRUID = DataRef(self:CouponOf(r.days)) end
+		if isvalid(self.confirmName) then self.confirmName.Text = tostring(r.days) .. "일 이용권" end
+		if isvalid(self.confirmDesc) then self.confirmDesc.Text = "계정 경험치 · 발록의 심장 2배 · " .. tostring(r.days) .. "일" end
+		if isvalid(self.confirmPrice) then self.confirmPrice.Text = self:Comma(r.price) end
+		self:RefreshButtons()
+		if isvalid(self.confirmDim) then self.confirmDim.Enable = true end
+		if isvalid(self.confirm) then self.confirm.Enable = true end
+		log("[BoostShop] confirm days=" .. tostring(r.days) .. " price=" .. tostring(r.price) .. " pid=" .. r.productId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseConfirm()
+		-- 확인 창 닫기.
+		if isvalid(self.confirmDim) then self.confirmDim.Enable = false end
+		if isvalid(self.confirm) then self.confirm.Enable = false end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Purchase()
+		-- 확인 → 플랫폼 결제 창. 상품 등록 전(ProductId 빈칸 · Enabled=false)이면 막는다.
+		local r = (self.rows ~= nil) and self.rows[self.pick] or nil
+		self:CloseConfirm()
+		if r == nil then return end
+		if not r.enabled or r.productId == "" then
+			log_warning("[BoostShop] product not ready days=" .. tostring(r.days) .. " — 상품 등록 전")
+			self:ShowToast("아직 판매 준비 중이에요")
+			return
+		end
+		log("[BoostShop] PromptPurchase pid=" .. r.productId .. " days=" .. tostring(r.days))
+		_WorldShopService:PromptPurchase(r.productId)
+	end
+
+	-- ── 서버 → 클라 ──────────────────────────────────────────────────
+
+	@ExecSpace("Client")
+	method void SetState(integer leftMs, integer boughtDays)
+		-- 서버(BoostPassService.PushState)가 보낸 남은 ms. boughtDays > 0 = 방금 지급됨 → 시작 알림.
+		self.leftMs = math.max(0, leftMs)
+		self.redrawAcc = 0
+		self:RenderState()
+		self:RefreshButtons()
+		log("[BoostShop] state leftMs=" .. tostring(leftMs) .. " bought=" .. tostring(boughtDays))
+		if boughtDays > 0 then self:ShowToast(tostring(boughtDays) .. "일 이용권 시작! 계정 경험치 · 발록의 심장 2배") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderState()
+		-- 사용 중이면 효과 띠 대신 사용 중 띠(남은 시간 · 게이지 = 남은 시간 ÷ 가장 긴 이용권 기간).
+		local using = self.leftMs > 0
+		if isvalid(self.effectBand) then self.effectBand.Enable = not using end
+		if isvalid(self.useBand) then self.useBand.Enable = using end
+		if not using then return end
+		if isvalid(self.useLeft) then self.useLeft.Text = self:FormatLeft(self.leftMs) end
+		if isvalid(self.useFill) then self.useFill.FillAmount = math.min(1, self.leftMs / (self.maxDays * 86400000)) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FormatLeft(number ms)
+		-- "6일 23시간" · 하루 미만 "23시간 59분" · 한 시간 미만 "59분"(1분 미만도 1분).
+		local totalMin = math.max(1, math.floor(ms / 60000))
+		local d = math.floor(totalMin / 1440)
+		local h = math.floor((totalMin % 1440) / 60)
+		local m = totalMin % 60
+		if d > 0 then return tostring(d) .. "일 " .. tostring(h) .. "시간" end
+		if h > 0 then return tostring(h) .. "시간 " .. tostring(m) .. "분" end
+		return tostring(m) .. "분"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowToast(string text)
+		-- 2초 알림(툴팁 판).
+		if not isvalid(self.toast) then return end
+		if isvalid(self.toastText) then self.toastText.Text = text end
+		self.toast.Enable = true
+		if self.toastTimer ~= 0 then _TimerService:ClearTimer(self.toastTimer) end
+		self.toastTimer = _TimerService:SetTimerOnce(function()
+			self.toastTimer = 0
+			if isvalid(self.toast) then self.toast.Enable = false end
+		end, self.ToastSec)
+	end
+
+end
