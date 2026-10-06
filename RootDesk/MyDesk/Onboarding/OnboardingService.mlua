@@ -1,0 +1,204 @@
+@Logic
+script OnboardingService extends Logic
+	-- 처음 하는 사람 안내 · 알림 카드의 서버 반쪽 + 클라 상태 (2026-10-05 2차 · 디자인팀).
+	--   클라는 스스로 알 수 없는 세 가지를 서버가 계산해 그 사람 클라에만 보낸다:
+	--     ① 처음 하는 사람인가 = 계정 경험치 0(매치를 한 번도 끝내지 않음 · _AccountData:GetExp 읽기만 · 로드 전 값은 진짜가 아니라 IsLoaded 를 기다린다)
+	--     ② ★1 + 안내 켬 = _GuideService:IsActive(기존 ★1 안내와 같은 판정 · '안내 끄기'를 누르면 같이 꺼진다) — 클라 Difficulty 는 동기화되지 않는다
+	--     ③ 매치 시작 · 마을 차지 순간 = MatchPhaseChangedEvent(PHASE0-1 · MatchSerial 로 판마다 한 번) · VillageClaimedEvent
+	--   클라 Logic 은 매치(방)마다 새로 시작하므로 '한 번'의 단위는 매치 한 판이다.
+	--   클라는 준비되면 RequestState() 로 한 번 묻는다 — 입장 RPC 가 클라 Logic 보다 먼저 올 수 있다(AvatarSelectUIController 와 같은 이유).
+	--   남의 파일은 고치지 않는다(협업-규칙 6-1 · 6-2): 발행자 이벤트를 여기서 구독하고 읽기 API 만 쓴다.
+
+	-- 계정 로드를 기다리는 간격 · 최대 시간(초)
+	property number RetrySeconds = 0.5
+
+	property number RetryLimitSeconds = 20
+
+	-- 🧪 테스트용: true 면 모두 '처음 하는 사람'으로 본다(Maker 계정은 경험치가 쌓여 있을 수 있다). 배포 전 false.
+	property boolean DevForceFirst = false
+
+	-- ── 서버 ──
+	@HideFromInspector
+	property integer lastSerial = 0
+
+	@HideFromInspector
+	property any pending = nil
+
+	@HideFromInspector
+	property number retryTimer = 0
+
+	-- ── 클라(이 사람 것만) ──
+	@HideFromInspector
+	property boolean known = false
+
+	@HideFromInspector
+	property boolean firstTimer = false
+
+	@HideFromInspector
+	property boolean inMatch = false
+
+	@HideFromInspector
+	property boolean guideOn = false
+
+	@HideFromInspector
+	property integer matchSerial = 0
+
+	@HideFromInspector
+	property string ownVillage = ""
+
+	method void OnBeginPlay()
+		-- 서버: 대기표 준비 · 클라: 지금 상태를 한 번 묻는다.
+		if self:IsServer() then
+			self.pending = {}
+			log("[Onboard] ready (server)")
+		else
+			self.known = false
+			self:RequestState()
+			log("[Onboard] ready (client) - state requested")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestState()
+		-- 클라 → 서버: 이 사람의 상태를 보내 달라(입장 직후 · 늦게 붙은 클라).
+		local uid = senderUserId
+		if uid == nil or uid == "" then
+			return
+		end
+		self:Answer(uid, "request")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Answer(string uid, string reason)
+		-- 계정이 아직 안 읽혔으면 대기표에 올리고 OnUpdate 가 다시 부른다(최대 RetryLimitSeconds 뒤엔 읽힌 것으로 보고 보낸다).
+		if self.pending == nil then
+			self.pending = {}
+		end
+		if _AccountData ~= nil and not _AccountData:IsLoaded(uid) then
+			local waited = self.pending[uid]
+			if waited == nil then
+				self.pending[uid] = { waited = 0, reason = reason }
+				log("[Onboard] wait account load user=" .. uid .. " reason=" .. reason)
+				return
+			end
+			if waited.waited < self.RetryLimitSeconds then
+				return
+			end
+			log_warning("[Onboard] account still not loaded after " .. tostring(self.RetryLimitSeconds) .. "s - answer anyway user=" .. uid)
+		end
+		self.pending[uid] = nil
+		local exp = 0
+		if _AccountData ~= nil then
+			exp = _AccountData:GetExp(uid)
+		end
+		local first = exp <= 0 or self.DevForceFirst
+		local m = _MatchSessionLogic
+		local inMatch = m ~= nil and m.Running == true and m:IsParticipant(uid)
+		local serial = 0
+		local guideOn = false
+		local village = ""
+		if inMatch then
+			serial = m.MatchSerial
+			guideOn = _GuideService ~= nil and _GuideService:IsActive(uid)
+			if _VillageOwnership ~= nil then
+				village = _VillageOwnership:VillageOf(uid) or ""
+			end
+		end
+		log("[Onboard] state user=" .. uid .. " first=" .. tostring(first) .. " (exp " .. tostring(exp) .. ") match=" .. tostring(inMatch) .. " serial=" .. tostring(serial) .. " guide=" .. tostring(guideOn) .. " village=" .. village .. " reason=" .. reason)
+		self:PushState(first, inMatch, serial, guideOn, village, reason, uid)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 계정 로드를 기다리는 사람이 있으면 RetrySeconds 마다 다시 확인한다.
+		if self.pending == nil or next(self.pending) == nil then
+			return
+		end
+		self.retryTimer = self.retryTimer - delta
+		if self.retryTimer > 0 then
+			return
+		end
+		self.retryTimer = self.RetrySeconds
+		local ready = {}
+		for uid, w in pairs(self.pending) do
+			w.waited = w.waited + self.RetrySeconds
+			if (_AccountData ~= nil and _AccountData:IsLoaded(uid)) or w.waited >= self.RetryLimitSeconds then
+				table.insert(ready, { uid = uid, reason = w.reason })
+			end
+		end
+		for _, r in ipairs(ready) do
+			self:Answer(r.uid, r.reason)
+		end
+	end
+
+	@EventSender("Logic", "MatchSessionLogic")
+	@ExecSpace("ServerOnly")
+	handler HandleMatchPhaseChangedEvent(MatchPhaseChangedEvent event)
+		-- 매치 시작(PHASE0-1)마다 한 번: 참가자마다 상태를 보낸다. StartMatch 가 Running · Difficulty 를 켠 뒤 SetPhase(1) 에서 쏜다.
+		--   SetProfile 이 PHASE0-1 을 다시 쏘면 MatchSerial 이 같아 무시한다.
+		if event.Phase ~= "PHASE0-1" then
+			return
+		end
+		local m = _MatchSessionLogic
+		if m == nil or m.MatchSerial == self.lastSerial then
+			return
+		end
+		self.lastSerial = m.MatchSerial
+		local n = 0
+		if m.participants ~= nil then
+			for _, uid in ipairs(m.participants) do
+				self:Answer(uid, "match-start")
+				n = n + 1
+			end
+		end
+		log("[Onboard] match start serial=" .. tostring(m.MatchSerial) .. " diff=" .. tostring(m.Difficulty) .. " players=" .. tostring(n))
+	end
+
+	@EventSender("Logic", "VillageOwnership")
+	@ExecSpace("ServerOnly")
+	handler HandleVillageClaimedEvent(VillageClaimedEvent event)
+		-- 마을 차지 → 그 사람 클라에만(안내 9단계 · 알림 카드).
+		local uid = event.OwnerUserId
+		if uid == nil or uid == "" then
+			return
+		end
+		log("[Onboard] village claimed " .. tostring(event.VillageId) .. " by " .. uid)
+		self:PushClaimed(event.VillageId, uid)
+	end
+
+	@ExecSpace("Client")
+	method void PushState(boolean first, boolean inMatch, integer serial, boolean guideOn, string village, string reason)
+		-- 서버 → 이 클라: 상태를 적고 소개 · 안내 · 알림에 알린다. 같은 판(serial)의 시작은 한 번만 넘긴다.
+		local newMatch = inMatch and serial > 0 and serial ~= self.matchSerial
+		self.known = true
+		self.firstTimer = first
+		self.inMatch = inMatch
+		self.guideOn = guideOn
+		self.ownVillage = village
+		if inMatch then
+			self.matchSerial = serial
+		end
+		log("[Onboard] state first=" .. tostring(first) .. " match=" .. tostring(inMatch) .. " serial=" .. tostring(serial) .. " guide=" .. tostring(guideOn) .. " village=" .. village .. " new=" .. tostring(newMatch) .. " reason=" .. reason)
+		if _GameIntroController ~= nil then
+			_GameIntroController:OnOnboardState()
+		end
+		if newMatch then
+			if _CoachMarkController ~= nil then
+				_CoachMarkController:OnMatchStart()
+			end
+			if _TipController ~= nil then
+				_TipController:OnMatchStart()
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PushClaimed(string villageId)
+		-- 서버 → 이 클라: 방금 마을을 차지했다.
+		self.ownVillage = villageId
+		log("[Onboard] claimed " .. villageId)
+		if _CoachMarkController ~= nil then
+			_CoachMarkController:OnVillageClaimed()
+		end
+	end
+end

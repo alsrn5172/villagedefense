@@ -55,6 +55,24 @@ script StatusHUDController extends Logic
 	-- 레벨업 알림을 켜 두는 시간(초)
 	property number NoticeSeconds = 2
 
+	-- 레벨업 몸 빛남(WO-050 §2-18 · 사용자 "레벨업 시 몸에서 빛나기"): 레벨업한 플레이어 몸 뒤에 금빛 원이 숨쉬듯 커졌다 작아지며 2번 반짝인다. 같은 방 모든 클라에 보인다.
+	-- 그림 = Docs/tools/levelup-glow(make.py · upload.cjs) 로 만들어 그룹 저장소에 올린 부드러운 금빛 원 256×256.
+	property string LevelUpGlowRUID = "88733245eb4544a58e5b401890b31d52"
+
+	property number LevelUpGlowSeconds = 1.5
+
+	-- 그림 한 변(2.56 유닛)에 곱하는 배율. 0.9 → 약 2.3 유닛(캐릭터보다 조금 크게).
+	property number LevelUpGlowScale = 0.9
+
+	property integer LevelUpGlowPulses = 2
+
+	-- 반짝임 최대 투명도(0~1)
+	property number LevelUpGlowAlpha = 0.8
+
+	-- 진행 중인 빛 목록(클라 로컬): { uid = 레벨업한 유저, e = 빛 엔티티, t = 지난 시간 }
+	@HideFromInspector
+	property any glows = nil
+
 	@HideFromInspector
 	property any handlers = nil
 
@@ -149,6 +167,7 @@ script StatusHUDController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
 		-- HP 는 네이티브 값이라 여기서 직접 읽어 매 프레임 반영한다(피격 즉시 반응).
+		self:TickGlows(delta)
 		if self.noticeLeft > 0 then
 			self.noticeLeft = self.noticeLeft - delta
 			if self.noticeLeft <= 0 then
@@ -283,6 +302,64 @@ script StatusHUDController extends Logic
 		
 		self:ShowNotice(newLevel)
 		log("[Status] LEVEL UP 연출 Lv" .. tostring(newLevel))
+	end
+
+	@ExecSpace("Client")
+	method void PlayLevelUpGlow(string leveledUserId)
+		-- 서버 → 방 안 각 클라: leveledUserId 플레이어 몸 뒤에 금빛 빛을 로컬로 만든다(서버에 안 보냄 · 끝나면 지운다). 이미 도는 빛이 있으면 다시 시작한다.
+		if leveledUserId == nil or leveledUserId == "" then return end
+		local target = _UserService:GetUserEntityByUserId(leveledUserId)
+		if not isvalid(target) then return end
+		if self.glows == nil then self.glows = {} end
+		for i = #self.glows, 1, -1 do
+			if self.glows[i].uid == leveledUserId then
+				if isvalid(self.glows[i].e) then self.glows[i].e:Destroy() end
+				table.remove(self.glows, i)
+			end
+		end
+		local ruid = self.LevelUpGlowRUID
+		_ResourceService:PreloadAsync({ ruid }, function()
+			local t2 = _UserService:GetUserEntityByUserId(leveledUserId)
+			if not isvalid(t2) then return end
+			-- 클라에서 SpawnByModelId 로 만든 엔티티는 이 클라에만 있다(Play 로 확인: 서버에는 안 보임). 층은 플레이어(Default/4) 바로 뒤(Default/3).
+			local g = _SpawnService:SpawnByModelId("auracircle", "LevelUpGlow", Vector3(0, 0.5, 0), t2)
+			if not isvalid(g) then
+				log_warning("[Status] level up glow spawn failed")
+				return
+			end
+			local sr = g.SpriteRendererComponent
+			if isvalid(sr) then
+				sr.SpriteRUID = ruid
+				sr.SortingLayer = "Default"
+				sr.OrderInLayer = 3
+				sr.Color = Color(1, 1, 1, 0)
+			end
+			g.TransformComponent.Scale = Vector3(self.LevelUpGlowScale, self.LevelUpGlowScale, 1)
+			table.insert(self.glows, { uid = leveledUserId, e = g, t = 0 })
+			log("[Status] level up glow start " .. leveledUserId)
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TickGlows(number delta)
+		-- 빛마다: 투명도 = 최대 × |sin(π × 반짝임 수 × 진행)| · 크기 = 기본 × (1 + 0.15 sin(π 진행)). 시간이 다 되면 지운다.
+		if self.glows == nil or #self.glows == 0 then return end
+		for i = #self.glows, 1, -1 do
+			local gl = self.glows[i]
+			gl.t = gl.t + delta
+			local p = gl.t / math.max(0.1, self.LevelUpGlowSeconds)
+			if p >= 1 or not isvalid(gl.e) then
+				if isvalid(gl.e) then gl.e:Destroy() end
+				table.remove(self.glows, i)
+			else
+				local sr = gl.e.SpriteRendererComponent
+				if isvalid(sr) then
+					sr.Color = Color(1, 1, 1, self.LevelUpGlowAlpha * math.abs(math.sin(math.pi * self.LevelUpGlowPulses * p)))
+				end
+				local k = self.LevelUpGlowScale * (1 + 0.15 * math.sin(math.pi * p))
+				gl.e.TransformComponent.Scale = Vector3(k, k, 1)
+			end
+		end
 	end
 
 	@ExecSpace("ClientOnly")

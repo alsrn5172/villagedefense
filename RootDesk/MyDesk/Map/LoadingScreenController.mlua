@@ -1,0 +1,232 @@
+@Logic
+script LoadingScreenController extends Logic
+
+	property Entity loadingGroup = "2f7f29d5-a6a4-4db9-83d2-4d852f671124"
+
+	property CanvasGroupComponent canvasGroup = "2f7f29d5-a6a4-4db9-83d2-4d852f671124"
+
+	property SpriteGUIRendererComponent background = "015e8c42-ea0f-463e-85f2-79966cc9b8f7"
+
+	property string RuidLithDay = "a89a9f081e554b3eb29cd33fbdc2eef2"
+	property string RuidLithNight = "657d16d4a66d4a5da55205e2ef8c6f67"
+	property string RuidKerningDay = "96e5e2b508db4076bd978a7548b9d5d2"
+	property string RuidKerningNight = "87f96f188de242d38c556b0d6aaaf024"
+	property string RuidElliniaDay = "3c5cb936814446fd90b23bf582ec69c4"
+	property string RuidElliniaNight = "8843262d1a484b29b592b751418640c4"
+
+	property number MinShowSeconds = 0.6
+	property number FadeOutSeconds = 0.35
+	property number PollSeconds = 0.1
+	property number RequestTimeoutSeconds = 20
+	property integer DayStartHour = 6
+	property integer NightStartHour = 18
+
+	@Sync
+	property integer ServerKoreaHour = -1
+
+	@HideFromInspector
+	property number serverHourPollElapsed = 0
+
+	@HideFromInspector
+	property string currentMapName = ""
+
+	@HideFromInspector
+	property string lastImageKey = ""
+
+	@HideFromInspector
+	property string expectedMapName = ""
+
+	@HideFromInspector
+	property boolean active = false
+
+	@HideFromInspector
+	property boolean waitingForMap = false
+
+	@HideFromInspector
+	property boolean mapInitialized = false
+
+	@HideFromInspector
+	property boolean fading = false
+
+	@HideFromInspector
+	property number pollElapsed = 0
+
+	@HideFromInspector
+	property number arrivalElapsed = 0
+
+	@HideFromInspector
+	property number requestElapsed = 0
+
+	@HideFromInspector
+	property number fadeElapsed = 0
+
+	method void OnBeginPlay()
+		-- 서버는 한국 현지 시각을 동기화하고 클라는 첫 로딩 화면을 준비한다.
+		if self:IsServer() then
+			local now = DateTime.UtcNow + TimeSpan.FromHours(9)
+			self.ServerKoreaHour = now.Hour
+			log("[Loading] server hour synced " .. tostring(self.ServerKoreaHour))
+		else
+			log("[Loading] controller ready (client)")
+			self:PreloadImages()
+			self:Show("")
+		end
+	end
+
+	method void OnUpdate(number delta)
+		-- 서버 시각을 동기화하고 클라에서는 CurrentMap을 0.1초 간격으로 확인한다.
+		if self:IsServer() then
+			self.serverHourPollElapsed = self.serverHourPollElapsed + delta
+			if self.serverHourPollElapsed >= 1 then
+				self.serverHourPollElapsed = 0
+				local now = DateTime.UtcNow + TimeSpan.FromHours(9)
+				if self.ServerKoreaHour ~= now.Hour then
+					self.ServerKoreaHour = now.Hour
+					log("[Loading] server hour synced " .. tostring(self.ServerKoreaHour))
+				end
+			end
+			return
+		end
+		if not isvalid(self.loadingGroup) or not isvalid(self.canvasGroup) or not isvalid(self.background) then return end
+		self.pollElapsed = self.pollElapsed + delta
+		if self.pollElapsed >= self.PollSeconds then
+			self.pollElapsed = 0
+			self:PollCurrentMap()
+		end
+		if self.waitingForMap then
+			self.requestElapsed = self.requestElapsed + delta
+			if self.requestElapsed >= self.RequestTimeoutSeconds then
+				log_warning("[Loading] map change timed out for " .. self.expectedMapName)
+				self:Hide()
+			end
+			return
+		end
+		if not self.active then return end
+		if self.fading then
+			self.fadeElapsed = self.fadeElapsed + delta
+			local alpha = 1 - self.fadeElapsed / self.FadeOutSeconds
+			self.canvasGroup.GroupAlpha = math.max(0, alpha)
+			if self.fadeElapsed >= self.FadeOutSeconds then self:Hide() end
+			return
+		end
+		self.arrivalElapsed = self.arrivalElapsed + delta
+		if self.arrivalElapsed >= self.MinShowSeconds then
+			self.fading = true
+			self.fadeElapsed = 0
+			log("[Loading] fade out after arrival " .. self.currentMapName)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(string mapName)
+		-- 목적지 그림을 켜고 맵 변경을 기다린다.
+		local key = self:ImageKeyForMap(mapName)
+		self.expectedMapName = mapName or ""
+		self.waitingForMap = true
+		self.requestElapsed = 0
+		self.arrivalElapsed = 0
+		self.fading = false
+		self.fadeElapsed = 0
+		self.active = true
+		self.loadingGroup.Enable = true
+		self.canvasGroup.GroupAlpha = 1
+		self:SetImage(key)
+		log("[Loading] show " .. ((mapName ~= nil and mapName ~= "") and mapName or "<first map>") .. " " .. key)
+	end
+
+	@ExecSpace("Client")
+	method void ShowFor(string mapName)
+		-- 서버가 실제 이동을 시작한 플레이어 한 명에게만 목적지 로딩 화면을 보낸다.
+		self:Show(mapName)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hide()
+		-- 로딩 그룹을 끄고 전환 상태를 비운다.
+		self.active = false
+		self.waitingForMap = false
+		self.fading = false
+		self.fadeElapsed = 0
+		self.canvasGroup.GroupAlpha = 0
+		self.loadingGroup.Enable = false
+		log("[Loading] hide " .. self.currentMapName)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PreloadImages()
+		-- 첫 전환 전에 여섯 로딩 그림을 리소스 캐시에 올린다.
+		local resources = { self.RuidLithDay, self.RuidLithNight, self.RuidKerningDay, self.RuidKerningNight, self.RuidElliniaDay, self.RuidElliniaNight }
+		_ResourceService:PreloadAsync(resources, function(results)
+			log("[Loading] preload complete " .. tostring(#resources) .. " images")
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PollCurrentMap()
+		-- 플레이어의 실제 맵이 바뀐 순간을 감지한다.
+		local player = _UserService.LocalPlayer
+		if not isvalid(player) or not isvalid(player.CurrentMap) then return end
+		local mapName = player.CurrentMap.Name
+		if self.mapInitialized and mapName == self.currentMapName then
+			-- ShowFor RPC가 맵 동기화보다 늦게 도착해도 현재 목적지면 도착으로 마감한다.
+			if self.waitingForMap and (self.expectedMapName == "" or self.expectedMapName == mapName) then
+				self.waitingForMap = false
+				self.expectedMapName = ""
+				self.requestElapsed = 0
+				self.arrivalElapsed = 0
+				log("[Loading] destination already active " .. mapName)
+			end
+			return
+		end
+		self.mapInitialized = true
+		self.currentMapName = mapName
+		self.waitingForMap = false
+		self.expectedMapName = ""
+		self.requestElapsed = 0
+		self.arrivalElapsed = 0
+		self.fading = false
+		self.fadeElapsed = 0
+		self.active = true
+		self.loadingGroup.Enable = true
+		self.canvasGroup.GroupAlpha = 1
+		self:SetImage(self:ImageKeyForMap(mapName))
+		log("[Loading] map changed " .. mapName)
+		if _PortalNetwork ~= nil then _PortalNetwork:OnLocalMapChanged(mapName) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ImageKeyForMap(string mapName)
+		-- 목적지 지역 접두사로 그림을 고르고 다른 지역 맵이면 마지막 그림을 재사용한다.
+		local region = ""
+		if mapName ~= nil then
+			if string.find(mapName, "LithHarbor_", 1, true) == 1 or string.find(mapName, "Henesys_", 1, true) == 1 then region = "lith_henesys"
+			elseif string.find(mapName, "KerningCity_", 1, true) == 1 or string.find(mapName, "Perion_", 1, true) == 1 then region = "kerning_perion"
+			elseif string.find(mapName, "Ellinia_", 1, true) == 1 or string.find(mapName, "Nautilus_", 1, true) == 1 then region = "ellinia_nautilus" end
+		end
+		if region == "" and self.lastImageKey ~= "" then return self.lastImageKey end
+		if region == "" then region = "lith_henesys" end
+		local hour = self.ServerKoreaHour
+		if hour < 0 then
+			local now = DateTime.UtcNow + TimeSpan.FromHours(9)
+			hour = now.Hour
+		end
+		local suffix = (hour >= self.DayStartHour and hour < self.NightStartHour) and "day" or "night"
+		local key = "loading_" .. region .. "_" .. suffix
+		self.lastImageKey = key
+		return key
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetImage(string key)
+		-- 선택된 로딩 그림을 현재 UI 이미지에 적용한다.
+		local ruid = ""
+		if key == "loading_lith_henesys_day" then ruid = self.RuidLithDay
+		elseif key == "loading_lith_henesys_night" then ruid = self.RuidLithNight
+		elseif key == "loading_kerning_perion_day" then ruid = self.RuidKerningDay
+		elseif key == "loading_kerning_perion_night" then ruid = self.RuidKerningNight
+		elseif key == "loading_ellinia_nautilus_day" then ruid = self.RuidElliniaDay
+		elseif key == "loading_ellinia_nautilus_night" then ruid = self.RuidElliniaNight end
+		if ruid ~= "" and self.background.ImageRUID ~= ruid then self.background.ImageRUID = ruid end
+		if ruid == "" then log_warning("[Loading] missing image RUID for " .. key) end
+	end
+end

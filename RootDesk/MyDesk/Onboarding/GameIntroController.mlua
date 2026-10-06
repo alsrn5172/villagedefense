@@ -1,0 +1,604 @@
+@Logic
+script GameIntroController extends Logic
+	-- 도움말 창 클라 컨트롤러 — 1차 게임 소개(넘기는 7쪽 · 시안 WIN_INTRO) + 2차 탭(2026-10-05 · GameIntroGroup).
+	--   탭: 게임 소개(7쪽) · 재화 · 아이템(왼쪽 목록 11칸 → 오른쪽 설명) · 마을 NPC · 조작키 + '안내 다시 보기'.
+	--   H 키 · HUD '도움말' 버튼(HelpHudGroup)으로 언제든 연다(마지막 탭으로). Esc · 닫기로 닫는다. ← → = 소개 쪽 · 재화 항목 넘김.
+	--   🔴 ↑ ↓ 는 쓰지 않는다: ↑ 는 PortalNetwork 가 KeyDownEvent 로 직접 받아 포탈을 탄다(창이 열려 있어도 · 2026-10-05 Play 확인).
+	--   처음 하는 사람(OnboardingService.firstTimer = 계정 경험치 0)에게만, 외형을 고른 직후(_AvatarSelectUIController.opened true → false) 소개를 자동으로 연다.
+	--   열려 있는 동안 캐릭터 이동(좌우 · ↑ ↓ 사다리 · 엎드리기) · 점프(왼쪽 Alt = Jump2 포함) · 기본 공격을 막는다(PlayerControllerComponent:AddCondition — SkillCaster 와 같은 방식).
+	--   소개 마지막 쪽 '게임 시작하기' → 로비라면 처음 하는 사람에게 안내(CoachMarkController) 로비 1단계.
+	--   글자는 전부 .ui 에 있다(Maker 에서 바로 고칠 수 있게) — 여기서는 켜기/끄기 · 점 · 버튼 · 탭 모양만 바꾼다.
+	--   UUID 는 Docs/tools/design-ui/apply-intro-coach.cjs intro 가 주입한다. "봤음" 저장은 하지 않는다(AccountProfile 스키마 변경 → A 인계).
+
+	property Entity root = "1184e124-6383-4e3a-8abb-bb8799cdb9d1"
+
+	property Entity pagesRoot = "8cb08798-206d-4f1c-acd3-2557a476e68b"
+
+	property Entity dotsRoot = "a8492525-37c7-4ecf-8e3c-e25d77a8106e"
+
+	property ButtonComponent btnPrev = "300b5caa-34b9-47d8-bb6d-b53698e5923f"
+
+	property ButtonComponent btnNext = "c0417131-73fd-4ccd-8252-9c6db8e06eb9"
+
+	property ButtonComponent btnSkip = "755ebb83-9c42-4ea5-b24e-2cbe14b8e462"
+
+	property ButtonComponent btnClose = "e7cbfdf4-5557-4e2e-a6f1-094833abc904"
+
+	property ButtonComponent btnHelp = "80980b40-d087-4d08-bf28-ec552da90985"
+
+	property Entity footIntro = "286d7f89-eacc-4819-8d8e-4ccb14cf8fbd"
+
+	property Entity footAlt = "e04ef8a6-757f-4efd-b347-dde1be1c9b06"
+
+	property TextGUIRendererComponent footHint = "5da24542-c9b1-4d24-b088-ae14fcf2b72e"
+
+	property ButtonComponent btnClose2 = "27003149-6d3a-4fe0-bd48-da615bf07076"
+
+	property Entity tabsRoot = "d1293ae5-91b0-4896-9f92-2b48af5a5fc0"
+
+	property ButtonComponent tab1 = "f7ab0391-b429-47bc-85a3-bf348ce79430"
+
+	property ButtonComponent tab2 = "3ad3afec-0479-45bb-993d-aee04acab951"
+
+	property ButtonComponent tab3 = "bf86e075-334f-4f91-8a8f-f7c602424d58"
+
+	property ButtonComponent tab4 = "4365ca13-f579-44dc-ad89-79c22db7a5af"
+
+	property ButtonComponent btnReplay = "95e7d683-17c4-4a93-87c3-9e9a6813794c"
+
+	property Entity paneCur = "f5838cbd-33f3-48b3-81d0-03e4f295d1f3"
+
+	property Entity paneNpc = "b1e6e8b4-6f96-4163-9ab4-858165cfbb58"
+
+	property Entity paneKeys = "d52e9c54-c365-4a8b-bd93-1ae479cd48a8"
+
+	property Entity curList = "ef5040f5-b9be-437f-ad1e-ce8d9ef006fa"
+
+	property Entity curDetail = "98d6d6ab-2811-407e-abc7-29b9e1b92c32"
+
+	-- 그림 (Docs/tools/design-ui/ruid-map.json)
+	property string ruidBlue = "e4b784045ccc40679a7de368c63037b6"
+
+	property string ruidBlueOff = "a5a8d6f3221f41dc92cf2f83729cb606"
+
+	property integer pageCount = 7
+
+	property integer curCount = 11
+
+	-- 다음 버튼 폭: 보통 200 · 마지막 쪽 '게임 시작하기' 240 (시안)
+	property number nextW = 200
+
+	property number nextWLast = 240
+
+	@HideFromInspector
+	property integer page = 1
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string tab = "intro"
+
+	@HideFromInspector
+	property integer curSel = 1
+
+	@HideFromInspector
+	property boolean lookWasOpen = false
+
+	@HideFromInspector
+	property boolean autoShown = false
+
+	@HideFromInspector
+	property boolean pendingAuto = false
+
+	@HideFromInspector
+	property string gatePlayerId = ""
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property any keyHandler = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 · 탭 · 목록 · 키 연결, 닫힌 채로 시작.
+		self.handlers = {}
+		self:Bind(self.btnPrev, function() self:Prev() end)
+		self:Bind(self.btnNext, function() self:Next() end)
+		self:Bind(self.btnSkip, function() self:Close("skip") end)
+		self:Bind(self.btnClose, function() self:Close("close") end)
+		self:Bind(self.btnClose2, function() self:Close("close") end)
+		self:Bind(self.btnHelp, function() self:Toggle("button") end)
+		self:Bind(self.btnReplay, function() self:Replay() end)
+		self:Bind(self.tab1, function() self:GoTab("intro") end)
+		self:Bind(self.tab2, function() self:GoTab("cur") end)
+		self:Bind(self.tab3, function() self:GoTab("npc") end)
+		self:Bind(self.tab4, function() self:GoTab("keys") end)
+		local rows = 0
+		if isvalid(self.curList) then
+			for i = 1, self.curCount do
+				local row = self.curList:GetChildByName("Row" .. tostring(i))
+				if isvalid(row) and row.ButtonComponent ~= nil then
+					local idx = i
+					table.insert(self.handlers, { e = row, h = row:ConnectEvent(ButtonClickEvent, function() self:SelectCur(idx) end) })
+					rows = rows + 1
+				end
+			end
+		end
+		self.keyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		self.isOpen = false
+		log("[Intro] ready (client) pages=" .. tostring(self:CountPages()) .. " curRows=" .. tostring(rows) .. " help=" .. tostring(isvalid(self.btnHelp)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Bind(ButtonComponent btn, any fn)
+		-- ButtonComponent 프로퍼티에 클릭을 건다(없으면 건너뜀).
+		if not isvalid(btn) then
+			return
+		end
+		table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer CountPages()
+		-- .ui 에 실제로 있는 쪽 수(P1 ~ P7).
+		local n = 0
+		if not isvalid(self.pagesRoot) then
+			return 0
+		end
+		for i = 1, self.pageCount do
+			if isvalid(self.pagesRoot:GetChildByName("P" .. tostring(i))) then
+				n = n + 1
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 외형 선택창이 닫히는 순간(고름 확정) 처음 하는 사람이면 소개를 한 번 연다. 죽으면 닫는다(부활 선택을 가리지 않게).
+		local look = _AvatarSelectUIController
+		if look ~= nil then
+			local opened = look.opened == true
+			if self.lookWasOpen and not opened and not self.autoShown then
+				self.autoShown = true
+				self.pendingAuto = true
+				self:TryAutoOpen("look")
+			end
+			self.lookWasOpen = opened
+		end
+		if self.isOpen then
+			local p = _UserService.LocalPlayer
+			if isvalid(p) and p.PlayerComponent ~= nil and p.PlayerComponent:IsDead() then
+				self:Close("dead")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnOnboardState()
+		-- OnboardingService 가 상태(처음 하는 사람인지)를 받았다 → 기다리던 자동 열기가 있으면 지금 판단.
+		if self.pendingAuto then
+			self:TryAutoOpen("state")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TryAutoOpen(string why)
+		-- 자동 열기: 서버 상태를 아직 모르면 기다린다(OnOnboardState 가 다시 부름) · 처음 하는 사람에게만.
+		local ob = _OnboardingService
+		if ob == nil or ob.known ~= true then
+			log("[Intro] auto open waits for onboarding state (" .. why .. ")")
+			return
+		end
+		self.pendingAuto = false
+		if ob.firstTimer == true then
+			self:OpenTab("intro", 1, "look")
+		else
+			log("[Intro] auto open skipped - not first timer")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- H = 열기/닫기 · 열려 있을 때 ← → = 소개 쪽 · 재화 항목 넘김 · Esc = 닫기. (↑ ↓ 는 포탈 · 엎드리기와 겹쳐 쓰지 않는다)
+		-- 채팅 입력 중이면 H · ← → 는 글자 · 커서 이동이다(Chat/ChatService.typing).
+		-- Esc 는 Summon/UIEscStack 한 곳이 받아 Close("esc") 를 부른다(최근에 연 창부터 하나씩 · WO-050 §3 · 여기서 따로 받으면 한 번에 두 창이 닫힌다).
+		if _ChatService ~= nil and _ChatService.typing then
+			return
+		end
+		local key = event.key
+		if key == KeyboardKey.H then
+			self:Toggle("key")
+			return
+		end
+		if not self.isOpen then
+			return
+		end
+		if self.tab == "intro" and key == KeyboardKey.RightArrow then
+			self:Next()
+		elseif self.tab == "intro" and key == KeyboardKey.LeftArrow then
+			self:Prev()
+		elseif self.tab == "cur" and key == KeyboardKey.RightArrow then
+			self:SelectCur(math.min(self.curCount, self.curSel + 1))
+		elseif self.tab == "cur" and key == KeyboardKey.LeftArrow then
+			self:SelectCur(math.max(1, self.curSel - 1))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Toggle(string reason)
+		-- 열려 있으면 닫고 닫혀 있으면 마지막 탭으로 연다. 외형 선택창이 떠 있는 동안에는 열지 않는다(그 창이 먼저).
+		if self.isOpen then
+			self:Close(reason)
+			return
+		end
+		if _AvatarSelectUIController ~= nil and _AvatarSelectUIController.opened == true then
+			log("[Intro] ignore open while look select is up")
+			return
+		end
+		local entry = self.page
+		if self.tab == "cur" then
+			entry = self.curSel
+		end
+		self:OpenTab(self.tab, entry, reason)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(integer pageNo, string reason)
+		-- 1차 호환: 소개 탭의 pageNo 쪽으로 연다.
+		self:OpenTab("intro", pageNo, reason)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenTab(string tabKey, integer entry, string reason)
+		-- 도움말 창을 tabKey 탭으로 연다(entry = 소개 쪽 번호 · 재화 항목 번호 · 그 밖은 무시). 알림 카드 '자세히'도 이것으로.
+		if not isvalid(self.root) then
+			log_warning("[Intro] root missing")
+			return
+		end
+		if _CoachMarkController ~= nil and _CoachMarkController.active == true then
+			_CoachMarkController:Close("intro")
+		end
+		self:InstallMoveGate()
+		self:BringToFront()
+		self.isOpen = true
+		self.root.Enable = true
+		self:GoTab(tabKey)
+		if tabKey == "intro" then
+			local n = entry
+			if n < 1 then
+				n = 1
+			end
+			self:GoTo(n)
+		elseif tabKey == "cur" then
+			local n = entry
+			if n < 1 then
+				n = self.curSel
+			end
+			self:SelectCur(n)
+		end
+		log("[Intro] open tab=" .. tabKey .. " entry=" .. tostring(entry) .. " reason=" .. reason)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoTab(string tabKey)
+		-- 탭 하나만 켠다: 내용 상자 · 아래 줄(소개는 쪽 넘김 줄 · 나머지는 안내 문구 + 닫기) · 탭 단추 모양(금 = 고름).
+		local keys = { "intro", "cur", "npc", "keys" }
+		local valid = false
+		for _, k in ipairs(keys) do
+			if k == tabKey then
+				valid = true
+			end
+		end
+		if not valid then
+			tabKey = "intro"
+		end
+		self.tab = tabKey
+		local intro = tabKey == "intro"
+		if isvalid(self.pagesRoot) then
+			self.pagesRoot.Enable = intro
+		end
+		if isvalid(self.footIntro) then
+			self.footIntro.Enable = intro
+		end
+		if isvalid(self.footAlt) then
+			self.footAlt.Enable = not intro
+		end
+		if isvalid(self.paneCur) then
+			self.paneCur.Enable = tabKey == "cur"
+		end
+		if isvalid(self.paneNpc) then
+			self.paneNpc.Enable = tabKey == "npc"
+		end
+		if isvalid(self.paneKeys) then
+			self.paneKeys.Enable = tabKey == "keys"
+		end
+		if isvalid(self.footHint) then
+			if tabKey == "cur" then
+				self.footHint.Text = "왼쪽 목록에서 고르면 얻는 곳 · 쓰는 곳이 나와요 · ← → 로도 넘겨요"
+			elseif tabKey == "npc" then
+				self.footHint.Text = "마을 NPC는 마을 안 구역마다 서 있어요 · 클릭해서 말을 걸어요"
+			elseif tabKey == "keys" then
+				self.footHint.Text = "도움말은 H 로 언제든 열고 닫아요 · Esc 로 닫기"
+			end
+		end
+		for i, k in ipairs(keys) do
+			self:TabLook(i, k == tabKey)
+		end
+		log("[Intro] tab " .. tabKey)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TabLook(integer i, boolean on)
+		-- 탭 단추 하나: 고른 탭 = 금 바탕(SelBg) + 진한 글자 · 나머지 = 파랑 + 상아 글자(계정 창 탭과 같은 규칙).
+		if not isvalid(self.tabsRoot) then
+			return
+		end
+		local t = self.tabsRoot:GetChildByName("Tab" .. tostring(i))
+		if not isvalid(t) then
+			return
+		end
+		local sel = t:GetChildByName("SelBg")
+		if isvalid(sel) then
+			sel.Enable = on
+		end
+		local label = t:GetChildByName("Label")
+		if isvalid(label) and label.TextGUIRendererComponent ~= nil then
+			if on then
+				label.TextGUIRendererComponent.FontColor = Color(0.110, 0.078, 0.020, 1)
+			else
+				label.TextGUIRendererComponent.FontColor = Color(0.953, 0.933, 0.886, 1)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectCur(integer n)
+		-- 재화 목록 n 번째를 고른다: 고른 줄 금테(Sel) · 오른쪽 설명 판 하나만 켠다.
+		local idx = math.max(1, math.min(self.curCount, n))
+		self.curSel = idx
+		for i = 1, self.curCount do
+			if isvalid(self.curList) then
+				local row = self.curList:GetChildByName("Row" .. tostring(i))
+				if isvalid(row) then
+					local sel = row:GetChildByName("Sel")
+					if isvalid(sel) then
+						sel.Enable = (i == idx)
+					end
+				end
+			end
+			if isvalid(self.curDetail) then
+				local d = self.curDetail:GetChildByName("D" .. tostring(i))
+				if isvalid(d) then
+					d.Enable = (i == idx)
+				end
+			end
+		end
+		log("[Intro] cur " .. tostring(idx))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Replay()
+		-- '안내 다시 보기': 창을 닫고 지금 자리에 맞는 안내 묶음(로비 / 매치 시작)을 다시 띄운다.
+		self:Close("replay")
+		if _CoachMarkController ~= nil then
+			_CoachMarkController:Replay("help")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BringToFront()
+		-- UI 그룹은 런타임에 /ui 형제 순서로 그려진다 — 파일 GroupOrder 만으로는 월드맵 · 외형 선택 아래에 깔렸다(2026-10-05 Play 실측).
+		--   열 때마다 부활 팝업 바로 아래로 올린다. 아래에서 올라오면 내 자리가 빠지며 부활 팝업이 한 칸 내려오므로 revIdx - 1
+		--   (1차는 그대로 revIdx 로 올려 부활 팝업 위로 갔다 · 2차 설계 검토).
+		local me = _EntityService:GetEntityByPath("/ui/GameIntroGroup")
+		if not isvalid(me) then
+			return
+		end
+		local before = _UILogic:GetSiblingIndex(me.UITransformComponent)
+		local idx = 1000000
+		local revAt = -1
+		local rev = _EntityService:GetEntityByPath("/ui/RevivePopupGroup")
+		if isvalid(rev) then
+			revAt = _UILogic:GetSiblingIndex(rev.UITransformComponent)
+			idx = revAt
+			if before < idx then
+				idx = idx - 1
+			end
+		end
+		_UILogic:SetSiblingIndex(me.UITransformComponent, idx)
+		local revAfter = -1
+		if isvalid(rev) then
+			revAfter = _UILogic:GetSiblingIndex(rev.UITransformComponent)
+		end
+		log("[Intro] front sibling " .. tostring(before) .. " -> " .. tostring(_UILogic:GetSiblingIndex(me.UITransformComponent)) .. " (revive " .. tostring(revAt) .. " -> " .. tostring(revAfter) .. ")")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close(string reason)
+		-- 도움말 창을 닫는다(건너뛰기 · 닫기 · Esc · 게임 시작하기 · 죽음 · 안내 다시 보기).
+		if not self.isOpen then
+			return
+		end
+		self.isOpen = false
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		log("[Intro] close tab=" .. self.tab .. " page=" .. tostring(self.page) .. " reason=" .. reason)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Next()
+		-- 다음 쪽. 마지막 쪽이면 '게임 시작하기' = 닫고 (로비 · 처음 하는 사람) 안내.
+		if self.page >= self.pageCount then
+			self:Finish()
+			return
+		end
+		self:GoTo(self.page + 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Prev()
+		-- 이전 쪽(첫 쪽에서는 아무 일 없음 · 버튼은 비활성 그림).
+		if self.page <= 1 then
+			return
+		end
+		self:GoTo(self.page - 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Finish()
+		-- '게임 시작하기': 닫고, 로비에서 처음 하는 사람이면(이 방에서 아직이면) 매치 안내원 1단계를 띄운다. 매치 중 H 로 연 소개 끝은 안 띄운다.
+		self:Close("finish")
+		local ob = _OnboardingService
+		if _CoachMarkController == nil or ob == nil then
+			return
+		end
+		if ob.inMatch == true or ob.firstTimer ~= true or _CoachMarkController.lobbyShown == true then
+			return
+		end
+		_CoachMarkController:StartLobby("finish")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoTo(integer pageNo)
+		-- 쪽 하나만 켜고 점 · 이전/다음 버튼을 맞춘다.
+		local n = math.max(1, math.min(self.pageCount, pageNo))
+		self.page = n
+		if isvalid(self.pagesRoot) then
+			for i = 1, self.pageCount do
+				local p = self.pagesRoot:GetChildByName("P" .. tostring(i))
+				if isvalid(p) then
+					p.Enable = (i == n)
+				end
+			end
+		end
+		self:LayoutDots()
+		self:RefreshButtons()
+		log("[Intro] page " .. tostring(n) .. "/" .. tostring(self.pageCount))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LayoutDots()
+		-- 쪽 표시 점: 지금 쪽 = 긴 금 막대(28) · 지난 쪽 = 어두운 금 · 남은 쪽 = 남색(10) · 간격 6 · 왼쪽부터 (시안 introWin).
+		if not isvalid(self.dotsRoot) then
+			return
+		end
+		local x = 0
+		for i = 1, self.pageCount do
+			local d = self.dotsRoot:GetChildByName("D" .. tostring(i))
+			if isvalid(d) then
+				local w = 10
+				local c = Color(0.243, 0.322, 0.51, 1)
+				if i == self.page then
+					w = 28
+					c = Color(0.91, 0.714, 0.298, 1)
+				elseif i < self.page then
+					c = Color(0.541, 0.455, 0.251, 1)
+				end
+				local t = d.UITransformComponent
+				-- 위치 → 크기 순서(런타임에 위치를 옮기면 크기가 옛 값으로 돌아가는 일이 있다 · WorldMapController.SetAnchored)
+				t.anchoredPosition = Vector2(x + w / 2, 0)
+				t.RectSize = Vector2(w, 10)
+				local sp = d.SpriteGUIRendererComponent
+				if sp ~= nil then
+					sp.Color = c
+				end
+				x = x + w + 6
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshButtons()
+		-- 이전: 첫 쪽이면 비활성 그림 + 흐린 글자. 다음: 마지막 쪽이면 '게임 시작하기' + 폭 240(오른쪽 끝 고정 · 피벗 오른쪽).
+		local first = self.page <= 1
+		if isvalid(self.btnPrev) then
+			self.btnPrev.Enable = not first
+			local sp = self.btnPrev.Entity.SpriteGUIRendererComponent
+			if sp ~= nil then
+				if first then
+					sp.ImageRUID = DataRef(self.ruidBlueOff)
+				else
+					sp.ImageRUID = DataRef(self.ruidBlue)
+				end
+			end
+			local tx = self.btnPrev.Entity.TextGUIRendererComponent
+			if tx ~= nil then
+				if first then
+					tx.FontColor = Color(0.894, 0.91, 0.937, 1)
+				else
+					tx.FontColor = Color(0.953, 0.933, 0.886, 1)
+				end
+			end
+		end
+		local last = self.page >= self.pageCount
+		if isvalid(self.btnNext) then
+			local tx = self.btnNext.Entity.TextGUIRendererComponent
+			if tx ~= nil then
+				if last then
+					tx.Text = "게임 시작하기"
+				else
+					tx.Text = "다음"
+				end
+			end
+			local t = self.btnNext.Entity.UITransformComponent
+			local w = self.nextW
+			if last then
+				w = self.nextWLast
+			end
+			local pos = t.anchoredPosition
+			t.anchoredPosition = pos
+			t.RectSize = Vector2(w, t.RectSize.y)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InstallMoveGate()
+		-- 창이 열려 있는 동안 ← → · ↑ ↓(사다리 · 엎드리기) · 점프(Space · 왼쪽 Alt = Jump2) · 기본 공격(왼쪽 Ctrl)이 캐릭터를 움직이지 않도록 조건을 건다.
+		--   플레이어마다 한 번 · 지울 API 가 없어 조건이 isOpen 을 읽는다. 스킬 키(Q W E R …)는 SkillHotbar 가, 포탈 ↑ 는 PortalNetwork 가 따로 받아 여기서 막지 못한다.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) then
+			return
+		end
+		if self.gatePlayerId == p.Id then
+			return
+		end
+		local c = p.PlayerControllerComponent
+		if not isvalid(c) then
+			return
+		end
+		self.gatePlayerId = p.Id
+		c:AddCondition("MoveLeft", function() return not self.isOpen end)
+		c:AddCondition("MoveRight", function() return not self.isOpen end)
+		c:AddCondition("MoveUp", function() return not self.isOpen end)
+		c:AddCondition("MoveDown", function() return not self.isOpen end)
+		c:AddCondition("Jump", function() return not self.isOpen end)
+		c:AddCondition("Jump2", function() return not self.isOpen end)
+		c:AddCondition("DownJump", function() return not self.isOpen end)
+		c:AddCondition("Attack", function() return not self.isOpen end)
+		log("[Intro] movegate installed player=" .. p.Name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 연결 해제.
+		if self.handlers ~= nil then
+			for _, x in ipairs(self.handlers) do
+				if isvalid(x.e) then
+					x.e:DisconnectEvent(ButtonClickEvent, x.h)
+				end
+			end
+		end
+		self.handlers = {}
+		if self.keyHandler ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.keyHandler)
+			self.keyHandler = nil
+		end
+	end
+end

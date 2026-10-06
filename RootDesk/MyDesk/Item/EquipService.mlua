@@ -116,22 +116,35 @@ script EquipService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestEquip(string instanceId)
-		-- 클라 요청: 인벤토리의 장비를 그 슬롯에 장착 (기존 장비는 인벤토리로 돌아간다).
+		-- 클라 요청: 인벤토리의 장비를 그 슬롯에 장착 (기존 장비는 인벤토리로 돌아간다). 검증 · 상호 배제는 EquipInstance 한 곳.
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
-		local userId = senderUserId
+		self:EquipInstance(senderUserId, instanceId, false)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean EquipInstance(string userId, string instanceId, boolean quiet)
+		-- 장비 인스턴스 하나를 장착한다(레벨 · 직업 제한 · 두손무기 ↔ 방패 · 한벌옷 ↔ 하의 자동 해제 포함). quiet 이면 거절 · 안내 토스트를 띄우지 않고 로그만 남긴다
+		-- (매치 시작 킷 자동 착용 · WO-050 §2-4). 장착했으면 true.
+		local function deny(reason)
+			if quiet then
+				log("[Item] equip skipped (" .. tostring(userId) .. "): " .. reason)
+			else
+				self:DenyEquip(userId, reason)
+			end
+		end
 		local e = self:EnsureUser(userId)
 		local it = _InventoryService:Find(userId, instanceId)
 		if e == nil or it == nil then
-			self:DenyEquip(userId, "그 아이템을 찾을 수 없습니다")
-			return
+			deny("그 아이템을 찾을 수 없습니다")
+			return false
 		end
 		local def = _ItemCatalog:Get(it.itemId)
 		if def == nil or def.type ~= "EQUIP" or def.slot == "" then
-			self:DenyEquip(userId, "장착할 수 있는 장비가 아닙니다")
-			return
+			deny("장착할 수 있는 장비가 아닙니다")
+			return false
 		end
 		if self:IsEquipped(userId, instanceId) then
-			return
+			return false
 		end
 		local level = 1
 		if _SummonManager ~= nil then
@@ -139,8 +152,8 @@ script EquipService extends Logic
 			if econ ~= nil then level = econ.level end
 		end
 		if level < def.reqLevel then
-			self:DenyEquip(userId, def.name .. " 은(는) Lv" .. tostring(def.reqLevel) .. " 부터 장착할 수 있습니다 (현재 Lv" .. tostring(level) .. ")")
-			return
+			deny(def.name .. " 은(는) Lv" .. tostring(def.reqLevel) .. " 부터 장착할 수 있습니다 (현재 Lv" .. tostring(level) .. ")")
+			return false
 		end
 		-- 직업 제한: 아직 전직하지 않은 유저(NOVICE)는 제한 없음. 전직한 유저는 다른 직업 장비만 막힌다.
 		-- 전직(B 의 JobChangedEvent → _StatService:SetJob)은 WO-045(2026-10-05)에서 연결됐다 — 그 전엔 모두 영구 NOVICE 라 제한이 안 걸렸다.
@@ -148,8 +161,8 @@ script EquipService extends Logic
 			local su = _StatService:EnsureUser(userId)
 			local job = (su ~= nil) and su.job or ""
 			if job ~= "" and job ~= "NOVICE" and job ~= def.reqJob then
-				self:DenyEquip(userId, def.name .. " 은(는) " .. def.reqJob .. " 전용입니다")
-				return
+				deny(def.name .. " 은(는) " .. def.reqJob .. " 전용입니다")
+				return false
 			end
 		end
 		-- 두손무기 ↔ 방패 상호 배제: 두손무기는 한손+보조 슬롯을 함께 점유한다.
@@ -158,12 +171,12 @@ script EquipService extends Logic
 			local dropped = e["SUBWEAPON"]
 			e["SUBWEAPON"] = ""
 			self:Apply(userId, "SUBWEAPON", dropped, "")
-			self:DenyEquip(userId, "두손무기라 방패를 해제했습니다")
+			deny("두손무기라 방패를 해제했습니다")
 		elseif def.slot == "SUBWEAPON" and _ItemCatalog:IsTwoHand(self:EquippedItemId(userId, e, "WEAPON")) then
 			local dropped = e["WEAPON"]
 			e["WEAPON"] = ""
 			self:Apply(userId, "WEAPON", dropped, "")
-			self:DenyEquip(userId, "방패를 들어 두손무기를 해제했습니다")
+			deny("방패를 들어 두손무기를 해제했습니다")
 		end
 		-- 한벌옷 ↔ 하의 상호 배제 (2026-09-30 · 사용자 결정 "한벌옷은 상의 칸 · 하의는 없앤다"): 한벌옷은 상의 칸에 끼우고 하의 칸까지 차지한다.
 		-- 두손무기 ↔ 방패와 같은 방식 — 막지 않고 상대를 자동 해제한다(장비는 인벤토리에 그대로 남는다).
@@ -171,12 +184,12 @@ script EquipService extends Logic
 			local dropped = e["BOTTOM"]
 			e["BOTTOM"] = ""
 			self:Apply(userId, "BOTTOM", dropped, "")
-			self:DenyEquip(userId, "한벌옷이라 하의를 해제했습니다")
+			deny("한벌옷이라 하의를 해제했습니다")
 		elseif def.slot == "BOTTOM" and _ItemCatalog:IsLongcoat(self:EquippedItemId(userId, e, "TOP")) then
 			local dropped = e["TOP"]
 			e["TOP"] = ""
 			self:Apply(userId, "TOP", dropped, "")
-			self:DenyEquip(userId, "하의를 입어 한벌옷을 해제했습니다")
+			deny("하의를 입어 한벌옷을 해제했습니다")
 		end
 
 		local prev = e[def.slot]
@@ -184,6 +197,28 @@ script EquipService extends Logic
 		self:Apply(userId, def.slot, prev, instanceId)
 		-- 업적 ENHANCE_ALL_MAX — 이미 최대 강화한 장비를 끼워 6칸이 채워지는 경우(WO-031 묶음 5).
 		if _AchievementService ~= nil then _AchievementService:CheckEnhanceAll(userId) end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AutoEquipMatchKit(string userId)
+		-- 매치 시작 킷(몽둥이 · 두건 · 상의 · 하의 · 장화)을 비어 있는 칸에 자동으로 끼운다(WO-050 §2-4 · 사용자 "시작 킷 장비 자동 착용").
+		-- 이미 끼운 칸은 건드리지 않고, 검증은 EquipInstance 와 같다(조용히). 끼운 개수를 반환.
+		if userId == nil or userId == "" or _InventoryService == nil then return 0 end
+		local inv = _InventoryService:EnsureUser(userId)
+		if inv == nil then return 0 end
+		local n = 0
+		for _, it in ipairs(inv.items) do
+			local def = _ItemCatalog:Get(it.itemId)
+			if def ~= nil and def.type == "EQUIP" and def.slot ~= "" then
+				local e = self:EnsureUser(userId)
+				if e ~= nil and e[def.slot] == "" and not self:IsEquipped(userId, it.iid) then
+					if self:EquipInstance(userId, it.iid, true) then n = n + 1 end
+				end
+			end
+		end
+		log("[Item] match kit auto-equip " .. tostring(n) .. " slots (" .. userId .. ")")
+		return n
 	end
 
 	@ExecSpace("ServerOnly")

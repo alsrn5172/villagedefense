@@ -1,0 +1,408 @@
+@Logic
+script TipController extends Logic
+	-- 알림 카드 클라 컨트롤러 (2026-10-05 2차 · ui/TipGroup.ui · 디자인팀).
+	--   처음 하는 사람이 사냥 중에 막히는 순간을 화면 오른쪽 가운데 작은 카드로 알려 준다(화면을 덮지 않는다).
+	--   ★1 + 안내 켬일 때만(서버 판정 _OnboardingService.guideOn · 도중에 '안내 끄기'를 누르면 _GuideUIController.visible 로 멈춘다).
+	--   기존 ★1 안내 토스트(첫 재화 T1~T6 · 엘리트 T7 · 리스항구 닫힘 T9 · 웨이브 T10 · G12)와 겹치는 내용은 넣지 않는다.
+	--   토스트(UIToast)는 2초 · 줄 없음 · 덮어쓰기라 따로 카드 + 자기 줄(gapSeconds 간격)로 띄운다. 알림마다 매치 한 판에 한 번.
+	--   '자세히' = 도움말(H) 창의 해당 탭. 카드 글자는 여기 표에 있다(TipGroup.ui 는 판 · 아이콘 · 버튼 뼈대).
+	--   UUID 는 Docs/tools/design-ui/apply-intro-coach.cjs tip 가 주입한다.
+
+	property Entity root = "5ec1853b-f690-4c53-a389-42881fcddbd5"
+
+	property Entity card = "1fb7ea02-100a-4867-b460-6bad91fc3a2d"
+
+	property SpriteGUIRendererComponent icon = "e8dcb186-b976-413d-8ee7-75eff1551b0b"
+
+	property TextGUIRendererComponent titleText = "91a22c5f-c0f1-488b-ba87-4597463c87bd"
+
+	property TextGUIRendererComponent bodyText = "0833d501-510f-461b-9cf0-f79540f46595"
+
+	property ButtonComponent btnMore = "5c8d27c7-8fd0-4282-a09b-cce1f3098780"
+
+	property ButtonComponent btnClose = "dd959f89-c117-49d5-9b29-8ff83435221c"
+
+	-- 카드가 떠 있는 시간 · 카드 사이 최소 간격 · 규칙 확인 간격(초)
+	property number showSeconds = 12
+
+	property number gapSeconds = 25
+
+	property number pollSeconds = 0.5
+
+	-- 이 시간 안에 창 · 안내에 가려지거나 쓰러져 내려간 카드는 줄 맨 앞으로 되돌린다(읽기도 전에 사라지지 않게 · 2차 Play)
+	property number requeueSeconds = 4
+
+	@HideFromInspector
+	property boolean armed = false
+
+	@HideFromInspector
+	property number matchAt = 0
+
+	@HideFromInspector
+	property any done = nil
+
+	@HideFromInspector
+	property any queue = nil
+
+	@HideFromInspector
+	property string current = ""
+
+	@HideFromInspector
+	property number shownAt = 0
+
+	@HideFromInspector
+	property number lastHideAt = -1000
+
+	@HideFromInspector
+	property number pollAcc = 0
+
+	@HideFromInspector
+	property any tips = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 알림 표 · 버튼 연결. 꺼진 채로 시작하고 매치 시작(OnMatchStart) 때 켠다.
+		self:BuildTips()
+		self.done = {}
+		self.queue = {}
+		self.handlers = {}
+		if isvalid(self.btnMore) then
+			table.insert(self.handlers, { e = self.btnMore.Entity, h = self.btnMore.Entity:ConnectEvent(ButtonClickEvent, function() self:OnMore() end) })
+		end
+		if isvalid(self.btnClose) then
+			table.insert(self.handlers, { e = self.btnClose.Entity, h = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, function() self:Hide("close") end) })
+		end
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		log("[Tip] ready (client) tips=" .. tostring(self:CountTips()))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BuildTips()
+		-- 알림 표. order = 줄에 먼저 서는 순서(급한 것 먼저) · tab/entry = '자세히'가 여는 도움말 탭 · 항목.
+		--   글자 색: 금 #E8B64C · 빨강 #FF8A7A. 숫자는 표에서 확인한 값(PlayerRespawnService 5,000 / 50% · LaneFacility 3페이즈 100%).
+		self.tips = {
+			potion = { order = 1, icon = "3d222539da12436980c0c41ed3baba09", title = "물약을 칸에 넣어 두세요",
+				text = "<b>C</b> 가방의 빨간 · 파란 포션을 왼쪽 아래 <b>1 · 2</b> 칸으로\n끌어다 놓으면 키 하나로 바로 마셔요.", tab = "keys", entry = 0 },
+			phase2 = { order = 2, icon = "2f59dcdf872f4df8b6b3d0aa6de0e31b", title = "2페이즈 견제 시작",
+				text = "웨이브가 더 강해져요. 쓰러지면 언제든 <color=#E8B64C><b>메소 5,000</b></color> 또는 <color=#E8B64C><b>경험치 50%</b></color>를 내고\n내 마을에서 다시 시작해요. HP를 아껴요!", tab = "intro", entry = 2 },
+			phase3 = { order = 3, icon = "fe93d5758bfb4bc195d38af013192973", title = "3페이즈 결전 시작",
+				text = "이제 다른 마을 시설에도 피해가 <color=#FF8A7A><b>100%</b></color> 들어가요.\n내 마을을 지키면서 <b>주니어 발록</b>에게!", tab = "cur", entry = 7 },
+			denied = { order = 4, icon = "ec27b1c115f7404eb5afaf346ff2540a", title = "마을 주인만 쓸 수 있어요",
+				text = "마을 NPC는 그 마을 주인 전용이에요. 빈 마을의\n<b>넥서스</b>를 누르면 내 마을이 되고 NPC를 쓸 수 있어요.", tab = "npc", entry = 0 },
+			weapon = { order = 5, icon = "63f4aa13a31346da9a349bcd769580e7", title = "무기를 끼우세요",
+				text = "무기가 없으면 <b>스킬이 나가지 않아요</b>.\n<b>C</b> → 장비 · 인벤토리에서 몽둥이를 누르면 끼워져요.", tab = "keys", entry = 0 },
+			spjob = { order = 6, icon = "1863aecf198b4452b367fcaa62ab8cd2", title = "SP를 먼저 다 쓰세요",
+				text = "전직(Lv 10 · 20 · 30)하면 <color=#FF8A7A><b>남은 SP는 사라져요</b></color>.\n<b>K</b> 스킬 창에서 지금 배워 두세요.", tab = "keys", entry = 0 },
+			ap = { order = 7, icon = "3f3090f23fe0470797c682dfb08b816a", title = "능력치(AP)를 찍어요",
+				text = "레벨이 오르면 AP가 생겨요. <b>C</b> → 스탯 탭에서\n<b>자동 분배</b>를 누르면 한 번에 끝나요.", tab = "keys", entry = 0 },
+			sp = { order = 8, icon = "98de79cac5f64df8a99ca26ff932d37e", title = "스킬을 배워요",
+				text = "<b>K</b> 스킬 창에서 SP로 <b>달팽이 세마리</b>(Q · 공격)나\n<b>더블 점프</b>(공중에서 한 번 더)를 배워요.", tab = "keys", entry = 0 },
+		}
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer CountTips()
+		-- 표에 든 알림 수(준비 로그용).
+		local n = 0
+		if self.tips ~= nil then
+			for _, _ in pairs(self.tips) do
+				n = n + 1
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMatchStart()
+		-- OnboardingService 가 새 판 시작을 알렸다 → ★1 + 안내 켬이면 켠다. 판마다 처음부터.
+		self.done = {}
+		self.queue = {}
+		self.matchAt = _UtilLogic.ElapsedSeconds
+		self.lastHideAt = -1000
+		self.armed = _OnboardingService ~= nil and _OnboardingService.guideOn == true
+		self:Hide("match-start")
+		log("[Tip] match start armed=" .. tostring(self.armed))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- pollSeconds 마다 규칙을 보고, 떠 있는 카드는 showSeconds 뒤 내린다.
+		if not self.armed then
+			return
+		end
+		self.pollAcc = self.pollAcc + delta
+		if self.pollAcc < self.pollSeconds then
+			return
+		end
+		self.pollAcc = 0
+		self:Tick()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Tick()
+		-- 규칙 확인 → 줄 세우기 → 안전할 때 하나 띄우기.
+		local now = _UtilLogic.ElapsedSeconds
+		-- 도중에 ★1 안내를 끄면(목표 바가 내려감) 멈춘다. 시작 직후 몇 초는 바가 아직 안 왔을 수 있다.
+		if _GuideUIController ~= nil and _GuideUIController.visible ~= true and now - self.matchAt > 8 then
+			if self.current ~= "" then
+				self:Hide("guide-off")
+			end
+			return
+		end
+		if _SpectateService ~= nil and _SpectateService.spectating == true then
+			self.armed = false
+			self:Hide("spectate")
+			return
+		end
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) then
+			return
+		end
+		local pc = p.PlayerComponent
+		if pc ~= nil and pc:IsDead() then
+			if self.current ~= "" then
+				self:Hide("dead")
+			end
+			return
+		end
+		self:Check(now, p)
+		if self.current ~= "" then
+			if now - self.shownAt >= self.showSeconds then
+				self:Hide("timeout")
+			elseif not self:IsSafe() then
+				-- 떠 있는 동안 창 · 도움말 · 안내가 열리면 내린다(뒤에 깔려 가장자리만 보였다 · 2차 Play). 그 창을 연 것이 곧 카드를 따른 것.
+				self:Hide("covered")
+			end
+			return
+		end
+		if #self.queue == 0 or now - self.lastHideAt < self.gapSeconds or not self:IsSafe() then
+			return
+		end
+		local key = table.remove(self.queue, 1)
+		if self:StillTrue(key) then
+			self:Show(key)
+		else
+			log("[Tip] drop " .. key .. " (already resolved)")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean StillTrue(string key)
+		-- 줄에서 꺼낼 때 조건이 아직 맞나 — 기다리는 사이(되돌린 카드 포함) 이미 해결했으면 띄우지 않는다.
+		local hud = _StatusHUDController
+		local ready = hud ~= nil and hud.statsReady == true
+		if key == "weapon" then
+			local inv = _InventoryUIController
+			return inv == nil or inv.equipped == nil or inv.equipped["WEAPON"] == nil
+		elseif key == "sp" or key == "spjob" then
+			return not ready or hud.curSp > 0
+		elseif key == "ap" then
+			return not ready or hud.curAp > 0
+		elseif key == "potion" then
+			return self:QuickSlotsEmpty()
+		end
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Check(number now, Entity p)
+		-- 알림 조건. 맞으면 줄에 세운다(알림마다 한 판에 한 번).
+		local hud = _StatusHUDController
+		local since = now - self.matchAt
+		if hud ~= nil and hud.statsReady == true then
+			local level = hud.curLevel
+			local sp = hud.curSp
+			local novice = _PlayerSkillState ~= nil and _PlayerSkillState:LocalJobId() == _PlayerSkillState.NoviceJobId
+			local mapName = ""
+			if isvalid(p.CurrentMap) then
+				mapName = p.CurrentMap.Name
+			end
+			-- 초보자는 Lv 10 에 리스항구 전직관에게서 직접 전직한다(그때 SP 가 사라짐) · 2 · 3차(Lv 20 · 30)는 전직한 사람만 저절로.
+			--   그래서 Lv 19 · 29 는 전직한 사람에게만(초보자 Lv 19 에 떠서 고침 · 2차 Play).
+			if sp > 0 and ((novice and level >= 10 and mapName == "LithHarbor_Village_MinimiMain") or (not novice and (level == 19 or level == 29))) then
+				self:Want("spjob")
+			end
+			if hud.curAp > 0 and level >= 2 then
+				self:Want("ap")
+			end
+			-- 첫 SP: 매치 시작 안내(장비)가 끝날 즈음(25초)에도 SP 를 안 썼으면
+			if sp > 0 and since > 25 and (_CoachMarkController == nil or _CoachMarkController.active ~= true) then
+				self:Want("sp")
+			end
+		end
+		local pc = p.PlayerComponent
+		if pc ~= nil and pc.MaxHp > 0 and pc.Hp / pc.MaxHp < 0.3 and self:QuickSlotsEmpty() then
+			self:Want("potion")
+		end
+		if _MatchSessionLogic ~= nil then
+			-- 페이즈는 건너뛸 수 있어(SetPhase 가 최신 페이즈로 바로 간다) '이상'으로 본다. 4 = PHASE2 · 5 = PHASE3
+			local ph = _MatchSessionLogic.CurrentPhase
+			if ph >= 4 then
+				self:Want("phase2")
+			end
+			if ph >= 5 then
+				self:Want("phase3")
+			end
+		end
+		if _VillageNpcUIController ~= nil and _VillageNpcUIController.LastDeniedReason == "ACCESS_DENIED" then
+			self:Want("denied")
+		end
+		if since > 60 and _InventoryUIController ~= nil and _InventoryUIController.equipped ~= nil and _InventoryUIController.equipped["WEAPON"] == nil then
+			self:Want("weapon")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean QuickSlotsEmpty()
+		-- 퀵슬롯 1 · 2 둘 다 비었나(빈 칸 = 항목 없음 또는 itemId "" · 개수 0).
+		local q = _QuickSlotController
+		if q == nil or q.slots == nil then
+			return true
+		end
+		for i = 1, 2 do
+			local s = q.slots[i]
+			if s ~= nil and s.itemId ~= nil and s.itemId ~= "" and (s.count or 0) > 0 then
+				return false
+			end
+		end
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Want(string key)
+		-- 알림 하나를 줄에 세운다(한 번만) · order 순서로 끼워 넣는다.
+		if self.done[key] == true or self.tips[key] == nil then
+			return
+		end
+		self.done[key] = true
+		local ord = self.tips[key].order
+		local at = #self.queue + 1
+		for i, k in ipairs(self.queue) do
+			if self.tips[k].order > ord then
+				at = i
+				break
+			end
+		end
+		table.insert(self.queue, at, key)
+		log("[Tip] want " .. key .. " (queue " .. tostring(#self.queue) .. ")")
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsSafe()
+		-- 다른 창 · 소개 · 안내가 떠 있으면 기다린다(카드가 창을 가리지 않게).
+		if _GameIntroController ~= nil and _GameIntroController.isOpen == true then
+			return false
+		end
+		if _CoachMarkController ~= nil and _CoachMarkController.active == true then
+			return false
+		end
+		if _VillageNpcUIController ~= nil and _VillageNpcUIController:IsAnyOpen() then
+			return false
+		end
+		if _WorldMapController ~= nil and _WorldMapController.isOpen == true then
+			return false
+		end
+		if _SkillWindowLogic ~= nil and isvalid(_SkillWindowLogic.rootGroup) and _SkillWindowLogic.rootGroup.Enable == true then
+			return false
+		end
+		if _PlayerRespawnUIController ~= nil and _PlayerRespawnUIController.isOpen == true then
+			return false
+		end
+		if _MatchResultUIController ~= nil and _MatchResultUIController.isOpen == true then
+			return false
+		end
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(string key)
+		-- 카드에 글 · 그림을 넣고 띄운다.
+		local t = self.tips[key]
+		if t == nil or not isvalid(self.root) then
+			return
+		end
+		self.current = key
+		self.shownAt = _UtilLogic.ElapsedSeconds
+		if isvalid(self.icon) then
+			self.icon.ImageRUID = DataRef(t.icon)
+		end
+		if isvalid(self.titleText) then
+			self.titleText.Text = t.title
+		end
+		if isvalid(self.bodyText) then
+			self.bodyText.Text = t.text
+		end
+		self:BringToFront()
+		self.root.Enable = true
+		log("[Tip] show " .. key .. " - " .. t.title)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hide(string reason)
+		-- 카드를 내린다(시간 끝 · × · 자세히 · 죽음 · 안내 끔 · 가려짐). 뜨자마자 가려지거나 쓰러졌으면 줄 맨 앞으로 되돌린다.
+		if self.current == "" then
+			return
+		end
+		local key = self.current
+		local now = _UtilLogic.ElapsedSeconds
+		log("[Tip] hide " .. key .. " reason=" .. reason)
+		self.current = ""
+		self.lastHideAt = now
+		if (reason == "covered" or reason == "dead") and now - self.shownAt < self.requeueSeconds and self.queue ~= nil then
+			table.insert(self.queue, 1, key)
+			log("[Tip] requeue " .. key .. " (shown " .. string.format("%.1f", now - self.shownAt) .. "s)")
+		end
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMore()
+		-- '자세히' → 도움말 창의 해당 탭 · 항목.
+		local t = self.tips[self.current]
+		local key = self.current
+		self:Hide("more")
+		if t ~= nil and _GameIntroController ~= nil then
+			_GameIntroController:OpenTab(t.tab, t.entry, "tip:" .. key)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BringToFront()
+		-- UI 그룹은 런타임에 /ui 형제 순서로 그려진다 → 띄울 때 부활 팝업 바로 아래로 올린다.
+		--   아래에서 올라오면 내 자리가 빠지며 부활 팝업이 한 칸 내려오므로 revIdx - 1 로 둔다(그래야 부활 팝업 위로 안 간다).
+		local me = _EntityService:GetEntityByPath("/ui/TipGroup")
+		if not isvalid(me) then
+			return
+		end
+		local before = _UILogic:GetSiblingIndex(me.UITransformComponent)
+		local idx = 1000000
+		local rev = _EntityService:GetEntityByPath("/ui/RevivePopupGroup")
+		if isvalid(rev) then
+			idx = _UILogic:GetSiblingIndex(rev.UITransformComponent)
+			if before < idx then
+				idx = idx - 1
+			end
+		end
+		_UILogic:SetSiblingIndex(me.UITransformComponent, idx)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 연결 해제.
+		if self.handlers ~= nil then
+			for _, x in ipairs(self.handlers) do
+				if isvalid(x.e) then
+					x.e:DisconnectEvent(ButtonClickEvent, x.h)
+				end
+			end
+		end
+		self.handlers = {}
+	end
+end

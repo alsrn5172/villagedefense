@@ -2,8 +2,7 @@
 script PlayerRespawnService extends Logic
 	-- 플레이어 사망·리스폰 (9/14 기획 · WO-027 §9-0 3차 ④ · WO-028 T17 · a/plan-0914 B9).
 	--   · 감지 = 매치 참가자의 PlayerComponent:IsDead() 폴링(PollInterval) — 엔진 사망(= A 쪽 피해 적용점 뒤 HP≤0) 그대로. PlayerHit(B) 손대지 않음.
-	--   · 1P 이전(FreePhases: PHASE0-1·0-2·PHASE1) 사망 = 리스항구 리스폰 · 페널티 0.
-	--   · 2P 이후 사망 = 내 마을 리스폰 + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
+	--   · 매치 중 사망 = 내 마을 리스폰 + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
 	--     선택 창 = RespawnDuration(ChoiceSeconds) 동안. 고르면 즉시 부활(ProcessRevive) · 안 고르면 엔진 자동 부활 뒤 기본(경험치) 적용. 메소가 모자라면 경험치만.
 	--   · 발록 방 사망은 기존(BalrogRoomService) · 매치 밖 사망은 손대지 않는다. 사망 횟수는 서버 메모리(저장 안 함).
 
@@ -16,11 +15,15 @@ script PlayerRespawnService extends Logic
 
 	property number DefaultRespawnSeconds = 5
 
-	property string FreePhases = "PHASE0-1,PHASE0-2,PHASE1"
-
 	property string BalrogMapPrefix = "Sleepywood_Boss_JrBalrog"
 
 	property number PollInterval = 0.25
+
+	-- 사냥터(<지역>_Hunt_*)에서 죽으면 그 지역 마을에서 부활한다(WO-049 ⑦). 마을 맵 이름 = <지역> + 이 접미사.
+	property string VillageMapSuffix = "_Village_MinimiMain"
+
+	-- 부활 직후 HP 가 이 비율(최대 HP 대비) 아래면 최대치로 다시 채운다 — 엔진 부활이 HP 를 늦게 · 다르게 쓰는 경우 대비(사용자 2026-10-05 "가끔 부활했을 때 체력이 안 차 있음 · 최소 절반").
+	property number ReviveMinHpRatio = 0.5
 
 	-- 부활 이동 확인(WO-035 B): 옮긴 뒤 MoveCheckSeconds 에 되읽어 목적지 맵 · MoveCheckTolerance 안이 아니면 MoveMaxTries 까지 다시 옮긴다.
 	-- 허용 거리는 부활 직후 걸어서 벗어나는 폭보다 넉넉하게 — 죽은 자리에 남은 경우만 잡으면 된다.
@@ -115,14 +118,6 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean IsFreePhase()
-		-- 지금 페이즈가 페널티 없는 구간(1P 이전)인가.
-		local phase = ""
-		if _MatchSessionLogic ~= nil then phase = tostring(_MatchSessionLogic.CurrentPhaseName or "") end
-		return string.find("," .. self.FreePhases .. ",", "," .. phase .. ",", 1, true) ~= nil
-	end
-
-	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- 참가자 사망/부활 엣지 감지.
 		if self.participants == nil then return end
@@ -170,7 +165,7 @@ script PlayerRespawnService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnDeath(string userId, Entity player)
-		-- 사망 1건: 발록 방·매치 밖은 손대지 않음. 1P 이전 = 무료 안내 · 2P 이후 = 팝업.
+		-- 사망 1건: 발록 방·매치 밖은 손대지 않는다. 매치 페이즈와 무관하게 비용을 선택하는 팝업을 연다.
 		local mapName = ""
 		if isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
 		if string.find(mapName, self.BalrogMapPrefix, 1, true) == 1 then
@@ -180,12 +175,6 @@ script PlayerRespawnService extends Logic
 		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then return end
 		self.deaths[userId] = (self.deaths[userId] or 0) + 1
 		local phase = tostring(_MatchSessionLogic.CurrentPhaseName or "")
-		if self:IsFreePhase() then
-			self.pending[userId] = { penalty = false, choice = "", phase = phase, map = mapName, expCut = 0 }
-			if _UIToast ~= nil then _UIToast:ShowMessage("쓰러졌습니다. 리스항구에서 다시 시작합니다 (페널티 없음)", userId) end
-			log("[Death] user=" .. userId .. " phase=" .. phase .. " map=" .. mapName .. " free (deaths=" .. tostring(self.deaths[userId]) .. ")")
-			return
-		end
 		local cut = self:ExpCutOf(userId)
 		local meso = 0
 		if _SummonManager ~= nil then
@@ -240,6 +229,69 @@ script PlayerRespawnService extends Logic
 			end
 		end
 		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method any VillageRowByMap(string villageMap)
+		-- VillageConfig 에서 마을 맵 이름이 같은 행 { map, lane1 }. 없으면 nil(리스항구는 이 표에 없다).
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil then return nil end
+		for i = 1, t:GetRowCount() do
+			if tostring(t:GetCell(i, "VillageMapName") or "") == villageMap then
+				return { map = villageMap, lane1 = tostring(t:GetCell(i, "Lane1MapName") or "") }
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RegionLabel(string region)
+		-- 부활 알림에 쓰는 지역 이름.
+		local names = { Henesys = "헤네시스", Ellinia = "엘리니아", KerningCity = "커닝시티", Perion = "페리온", Nautilus = "노틸러스", LithHarbor = "리스항구" }
+		return names[region] or region
+	end
+
+	@ExecSpace("ServerOnly")
+	method any HuntRespawn(string deathMap)
+		-- 사냥터에서 죽었으면 그 지역 마을의 부활 자리 { map, pos, label, rule }. 사냥터가 아니거나 마을 맵이 이 룸에 없으면 nil.
+		-- 자리: 마을의 "죽은 맵으로 가는 포탈" → 없으면 마을의 1레인 포탈 → 없으면 마을 맵 첫 SpawnLocation.
+		local region = string.match(deathMap or "", "^(.-)_Hunt_")
+		if region == nil or region == "" then return nil end
+		local villageMap = region .. self.VillageMapSuffix
+		local vmap = _EntityService:GetEntityByPath("/maps/" .. villageMap)
+		if not isvalid(vmap) then return nil end
+		local paths = { "/maps/" .. villageMap .. "/P_To_" .. deathMap }
+		local row = self:VillageRowByMap(villageMap)
+		if row ~= nil and row.lane1 ~= "" then table.insert(paths, "/maps/" .. villageMap .. "/P_To_" .. row.lane1) end
+		for _, path in ipairs(paths) do
+			local portal = _EntityService:GetEntityByPath(path)
+			if isvalid(portal) and isvalid(portal.TransformComponent) then
+				local pp = portal.TransformComponent.WorldPosition
+				return { map = villageMap, pos = Vector2(pp.x, pp.y), label = self:RegionLabel(region), rule = "HUNT_REGION" }
+			end
+		end
+		local sp = self:SpawnPointOf(vmap)
+		if sp ~= nil then return { map = villageMap, pos = sp, label = self:RegionLabel(region), rule = "HUNT_REGION_SPAWN" } end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureReviveHp(string userId, integer round, integer epoch)
+		-- 부활 직후 0.4초 간격으로 3번: 살아 있는데 HP 가 최소 비율 아래면 최대치로(엔진이 나중에 HP 를 덮어쓴 경우).
+		-- 매치가 끝났거나(세대가 바뀜) 그 사이 참가자가 아니게 됐으면 아무것도 하지 않는다(로비 · 다음 매치 HP 를 건드리지 않게 · Codex 리뷰).
+		if epoch ~= self.moveEpoch or _MatchSessionLogic == nil or not _MatchSessionLogic.Running then return end
+		if not self:IsParticipant(userId) then return end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		local pc = player.PlayerComponent
+		if pc:IsDead() then return end
+		if pc.Hp < math.ceil(pc.MaxHp * self.ReviveMinHpRatio) then
+			log("[Death] revive hp low " .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " → refill (round " .. tostring(round) .. " · " .. userId .. ")")
+			pc.Hp = pc.MaxHp
+		end
+		if round < 3 then
+			_TimerService:SetTimerOnce(function() self:EnsureReviveHp(userId, round + 1, epoch) end, 0.4)
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -302,6 +354,7 @@ script PlayerRespawnService extends Logic
 			map = here.Name
 			pos = sp
 		end
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(map, userId) end
 		player.PlayerComponent:MoveToMapPosition(map, pos)
 		_TimerService:SetTimerOnce(function()
 			-- 그사이 매치가 끝났거나 · 새 매치가 시작됐거나 · 이탈했거나 · 다시 부활했으면 이 확인은 버린다.
@@ -367,13 +420,28 @@ script PlayerRespawnService extends Logic
 		local destMap = ""
 		local destPos = nil
 		local pc = player.PlayerComponent
-		if p.penalty then
+		-- 시간 만료 부활은 엔진이 HP를 채운다고 보장하지 않는다. 선택 부활과 같은 지점에서 항상 최대 HP로 보정한다.
+		pc.Hp = pc.MaxHp
+		local reviveEpoch = self.moveEpoch
+		_TimerService:SetTimerOnce(function() self:EnsureReviveHp(userId, 1, reviveEpoch) end, 0.4)
+		local label = ""
+		local rule = ""
+		-- ① 사냥터에서 죽었으면 그 지역 마을(WO-049 ⑦ · 사용자 2026-10-05 "사냥터에서 죽으면 그 사냥터에 해당하는 마을로").
+		local hunt = self:HuntRespawn(p.map)
+		if hunt ~= nil then
+			target = "/maps/" .. hunt.map
+			destMap = hunt.map
+			destPos = hunt.pos
+			label = hunt.label
+			rule = hunt.rule
+		end
+		-- ② 그 밖(마을 · 보스 · 여섯갈래길 등)은 내 마을의 1레인 쪽 포탈 자리 → 못 찾으면 리스항구.
+		if target == "" and p.penalty then
 			local vid = ""
 			if _LaneStateService ~= nil then vid = _LaneStateService:VillageOfUser(userId) end
 			local row = nil
 			if vid ~= "" then row = self:VillageRowOf(vid) end
 			if row ~= nil and row.map ~= "" and row.lane1 ~= "" then
-				-- 내 마을의 1레인 쪽 포탈 자리. 포탈을 못 찾으면(이 룸에 그 맵이 없음 등) 아래 리스항구 경로로 넘어간다.
 				local path = "/maps/" .. row.map .. "/P_To_" .. row.lane1
 				local portal = _EntityService:GetEntityByPath(path)
 				if isvalid(portal) and isvalid(portal.TransformComponent) then
@@ -381,6 +449,8 @@ script PlayerRespawnService extends Logic
 					target = path
 					destMap = row.map
 					destPos = Vector2(pp.x, pp.y)
+					label = "내 마을"
+					rule = "OWN_VILLAGE"
 				else
 					log_warning("[Death] village respawn portal not found " .. path .. " (" .. userId .. ")")
 				end
@@ -390,6 +460,8 @@ script PlayerRespawnService extends Logic
 			target = _MatchLobbyGateway.MatchStartMapId
 			destMap = _MatchLobbyGateway.MatchStartMapId
 			destPos = _MatchLobbyGateway.MatchStartSpawn
+			label = "리스항구"
+			rule = "LITH"
 		end
 		if destMap ~= "" and destPos ~= nil then
 			self:BumpMove(userId)
@@ -397,8 +469,9 @@ script PlayerRespawnService extends Logic
 		end
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
 		if p.penalty and _UIToast ~= nil then
-			if applied == "MESO" then _UIToast:ShowMessage("내 마을에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
-			else _UIToast:ShowMessage("내 마을에서 부활 — 경험치 " .. tostring(amount) .. " 차감 (레벨 유지)", userId) end
+			local where = (label ~= "") and label or "마을"
+			if applied == "MESO" then _UIToast:ShowMessage(where .. "에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
+			else _UIToast:ShowMessage(where .. "에서 부활 — 경험치 " .. tostring(amount) .. " 차감 (레벨 유지)", userId) end
 		end
 		-- MP 도 최대치로 — 시간 부활 · 선택 부활 모두 여기를 지난다(#40 comment 5844239483 · 사용자 강민구 2026-09-26 A 결정). econ.mp 원장은 SummonManager(GrantMp 가 maxMp clamp · HUD Push).
 		if _SummonManager ~= nil then
@@ -410,7 +483,7 @@ script PlayerRespawnService extends Logic
 		end
 		local how = "timed"
 		if p.choice ~= "" then how = "choice" end
-		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0)
+		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " rule=" .. rule .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0)
 			.. " revive=" .. how .. " hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
 	end
 end

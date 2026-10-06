@@ -4,8 +4,45 @@ script PlayerHit extends HitComponent
 	@MinValue(0)
 	property number ImmuneCooldown = 1
 
+	property number PlayerKnockbackX = 2.0
+
+	property number PlayerKnockbackY = 1.2
+
+	@HideFromInspector
+	property boolean ServerHitEventDisconnected = false
+
+	@HideFromInspector
+	property boolean ClientHitEventDisconnected = false
+
 	@HideFromInspector
 	property number LastHitTime = 0
+
+	method void OnBeginPlay()
+		-- 플레이어 피격 HIT 전이를 끊어 즉시 조작할 수 있게 한다.
+		self:DisconnectHitTransition()
+	end
+
+	method void OnMapEnter(Entity map)
+		-- 맵 진입 때 엔진이 상태 이벤트를 다시 연결한 경우를 대비한다.
+		self:DisconnectHitTransition()
+	end
+
+	method void DisconnectHitTransition()
+		-- HitEvent 구독자는 유지하고 StateComponent 의 HIT 상태 전이만 끊는다.
+		local isServer = self:IsServer()
+		if not isServer then
+			local localPlayer = _UserService.LocalPlayer
+			if not isvalid(localPlayer) or localPlayer ~= self.Entity then return end
+		end
+		if isServer and self.ServerHitEventDisconnected then return end
+		if not isServer and self.ClientHitEventDisconnected then return end
+		local state = self.Entity.StateComponent
+		if isvalid(state) then
+			state:DisconnectHitEvent()
+			if isServer then self.ServerHitEventDisconnected = true else self.ClientHitEventDisconnected = true end
+			log("[PlayerHit] HIT transition disconnected uid=" .. self:OwnerUserId())
+		end
+	end
 
 	method boolean IsHitTarget(string attackInfo)
 		-- 피격 무적 시간(ImmuneCooldown 1s). 불굴의 진(SK_W31) 동안은 B SkillBuffs.GetHitImmuneMul(0.5) 배 = 절반 (2026-09-13 사용자 요청).
@@ -28,6 +65,8 @@ script PlayerHit extends HitComponent
 		-- 불굴의 진(SK_W31 · 2026-09-13 사용자 변경 "8초간 HP 최대치 고정 · 피격 경직·넉백 없음 · 피격 무적 시간 절반") 동안은
 		-- 기본 피격 처리(HP 감산 → HIT 상태 = 경직·넉백 · 피해 표시 · HitEvent)를 통째로 건너뛰고 B SkillBuffs.OnUnyieldingHit 에 넘긴다
 		-- (HP 를 최대치로 되돌리고 아이언 바디 반사만 그대로). 그 외에는 엔진 기본 동작 그대로.
+		-- 회피(WO-050 §2-12 · 공격 쪽이 CalcDamage 0 을 돌려준 빗맞음)는 피해 0 으로 들어온다 — 무적 · 반사 훅에 닿기 전에 여기서 끝낸다(빗맞은 공격이 불굴의 진 반사를 일으키면 안 된다).
+		if self:IsServer() and damage <= 0 then return end
 		-- 궁 시전 무적(2026-09-13 사용자 요청 "모든 직업의 궁은 사용 중 무적" · b/skill-thief-motion): SkillCaster 가 궁(ORIGIN) 시전 락 동안 연 창(SkillBuffs.IsCastInvulnerable)
 		-- 안이면 역시 기본 피격 처리를 통째로 건너뛴다(HP·경직·넉백·표시 없음 · OnCastInvulnerableHit = 로그만). 불굴의 진 분기가 먼저(반사 유지).
 		if self:IsServer() and _SkillBuffs ~= nil then
@@ -50,6 +89,47 @@ script PlayerHit extends HitComponent
 			end
 		end
 		__base:OnHit(attacker, damage, isCritical, attackInfo, hitCount)
+		if not self:IsServer() or damage <= 0 then return end
+		local player = self.Entity.PlayerComponent
+		if not isvalid(player) or player:IsDead() then return end
+		local userId = player.UserId
+		if userId == nil or userId == "" or not isvalid(_UserService:GetUserEntityByUserId(userId)) then return end
+		if not isvalid(attacker) or not isvalid(attacker.TransformComponent) or not isvalid(self.Entity.TransformComponent) then return end
+
+		local playerX = self.Entity.TransformComponent.WorldPosition.x
+		local attackerX = attacker.TransformComponent.WorldPosition.x
+		local dirX = 0
+		if playerX > attackerX then
+			dirX = 1
+		elseif playerX < attackerX then
+			dirX = -1
+		else
+			local projectile = attacker.SkillProjectile
+			local controller = attacker.PlayerController
+			if isvalid(projectile) and projectile.DirectionX ~= 0 then
+				dirX = projectile.DirectionX
+			elseif isvalid(controller) and controller.LookDirectionX ~= 0 then
+				dirX = controller.LookDirectionX
+			else
+				local scaleX = attacker.TransformComponent.Scale.x
+				dirX = (scaleX < 0) and 1 or -1
+			end
+		end
+		log("[PlayerHit] knockback dir=" .. tostring(dirX) .. " (" .. userId .. ")")
+		self:ApplyHitKnockback(dirX, userId)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyHitKnockback(number dirX)
+		-- 서버가 맞은 플레이어의 userId 를 마지막 인자로 붙여 그 클라에만 보낸다(선언에는 쓰지 않는다). 소유 클라에서만 Rigidbody 에 수평·상향 힘을 적용한다.
+		local player = self.Entity.PlayerComponent
+		local localPlayer = _UserService.LocalPlayer
+		if not isvalid(player) or not isvalid(localPlayer) or not isvalid(localPlayer.PlayerComponent) then return end
+		if player.UserId ~= localPlayer.PlayerComponent.UserId then return end
+		local body = self.Entity.RigidbodyComponent
+		if not isvalid(body) then return end
+		body:AddForce(Vector2(dirX * self.PlayerKnockbackX, self.PlayerKnockbackY))
+		log("[PlayerHit] client knockback applied dir=" .. tostring(dirX))
 	end
 
 	method string OwnerUserId()

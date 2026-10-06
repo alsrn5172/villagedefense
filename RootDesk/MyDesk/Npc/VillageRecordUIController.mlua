@@ -84,6 +84,36 @@ script VillageRecordUIController extends Logic
 	property any boundCells = nil
 
 	@HideFromInspector
+	property any sparkleDefaults = nil
+
+	@HideFromInspector
+	property any buttonEffectBaseColor = nil
+
+	@HideFromInspector
+	property any buttonEffectBaseScale = nil
+
+	@HideFromInspector
+	property boolean buttonEffectActive = false
+
+	@HideFromInspector
+	property boolean collectionEffectsActive = false
+
+	@HideFromInspector
+	property number sparkleElapsed = 0
+
+	property number SparkleHz = 1.2
+
+	property number SparkleMinAlpha = 0.35
+
+	property number SparkleMaxAlpha = 1.0
+
+	property number SparkleMaxScale = 1.06
+
+	property number SparkleBrightness = 1.06
+
+	property Color SparkleGold = Color(0.91, 0.71, 0.27, 1)
+
+	@HideFromInspector
 	property boolean waiting = false
 
 	-- 도감 눈금 그림(gauge_seg_on / gauge_seg_off) · 글자 색 (디자이너 시안 11-record)
@@ -120,6 +150,8 @@ script VillageRecordUIController extends Logic
 		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
 		if isvalid(self.btnPrimary) then bind(self.btnPrimary.Entity, function() self:OnPrimary() end) end
 		self.boundCells = {}
+		self.sparkleDefaults = {}
+		self:CaptureButtonEffectDefaults()
 		if isvalid(self.collGrid) then
 			if isvalid(self.collTemplate) then self.collGrid.ItemEntity = self.collTemplate end
 			self.collGrid.OnRefresh = function(index, entity) self:FillCollCell(index, entity) end
@@ -148,6 +180,12 @@ script VillageRecordUIController extends Logic
 			self:Open(r.PendingUiRoute)
 			r:ClearPendingRequest()
 		end
+		if self.isOpen and self.route == "collection" then
+			self.sparkleElapsed = self.sparkleElapsed + delta
+			self:UpdateCollectionEffects()
+		elseif self.collectionEffectsActive then
+			self:ResetCollectionEffects()
+		end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -172,12 +210,14 @@ script VillageRecordUIController extends Logic
 		self.isOpen = open
 		if isvalid(self.dimmer) then self.dimmer.Enable = open end
 		if isvalid(self.window) then self.window.Enable = open end
+		if not open then self:ResetCollectionEffects() end
 		log("[Record] open=" .. tostring(open))
 	end
 
 	@ExecSpace("ClientOnly")
 	method void GoRoute(string route)
 		-- Content 하위 컨테이너 하나만. Footer 없음.
+		if self.route == "collection" and route ~= "collection" then self:ResetCollectionEffects() end
 		self.route = route
 		local titles = { collection = "몬스터 도감", stats = "마을 통계" }
 		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "기록" end
@@ -324,7 +364,9 @@ script VillageRecordUIController extends Logic
 		-- 고름 · 잠김 표시는 미리 깔아 둔 Sel / Locked 덮개를 켜고 끈다(그림 교체 없음).
 		local r = self.collRows[index + 1]
 		if r == nil or not isvalid(cell) then return end
+		self:CaptureCellEffectDefaults(cell)
 		local unlocked = (r.monLv >= 1)
+		local canUnlock = self:CanUnlock(r)
 		-- 서버 이름은 "한글 (English)" → 칸에는 한글만(영문까지 넣으면 칸 폭을 넘어 "파란 달팽이 (Bl…" 로 잘렸다 · 시안은 한글만 · Play 확인 2026-10-01). 전체 이름은 아래 푸터에 그대로 둔다.
 		local cellKo = string.match(r.name, "^(.-)%s*%(")
 		self:SetText(cell, "Name", (cellKo ~= nil and cellKo ~= "") and cellKo or r.name)
@@ -347,7 +389,12 @@ script VillageRecordUIController extends Logic
 		if unlocked then
 			self:SetText(cell, "Mul", "×" .. tostring(r.mul))
 		else
-			self:SetText(cell, "Sub", "잠김 · Lv " .. tostring(r.level))
+			if canUnlock then
+				self:SetText(cell, "Sub", "해금 가능!")
+				self:SetColor(cell, "Sub", self.SparkleGold)
+			else
+				self:SetText(cell, "Sub", "잠김 · Lv " .. tostring(r.level))
+			end
 		end
 		for k = 1, 5 do
 			local seg = cell:GetChildByName("Seg" .. tostring(k))
@@ -361,7 +408,11 @@ script VillageRecordUIController extends Logic
 		end
 		-- 클릭 배선은 셀 엔티티당 1회. 복제 셀은 스크롤마다 index 가 바뀌므로 boundCells[셀 Id] 에 {index, 엔티티} 를 갱신해 두고 클릭·재칠하기 때 읽는다.
 		local bound = self.boundCells[cell.Id]
-		self.boundCells[cell.Id] = { index = index, cell = cell }
+		local rec = (bound ~= nil) and bound or { index = index, cell = cell, glowing = false }
+		rec.index = index
+		rec.cell = cell
+		self.boundCells[cell.Id] = rec
+		if not canUnlock then self:RestoreCellEffect(cell) end
 		if bound == nil then
 			local id = cell.Id
 			local h = cell:ConnectEvent(ButtonClickEvent, function()
@@ -379,6 +430,131 @@ script VillageRecordUIController extends Logic
 		for id, rec in pairs(self.boundCells) do
 			if rec ~= nil and isvalid(rec.cell) then self:FillCollCell(rec.index, rec.cell) end
 		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CanUnlock(any r)
+		-- 서버 뷰에 담긴 값만 사용해 해금 가능 여부를 판정한다.
+		if r == nil or r.monLv ~= 0 or r.noUnlock or not self.hasVillage then return false end
+		local mat = (r.mat ~= nil) and r.mat or self.collMat
+		return mat ~= nil and (mat.have or 0) >= (mat.cost or 8)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CaptureCellEffectDefaults(Entity cell)
+		-- 반짝임 적용 전 자물쇠·보조 글자의 색을 셀마다 한 번 저장한다.
+		if self.sparkleDefaults == nil then self.sparkleDefaults = {} end
+		if self.sparkleDefaults[cell.Id] ~= nil then return end
+		local badge = cell:GetChildByName("LockBadge")
+		local icon = cell:GetChildByName("LockIcon")
+		local sub = cell:GetChildByName("Sub")
+		local badgeColor = isvalid(badge) and isvalid(badge.SpriteGUIRendererComponent) and badge.SpriteGUIRendererComponent.Color or nil
+		local iconColor = isvalid(icon) and isvalid(icon.SpriteGUIRendererComponent) and icon.SpriteGUIRendererComponent.Color or nil
+		local subColor = isvalid(sub) and isvalid(sub.TextGUIRendererComponent) and sub.TextGUIRendererComponent.FontColor or nil
+		self.sparkleDefaults[cell.Id] = { badge = badgeColor, icon = iconColor, sub = subColor }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RestoreCellEffect(Entity cell)
+		-- 해당 셀의 원래 색을 되돌린다.
+		if not isvalid(cell) or self.sparkleDefaults == nil then return end
+		local original = self.sparkleDefaults[cell.Id]
+		if original == nil then return end
+		local badge = cell:GetChildByName("LockBadge")
+		local icon = cell:GetChildByName("LockIcon")
+		local sub = cell:GetChildByName("Sub")
+		if isvalid(badge) and isvalid(badge.SpriteGUIRendererComponent) and original.badge ~= nil then badge.SpriteGUIRendererComponent.Color = original.badge end
+		if isvalid(icon) and isvalid(icon.SpriteGUIRendererComponent) and original.icon ~= nil then icon.SpriteGUIRendererComponent.Color = original.icon end
+		if isvalid(sub) and isvalid(sub.TextGUIRendererComponent) and original.sub ~= nil then sub.TextGUIRendererComponent.FontColor = original.sub end
+		if self.boundCells ~= nil and self.boundCells[cell.Id] ~= nil then self.boundCells[cell.Id].glowing = false end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CaptureButtonEffectDefaults()
+		-- 해금 버튼의 초기 색과 크기를 저장한다.
+		if not isvalid(self.btnPrimary) or not isvalid(self.btnPrimary.Entity) then return end
+		local buttonEntity = self.btnPrimary.Entity
+		if isvalid(buttonEntity.SpriteGUIRendererComponent) then
+			local color = buttonEntity.SpriteGUIRendererComponent.Color
+			self.buttonEffectBaseColor = Color(color.r, color.g, color.b, color.a)
+		end
+		if isvalid(buttonEntity.UITransformComponent) then
+			local scale = buttonEntity.UITransformComponent.UIScale
+			self.buttonEffectBaseScale = Vector3(scale.x, scale.y, scale.z)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateCollectionEffects()
+		-- 살아 있는 셀만 갱신하고 버튼은 해금 조건이 맞을 때 숨쉬게 한다.
+		self.collectionEffectsActive = true
+		if self.boundCells ~= nil then
+			local wave = (math.sin(self.sparkleElapsed * math.pi * 2 * self.SparkleHz) + 1) * 0.5
+			local alpha = self.SparkleMinAlpha + (self.SparkleMaxAlpha - self.SparkleMinAlpha) * wave
+			for id, rec in pairs(self.boundCells) do
+				if rec ~= nil and isvalid(rec.cell) then
+					local r = self.collRows and self.collRows[rec.index + 1] or nil
+					if self:CanUnlock(r) then
+						local badge = rec.cell:GetChildByName("LockBadge")
+						local icon = rec.cell:GetChildByName("LockIcon")
+						if isvalid(badge) and isvalid(badge.SpriteGUIRendererComponent) then badge.SpriteGUIRendererComponent.Color = Color(self.SparkleGold.r, self.SparkleGold.g, self.SparkleGold.b, alpha) end
+						if isvalid(icon) and isvalid(icon.SpriteGUIRendererComponent) then icon.SpriteGUIRendererComponent.Color = Color(self.SparkleGold.r, self.SparkleGold.g, self.SparkleGold.b, alpha) end
+						rec.glowing = true
+					elseif rec.glowing then
+						self:RestoreCellEffect(rec.cell)
+					end
+				end
+			end
+		end
+		self:UpdateButtonEffect()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateButtonEffect()
+		-- 선택한 해금 대상에 재료가 충분하고 요청 중이 아니면 색과 크기를 같은 위상으로 움직인다.
+		if not isvalid(self.btnPrimary) or not isvalid(self.btnPrimary.Entity) then return end
+		local buttonEntity = self.btnPrimary.Entity
+		local transform = buttonEntity.UITransformComponent
+		local sprite = buttonEntity.SpriteGUIRendererComponent
+		local r = self.collRows and self.collRows[self.selColl] or nil
+		local shouldGlow = self.isOpen and self.route == "collection" and not self.waiting and self:CanUnlock(r)
+		if not shouldGlow then
+			if self.buttonEffectActive then
+				if isvalid(sprite) and self.buttonEffectBaseColor ~= nil then sprite.Color = self.buttonEffectBaseColor end
+				if isvalid(transform) and self.buttonEffectBaseScale ~= nil then transform.UIScale = self.buttonEffectBaseScale end
+				self.buttonEffectActive = false
+			end
+			return
+		end
+		self.buttonEffectActive = true
+		local wave = (math.sin(self.sparkleElapsed * math.pi * 2 * self.SparkleHz) + 1) * 0.5
+		local brightness = 1 + (self.SparkleBrightness - 1) * wave
+		local scale = 1 + (self.SparkleMaxScale - 1) * wave
+		if isvalid(sprite) and self.buttonEffectBaseColor ~= nil then
+			local c = self.buttonEffectBaseColor
+			sprite.Color = Color(math.min(1, c.r * brightness), math.min(1, c.g * brightness), math.min(1, c.b * brightness), c.a)
+		end
+		if isvalid(transform) and self.buttonEffectBaseScale ~= nil then
+			local s = self.buttonEffectBaseScale
+			transform.UIScale = Vector3(s.x * scale, s.y * scale, s.z * scale)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetCollectionEffects()
+		-- 닫힘·다른 라우트·대기 상태에서는 모든 강조 값을 원래대로 되돌린다.
+		if self.boundCells ~= nil then
+			for _, rec in pairs(self.boundCells) do
+				if rec ~= nil and isvalid(rec.cell) then self:RestoreCellEffect(rec.cell) end
+			end
+		end
+		if self.buttonEffectActive and isvalid(self.btnPrimary) and isvalid(self.btnPrimary.Entity) then
+			local buttonEntity = self.btnPrimary.Entity
+			if isvalid(buttonEntity.SpriteGUIRendererComponent) and self.buttonEffectBaseColor ~= nil then buttonEntity.SpriteGUIRendererComponent.Color = self.buttonEffectBaseColor end
+			if isvalid(buttonEntity.UITransformComponent) and self.buttonEffectBaseScale ~= nil then buttonEntity.UITransformComponent.UIScale = self.buttonEffectBaseScale end
+		end
+		self.buttonEffectActive = false
+		self.collectionEffectsActive = false
 	end
 
 	@ExecSpace("ClientOnly")
@@ -401,7 +577,7 @@ script VillageRecordUIController extends Logic
 		local f = self.footer
 		local locked = (r ~= nil and r.monLv < 1)
 		local owned = (r ~= nil and r.monLv >= 1)
-		local can = false
+		local can = self:CanUnlock(r)
 		-- 세 모양: 안 골랐을 때(안내 + 보유 재화 칩) · 해금 안 된 몬스터(이름 + 해금 비용 칩) · 해금된 몬스터(이름 + 초록 요약 한 줄)
 		self:Show(f, "StateHint", r == nil)
 		self:Show(f, "SelName", r ~= nil)
@@ -428,8 +604,7 @@ script VillageRecordUIController extends Logic
 				self:SetText(f, "StateLocked/CostPlate/MatHave", "모집 대상 아님")
 				self:SetColor(f, "StateLocked/CostPlate/MatHave", Color(0.486, 0.533, 0.643, 1))
 			elseif locked then
-				-- 재료가 모자라도 버튼은 켜 둔다 — 서버가 거절 토스트로 알린다(잠긴 것처럼 보이지 않게). 모자라면 비용 칩만 붉게.
-				can = true
+				-- 비용 안내는 보여 주되 해금 조건이 부족하면 버튼은 비활성화한다.
 				local short = (matHave < matCost)
 				self:SetIcon(f, "StateLocked/CostPlate/MatIcon", self:ItemIcon((m ~= nil) and m.itemId or ""))
 				self:SetText(f, "StateLocked/CostPlate/MatName", matName)
@@ -450,7 +625,6 @@ script VillageRecordUIController extends Logic
 				self.costLabel.Text = "해금됨 · 도감 Lv" .. tostring(r.monLv) .. " ×" .. tostring(r.mul) .. " · 모집 가능 - 강화는 몬스터 조련사에게"
 			end
 		end
-		if not self.hasVillage then can = false end
 		if isvalid(self.btnPrimary) then
 			local on = (can and not self.waiting)
 			self.btnPrimary.Enable = on
@@ -471,13 +645,14 @@ script VillageRecordUIController extends Logic
 		if self.route ~= "collection" or self.waiting then return end
 		local r = self.collRows and self.collRows[self.selColl] or nil
 		if r == nil or _LaneStateService == nil then return end
-		if r.monLv >= 1 then return end
+		if not self:CanUnlock(r) then return end
 		self.waiting = true
 		if isvalid(self.btnPrimary) then
 			self.btnPrimary.Enable = false
 			local t = self.btnPrimary.Entity.TextGUIRendererComponent
 			if t ~= nil then t.FontColor = self.cPale end
 		end
+		self:UpdateButtonEffect()
 		_LaneStateService:RequestUnlockCollection(r.id)
 	end
 

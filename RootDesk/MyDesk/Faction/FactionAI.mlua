@@ -76,6 +76,23 @@ script FactionAI extends Component
 	@HideFromInspector
 	property any TargetEntity = nil
 
+	@HideFromInspector
+	property boolean TargetWasCore = false
+
+	-- 정지선 탐색 비용 절감: 적 넥서스 캐시 수명 · 정지선 앞 적 재탐색 주기(초)
+	property number ApproachCoreCacheSeconds = 2.0
+
+	property number FrontScanInterval = 0.9
+
+	@HideFromInspector
+	property any ApproachCoreCache = nil
+
+	@HideFromInspector
+	property number ApproachCoreCacheAt = -100
+
+	@HideFromInspector
+	property number FrontScanAt = -100
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 팀에 따라 전진 방향을 정하고 전진 상태로 시작한다.
@@ -285,6 +302,120 @@ script FactionAI extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean IsApproachCore(Entity target)
+		-- 이 대상이 적 넥서스인가.
+		if not isvalid(target) then return false end
+		local facility = target:GetComponent("script.LaneFacility")
+		return isvalid(facility) and facility.Stage == "CORE" and _FactionLogic:IsEnemy(self.Entity, target)
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity FindApproachCore()
+		-- 현재 맵의 살아 있는 적 넥서스를 찾는다.
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then return nil end
+		local facilities = map:GetChildComponentsByTypeName("script.LaneFacility", true)
+		if facilities == nil then return nil end
+		for _, facility in ipairs(facilities) do
+			if isvalid(facility) and isvalid(facility.Entity) and facility.Stage == "CORE"
+				and _FactionLogic:IsEnemy(self.Entity, facility.Entity) and not self:IsDeadEntity(facility.Entity) then
+				local state = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(facility.VillageId, facility.Stage) or nil
+				if state == nil or state.alive then return facility.Entity end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity CachedApproachCore()
+		-- 적 넥서스를 ApproachCoreCacheSeconds 동안 기억한다(죽었거나 사라지면 바로 다시 찾는다).
+		local now = _UtilLogic.ElapsedSeconds
+		local c = self.ApproachCoreCache
+		if isvalid(c) and not self:IsDeadEntity(c) and now - self.ApproachCoreCacheAt < self.ApproachCoreCacheSeconds then return c end
+		c = self:FindApproachCore()
+		self.ApproachCoreCache = c
+		self.ApproachCoreCacheAt = now
+		return c
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsAtApproachStopLine(number myX)
+		-- 정지선은 관성 보정(ApproachSlide)을 반영한 전진 시작 지점이다.
+		if not self.ApproachActive or self.ResolvedDir == 0 then return false end
+		local stopX = self.ApproachX - self.ResolvedDir * self.ApproachSlide
+		if self.ResolvedDir > 0 then return myX >= stopX end
+		return myX <= stopX
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity FindFrontApproachEnemy(Entity core)
+		-- 정지선 앞쪽에서 이미 사거리 안에 든 적만 넥서스보다 먼저 친다.
+		local map = self.Entity.CurrentMap
+		local myTransform = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(myTransform) then return core end
+		local myPos = myTransform.WorldPosition
+		local best = core
+		local bestDist = math.huge  -- 후보마다 (AttackRange + 상자 여유)² 안인지 따로 걸러 가장 가까운 것을 고른다
+		local candidates = {}
+		local factions = map:GetChildComponentsByTypeName("script.Faction", true)
+		if factions ~= nil then
+			for _, comp in ipairs(factions) do
+				if isvalid(comp) and isvalid(comp.Entity) then table.insert(candidates, comp.Entity) end
+			end
+		end
+		local mapComp = map.MapComponent
+		if isvalid(mapComp) then
+			local users = _UserService:GetUsersByMapComponent(mapComp)
+			if users ~= nil then
+				for _, user in ipairs(users) do
+					if _FactionLogic:IsTargetable(user) then table.insert(candidates, user) end
+				end
+			end
+		end
+		for _, cand in ipairs(candidates) do
+			if cand ~= self.Entity and cand ~= core and _FactionLogic:IsEnemy(self.Entity, cand) and not self:IsDeadEntity(cand) then
+				local transform = cand.TransformComponent
+				if isvalid(transform) then
+					local pos = transform.WorldPosition
+					local dx = pos.x - myPos.x
+					local dy = pos.y - myPos.y
+					local d = dx * dx + dy * dy
+					local pad = 0
+					local hit = cand.HitComponent
+					if isvalid(hit) then pad = math.max(0, hit.BoxSize.x * math.abs(transform.Scale.x) * 0.5 - 0.4) end
+					local isAhead = (pos.x - self.ApproachX) * self.ResolvedDir > 0
+					if isAhead and d <= (self.AttackRange + pad) * (self.AttackRange + pad)
+						and math.abs(dy) <= self:TargetDyLimit(cand) and d < bestDist then
+						best = cand
+						bestDist = d
+					end
+				end
+			end
+		end
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ApproachCoreLossReason(Entity core)
+		-- 넥서스 표적이 사라진 원인을 로그에 남긴다.
+		if not isvalid(core) or self:IsDeadEntity(core) then return "dead" end
+		local facility = core:GetComponent("script.LaneFacility")
+		if isvalid(facility) and _LaneStateService ~= nil then
+			local state = _LaneStateService:FacilityState(facility.VillageId, facility.Stage)
+			if state == nil or not state.alive then return "dead" end
+		end
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local targetTransform = core.TransformComponent
+		if not isvalid(targetTransform) then return "dead" end
+		local targetPos = targetTransform.WorldPosition
+		if math.abs(targetPos.y - myPos.y) > self:TargetDyLimit(core) then return "dy" end
+		local dx = targetPos.x - myPos.x
+		local dy = targetPos.y - myPos.y
+		if dx * dx + dy * dy > self.DetectRange * self.DetectRange then return "range" end
+		return "retarget"
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean IsDeadEntity(Entity target)
 		-- 대상이 죽은 몬스터인지 확인한다. 플레이어처럼 Monster 가 없으면 살아있는 것으로 본다.
 		---@type Monster
@@ -346,7 +477,35 @@ script FactionAI extends Component
 		-- 5) 주기적으로 적 재탐색
 		if self.RetargetTimer <= 0 then
 			self.RetargetTimer = self.RetargetInterval
-			self.TargetEntity = self:FindNearestEnemy()
+			local previous = self.TargetEntity
+			local previousWasCore = self.ApproachActive and (self.TargetWasCore or self:IsApproachCore(previous))
+			local myX = self.Entity.TransformComponent.WorldPosition.x
+			local atStopLine = self.ApproachActive and self:IsAtApproachStopLine(myX)
+			-- 정지선에서는 맵 전체 탐색(FindNearestEnemy)을 건너뛴다 — 아래 정지선 규칙이 표적을 정한다.
+			local nextTarget = nil
+			if not atStopLine then nextTarget = self:FindNearestEnemy() end
+			if atStopLine then
+				local core = self:CachedApproachCore()
+				if isvalid(core) then
+					local now = _UtilLogic.ElapsedSeconds
+					local keep = self.TargetEntity
+					if isvalid(keep) and not self:IsDeadEntity(keep) and now - self.FrontScanAt < self.FrontScanInterval then
+						nextTarget = keep
+					else
+						nextTarget = self:FindFrontApproachEnemy(core)
+						self.FrontScanAt = now
+					end
+				else
+					nextTarget = nil
+				end
+			end
+			self.TargetEntity = nextTarget
+			self.TargetWasCore = self.ApproachActive and self:IsApproachCore(nextTarget)
+			if self.ApproachActive and previousWasCore and previous ~= nextTarget then
+				local replacement = isvalid(nextTarget) and nextTarget.Name or "none"
+				local reason = isvalid(previous) and self:ApproachCoreLossReason(previous) or "dead"
+				log("[Approach] " .. self.Entity.Name .. " lost core -> " .. replacement .. " reason=" .. reason)
+			end
 		end
 		
 		local target = self.TargetEntity
@@ -419,6 +578,32 @@ script FactionAI extends Component
 		-- 7) 사거리 안 적이 없으면 목표(적 포탑) 방향으로 계속 전진한다.
 		--    중립(ResolvedDir==0)은 그 자리에 정지한다.
 		self.CurrentAIState = "ADVANCE"
+
+		-- 접근 미니언은 넥서스가 사라져도 정지선을 넘지 않는다.
+		if self.ApproachActive and self.ResolvedDir ~= 0 then
+			local myX = self.Entity.TransformComponent.WorldPosition.x
+			if self:IsAtApproachStopLine(myX) then
+				if (self.ResolvedDir > 0 and myX > self.ApproachX + 0.02)
+					or (self.ResolvedDir < 0 and myX < self.ApproachX - 0.02) then
+					local returnDir = -self.ResolvedDir
+					self:SetSprite(self.MoveRUID)
+					self:FaceTo(returnDir)
+					local movement = self.Entity.MovementComponent
+					if isvalid(movement) then movement:MoveToDirection(Vector2(returnDir, 0), 0) end
+				else
+					self.CurrentAIState = "HOLD"
+					self:SetSprite(self.StandRUID)
+					self:FaceTo(self.ResolvedDir)
+					self:StopMovement()
+					local body = self.Entity.RigidbodyComponent
+					if isvalid(body) and math.abs(body.RealMoveVelocity.x) <= 0.001 and math.abs(myX - self.ApproachX) > 0.005 and math.abs(myX - self.ApproachX) <= self.ApproachSnapMax then
+						body:SetWorldPosition(Vector2(self.ApproachX, self.Entity.TransformComponent.WorldPosition.y))
+						log(string.format("[Approach] %s snap x %.3f -> %.3f (stopline)", self.Entity.Name, myX, self.ApproachX))
+					end
+				end
+				return
+			end
+		end
 
 		if self.ResolvedDir == 0 then
 			self:SetSprite(self.StandRUID)

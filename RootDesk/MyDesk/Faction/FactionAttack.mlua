@@ -16,6 +16,9 @@ script FactionAttack extends AttackComponent
 	--    10.0 으로 올리는 곳은 DefenderService.SpawnOne(수비대) · LaneFacilityService.ApplyCombat(시설) 두 군데뿐이다.
 	property number PlayerDamageMul = 1.0
 
+	-- 시설은 기본적으로 회피 가능 공격에서 제외한다. 켜면 시설 공격에도 회피를 적용한다.
+	property boolean EnableFacilityDodge = false
+
 	-- 한 번의 공격이 때릴 수 있는 최대 대상 수 (WO-021). 0 = 무제한(현행 · 포탑 광역). 넘치면 **가까운 순**으로 고른다.
 	-- 🔴 기본값 0 을 바꾸지 마라 — 포탑 광역이 조용히 좁아진다. 헤네시스 억제기 = 3 · 커닝 포탑 = 1.
 	property integer MaxTargets = 0
@@ -416,6 +419,7 @@ script FactionAttack extends AttackComponent
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
 		-- 최종 데미지 = BaseDamage * 공격력 버프 배율 (* 대플레이어 계수). 반사는 고정 피해 그대로.
 		-- ⚠ 반환 타입은 부모와 동일한 integer 여야 한다 (number/int 로 쓰면 시그니처 불일치).
+		if self:IsServer() and self:TryDodgePlayer(attacker, defender) then return 0 end
 		if attackInfo == "reflect" then
 			-- 반사 고정 피해도 플레이어 방어 감산은 받는다 (B4 · Codex 리뷰 2026-09-23).
 			local r = math.max(1, math.floor(self.ReflectDamage))
@@ -446,6 +450,34 @@ script FactionAttack extends AttackComponent
 			return math.floor(full * self.HitPart / self.HitParts) - math.floor(full * (self.HitPart - 1) / self.HitParts)
 		end
 		return full
+	end
+
+	method boolean TryDodgePlayer(Entity attacker, Entity defender)
+		-- 미니언·수비대의 플레이어 공격에 회피 판정을 적용한다. 시설은 별도 속성을 켠 경우만 포함한다.
+		if not isvalid(attacker) or not isvalid(defender) or not isvalid(defender.PlayerComponent) or _StatService == nil or _DamageFormula == nil then return false end
+		if isvalid(self.Entity.LaneFacility) and not self.EnableFacilityDodge then return false end
+		local userId = defender.PlayerComponent.UserId
+		if userId == nil or userId == "" then return false end
+		local stats = _StatService:GetLedger(userId)
+		if stats == nil or stats.final == nil then return false end
+
+		local mobLevel = 1
+		local reward = attacker.FarmReward
+		if isvalid(reward) and reward.SpawnLevel ~= nil and reward.SpawnLevel > 0 then
+			mobLevel = reward.SpawnLevel
+		elseif _MonsterCatalog ~= nil then
+			local minion = attacker.MinionUnit
+			local monsterId = isvalid(minion) and minion.MonsterId or (isvalid(reward) and reward.MonsterId or 0)
+			local level = _MonsterCatalog:GetLevel(monsterId)
+			if level > 0 then mobLevel = level end
+		end
+		local avoid = _DamageFormula:DerivedAvoid(stats.final.dex or 0, stats.final.luk or 0)
+		local playerLevel = math.max(1, math.floor(stats.level or 1))
+		if not _DamageFormula:DodgeCheck(avoid, playerLevel, mobLevel) then return false end
+
+		log("[Stat] DODGE source=" .. tostring(attacker.Name) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " (" .. userId .. ")")
+		_DamageFormula:ShowMiss(defender)
+		return true
 	end
 
 end
