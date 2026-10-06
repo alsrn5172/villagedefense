@@ -1,0 +1,530 @@
+@Logic
+script MinimapController extends Logic
+
+	-- 미니맵 (B · b/minimap · 2026-10-06). 좌상단 HUD: 머리줄 = 맵 이름, 아래 칸 = 발판·줄·사다리 윤곽 + 표식.
+	-- 클라이언트 전용이다. 서버 호출·새 동기화가 없다 — 이미 클라에 있는 엔티티 위치만 읽는다.
+	-- 윤곽은 맵에 들어갈 때 한 번 그리고(FootholdComponent · ClimbableComponent), 위치 표식은 RefreshInterval 마다 옮긴다.
+	-- 표식 색(서로 겹치지 않게 고정): 나 = 노랑 점(맨 위) · 다른 플레이어 = 빨강 점 · 포탈 = 파랑 고리 · 포탑 = 초록 네모 · 상인 = 주황 역삼각형 · 기능 NPC = 흰 타원.
+	-- 몬스터 · 마을/넥서스/보스 표시는 넣지 않는다(2026-10-06 사용자 지시).
+
+	-- 🔌 전체 끄기 스위치 (SkillExecutors.CutsceneWorldVideo 와 같은 방식). false 면 미니맵 UI 를 끄고 아무 계산도 하지 않는다.
+	property boolean MinimapEnabled = true
+
+	property Entity panel = "8aca5880-bfda-4679-99f1-3a599d8158ee"
+
+	property TextGUIRendererComponent titleText = "424e7c00-2adf-4366-8000-cb68ac5ebf76"
+
+	property Entity box = "14be4151-8479-45fb-9134-7233688e7439"
+
+	property SpriteGUIRendererComponent thumb = "ce4ecb6f-4f69-4fe6-9ae7-95611d977d3b"
+
+	property Entity lineTpl = "53cebf94-f853-4778-a878-467799894c7b"
+
+	property Entity portalTpl = "da41beb2-3f6f-4da9-99f1-95317fda49e1"
+
+	property Entity turretTpl = "31d5283f-5d6f-4f57-9dd8-240aeff2a1a5"
+
+	property Entity shopTpl = "780426dc-3dbc-4a7c-b311-ef87d05d45fc"
+
+	property Entity npcTpl = "868803c7-0316-49a9-b58d-72e70418fcfe"
+
+	property Entity otherTpl = "980d37de-a0b2-4106-9063-3bc1021bde49"
+
+	property Entity meDot = "5d3d0f3a-a976-46f0-9631-e69f1c472a0c"
+
+	-- 위치 표식 갱신 주기(초). 0.15 = 초당 약 6.7회.
+	@HideFromInspector
+	property number RefreshInterval = 0.15
+
+	-- 포탈·포탑·NPC 를 다시 찾는 주기(초). 시설·NPC 는 맵 입장 뒤에 생기기도 해서 한 번만 찾으면 빠진다.
+	@HideFromInspector
+	property number ScanInterval = 1
+
+	-- 펼친 높이 / 접은 높이(머리줄만). .ui 의 Minimap 패널 크기와 맞춘다.
+	@HideFromInspector
+	property number OpenHeight = 200
+
+	@HideFromInspector
+	property number FoldedHeight = 36
+
+	-- 칸 안쪽 여백(px). 윤곽이 테두리에 붙지 않게 한다.
+	@HideFromInspector
+	property number BoxPad = 8
+
+	-- 윤곽 선 개수 상한(엔티티 수 안전망).
+	@HideFromInspector
+	property integer MaxLines = 160
+
+	@HideFromInspector
+	property Color TerrainColor = Color(0.74, 0.76, 0.80, 0.95)
+
+	@HideFromInspector
+	property number TerrainWidth = 2
+
+	@HideFromInspector
+	property Color RopeColor = Color(0.56, 0.58, 0.63, 0.95)
+
+	@HideFromInspector
+	property number RopeWidth = 2
+
+	-- 맵 이름은 월드맵 표(WorldMapNodes)의 Label 을 읽기만 한다. 표에 없으면 맵 엔티티 이름.
+	@HideFromInspector
+	property string NodeTableName = "WorldMapNodes"
+
+	@HideFromInspector
+	property boolean folded = false
+
+	@HideFromInspector
+	property string mapId = ""
+
+	@HideFromInspector
+	property number tick = 0
+
+	@HideFromInspector
+	property number scanTick = 0
+
+	@HideFromInspector
+	property boolean scanLogged = false
+
+	@HideFromInspector
+	property any hKey = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 스위치 확인 → 템플릿 숨김 → 접기 키 연결.
+		if not self.MinimapEnabled then
+			if isvalid(self.panel) then self.panel.Enable = false end
+			log("[Minimap] disabled (MinimapEnabled=false)")
+			return
+		end
+		self._T.pools = { line = {}, portal = {}, turret = {}, shop = {}, npc = {}, other = {} }
+		self._T.view = { cx = 0, cy = 0, s = 1, hw = 100, hh = 60 }
+		for _, tpl in ipairs({ self.lineTpl, self.portalTpl, self.turretTpl, self.shopTpl, self.npcTpl, self.otherTpl, self.meDot }) do
+			if isvalid(tpl) then tpl.Enable = false end
+		end
+		if isvalid(self.thumb) then self.thumb.Entity.Enable = false end
+		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		self:ApplyFold()
+		log("[Minimap] begin key=N refresh=" .. tostring(self.RefreshInterval) .. "s scan=" .. tostring(self.ScanInterval) .. "s")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 맵이 바뀌면 윤곽을 다시 그리고, 펼쳐져 있을 때만 표식을 옮긴다.
+		if not self.MinimapEnabled then return end
+		self.tick = self.tick + delta
+		if self.tick < self.RefreshInterval then return end
+		local dt = self.tick
+		self.tick = 0
+		local me = _UserService.LocalPlayer
+		if not isvalid(me) then return end
+		local map = me.CurrentMap
+		if not isvalid(map) then return end
+		if map.Id ~= self.mapId then
+			self:Rebuild(map)
+		end
+		if self.folded then return end
+		self.scanTick = self.scanTick + dt
+		if self.scanTick >= self.ScanInterval then
+			self.scanTick = 0
+			self:ScanStatic(map)
+		end
+		self:UpdatePlayers(map, me)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 접기 키 핸들러 해제.
+		if self.hKey ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.hKey)
+			self.hKey = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- N 키로 접기/펼치기. M 은 월드맵(WorldMapController)이 쓴다. 채팅 입력 중엔 무시(WO-043 과 같은 규칙).
+		if event.key ~= KeyboardKey.N then return end
+		if _ChatService ~= nil and _ChatService.typing then return end
+		self.folded = not self.folded
+		self:ApplyFold()
+		log("[Minimap] folded=" .. tostring(self.folded))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyFold()
+		-- 접으면 지도 칸을 끄고 패널 높이를 머리줄만큼 줄인다(피벗이 위쪽이라 위 모서리는 그대로).
+		if isvalid(self.box) then self.box.Enable = not self.folded end
+		if isvalid(self.panel) and self.panel.UITransformComponent ~= nil then
+			local t = self.panel.UITransformComponent
+			local h = self.OpenHeight
+			if self.folded then h = self.FoldedHeight end
+			t.RectSize = Vector2(t.RectSize.x, h)
+		end
+		if not self.folded then
+			-- 펼치자마자 다음 갱신에서 포탈·NPC 를 다시 찾게 한다.
+			self.scanTick = self.ScanInterval
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ThumbnailRuid(string mapName)
+		-- 🔌 맵별 썸네일 자리. 여기에 맵 이름 → 스프라이트 RUID 를 넣으면 그 맵은 선 윤곽 대신 그림을 깐다.
+		--    그림은 발판 윤곽과 같은 범위(발판·줄 끝점의 최소~최대 좌표)를 꽉 채우는 것으로 본다 — 표식 위치가 그 범위로 계산된다.
+		--    예: ["Henesys_Hunt_HillNorth"] = "<sprite ruid>",
+		local thumbs = {
+		}
+		return thumbs[mapName] or ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method string MapLabel(string mapName)
+		-- WorldMapNodes 표의 Label(한글 이름). 표는 처음 한 번만 읽어 둔다.
+		if self._T.labels == nil then
+			local labels = {}
+			local tbl = _DataService:GetTable(self.NodeTableName)
+			if tbl ~= nil then
+				for i = 1, tbl:GetRowCount() do
+					local n = tbl:GetCell(i, "MapName") or ""
+					local l = tbl:GetCell(i, "Label") or ""
+					if n ~= "" and l ~= "" then labels[n] = l end
+				end
+			else
+				log_warning("[Minimap] dataset not found: " .. self.NodeTableName)
+			end
+			self._T.labels = labels
+		end
+		return self._T.labels[mapName] or mapName
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Rebuild(Entity map)
+		-- 맵 입장: 이름 · 범위 계산 · 윤곽(또는 썸네일)을 새로 깔고 이전 맵의 표식을 지운다.
+		self.mapId = map.Id
+		self.scanLogged = false
+		self.scanTick = self.ScanInterval
+		local mapName = map.Name
+		local label = self:MapLabel(mapName)
+		if isvalid(self.titleText) then self.titleText.Text = label end
+
+		local terrain = self:CollectTerrain(map)
+		self:FitView(map, terrain)
+
+		local ruid = self:ThumbnailRuid(mapName)
+		local useThumb = ruid ~= "" and isvalid(self.thumb)
+		if isvalid(self.thumb) then
+			if useThumb then self.thumb.ImageRUID = ruid end
+			self.thumb.Entity.Enable = useThumb
+		end
+		local used = 0
+		if not useThumb then
+			used = self:DrawTerrain(terrain)
+		end
+		local pools = self._T.pools
+		self:HideFrom(pools.line, used + 1)
+		for _, key in ipairs({ "portal", "turret", "shop", "npc", "other" }) do
+			self:HideFrom(pools[key], 1)
+		end
+		if isvalid(self.meDot) then self.meDot.Enable = false end
+
+		local v = self._T.view
+		log(string.format("[Minimap] build map=%s label=%s platforms=%d ropes=%d lines=%d scale=%.2f thumb=%s",
+			mapName, label, #terrain.platforms, #terrain.ropes, used, v.s, tostring(useThumb)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string PointKey(number x, number y)
+		-- 끝점 이어 붙이기용 키(0.05 단위로 반올림).
+		return tostring(math.floor(x * 20 + 0.5)) .. ":" .. tostring(math.floor(y * 20 + 0.5))
+	end
+
+	@ExecSpace("ClientOnly")
+	method any CollectTerrain(Entity map)
+		-- 발판 = 끝점이 이어진 발판끼리 한 줄(폴리라인)로 묶는다. 세로 벽은 뺀다(맵 양끝 벽이 칸을 가르지 않게).
+		-- 줄·사다리 = ClimbableComponent 상자를 세로선으로. 사다리는 짧은 조각을 쌓아 만든 경우가 많아 같은 x 의 붙은 조각을 합친다.
+		local segs = {}
+		local comps = {}
+		if map.FootholdComponent ~= nil then table.insert(comps, map.FootholdComponent) end
+		for _, c in ipairs(map:GetChildComponentsByTypeName("FootholdComponent", true) or {}) do
+			if c ~= map.FootholdComponent then table.insert(comps, c) end
+		end
+		for _, fhc in ipairs(comps) do
+			---@type FootholdComponent
+			local fc = fhc
+			local all = fc:GetFootholdAll()
+			if all ~= nil then
+				for _, fh in pairs(all) do
+					local a = fh.StartPoint
+					local b = fh.EndPoint
+					if math.abs(a.x - b.x) > 0.01 then
+						table.insert(segs, { a = Vector2(a.x, a.y), b = Vector2(b.x, b.y) })
+					end
+				end
+			end
+		end
+
+		local index = {}
+		for i, s in ipairs(segs) do
+			for _, p in ipairs({ s.a, s.b }) do
+				local k = self:PointKey(p.x, p.y)
+				if index[k] == nil then index[k] = {} end
+				table.insert(index[k], i)
+			end
+		end
+		local used = {}
+		local platforms = {}
+		for i, s in ipairs(segs) do
+			if not used[i] then
+				used[i] = true
+				local pts = { s.a, s.b }
+				for side = 1, 2 do
+					local guard = 0
+					while guard < 2000 do
+						guard = guard + 1
+						local tip = pts[#pts]
+						if side == 2 then tip = pts[1] end
+						local nextIdx = 0
+						for _, j in ipairs(index[self:PointKey(tip.x, tip.y)] or {}) do
+							if not used[j] then nextIdx = j break end
+						end
+						if nextIdx == 0 then break end
+						used[nextIdx] = true
+						local n = segs[nextIdx]
+						local far = n.b
+						if self:PointKey(n.b.x, n.b.y) == self:PointKey(tip.x, tip.y) then far = n.a end
+						if side == 1 then
+							table.insert(pts, far)
+						else
+							table.insert(pts, 1, far)
+						end
+					end
+				end
+				table.insert(platforms, pts)
+			end
+		end
+
+		local pieces = {}
+		for _, c in ipairs(map:GetChildComponentsByTypeName("ClimbableComponent", true) or {}) do
+			local e = c.Entity
+			if isvalid(e) and e.EnabledInHierarchy and e.TransformComponent ~= nil then
+				---@type ClimbableComponent
+				local cc = c
+				local wp = e.TransformComponent.WorldPosition
+				local x = wp.x + cc.BoxOffset.x
+				local cy = wp.y + cc.BoxOffset.y
+				local half = cc.BoxSize.y * 0.5
+				table.insert(pieces, { x = x, kx = math.floor(x * 10 + 0.5), y1 = cy - half, y2 = cy + half })
+			end
+		end
+		-- 정렬 키는 0.1 칸으로 자른 x(같은 사다리의 조각마다 오프셋이 0.01 쯤 달라서) → y. 허용오차 비교는 정렬 함수에 쓰면 안 된다(순서가 어긋나면 table.sort 오류).
+		table.sort(pieces, function(p, q)
+			if p.kx ~= q.kx then return p.kx < q.kx end
+			return p.y1 < q.y1
+		end)
+		local ropes = {}
+		for _, p in ipairs(pieces) do
+			local last = ropes[#ropes]
+			if last ~= nil and last.kx == p.kx and p.y1 <= last.y2 + 0.12 then
+				last.y2 = math.max(last.y2, p.y2)
+			else
+				table.insert(ropes, { x = p.x, y1 = p.y1, y2 = p.y2 })
+			end
+		end
+		return { platforms = platforms, ropes = ropes }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FitView(Entity map, any terrain)
+		-- 윤곽 범위를 고정 칸에 가로세로 비율을 지켜 맞춘다(작은 쪽 배율 · 가운데 정렬).
+		local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+		for _, pts in ipairs(terrain.platforms) do
+			for _, p in ipairs(pts) do
+				minX = math.min(minX, p.x) maxX = math.max(maxX, p.x)
+				minY = math.min(minY, p.y) maxY = math.max(maxY, p.y)
+			end
+		end
+		for _, r in ipairs(terrain.ropes) do
+			minX = math.min(minX, r.x) maxX = math.max(maxX, r.x)
+			minY = math.min(minY, r.y1) maxY = math.max(maxY, r.y2)
+		end
+		if minX > maxX and map.MapComponent ~= nil then
+			-- 발판이 하나도 없는 맵: 맵 경계로 대신한다.
+			local lb, rt = map.MapComponent:GetBound()
+			if lb ~= nil and rt ~= nil then
+				minX, minY, maxX, maxY = lb.x, lb.y, rt.x, rt.y
+			end
+		end
+		if minX > maxX then
+			minX, minY, maxX, maxY = -5, -3, 5, 3
+		end
+		local w = math.max(maxX - minX, 1)
+		local h = math.max(maxY - minY, 1)
+		local bw, bh = 284, 156
+		if isvalid(self.box) and self.box.UITransformComponent ~= nil then
+			local size = self.box.UITransformComponent.RectSize
+			bw, bh = size.x, size.y
+		end
+		local s = math.min((bw - self.BoxPad * 2) / w, (bh - self.BoxPad * 2) / h)
+		self._T.view = { cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5, s = s, hw = bw * 0.5 - 4, hh = bh * 0.5 - 4 }
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 ToUI(number x, number y)
+		-- 월드 좌표 → 칸 가운데 기준 UI px. 칸 밖으로 나가는 표식은 테두리 안쪽에 붙인다.
+		local v = self._T.view
+		local ux = (x - v.cx) * v.s
+		local uy = (y - v.cy) * v.s
+		ux = math.max(-v.hw, math.min(v.hw, ux))
+		uy = math.max(-v.hh, math.min(v.hh, uy))
+		return Vector2(ux, uy)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity PoolGet(any pool, Entity tpl, integer i, string prefix)
+		-- i 번째 표식/선 엔티티. 없으면 템플릿을 복제한다(복제본은 템플릿과 같은 부모 밑에 생긴다).
+		local e = pool[i]
+		if not isvalid(e) then
+			if not isvalid(tpl) then return nil end
+			e = tpl:Clone(prefix .. tostring(i))
+			pool[i] = e
+		end
+		if isvalid(e) and not e.Enable then e.Enable = true end
+		return e
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideFrom(any pool, integer first)
+		-- first 번째부터 남는 엔티티를 끈다(지우지 않고 다음에 다시 쓴다).
+		if pool == nil then return end
+		for i = first, #pool do
+			local e = pool[i]
+			if isvalid(e) and e.Enable then e.Enable = false end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetLine(Entity e, any pts, Color color, number width)
+		-- 선 엔티티의 점을 새로 채운다. 선 엔티티는 칸 가운데에 2×2 로 놓여 있어 점 좌표 = 칸 가운데 기준 px.
+		if not isvalid(e) or e.LineGUIRendererComponent == nil then return end
+		local points = e.LineGUIRendererComponent.Points
+		points:Clear()
+		for _, p in ipairs(pts) do
+			points:Add(LinePoint(self:ToUI(p.x, p.y), color, width))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer DrawTerrain(any terrain)
+		-- 발판 줄 → 줄·사다리 순으로 선을 깐다. 쓴 선 개수를 돌려준다.
+		local pool = self._T.pools.line
+		local n = 0
+		for _, pts in ipairs(terrain.platforms) do
+			if n >= self.MaxLines then break end
+			n = n + 1
+			self:SetLine(self:PoolGet(pool, self.lineTpl, n, "Line_"), pts, self.TerrainColor, self.TerrainWidth)
+		end
+		for _, r in ipairs(terrain.ropes) do
+			if n >= self.MaxLines then break end
+			n = n + 1
+			self:SetLine(self:PoolGet(pool, self.lineTpl, n, "Line_"), { Vector2(r.x, r.y1), Vector2(r.x, r.y2) }, self.RopeColor, self.RopeWidth)
+		end
+		if n >= self.MaxLines then
+			log_warning("[Minimap] line cap reached (" .. tostring(self.MaxLines) .. ") — some terrain not drawn")
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Place(any pool, Entity tpl, string prefix, any positions)
+		-- 위치 목록대로 표식을 놓고 남는 것은 끈다.
+		for i, wp in ipairs(positions) do
+			local e = self:PoolGet(pool, tpl, i, prefix)
+			if isvalid(e) and e.UITransformComponent ~= nil then
+				e.UITransformComponent.anchoredPosition = self:ToUI(wp.x, wp.y)
+			end
+		end
+		self:HideFrom(pool, #positions + 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ScanStatic(Entity map)
+		-- 포탈 · 포탑(LaneFacility Stage=TOWER) · 상인/기능 NPC(VillageNpcInteractor) 위치를 다시 모은다.
+		-- 넥서스(CORE) · 억제기(SUPPRESSOR)는 "마을/넥서스 표시 안 함" 지시에 따라 뺀다.
+		local portals, turrets, shops, npcs = {}, {}, {}, {}
+		for _, c in ipairs(map:GetChildComponentsByTypeName("PortalComponent", true) or {}) do
+			local e = c.Entity
+			if isvalid(e) and e.EnabledInHierarchy and e.TransformComponent ~= nil then
+				---@type PortalComponent
+				local pc = c
+				local wp = e.TransformComponent.WorldPosition
+				table.insert(portals, Vector2(wp.x + pc.BoxOffset.x, wp.y + pc.BoxOffset.y))
+			end
+		end
+		for _, c in ipairs(map:GetChildComponentsByTypeName("script.LaneFacility", true) or {}) do
+			---@type LaneFacility
+			local f = c
+			local e = f.Entity
+			if isvalid(e) and e.EnabledInHierarchy and f.Stage == "TOWER" and e.TransformComponent ~= nil then
+				local wp = e.TransformComponent.WorldPosition
+				table.insert(turrets, Vector2(wp.x, wp.y))
+			end
+		end
+		for _, c in ipairs(map:GetChildComponentsByTypeName("script.VillageNpcInteractor", true) or {}) do
+			---@type VillageNpcInteractor
+			local npc = c
+			local e = npc.Entity
+			if isvalid(e) and e.EnabledInHierarchy and e.TransformComponent ~= nil then
+				local wp = e.TransformComponent.WorldPosition
+				local route = npc.ActionRoute or ""
+				if string.sub(route, 1, 5) == "shop_" then
+					table.insert(shops, Vector2(wp.x, wp.y))
+				else
+					table.insert(npcs, Vector2(wp.x, wp.y))
+				end
+			end
+		end
+		local pools = self._T.pools
+		self:Place(pools.portal, self.portalTpl, "Portal_", portals)
+		self:Place(pools.turret, self.turretTpl, "Turret_", turrets)
+		self:Place(pools.shop, self.shopTpl, "Shop_", shops)
+		self:Place(pools.npc, self.npcTpl, "Npc_", npcs)
+		if not self.scanLogged then
+			self.scanLogged = true
+			log(string.format("[Minimap] scan portals=%d turrets=%d shops=%d npcs=%d", #portals, #turrets, #shops, #npcs))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdatePlayers(Entity map, Entity me)
+		-- 같은 맵의 다른 플레이어 = 빨강 점, 나 = 노랑 점(맨 위 칸 Top 에 있어 항상 위에 그려진다).
+		local users = nil
+		if map.MapComponent ~= nil then
+			users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		end
+		local count = 0
+		if users ~= nil then
+			for _ in pairs(users) do count = count + 1 end
+		end
+		if count == 0 then
+			-- 나도 이 맵에 있으니 정상이면 1명 이상이다. 비면(클라에서 이 API 가 안 채워질 때) 맵 자식의 PlayerComponent 로 찾는다.
+			users = {}
+			for _, pc in ipairs(map:GetChildComponentsByTypeName("PlayerComponent", true) or {}) do
+				table.insert(users, pc.Entity)
+			end
+		end
+		local others = {}
+		for _, u in pairs(users) do
+			if isvalid(u) and u.Id ~= me.Id and u.TransformComponent ~= nil then
+				local wp = u.TransformComponent.WorldPosition
+				table.insert(others, Vector2(wp.x, wp.y))
+			end
+		end
+		self:Place(self._T.pools.other, self.otherTpl, "Other_", others)
+		if isvalid(self.meDot) and me.TransformComponent ~= nil then
+			local wp = me.TransformComponent.WorldPosition
+			if not self.meDot.Enable then self.meDot.Enable = true end
+			self.meDot.UITransformComponent.anchoredPosition = self:ToUI(wp.x, wp.y)
+		end
+	end
+
+end
