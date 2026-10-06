@@ -133,7 +133,7 @@ txt(SBP + '/Help', '재료·소비 아이템만(장비 제외) · 칸을 고르�
 const ST = 'Window/Content/Storage';
 const PANES = [
   { name: 'InvPanel', rect: [134, 218, 428, 369], slot: 'InvSlot_', x0: 168, title: '내 가방', sub: '재료 · 소비', icon: 'ico_bag', iconX: 146, titleX: 182, subRect: [420, 236, 130, 22] },
-  { name: 'StoPanel', rect: [638, 218, 428, 369], slot: 'StoSlot_', x0: 672, title: '마을 창고', sub: '마을 주인 공용', icon: 'ico_home', iconX: 650, titleX: 686, subRect: [924, 236, 130, 22] },
+  { name: 'StoPanel', rect: [638, 218, 428, 369], slot: 'StoSlot_', x0: 672, title: '마을 창고', sub: '마을 주인 전용', icon: 'ico_home', iconX: 650, titleX: 686, subRect: [924, 236, 130, 22] },
 ];
 PANES.forEach((pn) => {
   const P = `${ST}/${pn.name}`;
