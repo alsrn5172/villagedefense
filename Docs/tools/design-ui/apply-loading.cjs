@@ -35,11 +35,10 @@ const b = fs.existsSync(OUT) ? UIBuilder.load(OUT) : new UIBuilder('LoadingGroup
 b.group('LoadingGroup', { default_show: true, group_order: 41, group_type: 1, blocks_raycasts: false, interactable: false });
 b.sprite('BlackBase', { anchor: 'stretch', pos: [0, 0], rect_size: [1920, 1080], image_ruid: RUIDS[keys[0]].ruid, sprite_type: 0, color: '#000000', alpha: 1, raycast: false });
 b.sprite('Background', { anchor: 'stretch', pos: [0, 0], rect_size: [1920, 1080], image_ruid: RUIDS[keys[0]].ruid, sprite_type: 0, color: '#FFFFFF', alpha: 1, raycast: false });
-b.script('Controller', 'script.LoadingScreenController', { anchor: 'stretch', pos: [0, 0], rect_size: [1920, 1080] });
+// LoadingScreenController 는 @Logic 이라 엔티티에 붙이지 않는다(붙여 두면 Maker 가 Reimport 때마다 Controller 엔티티를 지운다 · 2026-10-06 Play 확인).
 b.patchComponent('LoadingGroup', 'MOD.Core.CanvasGroupComponent', { GroupAlpha: 0, BlocksRaycasts: false, Interactable: false });
 b.patch('BlackBase', { display_order: 0 });
 b.patch('Background', { display_order: 1 });
-b.patch('Controller', { display_order: 2 });
 b.write(OUT, {
   bind: {
     mlua: SCRIPT,
