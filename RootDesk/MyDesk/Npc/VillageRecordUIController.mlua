@@ -67,15 +67,9 @@ script VillageRecordUIController extends Logic
 	@HideFromInspector
 	property integer selPlayer = 0
 
-	-- collection 선택·재료 (WO-012 ③)
+	-- collection 선택 (WO-012 ③). 재료는 몬스터마다 서버가 행에 싣는다(공용 다이아 · 꿈의 조각 재화는 이 창에서 안 쓴다 · 사용자 2026-10-06).
 	@HideFromInspector
 	property integer selColl = 0
-
-	@HideFromInspector
-	property any collMat = nil
-
-	@HideFromInspector
-	property integer dream = 0
 
 	@HideFromInspector
 	property boolean hasVillage = true
@@ -112,6 +106,13 @@ script VillageRecordUIController extends Logic
 	property number SparkleBrightness = 1.06
 
 	property Color SparkleGold = Color(0.91, 0.71, 0.27, 1)
+
+	-- 해금 가능한 칸의 노란 테두리 불빛(CollTemplate/Glow) — SparkleHz 와 같은 박자로 알파가 사인파로 깜빡인다.
+	property number GlowMinAlpha = 0.15
+
+	property number GlowMaxAlpha = 0.85
+
+	property Color GlowYellow = Color(1, 0.847, 0.29, 1)
 
 	@HideFromInspector
 	property boolean waiting = false
@@ -312,24 +313,19 @@ script VillageRecordUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RenderCollection(any rows)
-		-- C|id|name|level|monLv|icon|nextCost|mul|nextMul · MAT|itemId|name|have|cost · DREAM|have · NO_VILLAGE → GridView + 푸터.
+		-- C|id|name|level|monLv|icon|nextCost|mul|nextMul|matItemId|matName|matHave|matCost · NO_VILLAGE → GridView + 푸터. (서버가 같이 보내는 공용 MAT · DREAM 행은 이 창에서 쓰지 않는다.)
 		self.collRows = {}
 		self.hasVillage = true
 		local unlocked = 0
 		for _, f in ipairs(rows) do
 			if f[1] == "C" then
 				local monLv = tonumber(f[5]) or 0
-				-- f[10..13] = 이 몬스터 해금 재료(itemId · 이름 · 보유 · 필요 · WO-046) — 없으면(옛 서버) 공용 MAT 행을 쓴다.
-				-- "-" = 그 몬스터는 재료가 없다(모집 대상 아님) → 해금 없음.
+				-- f[10..13] = 이 몬스터 해금 재료(itemId · 이름 · 보유 · 필요 · WO-046). "-" = 그 몬스터는 재료가 없다(모집 대상 아님) → 해금 없음.
 				local mat = nil
 				local noUnlock = (f[10] == "-")
 				if (f[10] or "") ~= "" and not noUnlock then mat = { itemId = f[10], name = f[11] or f[10], have = tonumber(f[12]) or 0, cost = tonumber(f[13]) or 8 } end
 				table.insert(self.collRows, { id = f[2], name = f[3], level = f[4], monLv = monLv, icon = f[6] or "", nextCost = tonumber(f[7]) or 0, mul = f[8] or "1.0", nextMul = f[9] or "1.0", mat = mat, noUnlock = noUnlock })
 				if monLv >= 1 then unlocked = unlocked + 1 end
-			elseif f[1] == "MAT" then
-				self.collMat = { itemId = f[2], name = f[3], have = tonumber(f[4]) or 0, cost = tonumber(f[5]) or 8 }
-			elseif f[1] == "DREAM" then
-				self.dream = tonumber(f[2]) or 0
 			elseif f[1] == "NO_VILLAGE" then
 				self.hasVillage = false
 			end
@@ -386,6 +382,8 @@ script VillageRecordUIController extends Logic
 		self:Show(cell, "LockIcon", not unlocked)
 		self:Show(cell, "Sub", not unlocked)
 		self:Show(cell, "Mul", unlocked)
+		-- 해금할 수 있는 칸만 노란 테두리 불빛(깜빡임은 UpdateCollectionEffects 가 매 프레임)
+		self:SetGlow(cell, canUnlock, self:GlowAlpha())
 		if unlocked then
 			self:SetText(cell, "Mul", "×" .. tostring(r.mul))
 		else
@@ -436,7 +434,7 @@ script VillageRecordUIController extends Logic
 	method boolean CanUnlock(any r)
 		-- 서버 뷰에 담긴 값만 사용해 해금 가능 여부를 판정한다.
 		if r == nil or r.monLv ~= 0 or r.noUnlock or not self.hasVillage then return false end
-		local mat = (r.mat ~= nil) and r.mat or self.collMat
+		local mat = r.mat
 		return mat ~= nil and (mat.have or 0) >= (mat.cost or 8)
 	end
 
@@ -458,6 +456,7 @@ script VillageRecordUIController extends Logic
 	method void RestoreCellEffect(Entity cell)
 		-- 해당 셀의 원래 색을 되돌린다.
 		if not isvalid(cell) or self.sparkleDefaults == nil then return end
+		self:SetGlow(cell, false, self.GlowMinAlpha)
 		local original = self.sparkleDefaults[cell.Id]
 		if original == nil then return end
 		local badge = cell:GetChildByName("LockBadge")
@@ -467,6 +466,25 @@ script VillageRecordUIController extends Logic
 		if isvalid(icon) and isvalid(icon.SpriteGUIRendererComponent) and original.icon ~= nil then icon.SpriteGUIRendererComponent.Color = original.icon end
 		if isvalid(sub) and isvalid(sub.TextGUIRendererComponent) and original.sub ~= nil then sub.TextGUIRendererComponent.FontColor = original.sub end
 		if self.boundCells ~= nil and self.boundCells[cell.Id] ~= nil then self.boundCells[cell.Id].glowing = false end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number GlowAlpha()
+		-- 지금 박자의 불빛 알파(GlowMinAlpha ~ GlowMaxAlpha 를 SparkleHz 사인파로).
+		local wave = (math.sin(self.sparkleElapsed * math.pi * 2 * self.SparkleHz) + 1) * 0.5
+		return self.GlowMinAlpha + (self.GlowMaxAlpha - self.GlowMinAlpha) * wave
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetGlow(Entity cell, boolean on, number alpha)
+		-- 칸의 노란 테두리 불빛(Glow)을 켜고 끈다. 켤 때만 색 + 알파를 쓴다.
+		if not isvalid(cell) then return end
+		local g = cell:GetChildByName("Glow")
+		if not isvalid(g) then return end
+		if g.Enable ~= on then g.Enable = on end
+		if on and isvalid(g.SpriteGUIRendererComponent) then
+			g.SpriteGUIRendererComponent.Color = Color(self.GlowYellow.r, self.GlowYellow.g, self.GlowYellow.b, alpha)
+		end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -491,10 +509,12 @@ script VillageRecordUIController extends Logic
 		if self.boundCells ~= nil then
 			local wave = (math.sin(self.sparkleElapsed * math.pi * 2 * self.SparkleHz) + 1) * 0.5
 			local alpha = self.SparkleMinAlpha + (self.SparkleMaxAlpha - self.SparkleMinAlpha) * wave
+			local glowAlpha = self:GlowAlpha()
 			for id, rec in pairs(self.boundCells) do
 				if rec ~= nil and isvalid(rec.cell) then
 					local r = self.collRows and self.collRows[rec.index + 1] or nil
 					if self:CanUnlock(r) then
+						self:SetGlow(rec.cell, true, glowAlpha)
 						local badge = rec.cell:GetChildByName("LockBadge")
 						local icon = rec.cell:GetChildByName("LockIcon")
 						if isvalid(badge) and isvalid(badge.SpriteGUIRendererComponent) then badge.SpriteGUIRendererComponent.Color = Color(self.SparkleGold.r, self.SparkleGold.g, self.SparkleGold.b, alpha) end
@@ -569,8 +589,8 @@ script VillageRecordUIController extends Logic
 	method void UpdateFooter()
 		-- 선택한 몬스터의 필요 재료 · 버튼 문구/활성.
 		local r = self.collRows and self.collRows[self.selColl] or nil
-		-- 해금 재료 = 고른 몬스터의 재료(행마다 · WO-046). 행에 없으면 공용 MAT 행.
-		local m = (r ~= nil and r.mat ~= nil) and r.mat or self.collMat
+		-- 해금 재료 = 고른 몬스터의 재료(행마다 · WO-046). 공용 다이아 · 꿈의 조각 재화는 이 창에서 보이지 않는다(사용자 2026-10-06).
+		local m = (r ~= nil) and r.mat or nil
 		local matName = (m ~= nil) and m.name or "재료"
 		local matHave = (m ~= nil) and m.have or 0
 		local matCost = (m ~= nil) and m.cost or 8
@@ -578,24 +598,14 @@ script VillageRecordUIController extends Logic
 		local locked = (r ~= nil and r.monLv < 1)
 		local owned = (r ~= nil and r.monLv >= 1)
 		local can = self:CanUnlock(r)
-		-- 세 모양: 안 골랐을 때(안내 + 보유 재화 칩) · 해금 안 된 몬스터(이름 + 해금 비용 칩) · 해금된 몬스터(이름 + 초록 요약 한 줄)
+		-- 세 모양: 안 골랐을 때(안내 한 줄 · 재화 칩 없음) · 해금 안 된 몬스터(이름 + 그 몬스터 재료 비용 칩) · 해금된 몬스터(이름 + 초록 요약 한 줄)
 		self:Show(f, "StateHint", r == nil)
 		self:Show(f, "SelName", r ~= nil)
 		self:Show(f, "StateLocked", locked)
 		if isvalid(self.costLabel) then self.costLabel.Entity.Enable = owned end
-		if r == nil then
-			-- 몬스터마다 재료가 다르면(WO-046) 고르기 전엔 공용 재화 칸(예전 다이아몬드)을 감추고 꿈의 조각만 보인다.
-			local perRow = (self.collRows ~= nil and self.collRows[1] ~= nil and (self.collRows[1].mat ~= nil or self.collRows[1].noUnlock))
-			self:Show(f, "StateHint/HoldPlate/GemIcon", not perRow)
-			self:Show(f, "StateHint/HoldPlate/GemNum", not perRow)
-			self:SetText(f, "StateHint/HoldPlate/GemNum", tostring(matHave))
-			self:SetText(f, "StateHint/HoldPlate/DreamNum", tostring(self.dream))
-			local matItem = (self.collMat ~= nil) and self.collMat.itemId or ""
-			self:SetIcon(f, "StateHint/HoldPlate/GemIcon", self:ItemIcon(matItem))
-			self:SetIcon(f, "StateHint/HoldPlate/DreamIcon", self:ItemIcon("DREAM_PIECE"))
-		else
+		if r ~= nil then
 			local selKo = string.match(r.name, "^(.-)%s*%(")
-				self:SetText(f, "SelName", (selKo ~= nil and selKo ~= "") and selKo or r.name)
+			self:SetText(f, "SelName", (selKo ~= nil and selKo ~= "") and selKo or r.name)
 			if locked and r.noUnlock then
 				-- 재료가 없는 몬스터(모집 대상 아님 · WO-046): 해금 없음 · 버튼 끔.
 				self:SetIcon(f, "StateLocked/CostPlate/MatIcon", "")

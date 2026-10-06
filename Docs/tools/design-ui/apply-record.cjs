@@ -14,6 +14,8 @@ const b = S.open(WORLD, 'VillageRecordGroup');
 const before = b.listEntities().length;
 const C = S.COLOR;
 const GRID = 'MOD.Core.GridViewComponent';
+const ROUND = 'f5e5fbd6dd224f2d8a5af320436b95f0'; // 흰 둥근사각 9-slice(틴트용 · 테두리 14)
+const GLOW_COLOR = '#FFD84A';                      // 해금 가능 칸 불빛 노랑(컨트롤러 GlowYellow 와 같은 값)
 
 // ── 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h · 1200x900 캔버스) ──
 const WIN = [110, 110, 980, 720];
@@ -92,6 +94,9 @@ b.patchComponent(CO + '/CollGrid', GRID, {
   S.button(b, T, { normal: 'panel_row', hover: 'panel_row_hover', pressed: 'panel_row_hover' });
   img(T + '/Sel', 'panel_row_selected', L, L, { enable: false });
   img(T + '/Locked', 'panel_row_locked', L, L, { enable: false });
+  // 해금할 수 있는 칸의 노란 테두리 불빛(2026-10-06): 칸 크기의 노란 고리(흰 둥근사각 9-slice 틴트 · 가운데 비움). 평소 꺼 둔다 — 컨트롤러가 켜고 알파를 사인파로 깜빡인다. 클릭은 통과.
+  b.sprite(T + '/Glow', { anchor: 'middle-center', pos: [0, 0], rect_size: [L[2], L[3]], pivot: [0.5, 0.5], image_ruid: ROUND, sprite_type: 1, color: GLOW_COLOR, alpha: 0.15, raycast: false, enable: false });
+  b.patchComponent(T + '/Glow', S.SPR, { FillCenter: false });
   img(T + '/Slot', 'slot_frame', [43.5, 9, 52, 52], L);
   img(T + '/SlotLocked', 'slot_frame_locked', [43.5, 9, 52, 52], L, { enable: false });
   ctr(T + '/Icon', [49.5, 15, 40, 40], L);
@@ -101,12 +106,13 @@ b.patchComponent(CO + '/CollGrid', GRID, {
   // 해금: 도감 레벨 5칸 눈금 + 금색 배율
   for (let k = 0; k < 5; k++) img(`${T}/Seg${k + 1}`, 'gauge_seg_off', [33 + 15 * k, 97, 13, 13], L);
   txt(T + '/Mul', '×1.0', [39.75, 111, 60, 18], L, { font: 'FootballB', size: 13, color: C.gold });
-  // 잠김: 자물쇠 + "잠김 · Lv N"(기존 Sub 를 이 자리로)
-  lab(T + '/Sub', [48, 97, 86, 18], L, { font: 'Noto700', size: 13, color: C.faint, h: 'left' });
-  img(T + '/LockIcon', 'icon_lock', [30.5, 99, 14, 14], L, { enable: false });
-  // 그리기 순서: 덮개 · 틀은 그림 · 글자 뒤(맨 뒤) — Locked 보다 Sel 이 앞
+  // 잠김: 자물쇠 + "잠김 · Lv N"(기존 Sub 를 이 자리로). 자물쇠를 왼쪽 끝(x 10)으로 · 글자 상자는 한 줄에 들어가게 넓게(108 · 2026-10-06).
+  lab(T + '/Sub', [27, 97, 108, 18], L, { font: 'Noto700', size: 13, color: C.faint, h: 'left' });
+  img(T + '/LockIcon', 'icon_lock', [10, 99, 14, 14], L, { enable: false });
+  // 그리기 순서: 덮개 · 틀은 그림 · 글자 뒤(맨 뒤) — Locked 보다 Sel 이 앞 · 불빛(Glow)은 그 둘 바로 뒤(이름 · 틀 · 글자는 불빛 위)
   S.before(b, T + '/Slot', T + '/Icon');
   S.before(b, T + '/SlotLocked', T + '/Icon');
+  S.before(b, T + '/Glow', T + '/Name');
   S.back(b, T + '/Sel');
   S.back(b, T + '/Locked'); // 순서 주의: 나중에 보낸 것이 더 뒤 → Locked 가 맨 뒤, Sel 이 그 앞(잠긴 칸을 골라도 금테가 보이게)
 }
@@ -150,8 +156,9 @@ txt(F + '/BtnPrimary/DoneLabel', '해금됨', [915, 756, 100, 34], BTN, { font: 
   // 🔴 칩 크기 규칙(5차 · skin.cjs): 재화 숫자는 네 자리("9,999" Football 18 · 49 → 칸 48)까지. 판 폭 = 8 + 아이콘 30 + 4 + 숫자 칸 + 8 + 아이콘 30 + 4 + 숫자 칸 + 14 = 190 (오른쪽 끝 784.5 고정).
   const HW = 8 + 30 + 4 + 48 + 8 + 30 + 4 + 48 + 14;
   const HP = [784.5 - HW, 746.5, HW, 48];
-  img(H + '/HoldPlate', 'plate_dark', HP, FOOT);
-  // 재화 그림 칸(지역재화 · 꿈의 조각)은 런타임에 원작 아이콘을 넣는다 — 칸 크기만 잡는다
+  // 🔴 보유 재화 칩(다이아 · 꿈의 조각)은 끈다(사용자 2026-10-06 · 도감 창은 그 몬스터의 재료만 보인다) — 컨트롤러도 더는 안 건드린다.
+  img(H + '/HoldPlate', 'plate_dark', HP, FOOT, { enable: false });
+  // (끈 칩의 자리 잡기 값 — 지금은 안 보인다)
   img(H + '/HoldPlate/GemIcon', 'icon_info_exp', [HP[0] + 8, 755.5, 30, 30], HP, { enable: false });
   txt(H + '/HoldPlate/GemNum', '0', [HP[0] + 42, 758, 48, 25], HP, { font: 'FootballB', size: 18, color: C.ivory, h: 'left' });
   img(H + '/HoldPlate/DreamIcon', 'icon_info_exp', [HP[0] + 98, 755.5, 30, 30], HP, { enable: false });
