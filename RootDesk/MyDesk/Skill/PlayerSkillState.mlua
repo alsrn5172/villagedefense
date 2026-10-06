@@ -52,7 +52,15 @@ script PlayerSkillState extends Logic
     --   · 전직 · 차수 상승(ForfeitOldTierSp) 때 남은 초보자 SP 를 없애지 않는다
     --   · 어느 직업 · 차수든 초보자 스킬(ReqTier 0)을 초보자 SP 로 배운다(RequestLearn)
     --   1 · 2 · 3 차 SP 규칙(독립 · 모아 두기 없음 · 차수가 오르면 이전 차수 몫 소멸)은 그대로다. false = 예전처럼 0 차도 소멸.
+    --   → 2026-10-06 PastTierSpKept 가 이 예외를 모든 차수로 넓혔다(아래). 초보자 스킬을 어느 직업에서든 배우는 것(CheckRequirements)은 이 값이 그대로 맡는다.
     property boolean NoviceSpKeptAcrossJobs = true
+
+    -- 지난 차수 SP 유지(b/skill-tier-sp-keep · A 결정 #40 6011071575 · 2026-10-06 "SP 는 차수마다 분리하고 서로 영향을 주지 않는다 · 전직해도 이전 차수 SP 는 없어지지 않고
+    --   그 차수 스킬에 계속 쓸 수 있다"): 위 47 행 · 54 행의 "차수가 오르면 이전 차수 몫 소멸" 을 바꾼다.
+    --   · 전직 · 차수 상승(ForfeitOldTierSp) 때 0 ~ 3 차 남은 SP 를 모두 지갑에 남긴다(지갑이 차수 몫 합보다 많을 때만 그 넘침을 없앤다 — 차수 몫이 새지 않게)
+    --   · 스킬 ReqTier ≤ 지금 차수면 그 차수 남은 SP(TierSpLeft)로 배운다(RequestLearn · 스킬 창 "+" PlusBlockReason)
+    --   · 차수끼리 옮겨 쓰지는 않는다(1 차 SP 로 2 차 스킬 안 됨 · 배우기는 늘 그 스킬 차수 몫으로만). false = 예전(초보자만 예외 · 1 ~ 3 차는 소멸).
+    property boolean PastTierSpKept = true
 
     -- 초보자 액티브 스킬(ReqTier 0 · Behavior ≠ PASSIVE)인데 지금 직업에 누를 슬롯 키가 없으면(SkillHotbar.HasCastKey) 못 올린다 —
     --   전직 뒤 달팽이 세마리(Q 가 직업 스킬로 바뀐다)에 SP 를 쓰면 쓸 수 없는 레벨만 남기 때문(사용자 2026-10-05). 스킬 id 를 적지 않고 표(Behavior · ReqTier)와 슬롯 표로 정한다.
@@ -270,13 +278,16 @@ script PlayerSkillState extends Logic
         if e == nil then return end
         local wallet = math.floor(e.sp or 0)
         local keep = 0
-        for t = newTier, self.MaxTier do
+        -- PastTierSpKept(2026-10-06 · A 결정 6011071575): 지난 차수(1 ~ newTier−1) 남은 SP 도 남긴다 — 0 차는 아래 초보자 줄이 센다.
+        local firstKept = newTier
+        if self.PastTierSpKept then firstKept = 1 end
+        for t = firstKept, self.MaxTier do
             local left = self:TierSpLeft(userId, t)
             if left > 0 then keep = keep + left end
         end
-        -- 초보자(0 차) 남은 SP 는 남긴다(NoviceSpKeptAcrossJobs · A 구두 승인 2026-10-05 · 0 차만).
+        -- 초보자(0 차) 남은 SP 는 남긴다(NoviceSpKeptAcrossJobs · A 구두 승인 2026-10-05 · PastTierSpKept 면 늘).
         local noviceKeep = 0
-        if self.NoviceSpKeptAcrossJobs and newTier > 0 then
+        if (self.NoviceSpKeptAcrossJobs or self.PastTierSpKept) and newTier > 0 then
             noviceKeep = self:TierSpLeft(userId, 0)
             if noviceKeep > 0 then keep = keep + noviceKeep else noviceKeep = 0 end
         end
@@ -389,7 +400,8 @@ script PlayerSkillState extends Logic
         u.jobId = newJobId
         u.tier = newTier
         log("[Skill] JOB " .. prev .. " -> " .. newJobId .. "/" .. tostring(newTier) .. " (level " .. tostring(self:GetLevel(userId)) .. ") " .. userId)
-        -- 차수별 SP(b/skill-novice-snails): 차수가 오르면 이전 차수 SP 를 없앤다. DEV 전환(DevSetJobState)은 이 경로를 안 탄다.
+        -- 차수별 SP(b/skill-novice-snails): 차수가 오르면 지갑을 차수 몫에 맞춘다. 2026-10-06 PastTierSpKept 부터 지난 차수 몫은 남고(forfeit = 지갑 − 0 ~ 3 차 남은 SP 합) 넘침만 없앤다.
+        --   DEV 전환(DevSetJobState)은 이 경로를 안 탄다.
         if self.TierSpEnabled and newTier > prevTier then
             self:ForfeitOldTierSp(userId, newTier)
         end
@@ -504,9 +516,11 @@ script PlayerSkillState extends Logic
         --   예외: 초보자 스킬(0 차)은 어느 차수에서든 초보자 SP 로 배운다(NoviceSpKeptAcrossJobs · A 구두 승인 2026-10-05).
         local spCost = math.floor(skill.spCost)
         local skillTier = math.floor(skill.requiredTier)
+        --   2026-10-06 PastTierSpKept(A 결정 6011071575): 지난 차수 스킬(ReqTier < 지금 차수)도 그 차수 남은 SP 로 배운다. 앞 차수(ReqTier > 지금)는 CanLearn 이 이미 막는다.
         if self.TierSpEnabled then
             local noviceAnyTier = self.NoviceSpKeptAcrossJobs and skillTier == 0
-            if skillTier ~= u.tier and not noviceAnyTier then
+            local pastTierOk = self.PastTierSpKept and skillTier < u.tier
+            if skillTier ~= u.tier and not noviceAnyTier and not pastTierOk then
                 self:LearnResult(skillId, false, "per-tier SP: only tier " .. tostring(u.tier) .. " skills now (this is tier " .. tostring(skillTier) .. ")", uid)
                 return
             end
