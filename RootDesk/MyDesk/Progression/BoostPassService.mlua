@@ -1,0 +1,222 @@
+@Logic
+script BoostPassService extends Logic
+
+	-- 이용권 상점 (WO-053 · 계약 A-2-29 BoostProduct · §0-5 AccountProfile v6).
+	--   · 월드코인 상품(ITEM 타입) 1/3/7일권 → 계정 경험치 + 발록의 심장 **2배**(매치 순위 보상만 · RankRewardService 가 BoostMul 을 곱한다).
+	--   · 지급 = _WorldShopService:SetProcessPurchaseCallback. 🔴 **월드에 하나뿐**이다 — 다른 곳에서 또 등록하면 이쪽이 덮인다.
+	--     나중에 다른 상품이 생기면 여기서 ProductId 로 분기한다.
+	--   · 🔴 `true` 는 **저장 확정 뒤에만**. 로드 전 · 저장 실패 · 모르는 상품 · PurchaseId 없음 = `false` → 플랫폼이 다음 접속 때 다시 부른다.
+	--   · 🔴 처리한 PurchaseId 를 계정에 남긴다(최근 20개). 같은 결제가 다시 와도 기간을 또 늘리지 않는다(이어 붙임 방식이라 두 번 오면 두 배가 된다).
+	--   · 사용 중에 또 사면 남은 기간 뒤에 이어 붙인다. 시각 = DateTime.UtcNow.Elapsed(ms · 룸 · 재시작을 넘는 절대 시각).
+	--   · Maker 구매는 코인이 안 빠지고 LogPurchaseInfo 도 안 남는다 — 실결제는 출시 월드에서 사람이 확인한다(WO-053 §6-2).
+
+	property string TableName = "BoostProduct"
+
+	-- 하루 ms. 기간 = Days × 이 값.
+	property integer DayMs = 86400000
+
+	-- 이용권이 켜져 있을 때 순위 보상 배율.
+	property integer BoostMultiplier = 2
+
+	-- 처리한 PurchaseId 를 몇 개까지 기억하나(오래된 것부터 버린다).
+	property integer KeepPurchaseIds = 20
+
+	-- 상품 대조(GetProductAndWait)를 월드 시작 몇 초 뒤에 하나.
+	property number VerifyDelaySec = 3.0
+
+	-- byId[productId] = { productId, days, price } · rows = 표 순서(Enabled 행만)
+	@HideFromInspector
+	property any byId = nil
+
+	@HideFromInspector
+	property any rows = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 표를 읽고 결제 콜백을 건다. 상품 대조는 조금 뒤에(시작을 막지 않게).
+		self:EnsureLoaded()
+		_WorldShopService:SetProcessPurchaseCallback(self.ProcessPurchase)
+		log("[Boost] purchase callback registered")
+		_TimerService:SetTimerOnce(function() self:VerifyProducts() end, self.VerifyDelaySec)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnsureLoaded()
+		-- BoostProduct 적재 (1-based · 행 수 로그). ProductId 가 비었거나 Enabled=false 인 행은 뺀다.
+		if self.loaded then return end
+		self.loaded = true
+		self.byId = {}
+		self.rows = {}
+		local t = _DataService:GetTable(self.TableName)
+		if t == nil then
+			log_warning("[Boost] dataset not found: " .. self.TableName .. " — 이용권 판매 없음")
+			return
+		end
+		local total = t:GetRowCount()
+		for i = 1, total do
+			local pid = tostring(t:GetCell(i, "ProductId") or "")
+			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "false")) == "true"
+			local days = math.floor(tonumber(tostring(t:GetCell(i, "Days") or "")) or 0)
+			local price = math.floor(tonumber(tostring(t:GetCell(i, "Price") or "")) or 0)
+			if enabled and pid ~= "" and days >= 1 then
+				local row = { productId = pid, days = days, price = price }
+				self.byId[pid] = row
+				table.insert(self.rows, row)
+			end
+		end
+		log("[Boost] BoostProduct " .. tostring(total) .. "행 로드 · 판매 " .. tostring(#self.rows) .. "행")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void VerifyProducts()
+		-- 표 가격(표시용 사본)을 플랫폼 상품과 한 번 대조한다. 결제 가격의 정본은 크리에이터 센터다.
+		self:EnsureLoaded()
+		for _, r in ipairs(self.rows) do
+			local ok, p = pcall(function() return _WorldShopService:GetProductAndWait(r.productId) end)
+			if not ok or p == nil then
+				log_warning("[Boost] product lookup failed " .. r.productId .. " : " .. tostring(p))
+			else
+				local same = (math.floor(p.Price) == r.price)
+				local line = "[Boost] product " .. r.productId .. " name=" .. tostring(p.Name) .. " price=" .. tostring(p.Price) ..
+					" status=" .. tostring(p.Status) .. " type=" .. tostring(p.Type) .. " days=" .. tostring(r.days)
+				if same then
+					log(line .. " 표 일치")
+				else
+					log_warning(line .. " 🔴 표 가격 " .. tostring(r.price) .. " 와 다름")
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer NowMs()
+		-- 룸 · 월드 재시작을 넘는 절대 시각(ms). ServerElapsedSeconds 는 룸마다 0 부터라 쓰지 않는다.
+		return DateTime.UtcNow.Elapsed
+	end
+
+	-- ── 결제 콜백 ────────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method boolean ProcessPurchase(any info)
+		-- 플랫폼이 부르는 결제 콜백. 예외는 전부 false(= 지급 안 됨 → 다음 접속 때 다시 온다).
+		if info == nil then
+			log_error("[Boost] purchase info nil — false")
+			return false
+		end
+		local userId = tostring(info.UserId or "")
+		local productId = tostring(info.ProductId or "")
+		local purchaseId = tostring(info.PurchaseId or "")
+		log("[Boost] purchase in user=" .. userId .. " pid=" .. productId .. " pc=" .. purchaseId .. " order=" .. tostring(info.OrderNumber))
+		local ok, result = pcall(function() return self:Grant(userId, productId, purchaseId, info) end)
+		if not ok then
+			log_error("[Boost] grant error user=" .. userId .. " pid=" .. productId .. " pc=" .. purchaseId .. " : " .. tostring(result))
+			return false
+		end
+		return result == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean Grant(string userId, string productId, string purchaseId, any info)
+		-- 지급 본체. 🔴 저장이 확정돼야 true. 테스트에서 info 없이(nil) 바로 부를 수 있게 분리했다.
+		self:EnsureLoaded()
+		local row = (self.byId ~= nil) and self.byId[productId or ""] or nil
+		if row == nil then
+			-- 남의 상품을 삼키지 않는다 — 다른 상품이 생겼는데 분기를 안 넣었으면 여기서 막힌다.
+			log_error("[Boost] unknown product pid=" .. tostring(productId) .. " user=" .. tostring(userId) .. " — false")
+			return false
+		end
+		if purchaseId == nil or purchaseId == "" then
+			log_error("[Boost] empty PurchaseId user=" .. tostring(userId) .. " pid=" .. productId .. " — 중복 판별 불가라 false")
+			return false
+		end
+		if _AccountData == nil or not _AccountData:IsLoaded(userId) then
+			log_warning("[Boost] account not loaded user=" .. tostring(userId) .. " pc=" .. purchaseId .. " — false(다음 접속 때 다시)")
+			return false
+		end
+		if _AccountData:HasBoostPurchase(userId, purchaseId) then
+			-- 지급 · 저장은 끝났는데 true 가 플랫폼에 못 닿은 경우. 기간을 또 늘리지 않는다.
+			log("[Boost] dup user=" .. userId .. " pc=" .. purchaseId .. " — 이미 지급(true)")
+			return true
+		end
+
+		local now = self:NowMs()
+		local oldUntil = _AccountData:GetBoostUntilMs(userId)
+		local oldIds = _AccountData:GetBoostPurchaseIds(userId)
+		local newUntil = math.max(now, oldUntil) + row.days * self.DayMs
+		local newIds = self:AppendId(oldIds, purchaseId)
+
+		-- 원장에 쓰고 되읽어 확인(WO-022 구멍 6 패턴).
+		if not _AccountData:SetBoost(userId, newUntil, newIds) or _AccountData:GetBoostUntilMs(userId) ~= newUntil then
+			log_error("[Boost] ledger write failed user=" .. userId .. " pc=" .. purchaseId .. " — false")
+			_AccountData:SetBoost(userId, oldUntil, oldIds)
+			return false
+		end
+
+		-- 🔴 동기 저장. 실패하면 되돌리고 false — 확정 못 한 지급을 true 로 보내면 유저가 돈 내고 잃는다.
+		local saved = false
+		if _PlayerDBManager ~= nil then saved = _PlayerDBManager:FlushUserAndWait(userId) end
+		if not saved then
+			_AccountData:SetBoost(userId, oldUntil, oldIds)
+			log_error("[Boost] save failed user=" .. userId .. " pc=" .. purchaseId .. " — 되돌림 · false")
+			return false
+		end
+
+		if info ~= nil then
+			-- Maker 에서는 동작하지 않는다(문서). 기록 실패가 지급을 막지 않게 감싼다.
+			local okLog, errLog = pcall(function()
+				_LogStorageService:LogPurchaseInfo(info, "boost ok days=" .. tostring(row.days) .. " until=" .. tostring(newUntil))
+			end)
+			if not okLog then log_warning("[Boost] LogPurchaseInfo failed : " .. tostring(errLog)) end
+		end
+		log("[Boost] ok user=" .. userId .. " pid=" .. productId .. " pc=" .. purchaseId ..
+			" order=" .. tostring(info ~= nil and info.OrderNumber or "-") .. " days=" .. tostring(row.days) ..
+			" until " .. tostring(oldUntil) .. " -> " .. tostring(newUntil) .. " (now=" .. tostring(now) .. ")")
+		self:PushState(userId, row.days)
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method string AppendId(string ids, string purchaseId)
+		-- 쉼표 목록 뒤에 붙이고 최근 KeepPurchaseIds 개만 남긴다.
+		local list = {}
+		for id in string.gmatch(ids or "", "([^,]+)") do table.insert(list, id) end
+		table.insert(list, purchaseId)
+		while #list > self.KeepPurchaseIds do table.remove(list, 1) end
+		return table.concat(list, ",")
+	end
+
+	-- ── 배율 · 상태 ──────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method integer BoostMul(string userId)
+		-- 지금 이용권이 켜져 있으면 BoostMultiplier, 아니면 1. 순위 보상 정산 순간에 부른다(경험치 · 심장 둘 다 이 값).
+		if _AccountData == nil or userId == nil or userId == "" then return 1 end
+		if _AccountData:GetBoostUntilMs(userId) > self:NowMs() then return self.BoostMultiplier end
+		return 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer LeftMs(string userId)
+		-- 남은 ms(0 = 없음).
+		if _AccountData == nil then return 0 end
+		return math.max(0, _AccountData:GetBoostUntilMs(userId) - self:NowMs())
+	end
+
+	@ExecSpace("Server")
+	method void RequestState()
+		-- 상점 창이 열릴 때 클라가 부른다.
+		self:PushState(senderUserId, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushState(string userId, integer boughtDays)
+		-- 남은 시간을 그 유저 창에 보낸다. boughtDays > 0 이면 방금 산 것(시작 알림).
+		if userId == nil or userId == "" then return end
+		local left = self:LeftMs(userId)
+		if _BoostShopUIController ~= nil then _BoostShopUIController:SetState(left, boughtDays, userId) end
+	end
+
+end

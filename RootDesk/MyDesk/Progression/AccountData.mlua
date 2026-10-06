@@ -39,6 +39,8 @@ script AccountData extends Logic
 				autoApOff = false,       -- 레벨업 자동 AP 분배 끄기 (WO-050 §2-3 · v5)
 				titles = "",             -- 보유 칭호 TitleId 쉼표 목록 (WO-031 묶음 5 · v4)
 				title = "",              -- 장착 칭호 TitleId · "" = 없음 (v4)
+				boostUntil = 0,          -- 이용권 만료 절대 ms · 0 = 없음 (WO-053 · v6)
+				boostIds = "",           -- 처리한 결제 PurchaseId 쉼표 목록(최근 20개 · v6)
 				isSaveDB = false,      -- 더티 플래그. 바뀐 게 있을 때만 저장한다 (Credit 절약)
 				saveGeneration = 0,    -- 모든 setter 가 +1. 저장 왕복 중 setter 를 감지하는 장치
 				loaded = false,        -- 🔴 저장소에서 채워지기 전에는 값이 "기본값"일 뿐 진짜가 아니다
@@ -101,6 +103,8 @@ script AccountData extends Logic
 		u.autoApOff = profile.account_autoApOff == true
 		u.titles = profile.account_titles
 		u.title = profile.account_title
+		u.boostUntil = profile.account_boostUntilMs
+		u.boostIds = profile.account_boostPurchaseIds
 		-- 장착 칭호는 반드시 보유 목록 안(Codex 리뷰 2026-09-26 — 깨진 저장본이 안 가진 칭호를 이름표에 띄우지 않게).
 		if (u.title or "") ~= "" then
 			local owned = false
@@ -126,7 +130,7 @@ script AccountData extends Logic
 		end
 		u.loaded = true
 		log("[AcctData] loaded " .. userId .. " lv=" .. tostring(u.level) .. " heart=" .. tostring(u.balrogHeart) ..
-			" free=" .. tostring(u.freeHeart) .. " freeAt=" .. tostring(u.freeAtMs))
+			" free=" .. tostring(u.freeHeart) .. " freeAt=" .. tostring(u.freeAtMs) .. " boostUntil=" .. tostring(u.boostUntil))
 		return true
 	end
 
@@ -158,6 +162,8 @@ script AccountData extends Logic
 		profile.account_autoApOff = u.autoApOff == true
 		profile.account_titles = u.titles or ""
 		profile.account_title = u.title or ""
+		profile.account_boostUntilMs = u.boostUntil or 0
+		profile.account_boostPurchaseIds = u.boostIds or ""
 
 		local t = {}
 		profile:Serialize(t)
@@ -419,6 +425,47 @@ script AccountData extends Logic
 		if v ~= "" and not self:HasTitle(userId, v) then return false end
 		if (u.title or "") == v then return true end
 		u.title = v
+		self:Touch(u)
+		return true
+	end
+
+	-- ── 이용권 (WO-053 · SchemaVersion 6 · account_boostUntilMs / account_boostPurchaseIds) ──
+
+	@ExecSpace("ServerOnly")
+	method integer GetBoostUntilMs(string userId)
+		-- 이용권 만료 절대 ms. 0 = 없음. 켜졌는지는 BoostPassService 가 지금 시각과 비교해 판단한다.
+		local u = self:EnsureUser(userId)
+		return u ~= nil and (u.boostUntil or 0) or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetBoostPurchaseIds(string userId)
+		-- 처리한 결제 PurchaseId 쉼표 목록.
+		local u = self:EnsureUser(userId)
+		return u ~= nil and (u.boostIds or "") or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HasBoostPurchase(string userId, string purchaseId)
+		-- 이 결제를 이미 처리했나.
+		if purchaseId == nil or purchaseId == "" then return false end
+		for id in string.gmatch(self:GetBoostPurchaseIds(userId), "([^,]+)") do
+			if id == purchaseId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SetBoost(string userId, integer untilMs, string purchaseIds)
+		-- 만료 시각과 처리 목록을 함께 쓴다. 🔴 **둘은 한 쌍이다** — 따로 쓰면 "기간은 늘었는데 처리 기록이 없는" 상태가 생겨
+		--    같은 결제가 다시 오면 기간이 두 번 늘어난다. 반환 = 원장에 들어갔나(로드 전이면 false).
+		local u = self:EnsureUser(userId)
+		if not self:CanWrite(userId, u) then return false end
+		local a = math.max(0, math.floor(untilMs))
+		local ids = purchaseIds or ""
+		if (u.boostUntil or 0) == a and (u.boostIds or "") == ids then return true end
+		u.boostUntil = a
+		u.boostIds = ids
 		self:Touch(u)
 		return true
 	end
