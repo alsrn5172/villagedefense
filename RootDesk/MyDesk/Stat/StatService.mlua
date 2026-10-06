@@ -40,6 +40,14 @@ script StatService extends Logic
 
 	property number BaseJumpForce = 0.9
 
+	-- 맨손(무기 칸 비움) 기본 공격 안내(사용자 2026-10-06 "맨손 기본 공격은 피해 0 + 토스트"): 같은 사람에게 이 간격(초) 안에는 다시 안 띄운다.
+	property number UnarmedToastGap = 2
+
+	property string UnarmedToastText = "무기를 장착해야 공격할 수 있어요"
+
+	@HideFromInspector
+	property any unarmedToastAt = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 원장 준비 + 직업표 로드(없으면 NOVICE 폴백만).
@@ -493,12 +501,38 @@ script StatService extends Logic
 		return _DamageFormula:CalcRange(sv, u.final.attack or 0, u.mastery)
 	end
 
+	method boolean IsUnarmed(string userId)
+		-- 무기 칸이 비었나(장착 기준 · 외형 아님). SkillCaster.HasWeapon 과 같은 판정. 장비 서비스가 없으면 false(막지 않는다).
+		if userId == nil or userId == "" or _EquipService == nil then return false end
+		local e = _EquipService:EnsureUser(userId)
+		if e == nil then return false end
+		return _EquipService:EquippedItemId(userId, e, "WEAPON") == ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void NoteUnarmed(string userId)
+		-- 맨손으로 기본 공격을 눌렀다 → 안내 토스트(UnarmedToastGap 초에 한 번). PlayerMotion · CalcPlayerDamage 가 부른다.
+		if userId == nil or userId == "" then return end
+		local now = _UtilLogic.ElapsedSeconds
+		if self.unarmedToastAt == nil then self.unarmedToastAt = {} end
+		local last = self.unarmedToastAt[userId]
+		if last ~= nil and now - last < self.UnarmedToastGap then return end
+		self.unarmedToastAt[userId] = now
+		log("[Stat] unarmed basic attack blocked (" .. userId .. ")")
+		if _UIToast ~= nil then _UIToast:ShowMessage(self.UnarmedToastText, userId) end
+	end
+
 	method integer CalcPlayerDamage(Entity attacker, Entity defender)
 		-- PlayerAttack.CalcDamage 가 부른다. 명중 실패면 0 (MISS). 서버 원장이 없으면(클라) 1.
 		if self.users == nil or not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
 			return 1
 		end
 		local userId = attacker.PlayerComponent.UserId
+		-- 맨손이면 피해 0 + 안내(대상이 있을 때만 · DevStatRemote 의 표시용 호출은 defender 가 없다). 기본 근접 · 원거리가 모두 여기를 지난다.
+		if isvalid(defender) and self:IsUnarmed(userId) then
+			self:NoteUnarmed(userId)
+			return 0
+		end
 		local u = self:EnsureUser(userId)
 		if u == nil then
 			return 1
