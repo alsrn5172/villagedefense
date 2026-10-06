@@ -25,6 +25,9 @@ script GuideService extends Logic
 
 	property integer RecruitMaterialNeed = 8
 
+	-- 도감 해금 재료 수(LaneStateService.CollectionMaterialOf = MonsterRecruit.MaterialCount · 지금 전부 8) — G8U 진행률
+	property integer UnlockMaterialNeed = 8
+
 	property string SoulstoneItemId = "BRAND_SOULSTONE"
 
 	property string DreamItemId = "DREAM_PIECE"
@@ -153,6 +156,13 @@ script GuideService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean IsGuideMatch()
+		-- 안내를 띄우는 매치인가(WO-051): 매치가 돌고 있고 튜토리얼 룸이 아니면(난이도 무관 · 예전엔 ★1 만).
+		if _TutorialService ~= nil and _TutorialService.Active then return false end
+		return _MatchSessionLogic ~= nil and _MatchSessionLogic.Running
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean IsOff(string userId)
 		-- 계정 토글로 껐나.
 		return _AccountData ~= nil and _AccountData:IsGuideOff(userId)
@@ -160,8 +170,9 @@ script GuideService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean IsActive(string userId)
-		-- 이 유저에게 안내를 보여 주나.
-		return self:IsStarOne() and not self:IsOff(userId)
+		-- 이 유저에게 안내를 보여 주나. WO-051(사용자 2026-10-06 "안내 다시 보기 = 토글 · on 이면 항상"): 난이도와 상관없이 매치 중 + 안내 켬이면 보인다.
+		--   튜토리얼 룸에서는 튜토리얼 디렉터만 안내한다(IsGuideMatch).
+		return self:IsGuideMatch() and not self:IsOff(userId)
 	end
 
 	@ExecSpace("Server")
@@ -173,6 +184,8 @@ script GuideService extends Logic
 		_AccountData:SetGuideOff(uid, off)
 		log("[Guide] toggle user=" .. uid .. " off=" .. tostring(off))
 		if _UIToast ~= nil then _UIToast:ShowMessage(off and "안내를 껐습니다 (계정에 저장)" or "안내를 켰습니다", uid) end
+		-- 도움말 토글 표시 · 매치 중 자동 안내 · 알림 카드도 같은 값으로 맞춘다(WO-051 · OnboardingService 상태 다시 보내기).
+		if _OnboardingService ~= nil then _OnboardingService:Answer(uid, "guide-toggle") end
 		local s = (self.st ~= nil) and self.st[uid] or nil
 		if s ~= nil then
 			s.goalText = ""
@@ -190,7 +203,7 @@ script GuideService extends Logic
 		self.pollTimer = self.pollTimer - delta
 		if self.pollTimer > 0 then return end
 		self.pollTimer = self.PollInterval
-		if not self:IsStarOne() then
+		if not self:IsGuideMatch() then
 			for _, uid in ipairs(self.participants) do self:HideFor(uid, false) end
 			return
 		end
@@ -240,10 +253,15 @@ script GuideService extends Logic
 	method void ShowFirstJobTaxiGuide(string userId)
 		-- 첫 전직 성공 이벤트 이후에만 안내. 거울의 실제 위치는 기존 코치마크로 가리킨다.
 		if userId == nil or userId == "" then return end
+		-- 안내가 꺼져 있거나 튜토리얼 룸이면 띄우지 않는다(2026-10-06: 꺼 둔 사람 · 튜토리얼에 빈 마을 핀이 남아 "지금 할 일과 다른 핀"이 됐다).
+		if not self:IsActive(userId) then return end
 		if _UIToast ~= nil then _UIToast:ShowMessage("전직 완료! 차원의 거울로 가서 빈 마을로 이동해 넥서스를 차지하세요", userId) end
 		if _CoachMarkController ~= nil then _CoachMarkController:ShowFirstJobMirrorGuide(userId) end
 		local maps = self:EmptyVillageMaps()
-		if maps ~= "" and _WorldMapController ~= nil then _WorldMapController:ShowGoalMarkers(maps, userId) end
+		-- Evaluate 의 마커 캐시도 같은 값으로 맞춘다(캐시가 옛 값이면 다음 목표 핀이 안 바뀐다).
+		local s = (self.st ~= nil) and self.st[userId] or nil
+		if s ~= nil then s.marker = maps end
+		if _WorldMapController ~= nil then _WorldMapController:ShowGoalMarkers(maps, userId) end
 		log("[Guide] first-job taxi guide maps=" .. maps .. " (" .. userId .. ")")
 	end
 
@@ -316,12 +334,19 @@ script GuideService extends Logic
 		s.village = ""
 		if _LaneStateService ~= nil then s.village = _LaneStateService:VillageOfUser(userId) end
 		s.defenders = 0
+		s.unlocked = 0
 		s.towerLv = 0
 		s.towerAlive = true
 		if s.village ~= "" and _LaneStateService ~= nil then
 			local v = _LaneStateService:StateOfUser(userId)
 			if v ~= nil then
 				s.defenders = (v.defenders ~= nil) and #v.defenders or 0
+				-- 도감에서 해금한 몬스터 수(v.mon[id] = 도감 레벨 1~5) — 해금한 몬스터만 모집할 수 있다(G8U).
+				if v.mon ~= nil then
+					for _, lv in pairs(v.mon) do
+						if (lv or 0) >= 1 then s.unlocked = s.unlocked + 1 end
+					end
+				end
 				local tw = (v.towers ~= nil) and v.towers["TOWER"] or nil
 				if tw ~= nil then
 					s.towerLv = tw.lv or 0
@@ -390,7 +415,11 @@ script GuideService extends Logic
 		end
 		if s.level >= 24 then return "G11" end
 		if s.level >= 17 then return "G9" end
-		if s.firstWaveDone and s.defenders == 0 then return "G8" end
+		if s.firstWaveDone and s.defenders == 0 then
+			-- 모집 전에 도감 해금부터(사용자 2026-10-06): 해금한 몬스터가 하나도 없으면 도감 관리인 단계.
+			if s.unlocked == 0 then return "G8U" end
+			return "G8"
+		end
 		return "G6"
 	end
 
@@ -406,6 +435,7 @@ script GuideService extends Logic
 		elseif key == "G6" or key == "G9" then n, max = s.level, (key == "G6") and 17 or 24
 		elseif key == "G11" or key == "G12" then n, max = s.level, 30
 		elseif key == "G8" then n, max = s.mat, self.RecruitMaterialNeed
+		elseif key == "G8U" then n, max = s.mat, self.UnlockMaterialNeed
 		elseif key == "G13" then n, max = s.stones, self.SoulstoneGoal end
 		local text = step.text
 		if key == "G4" then
@@ -547,7 +577,7 @@ script GuideService extends Logic
 	@ExecSpace("ServerOnly")
 	method void OnEliteSpawned(string mapName)
 		-- 엘리트 등장 → 그 맵에 있는 참가자에게 T7 (매번).
-		if self.participants == nil or not self:IsStarOne() then return end
+		if self.participants == nil or not self:IsGuideMatch() then return end
 		for _, uid in ipairs(self.participants) do
 			if not self:IsOff(uid) then
 				local player = _UserService:GetUserEntityByUserId(uid)
@@ -566,7 +596,7 @@ script GuideService extends Logic
 	@ExecSpace("ServerOnly")
 	method void OnFacilityDestroyed(string villageId, string stage)
 		-- 내 포탑/억제기 파괴 → 주인에게 T12/T13 (매번).
-		if self.participants == nil or not self:IsStarOne() or _VillageOwnership == nil then return end
+		if self.participants == nil or not self:IsGuideMatch() or _VillageOwnership == nil then return end
 		local owner = _VillageOwnership:OwnerOf(villageId)
 		if owner == "" or self.st == nil or self.st[owner] == nil or self:IsOff(owner) then return end
 		if stage == "TOWER" then self:Toast(owner, "T12") elseif stage == "SUPPRESSOR" then self:Toast(owner, "T13") end

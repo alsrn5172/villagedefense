@@ -131,7 +131,7 @@ S.image(b, D, 'panel_inner');
 img(D + '/HeadIcon', 'icon_star', [572, 190.5, 22, 22], DIFF);
 ctr(D + '/DiffTitle', [604, 184.5, 120, 33.5], DIFF);
 S.font(b, D + '/DiffTitle', { font: 'Maple', size: 24, color: C.title, h: 'left', v: 'middle', outline: false });
-txt(D + '/HeadHint', '새 매치 만들기', [978, 190.5, 200, 22.5], DIFF, { font: 'Noto400', size: 16, color: C.faint, h: 'right' });
+// 오른쪽 위 '새 매치 만들기' 글자는 뺐다(사용자 2026-10-06 · fix-lobby-headhint.cjs)
 
 // 안 쓰게 된 것은 끄고 남긴다(스크립트가 UUID 로 잡고 있다): 통글 설명 · 옛 심장 글 · ★ 버튼 5개 · 옛 엠블럼 자리
 S.place(b, D + '/DiffDesc', { enable: false });

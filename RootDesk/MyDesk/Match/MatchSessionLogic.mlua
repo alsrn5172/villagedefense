@@ -768,6 +768,8 @@ script MatchSessionLogic extends Logic
 		-- 시계: 페이즈 전환 · 투입 · HUD. 만료되면 Running 이 꺼져 여기서 바로 빠진다.
 		if self.handoffActive then self:TickPendingStart(delta) end
 		if not self.Running or self.phases == nil or #self.phases == 0 then return end
+		-- 튜토리얼(WO-051): 시계를 멈춘다 — 개척(PHASE0-1)에 머물러 웨이브 표 · 미점령 탈락 · 만료가 오지 않는다. 웨이브는 장면이 TutorialService 로 한 번 부른다.
+		if self:IsTutorial() then return end
 		self.Elapsed = self.Elapsed + delta
 		self.PhaseElapsed = self.PhaseElapsed + delta
 		if self.MatchDuration > 0 and self.Elapsed >= self.MatchDuration then
@@ -832,6 +834,11 @@ script MatchSessionLogic extends Logic
 		--    승자가 나오면 DeclareWinner → Expire("승리 — …") 가 이미 끝냈으므로 여기서 돌아간다.
 		--    그 안쪽 Expire 에선 Winner 가 이미 차 있어 ClaimPendingWinner 가 false 라 재귀하지 않는다.
 		if _BalrogRoomService ~= nil and _BalrogRoomService:ClaimPendingWinner() then return end
+		-- 튜토리얼(WO-051): 결과 화면 · 순위 보상 · 계정 경험치 · 업적 · 플레이 기록 · 저장 없이 조용히 닫는다(결과는 전부 휘발).
+		if self:IsTutorial() then
+			self:EndQuiet(reason)
+			return
+		end
 		self.Expired = true
 		self.Running = false
 		-- 🔴 발록 방 도전을 **지금** 닫는다 (모든 방 무적 · 감시 중지). BalrogRoomService.OnUpdate 가 다음 프레임에
@@ -855,6 +862,30 @@ script MatchSessionLogic extends Logic
 		-- 🔴 순위 보상(B8 · ShowResult → RankRewardService.Settle)이 계정 원장을 더럽히므로 **결과 정산 뒤에** 굳힌다 (Codex 리뷰 2026-09-23).
 		self:ShowResult(reason)
 		if _PlayerDBManager ~= nil then _PlayerDBManager:FlushAll() end
+	end
+
+	method boolean IsTutorial()
+		-- 이 방이 튜토리얼인가(WO-051 · TutorialService.Active · 서버 · 클라 공용).
+		return _TutorialService ~= nil and _TutorialService.Active == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndTutorial()
+		-- 튜토리얼 끝 · 그만두기(TutorialService.Cleanup): 돌고 있으면 조용히 닫는다(Expire → EndQuiet).
+		if not self.Running then return end
+		self:Expire("튜토리얼 종료")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndQuiet(string reason)
+		-- 튜토리얼 매치 닫기: 큐 · 발록 감시 · 부활 · 안내 · 파병 배지만 정리한다. 결과 · 정산 · 저장(FlushAll)은 하지 않는다.
+		self.Expired = true
+		self.Running = false
+		if _BalrogRoomService ~= nil and _BalrogRoomService.active then _BalrogRoomService:OnMatchOver() end
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:OnMatchOver() end
+		if _GuideService ~= nil then _GuideService:OnMatchOver() end
+		if _DispatchService ~= nil then _DispatchService:ResetBadges() end
+		log("[Match] tutorial closed quietly (" .. tostring(reason) .. ") — 결과 · 정산 · 저장 없음")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -946,7 +977,7 @@ script MatchSessionLogic extends Logic
 		self.leftUsers[userId] = true
 		self:SnapshotRow(userId, true)
 		-- 플레이 기록 LEFT 1줄 (WO-031 묶음 6) — 매치가 도는 중에 **처음** 나갔을 때만(경로가 겹쳐도 한 줄 · 끝난 뒤 로비로 가는 건 정산 줄이 이미 있다 · Codex 리뷰 2026-09-26).
-		if firstLeave and self.Running and _MatchHistoryService ~= nil then
+		if firstLeave and self.Running and _MatchHistoryService ~= nil and not self:IsTutorial() then
 			local lv = (_VillageOwnership ~= nil) and _VillageOwnership:LevelOf(userId) or 1
 			_MatchHistoryService:AppendLeft(userId, self.Difficulty, #(self.participants or {}), lv, self:KillsOf(userId))
 		end

@@ -127,11 +127,11 @@ b.entities.filter((e) => e.path.startsWith('/ui/WorldMapGroup/' + NODES + '/') &
 
 // ═══ 내 위치 · 목표 핀 ═══
 // 컨테이너(48x70)는 스크립트가 노드 위 31 에 두고 둥둥 띄운다. 자식 좌표는 컨테이너 기준(스크립트가 같은 값을 다시 준다).
-function marker(name, pinKey, tagColor, tagText, tagW) {
+function marker(name, pinKey, tagColor, tagText, tagW, pinTint) {
   const P = `${BD}/${name}`;
   ['Down', 'Left', 'Right', 'Up'].forEach((d) => S.place(b, `${P}/Outline${d}`, { enable: false })); // 새 핀 그림에 테가 있다
   S.place(b, P + '/Flag', { anchor: 'middle-center', pivot: [0.5, 0.5], pos: [0, -13], size: [36, 48] });
-  S.image(b, P + '/Flag', pinKey);
+  S.image(b, P + '/Flag', pinKey, { color: pinTint || '#FFFFFF' });
   if (b.find(P + '/Label')) {
     S.place(b, P + '/Label', { anchor: 'middle-center', pivot: [0.5, 0.5], pos: [0, 23], size: [tagW, 20] });
     S.font(b, P + '/Label', { font: 'Maple', size: 13, color: C.white, h: 'center', v: 'middle', outline: false, text: tagText });
@@ -139,8 +139,9 @@ function marker(name, pinKey, tagColor, tagText, tagW) {
     b.patchComponent(P + '/Label', S.SPR, { ImageRUID: { DataId: ROUND }, Type: 1, Color: S.C(tagColor, 1) });
   }
 }
-marker('HereMarker', 'map_pin_me', '#0F5E8A', '내 위치', 54);
-for (let i = 0; i < 6; i++) marker('GoalMarker_' + i, 'map_pin_goal', '#6E4508', '목표', 38);
+// 사용자 2026-10-06: 내 위치 = 노랑(금색 핀) · 목표 = 진한 파랑(하늘색 핀 곱하기 틴트) — fix-worldmap-pin-colors.cjs 와 같은 값
+marker('HereMarker', 'map_pin_goal', '#8C6200', '내 위치', 54);
+for (let i = 0; i < 6; i++) marker('GoalMarker_' + i, 'map_pin_me', '#0B3A80', '목표', 38, '#7A8FD9');
 
 // ═══ 지점 안내창 ═══
 // 안내창 왼쪽 위 기준 좌표 → 위 가운데 앵커 · 가운데 피벗

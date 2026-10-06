@@ -1,0 +1,1231 @@
+@Logic
+script TutorialDirector extends Logic
+	-- 튜토리얼 클라 진행자 (WO-051 · 2026-10-06). 서버 TutorialService 가 ClientBegin 으로 깨우면 장면 표를 처음부터 돈다.
+	--   장면 종류: card(큰 설명창 · TutorialGroup) · coach(막 + 구멍 + 말풍선 · CoachMarkController 외부 단계) · act(서버 일 · 페이드 순간이동) · wait(조건)
+	--   입력은 "의도한 하나만": 이동 · 점프 · 공격 = PlayerControllerComponent:AddCondition · UI 단축키 = 키 처리 파일마다 KeyAllowed 한 줄 · 클릭 = 막(구멍 밖은 막이 먹는다)
+	--   · 허락 안 한 창(캐릭터 · 스킬 · 월드맵 · 도움말 · NPC 창)은 열리면 바로 닫는다. 나가기는 오른쪽 위 [그만두기] + 확인창뿐.
+	--   글자는 이 표에 있다(문구만 바꾸기 쉽게). UUID 는 Docs/tools/design-ui/apply-tutorial.cjs 가 주입한다.
+
+	property Entity root = "c7e4eadc-01b3-40c2-9675-4e7139894e88"
+
+	property Entity fade = "b9f21172-2652-4a4b-b171-cfde3c5ce6bf"
+
+	property Entity stepRoot = "97db2f4c-9a0d-46f7-b2d1-64dfba222949"
+
+	property TextGUIRendererComponent stepText = "3c2cacca-f76a-42d8-baac-7bdcfcc5cf53"
+
+	property ButtonComponent btnQuit = "d4f084f3-9263-47b4-ae94-6ff5f3b04794"
+
+	property Entity card = "31bbc3f9-c84b-40de-96cf-e8045a192e28"
+
+	property TextGUIRendererComponent cardChip = "01571e5d-358d-4e53-8f72-057d3a638cdf"
+
+	property TextGUIRendererComponent cardTitle = "a50dec68-edf1-4452-923c-655ca7119b51"
+
+	property TextGUIRendererComponent cardBody = "0d8885e3-5aa3-4851-a80f-f6339c40485e"
+
+	property SpriteGUIRendererComponent cardEmblem = "ff3f4cf8-5b2e-496d-9a9d-ce29c0bf869c"
+
+	property Entity cardHp = "6337ef3e-7146-466f-8ae4-df334256b542"
+
+	property Entity cardHpFill = "3091911a-38b4-42ff-9003-3a81b3d415e9"
+
+	property TextGUIRendererComponent cardHpText = "9764f78a-859e-434c-8fac-86208bcaab43"
+
+	property ButtonComponent btnCardNext = "4eda3f4d-ab73-4b67-b4fb-cf5297dde2a4"
+
+	property Entity confirm = "8d02f0c4-1bcd-4f86-862b-4782a9cd3598"
+
+	property ButtonComponent btnConfirmYes = "7d5ba225-4460-450f-acc2-0c8dc4a2b381"
+
+	property ButtonComponent btnConfirmNo = "efc29a6d-44dc-492c-bc1a-34c2aba3b95f"
+
+	-- 페이드 시간(초) · 장면 조건 확인(Hz) · 순간이동 뒤 도착을 기다리는 최대 시간(초)
+	property number fadeSeconds = 0.35
+
+	property number pollHz = 10
+
+	property number arriveLimit = 4
+
+	-- 카드 몸 폭(창 가운데 기준 · 피벗 가운데): 문장 아이콘이 있으면 오른쪽으로 비킨다(아이콘 120 + 20)
+	property number cardBodyW = 760
+
+	-- 엘리니아 문장(파병 대상 가상 상대 · CommonNpcUIController.EmblemRuids 와 같은 그림)
+	property string rivalEmblem = "a67009c937104506b1f2d178e6477c1b"
+
+	property string rivalName = "엘리니아"
+
+	@HideFromInspector
+	property boolean active = false
+
+	@HideFromInspector
+	property integer idx = 0
+
+	@HideFromInspector
+	property any scenes = nil
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@HideFromInspector
+	property string gatePlayerId = ""
+
+	@HideFromInspector
+	property number pollAcc = 0
+
+	@HideFromInspector
+	property number sceneT = 0
+
+	-- act 장면 진행: "" · fadeout · request · arrive · fadein
+	@HideFromInspector
+	property string actPhase = ""
+
+	@HideFromInspector
+	property boolean actOk = false
+
+	@HideFromInspector
+	property number fadeAlpha = 0
+
+	@HideFromInspector
+	property number fadeGoal = 0
+
+	@HideFromInspector
+	property any mem = nil
+
+	@HideFromInspector
+	property boolean ended = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · 꺼진 채로 시작.
+		self.handlers = {}
+		self.mem = {}
+		self:Bind(self.btnQuit, function() self:AskQuit() end)
+		self:Bind(self.btnCardNext, function() self:OnCardNext() end)
+		self:Bind(self.btnConfirmYes, function() self:Quit() end)
+		self:Bind(self.btnConfirmNo, function() self:CloseConfirm() end)
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		self.active = false
+		log("[Tutorial] director ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Bind(ButtonComponent btn, any fn)
+		-- 버튼 클릭 연결(없으면 건너뜀).
+		if not isvalid(btn) then
+			return
+		end
+		table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+	end
+
+	-- ── 시작 · 끝 ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnBegin()
+		-- 서버 TutorialService.ClientBegin: 입력 문을 걸고 장면 1부터.
+		if self.active then
+			return
+		end
+		self.active = true
+		self.ended = false
+		self.mem = {}
+		self:BuildScenes()
+		self:InstallGate()
+		self:CloseOthers("")
+		if isvalid(self.root) then
+			self.root.Enable = true
+		end
+		if isvalid(self.confirm) then
+			self.confirm.Enable = false
+		end
+		if isvalid(self.card) then
+			self.card.Enable = false
+		end
+		self:SetFade(1, true)
+		self:SetFade(0, false)
+		self:HideMatchHud(true)
+		self:SetPin("")
+		log("[Tutorial] begin scenes=" .. tostring(#self.scenes))
+		self:Go(1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Finish()
+		-- 마지막 장면: 서버에 끝을 알리고 화면을 내린다(로비로 옮겨지면 도움말이 열린다).
+		self:End("finish")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AskQuit()
+		-- [그만두기] → 확인창.
+		if not self.active or not isvalid(self.confirm) then
+			return
+		end
+		self.confirm.Enable = true
+		self:BringToFront()
+		log("[Tutorial] quit asked at scene " .. tostring(self.idx))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseConfirm()
+		-- 확인창 [계속하기].
+		if isvalid(self.confirm) then
+			self.confirm.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Quit()
+		-- 확인창 [그만두기].
+		self:CloseConfirm()
+		self:End("quit")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void End(string why)
+		-- 화면 · 막을 내리고 서버에 나가기를 요청한다(서버가 원장을 비우고 로비로 옮긴다).
+		if not self.active or self.ended then
+			return
+		end
+		self.ended = true
+		self.active = false
+		if _CoachMarkController ~= nil then
+			_CoachMarkController:HideCustom(why)
+		end
+		if isvalid(self.card) then
+			self.card.Enable = false
+		end
+		self:SetFade(1, false)
+		self:HideMatchHud(false)
+		self:SetPin("")
+		log("[Tutorial] end " .. why .. " at scene " .. tostring(self.idx))
+		if _TutorialService ~= nil then
+			_TutorialService:RequestExit(why)
+		end
+		_TimerService:SetTimerOnce(function()
+			if isvalid(self.root) then
+				self.root.Enable = false
+			end
+		end, 3.0)
+	end
+
+	-- ── 입력 문 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void InstallGate()
+		-- 이동 · 점프 · 아래 점프 · 기본 공격 조건(플레이어마다 한 번 · 지울 API 가 없어 조건이 지금 장면을 읽는다).
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or self.gatePlayerId == p.Id then
+			return
+		end
+		local c = p.PlayerControllerComponent
+		if not isvalid(c) then
+			return
+		end
+		self.gatePlayerId = p.Id
+		for _, a in ipairs({ "MoveLeft", "MoveRight", "MoveUp", "MoveDown", "Jump", "Jump2", "DownJump", "Attack" }) do
+			local name = a
+			c:AddCondition(name, function() return self:ActionAllowed(name) end)
+		end
+		log("[Tutorial] gate installed player=" .. p.Name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean ActionAllowed(string name)
+		-- 튜토리얼이 아니면 늘 허락. 공격 = 장면 allow.attack · 나머지(이동 · 점프) = allow.move.
+		if not self.active then
+			return true
+		end
+		local s = self:Cur()
+		local allow = (s ~= nil) and s.allow or nil
+		if allow == nil then
+			return false
+		end
+		if name == "Attack" then
+			return allow.attack == true
+		end
+		return allow.move == true
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean KeyAllowed(any key)
+		-- UI 단축키(키 처리 파일마다 맨 앞에서 묻는다 · key = KeyDownEvent.key). 튜토리얼이 아니면 늘 허락 · 확인창이 떠 있으면 전부 막는다.
+		--   엔진 enum 은 매개변수 형식으로 못 쓰고(LSP) 표 키로도 믿기 어려워 allow.keys 는 배열로 두고 == 로 비교한다.
+		if not self.active then
+			return true
+		end
+		if isvalid(self.confirm) and self.confirm.Enable then
+			return false
+		end
+		local s = self:Cur()
+		if s == nil or s.allow == nil or s.allow.keys == nil then
+			return false
+		end
+		for _, k in ipairs(s.allow.keys) do
+			if k == key then
+				return true
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean WindowAllowed(string w)
+		-- 지금 장면이 열어 둘 수 있게 한 창인가(char · map · help · skill · npc · workshop · record · life · defense · common).
+		local s = self:Cur()
+		return s ~= nil and s.allow ~= nil and s.allow.win ~= nil and s.allow.win[w] == true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseOthers(string keep)
+		-- 허락 안 한 창을 닫는다(keep = 지금 장면이 쓰는 창).
+		if _StatUIController ~= nil and _StatUIController.isOpen and keep ~= "char" and not self:WindowAllowed("char") then
+			_StatUIController:Close()
+		end
+		if _WorldMapController ~= nil and _WorldMapController.isOpen == true and keep ~= "map" and not self:WindowAllowed("map") then
+			_WorldMapController:CloseMap()
+		end
+		if _GameIntroController ~= nil and _GameIntroController.isOpen == true then
+			_GameIntroController:Close("tutorial")
+		end
+		if _SkillWindowLogic ~= nil and isvalid(_SkillWindowLogic.rootGroup) and _SkillWindowLogic.rootGroup.Enable == true and not self:WindowAllowed("skill") then
+			_SkillWindowLogic:Toggle()
+		end
+		if _VillageNpcUIController ~= nil and keep ~= "npc" and not self:WindowAllowed("npc") and _VillageNpcUIController:IsAnyOpen() then
+			_VillageNpcUIController:CloseAll("")
+		end
+	end
+
+	-- ── 장면 진행 ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void SetPin(string maps)
+		-- 월드맵 목표 핀 = 지금 할 일이 있는 맵(장면 pin · 다음 pin 이 나올 때까지 유지 · "" = 없음).
+		--   튜토리얼 룸에서는 GuideService 가 핀을 보내지 않는다(IsGuideMatch) — 핀은 여기서만 바뀐다.
+		local w = _WorldMapController
+		if w == nil then
+			return
+		end
+		w.goalMaps = maps
+		w:ApplyGoalMarkers()
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean QuickHas(string itemId)
+		-- 퀵슬롯(왼쪽 아래 1 · 2번 칸) 어딘가에 그 아이템이 등록됐나.
+		local q = _QuickSlotController
+		if q == nil or q.slots == nil then
+			return false
+		end
+		for _, x in pairs(q.slots) do
+			if x ~= nil and x.itemId == itemId then
+				return true
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method any Cur()
+		-- 지금 장면.
+		if self.scenes == nil then
+			return nil
+		end
+		return self.scenes[self.idx]
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Go(integer n)
+		-- n 번째 장면으로. 끝을 넘으면 마무리.
+		if not self.active then
+			return
+		end
+		if n > #self.scenes then
+			self:Finish()
+			return
+		end
+		self.idx = n
+		self.sceneT = 0
+		self.actPhase = ""
+		local s = self.scenes[n]
+		if s.enter ~= nil then
+			s.enter(self)
+		end
+		if s.pin ~= nil then
+			self:SetPin(s.pin)
+		end
+		self:SetStep(s.step)
+		self:CloseOthers(s.keep or "")
+		log("[Tutorial] scene " .. tostring(n) .. "/" .. tostring(#self.scenes) .. " " .. tostring(s.id) .. " kind=" .. s.kind)
+		if s.kind == "card" then
+			self:ShowCard(s)
+		elseif s.kind == "coach" then
+			self:HideCard()
+			self:ShowCoach(s)
+		elseif s.kind == "act" then
+			self:StartAct(s)
+		else
+			self:HideCard()
+			if _CoachMarkController ~= nil then
+				_CoachMarkController:HideCustom("wait")
+			end
+		end
+		self:BringToFront()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Next(string why)
+		-- 다음 장면.
+		if not self.active then
+			return
+		end
+		log("[Tutorial] next from " .. tostring(self.idx) .. " (" .. why .. ")")
+		self:Go(self.idx + 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 페이드 · 장면 조건 확인(pollHz) · 허락 안 한 창 닫기.
+		self:TickFade(delta)
+		if not self.active then
+			return
+		end
+		self.sceneT = self.sceneT + delta
+		self.pollAcc = self.pollAcc + delta
+		if self.pollAcc < 1 / self.pollHz then
+			return
+		end
+		self.pollAcc = 0
+		local s = self:Cur()
+		if s == nil then
+			return
+		end
+		self:CloseOthers(s.keep or "")
+		if s.kind == "act" then
+			self:TickAct(s)
+			return
+		end
+		if s.kind == "coach" and s.target ~= nil and _CoachMarkController ~= nil and _CoachMarkController:IsCustom() then
+			-- 대상이 늦게 나타나는 창(그리드 칸 · 서버 뷰)은 매번 다시 찾는다.
+			local def = _CoachMarkController.defs["__custom"]
+			if def ~= nil then
+				self:ApplyTarget(def, s)
+			end
+		end
+		if s.done ~= nil and s.done(self) then
+			self:Next("done")
+			return
+		end
+		if s.timeout ~= nil and self.sceneT >= s.timeout then
+			self:Next("timeout")
+		end
+	end
+
+	-- ── 큰 설명창 ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void ShowCard(any s)
+		-- 카드: 칩 · 제목 · 몸(문장 아이콘 · 넥서스 체력 바는 있을 때만) · [다음].
+		if _CoachMarkController ~= nil then
+			_CoachMarkController:HideCustom("card")
+		end
+		if not isvalid(self.card) then
+			self:Next("no-card")
+			return
+		end
+		self.card.Enable = true
+		if isvalid(self.cardChip) then
+			self.cardChip.Text = s.chip or "튜토리얼"
+		end
+		if isvalid(self.cardTitle) then
+			self.cardTitle.Text = s.title or ""
+		end
+		local hasEmblem = s.emblem ~= nil and s.emblem ~= ""
+		if isvalid(self.cardEmblem) then
+			self.cardEmblem.Entity.Enable = hasEmblem
+			if hasEmblem then
+				self.cardEmblem.ImageRUID = s.emblem
+			end
+		end
+		if isvalid(self.cardBody) then
+			self.cardBody.Text = s.body or ""
+			local t = self.cardBody.Entity.UITransformComponent
+			local w = self.cardBodyW
+			local x = 0
+			if hasEmblem then
+				w = self.cardBodyW - 140
+				x = 70
+			end
+			t.anchoredPosition = Vector2(x, t.anchoredPosition.y)
+			t.RectSize = Vector2(w, t.RectSize.y)
+		end
+		if isvalid(self.cardHp) then
+			self.cardHp.Enable = s.hp ~= nil
+			if s.hp ~= nil and isvalid(self.cardHpFill) then
+				local tr = self.cardHpFill.UITransformComponent
+				tr.RectSize = Vector2(math.max(4, 560 * s.hp), tr.RectSize.y)
+				if isvalid(self.cardHpText) then
+					self.cardHpText.Text = s.hpText or ""
+				end
+			end
+		end
+		if isvalid(self.btnCardNext) then
+			local tx = self.btnCardNext.Entity.TextGUIRendererComponent
+			if tx ~= nil then
+				tx.Text = s.btn or "다음"
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideCard()
+		-- 카드를 내린다.
+		if isvalid(self.card) then
+			self.card.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCardNext()
+		-- 카드 [다음] (마지막 카드는 [로비로] = 끝).
+		local s = self:Cur()
+		if s == nil or s.kind ~= "card" then
+			return
+		end
+		if s.final == true then
+			self:Finish()
+			return
+		end
+		self:Next("card")
+	end
+
+	-- ── 강조(막 · 구멍 · 말풍선) ───────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void ShowCoach(any s)
+		-- 외부 단계 하나: 대상은 s.target(self) 가 돌려주는 표(ui · uiEntity · world · point · rect · target).
+		if _CoachMarkController == nil then
+			return
+		end
+		local def = { title = s.title or "", text = s.text or "", chip = s.chip or "튜토리얼", side = s.side or "auto", w = s.w or 460, btn = s.btn, pulse = s.pulse ~= false, finger = s.finger == true, noDim = s.noDim == true }
+		self:ApplyTarget(def, s)
+		_CoachMarkController:ShowCustom(def, function() self:OnCoachNext() end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyTarget(any def, any s)
+		-- 장면의 대상을 정의 표에 넣는다(지난 대상 칸은 지운다).
+		def.ui = nil
+		def.uiEntity = nil
+		def.world = nil
+		def.rect = nil
+		def.target = nil
+		if s.target == nil then
+			return
+		end
+		local t = s.target(self)
+		if t == nil then
+			return
+		end
+		for k, v in pairs(t) do
+			def[k] = v
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnCoachNext()
+		-- 말풍선 [다음].
+		local s = self:Cur()
+		if s == nil or s.kind ~= "coach" then
+			return
+		end
+		if s.onNext ~= nil then
+			s.onNext(self)
+		end
+		self:Next("coach")
+	end
+
+	-- ── 서버 일 · 페이드 순간이동 ──────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void StartAct(any s)
+		-- act: (fade) → RequestAction → 응답 · 도착 → (fade) → 다음.
+		self:HideCard()
+		if _CoachMarkController ~= nil then
+			_CoachMarkController:HideCustom("act")
+		end
+		self.actOk = false
+		if s.fade == true then
+			self.actPhase = "fadeout"
+			self:SetFade(1, false)
+		else
+			self:SendAct(s)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SendAct(any s)
+		-- 서버에 일 하나를 보낸다.
+		self.actPhase = "request"
+		self.sceneT = 0
+		local p = _UserService.LocalPlayer
+		self.mem.actFromMap = isvalid(p) and p.CurrentMapName or ""
+		if _TutorialService ~= nil then
+			_TutorialService:RequestAction(s.action)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnActionDone(string action, boolean ok)
+		-- 서버 TutorialService.ActionDone.
+		local s = self:Cur()
+		if not self.active or s == nil or s.kind ~= "act" or s.action ~= action then
+			return
+		end
+		self.actOk = ok
+		if not ok then
+			log_warning("[Tutorial] action failed " .. action .. " — 다음 장면으로 넘어간다")
+		end
+		self.actPhase = "arrive"
+		self.sceneT = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TickAct(any s)
+		-- act 단계 진행(pollHz).
+		if self.actPhase == "fadeout" then
+			if self.fadeAlpha >= 0.99 then
+				self:SendAct(s)
+			end
+		elseif self.actPhase == "request" then
+			if self.sceneT > 8 then
+				log_warning("[Tutorial] action timeout " .. tostring(s.action))
+				self.actPhase = "arrive"
+				self.sceneT = 0
+			end
+		elseif self.actPhase == "arrive" then
+			local p = _UserService.LocalPlayer
+			local arrived = true
+			if s.map ~= nil then
+				arrived = isvalid(p) and p.CurrentMapName == s.map
+			elseif s.moves == true then
+				arrived = self.sceneT >= 0.6
+			end
+			if arrived or self.sceneT >= self.arriveLimit then
+				if s.fade == true then
+					self.actPhase = "fadein"
+					self.sceneT = 0
+					self:SetFade(0, false)
+				else
+					self:Next("act")
+				end
+			end
+		elseif self.actPhase == "fadein" then
+			if self.sceneT >= 0.25 then
+				self:Next("act")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFade(number goal, boolean instant)
+		-- 페이드 목표(0 = 걷힘 · 1 = 까맘).
+		self.fadeGoal = goal
+		if instant then
+			self.fadeAlpha = goal
+		end
+		self:ApplyFade()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TickFade(number delta)
+		-- 페이드 알파를 목표 쪽으로.
+		if self.fadeAlpha == self.fadeGoal then
+			return
+		end
+		local stepV = delta / math.max(0.05, self.fadeSeconds)
+		if self.fadeAlpha < self.fadeGoal then
+			self.fadeAlpha = math.min(self.fadeGoal, self.fadeAlpha + stepV)
+		else
+			self.fadeAlpha = math.max(self.fadeGoal, self.fadeAlpha - stepV)
+		end
+		self:ApplyFade()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyFade()
+		-- 검은 막 알파 · 켜기(0 이면 꺼서 클릭을 막지 않는다).
+		if not isvalid(self.fade) then
+			return
+		end
+		self.fade.Enable = self.fadeAlpha > 0.01
+		local sp = self.fade.SpriteGUIRendererComponent
+		if sp ~= nil then
+			sp.Color = Color(0, 0, 0, self.fadeAlpha)
+		end
+	end
+
+	-- ── 화면 도우미 ─────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void SetStep(string text)
+		-- 위 가운데 단계 칩(매치 시계 자리).
+		if isvalid(self.stepRoot) then
+			self.stepRoot.Enable = text ~= nil and text ~= ""
+		end
+		if isvalid(self.stepText) and text ~= nil then
+			self.stepText.Text = text
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideMatchHud(boolean hide)
+		-- 튜토리얼 동안 매치 시계 · ★1 목표 바를 숨긴다(시계는 멈춰 있다).
+		local clock = _EntityService:GetEntityByPath("/ui/MatchClockGroup/Panel")
+		if isvalid(clock) then
+			clock.Enable = not hide
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BringToFront()
+		-- 강조 막 위에 그만두기 · 카드 · 페이드가 오도록: 막을 먼저 올리고 이 그룹을 그 위(부활 팝업 바로 아래)로.
+		if _CoachMarkController ~= nil and _CoachMarkController:IsCustom() then
+			_CoachMarkController:BringToFront()
+		end
+		local me = _EntityService:GetEntityByPath("/ui/TutorialGroup")
+		if not isvalid(me) then
+			return
+		end
+		local before = _UILogic:GetSiblingIndex(me.UITransformComponent)
+		local idx = 1000000
+		local rev = _EntityService:GetEntityByPath("/ui/RevivePopupGroup")
+		if isvalid(rev) then
+			idx = _UILogic:GetSiblingIndex(rev.UITransformComponent)
+			if before < idx then
+				idx = idx - 1
+			end
+		end
+		_UILogic:SetSiblingIndex(me.UITransformComponent, idx)
+	end
+
+	-- ── 대상 찾기 ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method Entity MapChild(string prefix)
+		-- 지금 맵에서 이름이 prefix 로 시작하는 첫 엔티티(NPC · 스폰한 몬스터).
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return nil
+		end
+		for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+			if string.sub(c.Name, 1, #prefix) == prefix and isvalid(c.TransformComponent) then
+				return c
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer AliveWithPrefix(string prefix)
+		-- 지금 맵에서 이름이 prefix 로 시작하고 살아 있는 몬스터 수.
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return 0
+		end
+		local n = 0
+		for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+			if string.sub(c.Name, 1, #prefix) == prefix then
+				local m = c.Monster
+				if not isvalid(m) or not m.IsDead then
+					n = n + 1
+				end
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity Facility(string stage)
+		-- 지금 맵의 헤네시스 시설(LaneFacility · Stage).
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return nil
+		end
+		local list = p.CurrentMap:GetChildComponentsByTypeName("script.LaneFacility", true)
+		if list == nil then
+			return nil
+		end
+		local vid = (_TutorialService ~= nil) and _TutorialService.VillageId or "HENESYS"
+		for _, comp in ipairs(list) do
+			---@type LaneFacility
+			local f = comp
+			if isvalid(f) and f.Stage == stage and (f.VillageId == "" or f.VillageId == vid) then
+				return f.Entity
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer AliveMinions()
+		-- 지금 맵에서 살아 있는 웨이브 미니언 수(MinionUnit).
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return 0
+		end
+		local list = p.CurrentMap:GetChildComponentsByTypeName("script.MinionUnit", true)
+		if list == nil then
+			return 0
+		end
+		local n = 0
+		for _, comp in ipairs(list) do
+			if isvalid(comp) and isvalid(comp.Entity) then
+				local m = comp.Entity.Monster
+				if not isvalid(m) or not m.IsDead then
+					n = n + 1
+				end
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity PortalNear(Entity anchor)
+		-- 지금 맵에서 anchor(넥서스) 에 가장 가까운 포탈(PortalComponent).
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then
+			return nil
+		end
+		local ax = 0
+		local ay = 0
+		if isvalid(anchor) then
+			local wp = anchor.TransformComponent.WorldPosition
+			ax = wp.x
+			ay = wp.y
+		else
+			local wp = p.TransformComponent.WorldPosition
+			ax = wp.x
+			ay = wp.y
+		end
+		local best = nil
+		local bestD = 0
+		for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+			if isvalid(c.PortalComponent) and isvalid(c.TransformComponent) then
+				local wp = c.TransformComponent.WorldPosition
+				local d = (wp.x - ax) * (wp.x - ax) + (wp.y - ay) * (wp.y - ay)
+				if best == nil or d < bestD then
+					best = c
+					bestD = d
+				end
+			end
+		end
+		return best
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity FindByText(Entity rootE, string text)
+		-- rootE 아래에서 글자에 text 가 들어간 엔티티를 찾아 가장 가까운 버튼 조상(없으면 그 엔티티)을 돌려준다(그리드 칸 · 카드 · 행).
+		if not isvalid(rootE) or text == nil or text == "" then
+			return nil
+		end
+		local found = self:FindTextIn(rootE, text, 0)
+		if found == nil then
+			return nil
+		end
+		local e = found
+		local guard = 0
+		while isvalid(e) and guard < 6 do
+			if e.ButtonComponent ~= nil and e.EnabledInHierarchy then
+				return e
+			end
+			if e == rootE then
+				break
+			end
+			e = e.Parent
+			guard = guard + 1
+		end
+		return found
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity FindTextIn(Entity e, string text, integer depth)
+		-- 깊이 우선으로 켜진 글자 엔티티를 찾는다(최대 깊이 8).
+		if not isvalid(e) or depth > 8 or not e.Enable then
+			return nil
+		end
+		local tx = e.TextGUIRendererComponent
+		if tx ~= nil and tx.Text ~= nil and string.find(tx.Text, text, 1, true) ~= nil then
+			return e
+		end
+		for _, c in ipairs(e.Children:ToTable()) do
+			local r = self:FindTextIn(c, text, depth + 1)
+			if r ~= nil then
+				return r
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method any NpcTarget(string prefix)
+		-- NPC 몸 + 이름표 구멍(CoachMarkController.MatchGuideTarget 과 같은 크기).
+		local e = self:MapChild(prefix)
+		if not isvalid(e) then
+			return nil
+		end
+		return { world = { e = e, x1 = -0.6, y1 = -0.35, x2 = 0.6, y2 = 1.1, px = 0, py = 0.45 } }
+	end
+
+	@ExecSpace("ClientOnly")
+	method any UiTarget(Entity e)
+		-- UI 엔티티 하나(켜져 있을 때만).
+		if not isvalid(e) or not e.EnabledInHierarchy then
+			return nil
+		end
+		return { uiEntity = e }
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ItemCount(string itemId)
+		-- 클라 인벤토리 미러(_InventoryUIController.items)에서 그 아이템 수.
+		local inv = _InventoryUIController
+		if inv == nil or inv.items == nil then
+			return 0
+		end
+		local n = 0
+		for _, it in ipairs(inv.items) do
+			if it.itemId == itemId then
+				n = n + math.max(1, it.count or 1)
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method any Equipped(string slot)
+		-- 장착 미러(_InventoryUIController.equipped[slot]) · 없으면 nil.
+		local inv = _InventoryUIController
+		if inv == nil or inv.equipped == nil then
+			return nil
+		end
+		return inv.equipped[slot]
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer Tier()
+		-- 지금 전직 차수(B PlayerSkillState 클라 미러).
+		if _PlayerSkillState == nil then
+			return 0
+		end
+		return math.floor(_PlayerSkillState:LocalTier() or 0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ItemName(string itemId)
+		-- 아이템 표시 이름(ItemCatalog).
+		if _ItemCatalog == nil then
+			return itemId
+		end
+		local def = _ItemCatalog:Get(itemId)
+		if def == nil then
+			return itemId
+		end
+		return def.name
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean MapIs(string name)
+		-- 내가 그 맵에 있나.
+		local p = _UserService.LocalPlayer
+		return isvalid(p) and p.CurrentMapName == name
+	end
+
+	-- ── 장면 표 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void BuildScenes()
+		-- 대본 = WorkOrders/WO-051 · 줄바꿈은 직접 넣는다(게임 글꼴이 한글을 글자 단위로 끊는다).
+		local K = KeyboardKey
+		local G = function(t) return "<color=#E8B64C><b>" .. t .. "</b></color>" end
+		local R = function(t) return "<color=#FF8A7A><b>" .. t .. "</b></color>" end
+		local svc = _TutorialService
+		local lithMap = (svc ~= nil) and svc.LithVillageMapId or "LithHarbor_Village_MinimiMain"
+		local startMap = (svc ~= nil) and svc.StartMapId or "LithHarbor_Hunt_RightAroundLithHarbor"
+		local villageMap = "Henesys_Village_MinimiMain"
+		local lane1Map = "Henesys_Hunt_HillNorth"
+		local lane2Map = "Henesys_Hunt_GolemsTemple"
+		local bossMap = "Henesys_Boss_Mushmom"
+		local weapon = "WEAPON_WARRIOR_T10"
+		local hat = "ABSOLAB_HAT_WARRIOR"
+		local mat = "MAT_1210102"
+		local S1 = "1단계 · 전직과 마을 차지"
+		local S2 = "2단계 · 월드맵과 사냥"
+		local S3 = "3단계 · 미니언 막기"
+		local S4 = "4단계 · 보스 준비"
+		local S5 = "5단계 · 마을 보스"
+		local S6 = "6단계 · 견제와 발록"
+		local atk = { attack = true }
+		local none = {}
+		local list = {}
+		local add = function(t) table.insert(list, t) end
+
+		-- ── 1단계 ──
+		add({ id = "1-0a", kind = "card", step = S1, chip = "게임 소개", title = "이 게임은 이렇게 이겨요",
+			body = G("슬리피우드 안쪽 보스룸에 있는 주니어 발록") .. "을\n가장 먼저 잡는 사람이 이겨요.\n\n하지만 " .. R("내 넥서스가 부서지면 그 즉시 패배") .. "예요.\n한 판의 기본 제한 시간은 " .. G("45분") .. "이에요.", allow = none })
+		add({ id = "1-0b", kind = "card", step = S1, chip = "게임 소개", title = "성장하면서 지켜요",
+			body = "그래서 발록을 잡을 만큼 " .. G("성장") .. "하면서,\n몰려오는 미니언에게서 " .. G("넥서스도 지켜야") .. " 해요.", allow = none })
+		add({ id = "1-0c", kind = "card", step = S1, chip = "게임 소개", title = "상대를 견제해요",
+			body = "상대가 발록을 잡으러 가면 그 틈에\n" .. G("상대 수비대를 괴롭히거나") .. ", " .. G("내 수비대를 파병") .. " 보내\n상대 마을을 공격해 견제할 수 있어요.", btn = "튜토리얼 시작", allow = none })
+		add({ id = "1-0pg", kind = "act", action = "potion", pin = startMap, allow = none })
+		add({ id = "1-0p", kind = "coach", step = S1, title = "사냥 전에 물약부터", text = "물약을 몇 개 넣어 뒀어요.\n" .. G("캐릭터") .. "(<b>C</b>)를 눌러 가방을 열어요.", finger = true, side = "b", allow = { keys = { K.C }, win = { char = true } }, keep = "char",
+			target = function(d) return { ui = "/ui/StatusHUD/Shortcuts/BtnCharacter" } end,
+			done = function(d) return _StatUIController ~= nil and _StatUIController.isOpen end })
+		add({ id = "1-0pb", kind = "coach", step = S1, title = "왼쪽 아래 칸에 끌어다 놓아요", text = "가방의 " .. G("빨간 포션") .. "을 꾹 눌러 끌어다\n왼쪽 아래 " .. G("1번 칸") .. "에 놓아요.", finger = true, noDim = true, side = "t", allow = { keys = { K.C }, win = { char = true } }, keep = "char",
+			target = function(d) local q = _QuickSlotController if q == nil or not isvalid(q.slot1Btn) then return nil end return d:UiTarget(q.slot1Btn.Entity) end,
+			done = function(d) return d:QuickHas("POTION_RED") end })
+		add({ id = "1-0pc", kind = "coach", step = S1, title = "퀵슬롯 등록 완료!", text = "이제 숫자 키 " .. G("1") .. "(모바일은 칸을 터치)로 물약을 마셔요.\nHP 가 떨어지면 바로 눌러요!", btn = "다음", side = "t", allow = { win = { char = true } }, keep = "char",
+			target = function(d) local q = _QuickSlotController if q == nil or not isvalid(q.slot1Btn) then return nil end return d:UiTarget(q.slot1Btn.Entity) end,
+			onNext = function(d) if _StatUIController ~= nil and _StatUIController.isOpen then _StatUIController:Close() end end })
+		add({ id = "1-1s", kind = "act", action = "snail", moves = true, allow = none })
+		add({ id = "1-1", kind = "coach", step = S1, title = "기본 공격으로 잡아 보세요", text = "<b>Ctrl</b>(모바일은 공격 버튼)을 눌러\n앞에 있는 달팽이를 잡아요.", noDim = true, allow = atk,
+			target = function(d) local e = d:MapChild("Tutorial_100000_") if e == nil then return nil end return { world = { e = e, x1 = -0.5, y1 = -0.2, x2 = 0.5, y2 = 0.6, py = 0.2 } } end,
+			done = function(d) return d.sceneT > 0.8 and d:AliveWithPrefix("Tutorial_100000_") == 0 end })
+		add({ id = "1-2l", kind = "act", action = "lv:10", moves = true, allow = none })
+		add({ id = "1-2", kind = "card", step = S1, chip = "레벨 업", title = "Lv 10! 이제 전직할 수 있어요", body = "Lv 10이 되면 " .. G("전직") .. "을 할 수 있어요.\n\n실제 게임에서는 " .. G("4:00까지 사냥") .. "하고,\n" .. G("4:00 ~ 4:30") .. " 사이에 전직 → 차원의 거울 → 넥서스로 마을을 정해요.\n" .. R("4:30 안에 마을을 정하지 못하면 바로 게임 오버") .. "예요!", allow = none })
+		add({ id = "1-3m", kind = "act", pin = lithMap, action = "near:" .. lithMap .. ":Npc_VD_JOB_WARRIOR_:-1.4", fade = true, map = lithMap, allow = none })
+		add({ id = "1-3", kind = "coach", step = S1, title = "직업마다 전직관이 있어요", text = "전사 · 마법사 · 궁수 · 도적 · 해적 전직관이 나란히 있어요.\n직업은 마을과 상관없이 자유예요. " .. G("이번엔 전사") .. "로 해 볼게요.", btn = "다음", allow = none,
+			target = function(d) return { target = "jobnpc" } end })
+		add({ id = "1-4", kind = "coach", step = S1, title = "전사 전직관을 클릭해요", text = "<b>주먹펴고 일어서</b>를 클릭해 말을 걸어요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_JOB_WARRIOR_") end,
+			done = function(d) return _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen and _CommonNpcUIController.route == "jobchange" end })
+		add({ id = "1-4b", kind = "coach", step = S1, title = "전직하기를 눌러요", text = "아래 " .. G("전직하기") .. "를 누르면 전사가 돼요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) if _CommonNpcUIController == nil then return nil end return d:UiTarget(_CommonNpcUIController.btnTalkYes.Entity) end,
+			done = function(d) return _PlayerSkillState ~= nil and _PlayerSkillState:LocalJobId() == "WARRIOR" end })
+		add({ id = "1-5m", kind = "act", action = "near:" .. lithMap .. ":Npc_VD_LITH_TAXI_:-1.4", fade = true, map = lithMap, allow = none })
+		add({ id = "1-5", kind = "coach", step = S1, title = "차원의 거울로 마을에 가요", text = G("차원의 거울") .. "을 클릭하면 빈 마을로 순간이동할 수 있어요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local e = d:MapChild("Npc_VD_LITH_TAXI_") if e == nil then return nil end return { world = { e = e, x1 = -0.7, y1 = -0.35, x2 = 0.7, y2 = 1.5, py = 0.8 } } end,
+			done = function(d) return _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen and _CommonNpcUIController.route == "taxi" end })
+		add({ id = "1-6a", kind = "coach", pin = villageMap, step = S1, title = "마을은 먼저 차지한 사람 것", text = "마을은 먼저 넥서스를 차지한 사람의 것이에요!\n" .. R("원하는 마을을 다른 사람보다 빨리") .. " 차지해야 해요.\n" .. R("4:30") .. " 안에 못 정하면 바로 게임 오버!", btn = "다음", side = "b", w = 500, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) if _CommonNpcUIController == nil then return nil end return d:UiTarget(_CommonNpcUIController.gateRoot) end })
+		add({ id = "1-6b", kind = "coach", step = S1, title = "헤네시스를 골라요", text = "헤네시스는 궁수 마을이지만 직업과 상관없이 어느 마을이든 고를 수 있어요.\n" .. G("마을마다 특색이 있는데, 이 차이점은 모험을 통해 알아가세요~"), finger = true, side = "b", w = 520, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) if _CommonNpcUIController == nil or not isvalid(_CommonNpcUIController.gateRoot) then return nil end return d:UiTarget(_CommonNpcUIController.gateRoot:GetChildByName("Gate_HENESYS")) end,
+			done = function(d) return _CommonNpcUIController ~= nil and _CommonNpcUIController.selVillage == "HENESYS" end })
+		add({ id = "1-6c", kind = "coach", step = S1, title = "이동을 눌러요", text = G("이동") .. "을 누르면 헤네시스 넥서스 옆으로 가요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) if _CommonNpcUIController == nil then return nil end return d:UiTarget(_CommonNpcUIController.btnPrimary.Entity) end,
+			done = function(d) return d:MapIs(villageMap) end })
+		add({ id = "1-7w", kind = "wait", allow = none, done = function(d) return d.sceneT > 0.8 end })
+		add({ id = "1-7", kind = "coach", step = S1, title = "넥서스를 눌러 내 마을로", text = R("늦으면 다른 사람이 가져가요!") .. "\n넥서스를 눌러 헤네시스를 내 마을로 만들어요.", finger = true, allow = none,
+			target = function(d) local e = d:Facility("CORE") if e == nil then return nil end return { world = { e = e, x1 = -1.3, y1 = -0.2, x2 = 1.3, y2 = 2.6, py = 1.1 } } end,
+			done = function(d) return _OnboardingService ~= nil and _OnboardingService.ownVillage ~= "" end })
+		add({ id = "1-7b", kind = "card", step = S1, chip = "마을 차지", title = "헤네시스는 이제 내 마을!", body = "이제 이 마을의 " .. G("넥서스를 끝까지 지켜야") .. " 해요.\n마을 NPC 들이 성장과 방어를 도와줘요.", allow = none })
+
+		-- ── 2단계 ──
+		add({ id = "2-1", kind = "coach", pin = lane1Map, step = S2, title = "월드맵을 열어 봐요", text = G("월드맵") .. "(<b>M</b>)을 누르면 사냥터와 내 위치가 보여요.", finger = true, side = "b", allow = { keys = { K.M }, win = { map = true } }, keep = "map",
+			target = function(d) return { ui = "/ui/WorldMapGroup/Toolbar/OpenBtn" } end,
+			done = function(d) return _WorldMapController ~= nil and _WorldMapController.isOpen == true end })
+		add({ id = "2-2", kind = "coach", step = S2, title = "내 마을 사냥터", text = "노란 점이 사냥터예요. 내 마을 사냥터는 " .. G("3곳") .. "이고\n사냥터 1부터 차례로 강해져요.", btn = "다음", allow = { win = { map = true } }, keep = "map",
+			target = function(d) return { target = "hunt" } end })
+		add({ id = "2-2b", kind = "coach", step = S2, title = "월드맵 닫기", text = "닫기를 눌러 월드맵을 닫아요.", finger = true, allow = { win = { map = true } }, keep = "map",
+			target = function(d) if _WorldMapController == nil or not isvalid(_WorldMapController.closeBtn) then return nil end return d:UiTarget(_WorldMapController.closeBtn.Entity) end,
+			done = function(d) return _WorldMapController == nil or _WorldMapController.isOpen ~= true end })
+		add({ id = "2-3", kind = "coach", step = S2, title = "포탈로 사냥터에 가요", text = "포탈 위에서 " .. G("↑") .. " 를 누르면 다음 맵으로 이동해요.\n이번엔 바로 사냥터 1로 보내 줄게요.", btn = "다음", allow = none,
+			target = function(d) local e = d:PortalNear(d:Facility("CORE")) if e == nil then return nil end return { world = { e = e, x1 = -0.6, y1 = -0.2, x2 = 0.6, y2 = 1.6, py = 0.7 } } end })
+		add({ id = "2-3m", kind = "act", action = "lane:LANE1:0.5", fade = true, map = lane1Map, allow = none })
+		add({ id = "2-4s", kind = "act", action = "orange", moves = true, allow = none })
+		add({ id = "2-4", kind = "coach", step = S2, title = "잡아서 재화를 모아요", text = "주황버섯을 모두 잡아요. 떨어진 것은 자동으로 주워요.", noDim = true, allow = atk,
+			target = function(d) local e = d:MapChild("Tutorial_1210102_") if e == nil then return nil end return { world = { e = e, x1 = -0.5, y1 = -0.2, x2 = 0.5, y2 = 0.8, py = 0.3 } } end,
+			done = function(d) return d.sceneT > 0.8 and d:AliveWithPrefix("Tutorial_1210102_") == 0 end })
+		add({ id = "2-5g", kind = "act", action = "grant", allow = none })
+		add({ id = "2-5", kind = "card", step = S2, chip = "재화", title = "재화를 얻었어요",
+			body = G("메소") .. " · " .. G("몬스터 재료") .. " · " .. G("빅토리아 주화") .. " · " .. G("지역 재화") .. "를 얻었어요.\n쓰는 곳은 마을 NPC 들이에요. 차례로 써 볼게요!", allow = none })
+
+		-- ── 3단계 ──
+		add({ id = "3-0am", kind = "act", pin = lane2Map, action = "lanestart", fade = true, map = lane2Map, allow = none })
+		add({ id = "3-0a", kind = "coach", step = S3, title = "미니언은 이쪽에서 와요", text = "미니언은 " .. G("약 3분마다") .. " 몰려와서\n내 마을 " .. R("넥서스") .. "를 노려요.", btn = "다음", allow = none })
+		add({ id = "3-0bm", kind = "act", action = "fac:TOWER:2.4", fade = true, map = lane2Map, allow = none })
+		add({ id = "3-0b", kind = "coach", step = S3, title = "포탑 = 1차 방어선", text = G("포탑") .. "이 1차 방어선이에요.\n다가오는 미니언을 먼저 때려요.", btn = "다음", allow = none,
+			target = function(d) local e = d:Facility("TOWER") if e == nil then return nil end return { world = { e = e, x1 = -1.0, y1 = -0.2, x2 = 1.0, y2 = 2.6, py = 1.1 } } end })
+		add({ id = "3-0cm", kind = "act", action = "fac:SUPPRESSOR:2.4", fade = true, map = lane1Map, allow = none })
+		add({ id = "3-0c", kind = "coach", step = S3, title = "억제기", text = G("억제기") .. "가 부서지면 크게 터지면서 " .. G("주변 미니언이 모두 폭사") .. "해요.\n대신 넥서스가 드러나요.", btn = "다음", allow = none,
+			target = function(d) local e = d:Facility("SUPPRESSOR") if e == nil then return nil end return { world = { e = e, x1 = -1.0, y1 = -0.2, x2 = 1.0, y2 = 2.6, py = 1.1 } } end })
+		add({ id = "3-0dm", kind = "act", action = "fac:CORE:2.0", fade = true, map = villageMap, allow = none })
+		add({ id = "3-0d", kind = "coach", step = S3, title = "넥서스", text = R("넥서스가 부서지면 패배") .. "예요!", btn = "다음", allow = none,
+			target = function(d) local e = d:Facility("CORE") if e == nil then return nil end return { world = { e = e, x1 = -1.3, y1 = -0.2, x2 = 1.3, y2 = 2.6, py = 1.1 } } end })
+		add({ id = "3-0em", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_DEFENSE_TOWER_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "3-0e", kind = "coach", step = S3, title = "방어 시설 관리인", text = "포탑 · 억제기 · 넥서스 셋 다 " .. G("방어 시설 관리인") .. "에게서\n" .. G("수리 · 재건 · 강화") .. "할 수 있어요.", btn = "다음", allow = none,
+			target = function(d) return d:NpcTarget("Npc_VD_DEFENSE_TOWER_") end })
+		add({ id = "3-0f", kind = "card", step = S3, chip = "미니언 막기", title = "미니언은 세요!", body = R("앞에서 맞서지 말고") .. ",\n포탑과 수비대가 몸으로 막는 동안 " .. G("뒤에서 공격") .. "하세요.", allow = none })
+		add({ id = "3-1", kind = "card", step = S3, chip = "미니언 막기", title = "곧 미니언이 몰려와요!", body = "포탑 혼자서는 벅차요. " .. G("수비대") .. "를 불러요.", allow = none })
+		add({ id = "3-2m", kind = "act", pin = villageMap, action = "near:" .. villageMap .. ":Npc_VD_RECORD_COLLECTION_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "3-2", kind = "coach", step = S3, title = "도감에 등록해요", text = G("아까 잡은 주황버섯") .. "의 재료가 있으니 도감에 등록해요.\n등록한 몬스터만 수비대로 부를 수 있어요.", finger = true, w = 500, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_RECORD_COLLECTION_") end,
+			done = function(d) return _VillageRecordUIController ~= nil and _VillageRecordUIController.isOpen end })
+		add({ id = "3-3", kind = "coach", step = S3, title = "주황버섯을 골라요", text = "도감에서 " .. G("주황버섯") .. "을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _VillageRecordUIController if c == nil or not isvalid(c.collGrid) then return nil end return d:UiTarget(d:FindByText(c.collGrid.Entity, "주황버섯")) end,
+			done = function(d) local c = _VillageRecordUIController if c == nil or c.collRows == nil or c.selColl < 1 then return false end local r = c.collRows[c.selColl] return r ~= nil and r.id == "1210102" end })
+		add({ id = "3-3b", kind = "coach", step = S3, title = "해금을 눌러요", text = "재료 8개로 " .. G("해금") .. "해요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _VillageRecordUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			enter = function(d) d.mem.mat0 = d:ItemCount(mat) end,
+			done = function(d) return d:ItemCount(mat) < (d.mem.mat0 or 0) end })
+		add({ id = "3-3c", kind = "coach", step = S3, title = "등록 완료!", text = "이제 주황버섯을 수비대로 부를 수 있어요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "3-4m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_PRODUCTION_RECRUIT_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "3-4", kind = "coach", step = S3, title = "수비대 모집관을 눌러 봐요", text = "등록했으니 이제 " .. G("몬스터 모집관") .. "을 눌러 봐요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_PRODUCTION_RECRUIT_") end,
+			done = function(d) return _VillageLifeUIController ~= nil and _VillageLifeUIController.isOpen end })
+		add({ id = "3-5", kind = "coach", step = S3, title = "몬스터를 골라요", text = G("주황버섯") .. " 카드를 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _VillageLifeUIController if c == nil then return nil end return d:UiTarget(d:FindByText(c.cardRoot, "주황버섯")) end,
+			done = function(d) return _VillageLifeUIController ~= nil and _VillageLifeUIController.selUnit == "1210102" end })
+		add({ id = "3-5b", kind = "coach", step = S3, title = "재화를 내고 모집해요", text = "몬스터를 고르고 재화를 내면\n" .. G("제 포탑을 지켜 줍니다!"), finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _VillageLifeUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			enter = function(d) d.mem.mat1 = d:ItemCount(mat) end,
+			done = function(d) return d:ItemCount(mat) < (d.mem.mat1 or 0) end })
+		add({ id = "3-5c", kind = "coach", step = S3, title = "수비대 모집 완료!", text = "주황버섯 5마리가 최전방 포탑 앞에 모였어요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "3-6m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_DEFENSE_TOWER_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "3-6", kind = "coach", step = S3, title = "포탑을 강화해요", text = G("빅토리아 주화") .. "로 포탑을 강화해요.\n" .. G("방어 시설 관리인") .. "을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_DEFENSE_TOWER_") end,
+			done = function(d) return _VillageDefenseUIController ~= nil and _VillageDefenseUIController.isOpen end })
+		add({ id = "3-6b", kind = "coach", step = S3, title = "강화를 눌러요", text = "포탑 카드의 " .. G("강화") .. "를 눌러요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _VillageDefenseUIController if c == nil or not isvalid(c.cardRoot) then return nil end local card = c.cardRoot:GetChildByName("Card_TOWER") if not isvalid(card) then return nil end return d:UiTarget(card:GetChildByName("BtnUpgrade")) end,
+			done = function(d) local c = _VillageDefenseUIController if c == nil or not isvalid(c.cardRoot) then return false end local card = c.cardRoot:GetChildByName("Card_TOWER") if not isvalid(card) then return false end local lv = card:GetChildByName("LvText") return isvalid(lv) and lv.TextGUIRendererComponent ~= nil and lv.TextGUIRendererComponent.Text == "Lv 2" end })
+		add({ id = "3-6c", kind = "coach", step = S3, title = "포탑 Lv 2!", text = "포탑이 더 세졌어요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "3-7m", kind = "act", pin = lane2Map, action = "fac:TOWER:3.0", fade = true, map = lane2Map, allow = none })
+		add({ id = "3-7a", kind = "coach", step = S3, title = "웨이브가 와요!", text = "포탑과 수비대가 앞에서 막아요.\n우리는 " .. G("수비대 뒤에서") .. " 같이 공격해요.", btn = "다음", allow = none,
+			target = function(d) local e = d:Facility("TOWER") if e == nil then return nil end return { world = { e = e, x1 = -1.0, y1 = -0.2, x2 = 1.0, y2 = 2.6, py = 1.1 } } end })
+		add({ id = "3-7w", kind = "act", action = "wave", allow = none })
+		add({ id = "3-7", kind = "coach", step = S3, title = "웨이브를 막아요", text = "수비대 뒤에서 " .. G("공격") .. "해요. 미니언이 다 쓰러지면 끝!", noDim = true, allow = atk,
+			enter = function(d) d.mem.waveSeen = false end,
+			done = function(d) local n = d:AliveMinions() if n > 0 then d.mem.waveSeen = true end return (d.mem.waveSeen and n == 0) or d.sceneT > 90 end })
+		add({ id = "3-7b", kind = "card", step = S3, chip = "웨이브 방어", title = "웨이브를 막았어요!", body = "웨이브를 막으면 경험치를 많이 얻어요.", allow = none })
+		add({ id = "3-8l", kind = "act", action = "lv:20", moves = true, allow = { win = { npc = true } }, keep = "npc" })
+		add({ id = "3-8", kind = "coach", step = S3, title = "Lv 20! 2차 전직", text = "Lv 20 · 30이 되면 " .. G("전직 창이 저절로") .. " 열려요.\n" .. G("전직하기") .. "를 눌러요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _CommonNpcUIController if c == nil or not c.isOpen or c.route ~= "advance" then return nil end return d:UiTarget(c.btnTalkYes.Entity) end,
+			done = function(d) return d:Tier() >= 2 end, timeout = 30 })
+
+		-- ── 4단계 ──
+		add({ id = "4-1", kind = "card", pin = villageMap, step = S4, chip = "보스 준비", title = "다음 목표는 마을 보스!", body = "웨이브를 막았으니 이제 " .. G("마을 보스") .. "를 잡으러 가요.\n" .. G("보스를 잡으러 가기 전이니까") .. " 장비를 만들고, 물약을 사고,\n장비를 강화해 두면 훨씬 쉬워요. 웨이브 사이 남는 시간에 하면 좋아요.", allow = none })
+		add({ id = "4-1m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_WORKSHOP_CRAFT_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "4-1b", kind = "card", step = S4, chip = "공방 구역", title = "장인들에게 가면 나를 강화할 수 있어요",
+			body = "마을 " .. G("공방 구역") .. "의 장인들이에요.\n\n" .. G("제작 장인") .. "  지역 재화 · 메소로 장비를 만들어요\n" .. G("강화 장인") .. "  메소(+ 보석)로 입은 장비를 강화해요\n" .. G("물약 상인") .. "  메소로 물약을 사요", allow = none })
+		add({ id = "4-2", kind = "coach", step = S4, title = "제작 장인", text = G("제작 장인") .. "을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_WORKSHOP_CRAFT_") end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.isOpen and _WorkshopUIController.route == "craft" end })
+		add({ id = "4-2b", kind = "coach", step = S4, title = "무기를 골라요", text = G(self:ItemName(weapon)) .. "를 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil or not isvalid(c.craftGrid) then return nil end return d:UiTarget(d:FindByText(c.craftGrid.Entity, d:ItemName(weapon))) end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.craftSel == "RECIPE_" .. weapon end })
+		add({ id = "4-2c", kind = "coach", step = S4, title = "제작을 눌러요", text = "지역 재화와 메소로 " .. G("제작") .. "해요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			done = function(d) return d:ItemCount(weapon) > 0 end })
+		add({ id = "4-2d", kind = "coach", step = S4, title = "새 장비!", text = "만든 장비는 가방에 들어가요. 입어 볼게요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "4-2e", kind = "coach", step = S4, title = "캐릭터 창을 열어요", text = G("캐릭터") .. "(<b>C</b>)를 눌러요.", finger = true, side = "b", allow = { keys = { K.C }, win = { char = true } }, keep = "char",
+			target = function(d) return { ui = "/ui/StatusHUD/Shortcuts/BtnCharacter" } end,
+			done = function(d) return _StatUIController ~= nil and _StatUIController.isOpen end })
+		add({ id = "4-2f", kind = "coach", step = S4, title = "장비를 입어요", text = "가방의 " .. G("새 무기") .. "를 누르면 바로 입어요.", finger = true, allow = { win = { char = true } }, keep = "char",
+			target = function(d) local inv = _InventoryUIController if inv == nil or not isvalid(inv.grid) then return nil end return d:UiTarget(d:FindByText(inv.grid.Entity, d:ItemName(weapon))) end,
+			done = function(d) local e = d:Equipped("WEAPON") return e ~= nil and e.itemId == weapon end })
+		add({ id = "4-2g", kind = "coach", step = S4, title = "장착 완료!", text = "입은 장비는 캐릭터에도 보여요.", btn = "다음", allow = { win = { char = true } }, keep = "char",
+			onNext = function(d) if _StatUIController ~= nil and _StatUIController.isOpen then _StatUIController:Close() end end })
+		add({ id = "4-3m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_SHOP_POTION_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "4-3", kind = "coach", step = S4, title = "물약 상인", text = "보스전에 대비해 " .. G("물약") .. "을 사요. 물약 상인을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_SHOP_POTION_") end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.isOpen and _WorkshopUIController.route == "potion" end })
+		add({ id = "4-3b", kind = "coach", step = S4, title = "빨간 포션", text = G("빨간 포션") .. "을 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil or not isvalid(c.potionGrid) then return nil end return d:UiTarget(d:FindByText(c.potionGrid.Entity, "빨간 포션")) end,
+			enter = function(d) d.mem.pot0 = d:ItemCount("POTION_RED") end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.potionSel ~= "" end })
+		add({ id = "4-3c", kind = "coach", step = S4, title = "구매를 눌러요", text = G("구매") .. "를 누르면 메소로 물약을 사요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			done = function(d) return d:ItemCount("POTION_RED") > (d.mem.pot0 or 0) end })
+		add({ id = "4-3d", kind = "coach", step = S4, title = "물약은 아까 그 칸에", text = "산 물약은 아까 등록한 왼쪽 아래 " .. G("1번 칸") .. "에 바로 더해져요.\n숫자 키 " .. G("1") .. "로 마셔요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "4-4m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_WORKSHOP_ENHANCE_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "4-4", kind = "coach", step = S4, title = "강화 장인", text = "입은 장비를 " .. G("강화") .. "해요. 강화 장인을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_WORKSHOP_ENHANCE_") end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.isOpen and _WorkshopUIController.route == "enhance" end })
+		add({ id = "4-4b", kind = "coach", step = S4, title = "강화할 장비를 골라요", text = "가운데 칸을 눌러 강화할 장비를 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.targetSlot.Entity) end,
+			done = function(d) local c = _WorkshopUIController return c ~= nil and isvalid(c.contentPick) and c.contentPick.EnabledInHierarchy end })
+		add({ id = "4-4c", kind = "coach", step = S4, title = "방금 입은 무기", text = "방금 입은 " .. G("무기") .. "를 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil or not isvalid(c.pickGrid) then return nil end return d:UiTarget(d:FindByText(c.pickGrid.Entity, d:ItemName(weapon))) end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.targetIid ~= "" end })
+		add({ id = "4-4d", kind = "coach", step = S4, title = "보석을 넣어요", text = "보석 칸을 눌러 " .. G("다이아몬드") .. "를 넣어요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.gemSlot0.Entity) end,
+			done = function(d) local c = _WorkshopUIController return c ~= nil and ((isvalid(c.gemPickRoot) and c.gemPickRoot.EnabledInHierarchy) or (c.chosenGems ~= nil and #c.chosenGems > 0)) end })
+		add({ id = "4-4e", kind = "coach", step = S4, title = "다이아몬드", text = G("다이아몬드") .. "를 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil or not isvalid(c.gemPickRoot) or not c.gemPickRoot.EnabledInHierarchy then return nil end return d:UiTarget(d:FindByText(c.gemPickRoot, "다이아몬드")) end,
+			done = function(d) local c = _WorkshopUIController return c ~= nil and c.chosenGems ~= nil and #c.chosenGems > 0 end })
+		add({ id = "4-4f", kind = "coach", step = S4, title = "강화를 눌러요", text = "메소와 보석으로 " .. G("강화") .. "해요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			done = function(d) local e = d:Equipped("WEAPON") return e ~= nil and (e.enh or 0) >= 1 end })
+		add({ id = "4-4g", kind = "coach", step = S4, title = "강화 성공!", text = "무기가 " .. G("+1") .. " 이 됐어요. 이제 보스를 잡으러 가요!", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+
+		-- ── 5단계 ──
+		add({ id = "5-0a", kind = "card", pin = bossMap, step = S5, chip = "마을 보스", title = "주니어 발록 전에 마을 보스!", body = "주니어 발록에게 가기 전에 " .. G("마을 보스") .. "를 잡아야 해요.\n헤네시스의 보스는 " .. G("머쉬맘") .. "이에요.\n원래는 사냥터 3 끝 포탈로 " .. G("지역 재화 25개") .. "를 내고 들어가요.", allow = none })
+		add({ id = "5-0m", kind = "act", action = "boss", fade = true, map = bossMap, allow = none })
+		add({ id = "5-0b", kind = "coach", step = S5, title = "보스를 잡아 봐요", text = "머쉬맘을 공격해요! 가장 많이 때린 사람이 보상을 받아요.", noDim = true, allow = atk,
+			target = function(d) local e = d:MapChild("Boss_") if e == nil then return nil end return { world = { e = e, x1 = -1.2, y1 = -0.2, x2 = 1.2, y2 = 2.2, py = 1.0 } } end,
+			done = function(d) return d:ItemCount("MAPLE_SEAL_STONE") > 0 or d.sceneT > 120 end })
+		add({ id = "5-0c", kind = "card", step = S5, chip = "보스 보상", title = "특수 재화를 얻었어요", body = "마을 보스는 특수 재화 " .. G("단풍 봉인석") .. "을 줘요.\n" .. G("제작 장인") .. "에게서 " .. G("앱솔랩스 장비") .. "로 바꿀 수 있어요.\n\n주니어 발록 입장 재료 " .. G("낙인의 영혼석") .. "도 많이 줘요.", allow = none })
+		add({ id = "5-0cm", kind = "act", pin = villageMap, action = "near:" .. villageMap .. ":Npc_VD_WORKSHOP_CRAFT_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "5-0d", kind = "coach", step = S5, title = "제작 장인에게 교환", text = G("제작 장인") .. "을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_WORKSHOP_CRAFT_") end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.isOpen and _WorkshopUIController.route == "craft" end })
+		add({ id = "5-0e", kind = "coach", step = S5, title = "앱솔랩스 장비", text = G(self:ItemName(hat)) .. "를 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil or not isvalid(c.craftGrid) then return nil end return d:UiTarget(d:FindByText(c.craftGrid.Entity, d:ItemName(hat))) end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.craftSel == "RECIPE_" .. hat end })
+		add({ id = "5-0f", kind = "coach", step = S5, title = "교환을 눌러요", text = "단풍 봉인석 1개로 " .. G("교환") .. "해요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			done = function(d) return d:ItemCount(hat) > 0 end })
+		add({ id = "5-0g", kind = "coach", step = S5, title = "교환 완료!", text = "앱솔랩스 장비는 캐릭터 창에서 입을 수 있어요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "5-0h", kind = "card", step = S5, chip = "발록 입장 재료", title = "낙인의 영혼석", body = "주니어 발록 입장 재료 " .. G("낙인의 영혼석") .. "은\n" .. G("엘리트 몬스터도 주지만 보스가 훨씬 많이 줘요") .. " (방금 20개!).", allow = none })
+
+		-- ── 6단계 ──
+		add({ id = "6-0l", kind = "act", action = "lv:30", moves = true, allow = { win = { npc = true } }, keep = "npc" })
+		add({ id = "6-0", kind = "coach", step = S6, title = "Lv 30! 3차 전직", text = "이번에도 " .. G("전직 창이 저절로") .. " 열렸어요. " .. G("전직하기") .. "!", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _CommonNpcUIController if c == nil or not c.isOpen or c.route ~= "advance" then return nil end return d:UiTarget(c.btnTalkYes.Entity) end,
+			done = function(d) return d:Tier() >= 3 end, timeout = 30 })
+		add({ id = "6-1", kind = "card", step = S6, chip = "견제", title = "저 사람 발록 잡으러 가요!!", emblem = self.rivalEmblem, hp = 0.18, hpText = self.rivalName .. " 넥서스 18%",
+			body = G("가상 상대") .. "가 주니어 발록에 도전하러 갔어요. 무척 세 보이는데…\n방어는 어느 정도 해 놓았지만 " .. R("넥서스 체력이 간당간당") .. "하네요!!\n곧 미니언 웨이브이기도 하니 " .. G("수비대를 파병") .. " 보내서\n미니언 공격에 가담해요!", allow = none })
+		add({ id = "6-1b", kind = "card", step = S6, chip = "견제 규칙", title = "직접 때릴 수 있는 것 · 없는 것",
+			body = "상대 마을의 " .. G("수비대 몬스터는 직접 공격할 수 있어요") .. ".\n하지만 " .. R("포탑 · 억제기 · 넥서스는 직접 공격할 수 없어요") .. " — 파병한 수비대와 미니언이 부숴요.\n\n그리고 " .. R("상대 포탑은 플레이어에게 10배 피해") .. "를 주니\n가까이 가지 않는 게 좋아요!", allow = none })
+		add({ id = "6-2d", kind = "act", action = "ensuredef", allow = none })
+		add({ id = "6-2m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_COMMON_DISPATCH_OFFICER_:-1.4", fade = true, map = villageMap, allow = none })
+		add({ id = "6-2", kind = "coach", step = S6, title = "파병 담당관", text = G("파병 담당관") .. "을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) return d:NpcTarget("Npc_VD_COMMON_DISPATCH_OFFICER_") end,
+			done = function(d) return _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen and _CommonNpcUIController.route == "dispatch" end })
+		add({ id = "6-2b", kind = "coach", step = S6, title = "상대 마을을 골라요", text = G(self.rivalName) .. "(가상 상대)을 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _CommonNpcUIController if c == nil or not isvalid(c.targetRoot) then return nil end return d:UiTarget(d:FindByText(c.targetRoot, d.rivalName)) end,
+			done = function(d) return _CommonNpcUIController ~= nil and _CommonNpcUIController.selVillage == ((_TutorialService ~= nil) and _TutorialService.RivalVillageId or "ELLINIA") end })
+		add({ id = "6-2c", kind = "coach", step = S6, title = "파병을 눌러요", text = G("파병") .. "을 누르면 다음 웨이브에 섞여 상대 마을로 가요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _CommonNpcUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
+			done = function(d) local c = _CommonNpcUIController return c ~= nil and c.queue ~= nil and #c.queue > 0 end })
+		add({ id = "6-2e", kind = "coach", step = S6, title = "파병 접수!", text = "다음 웨이브 미니언 뒤에 붙어 출발해요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
+			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		add({ id = "6-2w", kind = "act", action = "wave", allow = none })
+		add({ id = "6-3", kind = "card", pin = "", step = S6, chip = "주니어 발록", title = "이제 나도 발록을 잡으러!", body = G("Lv 30") .. " · " .. G("낙인의 영혼석 5개") .. "를 모아\n" .. G("슬리피우드 안쪽 보스룸") .. "의 주니어 발록에게 가요.\n가장 먼저 잡으면 승리!", allow = none })
+		add({ id = "6-4", kind = "card", step = S6, chip = "튜토리얼 완료", title = "튜토리얼 완료!",
+			body = "전직하고 " .. G("마을을 먼저 차지") .. "하고,\n사냥으로 성장하며 " .. G("수비대 · 포탑") .. "으로 넥서스를 지키고,\n" .. G("마을 보스") .. " → " .. G("주니어 발록") .. " 순서로 잡아요.\n\n모르는 게 있으면 " .. G("도움말(H)") .. "을 열어 보세요.", btn = "로비로", final = true, allow = none })
+		self.scenes = list
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 연결 해제.
+		if self.handlers ~= nil then
+			for _, x in ipairs(self.handlers) do
+				if isvalid(x.e) then
+					x.e:DisconnectEvent(ButtonClickEvent, x.h)
+				end
+			end
+		end
+		self.handlers = {}
+	end
+end

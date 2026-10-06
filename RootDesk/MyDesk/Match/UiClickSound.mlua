@@ -1,0 +1,138 @@
+@Logic
+script UiClickSound extends Logic
+
+	-- 모든 UI 버튼 클릭음 (사용자 2026-10-06 "ui 버튼 클릭음도 범용 리소스 모음에서 가져와서"). 클라 전용.
+	-- 소리 = MSW 공식 "범용 리소스 모음"(크리에이터 센터 postId=936)의 "버튼 클릭 효과음".
+	-- /ui 아래를 프레임마다 ScanPerFrame 개씩 깊이 우선으로 훑어, 처음 보는 ButtonComponent 에 ButtonClickEvent 를 건다.
+	--   컨트롤러가 나중에 복제한 버튼(목록 칸 등)도 다음 바퀴에 잡힌다. 한 바퀴가 끝나면 사라진 버튼을 정리하고 /ui 부터 다시.
+	-- 자기 클릭음을 이미 내는 창은 겹치지 않게 뺀다(SkipGroups · 월드맵 = WorldMapController.PlayClick).
+
+	property string ClickSoundRUID = "972843e759204d3e9ad84e7d3fa94f83"
+
+	property number Volume = 0.8
+
+	-- 프레임당 훑는 엔티티 수(한 바퀴 ≈ UI 엔티티 수 ÷ 이 값 프레임)
+	property integer ScanPerFrame = 150
+
+	-- 쉼표 목록 · UIGroup 이름
+	property string SkipGroups = "WorldMapGroup"
+
+	-- 같은 순간 겹쳐 울리지 않게(초)
+	property number MinGapSeconds = 0.05
+
+	-- hooked[entityId] = { e = Entity, h = 핸들러 }
+	@HideFromInspector
+	property any hooked = nil
+
+	@HideFromInspector
+	property any stack = nil
+
+	@HideFromInspector
+	property any skip = nil
+
+	@HideFromInspector
+	property number lastAt = 0
+
+	@HideFromInspector
+	property integer hookedCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 상태 준비 · 첫 바퀴는 OnUpdate 가 시작한다.
+		self.hooked = {}
+		self.stack = {}
+		self.skip = {}
+		for g in string.gmatch(self.SkipGroups, "[^,]+") do
+			self.skip[g] = true
+		end
+		log("[UiClick] ready sound=" .. self.ClickSoundRUID)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 스택이 비면 새 바퀴(정리 + /ui 의 그룹들), 아니면 ScanPerFrame 개만 처리.
+		if self.stack == nil then
+			return
+		end
+		if #self.stack == 0 then
+			self:StartRound()
+			return
+		end
+		local n = 0
+		while n < self.ScanPerFrame and #self.stack > 0 do
+			local e = table.remove(self.stack)
+			n = n + 1
+			if isvalid(e) then
+				if e.ButtonComponent ~= nil and self.hooked[e.Id] == nil then
+					self:Hook(e)
+				end
+				for _, c in ipairs(e.Children) do
+					table.insert(self.stack, c)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartRound()
+		-- 사라진 버튼을 빼고 /ui 의 그룹(SkipGroups 제외)을 스택에 넣는다.
+		local alive = {}
+		local count = 0
+		for id, x in pairs(self.hooked) do
+			if isvalid(x.e) then
+				alive[id] = x
+				count = count + 1
+			end
+		end
+		self.hooked = alive
+		if count ~= self.hookedCount then
+			self.hookedCount = count
+			log("[UiClick] buttons=" .. tostring(count))
+		end
+		local root = _EntityService:GetEntityByPath("/ui")
+		if not isvalid(root) then
+			return
+		end
+		for _, g in ipairs(root.Children) do
+			if isvalid(g) and not self.skip[g.Name] then
+				table.insert(self.stack, g)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hook(Entity e)
+		-- 이 버튼에 클릭음을 건다(한 번만).
+		local h = e:ConnectEvent(ButtonClickEvent, function()
+			self:Play()
+		end)
+		self.hooked[e.Id] = { e = e, h = h }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Play()
+		-- 클릭음 1회(MinGapSeconds 안의 중복은 무시).
+		local now = _UtilLogic.ElapsedSeconds
+		if now - self.lastAt < self.MinGapSeconds then
+			return
+		end
+		self.lastAt = now
+		if self.ClickSoundRUID ~= "" then
+			_SoundService:PlaySound(self.ClickSoundRUID, self.Volume)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 걸어 둔 핸들러를 푼다.
+		if self.hooked ~= nil then
+			for _, x in pairs(self.hooked) do
+				if isvalid(x.e) and x.h ~= nil then
+					x.e:DisconnectEvent(ButtonClickEvent, x.h)
+				end
+			end
+		end
+		self.hooked = {}
+		self.stack = {}
+	end
+end

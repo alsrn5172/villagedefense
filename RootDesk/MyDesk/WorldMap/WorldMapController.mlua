@@ -185,6 +185,18 @@ script WorldMapController extends Logic
 	@HideFromInspector
 	property string goalMaps = ""
 
+	-- 노드 더블클릭 판정 간격(초) · 마지막 클릭 노드 · 시각 (길안내 PortalNav · 사용자 2026-10-06)
+	property number DoubleClickSeconds = 0.4
+
+	@HideFromInspector
+	property integer lastClickIdx = 0
+
+	@HideFromInspector
+	property number lastClickAt = -10
+
+	-- 목표 핀(GoalMarker_0~5)을 그릴지. 사용자 2026-10-06 "월드맵에 뜨는 목표 핀 없애" → false. 내 위치 핀은 그대로.
+	property boolean ShowGoalPins = false
+
 	@HideFromInspector
 	property integer selectedIndex = 0
 
@@ -352,6 +364,8 @@ script WorldMapController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnKeyDown(KeyDownEvent event)
 		-- M키로 월드맵 토글.
+		-- 튜토리얼(WO-051): 장면이 허락한 키만 받는다.
+		if _TutorialDirector ~= nil and not _TutorialDirector:KeyAllowed(event.key) then return end
 		if _ChatService ~= nil and _ChatService.typing then return end -- 채팅 입력 중엔 단축키를 무시한다(WO-043)
 		if event.key == KeyboardKey.M then
 			self:Toggle()
@@ -669,7 +683,8 @@ script WorldMapController extends Logic
 			if isvalid(mk) then mk.Enable = false end
 		end
 		local overlapHere = false
-		if self.isOpen and self.goalMaps ~= "" and self.regions ~= nil then
+		-- 목표 핀은 끈다(사용자 2026-10-06 "월드맵에 뜨는 목표 핀 없애") — 안내 · 튜토리얼이 맵 목록을 보내도 그리지 않는다. 다시 켜려면 ShowGoalPins = true.
+		if self.ShowGoalPins and self.isOpen and self.goalMaps ~= "" and self.regions ~= nil then
 			local i = 0
 			for mapName in string.gmatch(self.goalMaps, "[^,]+") do
 				for _, r in ipairs(self.regions) do
@@ -969,6 +984,21 @@ script WorldMapController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void OnRegionDoubleClick(integer idx)
+		-- 노드 더블클릭: 그 맵까지 길안내를 켜고(같은 곳이면 끔 · 다른 곳이면 목적지 바꿈) 바로 화살표가 보이게 지도를 닫는다.
+		local r = self.regions[idx]
+		if r == nil or r.mapName == nil or tostring(r.mapName) == "" or _PortalNav == nil then
+			return
+		end
+		self:PlayClick()
+		local started = _PortalNav:Toggle(tostring(r.mapName), tostring(r.name or r.mapName))
+		log("[WorldMap] double click " .. tostring(r.mapName) .. " nav=" .. tostring(started))
+		if started and self.isOpen then
+			self:CloseMap()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
 	method void OnRegionClick(integer idx)
 		-- 지역 선택: 효과음 + SelectedMarker 이동 + 하단 정보 + 파병 리모컨 열기.
 		-- 관전 중(탈락 · SpectateService)이면 지역 클릭 = 그 맵으로 카메라 이동 (2026-09-08).
@@ -980,6 +1010,15 @@ script WorldMapController extends Logic
 			self:CloseMap()
 			return
 		end
+		-- 더블클릭(같은 노드를 DoubleClickSeconds 안에 두 번) = 그곳까지 길안내(PortalNav · 사용자 2026-10-06). 모바일 두 번 탭도 같은 UITouchUp.
+		local now = _UtilLogic.ElapsedSeconds
+		if idx == self.lastClickIdx and now - self.lastClickAt <= self.DoubleClickSeconds then
+			self.lastClickIdx = 0
+			self:OnRegionDoubleClick(idx)
+			return
+		end
+		self.lastClickIdx = idx
+		self.lastClickAt = now
 		-- regionClickEnabled=false 면 아무 효과 없음 (hover 툴팁만 산다).
 		if not self.regionClickEnabled then
 			return

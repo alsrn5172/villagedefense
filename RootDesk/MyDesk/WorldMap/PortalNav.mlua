@@ -1,0 +1,473 @@
+@Logic
+script PortalNav extends Logic
+
+	-- 월드맵 더블클릭 길안내 (사용자 2026-10-06). 클라 전용 · 보여 주기만 한다(포탈 이동 · 입장 판정은 지금처럼 PortalNetwork · 서버).
+	--   월드맵에서 가고 싶은 노드를 더블클릭 → 지금 맵에서 그 맵까지 포탈을 가장 적게 타는 길(PortalRoutes 표 · 너비 우선 탐색)을 찾고,
+	--   머리 위에 다음 포탈 쪽 키캡 화살표(← → · 포탈이 위/아래 층이면 ↑ ↓)를 띄운다. 그 포탈 위에 서면 "↑ 포탈" 키캡.
+	--   맵이 바뀔 때마다 다시 찾는다(길을 벗어나도 그 자리에서 다시 계산).
+	--   끝내기(사용자 선택): 도착하면 자동 · 화살표 옆 [X] · 같은 곳 다시 더블클릭 · 다른 곳 더블클릭 = 목적지 바꿈.
+	--   막힌 곳은 안내하지 않고 토스트로 이유만(사용자 선택): 4:30 뒤 리스항구(밖 → 안) · 입장료 있는 마을 보스 맵 · 주니어 발록 방. 튜토리얼 중엔 안 쓴다.
+	--   그림 = MSW 공식 "범용 리소스 모음"(크리에이터 센터 postId=936)의 화살표 · 포탈 안내 키캡 첫 장 — PortalNavGroup 에 다섯 장을 다 박아 두고 켜고 끄기만 한다
+	--   (그림 RUID 를 스크립트 문자열로만 들면 출시본에서 빠질 수 있다 · 2026-10-06 이름표 판 사례).
+	--   UUID 는 Docs/tools/design-ui/apply-portal-nav.cjs 가 write({bind}) 로 넣는다. 손으로 고치지 않는다.
+
+	property Entity root = "ec3749e7-5e48-4243-859a-0b994ef61f09"
+
+	property Entity nav = "c7823066-c7fd-416b-8dd2-122650bd2704"
+
+	property Entity arrowLeft = "30701d01-4882-439b-9c7a-78ce0dd92595"
+
+	property Entity arrowRight = "0c3e8b1c-a594-40eb-91d3-02ff3bfbf9b9"
+
+	property Entity arrowUp = "cd93d84c-0efc-4884-80df-ced2d71aa925"
+
+	property Entity arrowDown = "32bd4732-6b4c-4320-8878-4ff50b050403"
+
+	property Entity arrowPortal = "d323e49c-2e2d-4e84-85b1-ad0558c3247a"
+
+	property ButtonComponent btnClose = "ae1dc44f-7f06-4ec9-968e-1b5b93fc1cf3"
+
+	-- 발 → 화살표 가운데 높이(유닛) · 머리 끝 약 0.7(Play 실측) + 여유
+	property number HeadOffset = 1.15
+
+	-- 길 · 상태 다시 보기 간격(초) — 화살표 자리는 매 프레임
+	property number TickSeconds = 0.15
+
+	-- 포탈이 다른 층일 때 ↑ ↓: 가로 차이가 이 안이고(유닛) 세로 차이가 이보다 크면
+	property number VerticalNearX = 1.2
+
+	property number VerticalMinY = 1.0
+
+	-- 위아래로 살짝 흔들기(캔버스 px · 초당 라디안)
+	property number BobAmp = 5
+
+	property number BobSpeed = 4
+
+	-- 리스항구 입장이 열린 마지막 페이즈 번호(MatchSessionLogic.CurrentPhase · @Sync · 1 = PHASE0-1 · 2 = PHASE0-2).
+	--   PortalNetwork.IsLithOpen 은 CurrentPhaseName(동기화 안 됨)을 읽어 클라에선 늘 열림이라 못 쓴다. LithOpenPhases 를 바꾸면 이것도 같이.
+	property integer LithOpenMaxPhase = 2
+
+	@HideFromInspector
+	property string target = ""
+
+	@HideFromInspector
+	property string targetLabel = ""
+
+	@HideFromInspector
+	property string curMap = ""
+
+	@HideFromInspector
+	property integer curPhase = -1
+
+	@HideFromInspector
+	property string nextPortal = ""
+
+	@HideFromInspector
+	property integer hops = 0
+
+	@HideFromInspector
+	property string shown = ""
+
+	@HideFromInspector
+	property number tickLeft = 0
+
+	@HideFromInspector
+	property number bobT = 0
+
+	-- edges[from][to] = 포탈 이름 (같은 맵 쌍에 일반 포탈 · 미니언 통로 포탈(P_Lane_)이 둘 다면 일반 포탈)
+	@HideFromInspector
+	property any edges = nil
+
+	-- 이웃 순서(표 순서) — 너비 우선 탐색 결과가 매번 같게
+	@HideFromInspector
+	property any order = nil
+
+	@HideFromInspector
+	property any hClose = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 화면은 꺼 두고 [X] 를 잇는다.
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		if isvalid(self.btnClose) then
+			self.hClose = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, function()
+				self:Stop("close")
+			end)
+		end
+		log("[PortalNav] ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- [X] 연결을 푼다.
+		if self.hClose ~= nil and isvalid(self.btnClose) then
+			self.btnClose.Entity:DisconnectEvent(ButtonClickEvent, self.hClose)
+		end
+		self.hClose = nil
+	end
+
+	-- ── 시작 · 끝 ───────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method boolean Toggle(string mapName, string label)
+		-- 월드맵 더블클릭(WorldMapController.OnRegionDoubleClick). 같은 곳이면 끄고, 아니면 그곳으로 (다시) 시작. 돌려주는 값 = 새로 시작했나.
+		if mapName == nil or mapName == "" then
+			return false
+		end
+		if self.target ~= "" and self.target == mapName then
+			self:Stop("cancel")
+			return false
+		end
+		return self:Start(mapName, label)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean Start(string mapName, string label)
+		-- 목적지를 정하고 길을 찾는다. 못 가면 이유 토스트 · false.
+		local name = (label ~= nil and label ~= "") and label or mapName
+		if _TutorialDirector ~= nil and _TutorialDirector.active == true then
+			self:Toast("길안내 — 튜토리얼 중에는 쓸 수 없어요")
+			return false
+		end
+		local here = self:CurrentMapName()
+		if here == mapName then
+			self:Toast(name .. " — 이미 여기예요")
+			return false
+		end
+		local reason = self:BlockReason(here, mapName)
+		if reason ~= "" then
+			self:Toast(name .. " — " .. reason)
+			return false
+		end
+		local path = self:FindPath(here, mapName)
+		if path == nil then
+			self:Toast(name .. " — 지금 있는 곳에서 갈 수 있는 길이 없어요")
+			return false
+		end
+		self.target = mapName
+		self.targetLabel = name
+		self.curMap = ""
+		self.curPhase = -1
+		self.shown = ""
+		self.tickLeft = 0
+		self.bobT = 0
+		if isvalid(self.root) then
+			self.root.Enable = true
+		end
+		self:ShowOnly("")
+		self:Toast("길안내 시작 — " .. name .. "까지 포탈 " .. tostring(#path) .. "번")
+		log("[PortalNav] start " .. here .. " -> " .. mapName .. " hops=" .. tostring(#path))
+		self:Tick()
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Stop(string reason)
+		-- 끝(arrive · close · cancel · 그 밖 = 조용히).
+		if self.target == "" then
+			return
+		end
+		local name = self.targetLabel
+		log("[PortalNav] stop " .. reason .. " target=" .. self.target)
+		self.target = ""
+		self.targetLabel = ""
+		self.nextPortal = ""
+		self.shown = ""
+		self:ShowOnly("")
+		if isvalid(self.root) then
+			self.root.Enable = false
+		end
+		if reason == "arrive" then
+			self:Toast("도착 — " .. name)
+		elseif reason == "close" or reason == "cancel" then
+			self:Toast("길안내를 껐어요")
+		end
+	end
+
+	-- ── 매 프레임 · 주기 ────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 화살표 자리는 매 프레임, 길 · 상태는 TickSeconds 마다.
+		if self.target == "" then
+			return
+		end
+		self.bobT = self.bobT + delta
+		self:Place()
+		self.tickLeft = self.tickLeft - delta
+		if self.tickLeft <= 0 then
+			self.tickLeft = self.TickSeconds
+			self:Tick()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Tick()
+		-- 끝낼 일 · 맵 바뀜 · 다음 포탈 방향.
+		if self.target == "" then
+			return
+		end
+		if (_TutorialDirector ~= nil and _TutorialDirector.active == true)
+			or (_SpectateService ~= nil and _SpectateService.spectating == true)
+			or (_MatchResultUIController ~= nil and _MatchResultUIController.isOpen == true) then
+			self:Stop("quiet")
+			return
+		end
+		local here = self:CurrentMapName()
+		if here == "" then
+			self:ShowOnly("")
+			return
+		end
+		if here == self.target then
+			self:Stop("arrive")
+			return
+		end
+		local phase = (_MatchSessionLogic ~= nil) and (_MatchSessionLogic.CurrentPhase or 1) or 1
+		if here ~= self.curMap or phase ~= self.curPhase then
+			-- 맵이 바뀌었거나 페이즈가 넘어갔다(리스 입장 닫힘) → 길을 다시 찾는다.
+			self.curMap = here
+			self.curPhase = phase
+			local reason = self:BlockReason(here, self.target)
+			local path = (reason == "") and self:FindPath(here, self.target) or nil
+			if path == nil then
+				local name = self.targetLabel
+				self:Stop("quiet")
+				self:Toast(name .. " — " .. ((reason ~= "") and reason or "지금 있는 곳에서 갈 수 있는 길이 없어요"))
+				return
+			end
+			self.nextPortal = path[1].portal
+			self.hops = #path
+			log("[PortalNav] " .. here .. " next=" .. self.nextPortal .. " -> " .. path[1].to .. " (남은 포탈 " .. tostring(self.hops) .. ")")
+		end
+		self:ShowOnly(self:ArrowFor(here, self.nextPortal))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ArrowFor(string mapName, string portalName)
+		-- 다음 포탈과 내 자리로 보여 줄 키캡: portal(그 위에 섰다) · up · down(다른 층) · left · right. 포탈을 아직 못 찾으면 "".
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.TransformComponent) then
+			return ""
+		end
+		local src = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. portalName)
+		if not isvalid(src) or not isvalid(src.PortalComponent) or not isvalid(src.TransformComponent) then
+			return ""
+		end
+		-- ↑ 키가 실제로 먹는 상자와 같게: PortalNetwork.TryMoveByUpArrow 와 같은 판정(상자 축소 먼저 · 발 여유 PortalFootTolerance).
+		if _PortalNetwork ~= nil then
+			_PortalNetwork:ShrinkPortalBox(src)
+		end
+		local portal = src.PortalComponent
+		local pp = src.TransformComponent.WorldPosition
+		local me = p.TransformComponent.WorldPosition
+		local cx = pp.x + portal.BoxOffset.x
+		local cy = pp.y + portal.BoxOffset.y
+		local hw = portal.BoxSize.x * 0.5
+		local hh = portal.BoxSize.y * 0.5
+		local tol = (_PortalNetwork ~= nil) and _PortalNetwork.PortalFootTolerance or 0.05
+		local dx = me.x - cx
+		local dy = me.y - cy
+		if math.abs(dx) <= hw and dy >= -hh - tol and dy <= hh then
+			return "portal"
+		end
+		if math.abs(dx) <= self.VerticalNearX then
+			if -dy > self.VerticalMinY then
+				return "up"
+			end
+			if dy > self.VerticalMinY then
+				return "down"
+			end
+		end
+		if dx > 0 then
+			return "left"
+		end
+		return "right"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowOnly(string which)
+		-- 키캡 다섯 장 중 하나만 켠다("" = 다 끔).
+		if which == self.shown then
+			return
+		end
+		self.shown = which
+		local list = { left = self.arrowLeft, right = self.arrowRight, up = self.arrowUp, down = self.arrowDown, portal = self.arrowPortal }
+		for k, e in pairs(list) do
+			if isvalid(e) then
+				e.Enable = (k == which)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Place()
+		-- 머리 위(발 + HeadOffset) 월드 점을 화면 → 이 그룹 Root 로컬로 바꿔 화살표 묶음을 그 자리에(CoachMarkController.LocalOfWorld 와 같은 방식).
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.TransformComponent) or not isvalid(self.root) or not isvalid(self.nav) then
+			return
+		end
+		local wp = p.TransformComponent.WorldPosition
+		local sp = _UILogic:WorldToScreenPosition(Vector2(wp.x, wp.y + self.HeadOffset))
+		local lp = _UILogic:ScreenToLocalUIPosition(sp, self.root.UITransformComponent)
+		local bob = math.sin(self.bobT * self.BobSpeed) * self.BobAmp
+		self.nav.UITransformComponent.anchoredPosition = Vector2(lp.x, lp.y + bob)
+	end
+
+	-- ── 길 찾기 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method string CurrentMapName()
+		-- 내가 있는 맵 이름(없으면 "").
+		local p = _UserService.LocalPlayer
+		if isvalid(p) and isvalid(p.CurrentMap) then
+			return p.CurrentMap.Name
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean LithClosed()
+		-- 리스항구(밖 → 안) 입장이 닫혔나 — 1페이즈부터(4:30).
+		if _MatchSessionLogic == nil then
+			return false
+		end
+		return (_MatchSessionLogic.CurrentPhase or 1) > self.LithOpenMaxPhase
+	end
+
+	@ExecSpace("ClientOnly")
+	method string BlockReason(string fromMap, string toMap)
+		-- 목적지 자체가 막힌 곳이면 이유(토스트 둘째 줄) · 아니면 "".
+		local pn = _PortalNetwork
+		if pn == nil then
+			return ""
+		end
+		if toMap == pn.GatedToMap or string.find(toMap, "Sleepywood_Boss_JrBalrog", 1, true) == 1 then
+			return "주니어 발록 방은 길안내를 하지 않아요"
+		end
+		if pn:IsBossEntry(toMap) then
+			return "입장료가 있는 마을 보스 맵은 길안내를 하지 않아요"
+		end
+		if pn:IsLithEntry(fromMap, toMap) and self:LithClosed() then
+			return "4:30 이후에는 리스항구에 들어갈 수 없어요"
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean EdgeAllowed(string fromMap, string toMap)
+		-- 길 중간에 탈 수 있는 포탈인가(막힌 곳으로 들어가는 포탈은 뺀다).
+		local pn = _PortalNetwork
+		if pn == nil then
+			return true
+		end
+		if toMap == pn.GatedToMap then
+			return false
+		end
+		if pn:IsBossEntry(toMap) then
+			return false
+		end
+		if pn:IsLithEntry(fromMap, toMap) and self:LithClosed() then
+			return false
+		end
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LoadEdges()
+		-- PortalRoutes 를 한 번 읽어 맵 → 맵 연결을 만든다(Enabled 해석은 PortalNetwork.TryMoveByUpArrow 와 같게).
+		if self.edges ~= nil then
+			return
+		end
+		self.edges = {}
+		self.order = {}
+		local tableName = (_PortalNetwork ~= nil) and _PortalNetwork.TableName or "PortalRoutes"
+		local t = _DataService:GetTable(tableName)
+		if t == nil then
+			log_warning("[PortalNav] dataset not found: " .. tostring(tableName))
+			return
+		end
+		local n = 0
+		for i = 1, t:GetRowCount() do
+			local en = t:GetCell(i, "Enabled")
+			local s = string.lower(tostring(en or ""))
+			local on = en == nil or s == "" or s == "true" or s == "1" or s == "yes" or s == "y"
+			local from = tostring(t:GetCell(i, "FromMap") or "")
+			local portal = tostring(t:GetCell(i, "FromPortal") or "")
+			local to = tostring(t:GetCell(i, "ToMap") or "")
+			if on and from ~= "" and portal ~= "" and to ~= "" then
+				if self.edges[from] == nil then
+					self.edges[from] = {}
+					self.order[from] = {}
+				end
+				local cur = self.edges[from][to]
+				local isLane = string.find(portal, "P_Lane_", 1, true) == 1
+				if cur == nil then
+					self.edges[from][to] = portal
+					table.insert(self.order[from], to)
+					n = n + 1
+				elseif string.find(cur, "P_Lane_", 1, true) == 1 and not isLane then
+					-- 미니언 통로 포탈만 있던 자리에 일반 포탈이 오면 일반 포탈로
+					self.edges[from][to] = portal
+				end
+			end
+		end
+		log("[PortalNav] routes loaded: " .. tostring(n) .. " map links")
+	end
+
+	@ExecSpace("ClientOnly")
+	method any FindPath(string fromMap, string toMap)
+		-- 포탈을 가장 적게 타는 길 { {from, portal, to}, ... } (너비 우선). 없으면 nil.
+		self:LoadEdges()
+		if self.edges == nil or fromMap == "" or toMap == "" or self.edges[fromMap] == nil then
+			return nil
+		end
+		local prev = {}
+		local seen = {}
+		seen[fromMap] = true
+		local queue = { fromMap }
+		local head = 1
+		local found = false
+		while head <= #queue do
+			local m = queue[head]
+			head = head + 1
+			if m == toMap then
+				found = true
+				break
+			end
+			local nexts = self.order[m]
+			if nexts ~= nil then
+				for _, to in ipairs(nexts) do
+					if not seen[to] and self:EdgeAllowed(m, to) then
+						seen[to] = true
+						prev[to] = m
+						table.insert(queue, to)
+					end
+				end
+			end
+		end
+		if not found then
+			return nil
+		end
+		local path = {}
+		local cur = toMap
+		while cur ~= fromMap do
+			local p = prev[cur]
+			if p == nil then
+				return nil
+			end
+			table.insert(path, 1, { from = p, portal = self.edges[p][cur], to = cur })
+			cur = p
+		end
+		return path
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Toast(string msg)
+		-- 화면 위 토스트(클라 직접).
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(msg)
+		end
+	end
+end

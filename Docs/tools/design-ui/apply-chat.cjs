@@ -24,15 +24,15 @@ S.button(b, 'Chat/Btn', { normal: 'slot_frame', hover: 'slot_frame_hover', press
 b.patchComponent('Chat/Btn', 'MOD.Core.SpriteGUIRendererComponent', { RaycastTarget: true });
 S.newImage(b, 'Chat/Btn/Icon', 'icon_info', { pos: [0, 0], size: [40, 34] });
 
-// 접힘: 마지막 한 줄 판 420×40(plate_dark · 알파 0.92) — 닉네임 금색 · 말 아이보리(Default 16)
-S.newImage(b, 'Chat/Line', 'plate_dark', Object.assign(at(24, 100, 420, 40), { alpha: 0.92 }));
-S.newText(b, 'Chat/Line/Text', '', { font: 'Noto400', size: 16, color: S.COLOR ? S.COLOR.ivory : '#F3EEE2', h: 'left', v: 'middle', rect: [396, 40], overflow: 1 });
+// 접힘: 마지막 한 줄 판 356×40(2026-10-06 420 → 356 · ★ 안내 바와 안 겹치게)(plate_dark · 알파 0.92) — 닉네임 금색 · 말 아이보리(Default 16)
+S.newImage(b, 'Chat/Line', 'plate_dark', Object.assign(at(24, 100, 356, 40), { alpha: 0.92 }));
+S.newText(b, 'Chat/Line/Text', '', { font: 'Noto400', size: 16, color: S.COLOR ? S.COLOR.ivory : '#F3EEE2', h: 'left', v: 'middle', rect: [332, 40], overflow: 1 });
 
-// 펼침: 기록 판 420×300(최근 12줄 · 아래 정렬) + 입력 줄 420×44
-S.newImage(b, 'Chat/Log', 'plate_dark', Object.assign(at(24, 100, 420, 300), { alpha: 0.92 }));
-S.newText(b, 'Chat/Log/Text', '', { font: 'Noto400', size: 16, color: '#F3EEE2', h: 'left', v: 'bottom', rect: [396, 280], overflow: 0 });
-S.newImage(b, 'Chat/Input', 'plate_dark', Object.assign(at(24, 408, 420, 44), { alpha: 0.92 }));
-b.textInput('Chat/Input/Field', { placeholder: 'Enter 로 보내기 · ESC 취소', char_limit: 80, line_type: 0, font_size: 16, color: '#F3EEE2', anchor: 'middle-center', pos: [0, 0], rect_size: [396, 36] });
+// 펼침: 기록 판 356×300(최근 12줄 · 아래 정렬) + 입력 줄 356×44
+S.newImage(b, 'Chat/Log', 'plate_dark', Object.assign(at(24, 100, 356, 300), { alpha: 0.92 }));
+S.newText(b, 'Chat/Log/Text', '', { font: 'Noto400', size: 16, color: '#F3EEE2', h: 'left', v: 'bottom', rect: [332, 280], overflow: 0 });
+S.newImage(b, 'Chat/Input', 'plate_dark', Object.assign(at(24, 408, 356, 44), { alpha: 0.92 }));
+b.textInput('Chat/Input/Field', { placeholder: 'Enter 로 보내기 · ESC 취소', char_limit: 80, line_type: 0, font_size: 16, color: '#F3EEE2', anchor: 'middle-center', pos: [0, 0], rect_size: [332, 36] });
 b.patchComponent('Chat/Input/Field', 'MOD.Core.SpriteGUIRendererComponent', { Color: { r: 0, g: 0, b: 0, a: 0 } });
 b.patch('Chat/Log', { enable: false });
 b.patch('Chat/Input', { enable: false });
