@@ -68,7 +68,16 @@ script NpcSpawner extends Component
 		end
 
 		local name = "Npc_" .. tostring(entry.id) .. "_" .. tostring(ordinal)
-		local position = Vector3(entry.x, entry.y, 0)
+		local requestedPosition = Vector3(entry.x, entry.y, 0)
+		local snapped = self:ResolveFootholdPosition(map, entry.x, entry.y)
+		local position = requestedPosition
+		if snapped ~= nil then
+			position = snapped.position
+		else
+			-- 발판이 없는 맵·X 구간도 스폰 자체는 보존한다. 월드 NPC가 사라지는 것보다 원본 좌표가 안전하다.
+			log_warning("[NpcSpawner] foothold snap fallback id=" .. tostring(entry.id)
+				.. " map=" .. tostring(entry.mapName) .. " x=" .. tostring(entry.x) .. " y=" .. tostring(entry.y))
+		end
 		local npc = _SpawnService:SpawnByModelId(entry.modelId, name, position, map)
 		if not isvalid(npc) then
 			log_error("[NpcSpawner] spawn failed model=" .. tostring(entry.modelId)
@@ -79,7 +88,7 @@ script NpcSpawner extends Component
 		-- NPC 는 항상 플레이어 뒤 (사용자 지시 2026-09-07 "무조건 플레이어가 맨 앞"). 플레이어 렌더 층은 밟은 발판의 SortingLayer 를 따라가므로
 		-- NPC 도 서 있는 발판의 층으로 맞추고 OrderInLayer 3 (플레이어 4). Default/-1 이면 MapLayer 위 층인 Default 가 플레이어 앞에 그려졌다.
 		if isvalid(npc.SpriteRendererComponent) then
-			local layer = (_LaneFacilityService ~= nil) and _LaneFacilityService:SortingLayerBelow(map, entry.x, entry.y) or ""
+			local layer = (_LaneFacilityService ~= nil) and _LaneFacilityService:SortingLayerBelow(map, position.x, position.y) or ""
 			if layer ~= "" then npc.SpriteRendererComponent.SortingLayer = layer end
 			npc.SpriteRendererComponent.OrderInLayer = 3
 		end
@@ -130,9 +139,70 @@ script NpcSpawner extends Component
 		table.insert(self.spawned, npc)
 		if self.LogSpawn then
 			log("[NpcSpawner] spawn id=" .. tostring(entry.id) .. " model=" .. tostring(entry.modelId)
-				.. " x=" .. tostring(entry.x) .. " y=" .. tostring(entry.y))
+				.. " x=" .. tostring(position.x) .. " y=" .. tostring(position.y)
+				.. " requestedY=" .. tostring(entry.y)
+				.. " foothold=" .. tostring(snapped ~= nil and snapped.id or "none"))
 		end
 		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FindFootholdComponent(Entity map)
+		-- 대부분 맵 루트에 있지만, 일부 맵은 타일맵 자식이 발판을 소유한다.
+		if not isvalid(map) then
+			return nil
+		end
+		if isvalid(map.FootholdComponent) then
+			return map.FootholdComponent
+		end
+		local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+		if found ~= nil then
+			for _, component in ipairs(found) do
+				if isvalid(component) then
+					return component
+				end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ResolveFootholdPosition(Entity map, number x, number requestedY)
+		-- NPC의 X는 카탈로그 배치 의도이므로 옮기지 않는다. 같은 X를 지나는 바닥만 후보로 하며,
+		-- 위·아래 모두에서 가장 가까운 표면을 골라 공중·매몰 배치를 자동 보정한다.
+		local footholds = self:FindFootholdComponent(map)
+		if not isvalid(footholds) then
+			return nil
+		end
+
+		local nearest = nil
+		local nearestY = nil
+		local nearestDistance = nil
+		local all = footholds:GetFootholdAll()
+		if all == nil then
+			return nil
+		end
+		for _, foothold in ipairs(all) do
+			if foothold ~= nil and not foothold:IsVertical() then
+				local lo = math.min(foothold.StartPoint.x, foothold.EndPoint.x)
+				local hi = math.max(foothold.StartPoint.x, foothold.EndPoint.x)
+				if x >= lo and x <= hi then
+					local surfaceY = foothold:GetYByX(x)
+					local distance = math.abs(surfaceY - requestedY)
+					-- 같은 거리면 아래 바닥을 택해, 공중에 놓인 NPC가 위층으로 당겨지는 일을 막는다.
+					if nearest == nil or distance < nearestDistance
+						or (distance == nearestDistance and surfaceY < nearestY) then
+						nearest = foothold
+						nearestY = surfaceY
+						nearestDistance = distance
+					end
+				end
+			end
+		end
+		if nearest == nil then
+			return nil
+		end
+		return { position = Vector3(x, nearestY, 0), id = nearest.Id }
 	end
 
 	@ExecSpace("ServerOnly")
