@@ -18,11 +18,28 @@ script DefenderService extends Logic
 	-- 수비대 이동속도 배수 (WO-016 · 원문 "일반 몬스터의 2배" · 미정-값 E-3 잠정). 기준 = MonsterInfo.MoveSpeed(없으면 모델 기본 InputSpeed). 하드코딩 금지.
 	property number MoveSpeedMul = 2.0
 
-	property number GuardHpAtMax = 18300
+	-- 수비대 티어별 Lv1 · Lv5 스탯 (사용자 2026-10-06 · 기준 = MinionWave 의 1P 첫(P1-0) · 2P 첫(P2-1) · 2P 끝(P2-3) · 3P 30분경(P3-5) 웨이브).
+	-- T1 = Lv1 [P1-0 체력 ×2 · 공격력 같게] → Lv5 [P2-3 ×2 · ×2] / T2 = Lv1 [P2-1 체력 ×2 · 공격력 같게] → Lv5 [P3-5 ×2 · ×2]. 중간 레벨은 기하 보간.
+	-- T3 = 체력만 레벨 배수(Lv1 × Lv · Lv1 = P3-5 체력 ×2) · 공격력은 레벨과 무관하게 고정(= P3-5 공격력 ×2). 파병(MinionFlowService)은 이 값을 안 쓴다(MonsterRecruit.GuardHp × 훈련 배율).
+	property number T1HpLv1 = 2000
 
-	property number GuardAtkAtMax = 3400
+	property number T1AtkLv1 = 300
 
-	property number GuardLv1Mul = 0.9
+	property number T1HpLv5 = 7040
+
+	property number T1AtkLv5 = 1500
+
+	property number T2HpLv1 = 5120
+
+	property number T2AtkLv1 = 630
+
+	property number T2HpLv5 = 12156
+
+	property number T2AtkLv5 = 4498
+
+	property number T3HpLv1 = 12156
+
+	property number T3Atk = 4498
 
 	@HideFromInspector
 	property integer spawnSeq = 0
@@ -45,6 +62,34 @@ script DefenderService extends Logic
 			return _LaneStateService.towerDef.TOWER.range[1] or 3.0
 		end
 		return 3.0
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GuardHpOf(integer tier, integer lv)
+		-- 수비대 최대 체력 = 티어 · 강화 레벨(1~5)별 값 (사용자 2026-10-06). T3 = Lv1 체력 × 레벨 · T1/T2 = Lv1→Lv5 기하 보간.
+		lv = math.max(1, math.min(5, lv))
+		if tier >= 3 then return math.max(1, math.floor(self.T3HpLv1 * lv + 0.5)) end
+		local hp1 = self.T1HpLv1
+		local hp5 = self.T1HpLv5
+		if tier == 2 then
+			hp1 = self.T2HpLv1
+			hp5 = self.T2HpLv5
+		end
+		return math.max(1, math.floor(hp1 * (hp5 / hp1) ^ ((lv - 1) / 4) + 0.5))
+	end
+
+	@ExecSpace("ServerOnly")
+	method number GuardAtkOf(integer tier, integer lv)
+		-- 수비대 공격력 = 티어 · 강화 레벨(1~5)별 값. T3 는 레벨과 무관하게 고정 · T1/T2 = Lv1→Lv5 기하 보간.
+		lv = math.max(1, math.min(5, lv))
+		if tier >= 3 then return math.max(1, math.floor(self.T3Atk + 0.5)) end
+		local atk1 = self.T1AtkLv1
+		local atk5 = self.T1AtkLv5
+		if tier == 2 then
+			atk1 = self.T2AtkLv1
+			atk5 = self.T2AtkLv5
+		end
+		return math.max(1, math.floor(atk1 * (atk5 / atk1) ^ ((lv - 1) / 4) + 0.5))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -81,15 +126,12 @@ script DefenderService extends Logic
 		if level == nil or level <= 0 then level = 10 end
 		local maxHp = math.max(1, math.floor(baseHp * self.HpRatio * statMul))
 		local attack = math.max(1, math.floor(level * self.AttackPerLevel * statMul))
-		-- 수비대 스탯은 티어 기본값에서 강화 레벨별 기하 보간. MonsterTraining.StatMul 은 파병 등 다른 계산에 유지한다.
+		-- 수비대 스탯은 모집 티어 + 강화 레벨별 값(GuardHpOf/GuardAtkOf · 웨이브 기준). MonsterTraining.StatMul 은 파병 등 다른 계산에 유지한다.
 		local rr = (_LaneStateService ~= nil) and _LaneStateService:RecruitRow(monsterId) or nil
 		if rr ~= nil then
 			local lv = math.max(1, math.min(5, upgradeLevel or 1))
-			local progress = (lv - 1) / 4
-			local baseHp = rr.guardHp * self.GuardLv1Mul
-			local baseAttack = rr.guardAttack * self.GuardLv1Mul
-			maxHp = math.max(1, math.floor(baseHp * (self.GuardHpAtMax / baseHp) ^ progress + 0.5))
-			attack = math.max(1, math.floor(baseAttack * (self.GuardAtkAtMax / baseAttack) ^ progress + 0.5))
+			maxHp = self:GuardHpOf(rr.tier or 1, lv)
+			attack = self:GuardAtkOf(rr.tier or 1, lv)
 		end
 		local range = self:GuardRange()
 		local minX = row.pathMinX or -100000
