@@ -17,6 +17,11 @@
 - `RootDesk/MyDesk/Models/Npcs/VD_COMMON_BOOST_SHOP.model` (신규 · ModelBuilder): 매치 안내원 모델을 본떠 이름 · 그림만 바꿈(C6 — 기능 NPC 행마다 모델). 그림 = 원작 "메이플 운영자"(npc/9010063 stand `db2ef55d…` · D-6 고르기 생략).
 - `map/Orbis_Lobby_VictoriaStation.map` (MapBuilder): 왼쪽 아래 `Portal` 의 그림(`SpriteRendererComponent`) · 이동(`PortalComponent`) 만 끔 — 엔티티 · 위치 · `TagComponent(MODRespawnArea)` 는 그대로(D-5). 같은 자리(-9.44, -1.4)에 `npc-boostshop`(staticnpc · 매치 안내원 `npc-4525` 구성 · `VillageNpcInteractor` → `BoostShopGroup`/`boostshop` · 오른쪽 보게 FlipX · `MapLayer7` = 플레이어 뒤). 🔴 `RigidbodyComponent` 는 뺐다 — 포탈 자리는 로비 발판 범위(x ≥ -5.82) 밖이라 중력을 받으면 떨어진다. 발 높이는 Maker 캡처로 맞춘다. 빌더가 LF 로 쓴 줄끝은 원래대로 CRLF 로 되돌림(실제 변경 = 포탈 1 · NPC 추가 1).
 
+## 2026-10-07 — 상품 등록 · 월드별 상품 표
+
+- 그룹 월드(`0c9db25da1104fa097e8d7159bd19c4f` · 그룹 mIYbC · Maker `maker_get_world_info` 로 확인)에 상품 3종 **미공개(REGISTER)** 등록 — 1일 `8JF0ESFQ8` 200 · 3일 `8SGL4NNYD` 400 · 7일 `S6FV6SNKX` 600 · ITEM · 썸네일 120×120(시안 쿠폰 + 남색 판). 도구 `Docs/tools/design-ui/register-boost-products.cjs <worldId> <group|personal>` · 결과 `boost-products.json`. 공개 전환은 사람이.
+- `RootDesk/MyDesk/BoostProduct.csv`: **`WorldId` 열 추가**(`ProductId,WorldId,Days,Price,Enabled,#Note`) — 월드 상품은 월드마다 따로라 그룹 월드 상품 ID 로는 개인 월드 Play 에서 결제 창이 안 뜬다. 서버(`BoostPassService`)는 `Environment.WorldId` 와 같은 행만 판매 · 클라 상점 창도 그 행으로 카드를 채운다(이 월드 행이 없으면 카드만 보이고 구매는 막힘). 개인 월드 검증용 테스트 상품 행은 검증 때 추가(출시 월드에서는 걸러져 무해) → 머지 전에 ID 를 바꿔 넣을 필요가 없다. 계약 A-2-29 갱신.
+
 ## 2026-10-07 — 이용권 상점 창 (디자이너 시안)
 
 - `ui/BoostShopGroup.ui` (신규 · UIBuilder · 101 엔티티 · GroupOrder 27): 디자이너 넘김본 "이용권 상점 (월드코인)" 대로 — 화면 막 · NPC 창 공통 틀(980×720 · 문장 · 제목 띠 · 닫기) · 제목 "이용권 상점" + 코인 · 효과 띠(#7) ↔ 사용 중 띠(#16 · 남은 시간 · 게이지) · 카드 3장(#8~#14 · 쿠폰 · 효과 두 줄 · 하루 값 · 가격 · 구매/기간 연장 · "가장 이득") · 안내 문구(#15) · 구매 확인 창(#17 간이판) · 시작 알림(#20). 🔴 시안의 #5 내 월드코인 · #6 충전 · #18 잔액 변화 · #19 코인 부족 창은 **만들지 않음** — MSW 에 잔액 · 충전 API 가 없다(부족 안내는 플랫폼 결제 창). 확인 창은 잔액 줄 대신 가격 줄.
