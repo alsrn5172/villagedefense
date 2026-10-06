@@ -1,0 +1,721 @@
+@Logic
+script NpcTalkController extends Logic
+
+	-- 전직관 NPC 대화창 클라 컨트롤러 — WO-054(2026-10-07 디자이너 인계 "NPC 대화창 · 전직" · 1440×470 하단 대화창).
+	--   창(CommonNpcGroup/NpcTalk)은 CommonNpcUIController 가 라우트("jobchange:<직업>" · 2 · 3차 자동 창)로 열고 닫는다 — 여기는 그 안의 그림 · 글 · 버튼만 맡는다.
+	--   화면(page): lock(레벨 부족) · greet(인사) · offer(전직 제안) · confirm(확인) · done(전직 완료 · 다음 할 일) · adv(2 · 3차 전직) · already(이미 전직).
+	--   Lv10↑ 초보자 = greet → [이야기 듣기] → offer → [전직] → confirm → [전직한다] → done. Lv20 · 30 자동 창 = adv([N차 전직] 한 번 · 확인 없음).
+	--   전직은 B 의 PlayerSkillState.RequestChooseJob(1차) · RequestSync(2 · 3차 · 서버 TryAdvanceTier)를 그대로 부른다 — 성공은 클라 미러(LocalJobId · LocalTier)가 바뀌는 것으로 본다.
+	--   스킬 칸 2개 = SkillInfo.csv(SkillDatabase) 그 직업 · 그 차수 앞 2개 · 키 글자는 SkillHotbar 슬롯 표(패시브는 "패시브").
+	--   글자 · 그림 자리는 .ui 에 있다(Docs/tools/design-ui/apply-npc-talk.cjs) — 여기서는 켜기 · 끄기 · 글 · 위치만 바꾼다. 직업 아이콘도 RUID 를 문자열로 들지 않고 .ui 에 박아 둔 Icon_<직업> 을 켠다(출시본 누락 방지).
+	--   UUID 는 apply-npc-talk.cjs 가 write({bind}) 로 넣는다. 손으로 고치지 않는다.
+
+	property Entity talkRoot = "76ccdd7b-f692-438d-9670-06eadecf9a9b"
+
+	property SpriteGUIRendererComponent talkPortrait = "db0fc330-eb4e-4c11-b321-9028cb2b9d32"
+
+	property TextGUIRendererComponent talkName = "7b6c33b7-947d-415c-a582-dcf3b288b879"
+
+	property Entity nameIcons = "7b6c33b7-947d-415c-a582-dcf3b288b879"
+
+	property Entity roleChip = "56d70af3-4840-4da6-b839-a53dc331416a"
+
+	property TextGUIRendererComponent roleLabel = "a5008a57-ec9d-4a1b-b4bd-3ad990d5a751"
+
+	property TextGUIRendererComponent talkLine = "3247bf9c-4b14-439b-8bce-7c86a5dad7a1"
+
+	property Entity skillsRoot = "6b2c89c3-1641-477e-826c-f51d56cb4f49"
+
+	property Entity infoLv = "0ff44eb4-c11c-4d4c-8220-4bec6e8a7724"
+
+	property TextGUIRendererComponent lvNum = "20d9866d-b8b0-4749-8d71-7fb3b8a9509f"
+
+	property Entity lvFill = "3773f611-e512-4d17-bf55-9e14f23d0a62"
+
+	property Entity infoNext = "15d4e955-6f92-474e-84b7-713c57ba8eb9"
+
+	property TextGUIRendererComponent nextText = "351c3361-e676-42bb-bde7-c6f78dfa715e"
+
+	property ButtonComponent btnEnd = "59a34074-00e6-46ad-a2c1-1c5796b09599"
+
+	property ButtonComponent btnMid = "cd940559-75fb-4d0b-a3f3-f44773582fdb"
+
+	property ButtonComponent btnYes = "5725d7b3-5f58-411d-b19f-1dc6cca76973"
+
+	property Entity notice = "e72cf654-9bbb-4f44-a3c5-18e68304e2d7"
+
+	property TextGUIRendererComponent noticePill = "b98e8080-48aa-4621-a197-5381f60e90f0"
+
+	-- 2 · 3차 자동 창(전직관이 없는 맵에서도 뜬다): 직업별 전직관 그림 · 이름 (예전 CommonNpcUIController 에서 옮김)
+	property string JobNpcRuids = "WARRIOR=ec40238056d14dc895e93767d9bf6f90;MAGICIAN=fb911e3df47b4b54997950df0726285a;ARCHER=4d71a2a1d659408fbdf5dac3152134e6;THIEF=4801a0f7b2664b8da9b73d2b3ea25fd4;PIRATE=f389034efb9b4e29bba08efad1147a24"
+
+	property string JobNpcNames = "WARRIOR=주먹펴고 일어서;MAGICIAN=하인즈;ARCHER=헬레나;THIEF=다크로드;PIRATE=카이린"
+
+	property string JobNames = "WARRIOR=전사;MAGICIAN=마법사;ARCHER=궁수;THIEF=도적;PIRATE=해적"
+
+	-- 이 직업 사람: "~가 되겠나" · "~는 …" 에 붙는 조사
+	property string JobSubjects = "WARRIOR=전사가;MAGICIAN=마법사가;ARCHER=궁수가;THIEF=도적이;PIRATE=해적이"
+
+	property string JobTopics = "WARRIOR=전사는;MAGICIAN=마법사는;ARCHER=궁수는;THIEF=도적은;PIRATE=해적은"
+
+	-- 전직 제안 대사(전사 = 시안 문구 · 나머지는 임시 문구 — 디자이너가 다듬을 수 있다)
+	property string JobPitch = "WARRIOR=가까이서 강하게 싸우고 잘 버티지.;MAGICIAN=멀리서 강한 마법으로 적을 쓸어내지.;ARCHER=멀리서 정확하게 활을 쏴 적을 맞히지.;THIEF=빠르고 날카롭게 파고들어 적을 베지.;PIRATE=주먹과 발차기, 함포로 거침없이 몰아붙이지."
+
+	-- 초상 배치(무대 가운데 기준): 그림이 들어갈 최대 폭 · 키 · 발이 설 줄(무대 아래쪽에서 8 띄움) · 직업별 NPC 그림 프레임(가로,세로,피벗 nx,ny — 공식 자원 API 실측)
+	property number PortraitW = 220
+
+	property number PortraitH = 250
+
+	property number PortraitFeetY = -137
+
+	property string JobPortrait = "WARRIOR=84,88,0.3214,0;MAGICIAN=80,152,0.475,0;ARCHER=80,80,0.5125,0;THIEF=88,96,0.5,0.0312;PIRATE=68,84,0.4412,0.0238"
+
+	-- 길 보기: 사냥터 = 리스항구 근처 사냥터(PortalNav 길안내)
+	property string HuntMap = "LithHarbor_Hunt_RightAroundLithHarbor"
+
+	property string HuntLabel = "리스항구 사냥터"
+
+	-- 버튼 줄(창 안 위치): 오른쪽 끝 · 가운데 높이 · 높이 · 최소 폭 · 간격 · 글자 좌우 여백
+	property number BtnRight = 690
+
+	property number BtnY = -183.5
+
+	property number BtnH = 60
+
+	property number BtnMinW = 210
+
+	property number BtnGap = 14
+
+	property number BtnPad = 22
+
+	property number IconSize = 30
+
+	property number IconGap = 8
+
+	-- 대사 판 안 위치(판 가운데 기준 · 위가 +): 역할 칩 왼쪽 끝 · 스킬 칸 묶음 가운데 높이(대사 1줄 기준) · 대사가 한 줄 늘 때 내리는 높이
+	property number RoleLeft = -484
+
+	property number SkillsY = 15
+
+	property number SkillsLineH = 32
+
+	-- 레벨 게이지 · 완료 연출
+
+	property number GaugeFillMax = 188
+
+	property number NoticeSeconds = 3
+
+	property number WaitSeconds = 3
+
+	-- 글자 색
+	property Color ColInk = Color(0.110, 0.078, 0.020, 1)
+
+	property Color ColIvory = Color(0.953, 0.933, 0.886, 1)
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string page = ""
+
+	@HideFromInspector
+	property string mode = ""
+
+	@HideFromInspector
+	property string jobId = ""
+
+	@HideFromInspector
+	property integer tier = 1
+
+	@HideFromInspector
+	property string npcName = ""
+
+	@HideFromInspector
+	property string catalogId = ""
+
+	@HideFromInspector
+	property number reqLevel = 10
+
+	-- 전직 요청 뒤 기다림: "" · "job" · "tier"
+	@HideFromInspector
+	property string waitKind = ""
+
+	@HideFromInspector
+	property number waitT = 0
+
+	@HideFromInspector
+	property number noticeT = 0
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 연결 · 연출 끄기(창은 CommonNpcUIController 가 연다).
+		self.handlers = {}
+		self:Bind(self.btnEnd, function() self:OnEnd() end)
+		self:Bind(self.btnMid, function() self:OnMid() end)
+		self:Bind(self.btnYes, function() self:OnYes() end)
+		if isvalid(self.notice) then self.notice.Enable = false end
+		log("[NpcTalk] ready (client) end=" .. tostring(isvalid(self.btnEnd)) .. " mid=" .. tostring(isvalid(self.btnMid)) .. " yes=" .. tostring(isvalid(self.btnYes)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Bind(ButtonComponent btn, any fn)
+		if not isvalid(btn) then return end
+		table.insert(self.handlers, { e = btn.Entity, h = btn.Entity:ConnectEvent(ButtonClickEvent, fn) })
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 완료 연출 시간 · 전직 성공 기다리기(창이 닫혀 있어도 이어서 본다).
+		if self.noticeT > 0 then
+			self.noticeT = self.noticeT - delta
+			if self.noticeT <= 0 and isvalid(self.notice) then self.notice.Enable = false end
+		end
+		if self.waitKind == "" or _PlayerSkillState == nil then return end
+		self.waitT = self.waitT + delta
+		if self.waitKind == "job" and (_PlayerSkillState:LocalJobId() or "") == self.jobId then
+			self:OnJobChanged()
+		elseif self.waitKind == "tier" and math.floor(_PlayerSkillState:LocalTier() or 0) >= self.tier then
+			self:OnTierChanged()
+		elseif self.waitT >= self.WaitSeconds then
+			log_warning("[NpcTalk] 전직 응답 없음 kind=" .. self.waitKind .. " job=" .. self.jobId)
+			self.waitKind = ""
+			if _UIToast ~= nil then _UIToast:ShowMessage("전직하지 못했어요. 조건을 확인하고 다시 해 주세요") end
+			if self.isOpen then self:CloseWindow() end
+		end
+	end
+
+	-- ── 열기 · 닫기 ────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method string PairOf(string csv, string key)
+		-- "KEY=값;..." 에서 key 의 값(없으면 "").
+		for pair in string.gmatch(csv, "([^;]+)") do
+			local k = string.match(pair, "^([^=]+)=")
+			if k == key then return string.match(pair, "=(.*)$") or "" end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowJob(string job, string name, string catalog)
+		-- 리스항구 전직관(직업 1명 = 1개)에게 말을 걸었다 → 레벨 · 직업에 맞는 첫 화면.
+		self.mode = "jobchange"
+		self.jobId = job
+		self.tier = 1
+		self.npcName = name
+		self.catalogId = catalog
+		self.waitKind = ""
+		local novice = "NOVICE"
+		local myJob = ""
+		local myLevel = 1
+		if _PlayerSkillState ~= nil then
+			myJob = _PlayerSkillState:LocalJobId() or ""
+			myLevel = _PlayerSkillState:LocalLevel() or 1
+			novice = _PlayerSkillState.NoviceJobId or "NOVICE"
+		end
+		self.reqLevel = self:RequiredLevel(job, 1)
+		local first = "lock"
+		if self:PairOf(self.JobNames, job) == "" then
+			first = "already"
+		elseif myJob ~= "" and myJob ~= novice then
+			first = "already"
+		elseif myLevel >= self.reqLevel then
+			first = "greet"
+		end
+		self:OpenWindow()
+		self:SetPage(first)
+		log("[NpcTalk] job talk job=" .. job .. " npc=" .. catalog .. " myJob=" .. myJob .. " lv=" .. tostring(myLevel) .. " page=" .. first)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowAdvance(string job, integer nextTier, number req)
+		-- 2 · 3차 전직 자동 창(Lv20 · 30): 그 직업 전직관 그림 · 이름으로.
+		self.mode = "advance"
+		self.jobId = job
+		self.tier = nextTier
+		self.npcName = self:PairOf(self.JobNpcNames, job)
+		self.catalogId = ""
+		self.reqLevel = req
+		self.waitKind = ""
+		self:OpenWindow()
+		self:SetPage("adv")
+		log("[NpcTalk] advance window job=" .. job .. " tier=" .. tostring(nextTier) .. " req=" .. tostring(req))
+	end
+
+	@ExecSpace("ClientOnly")
+	method number RequiredLevel(string job, integer t)
+		-- 그 직업 t 차 전직 레벨(JobTier.ReqLevel). 없으면 10 · 20 · 30.
+		local req = 10 * t
+		if _JobDatabase ~= nil then
+			local v = _JobDatabase:GetRequiredLevel(job, t)
+			if v ~= nil and v > 0 then req = v end
+		end
+		return req
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenWindow()
+		-- 창 켜기 + 초상 · 이름 · 직업 아이콘 · 역할 칩(전직관이 정해지면 화면이 바뀌어도 그대로).
+		self.isOpen = true
+		self:RenderIdentity()
+		if isvalid(self.talkRoot) then self.talkRoot.Enable = true end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hide()
+		-- CommonNpcUIController.SetOpen(false) 가 부른다 — 창만 끈다(전직 기다림 · 연출은 이어진다).
+		self.isOpen = false
+		self.page = ""
+		if isvalid(self.talkRoot) then self.talkRoot.Enable = false end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseWindow()
+		-- 우리가 닫을 때: 공용 컨트롤러를 거쳐 닫는다(ESC 스택 · 라우트 상태가 같이 정리된다).
+		if _CommonNpcUIController ~= nil then _CommonNpcUIController:Close() else self:Hide() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderIdentity()
+		-- 초상 = 지금 맵에 서 있는 그 전직관(모델이 정본) · 자동 창은 직업별 그림 · 이름 판 + 직업 아이콘 · 역할 칩.
+		local ruid = ""
+		if self.catalogId ~= "" then ruid = self:FindNpcSprite(self.catalogId) end
+		if ruid == "" then ruid = self:PairOf(self.JobNpcRuids, self.jobId) end
+		if isvalid(self.talkPortrait) and ruid ~= "" then self.talkPortrait.ImageRUID = DataRef(ruid) end
+		self:PlacePortrait()
+		local jobKo = self:PairOf(self.JobNames, self.jobId)
+		local name = self.npcName
+		if name == nil or name == "" then name = self:PairOf(self.JobNpcNames, self.jobId) end
+		if isvalid(self.talkName) then
+			self.talkName.Text = name
+			-- 직업 아이콘: 글자 왼쪽(글자 폭 + 간격). 아이콘 5장은 .ui 에 박혀 있고 이 직업 것만 켠다.
+			local w = self.talkName:GetPreferredWidth(name)
+			self:ShowIcon(self.nameIcons, self.jobId, -w / 2 - self.IconGap - 11)
+		end
+		if isvalid(self.roleLabel) then self.roleLabel.Text = jobKo .. " 전직관" end
+		self:FitRoleChip(jobKo .. " 전직관")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlacePortrait()
+		-- 초상을 무대 가운데에: NPC 클립은 "그림 피벗(발 · nx)이 칸(rect) 가운데"에 오는 식으로 그려진다(msw-ui-animclip-feet-pivot).
+		--   → 칸을 그림 크기(비율 유지 · 폭 PortraitW · 키 PortraitH 안)로 맞추고, 칸 가운데를 "발이 설 자리 + 피벗만큼 위 · 가로는 가운데에서 피벗이 치우친 만큼"에 둔다.
+		--   프레임 크기 · 피벗은 공식 자원 API 실측(JobPortrait "직업=가로,세로,nx,ny" · 프레임이 그림에 딱 맞게 잘려 있어 프레임 가운데 = 그림 가운데).
+		if not isvalid(self.talkPortrait) then return end
+		local t = self.talkPortrait.Entity.UITransformComponent
+		local spec = self:PairOf(self.JobPortrait, self.jobId)
+		local vals = {}
+		for v in string.gmatch(spec, "[%d%.]+") do table.insert(vals, tonumber(v)) end
+		local w = vals[1]
+		local h = vals[2]
+		local nx = vals[3]
+		local ny = vals[4]
+		-- 피벗 → 위치 → 크기 순서(런타임에 위치를 옮기면 크기가 옛 값으로 돌아가는 일이 있다)
+		t.Pivot = Vector2(0.5, 0.5)
+		if w == nil or h == nil or nx == nil or ny == nil then
+			t.anchoredPosition = Vector2(0, self.PortraitFeetY + self.PortraitW / 2)
+			t.RectSize = Vector2(self.PortraitW, self.PortraitW)
+			return
+		end
+		local s = math.min(self.PortraitW / w, self.PortraitH / h)
+		local dw = w * s
+		local dh = h * s
+		t.anchoredPosition = Vector2((nx - 0.5) * dw, self.PortraitFeetY + ny * dh)
+		t.RectSize = Vector2(dw, dh)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FitRoleChip(string text)
+		-- 역할 칩 폭 = 글자 폭 + 28(좌우 14) · 왼쪽 끝 고정(대사 판 왼쪽에서 30).
+		if not isvalid(self.roleChip) or not isvalid(self.roleLabel) then return end
+		local w = math.ceil(self.roleLabel:GetPreferredWidth(text)) + 28
+		local t = self.roleChip.UITransformComponent
+		t.anchoredPosition = Vector2(self.RoleLeft + w / 2, t.anchoredPosition.y)
+		t.RectSize = Vector2(w, t.RectSize.y)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowIcon(Entity root, string job, number x)
+		-- Icon_<직업> 중 이 직업 하나만 켜고 가로 위치를 둔다(root 가 없으면 건너뜀).
+		if not isvalid(root) then return end
+		for _, k in ipairs({ "WARRIOR", "MAGICIAN", "ARCHER", "THIEF", "PIRATE", "MAP" }) do
+			local ic = root:GetChildByName("Icon_" .. k)
+			if isvalid(ic) then
+				ic.Enable = (k == job)
+				if k == job then
+					local t = ic.UITransformComponent
+					t.anchoredPosition = Vector2(x, t.anchoredPosition.y)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FindNpcSprite(string catalogNpcId)
+		-- 지금 맵에서 NpcSpawner 가 만든 "Npc_<CatalogNpcId>_<순번>" 엔티티의 SpriteRUID. 없으면 "".
+		if catalogNpcId == "" then return "" end
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) or not isvalid(p.CurrentMap) then return "" end
+		local prefix = "Npc_" .. catalogNpcId .. "_"
+		for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+			if string.sub(c.Name, 1, #prefix) == prefix and isvalid(c.SpriteRendererComponent) then
+				return c.SpriteRendererComponent.SpriteRUID
+			end
+		end
+		return ""
+	end
+
+	-- ── 화면 ───────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method string Gold(string s)
+		return "<color=#E8B64C><b>" .. s .. "</b></color>"
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Coral(string s)
+		return "<color=#F0806F>" .. s .. "</color>"
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Sub(string s)
+		return "<color=#AEB8CF>" .. s .. "</color>"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPage(string p)
+		-- 화면 하나를 그린다: 대사 · 스킬 칸 · 왼쪽 정보 · 버튼.
+		self.page = p
+		local job = self.jobId
+		local jobKo = self:PairOf(self.JobNames, job)
+		local subj = self:PairOf(self.JobSubjects, job)
+		local text = ""
+		local lines = 1
+		local skillsTier = 0
+		local info = ""
+		local btns = {}
+		if p == "lock" then
+			local lv = 1
+			if _PlayerSkillState ~= nil then lv = _PlayerSkillState:LocalLevel() or 1 end
+			text = "아직은 이르네. " .. self:Gold(tostring(math.floor(self.reqLevel)) .. "레벨") .. "이 되면 다시 찾아오게.\n" .. self:Sub("그동안 마을 근처 사냥터에서 몸을 단련하게나.")
+			lines = 2
+			info = "lv"
+			self:RenderLevelGauge(lv, self.reqLevel)
+			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" }, { b = self.btnYes, t = "사냥터 길 보기", kind = "gold" } }
+		elseif p == "greet" then
+			text = "어서 오게, 젊은이. 우리 다섯은 각자 다른 길을 가르치지.\n마음이 가는 직업의 전직관에게 말을 걸게."
+			lines = 2
+			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" }, { b = self.btnYes, t = jobKo .. " 이야기 듣기", kind = "gold" } }
+		elseif p == "offer" then
+			local pitch = self:PairOf(self.JobPitch, job)
+			local topic = self:PairOf(self.JobTopics, job)
+			text = "드디어 왔군. " .. self:Gold(jobKo) .. "의 길을 걷겠나? " .. topic .. " " .. pitch
+			skillsTier = 1
+			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" }, { b = self.btnMid, t = "다른 직업 보기", kind = "blue" }, { b = self.btnYes, t = jobKo .. "로 전직", kind = "gold", icon = job } }
+		elseif p == "confirm" then
+			text = "정말 " .. self:Gold(jobKo) .. self:Josa(subj, jobKo) .. " 되겠나?\n" .. self:Coral("한 번 전직하면 직업을 바꿀 수 없네.")
+			lines = 2
+			btns = { { b = self.btnEnd, t = "다시 생각할게요", kind = "blue" }, { b = self.btnYes, t = "전직한다", kind = "gold" } }
+		elseif p == "done" then
+			local nextReq = math.floor(self:RequiredLevel(job, 2))
+			text = "훌륭하네! 이제 " .. self:Gold("빈 마을의 넥서스") .. "를 눌러 너의 마을로 삼게. 먼저 누른 자가 주인이네.\n" .. self:Sub("스킬 창(K)에서 새 스킬을 배울 수 있네. " .. tostring(nextReq) .. "레벨이 되면 다시 오게.")
+			lines = 2
+			info = "next"
+			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" }, { b = self.btnYes, t = "마을 길 보기", kind = "gold", icon = "MAP" } }
+		elseif p == "adv" then
+			skillsTier = self.tier
+			local n = self:CountSkills(job, self.tier)
+			local what = (n >= 2) and "새 기술 두 가지를" or "새 기술을"
+			text = "벌써 " .. self:Gold(tostring(math.floor(self.reqLevel)) .. "레벨") .. "이군. " .. tostring(self.tier) .. "차 전직으로 " .. what .. " 알려 주지."
+			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" }, { b = self.btnYes, t = tostring(self.tier) .. "차 전직", kind = "gold" } }
+		elseif p == "wait" then
+			text = "…"
+			btns = {}
+		else
+			text = "이미 전직을 마쳤군. 자네의 길을 계속 가게."
+			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" } }
+		end
+		if isvalid(self.talkLine) then self.talkLine.Text = text end
+		if isvalid(self.infoLv) then self.infoLv.Enable = (info == "lv") end
+		if isvalid(self.infoNext) then self.infoNext.Enable = (info == "next") end
+		self:RenderSkills(job, skillsTier, lines)
+		self:LayoutButtons(btns)
+		log("[NpcTalk] page=" .. p .. " job=" .. job .. " tier=" .. tostring(self.tier))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Josa(string withJosa, string base)
+		-- "전사가" 에서 이름("전사")을 떼고 남은 조사("가") — 이 직업 표(JobSubjects)가 이미 조사까지 갖고 있어 그 꼬리만 쓴다.
+		if withJosa == nil or base == nil then return "" end
+		if string.sub(withJosa, 1, #base) == base then return string.sub(withJosa, #base + 1) end
+		return ""
+	end
+
+	-- ── 스킬 칸 ────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method any SkillList(string job, integer t)
+		-- 그 직업 그 차수 스킬(SlotOrder 순).
+		local list = {}
+		if _SkillDatabase ~= nil and job ~= "" and t > 0 then
+			_SkillDatabase:EnsureLoaded()
+			list = _SkillDatabase:GetSkillsByJobLineAndTier(job, t) or {}
+			table.sort(list, function(a, b) return a.order < b.order end)
+		end
+		return list
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer CountSkills(string job, integer t)
+		local n = #self:SkillList(job, t)
+		if n > 2 then n = 2 end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method string KeyOf(any skill, string job)
+		-- 시전 키 글자(SkillHotbar 슬롯 표). 패시브 · 키 없음 = "패시브".
+		if skill.behavior == "PASSIVE" then return "패시브" end
+		local hb = _SkillHotbar
+		if hb ~= nil then
+			if hb.slots == nil or #hb.slots == 0 then hb:BuildSlotTable() end
+			for _, e in ipairs(hb.slots) do
+				if e.byJob[job] == skill.id then return e.keyName end
+			end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FirstSentence(string desc)
+		-- 설명 첫 문장(마침표 앞까지 · 마침표가 없으면 전부). 길면 글자 상자가 말줄임으로 줄인다.
+		if desc == nil then return "" end
+		local at, stop = string.find(desc, ".", 1, true)
+		if at ~= nil then return string.sub(desc, 1, at) end
+		return desc
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderSkills(string job, integer t, integer lines)
+		-- 스킬 칸 2개: 칸 + 아이콘 + 이름 + "키 · 한 줄 설명". t = 0 이면 숨김. 대사가 한 줄 늘면 한 줄 높이만큼 내린다.
+		if not isvalid(self.skillsRoot) then return end
+		self.skillsRoot.Enable = (t > 0)
+		if t <= 0 then return end
+		self:SetPosY(self.skillsRoot, self.SkillsY - self.SkillsLineH * (lines - 1))
+		local list = self:SkillList(job, t)
+		for i = 1, 2 do
+			local card = self.skillsRoot:GetChildByName("S" .. tostring(i))
+			local s = list[i]
+			if isvalid(card) then
+				card.Enable = (s ~= nil)
+				if s ~= nil then
+					local ic = card:GetChildByName("Icon")
+					if isvalid(ic) and ic.SpriteGUIRendererComponent ~= nil and s.icon ~= "" then ic.SpriteGUIRendererComponent.ImageRUID = DataRef(s.icon) end
+					self:SetText(card, "Name", s.name)
+					local key = self:KeyOf(s, job)
+					local d = self:FirstSentence(s.description)
+					self:SetText(card, "Desc", (key ~= "") and (key .. " · " .. d) or d)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string childName, string text)
+		if not isvalid(parent) then return end
+		local c = parent:GetChildByName(childName)
+		if isvalid(c) and c.TextGUIRendererComponent ~= nil then c.TextGUIRendererComponent.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPosY(Entity e, number y)
+		-- 위치만 바꾼다(위치 → 크기 순서 문제를 피하려고 크기는 건드리지 않는다).
+		if not isvalid(e) then return end
+		local t = e.UITransformComponent
+		t.anchoredPosition = Vector2(t.anchoredPosition.x, y)
+	end
+
+	-- ── 레벨 게이지 ────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void RenderLevelGauge(number cur, number need)
+		-- 전직까지 남은 레벨: 게이지 채움(왼쪽 고정) + "Lv 9 / 10".
+		local p = math.min(1, math.max(0, cur / math.max(1, need)))
+		if isvalid(self.lvFill) then
+			local t = self.lvFill.UITransformComponent
+			local w = math.max(1, self.GaugeFillMax * p)
+			t.anchoredPosition = Vector2(w / 2 - self.GaugeFillMax / 2, t.anchoredPosition.y)
+			t.RectSize = Vector2(w, t.RectSize.y)
+		end
+		if isvalid(self.lvNum) then self.lvNum.Text = "Lv " .. tostring(math.floor(cur)) .. " / " .. tostring(math.floor(need)) end
+	end
+
+	-- ── 버튼 줄 ────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void LayoutButtons(any list)
+		-- list = 왼쪽부터 { b = 버튼 · t = 글 · kind = blue|gold · icon = 직업/MAP }. 오른쪽 끝부터 폭만큼 쌓는다(폭 = max(최소, 글 + 여백 + 아이콘)).
+		for _, b in ipairs({ self.btnEnd, self.btnMid, self.btnYes }) do
+			if isvalid(b) then b.Entity.Enable = false end
+		end
+		local right = self.BtnRight
+		for i = #list, 1, -1 do
+			local it = list[i]
+			local b = it.b
+			if isvalid(b) then
+				local tx = b.Entity.TextGUIRendererComponent
+				if tx ~= nil then
+					tx.Text = it.t
+					tx.FontColor = (it.kind == "gold") and self.ColInk or self.ColIvory
+				end
+				local tw = (tx ~= nil) and tx:GetPreferredWidth(it.t) or 100
+				local extra = (it.icon ~= nil) and 2 * (self.IconSize + self.IconGap) or 0
+				local w = math.max(self.BtnMinW, math.ceil(tw) + 2 * self.BtnPad + extra)
+				-- 위치 → 크기 순서
+				b.Entity.UITransformComponent.anchoredPosition = Vector2(right - w / 2, self.BtnY)
+				b.Entity.UITransformComponent.RectSize = Vector2(w, self.BtnH)
+				b.Entity.Enable = true
+				b.Enable = true
+				if it.kind == "gold" then
+					self:ShowIcon(b.Entity, it.icon or "", -tw / 2 - self.IconGap - self.IconSize / 2)
+				end
+				right = right - w - self.BtnGap
+			end
+		end
+	end
+
+	-- ── 버튼 동작 ──────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void OnEnd()
+		-- 왼쪽 파랑 버튼. 확인 화면의 [다시 생각할게요] = 제안으로 돌아간다 · 그 밖 = 닫기.
+		if self.waitKind ~= "" then return end
+		if self.page == "confirm" then
+			self:SetPage("offer")
+			return
+		end
+		self:CloseWindow()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMid()
+		-- [다른 직업 보기]: 전직관 1명 = 직업 1개라 이 창에서는 직업을 못 바꾼다 → 닫고 한 줄 안내.
+		if self.waitKind ~= "" then return end
+		if _UIToast ~= nil then _UIToast:ShowMessage("옆의 다른 전직관에게 말을 걸어 보세요") end
+		self:CloseWindow()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnYes()
+		-- 오른쪽 금 버튼 = 하는 쪽. 화면마다 다음 걸음.
+		if self.waitKind ~= "" then return end
+		local p = self.page
+		if p == "greet" then
+			self:SetPage("offer")
+		elseif p == "offer" then
+			self:SetPage("confirm")
+		elseif p == "confirm" then
+			self:RequestJob()
+		elseif p == "adv" then
+			self:RequestTier()
+		elseif p == "lock" then
+			self:GoHunt()
+		elseif p == "done" then
+			self:GoVillage()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestJob()
+		-- B 의 전직 요청(Server RPC). 최종 조건(초보자 · Lv10)은 서버가 본다. 성공 = 클라 미러 LocalJobId 가 이 직업이 되는 것.
+		if self.jobId == "" or _PlayerSkillState == nil then
+			log_warning("[NpcTalk] 전직: _PlayerSkillState 없음 또는 직업 없음 job=" .. self.jobId)
+			self:CloseWindow()
+			return
+		end
+		_PlayerSkillState:RequestChooseJob(self.jobId)
+		self.waitKind = "job"
+		self.waitT = 0
+		self:SetPage("wait")
+		log("[NpcTalk] jobchange request job=" .. self.jobId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestTier()
+		-- 2 · 3차 = B 의 RequestSync(서버 TryAdvanceTier 가 레벨만큼 차수를 올린다).
+		if _PlayerSkillState == nil then
+			self:CloseWindow()
+			return
+		end
+		_PlayerSkillState:RequestSync()
+		self.waitKind = "tier"
+		self.waitT = 0
+		self:SetPage("wait")
+		log("[NpcTalk] tier advance request tier=" .. tostring(self.tier))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnJobChanged()
+		-- 1차 전직 성공: 완료 연출 + (창이 열려 있으면) 완료 화면(다음 할 일 · 마을 길 보기).
+		self.waitKind = ""
+		log("[NpcTalk] jobchange done job=" .. self.jobId)
+		self:ShowNotice("초보자 → " .. self:PairOf(self.JobNames, self.jobId))
+		if self.isOpen then self:SetPage("done") end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnTierChanged()
+		-- 2 · 3차 전직 성공: 완료 연출 + 창 닫기.
+		self.waitKind = ""
+		log("[NpcTalk] tier done tier=" .. tostring(self.tier))
+		self:ShowNotice(self:PairOf(self.JobNames, self.jobId) .. " · " .. tostring(self.tier) .. "차 전직")
+		if self.isOpen then self:CloseWindow() end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoHunt()
+		-- [사냥터 길 보기](Lv9 안내): 월드맵 더블클릭 길안내와 같은 PortalNav 를 리스항구 근처 사냥터로 켠다. 막힌 곳이면 PortalNav 가 이유 토스트.
+		if _PortalNav ~= nil then _PortalNav:Start(self.HuntMap, self.HuntLabel) end
+		self:CloseWindow()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void GoVillage()
+		-- [마을 길 보기](전직 완료 안내): 차원의 거울을 가리키는 기존 코치마크. 서버가 이미 "전직 직후 안내"를 예약해 뒀으면 대화창을 닫은 뒤 저절로 뜬다.
+		self:CloseWindow()
+		local cm = _CoachMarkController
+		if cm ~= nil and not (cm._T ~= nil and cm._T.mirrorGuidePending == true) then cm:ShowKey("taxi") end
+	end
+
+	-- ── 완료 연출 ──────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void ShowNotice(string pill)
+		-- 화면 위 가운데 "전직 완료!" 문장 + 꽃 바 + 새 직업(레벨업 알림과 같은 모양 · 시안 12번).
+		if not isvalid(self.notice) then return end
+		if isvalid(self.noticePill) then
+			self.noticePill.Text = pill
+			-- 새 직업 판 폭 = 글자 폭 + 48(좌우 24) · 위치 → 크기 순서
+			local plate = self.notice:GetChildByName("Pill")
+			if isvalid(plate) then
+				local t = plate.UITransformComponent
+				t.anchoredPosition = Vector2(0, t.anchoredPosition.y)
+				t.RectSize = Vector2(math.ceil(self.noticePill:GetPreferredWidth(pill)) + 48, t.RectSize.y)
+			end
+		end
+		self.notice.Enable = true
+		self.noticeT = self.NoticeSeconds
+	end
+
+	method void OnEndPlay()
+		if self:IsClient() and self.handlers ~= nil then
+			for _, h in ipairs(self.handlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+		end
+	end
+
+end
