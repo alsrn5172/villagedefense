@@ -42,8 +42,9 @@ ctr('NpcTalk/PortraitBg', STAGE, WIN);
 roundStyle('NpcTalk/PortraitBg', C.gold, 0.45);                   // 금 안쪽 테두리 2px(시안 inset 0 0 0 2px)
 round('NpcTalk/PortraitBg/Fill', [36, 32, 316, 286], STAGE, '#203868', 1);
 S.back(b, 'NpcTalk/PortraitBg/Fill');
-// NPC 그림: 폭 220 · 바닥에서 8 띄움(바닥 가운데 피벗 · 비율 유지)
-S.place(b, 'NpcTalk/PortraitBg/Portrait', { anchor: 'middle-center', pivot: [0.5, 0], pos: [0, -137], size: [220, 220] });
+// NPC 그림: 폭 220 · 바닥에서 8 띄움. NPC 클립은 "그림 피벗(발)이 칸 가운데"에 그려져서(msw-ui-animclip-feet-pivot) 실제 위치 · 크기는
+//   NpcTalkController.PlacePortrait 가 직업별 프레임 크기 · 피벗으로 매번 정한다. 여기 값은 기본 자리(가운데 피벗 · 발줄 -137 + 110).
+S.place(b, 'NpcTalk/PortraitBg/Portrait', { anchor: 'middle-center', pivot: [0.5, 0.5], pos: [0, -27], size: [220, 220] });
 ctr('NpcTalk/PortraitBg/NamePlate', [34, 330, 320, 40], STAGE);
 S.image(b, 'NpcTalk/PortraitBg/NamePlate', 'plate_dark');
 S.font(b, 'NpcTalk/PortraitBg/NamePlate', { font: 'Maple', size: 18, color: C.ivory, h: 'center', v: 'middle', outline: false, shadow: true });
