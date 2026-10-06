@@ -99,7 +99,12 @@ function kit(b) {
       quiet(() => b.patchComponent(p, S.SPR, { ImageRUID: { DataId: '' }, Type: 1 }));
       RECT[p] = r;
     },
-    text(p, t, r, o = {}) { quiet(() => S.newText(b, p, t, Object.assign({ pos: pos(p, r), rect: [r[2], r[3]] }, o))); RECT[p] = r; },
+    text(p, t, r, o = {}) {
+      // 두 줄 이상 들어가는 상자는 단어(띄어쓰기) 자리에서 미리 줄을 바꾼다 — 게임 글꼴은 한글을 글자 단위로 끊어 "넥서스\n를" 처럼 갈라진다(사용자 2026-10-07 "단어별로 줄바꿈 통일").
+      const sz = o.size || 14;
+      if (o.wrap !== false && typeof t === 'string' && r[3] >= sz * 2.4) t = wrapWords(t, sz, r[2] - 4);
+      quiet(() => S.newText(b, p, t, Object.assign({ pos: pos(p, r), rect: [r[2], r[3]] }, o))); RECT[p] = r;
+    },
     // 45° 돌리기(UIRotation z 45 = QuaternionRotation 0,0,0.383,0.924 · Play 실측)
     rot45(p) { quiet(() => b.patchComponent(p, 'MOD.Core.UITransformComponent', { QuaternionRotation: { x: 0, y: 0, z: 0.38268343, w: 0.92387953 } })); },
     // 마름모 = 단색 칸을 45° 돌린 것. half = 가운데에서 꼭짓점까지(대각선 절반) → 칸 한 변 = half × √2
@@ -136,6 +141,19 @@ function estW(s, size) {
   return w * 1.08;
 }
 const nLines = (s, size, width) => Math.max(1, Math.ceil(estW(s, size) / width));
+// 단어 단위 줄바꿈: 직접 넣은 줄(\n)마다 어림 폭(estW · 실제보다 조금 넓게 잡힌다)을 넘으면 띄어쓰기 자리에서 끊는다. 태그(<b> 등)는 띄어쓰기가 없어 갈라지지 않는다.
+function wrapWords(t, size, width) {
+  return String(t).split('\n').map((seg) => {
+    if (estW(seg, size) <= width) return seg;
+    const lines = []; let cur = '';
+    for (const w of seg.split(' ')) {
+      const nx = cur ? cur + ' ' + w : w;
+      if (cur && estW(nx, size) > width) { lines.push(cur); cur = w; } else cur = nx;
+    }
+    if (cur) lines.push(cur);
+    return lines.join('\n');
+  }).join('\n');
+}
 
 // ─────────────────────────────────────────────── 게임 소개 ───────────────────────────────────────────────
 // 2차: 제목 띠 아래 탭 줄(56)을 넣느라 창을 840 → 910 으로 늘렸다(위로 35 · 아래로 35). 1차 쪽 내용은 PY 만큼 내려간다.
@@ -172,9 +190,9 @@ const BULLETS = [
     `직업(전사 · 마법사 · 궁수 · 도적 · 해적)은 마을과 상관없이 <b>자유롭게</b> 골라요.`,
     `${g('가장 먼저 발록을 쓰러뜨리면 즉시 승리')}. 넥서스가 부서지면 탈락이에요.`],
   [`<b>0 · 0.5페이즈 (0:00 ~ 4:30)</b> 사냥으로 레벨을 올려요. Lv 10이 되면 전직하고 마을을 차지해요.`,
-    `<b>1페이즈 성장 (4:30~)</b> 7:30에 미니언이 생기고 11:00 · 14:30에 웨이브가 마을을 공격해요. 파병도 이때부터.`,
+    `<b>1페이즈 성장 (4:30~)</b> 7:30에 미니언이 생기고 11:00 · 14:30에 웨이브가 마을을 공격해요. 파병도 이때부터 바로 가능해요.`,
     `<b>2페이즈 견제 (16:30~)</b> 웨이브가 더 강해져요. 쓰러지면 언제든 메소 5,000이나 경험치를 내고 내 마을에서 부활해요.`,
-    `${r('3페이즈 결전 (24:30~)')} 웨이브가 1분마다 와요. 넥서스가 버틸 때 서둘러 발록에게!`],
+    `${r('3페이즈 결전 (24:30~)')} 25:00부터 1분마다, 30:00부터 2분마다 웨이브가 와요. ${r('웨이브 미니언이 주는 피해가 강해져요!')}\n넥서스가 버티는 동안 서둘러 발록에게 도전해요!`],
   [`몬스터를 잡으면 경험치가 올라요. <b>레벨이 오르면 AP</b>(능력치)와 <b>SP</b>(스킬)가 생겨요. <b>C</b> 캐릭터 창 · <b>K</b> 스킬 창에서 찍어요.`,
     `빨간 알림이 붙은 버튼은 찍을 게 남았다는 뜻이에요. 레벨업 AP 는 <b>자동 분배</b>(기본 켜짐)가 직업에 맞게 찍어 줘요.`,
     `사냥터 위치와 몬스터 레벨은 <b>M</b> 월드맵에서 볼 수 있어요.`],
@@ -187,7 +205,7 @@ const BULLETS = [
     `수비대: <b>도감 관리인</b>에게서 해금 → <b>몬스터 모집관</b>에게 그 몬스터 재료 8개로 5마리 모집해요.`,
     `${r('넥서스가 부서지면 탈락')}이고, 남은 판은 관전해요.`],
   [`발록은 <b>혼자 들어가는 방</b>에서 1 : 1로 싸워요. 가장 먼저 쓰러뜨린 사람이 나오면 모두에게 알림이 뜨고 바로 끝나요.`,
-    `3페이즈에는 웨이브가 1분마다 와요. <b>마을을 버틸 수 있을 때</b> 발록에게 가는 게 핵심이에요.`,
+    `3페이즈에는 웨이브가 25:00부터 1분마다, 30:00부터 2분마다 오고 미니언 피해도 강해져요. <b>마을을 버틸 수 있을 때</b> 발록에게 가는 게 핵심이에요.`,
     `결과 창에서 순위 보상(발록의 심장 · 계정 경험치)을 받아요.`],
   [`색이 칠해진 키만 써요. <b>어두운 키</b>는 지금 게임에서 쓰지 않아요.`,
     `이 창(<b>도움말</b>)은 오른쪽 위 버튼이나 <b>H</b> 키로 언제든 열어요. 재화 · 마을 NPC · 조작키 탭도 있어요.`],
@@ -236,7 +254,8 @@ function buildIntro() {
       if (nLines(t, 18, BODY_W - 18) > lines) console.log(`  · ${i + 1}쪽 ${j + 1}줄은 어림으로 넘칠 수 있음 — 화면으로 확인`);
       const h = lines * 28;
       K.diamond(`${P}/Bullets/D${j + 1}`, BODY_X + 4, y + 14, 5.66, C.gold, 1);
-      K.text(`${P}/Bullets/T${j + 1}`, t, [BODY_X + 18, y, BODY_W - 18, h], { font: 'Noto500', size: 18, color: C.ivory, h: 'left', v: 'top' });
+      // 설명 줄은 직접 넣은 줄바꿈만 쓴다(넓은 상자 · 어림 폭이 실제보다 넓어 자동 줄바꿈을 끄면 줄 수가 상자 높이와 맞는다)
+      K.text(`${P}/Bullets/T${j + 1}`, t, [BODY_X + 18, y, BODY_W - 18, h], { font: 'Noto500', size: 18, color: C.ivory, h: 'left', v: 'top', wrap: false });
       y += h + 10;
     });
     if (y - 10 > KEY[1]) console.log(`⚠ ${i + 1}쪽 설명이 핵심 줄(${KEY[1]})을 넘을 수 있음: 끝 y ${y - 10}`);
@@ -369,8 +388,9 @@ function buildTutorial() {
   K.box('Root/Card', [0, 0, 1920, 1080], { enable: false });
   K.solid('Root/Card/Dimmer', C.veil, 0.55, [0, 0, 1920, 1080], { anchor: 'stretch', raycast: true });
   K.img('Root/Card/Window', 'panel_window', [540, 250, 840, 560], { raycast: true });
-  K.img('Root/Card/Window/Chip', 'chip_gold', [584, 312, 160, 30]);
-  K.text('Root/Card/Window/Chip/Text', '튜토리얼', [584, 312, 160, 30], { font: 'Maple', size: 15, color: C.goldInk });
+  // 칩(게임 소개 · 레벨 업 …) = 창 위쪽 가운데에 크게(사용자 2026-10-07 "박스 그대로 · 가운데에 크게") — 창 가운데 x 960 · 가장 긴 칩 글 7자(발록 입장 재료)도 들어가는 폭 260
+  K.img('Root/Card/Window/Chip', 'chip_gold', [830, 282, 260, 46]);
+  K.text('Root/Card/Window/Chip/Text', '튜토리얼', [830, 282, 260, 46], { font: 'Maple', size: 24, color: C.goldInk });
   K.text('Root/Card/Window/Title', '이 게임은 이렇게 이겨요', [584, 350, 756, 50], { font: 'Maple', size: 32, color: C.title, h: 'left', shadow: true });
   K.raw('Root/Card/Window/Emblem', ELLINIA_EMBLEM, [580, 418, 120, 120], { enable: false });
   K.text('Root/Card/Window/Body', '', [580, 418, 760, 218], { font: 'Noto500', size: 21, color: C.ivory, h: 'left', v: 'top' });
@@ -423,17 +443,18 @@ function p1(K, base, IN) {
 }
 
 function p2(K, base, IN) {
-  // 30분 타임라인 — 시안 timeline(): x(m) = 30 + m/30 * 1040 (안쪽 왼쪽 기준)
-  const X = (m) => IN[0] + 30 + (m / 30) * 1040;
+  // 45분 타임라인(사용자 2026-10-07 · 매치 45분 · 시안은 30분) — x(m) = 30 + m/45 * 1040 (안쪽 왼쪽 기준)
+  const X = (m) => IN[0] + 30 + (m / 45) * 1040;
   const T = IN[1];
   // 범례: 빨간 마름모 + 두 글
   K.diamond(`${base}/LegendDiaW`, IN[0] + 37, T + 30, 12.7, '#FFFFFF');
   K.diamond(`${base}/LegendDia`, IN[0] + 37, T + 30, 9.9, '#F0564E');
   K.text(`${base}/Legend1`, '미니언 웨이브(모든 마을 동시 공격)', [IN[0] + 54, T + 20, 300, 20], { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
-  K.text(`${base}/Legend2`, '3페이즈 = 1분마다 웨이브 · 2분마다 좀비머쉬맘 +1', [IN[0] + 54 + 304, T + 20, 470, 20], { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
+  // 3페이즈 웨이브 = MinionWave LIVE P3-1~5(25:00~29:00 매분) · P3-6~13(30:00~44:00 2분마다) · 웨이브마다 +5% · 좀비머쉬맘 증가
+  K.text(`${base}/Legend2`, '3페이즈 = 25:00부터 1분 · 30:00부터 2분마다 웨이브 · 좀비머쉬맘 증가 · 피해 점점 강해짐', [IN[0] + 54 + 304, T + 20, 740, 20], { font: 'Noto700', size: 14, color: C.sub, h: 'left' });
   // 페이즈 막대 4개
-  // 첫 칸(4.5분 = 153px)은 시안 글('0 · 0.5페이즈 개척 · 전직')이 두 줄로 꺾여(Play 실측) '페이즈'를 뺀다 — 시안도 칸 밖은 잘린다
-  const seg = [[0, 4.5, '#1F9E6A', '0 · 0.5 개척 · 전직'], [4.5, 16.5, '#2F6FE0', '1페이즈 성장'], [16.5, 24.5, '#B8861E', '2페이즈 견제'], [24.5, 30, '#C23A48', '3페이즈 결전']];
+  // 첫 칸(45분 눈금에선 4.5분 = 104px)은 '0 · 0.5 개척 · 전직'이 넘쳐 '개척 · 전직'만 쓴다(0 · 0.5페이즈는 아래 설명 글에 있음)
+  const seg = [[0, 4.5, '#1F9E6A', '개척 · 전직'], [4.5, 16.5, '#2F6FE0', '1페이즈 성장'], [16.5, 24.5, '#B8861E', '2페이즈 견제'], [24.5, 45, '#C23A48', '3페이즈 결전']];
   seg.forEach((s, i) => {
     const R = [X(s[0]), T + 96, X(s[1]) - X(s[0]) - 3, 36];
     K.fill(`${base}/Seg${i + 1}`, s[2], 1, R);
@@ -441,9 +462,9 @@ function p2(K, base, IN) {
   });
   // 웨이브 마름모(빨강 + 흰 테) · 3페이즈 작은 마름모
   [11, 14.5, 17, 20, 23].forEach((m, i) => { K.diamond(`${base}/WaveW${i + 1}`, X(m), T + 81, 15.6, '#FFFFFF'); K.diamond(`${base}/Wave${i + 1}`, X(m), T + 81, 12.7, '#F0564E'); });
-  [25.5, 26.5, 27.5, 28.5, 29.5].forEach((m, i) => { K.diamond(`${base}/MiniW${i + 1}`, X(m), T + 82, 10.6, '#FFFFFF', 0.85); K.diamond(`${base}/Mini${i + 1}`, X(m), T + 82, 8.5, '#F0564E', 0.85); });
-  // 시각 · 이름 11개 (짝수 = 위줄 · 홀수 = 아랫줄 + 연결선)
-  const TL = [[0, '0:00', '매치 시작 · 사냥 시작'], [4.5, '4:30', '1페이즈 성장'], [7.5, '7:30', '미니언 생성'], [11, '11:00', '1웨이브'], [14.5, '14:30', '2웨이브'], [16.5, '16:30', '2페이즈 견제'], [17, '17:00', '1웨이브'], [20, '20:00', '2웨이브'], [23, '23:00', '3웨이브'], [24.5, '24:30', '3페이즈 결전'], [30, '30:00', '시간 종료']];
+  [25, 26, 27, 28, 29, 30, 32, 34, 36, 38, 40, 42, 44].forEach((m, i) => { K.diamond(`${base}/MiniW${i + 1}`, X(m), T + 82, 10.6, '#FFFFFF', 0.85); K.diamond(`${base}/Mini${i + 1}`, X(m), T + 82, 8.5, '#F0564E', 0.85); });
+  // 시각 · 이름 12개 (짝수 = 위줄 · 홀수 = 아랫줄 + 연결선)
+  const TL = [[0, '0:00', '매치 시작 · 사냥 시작'], [4.5, '4:30', '1페이즈 성장'], [7.5, '7:30', '미니언 생성'], [11, '11:00', '1웨이브'], [14.5, '14:30', '2웨이브'], [16.5, '16:30', '2페이즈 견제'], [17, '17:00', '1웨이브'], [20, '20:00', '2웨이브'], [23, '23:00', '3웨이브'], [24.5, '24:30', '3페이즈 결전'], [30, '30:00', '웨이브 2분마다'], [45, '45:00', '시간 종료']];
   TL.forEach((t, i) => {
     const left = Math.max(IN[0], Math.min(IN[0] + 1100 - 120, X(t[0]) - 60)); const cx = left + 60;
     const top = i % 2 ? T + 196 : T + 146;
@@ -498,11 +519,12 @@ function p5(K, base, IN) {
   x += 100 + 28;
   K.img(`${base}/Arrow1`, 'icon_arrow_right', [x, cy - 22, 44, 44]);
   x += 44 + 28;
-  const FAC = [['fac_tower', '포탑', '1번째'], ['fac_inhibitor', '억제기', '2번째'], ['fac_nexus', '넥서스', '부서지면 탈락']];
+  // 시설 그림 = 사용자 제공 아이콘(리소스파일/포탑억제기넥서스_아이콘 · 2026-10-07 · 그룹 업로드 256px). 다른 창의 fac_* 키는 그대로.
+  const FAC = [['ed384a2c91cb49739b05fb6a7e41acc5', '포탑', '1번째'], ['6567c0feedd44b84abebe31b83cb4916', '억제기', '2번째'], ['6d3ace7c7c714ca1bbabcdefd41fcdf6', '넥서스', '부서지면 탈락']];
   FAC.forEach((f, i) => {
     const P = `${base}/Fac${i + 1}`; const R = [x, cy - 84, 150, 168];
     K.img(P, 'panel_row', R, i === 2 ? { color: '#FFD9D4' } : {});
-    K.img(P + '/Icon', f[0], [x + 39, R[1] + 18, 72, 72]);
+    K.raw(P + '/Icon', f[0], [x + 33, R[1] + 10, 84, 84]);
     K.text(P + '/Name', f[1], [x, R[1] + 96, 150, 28], { font: 'Maple', size: 20, color: C.ivory });
     K.text(P + '/Sub', f[2], [x, R[1] + 128, 150, 20], { font: 'Noto700', size: 14, color: i === 2 ? CORAL : C.sub });
     x += 150;
@@ -520,7 +542,7 @@ function p5(K, base, IN) {
 }
 
 function p6(K, base, IN) {
-  const c = [['chip_gold', '승리', '가장 먼저 발록을 쓰러뜨림', '즉시 매치 종료 · 1위', 'icon_balrog_heart'], ['chip_gray', '시간 종료', '30:00까지 아무도 못 잡음', '기록으로 순위: 발록 피해 → 넥서스 HP → 레벨 → 처치', 'icon_clock'], ['chip_red', '탈락', '내 넥서스가 부서짐', '바로 탈락 · 관전으로', 'fac_nexus_broken']];
+  const c = [['chip_gold', '승리', '가장 먼저 발록을 쓰러뜨림', '즉시 매치 종료 · 1위', 'icon_balrog_heart'], ['chip_gray', '시간 종료', '45:00까지 아무도 못 잡음', '기록으로 순위: 발록 피해 → 넥서스 HP → 레벨 → 처치', 'icon_clock'], ['chip_red', '탈락', '내 넥서스가 부서짐', '바로 탈락 · 관전으로', 'fac_nexus_broken']];
   card3(IN).forEach((R, i) => {
     const P = `${base}/Card${i + 1}`; const cx = R[0] + R[2] / 2; const t = R[1] + 22;
     K.img(P, 'panel_row', R);
@@ -865,7 +887,7 @@ function buildNpc(K) {
     const x = 348 + zi * 308; const Z = `${T}/Zone${zi + 1}`;
     K.img(Z, 'panel_inner', [x, 331, 300, 440]);
     K.text(Z + '/Name', `${z[0]} 구역`, [x + 16, 343, 120, 28], { font: 'Maple', size: 20, color: C.title, h: 'left', shadow: true });
-    K.text(Z + '/Sub', z[1], [x + 140, 343, 144, 28], { font: 'Noto500', size: 13, color: C.sub, h: 'right' });
+    // 구역 이름 오른쪽 흰 요약 글(장비 · 물약 등)은 뺐다(사용자 2026-10-07) — NPCZ 의 두 번째 칸은 자료로만 남는다.
     z[2].forEach((n, ni) => {
       const y = 381 + ni * 126; const N = `${Z}/Npc${ni + 1}`;
       K.fill(N, C.navy900, 0.4, [x + 10, y, 280, 118]);

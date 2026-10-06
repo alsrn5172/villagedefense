@@ -877,8 +877,14 @@ script CoachMarkController extends Logic
 	@ExecSpace("ClientOnly")
 	method any RectOfUI(Entity e)
 		-- 다른 UI 그룹의 엔티티 사각형 → 막 루트 로컬 좌표.
+		--   먼저 앵커 · 크기로 직접 계산한다(LayoutRect). GetWorldCorners 는 게임 화면 크기가 바뀐 뒤 그룹마다 갱신이 엇갈려
+		--   (2026-10-07 Maker 실측: StatusHUD 는 옛 화면 크기 그대로) 오른쪽 위 캐릭터(C) 버튼 강조가 두 칸 왼쪽에 떴다.
 		if not isvalid(e) or e.UITransformComponent == nil then
 			return nil
+		end
+		local lr = self:LayoutRect(e, 0)
+		if lr ~= nil then
+			return lr
 		end
 		local cs = e.UITransformComponent:GetWorldCorners()
 		if cs == nil or #cs < 4 then
@@ -888,6 +894,120 @@ script CoachMarkController extends Logic
 		local a = rt:ToLocalPoint(Vector3(cs[1].x, cs[1].y, 0))
 		local b = rt:ToLocalPoint(Vector3(cs[3].x, cs[3].y, 0))
 		return { x1 = math.min(a.x, b.x), y1 = math.min(a.y, b.y), x2 = math.max(a.x, b.x), y2 = math.max(a.y, b.y) }
+	end
+
+	@ExecSpace("ClientOnly")
+	method any GridCellRect(GridViewComponent g, integer index)
+		-- GridView 의 index 번째(0부터) 칸 사각형(막 루트 로컬). 칸 엔티티 좌표는 엔진 배치와 달라(2026-10-07 실측) 칸 크기 · 간격 · 여백 · 스크롤로 계산한다.
+		--   칸은 왼쪽 위부터 가로로 FixedCount 개씩 채운다(가방 · 공방 그리드 배치). 화면 밖(스크롤로 가려진) 칸이면 nil.
+		if not isvalid(g) or index < 0 or not g.Entity.EnabledInHierarchy then
+			return nil
+		end
+		local G = self:LayoutRect(g.Entity, 0)
+		if G == nil then
+			return nil
+		end
+		local cols = math.max(1, g.FixedCount)
+		local cw = g.CellSize.x
+		local ch = g.CellSize.y
+		local sx = g.Spacing.x
+		local sy = g.Spacing.y
+		local pad = g.Padding
+		local col = index % cols
+		local row = index // cols
+		local rows = math.max(1, (g.TotalCount + cols - 1) // cols)
+		local contentH = pad.top + rows * ch + (rows - 1) * sy + pad.bottom
+		local over = math.max(0, contentH - (G.y2 - G.y1))
+		local scrolled = 0
+		if over > 0 and g.UseScroll then
+			scrolled = (1 - g:GetScrollNormalizedPosition(UITransformAxis.Vertical)) * over
+		end
+		local x1 = G.x1 + pad.left + col * (cw + sx)
+		local y2 = G.y2 - pad.top - row * (ch + sy) + scrolled
+		local r = { x1 = x1, y1 = y2 - ch, x2 = x1 + cw, y2 = y2 }
+		if r.y1 < G.y1 - 1 or r.y2 > G.y2 + 1 then
+			return nil
+		end
+		return r
+	end
+
+	@ExecSpace("ClientOnly")
+	method any LayoutRect(Entity e, integer depth)
+		-- 그룹 루트(/ui/그룹) 가운데 기준 사각형을 앵커 · 오프셋 · 크기로 계산한다(전 그룹 1920x1080 = 막 루트와 같은 기준).
+		--   크기 배율(UIScale)이 있으면 nil → 호출한 쪽이 GetWorldCorners 로 계산. 스크롤 · 그리드 칸은 부모 사각형 안 비율로(아래).
+		if not isvalid(e) or depth > 20 then
+			return nil
+		end
+		local t = e.UITransformComponent
+		if t == nil then
+			return nil
+		end
+		local p = e.Parent
+		if not isvalid(p) then
+			return nil
+		end
+		if p.Path == "/ui" then
+			local w = t.RectSize.x
+			local h = t.RectSize.y
+			if w < 1 or h < 1 then
+				w = 1920
+				h = 1080
+			end
+			return { x1 = -w / 2, y1 = -h / 2, x2 = w / 2, y2 = h / 2 }
+		end
+		if math.abs(t.UIScale.x - 1) > 0.001 or math.abs(t.UIScale.y - 1) > 0.001 then
+			return nil
+		end
+		local P = self:LayoutRect(p, depth + 1)
+		if P == nil then
+			return nil
+		end
+		if p.ScrollLayoutGroupComponent ~= nil or p.GridViewComponent ~= nil then
+			-- 스크롤 · 그리드 칸은 엔진이 배치한다 → 칸과 그 부모의 월드 모서리 비율로 부모 사각형 안 자리를 구한다(같은 그룹이라 배율 · 어긋남이 상쇄된다).
+			local cc = t:GetWorldCorners()
+			local pc = p.UITransformComponent:GetWorldCorners()
+			if cc == nil or pc == nil or #cc < 4 or #pc < 4 then
+				return nil
+			end
+			local pwx = pc[3].x - pc[1].x
+			local pwy = pc[3].y - pc[1].y
+			if math.abs(pwx) < 0.001 or math.abs(pwy) < 0.001 then
+				return nil
+			end
+			local sx = (P.x2 - P.x1) / pwx
+			local sy = (P.y2 - P.y1) / pwy
+			local gx1 = P.x1 + (cc[1].x - pc[1].x) * sx
+			local gx2 = P.x1 + (cc[3].x - pc[1].x) * sx
+			local gy1 = P.y1 + (cc[1].y - pc[1].y) * sy
+			local gy2 = P.y1 + (cc[3].y - pc[1].y) * sy
+			return { x1 = math.min(gx1, gx2), y1 = math.min(gy1, gy2), x2 = math.max(gx1, gx2), y2 = math.max(gy1, gy2) }
+		end
+		local pw = P.x2 - P.x1
+		local ph = P.y2 - P.y1
+		local amin = t.AnchorsMin
+		local amax = t.AnchorsMax
+		local ax1 = P.x1 + amin.x * pw
+		local ax2 = P.x1 + amax.x * pw
+		local ay1 = P.y1 + amin.y * ph
+		local ay2 = P.y1 + amax.y * ph
+		local x1, x2, y1, y2
+		if math.abs(amax.x - amin.x) > 0.0001 then
+			x1 = ax1 + t.OffsetMin.x
+			x2 = ax2 + t.OffsetMax.x
+		else
+			local w = t.RectSize.x
+			x1 = ax1 + t.anchoredPosition.x - t.Pivot.x * w
+			x2 = x1 + w
+		end
+		if math.abs(amax.y - amin.y) > 0.0001 then
+			y1 = ay1 + t.OffsetMin.y
+			y2 = ay2 + t.OffsetMax.y
+		else
+			local h = t.RectSize.y
+			y1 = ay1 + t.anchoredPosition.y - t.Pivot.y * h
+			y2 = y1 + h
+		end
+		return { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
 	end
 
 	@ExecSpace("ClientOnly")

@@ -71,6 +71,8 @@ for (const [name, x, icon, label] of TAB) {
   img(p + '/SelBg', 'btn_gold_default', T, T, { enable: false });
   img(p + '/Icon', icon, [x + 89.5, 211, 26, 26], T);
   txt(p + '/Label', label, [x + 123.5, 196, 80, 56], T, { font: 'Maple', size: 24, color: C.ivory, h: 'left' });
+  // 새로 얻은 업적 · 칭호 알림(fix-account-tab-alert.cjs 와 같은 값 · 2026-10-07)
+  if (name === 'Tab_achievement' || name === 'Tab_title') S.newImage(b, p + '/Alert', 'badge_alert', { pos: S.at(x + 231, 188, 24, 24, T), size: [24, 24], enable: false });
 }
 
 // ═══ 안쪽 판 + 페이지 4개 ═══
