@@ -80,6 +80,13 @@
 - 레인 바닥(⑧ 절반 크기)은 사용자 맵 위에서 `Docs/tools/lane-floor/apply.cjs` 로 다시 깔았다(레인 = `LaneGround_*` 의 밟는 선 범위라 사용자가 고친 발판에 맞춰 다시 계산됨 · 10개 맵).
 - ✔ **클릭 표시(§2-6)**: 위 사용자 `clickhereEntity` 를 쓰도록 `LaneFacilityService` 를 바꿨다 — 맵에 놓인 것은 그대로 쓰고 주인이 생기면 지운다. 노틸러스 마을 맵에도 하나 놓여 있어(사용자) 그 맵에서는 그것이 보인다 — 노틸러스를 빼려면 맵에서 지워야 한다.
 
+### ⑳ 클릭 표시 위치 · 노틸러스 호 NPC 간격 (사용자 2026-10-06 "노틸은 내가 놔서 제외 · 엘리니아 클릭은 아래로 1.0 · 커닝은 우측으로 1.0 · 노틸러스는 간격 더 늘리고 퍼져서")
+- 노틸러스: 맵에 사용자가 직접 놓은 `clickhereEntity` 는 의도한 것이다(제외 규칙은 스폰 쪽에만 적용). 손대지 않는다.
+- 엘리니아: `LaneFacilityService.ClickHereOffsetByVillage` = `ELLINIA=-0.8,1.2` (기본 `-0.8,2.2` 에서 아래로 1.0). 3층 NPC 이름표와 안 겹침(Play 사진).
+- 커닝: 맵에 놓은 `clickhereEntity` 를 `MapBuilder` 로 오른쪽 +1.0 (x -11.99 → -10.99 · 로그로 확인).
+- 노틸러스 호 기능 NPC(`VillageNpcSector.csv` NAUTILUS 4줄): 간격 0.45 → 약 1.0. 오른쪽 구간(x 10.25~16.9)에 제작 · 강화 · 물약 · 도감 · 통계 · 방어 · 파병 7명, 가운데 빈 구간(x 0 · 1 · 2)에 창고 · 모집 · 조련 3명. 원본 NPC 와 1.0 이상 떨어져 있다.
+- 같은 시기에 다른 세션이 올린 `NpcSpawner` 발판 붙이기(`6b300c8`)는 X 를 그대로 두고 높이만 바닥에 맞춘다 — 호 위 10명 모두 y 0.30 에 붙는 것을 Play 로그로 확인.
+
 ### WO-050 §2 보완 요청 22건 (사용자 "보상 2배 · 자동 AP · 시작 장비 · 노틸러스 NPC · 신규 물약 · 명중 회피 · 로딩 화면 · 피격 넉백 등 고치자 / 다같이해" · 구현 = A · Codex gpt-6-luna 분담)
 - **2-1 사냥 보상 2배** — `SummonManager.HuntRewardMul = 2.0`(정식 밸런스 · 테스트 임시값 아님)을 `FarmReward`(일반 · 엘리트 메소 · 미니언 `MonsterId=0` 제외) · `DropTableLogic`(젬 · 몬스터 재료 · `REGION_*` 제외) · `EliteSpawner`(꿈 조각 · 영혼석)에서 한 번씩만 곱한다. `EliteSpawner.EliteDreamMul = 2`(엘리트 전용 꿈 조각 ×2 · 사냥 ×2 와 겹쳐 ×4).
 - **2-2 `REGION_LOCAL` 원복** — `DropTable.csv` GROUND 사냥터1/2/3 `REGION_LOCAL` 3행을 2배 변경 전 값(0.35×1 · 0.75×1 · 1.0×3~4)으로 손으로 되돌렸다. `MONSTER` 행 · ★5 `REGION_DROP_MUL` 은 그대로.
