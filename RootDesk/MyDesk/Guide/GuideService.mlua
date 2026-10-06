@@ -39,6 +39,10 @@ script GuideService extends Logic
 	@HideFromInspector
 	property any checkKeys = nil
 
+	-- 맵 ID → 표시 이름(WorldMapNodes.Label · MapLabel 이 처음 부를 때 채운다)
+	@HideFromInspector
+	property any mapLabels = nil
+
 	-- st[uid] = { goal, goalText, marker, toasted, checks, waveToasted, shown, shownChip }
 	@HideFromInspector
 	property any st = nil
@@ -279,11 +283,63 @@ script GuideService extends Logic
 		if t == nil then return nil end
 		for i = 1, t:GetRowCount() do
 			if tostring(t:GetCell(i, "VillageId") or "") == villageId then
-				return { map = tostring(t:GetCell(i, "VillageMapName") or ""), lane1 = tostring(t:GetCell(i, "Lane1MapName") or ""),
+				local row = { map = tostring(t:GetCell(i, "VillageMapName") or ""), lane1 = tostring(t:GetCell(i, "Lane1MapName") or ""),
 					lane2 = tostring(t:GetCell(i, "Lane2MapName") or ""), rear = tostring(t:GetCell(i, "RearMapName") or ""), boss = tostring(t:GetCell(i, "BossMapName") or "") }
+				row.tower = self:TowerMapOf(villageId, row.lane2)
+				return row
 			end
 		end
 		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method string TowerMapOf(string villageId, string fallback)
+		-- 내 포탑(1차 방어선)이 놓인 맵 = LaneConfig 의 LANE2 행 MapName. 마을마다 다르다(엘리니아 · 커닝시티 = 사냥터 1 맵 · 사용자 2026-10-07).
+		local t = _DataService:GetTable("LaneConfig")
+		if t ~= nil then
+			for i = 1, t:GetRowCount() do
+				if tostring(t:GetCell(i, "VillageId") or "") == villageId and tostring(t:GetCell(i, "LaneRole") or "") == "LANE2" then
+					local m = tostring(t:GetCell(i, "MapName") or "")
+					if m ~= "" then return m end
+				end
+			end
+		end
+		return fallback or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MapLabel(string mapId)
+		-- 맵 표시 이름(WorldMapNodes.Label · 월드맵과 같은 이름) · 없으면 "".
+		if mapId == nil or mapId == "" then return "" end
+		if self.mapLabels == nil then
+			self.mapLabels = {}
+			local t = _DataService:GetTable("WorldMapNodes")
+			if t ~= nil then
+				for i = 1, t:GetRowCount() do
+					local id = tostring(t:GetCell(i, "MapName") or "")
+					if id ~= "" then self.mapLabels[id] = tostring(t:GetCell(i, "Label") or "") end
+				end
+			end
+		end
+		return self.mapLabels[mapId] or ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method string FillNames(string text, any rows)
+		-- 문구의 {lane1} · {lane2} · {rear} · {village} · {boss} 를 내 마을의 실제 맵 이름으로(사용자 2026-10-07 "사냥터 1 · 2 가 뭔지 모른다 → 마을마다 이름").
+		--   마을이 없거나 이름을 못 찾으면 예전 말(사냥터 1 · 2 · 3 · 마을 · 마을 보스)로.
+		if text == nil or string.find(text, "{", 1, true) == nil then return text or "" end
+		local keys = { { "{lane1}", "lane1", "사냥터 1" }, { "{lane2}", "lane2", "사냥터 2" }, { "{rear}", "rear", "사냥터 3" }, { "{tower}", "tower", "포탑 맵" }, { "{village}", "map", "내 마을" }, { "{boss}", "boss", "마을 보스" } }
+		local out = text
+		for _, k in ipairs(keys) do
+			if string.find(out, k[1], 1, true) ~= nil then
+				local name = (rows ~= nil) and self:MapLabel(rows[k[2]]) or ""
+				if name == "" then name = k[3] end
+				local r, _c = string.gsub(out, k[1]:gsub("([{}])", "%%%1"), (name:gsub("%%", "%%%%")))
+				out = r
+			end
+		end
+		return out
 	end
 
 	@ExecSpace("ServerOnly")
@@ -451,7 +507,18 @@ script GuideService extends Logic
 			local t2, _c2 = string.gsub(t1, "{max}", tostring(max))
 			text = t2
 		end
-		return text
+		-- {wave} = 다음 웨이브까지 남은 시간 m:ss(1초마다 줄어든다 · 사용자 2026-10-07 "곧이 아니라 남은 시간") · 표가 끝났으면 "곧"
+		if string.find(text, "{wave}", 1, true) ~= nil then
+			local w = "곧"
+			local m = _MatchSessionLogic
+			if m ~= nil and m.waves ~= nil and m.nextWave <= #m.waves then
+				local left = math.max(0, math.floor(m.waves[m.nextWave].start - m.Elapsed))
+				w = string.format("%d:%02d", left // 60, left % 60)
+			end
+			local t3, _c3 = string.gsub(text, "{wave}", w)
+			text = t3
+		end
+		return self:FillNames(text, s.rows)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -468,6 +535,7 @@ script GuideService extends Logic
 			if mk == "@OWN_VILLAGE" then return r.map end
 			if mk == "@OWN_LANE1" then return r.lane1 end
 			if mk == "@OWN_LANE2" then return r.lane2 end
+			if mk == "@OWN_TOWER" then return r.tower end
 			if mk == "@OWN_REAR" then return r.rear end
 			if mk == "@OWN_BOSS" then return r.boss end
 			return ""
@@ -484,7 +552,9 @@ script GuideService extends Logic
 		if s == nil then return end
 		if step.once and s.toasted[key] then return end
 		s.toasted[key] = true
-		if _UIToast ~= nil then _UIToast:ShowMessage(step.text, userId) end
+		local rows = nil
+		if _LaneStateService ~= nil then rows = self:VillageRowOf(_LaneStateService:VillageOfUser(userId)) end
+		if _UIToast ~= nil then _UIToast:ShowMessage(self:FillNames(step.text, rows), userId) end
 		log("[Guide] toast " .. key .. " -> " .. userId)
 	end
 
@@ -503,10 +573,12 @@ script GuideService extends Logic
 		-- "C1|레벨 10|1;C2|전직|0;…"
 		local s = self.st[userId]
 		local parts = {}
+		local rows = nil
+		if _LaneStateService ~= nil then rows = self:VillageRowOf(_LaneStateService:VillageOfUser(userId)) end
 		for _, key in ipairs(self.checkKeys) do
 			local step = self.steps[key]
 			local done = (s ~= nil and s.checks[key]) and "1" or "0"
-			table.insert(parts, key .. "|" .. tostring(step and step.text or key) .. "|" .. done)
+			table.insert(parts, key .. "|" .. self:FillNames(tostring(step and step.text or key), rows) .. "|" .. done)
 		end
 		return table.concat(parts, ";")
 	end

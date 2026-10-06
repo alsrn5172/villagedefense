@@ -25,6 +25,10 @@ script MatchResultUIController extends Logic
 	@HideFromInspector
 	property boolean isOpen = false
 
+	-- 결과 창이 열리며 끈 다른 UI 그룹(닫을 때 되돌린다)
+	@HideFromInspector
+	property any hiddenGroups = nil
+
 	@HideFromInspector
 	property any hPrimary = nil
 
@@ -40,11 +44,39 @@ script MatchResultUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void SetOpen(boolean open)
-		-- 반투명 배경 + 창.
+		-- 반투명 배경 + 창. 열려 있는 동안 다른 UI 는 전부 끈다(코치 안내 · HUD 등 — 2026-10-07 "결과 화면엔 다른 UI 가 필요 없다").
 		self.isOpen = open
 		if isvalid(self.bg) then self.bg.Enable = open end
 		if isvalid(self.window) then self.window.Enable = open end
+		self:HideOtherUi(open)
 		log("[Result] open=" .. tostring(open))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideOtherUi(boolean hide)
+		-- 결과 창 그룹 · 토스트만 남기고 /ui 아래 다른 그룹을 끈다(끈 것만 기억했다가 닫을 때 되돌린다). 코치 안내는 먼저 닫는다(막이 결과 창을 가렸다).
+		local ui = _EntityService:GetEntityByPath("/ui")
+		if not isvalid(ui) then return end
+		if hide then
+			if self.hiddenGroups ~= nil then return end
+			if _CoachMarkController ~= nil and _CoachMarkController.active then _CoachMarkController:Close("result") end
+			local mine = self.window
+			while isvalid(mine) and isvalid(mine.Parent) and mine.Parent ~= ui do mine = mine.Parent end
+			self.hiddenGroups = {}
+			for _, g in ipairs(ui.Children:ToTable()) do
+				if g ~= mine and g.Name ~= "ToastGroup" and g.Enable then
+					g.Enable = false
+					table.insert(self.hiddenGroups, g)
+				end
+			end
+			log("[Result] hid " .. tostring(#self.hiddenGroups) .. " UI groups")
+		else
+			if self.hiddenGroups == nil then return end
+			for _, g in ipairs(self.hiddenGroups) do
+				if isvalid(g) then g.Enable = true end
+			end
+			self.hiddenGroups = nil
+		end
 	end
 
 	@ExecSpace("Client")
@@ -55,7 +87,7 @@ script MatchResultUIController extends Logic
 		local kv = {}
 		for k, v in string.gmatch(csv or "", "([^;=]+)=([^;]*)") do kv[k] = v end
 		if isvalid(self.titleText) then self.titleText.Text = kv.title or "매치 결과" end
-		self:ApplyReason(kv.reason or "")
+		self:ApplyReason(kv.reason or "", kv.out or "")
 		local rewardLine = kv.reward or ""
 		if isvalid(self.rewardText) then
 			self.rewardText.Text = rewardLine
@@ -86,9 +118,10 @@ script MatchResultUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method void ApplyReason(string reason)
+	method void ApplyReason(string reason, string out)
 		-- 결과 사유 칩(승리 금 · 시간 종료 회 · 전원 탈락 빨강) + 문장을 한 묶음으로 가운데에 놓는다(사이 12).
 		-- 서버 reason 은 "승리 — 이름" · "시간 종료" · "전원 탈락" — 앞부분으로 종류를 가른다. 모르는 사유는 회색 칩에 사유 글을 그대로 쓴다.
+		-- out = 내 탈락 사유(UNCLAIMED · NEXUS · "") — 전원 탈락이면 문장을 내 사유로 쓴다(2026-10-07 "4:30 안에 마을을 못 정해 죽었으면 그렇게").
 		local chipName = "ReasonChipTime"
 		local label = reason
 		local sentence = ""
@@ -105,6 +138,13 @@ script MatchResultUIController extends Logic
 			chipName = "ReasonChipOut"
 			label = "전원 탈락"
 			sentence = "모든 넥서스가 부서졌습니다"
+			if out == "UNCLAIMED" then
+				label = "탈락"
+				sentence = "4:30 안에 마을을 정하지 못해 탈락했습니다"
+			elseif out == "NEXUS" then
+				label = "탈락"
+				sentence = "내 넥서스가 부서져 탈락했습니다"
+			end
 		elseif reason == "시간 종료" then
 			label = "시간 종료"
 			sentence = "제한 시간이 끝나 기록으로 순위를 정했습니다"

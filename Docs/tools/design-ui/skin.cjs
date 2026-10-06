@@ -23,6 +23,47 @@ const H = { left: 1, center: 2, right: 4 };
 const V = { top: 256, middle: 512, bottom: 1024 };
 
 function R(key) { const m = MAP[key]; if (!m) throw new Error(`ruid-map 에 없는 그림: ${key}`); return m.ruid; }
+
+// ── 줄 판(panel_row) 크기별 자동 선택 (사용자 2026-10-07 "좌우가 블러처럼 흐릿") ──
+//   옛 줄 판은 모서리 장식이 자르는 선(20px)보다 커서 52px 줄에서 장식이 눌려 뭉개졌다 → 새 금테 판(gold_slot)으로 바꾸고,
+//   높이 100 이하 칸은 52px 높이로 다시 그린 짧은 판(panel_row_short*), 그보다 큰 카드는 원본 크기 판(panel_row*)을 쓴다.
+//   어느 스크립트가 'panel_row' 를 넣든 write 직전에 칸 높이를 보고 바꾼다(UIBuilder.write 를 한 번 감싼다 · 옛 RUID 도 같이 바꾼다).
+const ROW_SHORT_MAX_H = 100;
+const ROW_KIND = {};   // RUID → 'n' | 'h' | 'l'
+[['panel_row', 'n'], ['panel_row_hover', 'h'], ['panel_row_locked', 'l'], ['panel_row_short', 'n'], ['panel_row_short_hover', 'h'], ['panel_row_short_locked', 'l']]
+  .forEach(([k, kind]) => { if (MAP[k]) ROW_KIND[MAP[k].ruid] = kind; });
+Object.assign(ROW_KIND, { be148fa9a13e4151a1dd69dba19cf221: 'n', b8b94cac996541128a306986167adddb: 'h', '275f006191b64fd58bad11d8da67936f': 'l' });   // 옛 판
+function rowRuid(kind, h) {
+  const base = h <= ROW_SHORT_MAX_H ? 'panel_row_short' : 'panel_row';
+  return R(base + (kind === 'h' ? '_hover' : kind === 'l' ? '_locked' : ''));
+}
+function rowSwap(b) {
+  let n = 0;
+  for (const e of b.entities) {
+    const t = b.getComponent(e.path, 'MOD.Core.UITransformComponent');
+    const h = t && t.RectSize ? t.RectSize.y : 0;
+    const s = b.getComponent(e.path, 'MOD.Core.SpriteGUIRendererComponent');
+    if (s && s.ImageRUID && ROW_KIND[s.ImageRUID.DataId]) {
+      const want = rowRuid(ROW_KIND[s.ImageRUID.DataId], h);
+      if (want !== s.ImageRUID.DataId) { b.patchComponent(e.path, 'MOD.Core.SpriteGUIRendererComponent', { ImageRUID: { DataId: want }, Type: 1 }); n++; }
+    }
+    const btn = b.getComponent(e.path, 'MOD.Core.ButtonComponent');
+    if (btn && btn.ImageRUIDs) {
+      const u = {}; let changed = false;
+      for (const k of Object.keys(btn.ImageRUIDs)) {
+        const v = btn.ImageRUIDs[k];
+        if (v && ROW_KIND[v.DataId]) { const want = rowRuid(ROW_KIND[v.DataId], h); u[k] = { DataId: want }; if (want !== v.DataId) changed = true; } else u[k] = v;
+      }
+      if (changed) { b.patchComponent(e.path, 'MOD.Core.ButtonComponent', { ImageRUIDs: u }); n++; }
+    }
+  }
+  return n;
+}
+if (!UIBuilder.prototype.__rowSwapWrapped) {
+  const orig = UIBuilder.prototype.write;
+  UIBuilder.prototype.write = function (...args) { rowSwap(this); return orig.apply(this, args); };
+  UIBuilder.prototype.__rowSwapWrapped = true;
+}
 function isSliced(key) { return (MAP[key] || {}).mode === 'sliced'; }
 function C(hex, a) { const h = hex.replace('#', ''); return { r: parseInt(h.slice(0, 2), 16) / 255, g: parseInt(h.slice(2, 4), 16) / 255, b: parseInt(h.slice(4, 6), 16) / 255, a: a == null ? 1 : a }; }
 
@@ -286,4 +327,4 @@ function posOf(b, p) { const t = b.getComponent(absPath(b, p), UIT); return [t.a
 // 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h) → 부모 상자(같은 좌표계 px,py,pw,ph) 중심 기준 위치
 function at(x, y, w, h, parent) { return [Math.round((x + w / 2 - (parent[0] + parent[2] / 2)) * 2) / 2, Math.round(-((y + h / 2) - (parent[1] + parent[3] / 2)) * 2) / 2]; }
 
-module.exports = { UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum, chipText, chipKind, CHIP_INK, CHIP_OUTLINE, CHIP_OUTLINE_WIDTH, CHIP_OUTLINE_WIDTH_SM, textW, chipPad, chipBorder, evenCeil, chipWidth, CHIP, roleBox, fitChip, nudgeX, setX, setSize, sizeOf, posOf };
+module.exports = { rowSwap, UIBuilder, R, C, COLOR, FONT, SPR, TXT, BTN, open, has, place, image, tint, font, button, newImage, newText, newBox, at, isSliced, before, back, front, FOOTBALL_NUM_DROP, dropNum, chipText, chipKind, CHIP_INK, CHIP_OUTLINE, CHIP_OUTLINE_WIDTH, CHIP_OUTLINE_WIDTH_SM, textW, chipPad, chipBorder, evenCeil, chipWidth, CHIP, roleBox, fitChip, nudgeX, setX, setSize, sizeOf, posOf };

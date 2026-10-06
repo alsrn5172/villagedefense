@@ -76,6 +76,7 @@ script MinionUnit extends Component
 		if self.advancing then return end
 		local t = self.Entity.TransformComponent
 		if not isvalid(t) then return end
+		if self:HoldBehindFacility(t.WorldPosition) then return end
 		local x = t.WorldPosition.x
 		if (self.EndDir > 0 and x >= self.EndX) or (self.EndDir <= 0 and x <= self.EndX) then
 			self.advancing = true
@@ -83,6 +84,29 @@ script MinionUnit extends Component
 				_MinionFlowService:Advance(self.Entity)
 			end
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HoldBehindFacility(Vector3 pos)
+		-- 앞 시설(포탑 LANE2 · 억제기 LANE1)이 살아 있으면 그 시설 x 를 절대 못 넘는다 (사용자 2026-10-07 "때리다 밀려서 포탑·억제기를 뚫고 다음 방어 타워로 간다").
+		--   넘었으면(넉백 · 다단히트) 시설 앞 0.3 으로 되돌리고, 레인 끝(EndX) 도착 판정도 막는다. 시설이 부서지면 평소대로 지나간다.
+		--   넥서스(VILLAGE)는 다음 구간이 없어 FactionAI 가 그 자리에서 때린다 → 대상 아님.
+		local stage = ""
+		if self.LaneRole == "LANE2" then stage = "TOWER" elseif self.LaneRole == "LANE1" then stage = "SUPPRESSOR" end
+		if stage == "" or _LaneFacilityService == nil or _LaneStateService == nil then return false end
+		local row = _LaneFacilityService:LaneRow(self.VillageId, self.LaneRole)
+		if row == nil or row.slotX == nil then return false end
+		local dir = (self.EndDir > 0) and 1 or -1
+		if dir * (pos.x - row.slotX) <= 0 then return false end
+		local st = _LaneStateService:FacilityState(self.VillageId, stage)
+		if st == nil or not st.alive then return false end
+		local backX = row.slotX - dir * 0.3
+		local rb = self.Entity.RigidbodyComponent
+		if isvalid(rb) then
+			rb:SetWorldPosition(Vector2(backX, pos.y))
+		end
+		log(string.format("[MinionFlow] %s pushed past %s (x %.2f, slot %.2f) -> back to %.2f", self.Entity.Name, stage, pos.x, row.slotX, backX))
+		return true
 	end
 
 	@ExecSpace("ServerOnly")

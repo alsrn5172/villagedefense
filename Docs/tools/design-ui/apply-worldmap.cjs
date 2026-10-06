@@ -74,24 +74,9 @@ const HEREW = S.chipWidth('chip_blue', HERE_H, Math.ceil(S.textW('Maple', 14, '�
 S.newImage(b, BD + '/HereChip', 'chip_blue', { pos: [70.25, ctrY(91.5 - (HERE_H - 25) / 2, HERE_H)], size: [HEREW, HERE_H], enable: false });
 S.newText(b, BD + '/HereChip/Text', '지금 위치: 로비', { font: 'Maple', size: HERE_FS, color: C.white, rect: [HEREW, HERE_H], overflow: 0 });
 
-// ═══ 범례 (번호 없음 · 시안 s0~s5 전부에 있음) ═══
-const LG = [119, 908, 457, 34];
+// ═══ 범례: 없앤다(사용자 2026-10-07 "필요 없다 그냥 없애라" · fix-worldmap-no-legend.cjs 와 같은 결과) — 지도 그림에 점 · 길 · 이름이 이미 있다 ═══
 const LGN = BD + '/Legend';
-round(LGN, { pos: [ctrX(LG[0], LG[2]), ctrY(LG[1], LG[3])], size: [LG[2], LG[3]], color: C.navy900, alpha: 0.82 });
-const at = (x, y, w, h) => S.at(x, y, w, h, LG);
-[
-  ['Hub', 'map_dot_hub', [133, 914, 22, 22], '여섯갈래길', 91.5],
-  ['Town', 'map_dot_town', [238.5, 915, 20, 20], '마을', 51],
-  ['Hunt', 'map_dot_hunt', [303, 917, 16, 16], '사냥터', 59.5],
-  ['Boss', 'map_dot_boss', [377, 915, 20, 20], '보스', 51],
-  ['Me', 'map_pin_me', [441.5, 915, 15, 20], '내 위치', 61.5],
-  ['Goal', 'map_pin_goal', [517, 915, 15, 20], '목표', 45],
-].forEach(([name, key, r, label, spanW]) => {
-  S.newImage(b, `${LGN}/Icon${name}`, key, { pos: at(r[0], r[1], r[2], r[3]), size: [r[2], r[3]] });
-  // 글자는 아이콘 오른쪽 6px 뒤에서 시작(시안 글자 폭은 런타임 값이라 고정 폭 + 왼쪽 정렬)
-  const tx = r[0] + r[2] + 6, tw = spanW - r[2] - 6 + 8;
-  S.newText(b, `${LGN}/Text${name}`, label, { font: 'Noto700', size: 14, color: C.ivory, h: 'left', pos: at(tx, 915, tw, 20), rect: [tw, 20] });
-});
+if (b.find(LGN)) b.remove(LGN);
 
 // ═══ 지도 점 33개: 노드(크기 · 터치)는 그대로 두고 위치만 CSV X,Y 로 · 자식으로 hover 점만 얹는다 ═══
 // 종류 · 지역 · 위치는 WorldMapNodes.csv(NodeEntity 이름으로 찾는다).
@@ -99,7 +84,7 @@ const at = (x, y, w, h) => S.at(x, y, w, h, LG);
 //    (WorldMapController.SetDotHover 는 Dot 이 없으면 건너뛴다). hover 점 크기 = 그림 점 지름(화면 기준 허브 32 · 마을/보스 28 · 사냥터 18)의 약 1.15배가 되게.
 //    여섯갈래길은 그림이 분홍이라 보스 hover 점 · 리스항구 길은 그림이 별이라 hover 점도 없다(안내창만).
 //    노틸러스호만 그림에 점이 없어 게임이 마을 점을 그린다(사용자 결정 2026-10-04).
-const csv = fs.readFileSync(path.join(WORLD, 'RootDesk/MyDesk/WorldMapNodes.csv'), 'utf8').replace(/^﻿/, '').split(/\r?\n/).filter(Boolean);
+const csv = fs.readFileSync(path.join(WORLD, 'RootDesk/MyDesk/WorldMapNodes.csv'), 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
 const head = csv[0].split(',');
 const iEnt = head.indexOf('NodeEntity'), iType = head.indexOf('Type'), iReg = head.indexOf('Region'), iX = head.indexOf('X'), iY = head.indexOf('Y');
 const kindOf = {}, regionOf = {}, xyOf = {};
