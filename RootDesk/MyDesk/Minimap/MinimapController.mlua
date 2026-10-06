@@ -10,27 +10,27 @@ script MinimapController extends Logic
 	-- 🔌 전체 끄기 스위치 (SkillExecutors.CutsceneWorldVideo 와 같은 방식). false 면 미니맵 UI 를 끄고 아무 계산도 하지 않는다.
 	property boolean MinimapEnabled = true
 
-	property Entity panel = "8aca5880-bfda-4679-99f1-3a599d8158ee"
+	property Entity panel = "973f0287-0463-4044-bda7-85785fc6dd8f"
 
-	property TextGUIRendererComponent titleText = "424e7c00-2adf-4366-8000-cb68ac5ebf76"
+	property TextGUIRendererComponent titleText = "cacf0cb7-73d3-45d0-98ff-1c69bdb05a47"
 
-	property Entity box = "14be4151-8479-45fb-9134-7233688e7439"
+	property Entity box = "79a12ba4-6ace-4b81-8e42-9828faa9af6a"
 
-	property SpriteGUIRendererComponent thumb = "ce4ecb6f-4f69-4fe6-9ae7-95611d977d3b"
+	property SpriteGUIRendererComponent thumb = "d5fa391e-9597-4b0c-af32-8141322bc780"
 
-	property Entity lineTpl = "53cebf94-f853-4778-a878-467799894c7b"
+	property Entity segTpl ="36c52dcf-f617-4867-b80c-e9fdbb6ec246"
 
-	property Entity portalTpl = "da41beb2-3f6f-4da9-99f1-95317fda49e1"
+	property Entity portalTpl = "ca7a9900-5ca3-4c50-9a41-76bc92b69b47"
 
-	property Entity turretTpl = "31d5283f-5d6f-4f57-9dd8-240aeff2a1a5"
+	property Entity turretTpl = "e7dba5f2-c160-4993-a12c-214472f99f6b"
 
-	property Entity shopTpl = "780426dc-3dbc-4a7c-b311-ef87d05d45fc"
+	property Entity shopTpl = "5f244689-cdcc-4a9d-a0cb-d2ab7f074864"
 
-	property Entity npcTpl = "868803c7-0316-49a9-b58d-72e70418fcfe"
+	property Entity npcTpl = "68088bf4-72be-4042-bef0-16fa803438d0"
 
-	property Entity otherTpl = "980d37de-a0b2-4106-9063-3bc1021bde49"
+	property Entity otherTpl = "3242d058-11d6-4d7b-bc7d-aa0c705341d5"
 
-	property Entity meDot = "5d3d0f3a-a976-46f0-9631-e69f1c472a0c"
+	property Entity meDot = "0599108b-f4a5-4918-94de-027c62638bb2"
 
 	-- 위치 표식 갱신 주기(초). 0.15 = 초당 약 6.7회.
 	@HideFromInspector
@@ -51,9 +51,10 @@ script MinimapController extends Logic
 	@HideFromInspector
 	property number BoxPad = 8
 
-	-- 윤곽 선 개수 상한(엔티티 수 안전망).
+	-- 윤곽 조각(막대 스프라이트) 개수 상한(엔티티 수 안전망).
+	-- ⚠ LineGUIRenderer · PolygonGUIRenderer 는 이 프로젝트 UI 에서 그려지지 않았다(2026-10-06 Play 실측 · 점·Enable 정상인데 화면에 없음) → 윤곽 · 표식은 전부 스프라이트로 그린다.
 	@HideFromInspector
-	property integer MaxLines = 160
+	property integer MaxSegments = 400
 
 	@HideFromInspector
 	property Color TerrainColor = Color(0.74, 0.76, 0.80, 0.95)
@@ -107,7 +108,7 @@ script MinimapController extends Logic
 		end
 		self._T.pools = { line = {}, portal = {}, turret = {}, shop = {}, npc = {}, other = {} }
 		self._T.view = { cx = 0, cy = 0, s = 1, hw = 100, hh = 60 }
-		for _, tpl in ipairs({ self.lineTpl, self.portalTpl, self.turretTpl, self.shopTpl, self.npcTpl, self.otherTpl, self.meDot }) do
+		for _, tpl in ipairs({ self.segTpl, self.portalTpl, self.turretTpl, self.shopTpl, self.npcTpl, self.otherTpl, self.meDot }) do
 			if isvalid(tpl) then tpl.Enable = false end
 		end
 		if isvalid(self.thumb) then self.thumb.Entity.Enable = false end
@@ -249,7 +250,7 @@ script MinimapController extends Logic
 		if isvalid(self.meDot) then self.meDot.Enable = false end
 
 		local v = self._T.view
-		log(string.format("[Minimap] build map=%s label=%s platforms=%d ropes=%d lines=%d scale=%.2f thumb=%s",
+		log(string.format("[Minimap] build map=%s label=%s platforms=%d ropes=%d segs=%d scale=%.2f thumb=%s",
 			mapName, label, #terrain.platforms, #terrain.ropes, used, v.s, tostring(useThumb)))
 	end
 
@@ -424,33 +425,59 @@ script MinimapController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method void SetLine(Entity e, any pts, Color color, number width)
-		-- 선 엔티티의 점을 새로 채운다. 선 엔티티는 칸 가운데에 2×2 로 놓여 있어 점 좌표 = 칸 가운데 기준 px.
-		if not isvalid(e) or e.LineGUIRendererComponent == nil then return end
-		local points = e.LineGUIRendererComponent.Points
-		points:Clear()
-		for _, p in ipairs(pts) do
-			points:Add(LinePoint(self:ToUI(p.x, p.y), color, width))
+	method any Simplify(any pts)
+		-- 같은 방향으로 이어지는 점을 합친다(꺾임 3° 미만). 막대 스프라이트 수를 줄인다.
+		if #pts <= 2 then return pts end
+		local out = { pts[1] }
+		for i = 2, #pts - 1 do
+			local a = out[#out]
+			local b = pts[i]
+			local c = pts[i + 1]
+			local d = math.abs(math.atan(b.y - a.y, b.x - a.x) - math.atan(c.y - b.y, c.x - b.x))
+			if d > math.pi then d = 2 * math.pi - d end
+			if d > 0.05 then table.insert(out, b) end
 		end
+		table.insert(out, pts[#pts])
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceSeg(Entity e, Vector2 a, Vector2 b, Color color, number width)
+		-- 월드 두 점 a→b 를 막대 스프라이트 하나로: 가운데 = 중점 · 길이 = 거리(+두께, 이음매가 비지 않게) · ZRotation = 기울기.
+		if not isvalid(e) or e.UITransformComponent == nil then return end
+		local p = self:ToUI(a.x, a.y)
+		local q = self:ToUI(b.x, b.y)
+		local dx = q.x - p.x
+		local dy = q.y - p.y
+		local t = e.UITransformComponent
+		-- 위치 → 크기 순서(WorldMapController.SetAnchored 의 체크리스트 13 과 같은 이유).
+		t.anchoredPosition = Vector2((p.x + q.x) * 0.5, (p.y + q.y) * 0.5)
+		t.RectSize = Vector2(math.sqrt(dx * dx + dy * dy) + width, width)
+		t.ZRotation = math.deg(math.atan(dy, dx))
+		if e.SpriteGUIRendererComponent ~= nil then e.SpriteGUIRendererComponent.Color = color end
 	end
 
 	@ExecSpace("ClientOnly")
 	method integer DrawTerrain(any terrain)
-		-- 발판 줄 → 줄·사다리 순으로 선을 깐다. 쓴 선 개수를 돌려준다.
+		-- 발판 줄 → 줄·사다리 순으로 막대를 깐다. 쓴 막대 개수를 돌려준다.
 		local pool = self._T.pools.line
 		local n = 0
-		for _, pts in ipairs(terrain.platforms) do
-			if n >= self.MaxLines then break end
-			n = n + 1
-			self:SetLine(self:PoolGet(pool, self.lineTpl, n, "Line_"), pts, self.TerrainColor, self.TerrainWidth)
+		local capped = false
+		for _, raw in ipairs(terrain.platforms) do
+			local pts = self:Simplify(raw)
+			for i = 1, #pts - 1 do
+				if n >= self.MaxSegments then capped = true break end
+				n = n + 1
+				self:PlaceSeg(self:PoolGet(pool, self.segTpl, n, "Seg_"), pts[i], pts[i + 1], self.TerrainColor, self.TerrainWidth)
+			end
 		end
 		for _, r in ipairs(terrain.ropes) do
-			if n >= self.MaxLines then break end
+			if n >= self.MaxSegments then capped = true break end
 			n = n + 1
-			self:SetLine(self:PoolGet(pool, self.lineTpl, n, "Line_"), { Vector2(r.x, r.y1), Vector2(r.x, r.y2) }, self.RopeColor, self.RopeWidth)
+			self:PlaceSeg(self:PoolGet(pool, self.segTpl, n, "Seg_"), Vector2(r.x, r.y1), Vector2(r.x, r.y2), self.RopeColor, self.RopeWidth)
 		end
-		if n >= self.MaxLines then
-			log_warning("[Minimap] line cap reached (" .. tostring(self.MaxLines) .. ") — some terrain not drawn")
+		if capped then
+			log_warning("[Minimap] segment cap reached (" .. tostring(self.MaxSegments) .. ") — some terrain not drawn")
 		end
 		return n
 	end
@@ -461,7 +488,11 @@ script MinimapController extends Logic
 		for i, wp in ipairs(positions) do
 			local e = self:PoolGet(pool, tpl, i, prefix)
 			if isvalid(e) and e.UITransformComponent ~= nil then
-				e.UITransformComponent.anchoredPosition = self:ToUI(wp.x, wp.y)
+				local t = e.UITransformComponent
+				t.anchoredPosition = self:ToUI(wp.x, wp.y)
+				-- 갓 Clone 한 엔티티는 위치만 바꾸면 화면에 템플릿 자리(칸 가운데)로 남는다(2026-10-06 Play 실측).
+				-- 크기를 다시 넣어야 반영된다 — WorldMapController.SetAnchored 의 "위치 → 크기" 와 같은 이유.
+				t.RectSize = t.RectSize
 			end
 		end
 		self:HideFrom(pool, #positions + 1)
