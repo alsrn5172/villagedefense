@@ -396,6 +396,38 @@ script SkillExecutors extends Logic
     --   한 장씩 sprite 로. 프레임 세트가 있는 궁은 이 경로 · 없으면 예전 클립 경로. false = 예전 클립 경로로 되돌림.
     property boolean CutsceneVideoFrames = true
 
+    -- 궁 영상을 월드에(b/skill-ult-world-video · 사용자 결정 2026-10-06 "영상 동안 피해 숫자 · 명중 · 동전 이펙트가 보이게 · 예전처럼 영상 위에"):
+    --   f9443bf(#84 · 2026-09-26 · #40 5830063946)부터 시전자 화면의 컷신은 최상위 UI 그룹(SkillCutsceneGroup · GroupOrder 30)이라, 월드에 그리는 피해 숫자(DamageSkinService) ·
+    --   명중 · 동전 이펙트(EffectService)가 그 아래에 가렸다(엔진은 UI 를 늘 월드 위에 그린다). 그 전 컷신은 월드 이펙트라 숫자 · 이펙트가 위에 보였다.
+    --   true = 시전자 화면 영상을 **월드 sprite**(서버가 스폰한 화면 엔티티 · 시전자 클라만 보이게 · 매 프레임 카메라 가운데 · 화면을 덮는 크기 × CutsceneOverscan)에 넘긴다.
+    --   false = 예전 UI 경로(StartCutsceneFramesUI 그대로). 클라에서 읽는 값이라 시험 키트 키로 바꿀 수 있다(villagedefense-harness/pirate-check/r11/world_video_pick_client.lua).
+    property boolean CutsceneWorldVideo = true
+
+    -- 월드 영상 동안 HUD(/ui 의 UI 그룹 · SkillCutsceneGroup 빼고) 숨김(사용자 결정 2026-10-06). 보이던 그룹만 Visible=false 로 하고 끝나면 그 그룹만 되돌린다(Enable 은 안 건드린다 · UI 스크립트는 계속 돈다).
+    property boolean CutsceneHideHud = true
+
+    -- 월드 영상 층(SpriteRenderer SortingLayer / OrderInLayer). 지도(MapLayer0~7)보다 위 · Default 층(캐릭터 4 · 포탈 5 · 옵션 없는 이펙트)보다 아래 = MapLayer7 의 맨 위.
+    --   피해 숫자 · 이펙트 층은 런타임에서만 확인된다 → 시험 키트가 후보(MapLayer7/30000 · Default/3 · Default/6)를 돌린다. 정해지면 값만 바꾼다.
+    property string CutsceneWorldSortingLayer = "MapLayer7"
+
+    property integer CutsceneWorldOrderInLayer = 30000
+
+    -- 서버: 화면 엔티티 이름 번호 · 클라: 이번 영상의 화면 엔티티 이름 · 찾은 엔티티 · 숨긴 UI 그룹 목록 · 자리 맞추기 타이머.
+    @HideFromInspector
+    property integer cutsceneScreenSerial = 0
+
+    @HideFromInspector
+    property string cutsceneScreenName = ""
+
+    @HideFromInspector
+    property any cutsceneScreen = nil
+
+    @HideFromInspector
+    property table cutsceneHiddenHud = {}
+
+    @HideFromInspector
+    property integer cutsceneWorldPlaceTimer = 0
+
     -- 궁 영상 1280×720 세트(사용자 결정 2026-10-05 R11c "다섯 직업 다 1280" · 2026-10-06 업로드): 1280 세트가 다 올라간 직업은 그 세트를 쓴다.
     --   CutsceneFrameSet1280 에 없는 직업(업로드 미완 · 실패 프레임)은 640 세트 그대로. false = 전부 640(되돌리기 · 시험 키트 F6).
     property boolean CutsceneFrames1280 = true
@@ -2059,6 +2091,12 @@ script SkillExecutors extends Logic
                         end
                         -- 시전자 화면에만 전체 화면 UI 컷신(CutsceneUI · #40 5830063946). 마지막 인자 = 받을 클라(시전자).
                         if self.CutsceneUI then
+                            -- 궁 영상을 월드에(CutsceneWorldVideo · b/skill-ult-world-video): 영상이 있는 궁이면 시전자 화면용 월드 화면 엔티티를 숨긴 채 하나 스폰하고 이름을 시전자 클라에 먼저 알린다.
+                            --   늘 스폰한다(가벼움 · 알파 0) — 월드 / UI 고르기는 클라 값(CutsceneWorldVideo · 시험 키트)이라. 다른 유저에겐 알파 0 그대로라 안 보인다.
+                            if videoOnly then
+                                local screenName = self:SpawnCutsceneScreen(skillId, casterEntity)
+                                if screenName ~= "" then self:SetCutsceneScreen(screenName, skillId, casterEntity.PlayerComponent.UserId) end
+                            end
                             self:ShowCutsceneUI(skillId, spec.ruid, display, spec.cutsceneFadeSeconds or 0, casterEntity.PlayerComponent.UserId)
                         end
                     end
@@ -2137,6 +2175,11 @@ script SkillExecutors extends Logic
     method void StartCutsceneFramesUI(string skillId, table fs, integer token)
         -- 궁 컷신 영상 프레임을 전체 화면 UI sprite 에 1/fps 마다 넘긴다(b/skill-ultimate-cutscenes). 크기 = 프레임 비율(640×360 = 16:9)로 화면을 덮고 CutsceneOverscan 만큼 더 키운다
         --   (StartCutsceneUI 와 같은 규칙). 마지막 프레임 다음에 끈다. 새 컷신이 오면(token) 스스로 멈춘다. 프레임은 ShowCutsceneUI 가 미리 받아 둔다(PreloadAsync).
+        -- 월드 영상(CutsceneWorldVideo · b/skill-ult-world-video): 서버가 화면 엔티티 이름을 보냈으면(SetCutsceneScreen) 월드 경로로. 아니면 아래 UI 경로 그대로.
+        if self.CutsceneWorldVideo and self.cutsceneScreenName ~= "" then
+            self:StartCutsceneFramesWorld(skillId, fs, token)
+            return
+        end
         local e = self.cutsceneUiSprite
         if not isvalid(e) then return end
         local sr = e.SpriteGUIRendererComponent
@@ -2703,9 +2746,194 @@ script SkillExecutors extends Logic
             e.Enable = false
         end
         self:ResetCutsceneUIAlpha()
+        -- 월드 영상이었으면 화면 엔티티를 숨기고 HUD 를 되돌린다(b/skill-ult-world-video · 끝 · 일찍 끊김 · 새 컷신 모두 이 길).
+        self:HideCutsceneWorld()
         log("SkillExecutors: cutscene UI " .. skillId .. " off")
         -- 영상이 꺼지면(끝 · 일찍 끊김) 배경음악을 되돌린다 — 다른 유저 영상 소리 몫(bgmDuckSoundUntil)이 남았으면 그때까지(EndUltimateBgmDuck).
         self:EndUltimateBgmDuck("video off")
+    end
+
+    @ExecSpace("ServerOnly")
+    method string SpawnCutsceneScreen(string skillId, Entity casterEntity)
+        -- 궁 영상 월드 화면(b/skill-ult-world-video): 투사체 모델(model://skillprojectile = SpriteRenderer + SkillProjectile · PlaySpriteFlashXY 와 같은 빌림)을
+        --   시전자 자리에 알파 0 · VisualOnly · Speed 0 으로 스폰한다. 그림 · 자리 · 크기 · 층은 시전자 클라가 로컬로 바꾼다(StartCutsceneFramesWorld) — 다른 유저에겐 알파 0 이라 안 보인다.
+        --   수명 = 영상 길이 + 3 s(늦게 받은 클라 여유) 뒤 스스로 Destroy. 돌려주는 값 = 엔티티 이름(클라가 맵에서 찾는다 · 엔티티가 클라에 늦게 도착해도 된다). 실패면 "".
+        if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) or not isvalid(casterEntity.PlayerComponent) then return "" end
+        local map = casterEntity.CurrentMap
+        if not isvalid(map) then return "" end
+        local seconds = self:CutsceneVideoSeconds(skillId)
+        if seconds <= 0 then return "" end
+        self.cutsceneScreenSerial = self.cutsceneScreenSerial + 1
+        local name = "SkillFx_" .. casterEntity.PlayerComponent.UserId .. "_cutscene_" .. tostring(self.cutsceneScreenSerial)
+        local fx = _SpawnService:SpawnByModelId("model://skillprojectile", name, casterEntity.TransformComponent.WorldPosition, map)
+        if not isvalid(fx) then
+            log_warning("SkillExecutors: cutscene screen spawn failed " .. skillId)
+            return ""
+        end
+        local mover = fx:GetComponent("script.SkillProjectile")
+        if isvalid(mover) then
+            mover.VisualOnly = true
+            mover.Speed = 0
+            mover.MaxLifetime = seconds + 3
+            mover.SkillId = skillId .. "_screen"
+        end
+        local sprite = fx.SpriteRendererComponent
+        if isvalid(sprite) then
+            local c0 = sprite.Color
+            sprite.Color = Color(c0.r, c0.g, c0.b, 0)
+        end
+        log(string.format("SkillExecutors: cutscene screen %s spawned %s (hidden · %.2fs + 3)", skillId, name, seconds))
+        return name
+    end
+
+    @ExecSpace("Client")
+    method void SetCutsceneScreen(string screenName, string skillId)
+        -- 서버 → 시전자 클라(마지막 인자 userId): 이번 궁 영상의 월드 화면 엔티티 이름. ShowCutsceneUI 보다 먼저 온다(같은 서버 프레임 · 같은 순서의 RPC).
+        self.cutsceneScreenName = screenName or ""
+        self.cutsceneScreen = nil
+        log("SkillExecutors: cutscene screen " .. tostring(skillId) .. " -> " .. tostring(screenName) .. " (world video " .. tostring(self.CutsceneWorldVideo) .. ")")
+    end
+
+    @ExecSpace("ClientOnly")
+    method any FindCutsceneScreen()
+        -- 이번 영상 화면 엔티티(이름으로 내 맵에서 · 한 번 찾으면 기억). 아직 도착 안 했으면 nil.
+        if self.cutsceneScreen ~= nil and isvalid(self.cutsceneScreen) then return self.cutsceneScreen end
+        if self.cutsceneScreenName == "" then return nil end
+        local p = _UserService.LocalPlayer
+        if not isvalid(p) or not isvalid(p.CurrentMap) then return nil end
+        local e = p.CurrentMap:GetChildByName(self.cutsceneScreenName, false)
+        if isvalid(e) then self.cutsceneScreen = e end
+        return self.cutsceneScreen
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlaceCutsceneScreen(any e, number fw, number fh)
+        -- 화면 엔티티를 지금 카메라 가운데에 · 화면을 덮는 크기(프레임 비율 유지 · CutsceneOverscan)로. 화면 네 귀퉁이를 월드로 바꿔 잰다(_UILogic.ScreenToWorldPosition).
+        --   sprite 1 px = 0.01 월드(PPU 100 · platform §5)로 본다. 카메라가 맵 끝에서 멈춰도 화면 가운데에 놓이므로 예전 월드 컷신의 빈 자리(맵 끝)가 안 생긴다.
+        if not isvalid(e) or not isvalid(e.TransformComponent) then return end
+        local sw = _UILogic.ScreenWidth
+        local sh = _UILogic.ScreenHeight
+        if sw <= 0 or sh <= 0 then return end
+        local a = _UILogic:ScreenToWorldPosition(Vector2(0, 0))
+        local b = _UILogic:ScreenToWorldPosition(Vector2(sw, sh))
+        local ww = math.abs(b.x - a.x)
+        local wh = math.abs(b.y - a.y)
+        if ww <= 0 or wh <= 0 then return end
+        local over = self.CutsceneOverscan
+        if over <= 0 then over = 1 end
+        local scale = math.max(ww / (fw / 100), wh / (fh / 100)) * over
+        local z = e.TransformComponent.WorldPosition.z
+        e.TransformComponent.WorldPosition = Vector3((a.x + b.x) / 2, (a.y + b.y) / 2, z)
+        e.TransformComponent.Scale = Vector3(scale, scale, 1)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void SetHudHidden(boolean hide)
+        -- 월드 영상 동안 HUD 숨김(CutsceneHideHud · 사용자 결정 2026-10-06): /ui 아래 UI 그룹 중 SkillCutsceneGroup 을 뺀 보이던 그룹만 Visible=false · 끝나면 그 그룹만 true.
+        --   Enable 은 안 건드린다(UI 스크립트 · 타이머는 그대로 돈다). 영상 중에 다른 코드가 그룹을 켜고 끄는 것(Enable)과 겹치지 않는다.
+        if hide then
+            if not self.CutsceneHideHud or #self.cutsceneHiddenHud > 0 then return end
+            local root = _EntityService:GetEntityByPath("/ui")
+            if not isvalid(root) then return end
+            local names = {}
+            for _, g in ipairs(root.Children:ToTable()) do
+                if isvalid(g) and g.Name ~= "SkillCutsceneGroup" and g.Visible then
+                    g.Visible = false
+                    table.insert(self.cutsceneHiddenHud, g)
+                    table.insert(names, g.Name)
+                end
+            end
+            log("SkillExecutors: cutscene HUD hidden x" .. tostring(#names) .. " [" .. table.concat(names, ",") .. "]")
+            return
+        end
+        local n = 0
+        for _, g in ipairs(self.cutsceneHiddenHud) do
+            if isvalid(g) then
+                g.Visible = true
+                n = n + 1
+            end
+        end
+        if #self.cutsceneHiddenHud > 0 then log("SkillExecutors: cutscene HUD restored x" .. tostring(n)) end
+        self.cutsceneHiddenHud = {}
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StartCutsceneFramesWorld(string skillId, table fs, integer token)
+        -- 궁 컷신 영상 프레임을 월드 화면 엔티티(SpawnCutsceneScreen)의 SpriteRenderer 에 1/fps 마다 넘긴다(StartCutsceneFramesUI 와 같은 시간 규칙 · 늦으면 건너뜀 · 끝나면 HideCutsceneUI).
+        --   피해 숫자 · 명중 · 동전 이펙트는 월드라 이 영상 위에 그려질 수 있다(층 = CutsceneWorldSortingLayer / OrderInLayer). 화면 엔티티가 늦게 오면 오는 순간부터 보인다(시간 기준은 시작 순간 = 소리와 같음).
+        --   자리 · 크기는 1/60 s 마다 카메라에 맞춘다(cutsceneWorldPlaceTimer). HUD 는 켜는 동안 숨긴다(SetHudHidden).
+        self:StopCutsceneFrames()
+        if self.cutsceneUiTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneUiTimer)
+            self.cutsceneUiTimer = 0
+        end
+        local fw = fs.width or 640
+        local fh = fs.height or 360
+        local fps = fs.fps or 8
+        local n = #fs.frames
+        local index = 0
+        local shown = false
+        local t0 = _UtilLogic.ElapsedSeconds
+        if self.cutsceneWorldPlaceTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneWorldPlaceTimer)
+            self.cutsceneWorldPlaceTimer = 0
+        end
+        self:SetHudHidden(true)
+        local function apply(e, want)
+            local sr = e.SpriteRendererComponent
+            if not isvalid(sr) then return end
+            -- 알파 · 층은 틱마다 다시 확인한다 — 스폰 직후 서버 설정(알파 0)이 한 프레임 늦게 와서(PlaySpriteFlashXY 주석 · 2026-09-25 실측) 먼저 켠 값을 덮을 수 있다.
+            if sr.SortingLayer ~= self.CutsceneWorldSortingLayer then sr.SortingLayer = self.CutsceneWorldSortingLayer end
+            if sr.OrderInLayer ~= self.CutsceneWorldOrderInLayer then sr.OrderInLayer = self.CutsceneWorldOrderInLayer end
+            local c = sr.Color
+            if c.a ~= 1 then sr.Color = Color(c.r, c.g, c.b, 1) end
+            if not shown then
+                shown = true
+                log(string.format("SkillExecutors: cutscene world screen %s shown at +%.2fs layer %s/%d", skillId, _UtilLogic.ElapsedSeconds - t0, self.CutsceneWorldSortingLayer, self.CutsceneWorldOrderInLayer))
+            end
+            if want ~= index then
+                index = want
+                sr.SpriteRUID = fs.frames[index]
+            end
+        end
+        self.cutsceneWorldPlaceTimer = _TimerService:SetTimerRepeat(function()
+            local e = self:FindCutsceneScreen()
+            if e ~= nil then self:PlaceCutsceneScreen(e, fw, fh) end
+        end, 1 / 60)
+        self.cutsceneFrameTimer = _TimerService:SetTimerRepeat(function()
+            if token ~= self.cutsceneUiToken then
+                self:StopCutsceneFrames()
+                return
+            end
+            local want = math.floor((_UtilLogic.ElapsedSeconds - t0) * fps) + 1
+            if want > n then
+                self:StopCutsceneFrames()
+                self:HideCutsceneUI(skillId)
+                log(string.format("SkillExecutors: cutscene world video %s done x%d frames in %.2fs", skillId, n, _UtilLogic.ElapsedSeconds - t0))
+                return
+            end
+            local e = self:FindCutsceneScreen()
+            if e ~= nil then apply(e, want) end
+        end, 1 / (fps * 2))
+        log(string.format("SkillExecutors: cutscene world video %s on — %d frames @ %d fps = %.2fs · src %dx%d · screen %s", skillId, n, fps, n / fps, fw, fh, self.cutsceneScreenName))
+        self:BeginUltimateBgmDuck(skillId, n / fps, "video")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void HideCutsceneWorld()
+        -- 월드 영상 끄기: 자리 맞추기 멈춤 · 화면 엔티티 알파 0(서버가 수명 끝에 지운다) · HUD 되돌리기 · 이름 잊기. UI 경로였으면 할 일이 없다.
+        if self.cutsceneWorldPlaceTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneWorldPlaceTimer)
+            self.cutsceneWorldPlaceTimer = 0
+        end
+        local e = self.cutsceneScreen
+        if e ~= nil and isvalid(e) and isvalid(e.SpriteRendererComponent) then
+            local c = e.SpriteRendererComponent.Color
+            e.SpriteRendererComponent.Color = Color(c.r, c.g, c.b, 0)
+        end
+        self:SetHudHidden(false)
+        self.cutsceneScreen = nil
+        self.cutsceneScreenName = ""
     end
 
     @ExecSpace("ClientOnly")
