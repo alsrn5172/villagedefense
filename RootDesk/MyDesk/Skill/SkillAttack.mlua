@@ -170,6 +170,25 @@ script SkillAttack extends AttackComponent
     -- 0.6 = 경사 발판(내리막 앞 몬스터 ≈0.3~0.5 낮음)은 허용 · 한 층 아래(≥1)는 제외. 원작 표창·화살도 아래층은 안 맞는다. 위쪽(높은 발판)은 상자 높이 그대로 허용.
     property number AimFloorTolerance = 0.6
 
+    -- 몸 띠 조준(b/skill-projectile-level-aim v2 · 사용자 결정 2026-10-05): 투사체 조준(shape.floorY 가 있는 탐색 = SpawnProjectile · 조준 표시 PlayAimMarker ·
+    --   기본 공격 FireBasicProjectile)은 앞쪽 상자 안에서 **몸 상자가 시전자의 몸 띠(발 ~ 머리 위끝)와 세로로 겹치는** 몬스터만 고른다.
+    --   머리보다 완전히 위 · 발보다 완전히 아래인 몬스터는 더 가까워도 고르지 않는다(예전 = 발 0.6 아래까지 · 위로는 상자 2.5 까지 누구든).
+    --   비행은 그대로(대상 유도 · #161 FlightFor). 명중도 같은 띠로 거른다(SkillProjectile.UseBodyBand). 궁(ORIGIN)은 이 길을 지나지 않는다. false = 예전 규칙.
+    property boolean AimBodyBand = true
+
+    -- 시전자 키(world unit) — 시전자의 몸 상자(PlayerHit · HitComponent)를 못 읽을 때만 쓴다.
+    --   값 출처: Global/DefaultPlayer.model script.PlayerHit BoxSize (0.45, 0.7) · ColliderOffset (0, 0.35) → 발 0 ~ 머리 0.7.
+    property number CasterBodyHeightFallback = 0.7
+
+    -- 다음 SpawnProjectile 한 번에만(2026-10-05 b/skill-sniping-3x3 · 스나이핑 3명): 호출자(SkillExecutors.FireProjectile)가 고른 대상으로 쏜다 — 탐색(FindSkillTarget)을 건너뛴다.
+    --   SpawnProjectile 이 조준 직전에 읽고 비운다(다른 스킬로 새지 않게). nil = 예전처럼 탐색.
+    @HideFromInspector
+    property any PendingProjectileTarget = nil
+
+    -- 다음 SpawnProjectile 한 번에만: 화살 한 발(첫 발이 ×hitCount · 표시 hitCount 타를 그대로 진다 · 2발째부터 VisualOnly 화살을 띄우지 않는다). 스나이핑 3명 × 3타.
+    @HideFromInspector
+    property boolean PendingProjectileSingleArrow = false
+
     -- 유도 중엔 대상이 움직여도 따라가야 하므로 수명을 직선 수명(Range/Speed)의 배수로 늘린다.
     property number HomingLifetimeMul = 1.5
 
@@ -332,12 +351,24 @@ script SkillAttack extends AttackComponent
         -- 닷지(SK_A22 · GUARANTEED_CRIT · b/skill-archer-thief-pirate) 활성이면 반드시 크리티컬. 그 외엔 false(스킬엔 확률 크리 없음 · 예전과 같다).
         -- ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐이라 ServerOnly 인 SkillBuffs 를 불러도 된다.
         if attackInfo == self.FlatTag or attackInfo == self.ProbeTag then return false end
-        -- 시전 순간에 고정한 크리(DealSkillDamageToTargetAmount 의 critLocked). 타격 시점에 다시 판정하지 않는다.
-        if self.PendingCritOverride >= 0 then return self.PendingCritOverride == 1 end
-        if _SkillBuffs ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
-            return _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId)
+        local crit = false
+        if self.PendingCritOverride >= 0 then
+            -- 시전 순간에 고정한 크리(DealSkillDamageToTargetAmount 의 critLocked). 타격 시점에 다시 판정하지 않는다.
+            crit = self.PendingCritOverride == 1
+        elseif _SkillBuffs ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
+            crit = _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId)
         end
-        return false
+        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)를 더한다.
+        if _SkillExecutors ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
+            local uid = attacker.PlayerComponent.UserId
+            local base = self:BaseSkillId(attackInfo)
+            if _SkillExecutors:IsUltimateTallyOpen(uid, base) then
+                local dmg = self:CalcDamage(attacker, defender, attackInfo)
+                if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
+                _SkillExecutors:AddUltimateTally(uid, base, dmg)
+            end
+        end
+        return crit
     end
 
     method float GetCriticalDamageRate()
@@ -439,6 +470,35 @@ script SkillAttack extends AttackComponent
         return true
     end
 
+    method Vector2 BodyBoxBandOf(Entity e)
+        -- 엔티티 몸 상자(HitComponent · 없으면 script.PlayerHit)의 세로 범위(world) = Vector2(아래, 위). 못 읽으면 Vector2(발, 발) (점).
+        if not isvalid(e) or not isvalid(e.TransformComponent) then return Vector2(0, 0) end
+        local p = e.TransformComponent.WorldPosition
+        local hc = e.HitComponent
+        if not isvalid(hc) then hc = e:GetComponent("script.PlayerHit") end
+        if not isvalid(hc) or hc.BoxSize == nil then return Vector2(p.y, p.y) end
+        local sy = math.abs(e.TransformComponent.Scale.y)
+        local cy = p.y + hc.ColliderOffset.y * sy
+        local half = hc.BoxSize.y * sy / 2
+        return Vector2(cy - half, cy + half)
+    end
+
+    method Vector2 CasterBandOf(Entity caster)
+        -- 시전자 몸 띠(AimBodyBand) = Vector2(발, 머리 위끝). 머리 위끝 = 몸 상자 위끝(BodyBoxBandOf) · 못 읽으면 발 + CasterBodyHeightFallback(0.7).
+        if not isvalid(caster) or not isvalid(caster.TransformComponent) then return Vector2(0, 0) end
+        local feet = caster.TransformComponent.WorldPosition.y
+        local box = self:BodyBoxBandOf(caster)
+        local top = box.y
+        if top <= feet then top = feet + self.CasterBodyHeightFallback end
+        return Vector2(feet, top)
+    end
+
+    method boolean OverlapsBand(Entity e, Vector2 band)
+        -- 몬스터 몸 상자가 띠(Vector2(아래, 위))와 세로로 겹치는가(경계에 딱 닿는 것은 겹치지 않음).
+        local box = self:BodyBoxBandOf(e)
+        return box.y > band.x and box.x < band.y
+    end
+
     @ExecSpace("ServerOnly")
     method any FindSkillTarget(string skillId, table shape, boolean preferBoss)
         -- shape 상자(posX/posY/sizeX/sizeY) 안 몬스터 중 하나를 고른다: preferBoss 면 보스(script.BossSkillRunner 보유) 우선,
@@ -456,10 +516,17 @@ script SkillAttack extends AttackComponent
         local best = nil
         local bestScore = math.huge
         local belowFloor = 0
+        -- 몸 띠(AimBodyBand · 투사체 조준만): 시전자 발 ~ 머리 위끝. 몬스터 몸 상자가 이 띠와 겹치지 않으면 뺀다(offBand 로 센다).
+        local useBand = shape.floorY ~= nil and self.AimBodyBand
+        local band = Vector2(0, 0)
+        if useBand then band = self:CasterBandOf(self.Entity) end
+        local offBand = 0
         for _, cand in ipairs(self.Candidates) do
             if isvalid(cand) and isvalid(cand.TransformComponent) then
                 local p = cand.TransformComponent.WorldPosition
-                if shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
+                if useBand and not self:OverlapsBand(cand, band) then
+                    offBand = offBand + 1
+                elseif not useBand and shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then
                     belowFloor = belowFloor + 1
                 else
                     local dx = p.x - origin.x
@@ -477,9 +544,57 @@ script SkillAttack extends AttackComponent
         end
         local bestName = "none"
         if isvalid(best) then bestName = tostring(best.Name) end
-        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
+        local bandText = ""
+        if useBand then bandText = " offBand=" .. tostring(offBand) .. " band=" .. string.format("%.2f..%.2f", band.x, band.y) end
+        log("SkillAttack: FindSkillTarget " .. skillId .. " candidates=" .. tostring(#self.Candidates) .. " belowFloor=" .. tostring(belowFloor) .. bandText .. " preferBoss=" .. tostring(preferBoss) .. " -> " .. bestName)
         self.Candidates = {}
         return best
+    end
+
+    @ExecSpace("ServerOnly")
+    method table FindSkillTargetsNearest(string skillId, table shape, integer count, boolean preferBoss)
+        -- shape 상자 안 몬스터 중 시전자에게 가까운 순 count 개(2026-10-05 b/skill-sniping-3x3 · 스나이핑 3명). 거름은 FindSkillTarget 과 같다:
+        --   shape.floorY 가 있으면 몸 띠(AimBodyBand · OverlapsBand) — 띠가 꺼져 있으면 아래층(AimFloorTolerance) — 그리고 시전자보다 뒤(바라보는 쪽 반대)는 뺀다. preferBoss 면 보스(script.BossSkillRunner)를 먼저(FindSkillTarget 과 같은 점수 −1000000) · 그다음 가까운 순. 피해 없음(probe).
+        self:EnsureShape()
+        self.Shape.Position = Vector2(shape.posX, shape.posY)
+        self.Shape.Size = Vector2(shape.sizeX, shape.sizeY)
+        self.Shape.Angle = 0
+        self.Candidates = {}
+        self.SingleTarget = nil
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local origin = self.Entity.TransformComponent.WorldPosition
+        local dirX = 1
+        if isvalid(self.Entity.PlayerControllerComponent) and self.Entity.PlayerControllerComponent.LookDirectionX < 0 then dirX = -1 end
+        local useBand = shape.floorY ~= nil and self.AimBodyBand
+        local band = Vector2(0, 0)
+        if useBand then band = self:CasterBandOf(self.Entity) end
+        local scored = {}
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) then
+                local p = cand.TransformComponent.WorldPosition
+                local ok = true
+                if useBand and not self:OverlapsBand(cand, band) then ok = false end
+                if ok and not useBand and shape.floorY ~= nil and p.y < shape.floorY - self.AimFloorTolerance then ok = false end
+                if ok and (p.x - origin.x) * dirX < 0 then ok = false end
+                if ok then
+                    local dx = p.x - origin.x
+                    local dy = p.y - origin.y
+                    local score = dx * dx + dy * dy
+                    if preferBoss and isvalid(cand:GetComponent("script.BossSkillRunner")) then score = score - 1000000 end
+                    table.insert(scored, { e = cand, d = score })
+                end
+            end
+        end
+        self.Candidates = {}
+        table.sort(scored, function(a, b) return a.d < b.d end)
+        local out = {}
+        local names = {}
+        for i = 1, math.min(count, #scored) do
+            table.insert(out, scored[i].e)
+            table.insert(names, tostring(scored[i].e.Name))
+        end
+        log("SkillAttack: FindSkillTargetsNearest " .. skillId .. " in=" .. tostring(#scored) .. " -> " .. tostring(#out) .. " [" .. table.concat(names, ",") .. "]")
+        return out
     end
 
     @ExecSpace("ServerOnly")
@@ -756,7 +871,14 @@ script SkillAttack extends AttackComponent
         -- 조준(2026-09-10 3차 · 사용자 결정): 바라보는 방향 앞쪽 Range 상자(발부터 위로 AimSearchHeight) 안 최근접 몬스터 — 뒤쪽은 제외.
         -- 대상이 있으면 그쪽으로 유도 발사, 없으면 바라보는 방향 직선. 스나이핑(preferBoss)은 보스가 있으면 보스.
         local target = nil
-        if self.AimProjectileAtTarget then
+        -- 고른 대상(PendingProjectileTarget · 스나이핑 3명)이 있으면 그 대상으로 · 화살 한 발(PendingProjectileSingleArrow). 둘 다 이 호출에서 비운다.
+        local forcedTarget = self.PendingProjectileTarget
+        local singleArrow = self.PendingProjectileSingleArrow
+        self.PendingProjectileTarget = nil
+        self.PendingProjectileSingleArrow = false
+        if forcedTarget ~= nil and isvalid(forcedTarget) then
+            target = forcedTarget
+        elseif self.AimProjectileAtTarget then
             target = self:FindSkillTarget(skillId, {
                 posX = pos.x + dirX * range / 2, posY = pos.y + self.AimSearchHeight / 2,
                 sizeX = range, sizeY = self.AimSearchHeight, floorY = pos.y,
@@ -842,7 +964,9 @@ script SkillAttack extends AttackComponent
             if vt.delay ~= nil and vt.delay >= 0 then volleyDelay = vt.delay end
             if vt.gapY ~= nil then volleyGapY = vt.gapY end
         end
-        for i = 2, math.floor(hitCount) do
+        local volleyCount = math.floor(hitCount)
+        if singleArrow then volleyCount = 1 end
+        for i = 2, volleyCount do
             local k = i
             _TimerService:SetTimerOnce(function()
                 if not isvalid(caster) or not isvalid(caster.TransformComponent) then return end

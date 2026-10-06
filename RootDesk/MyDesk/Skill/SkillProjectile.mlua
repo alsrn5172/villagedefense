@@ -120,6 +120,17 @@ script SkillProjectile extends AttackComponent
 
     property number FloorTolerance = 0.6
 
+    -- 몸 띠 명중(b/skill-projectile-level-aim v2 · SkillAttack.AimBodyBand 와 같은 규칙): SameFloorOnly 투사체(스킬 · 기본 공격)는 몸 상자가 시전자의 몸 띠
+    --   (FloorY = 시전 때 발 ~ 발 + 시전자 키)와 세로로 겹치는 몬스터만 맞는다 — 머리 위 · 발 아래 몬스터는 닿아도 안 맞는다. 띠는 첫 판정 때 시전자 몸 상자로 한 번 잰다.
+    --   폭발 주변(에너지볼트 폭발 패스 · 그 후보 probe)은 예전 규칙(FloorTolerance)대로. false = 예전 규칙.
+    property boolean UseBodyBand = true
+
+    @HideFromInspector
+    property number bandTop = -100000
+
+    @HideFromInspector
+    property boolean bandSkip = false
+
     -- true = 판정 한 번에 몬스터 하나만 맞는다(b/skill-thief-effects · 럭키 세븐 1 대상). OnUpdate 가 probe 패스(ProbeTag · Candidates)로 후보를 모으고
     -- (조준 대상 TargetEntity 가 후보에 있으면 그것 · 없으면 투사체에 가장 가까운 것) 그 하나만 AllowedTargets 로 통과시켜 AttackFast 한다(에너지볼트 폭발과 같은 거름망).
     -- false = 예전대로 상자 안 전부.
@@ -465,6 +476,29 @@ script SkillProjectile extends AttackComponent
         return false
     end
 
+    method boolean InCasterBand(Entity defender)
+        -- 몸 띠(UseBodyBand): defender 몸 상자가 (FloorY ~ FloorY + 시전자 키)와 세로로 겹치는가. 시전자 키는 첫 호출 때 시전자의 SkillAttack 으로 한 번 잰다(띠 위끝 − 발).
+        --   시전자가 없으면(퇴장) 키 0.7(SkillAttack.CasterBodyHeightFallback 과 같은 값) · 몬스터는 발 높이 점으로 본다.
+        local caster = nil
+        if self.CasterUserId ~= "" then caster = _UserService:GetUserEntityByUserId(self.CasterUserId) end
+        local sa = nil
+        if isvalid(caster) then sa = caster:GetComponent("script.SkillAttack") end
+        if self.bandTop < -99999 then
+            local h = 0.7
+            if isvalid(sa) then
+                local band = sa:CasterBandOf(caster)
+                h = band.y - band.x
+                if h <= 0 then h = sa.CasterBodyHeightFallback end
+            end
+            self.bandTop = self.FloorY + h
+        end
+        if not isvalid(sa) then
+            local y = defender.TransformComponent.WorldPosition.y
+            return y >= self.FloorY and y < self.bandTop
+        end
+        return sa:OverlapsBand(defender, Vector2(self.FloorY, self.bandTop))
+    end
+
     @ExecSpace("ServerOnly")
     method void TryExplode(Vector3 pos)
         -- 폭발형 명중 검사: 지금 날아가는 상자(Shape · RangeX × RangeY)에 닿은 몬스터를 피해 없이 모은다. 없으면 계속 난다.
@@ -510,6 +544,8 @@ script SkillProjectile extends AttackComponent
         self.Shape.Size = Vector2(self.ExplodeSizeX, self.ExplodeSizeY)
         self.Shape.Angle = 0
         self.Candidates = {}
+        -- 폭발 주변은 예전 규칙(몸 띠 아님 · bandSkip) — 폭발 패스가 끝나면 아래에서 되돌린다.
+        self.bandSkip = true
         self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
         local inBox = self.Candidates
         self.Candidates = {}
@@ -559,6 +595,7 @@ script SkillProjectile extends AttackComponent
             self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
         end
         self.explodePass = false
+        self.bandSkip = false
         self.AllowedTargets = nil
 
         log("[SkillProjectile] EXPLODE " .. self.SkillId .. " first=" .. tostring(first.Name)
@@ -735,7 +772,10 @@ script SkillProjectile extends AttackComponent
             if not isvalid(caster) or not _FactionLogic:IsEnemy(caster, defender) then return false end
         end
         if self.SameFloorOnly and isvalid(defender) and isvalid(defender.TransformComponent) then
-            if defender.TransformComponent.WorldPosition.y < self.FloorY - self.FloorTolerance then
+            if self.UseBodyBand and not self.bandSkip then
+                -- 몸 띠(UseBodyBand): 시전자 발 ~ 머리와 몸 상자가 겹치는 몬스터만.
+                if not self:InCasterBand(defender) then return false end
+            elseif defender.TransformComponent.WorldPosition.y < self.FloorY - self.FloorTolerance then
                 return false
             end
         end
@@ -815,10 +855,17 @@ script SkillProjectile extends AttackComponent
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
         -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 예전처럼 false(스킬엔 확률 크리 없음).
         -- ⚠ 부모(AttackComponent.CalcCritical)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐.
+        local crit = false
         if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
-            return _SkillBuffs:IsGuaranteedCrit(self.CasterUserId)
+            crit = _SkillBuffs:IsGuaranteedCrit(self.CasterUserId)
         end
-        return false
+        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)를 더한다.
+        if _SkillExecutors ~= nil and self.CasterUserId ~= "" and _SkillExecutors:IsUltimateTallyOpen(self.CasterUserId, self.SkillId) then
+            local dmg = self:CalcDamage(attacker, defender, attackInfo)
+            if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
+            _SkillExecutors:AddUltimateTally(self.CasterUserId, self.SkillId, dmg)
+        end
+        return crit
     end
 
     method float GetCriticalDamageRate()

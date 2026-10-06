@@ -160,6 +160,10 @@ script SkillExecutors extends Logic
     -- PROJECTILE 중 보스 우선 조준 (skillId -> true). 스나이핑 SK_A21.
     property table projectilePreferBoss = {}
 
+    -- PROJECTILE 다중 대상 (skillId -> N): 앞쪽 상자 안 가까운 순 N명에게 화살 한 발씩(발마다 CSV HitCount 타 · SkillAttack.FindSkillTargetsNearest).
+    --   스나이핑 SK_A21 = 3(2026-10-05 b/skill-sniping-3x3 · A 요청). 대상이 없으면 예전처럼 한 발(바라보는 방향).
+    property table projectileTargetCount = {}
+
     -- BUFF_SELF 중 "그 버프가 켜져 있는 동안의 재시전 = 공격" 인 스킬 (skillId -> true). 에너지 차지 SK_P21.
     property table recastAttack = {}
 
@@ -219,6 +223,13 @@ script SkillExecutors extends Logic
 
     -- 메소 익스플로전(meso): 동전 연쇄 폭발 간격(초).
     property number MesoExplodeInterval = 0.06
+
+    -- 메소 익스플로전 동전 소리(#40 5988188093 · 사용자 결정 2026-10-05 "동전마다 소리를 낸다 — 단 한 번에 최대 10개까지, 동시에 겹치지 않게 연쇄로"):
+    --   동전이 터질 때마다 명중음(4210014/Hit) 하나 · 시전당 MesoCoinSoundMax 개까지(앞 동전부터) · 앞 소리와 MesoCoinSoundGap 초보다 가까우면 그만큼 늦춰 튼다(겹치지 않게).
+    --   예전 = 중심 폭발 때 한 번(2026-10-03 사용자 A/B). 0 = 소리 없음.
+    property integer MesoCoinSoundMax = 10
+
+    property number MesoCoinSoundGap = 0.12
 
     -- 동전 하나의 폭발 반지름(world unit · B 기본값 · #40 5884390073 5번 "동전마다 그 자리에서 터져 그 주변 적만 때린다 · 반경은 B 기본값"):
     --   1.0 u = 100 px. 픽파켓 동전은 맞은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다(MesoCoin.ArcSpread) → 1.0 이면 동전을 떨군 몬스터가
@@ -347,6 +358,26 @@ script SkillExecutors extends Logic
     -- 디자이너가 컷신을 새로 넘겨주면(테두리 처리 포함) 이 값은 다시 정한다.
     property number CutsceneOverscan = 1.08
 
+    -- 궁 합계 데미지(#40 5988188679 · 사용자 결정 2026-10-05 "영상이 끝난 직후 합계 데미지를 한 번 보여 준다 · 영상 중 숫자는 그대로"):
+    --   영상이 있는 궁(CutsceneVideoSeconds > 0)을 쓰면 서버가 그 시전의 타격 피해(크리 포함)를 모아(OpenUltimateTally · SkillAttack / SkillProjectile.CalcCritical → AddUltimateTally)
+    --   영상 끝 + UltimateTotalDelay 에 시전자 머리 위에 숫자 하나로 띄운다(ShowUltimateTotal · DamageSkinService.Play · 시전자의 DamageSkinSetting 스킨).
+    --   피해가 없는 궁(불굴의 진)은 띄우지 않는다. false = 끈다.
+    property boolean ShowUltimateTotalDamage = true
+
+    property number UltimateTotalDelay = 0.1
+
+    -- 합계 숫자 크기 배율(보통 숫자 = 1) · 시전자 발 기준 높이(world unit).
+    property number UltimateTotalScale = 1.4
+
+    property number UltimateTotalOffsetY = 1.3
+
+    -- 서버: 유저 → { skillId, total, hits, serial } (열려 있는 궁 합계 · 영상이 끝나면 지운다).
+    @HideFromInspector
+    property table ultimateTally = {}
+
+    @HideFromInspector
+    property integer ultimateTallySerial = 0
+
     -- 클라: 가장 최근 UI 컷신 번호(새 시전이 오면 이전 것의 늦은 콜백 · 끄기 타이머를 무시한다) · 끄기 타이머 id · RUID → 프레임 크기(px · 가장 큰 가로 · 세로) 캐시.
     property integer cutsceneUiToken = 0
 
@@ -356,6 +387,17 @@ script SkillExecutors extends Logic
     property integer cutsceneUiFadeTimer = 0
 
     property table cutsceneUiClipSize = {}
+
+    -- 궁 컷신 영상(b/skill-ultimate-cutscenes · 2026-10-05 · share-mp4 5종): 기획 영상을 8 fps · 640×360 PNG 프레임으로 올려(팀 저장소 mIYbC · sprite)
+    --   시전자 화면 UI 에 스크립트로 넘긴다(CutsceneFrameSet · StartCutsceneFramesUI). 애니메이션 클립 업로드는 안 됐다(2026-10-05 04:44 시험 · GIF → 완료 단계 오류) →
+    --   한 장씩 sprite 로. 프레임 세트가 있는 궁은 이 경로 · 없으면 예전 클립 경로. false = 예전 클립 경로로 되돌림.
+    property boolean CutsceneVideoFrames = true
+
+    -- 클라: 영상 프레임 넘기기 타이머 id(새 컷신 · 끄기 때 지운다).
+    property integer cutsceneFrameTimer = 0
+
+    -- 폭풍의 화살(SK_A31) 영상 타격 타수(사용자 결정 2026-10-05 · #40 5986277680 · A 확인 대기): 4000% 1타를 영상의 두 구간에 이만큼 나눠 친다(한 타 = 합계 ÷ 이 값). 1 = 예전처럼 1타(첫 구간 가운데).
+    property integer StormArrowSplitHits = 8
 
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
@@ -380,6 +422,7 @@ script SkillExecutors extends Logic
         self:BuildHandlerTable()
         self:BuildEffectOverrides()
         self:BuildCastSounds()
+        self:ApplyCutsceneSounds()
         self:StartCutscenePrewarm()
         _TimerService:SetTimerOnce(function()
             self:MeasureCutsceneClips()
@@ -538,6 +581,13 @@ script SkillExecutors extends Logic
             if skill ~= nil and skill.requiredJobLine == jobId then
                 local spec = entry.cast
                 if spec ~= nil and (spec.cutsceneSeconds ~= nil or spec.prewarm == true) then add(spec.ruid) end
+                -- 궁 컷신 영상 프레임(b/skill-ultimate-cutscenes): 그 직업 궁의 프레임 전부(52~75장 · 장당 ≈0.3 MB)를 미리 받아 둔다 — 첫 시전에 영상이 늦게 뜨지 않게.
+                if self.CutsceneVideoFrames then
+                    local fs = self:CutsceneFrameSet(skillId)
+                    if fs ~= nil then
+                        for _, r in ipairs(fs.frames) do add(r) end
+                    end
+                end
                 -- loopEnd.prewarm(b/skill-pirate-effects 2026-09-28 · P5 Play): 에너지 쉴드 end 클립은 세션 첫 터짐만 ≈0.57s 방울 없이 비었다 → 예열 목록에 넣는다
                 --   (main 의 직업별 예열 구조 안으로 옮김 · A 가이드 #116 comment 5906003186 ③).
                 if entry.loopEnd ~= nil and entry.loopEnd.prewarm == true then add(entry.loopEnd.ruid) end
@@ -645,10 +695,13 @@ script SkillExecutors extends Logic
             SK_A21 = true,        -- 스나이핑: Duration(1s) 선딜
         }
         self.projectileReleaseExtra = {
-            SK_A21 = 0.15,        -- 스나이핑: 선딜 1s + 0.15 = 1.15s 에 발사(Use 사운드의 휙 소리에 맞춤 · 시전 락 SkillCaster.castLockOverrides 1.35)
+            SK_A21 = 0.075,  -- 2026-10-05 2차(A 요청 · 시전 시간 반): 0.15 → 0.075 · 선딜 0.5 + 0.075 = 0.575s 발사 · 예전 주석:        -- 스나이핑: 선딜 1s + 0.15 = 1.15s 에 발사(Use 사운드의 휙 소리에 맞춤 · 시전 락 SkillCaster.castLockOverrides 1.35)
         }
         self.projectilePreferBoss = {
             SK_A21 = true,
+        }
+        self.projectileTargetCount = {
+            SK_A21 = 3,           -- 스나이핑: 가까운 3명 · 발마다 3타(CSV HitCount 3 · 타당 피해 그대로 = 합계 ×3) · A 요청 2026-10-05
         }
         self.recastAttack = {
             SK_P21 = true,        -- 에너지 차지: 차지 중 재입력 = 10연타 주먹
@@ -661,8 +714,7 @@ script SkillExecutors extends Logic
         -- b/skill-pirate-effects 2026-09-27: 기획 표가 "다수" 로만 적은 해적 스킬은 원작 mobCount 를 기본값으로 둔다(#40 기획 질문 · 답이 오면 여기만 고친다).
         self.skillTargetCaps = {
             -- 근거 = design-handoff/pirate-refs/research-original.md(WZ 데이터 경로 · 나무위키 현재판 인용).
-            SK_P11 = 6,    -- 섬머솔트 킥: 원작 최신(KMS 360~389 · 라이브) mobCount 6. 사용자 영상 툴팁 "최대 4마리" 는 빅뱅 이전 Lv7 행(비공식 클래식 클라)이라 쓰지 않았다.
-            SK_P21 = 4,    -- 피스트인레인지: 그림과 같은 판인 피스트 인레이지 VI(5141000 · 2023 뉴에이지) "4명을 10번 공격"(사용자 영상 64s · WZ mobCount 4). 기본 4차 피스트 인레이지(5121007) = 3.
+            -- 2026-10-05 b/skill-balance-x3(A 요청 · 기획): 섬머솔트 킥(예전 6) · 피스트인레인지(예전 4)는 상한을 뺐다 = 판정 상자 안 전부(상자 그대로).
             SK_P31 = 15,   -- 함포 사격: 원작 드레드노트(5241500) 풍랑 mobCount 15 (파마다). 뒤 이어지는 함선 폭격(5241501)은 7명.
         }
         -- 🔴 **레벨 구간 → 외형 티어. 이 표 한 곳이 구간을 정한다** (2026-09-16 요청: 구간 이동은 한 줄 수정).
@@ -713,7 +765,8 @@ script SkillExecutors extends Logic
                 -- 명중 5종: 시전 순번으로 하나를 골라 맞은 대상마다 4번(hitInterval 간격 · SkillAttack.PendingImpactRepeat).
                 hitClips = { "b79cbdf6d06b487382f03d625a1fc464", "a5fa2b779db14f93b881a873f36b7eac", "1ce3b9be19764a70a6229665e15adf42", "79132eeadd9b4ab090bf4845bfcfdbdb", "3720a775e9c241fbb547c81d76598843" },
                 -- 4타 · 타마다 파워 스트라이크 % × 0.8 · 앞 3.5 × 높이 2.5 · 최대 6명. hitAt 0.28 = 원작 첫 피해(영상 2013 실측 ≈ +0.28 s · 후보 E · 예전 0.12).
-                hits = 4, damageMul = 0.8, maxTargets = 6, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
+                --   2026-10-05 b/skill-balance-x3(A 요청): maxTargets 6 → 0 = 상자 안 전부(상자 그대로) · 피해는 파워 스트라이크 % 를 따라 ×3(SkillInfo.csv).
+                hits = 4, damageMul = 0.8, maxTargets = 0, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
             },
             SK_M11_FH = {   -- 플레임 헤이즈 — 원작 skill/212.img/skill/2121011: 몸 동작 flameHaze(기본 액션 2프레임) · 시전 · 투사체 · 폭발 hit/0 · 불꽃 5종(연출만) · 소리 Use · Hit
                 baseSkillId = "SK_M11",
@@ -739,6 +792,11 @@ script SkillExecutors extends Logic
                 -- spawnDelay = 투사체가 나가는 때(키 누름 기준 초). 0.81 = 원작 시전 effect 0 ~ 8번(9 × 90 ms) 뒤 effect/9 번쩍임과 함께 공이 나간다
                 --   (영상: Use 소리 9.497 → 공 10.300 = 0.80 s · 16.447 → 17.233 = 0.79 s · 폭발 Hit 소리는 Use + 1.20 s 두 판 모두). 예전 0 = 키 누름 즉시. 스폰 자리는 에너지볼트(SK_M11.spawn)와 같다.
                 damageMul = 2, spawnDelay = 0.81,
+                -- 사거리(2026-10-05 · A "플레임 헤이즈 사거리가 짧다" · 잠정 · 사용자 Play 뒤 조정): 예전 = 에너지볼트 CSV Range 3 을 그대로 썼다.
+                --   원작 2121011 common/range = 450 px(KMS 359 · 389 같음 · 에너지볼트 2001008 도 450) = 4.5 유닛(1 유닛 = 100 px).
+                --   영상(불탄 집『파이어 데몬』 9.4 s · 레드 2013): 시전자 → 맞은 대상 중심 ≈425 영상 px = 캐릭터 키(≈83 px)의 5.1배 ≈3.3–3.6 유닛에서 맞힌다 → 4.5 와 어긋나지 않음.
+                --   이 값이 탐색 상자 길이 · 비행 거리(lifetime = range / speed)를 함께 정한다. 없으면 에너지볼트 Range. 에너지볼트는 그대로.
+                range = 4.5,
                 -- impactOnce: 폭발 그림(hit/0)은 시전당 한 번 — 첫 대상 몸 중심(원작 onlyOnce · #40 5988186874 사용자 결정 2026-10-05). 피해 · 숫자 · 불꽃은 대상마다 그대로.
                 explode = { sizeX = 3.5, sizeY = 2.0, centerY = 0.25, maxTargets = 10, impactOnce = true },
             },
@@ -921,7 +979,7 @@ script SkillExecutors extends Logic
                 -- 🔴 2026-09-27 b/skill-archer-effects(사용자 결정: 한 시대 = **스나이핑 VI skill/324.img/skill/3241000** 한 벌 · 2023 뉴에이지 · 영상 88~98s):
                 --   aim = VI effect(662×357 · 27프레임 × 60ms = 1.62s · WZ) · delay 0.43 = 클립의 발사 섬광(≈0.567s · 영상 91.900 → 92.466)이 선딜 1초(표) 끝의 발사와 맞게 늦게 켠다.
                 --   예전 = 3221007 aim 6c7b4f79… · mob 0c76a3bd… · ball 07a44ad4… · hit 72fa136a…(≤2020 판).
-                aim = { ruid = "0b6df3e081d0484fb9a4aa174f9784a8", delay = 0.43, prewarm = true },   -- prewarm: 첫 시전만 ≈1s 늦게 떴다(2026-09-28 Play) → 입장 때 예열
+                aim = { ruid = "0b6df3e081d0484fb9a4aa174f9784a8", delay = 0, prewarm = true },   -- prewarm: 첫 시전만 ≈1s 늦게 떴다(2026-09-28 Play) → 입장 때 예열 · 2026-10-05 2차(A 요청 · 시전 시간 반): delay 0.43 → 0 — 클립 속 발사 섬광(≈0.567s)이 새 발사 0.575s 와 맞는다(클립 배속 그대로)
                 -- mob(VI 표식 116×112 · pivot = 가운데): atHead = 콜라이더 위쪽 끝(머리)에 가운데를 둔다 · onHit = **맞을 때** 새긴다(영상 92.766s · 데스티니 64.966s ·
                 --   "적중 시 표식을 새김") — 선딜 동안의 조준 표시(PlayAimMarker)는 켜지 않는다.
                 -- 2026-09-29 사용자 눈 확인 W(영상 91.8s · 92.767s · 캐릭터 키 ≈74px = 원본 1:1): 표식 ≈80px = 원본 116px × 0.75 · 폭발 아래(sortOnMob · HitMarkOrderInLayer 3).
@@ -1582,18 +1640,22 @@ script SkillExecutors extends Logic
             if base.spawn.offsetY ~= nil then spawnY = base.spawn.offsetY end
         end
         local ex = entry.explode
+        -- 사거리 = effectOverrides.SK_M11_FH.range(있으면) · 없으면 에너지볼트 CSV Range.
+        local range = skillData.range
+        if entry.range ~= nil and entry.range > 0 then range = entry.range end
         local function spawnNow()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
             skillAttack.PendingProjectileDamageMul = entry.damageMul
             skillAttack.PendingProjectileExtraHitCsv = table.concat(entry.flames, ",")
             -- 폭발 그림 높이(impact.offsetY) · 불꽃 붙이기(PlayMobFlame)를 에너지볼트(SK_M11) 값이 아니라 이 키로 본다(2026-10-05).
             skillAttack.PendingProjectileEffectKey = key
-            skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId, skillData.range, skillData.speed, 1, entry.impact.ruid,
+            skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId, range, skillData.speed, 1, entry.impact.ruid,
                 spawnY, entry.ball.ruid, self:GetExtraSound(key, "hit"), false, spawnX, 1,
                 { sizeX = ex.sizeX, sizeY = ex.sizeY, centerY = ex.centerY, maxTargets = ex.maxTargets, impactOnce = ex.impactOnce == true })
         end
         log("SkillExecutors: FLAME HAZE lv=" .. tostring(level) .. " x" .. tostring(entry.damageMul) .. " explode=" .. tostring(ex.sizeX) .. "x" .. tostring(ex.sizeY)
-            .. " max=" .. tostring(ex.maxTargets) .. " impactOnce=" .. tostring(ex.impactOnce == true) .. " flames=" .. tostring(#entry.flames) .. " delay=" .. tostring(entry.spawnDelay))
+            .. " max=" .. tostring(ex.maxTargets) .. " impactOnce=" .. tostring(ex.impactOnce == true) .. " flames=" .. tostring(#entry.flames) .. " delay=" .. tostring(entry.spawnDelay)
+            .. " range=" .. tostring(range) .. " (energy bolt " .. tostring(skillData.range) .. ")")
         if entry.spawnDelay ~= nil and entry.spawnDelay > 0 then
             _TimerService:SetTimerOnce(spawnNow, entry.spawnDelay)
         else
@@ -1855,6 +1917,10 @@ script SkillExecutors extends Logic
         --   기획 컷신(약 1초)보다 길어서 무적 창을 클립이 아니라 기획 길이에 맞춘다. 시전 락(SkillCaster.castLockOverrides)은 이 값을 따르지 않는다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.cast == nil or entry.cast.cutsceneSeconds == nil then return 0 end
+        -- 궁 컷신 영상(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05 "컷신 내내 무적 · 시전부터 영상 끝까지 · 직업마다 길이가 다르다"): 영상이 있으면 그 길이가 먼저다
+        --   (아래 cutsceneLengthSeconds · 실측 · 리터럴보다 앞 · 함포 사격 1.0 s 도 영상 6.5 s 로).
+        local video = self:CutsceneVideoSeconds(skillId)
+        if video > 0 then return video end
         local fixed = entry.cast.cutsceneLengthSeconds
         if fixed ~= nil and fixed > 0 then return fixed end
         local measured = self.cutsceneClipSeconds[skillId]
@@ -1928,7 +1994,15 @@ script SkillExecutors extends Logic
                         local wox = spec.offsetXByWeapon[self:MotionWeaponTypeOf(casterEntity.PlayerComponent.UserId)]
                         if wox ~= nil then ox = wox end
                     end
-                    local serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(ox * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+                    -- 궁 컷신 영상(b/skill-ultimate-cutscenes · R11 2026-10-05 "첫 시전에 예전 클립이 잠깐 보였다"): 영상이 있는 궁의 cast 는 예전 라이브러리 클립을 틀지 않는다
+                    --   (시전자 화면은 영상 UI · 다른 유저도 예전 클립을 안 본다). 첫 시전에 프레임을 받는 동안(≈1.0–1.3 s) 예전 클립이 먼저 보이던 것.
+                    local serial = 0
+                    local videoOnly = (stage == "cast" and spec.cutsceneSeconds ~= nil and self:CutsceneVideoSeconds(skillId) > 0)
+                    if videoOnly then
+                        log("SkillExecutors: cast clip " .. skillId .. " skipped — cutscene video plays instead")
+                    else
+                        serial = _EffectService:PlayEffectAttached(spec.ruid, casterEntity, Vector3(ox * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
+                    end
                     log("SkillExecutors: " .. stage .. " effect " .. skillId .. " attached, facing=" .. tostring(facing) .. " flipX=" .. tostring(opt["FlipX"]) .. " offsetX=" .. tostring(ox))
                     -- 화면 컷신(cast.cutsceneSeconds 가 있는 것 · 예열 목록과 같은 기준)이면 쉐도우 파트너 분신을 컷신 동안 숨긴다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
                     -- 2026-09-14 제보 "W 뒤 E 를 누르면 캐릭터가 사라진다": 예전 기준 "scale + noFlip" 에 에너지 쉴드 방울 cast(scale 0.85 · noFlip)가 걸려 변신 form 을 5.5초 숨겼다 → 명시 필드로.
@@ -2001,10 +2075,348 @@ script SkillExecutors extends Logic
         end
         self.cutsceneUiToken = self.cutsceneUiToken + 1
         local token = self.cutsceneUiToken
+        -- 궁 컷신 영상(b/skill-ultimate-cutscenes): 프레임 세트가 있으면 클립 대신 프레임을 넘긴다. 길이 = 프레임 수 ÷ fps(영상 길이) — 서버가 보낸 seconds(예전 클립 · 함포 사격 1.0s)는 쓰지 않는다.
+        local fs = nil
+        if self.CutsceneVideoFrames then fs = self:CutsceneFrameSet(skillId) end
+        if fs ~= nil and #fs.frames > 0 then
+            local t0 = _UtilLogic.ElapsedSeconds
+            _ResourceService:PreloadAsync(fs.frames, function()
+                if token ~= self.cutsceneUiToken then return end
+                log(string.format("SkillExecutors: cutscene video %s frames ready x%d in %.2fs", skillId, #fs.frames, _UtilLogic.ElapsedSeconds - t0))
+                self:StartCutsceneFramesUI(skillId, fs, token)
+            end)
+            return
+        end
         _ResourceService:PreloadAsync({ ruid }, function()
             if token ~= self.cutsceneUiToken then return end
             self:StartCutsceneUI(skillId, ruid, seconds, fadeSeconds or 0, token)
         end)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StartCutsceneFramesUI(string skillId, table fs, integer token)
+        -- 궁 컷신 영상 프레임을 전체 화면 UI sprite 에 1/fps 마다 넘긴다(b/skill-ultimate-cutscenes). 크기 = 프레임 비율(640×360 = 16:9)로 화면을 덮고 CutsceneOverscan 만큼 더 키운다
+        --   (StartCutsceneUI 와 같은 규칙). 마지막 프레임 다음에 끈다. 새 컷신이 오면(token) 스스로 멈춘다. 프레임은 ShowCutsceneUI 가 미리 받아 둔다(PreloadAsync).
+        local e = self.cutsceneUiSprite
+        if not isvalid(e) then return end
+        local sr = e.SpriteGUIRendererComponent
+        local tr = e.UITransformComponent
+        if not isvalid(sr) or not isvalid(tr) then return end
+        self:StopCutsceneFrames()
+        if self.cutsceneUiTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneUiTimer)
+            self.cutsceneUiTimer = 0
+        end
+        local cw = 1920
+        local ch = 1080
+        local parent = e.Parent
+        if isvalid(parent) and isvalid(parent.UITransformComponent) then
+            local rs = parent.UITransformComponent.RectSize
+            if rs.x > 0 and rs.y > 0 then
+                cw = rs.x
+                ch = rs.y
+            end
+        end
+        local fw = fs.width or 640
+        local fh = fs.height or 360
+        local over = self.CutsceneOverscan
+        if over <= 0 then over = 1 end
+        local scale = math.max(cw / fw, ch / fh) * over
+        tr.RectSize = Vector2(fw * scale, fh * scale)
+        tr.anchoredPosition = Vector2(0, 0)
+        e.Enable = false
+        sr.ImageRUID = DataRef(fs.frames[1])
+        self:ResetCutsceneUIAlpha()
+        e.Enable = true
+        local fps = fs.fps or 8
+        local n = #fs.frames
+        local index = 1
+        local t0 = _UtilLogic.ElapsedSeconds
+        self.cutsceneFrameTimer = _TimerService:SetTimerRepeat(function()
+            if token ~= self.cutsceneUiToken or not isvalid(sr) then
+                self:StopCutsceneFrames()
+                return
+            end
+            -- 타이머가 늦게 오면 프레임을 건너뛰어 영상 시간을 지킨다(소리와 어긋나지 않게).
+            local want = math.floor((_UtilLogic.ElapsedSeconds - t0) * fps) + 1
+            if want > n then
+                self:StopCutsceneFrames()
+                self:HideCutsceneUI(skillId)
+                log(string.format("SkillExecutors: cutscene video %s done x%d frames in %.2fs", skillId, n, _UtilLogic.ElapsedSeconds - t0))
+                return
+            end
+            if want ~= index then
+                index = want
+                sr.ImageRUID = DataRef(fs.frames[index])
+            end
+        end, 1 / (fps * 2))
+        log(string.format("SkillExecutors: cutscene video %s on — %d frames @ %d fps = %.2fs · rect %.0fx%.0f overscan %.2f", skillId, n, fps, n / fps, fw * scale, fh * scale, over))
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OpenUltimateTally(string skillId, Entity casterEntity)
+        -- 궁 합계 데미지(#40 5988188679): 영상이 있는 궁이면 이 유저의 합계를 새로 열고, 영상 끝 + UltimateTotalDelay 에 닫아 띄운다(CloseUltimateTally).
+        --   같은 유저가 다시 궁을 쓰면(쿨 0 테스트) 새 합계로 바뀌고 예전 타이머는 serial 이 달라 아무것도 안 한다.
+        if not self.ShowUltimateTotalDamage then return end
+        if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
+        local video = self:CutsceneVideoSeconds(skillId)
+        if video <= 0 then return end
+        local uid = casterEntity.PlayerComponent.UserId
+        self.ultimateTallySerial = self.ultimateTallySerial + 1
+        local serial = self.ultimateTallySerial
+        self.ultimateTally[uid] = { skillId = skillId, total = 0, hits = 0, serial = serial }
+        _TimerService:SetTimerOnce(function()
+            self:CloseUltimateTally(uid, serial, casterEntity)
+        end, video + self.UltimateTotalDelay)
+        log(string.format("SkillExecutors: ultimate total %s open for %.2fs (%s)", skillId, video + self.UltimateTotalDelay, uid))
+    end
+
+    method boolean IsUltimateTallyOpen(string userId, string skillId)
+        -- 그 유저의 궁 합계가 이 스킬로 열려 있는가(SkillAttack / SkillProjectile.CalcCritical 이 부른다 · 서버에서만 채워진다 → 클라는 늘 false).
+        local t = self.ultimateTally[userId]
+        return t ~= nil and t.skillId == skillId
+    end
+
+    method void AddUltimateTally(string userId, string skillId, integer amount)
+        -- 한 대상 한 타의 최종 피해(크리 배율 포함)를 더한다. 열려 있지 않거나 다른 스킬이면 무시.
+        local t = self.ultimateTally[userId]
+        if t == nil or t.skillId ~= skillId or amount <= 0 then return end
+        t.total = t.total + amount
+        t.hits = t.hits + 1
+    end
+
+    @ExecSpace("ServerOnly")
+    method void CloseUltimateTally(string userId, integer serial, Entity casterEntity)
+        -- 영상이 끝났다: 합계를 닫고 0 보다 크면 시전자 머리 위에 숫자 하나로 띄운다(그 맵 클라 전부 · ShowUltimateTotal).
+        local t = self.ultimateTally[userId]
+        if t == nil or t.serial ~= serial then return end
+        self.ultimateTally[userId] = nil
+        log("SkillExecutors: ultimate total " .. t.skillId .. " = " .. tostring(t.total) .. " over " .. tostring(t.hits) .. " hit(s) (" .. userId .. ")")
+        if t.total <= 0 or not isvalid(casterEntity) then return end
+        self:ShowUltimateTotal(casterEntity, math.floor(t.total))
+    end
+
+    @ExecSpace("Multicast")
+    method void ShowUltimateTotal(Entity casterEntity, integer total)
+        -- 클라: 시전자 머리 위에 합계 숫자 하나(시전자 DamageSkinSetting 스킨 · 크기 UltimateTotalScale · 높이 UltimateTotalOffsetY). 다른 맵 클라는 엔티티가 없어 건너뛴다.
+        if not isvalid(casterEntity) then return end
+        local skin = ""
+        local setting = casterEntity.DamageSkinSettingComponent
+        if isvalid(setting) and setting.DamageSkinId ~= nil then skin = setting.DamageSkinId.DataId end
+        if skin == nil or skin == "" then
+            log_warning("SkillExecutors: ultimate total " .. tostring(total) .. " — caster has no damage skin, not shown")
+            return
+        end
+        local s = self.UltimateTotalScale
+        _DamageSkinService:Play(casterEntity, skin, 0, { total }, DamageSkinTweenType.Default, false, Vector2(0, self.UltimateTotalOffsetY), Vector2(s, s))
+        log("SkillExecutors: ultimate total shown " .. tostring(total) .. " skin " .. string.sub(skin, 1, 8))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StopCutsceneFrames()
+        -- 궁 컷신 영상 프레임 넘기기 타이머를 멈춘다(화면은 그대로 · 끄기는 HideCutsceneUI).
+        if self.cutsceneFrameTimer ~= 0 then
+            _TimerService:ClearTimer(self.cutsceneFrameTimer)
+            self.cutsceneFrameTimer = 0
+        end
+    end
+
+    method table CutsceneFrameSet(string skillId)
+        -- 궁 컷신 영상 프레임 세트(b/skill-ultimate-cutscenes · 서버 · 클라 양쪽에서 부른다 — 상태 없는 리터럴이라 클라 인스턴스에서도 같다).
+        --   { fps, width, height, sound, frames = { RUID … } } · 없으면 nil(예전 클립 경로). 값은 villagedefense-harness/pirate-check/ultimates/manifest-*.json 에서 만든다(gen_frames.py).
+        --   원본 = share-mp4/<직업>.mp4 (1280×720 · 24 fps) → 8 fps · 640×360 PNG(lanczos). sound = 같은 이름 wav 를 ogg 로 올린 것(ApplyCutsceneSounds 가 castSounds 로).
+        -- @@ULT_FRAMES_BEGIN
+        -- SK_W31 전사.mp4 · 56 frames @ 8 fps = 7.00 s · sound 전사.wav (ogg) → castSounds.SK_W31 by ApplyCutsceneSounds
+        if skillId == "SK_W31" then
+            return { fps = 8, width = 640, height = 360, sound = "e57394c215da4de5b781951bb0d745e6", soundVolume = 1.74, frames = {
+                "e08fccb6f6e143a9bc5b05a750ebfee2", "f7719296ffd64d0c902632fd89a75b71", "68f6dea1090243e2a07c69407323104e", "269b0516125f43a9abc6ec89e9d145e6",
+                "21e2f5748110432d9ab75d7778c4a019", "cd41aa4d52a2435aacf98b4044676c58", "c1ea89faf8b641e79f44ec5e50365258", "9539562195d84eb5af9dfe4df2ed0b02",
+                "2e37a695ce4646f1a276f7bb2fe6e0fa", "0c355a67b8a04e0f8ab55aa4a064dcd7", "4ce69b6cc2094d6d9ad0d0cf8320b5b8", "689661566a3d4aca992b8dad911d62df",
+                "c25a0cbd821848f29c197cec3ce78eed", "97c667bdcdcc4db19805b1ef34efc6a5", "0a1d37529a4a42c2ba4bb71552a2f00e", "ae97899f3d9c4797af0874fcd2481d25",
+                "f13d0fa343584c25bc1e105b8b0d976b", "194ae20ddb93482c8172ad19f7612e4b", "6b135de87ee34ecd8da27ec7147d8e66", "3b5311b46d604ceea29bef115eedbd3f",
+                "6864ce963d4e4409907e1e8fa6ea0689", "772de6ca3b3a49f2833889647b028155", "abe8dabbd43341b692de0b95b7bdea6f", "1452264e87c14cefbac15e0b0e270206",
+                "009833f555fc46198be1237a4304c98f", "f5e1a94f771e4960afc4c0f502b7da96", "b491700e79c34ebea145caa9826610c0", "5f322e2b8db341a7a2d3443cff14224c",
+                "391786a267344fd7954e9f673a3792e3", "676823dd38c04333abccdf4c8804dd5b", "b417e5fd8b2c4ab191aa8bfcef1ea95f", "a7e587b10d6a474fa59e7f4c729d274e",
+                "96c6ad5db60d499f8e84bcadc1ae49c6", "175bc4972995436cb8885afa2ddfb066", "a7a6f69100254fb7a4cb9df6c49d305d", "3fa5531c79d74bb9b216b09b47038347",
+                "9e511f5acae64834b737ebe2cb28907f", "159b299ff6794a719e59b5e06e93e85f", "2e5cb511249146b2b2fd3a3e9f55ff53", "14c2ee5c63054df78c7970965cb64969",
+                "810e02f9b4ca48d2a769026db5ebc278", "06839fee101c4d5cb6ad617f6ae54037", "bba6f16d6119474db6f0b09ea8ae77a4", "aaed64d5b8ac4dd497b601df8305d4b6",
+                "499b39e9f73f44108c48578e6afebd25", "4dfe635efae84218886232fb7b737b44", "d47fdf63a17d4aa0ba0ea856dc1b0ab6", "854c922b8d5b48f582062368d17e9db7",
+                "5419d450345a49e1938484423f1eae63", "2f2a37f9f39b46c09dca9db898e5dc04", "3020806933ed46aa9dee80c3babc295f", "c1be43322d8e487daeeffd9fa9c4384d",
+                "2fb4cec53af34f9193a169db4d7e15e0", "19fabbc1d7564fcbac74894bd1ce5217", "c136fe4f76d3486ba1d0aa64ecb3ad57", "13116aff80044b67a8724a717ca5733f",
+            } }
+        end
+        -- SK_M31 마법사.mp4 · 75 frames @ 8 fps = 9.38 s · sound 마법사.wav (ogg) → castSounds.SK_M31 by ApplyCutsceneSounds
+        if skillId == "SK_M31" then
+            return { fps = 8, width = 640, height = 360, sound = "8c0c6ccc31df4644af7cd58e34353a7d", soundVolume = 1.2, frames = {
+                "03c185e3f1724951843434b49c59563c", "1f4c467eaac0474e9f6543e89a3d9ee2", "49aba6298d5445cb8a09a370772b1375", "ea64d2ad9f9d4aadb490ae8b664e2fb7",
+                "ea5b247dce234fd7b8169be4ce0ab416", "b17b762693d5470f96caf602c3e8b974", "b2c39f20340141b6820e1420911518fe", "27d54c39ba274099867d66fd7467c552",
+                "85ed95884c1e4725b19da6436c30bac6", "fd7482aaaa5d423ea8100a5c5c72189d", "4c7774deb41e4ab49d8808d883e11c81", "ee98863f0a9345caa58d34977f467966",
+                "eb70d7c3e5ab4d5cb1562f1ad0deec0f", "b1e69c03e2214c7793154e1ab2ab07ac", "5d605112a61440199feb496a9da9d4f4", "06203f50c9ff45bda30b5f7200d4a649",
+                "5a58f7d27e524e60ab0fb03dc2cf2e83", "a465fa25f8a4466f8e7d1d61bd3cea76", "fa5c2c60df944f2c9fed3419987323d6", "e92bf00555444eeca3277b01a810848d",
+                "5e9dd5a752b04b65b7c5457f94462f61", "8ec52d1fb7e840f0a2672771cae689a5", "3ee3f5f7ea5a476f979c4d26e6303ade", "023f7f301d144fe6aa01bd95a834386f",
+                "70cdcbdda1d847b590641a181e787174", "4fdf382e49704601a0e1e49ff4e15f7b", "8bcbc797772c4ac0ab13b701f435c131", "1ebb5e214aec47dcb196b185b4818f15",
+                "f9c5e55e991a4c089f19ea5b8e8f0532", "73bf8d0d81bc41f6b3e36f2efcbccb7b", "93b6d2c121c64031a58b0f4c88a97f94", "737f77f274904dabb2a71d31e4c11434",
+                "f1a49764bfb74a5ca821b91df6567f6d", "80cb50baa3de45debb157f30216a6dfa", "682af4ee5c984242afff01b7f856f03e", "45bd46f8633440838e5bdb7c2c11e470",
+                "b598abadaf004b719168d522ddeed295", "5c7381c981704ff0a82edac1d5464896", "bf410d4ba731459099e5c19d3e7bcdf3", "75a41cc8e9f5497fb6fd981f0579218c",
+                "69642a12d6774d6b9a881e36b8909f13", "12d5fd8795f846a0a652e5f8793cbba5", "f2a53fb1f5d94a20b94f68c16b37b7a9", "8ed082f453fc4211b06cde91a9f6c7cb",
+                "767f3e6bfdc04f2fb45c6d18a9e4c829", "ead40c23b61d4d71aeac523a9644a695", "698e2a4055aa4ec9a42af22848def5e0", "24843358a22d4155b7e15e47ed5ca525",
+                "b0b064056f9e4db78dd8817088d11a80", "ebe0d1da50dd4c10bd3ca8a634295c6c", "834d7253a6b64f13b6ec99a3a53d8baf", "eb6c282bee3c4599ac61616865bbf0ba",
+                "40bb4296e998410e886d2c26c6b05dc7", "766b774705294b5281dbc255cc0932c8", "b07f64a5c5824cca9e258395c8ad35c2", "aa703f20b2c5432497323120e71f3c0d",
+                "b2b0ad2d42b440408c1848509accc0b3", "85ca8f4dd84847458bf81a40a396f28f", "ae8bbf4a0ce1406bb95b439de9685f2a", "a36018f9399f4d8ca6d87907b6320a7c",
+                "7a5165515a454acbb51bc3ea1289042b", "177e356548cf402a962c631878a6dbe6", "ebe561845a45436799632da3ee1683ca", "ce13c0bf44724abba48c7c1d55c76438",
+                "6b307d5c0749466cb1ae1d263d8df547", "e5eb6219c3c74c0eafbcfd67f3c040a0", "ec7e18cc0e0549de811fd1711aa9b9fd", "b9d276e3c3444315980a9e338fedbbbf",
+                "281bc2f1aad84400971bad8702ab52a8", "2557f9f63ebe47a89890a040e1a73259", "fde6ca6cc0dc4e1ca0cf83b6adb15005", "248273d7b13a4517bd3802e6bdeadcd1",
+                "ab9fc93692424fcd9f17cc91e306a90b", "3ae6c758a3a04b31800257bf3f5373bf", "f651d72b958a45659590aa6ee6e455c1",
+            } }
+        end
+        -- SK_A31 궁수.mp4 · 62 frames @ 8 fps = 7.75 s · sound 궁수.wav (ogg) → castSounds.SK_A31 by ApplyCutsceneSounds
+        if skillId == "SK_A31" then
+            return { fps = 8, width = 640, height = 360, sound = "4558ebf913f9448cb6e0d23d82edf7d3", soundVolume = 1.93, frames = {
+                "ec35a090bf2d4d5a8550afb773fceefd", "c2caba1e7efe4511a85ce61e0bcb080d", "8499b0c229724289a8398a240d2f2c56", "2a15ac56e0cc4273a1d459920a909b7d",
+                "186d0b0cf53d4cbdb75b81c403f8371d", "f7e97e36b4f44b0db61ba05c0a1067e1", "5e37c380caf941c087709dcb6356b2fa", "866a322abef7413790b7d11ae2c64a49",
+                "d9e96ecc43b0468aa70a7d6ec193e466", "d88cdce9af60404b91af577a0af337cb", "762dc31a4389482a8f6017dedec487df", "e4913a0cb38241988cecde5079b5948d",
+                "737ecaaba03448aebbeb88c1795a8baa", "3dc84b6973ff4f4db234d2fded3d64ff", "df895c7484a94773841565e0b0aba8a0", "05989311652f4e618e47837df333a247",
+                "dcb2138174fc41e8b461225766f31769", "41ab8f12c8da4c33a2f57d9899cf9e05", "468e7c85bd3c4cd3a3d2a1977419f693", "4ce305dd58ad4210a5a13329d50b4673",
+                "7c4c80e7a26a48f0947cd79d54d256b8", "159cce4b1ce14504a59f28db12401cba", "23253864fb57437e90efae106a798e80", "7fd065c5aa204ca6a650e0211a232da7",
+                "b67382417e104bfd9c730a3e46a1e3e8", "0ef66b37adbb42f891ee0e2bfc780858", "13a395eb9c9f4cf49fe9ac1a70749674", "58834fee35e94d32b8b402d5c08ed29e",
+                "f1b85c6b1e9644638836d6ab0111d999", "921b978d8b384b10a879255d46471b2e", "76bc3a6c4f094cb79d09a78cde675be7", "8d85f7ac404b4accab6521edfd5c1445",
+                "0b9aedea6a6d4eeab893cfbdc829663b", "4c22053151f247a99a16fb04ed3e4542", "88867522b48b424b9f7dad93977ceaad", "79530cb520a24477b8fddb57d533aa99",
+                "a0fa1341eefd45f59c14008c2a430356", "e8e1dd58a8dc4ccda9743d2a8541395b", "08ff9e8e6ebf4345913d5f78e65cc6c9", "cd976978895c4fc885671179072bcd38",
+                "9d5a9084e1e34aa282223191a31a0125", "d451937b971649c684b6c0fa051b95a1", "9c9f13f78e994fad988a49072c3bfaf1", "1972ce758f344c6d84895e51e273864d",
+                "2b01f206a1414490908bac0f17312c99", "0a1113a532c249049b66efbe0c3d941d", "cf9924fd75a146b184d8c18848a43009", "e5859021fbf04e9683ee6c12aec1efae",
+                "8b12aa51af83425b80113ff924749d0e", "5a8f0be6fe0a4aa883685d17659a3848", "1fd2ebc82c624b7f95301e7a59a43ecc", "27e6419bf4f64591a1a0bb2a4681226f",
+                "e73a9159c5854ba7982895c41b45239b", "8ddd36e62f044f759a0198af11a8a84d", "505026f1441842368911b349f10dbdea", "ebc4ddf5c3aa444bb9046487569e519e",
+                "87764f2c37544da6b5e4694a8be6b001", "151662cb6b7b41519a7aac5bb89549ca", "0400e6a135534b969ce96339a02b5f5b", "ed7973e4f76545f79e5577e9fbdee537",
+                "3e71a8b394344e26b5f9378dc1e151bc", "b989d57b1d3642008cbeb88d18a6181f",
+            } }
+        end
+        -- SK_T31 도적.mp4 · 62 frames @ 8 fps = 7.75 s · sound 도적.wav (ogg) → castSounds.SK_T31 by ApplyCutsceneSounds
+        if skillId == "SK_T31" then
+            return { fps = 8, width = 640, height = 360, sound = "730975854cb64e33b1fbefccdae05713", soundVolume = 1.86, frames = {
+                "eafbadbca91741bda1e2f2cfc593bcdf", "2017a6fb4c534d9ba84ffef3ec3632a3", "ff26f88c8fd74f09aeeac1fee289ba19", "16fdde6d9d6a409c95b6715187fc4ea3",
+                "373fcd8cb22940e496651211661174b4", "fa4f9989eb5749269120211af2249c82", "e6fbbf30faf74c0c80059b7f5733137c", "2722b2fb776b4a3987395335a0a8cba9",
+                "fad2b7a326214ba5bffe7f80ab582b71", "5cd3bfa8c7df4a558acd137639fa8a98", "5e65b431324a4ba3bce783de1ac53366", "759040464c6b4be1b40de89169ea8b6a",
+                "9aad7eeb7cf046a2bf574a834d7e6a8e", "1654d38fd9024bf5a7d4a15ec23f51f2", "49b403d81f814004a18f58d084fd80d9", "70162aac5adb4dbeb3e5a112691aebb4",
+                "c490e191f48148e1a5e21079264aed8c", "10cf9ec4fd4c4dc2a68554c2316dd496", "ee87068d9b854abcb753be0bec235883", "224c52ce4631432c847a7381c8a90561",
+                "b10d45db97c14ed19cfed6ae17ec0f9b", "b41a6ad0786646428832e12b01cf5c49", "71af5eea0ccc408d90395c4e9b583d50", "f54f7abb73e1469b85fab76944411e89",
+                "bd0a2ca119f54367a1304b983ded3b76", "5579836a787540d7ace5afc5308a2cf4", "81a9dfbddb80465380712b62b7c9c8fa", "799cb629582c4005bb1ab7a0df646b23",
+                "6aa9b0bc225e43568041cd869ba0de38", "93aa7101e6724a619a00a2123e3cd48f", "5851bab2e42143aa89442931d467ebab", "4ea99c00bcf14481aa75ddd89c115235",
+                "f352aca49d5347109974a35fba14d0d2", "b67a11fa74984d5f82cd8398ed0fd9ba", "77c6559819f4440eb1e31951587c4e0d", "e7192dd0d3d7472a82a7d758084b9b32",
+                "9ab53aed19da47b6a469acac235a5b61", "80f69936812d48fd8bc77a628cb70453", "ece0cb4da4564e5aa3b2f09817634c58", "d7d577e5840b433486aa2e889d5ac422",
+                "51393634f0b243c2b7bc7b9801f7b11f", "8fe7e688b2774a4895d62018e2dbeda3", "9aa99131d6a04c64a468b020bc1a5e22", "5f4f8cffe0c3466d9c82dc3f6bbd5a44",
+                "482f4071dafd45eba17021a465de1274", "dd1279d2faff44c48e64d489e9a5d6ed", "f663b263f76d45d4883c72e1d479c55c", "7a0b06efe755410baccb6d897e3ec267",
+                "259e3c7b5e5442bca5661414534d4b3f", "ac796bb0604f4ec58e448c3b9aaac27c", "30c2392fb731401a8d839a462bc6a7c0", "7e729c179c9744cdaf75146e6cd1b808",
+                "0b2a8b7a3cf5481f933166aa79a03332", "7ca09454f78c488e98cad4fc945fb148", "29484b0cfa1e40488be6ecf3ea54a784", "533c99e9085e4651875dcd6d47d5ef3c",
+                "9f5ceca768574f27b02a1d8adb079047", "68e16eb6603e4acfbaf668c8eb883f3d", "d954d1fceb1c4bf581b38be6246cb0dc", "7cde7f914091405695708872e0fd3a81",
+                "3145543a719c4276a7520e7bb011d1ac", "8bc6621e4ab34915a645b62a46c370fc",
+            } }
+        end
+        -- SK_P31 해적.mp4 · 52 frames @ 8 fps = 6.50 s · sound 해적.wav (ogg) → castSounds.SK_P31 by ApplyCutsceneSounds
+        if skillId == "SK_P31" then
+            return { fps = 8, width = 640, height = 360, sound = "9e24e46382434cb39cde4dc5084e05ce", soundVolume = 1.86, frames = {
+                "809e44c4771e46e28a6d2a6d9344bfd8", "95ae2774a6aa48f7a2b74b446162bcd0", "9b1755c0c288406e8ab148e902833f88", "67c7cc5c972a43f6b1ed158162a346e9",
+                "1c1dd779d555444b93eed29a8df2895a", "1f3896b1629e47b195e0359098101202", "6759d32175b843bc83d9746840f13d5c", "07249dee97ae4cfeb30fc83b47976ac6",
+                "8528353a49944f808c5882f2de22a73b", "532a703796634ad3b57a5db2ae67d66f", "3573f2b6ecbf495880f73a26277bb8b2", "3ba09c9d67824f1eadaebbfa6ddacb8e",
+                "600eb53702b04ebb8172e40bc243a88b", "d6a3cfa0ec954bd68eba41c1f1623250", "0c47b76d50534ed58b52c559e612ff04", "3ff7810ca5294480bba773f40a416659",
+                "61c86d23c1b4472982c55d7c90174982", "c4b15d99f5a541cebe9a7e48b5a46eab", "507305ace36846fa8a03d67306321750", "171c467fd1c54a88bf4d99c1db9e907f",
+                "3326c8a864494bb39429a9a368e05c0a", "ec3f911ede674327af4e2a4d30a467fc", "3b6a9854178043f6a0cf1cf8136733f2", "211862b5188e4b73953d82bb99638c4b",
+                "5fcbe166fdb343ea8db7e7467ab9ff4d", "ecc62f7cbcd1400996b1a8a2a4a2f682", "664100443ea64515af0237b662001baa", "535c3476f4104ddfa2c58566d52fca9f",
+                "6dba873947b645a69dd2b19d9246e626", "4c70d7ec6afc495c8f896e765fb1d527", "a5e6734641c64ce3afbdd91fbc5396d3", "681833616e744321b2dc3ec687ea1a54",
+                "4df44c23f5bf445880281cd677f03f06", "985ab33ab18441d0aaf2529826adef49", "6c072e10db9b452083aa6aa0eec8bbd6", "5fb290ece47f4f578a48008203734321",
+                "922e7c92089a4681a5495e3598d9df59", "2ed0b06e7f014c988f22263c9aff5b08", "59163fabdb154ea88714ef412671d602", "a79d81cc9f3949fd9761fabc255407a2",
+                "79166439fed642e0b1081cee83f851a6", "ebc6f4562a2d4104a996691a06a09fcb", "10ee9754162d4338b91589355ab2d47f", "06c645508f96468580875609a73fd5c7",
+                "553909e0e6bf483e9ba1b8387014ea82", "4ec656f6f4ef4513b61f311ac3bb1ebb", "9c4f3db656e84c6c98074af805f357e8", "56c6164074fb48ad97a465548dff8aea",
+                "cf957731c623453084db89a4a2a3c9eb", "76ae3a581da04bb0aed2b4f442f34340", "2fb5291b16f34eec9bb6c958273c580b", "d3ef094e283245d5b41095e378664b14",
+            } }
+        end
+        return nil
+        -- @@ULT_FRAMES_END
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ApplyCutsceneSounds()
+        -- 궁 컷신 영상 소리(b/skill-ultimate-cutscenes): 프레임 세트의 sound 로 그 궁의 시전 소리(castSounds)를 바꾼다(모두가 듣는 소리 · 예전 값은 BuildCastSounds 표에 그대로).
+        --   표 줄을 직접 고치지 않는 이유: 다른 열린 PR(#102 등)이 바로 옆 줄을 고쳐 합칠 때 충돌한다. OnBeginPlay 에서 BuildCastSounds 바로 뒤에 한 번 부른다.
+        if not self.CutsceneVideoFrames then return end
+        for _, skillId in ipairs({ "SK_W31", "SK_M31", "SK_A31", "SK_T31", "SK_P31" }) do
+            local fs = self:CutsceneFrameSet(skillId)
+            if fs ~= nil and fs.sound ~= nil and fs.sound ~= "" then
+                log("SkillExecutors: cutscene video sound " .. skillId .. " " .. tostring(self.castSounds[skillId]) .. " -> " .. fs.sound)
+                self.castSounds[skillId] = fs.sound
+            end
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayUltimateCastSound(string skillId, Entity casterEntity)
+        -- 궁 시전 소리(b/skill-ultimate-cutscenes · R11 2026-10-05 "배경음악에 묻힌다"): 영상이 있는 궁은 프레임 세트의 soundVolume(다른 스킬 소리보다 3 dB 위 = −12.6 LUFS · 상한 ×2.0)으로,
+        --   없으면 예전 PlayCastSound(×1.0). PlayCastSound 줄은 #158(유저별 소리)이 고치는 줄이라 건드리지 않는다 — #158 이 먼저 머지되면 이 호출도 유저별 경로로 옮긴다.
+        local fs = nil
+        if self.CutsceneVideoFrames then fs = self:CutsceneFrameSet(skillId) end
+        if fs == nil or fs.soundVolume == nil or not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then
+            self:PlayCastSound(skillId, casterEntity)
+            return
+        end
+        local soundId = self.castSounds[skillId] or self.defaultCastSound
+        _SoundService:PlaySoundAtPos(soundId, casterEntity.TransformComponent.WorldPosition, casterEntity, fs.soundVolume)
+        log("SkillExecutors: ultimate cast sound " .. skillId .. " " .. tostring(soundId) .. " x" .. tostring(fs.soundVolume))
+    end
+
+    method number CutsceneVideoSeconds(string skillId)
+        -- 궁 컷신 영상 길이(초) = 프레임 수 ÷ fps(b/skill-ultimate-cutscenes). 영상이 없거나 스위치가 꺼져 있으면 0. 서버 · 클라 공용 —
+        --   무적 창(GetCutsceneSeconds → SkillCaster) · 시전 락(SkillCaster.GetCastLockSeconds) · "끝까지" 피해 구간의 끝이 이 값이다(사용자 결정 2026-10-05 · 직업마다 길이가 다른 것이 맞다).
+        if not self.CutsceneVideoFrames then return 0 end
+        local fs = self:CutsceneFrameSet(skillId)
+        if fs == nil or fs.frames == nil or #fs.frames == 0 then return 0 end
+        local fps = fs.fps or 8
+        if fps <= 0 then fps = 8 end
+        return #fs.frames / fps
+    end
+
+    method table UltimateHitTimes(string skillId, integer count)
+        -- 궁 피해 시각(시전 뒤 초 · 오름차순) — 기획 `컷신_타격_타이밍.txt`(초:프레임 · 24 fps) 그대로(사용자 결정 2026-10-05 · #166).
+        --   점 시각(points)을 앞에서부터 쓰고, 타수가 점보다 많으면 남는 타를 구간(windows)에 고르게 나눈다(구간마다 같은 수 · 나머지는 앞 구간부터 ·
+        --   구간 안에서는 길이를 타수로 나눈 칸의 가운데). count 가 0 이면 점 시각만. 구간 끝 −1 = 영상 끝(CutsceneVideoSeconds).
+        --   영상이 없거나 이 궁의 표가 없으면 빈 표 → 부르는 쪽이 예전 시각(CSV Duration 등)을 쓴다.
+        --   불굴의 진(SK_W31)은 표에 피해가 없다(8초 버프 · skill-spec.md) → 파일의 전사 시각 4개(1:04 · 1:11 · 4:16 · 5:00)는 쓰지 않는다.
+        local out = {}
+        local video = self:CutsceneVideoSeconds(skillId)
+        if video <= 0 then return out end
+        local points = {}
+        local windows = {}
+        if skillId == "SK_M31" then
+            points = { 6 + 4 / 24 }                                                         -- 마법사 06:04
+        elseif skillId == "SK_A31" then
+            windows = { { 3 + 16 / 24, 4 + 4 / 24 }, { 6 + 11 / 24, -1 } }                  -- 궁수 03:16~04:04 · 06:11~끝
+        elseif skillId == "SK_T31" then
+            points = { 2 + 8 / 24, 2 + 13 / 24, 2 + 19 / 24, 3, 3 + 4 / 24 }                -- 도적 02:08 · 02:13 · 02:19 · 03:00 · 03:04
+            windows = { { 4 + 11 / 24, -1 } }                                               --      04:11~끝
+        elseif skillId == "SK_P31" then
+            points = { 2 + 15 / 24, 6 + 1 / 24 }                                            -- 해적 02:15 · 06:01
+        else
+            return out
+        end
+        if count == nil or count <= 0 then
+            for _, t in ipairs(points) do table.insert(out, t) end
+            return out
+        end
+        for i = 1, math.min(count, #points) do table.insert(out, points[i]) end
+        local rest = count - #points
+        if rest > 0 and #windows > 0 then
+            local base = math.floor(rest / #windows)
+            local extra = rest - base * #windows
+            for w, win in ipairs(windows) do
+                local n = base
+                if w <= extra then n = n + 1 end
+                local a = win[1]
+                local b = win[2]
+                if b < 0 then b = video end
+                if b < a then b = a end
+                for k = 1, n do table.insert(out, a + (k - 0.5) * (b - a) / n) end
+            end
+        end
+        table.sort(out)
+        return out
     end
 
     @ExecSpace("ClientOnly")
@@ -2094,7 +2506,8 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ClientOnly")
     method void HideCutsceneUI(string skillId)
-        -- UI 컷신을 끈다(클립은 그대로 두고 엔티티만 끈다 · 다음 시전이 다시 건다). 페이드가 있었으면 알파를 1 로 되돌려 둔다.
+        -- UI 컷신을 끈다(클립은 그대로 두고 엔티티만 끈다 · 다음 시전이 다시 건다). 페이드가 있었으면 알파를 1 로 되돌려 둔다. 영상 프레임 넘기기도 멈춘다.
+        self:StopCutsceneFrames()
         local e = self.cutsceneUiSprite
         if isvalid(e) then
             e.Enable = false
@@ -2642,6 +3055,36 @@ script SkillExecutors extends Logic
         end
         local function spawnNow()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            -- 다중 대상(projectileTargetCount · 스나이핑 3명): 앞쪽 상자(SpawnProjectile 조준과 같은 Range × AimSearchHeight · 몸 띠) 안 N명에게 한 발씩 —
+            --   projectilePreferBoss 면 보스가 먼저 한 자리(사용자 2026-10-05 "보스 우선 · 나머지는 가까운 순 · 모두 3명") · 그다음 가까운 순.
+            --   발마다 CSV HitCount 타(첫 발 ×hitCount · 표시 hitCount 타) · 화살은 한 발(PendingProjectileSingleArrow) · 대상 고정(PendingProjectileTarget).
+            local wanted = self.projectileTargetCount[skillId]
+            if wanted ~= nil and wanted > 1 then
+                local cp = casterEntity.TransformComponent.WorldPosition
+                local dirX = self:GetFacingX(casterEntity)
+                local range = skillData.range
+                if range <= 0 then range = 1 end
+                local h = skillAttack.AimSearchHeight
+                if h == nil or h <= 0 then h = 2.5 end
+                local targets = skillAttack:FindSkillTargetsNearest(skillId, {
+                    posX = cp.x + dirX * range / 2, posY = cp.y + h / 2,
+                    sizeX = range, sizeY = h, floorY = cp.y,
+                }, math.floor(wanted), self.projectilePreferBoss[skillId] == true)
+                if #targets > 0 then
+                    for _, t in ipairs(targets) do
+                        skillAttack.PendingProjectileTarget = t
+                        skillAttack.PendingProjectileSingleArrow = true
+                        skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
+                            skillData.range, skillData.speed, skillData.hitCount, self:GetLevelSpecRuid(skillId, "impact", level),
+                            spawnY, self:GetLevelSpecRuid(skillId, "ball", level), self:GetExtraSound(skillId, "hit"),
+                            self.projectilePreferBoss[skillId] == true, spawnX, spriteScale, self:GetProjectileExplode(skillId))
+                    end
+                    log("SkillExecutors: PROJECTILE " .. skillId .. " multi-target " .. tostring(#targets) .. "/" .. tostring(wanted) .. " x" .. tostring(skillData.hitCount) .. " hits each")
+                    return
+                end
+                log("SkillExecutors: PROJECTILE " .. skillId .. " multi-target: none in front — one straight shot")
+                skillAttack.PendingProjectileSingleArrow = true
+            end
             -- 레벨별 그림(effectOverrides[skill].levels · 달팽이 세마리 레벨마다 다른 껍질)이 있으면 그 칸, 없으면 예전과 같은 impact · ball.
             skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId,
                 skillData.range, skillData.speed, skillData.hitCount, self:GetLevelSpecRuid(skillId, "impact", level),
@@ -3266,7 +3709,9 @@ script SkillExecutors extends Logic
         else
             self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
         end
-        self:PlayCastSound(skillId, casterEntity)
+        self:PlayUltimateCastSound(skillId, casterEntity)
+        -- 궁 합계 데미지(#40 5988188679): 영상이 있으면 이 시전의 타격 피해를 영상 끝까지 모은다.
+        self:OpenUltimateTally(skillId, casterEntity)
 
         -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 시전 즉시 버프를 Duration(8초) 동안 켠다.
         -- 컷신은 SkillCaster.castLockOverrides 가 만들고, 무적 판정은 SkillBuffs.IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
@@ -3303,6 +3748,11 @@ script SkillExecutors extends Logic
             return
         end
 
+        -- 피해 시각(b/skill-ultimate-cutscenes · 대마법 SK_M31): 영상이 있으면 타이밍 파일의 시각(06:04 = 6.17 s · UltimateHitTimes), 없으면 예전대로 CSV Duration.
+        local hitDelay = skillData.duration
+        local hitTimes = self:UltimateHitTimes(skillId, 1)
+        if #hitTimes > 0 then hitDelay = hitTimes[1] end
+        log("SkillExecutors: ORIGIN " .. skillId .. " hit at +" .. string.format("%.2f", hitDelay) .. "s (CSV Duration " .. tostring(skillData.duration) .. " · video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
         _TimerService:SetTimerOnce(function()
             if chargeSerial ~= 0 then _ParticleService:RemoveParticle(chargeSerial) end
             if not isvalid(casterEntity) then return end
@@ -3328,7 +3778,7 @@ script SkillExecutors extends Logic
 
             self:PlayStageEffect(skillId, "impact", casterEntity, finalPos, BasicParticleType.BigExplosion)
             skillAttack:DealSkillDamage(skillId, level, screen)
-        end, skillData.duration)
+        end, hitDelay)
     end
 
     @ExecSpace("ServerOnly")
@@ -3338,6 +3788,24 @@ script SkillExecutors extends Logic
         -- 연출: 맞은 대상마다 hit/0(SkillAttack.OnAttack) + 직선 위 LineHitEffects 지점에 순차 hit/0(대상이 없어도 화살이 지나간 것을 보인다).
         local delay = skillData.duration
         if delay < 0 then delay = 0 end
+        -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05 · #40 5986277680): 영상의 화살비 구간 두 개(03:16~04:04 · 06:11~끝)에
+        --   StormArrowSplitHits(8)타로 나눠 고르게 — 한 타 = 표 피해(4000% × HitCount) ÷ 8 = 500%. 합계는 그대로. 영상이 없으면 예전 1타(CSV Duration).
+        local splitTimes = self:UltimateHitTimes(skillId, self.StormArrowSplitHits)
+        if #splitTimes > 0 then
+            local baseHits = skillData.hitCount
+            if baseHits <= 0 then baseHits = 1 end
+            local mul = baseHits / #splitTimes
+            local parts = {}
+            for k, t in ipairs(splitTimes) do
+                table.insert(parts, string.format("%.2f", t))
+                local idx = k
+                _TimerService:SetTimerOnce(function()
+                    self:StormArrowSplitHit(skillId, skillData, casterEntity, level, mul, idx, #splitTimes)
+                end, t)
+            end
+            log("SkillExecutors: LINE " .. skillId .. " split " .. tostring(#splitTimes) .. " hits x" .. string.format("%.3f", mul) .. " of the table damage at +[" .. table.concat(parts, ", ") .. "]s (video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
+            return
+        end
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
             local skillAttack = casterEntity:GetComponent("script.SkillAttack")
@@ -3389,6 +3857,46 @@ script SkillExecutors extends Logic
             end
             log("SkillExecutors: LINE " .. skillId .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range) .. " height=" .. tostring(self.LineHeight) .. " lv=" .. tostring(level))
         end, delay)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void StormArrowSplitHit(string skillId, table skillData, Entity casterEntity, number level, number mul, integer k, integer n)
+        -- 폭풍의 화살 나눠 친 한 타(b/skill-ultimate-cutscenes): 그 순간 시전자 앞 직선 상자(Range × LineHeight · 예전 1타와 같은 상자) 안 전부에 표 피해 × mul · 표시 1타.
+        --   SkillAttack 의 패스 순서(EnsureShape → CapTargetsByShape → BeginPass → AttackFast → EndPass)를 그대로 쓴다 — DealSkillDamage 와 같지만 배율을 따로 준다.
+        --   대상마다 hit/0(PendingImpactRuid) · 직선 위 hit/0 은 구간의 첫 타에만(같은 그림이 매 타 겹치지 않게).
+        if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping split line hit for " .. skillId)
+            return
+        end
+        local p = casterEntity.TransformComponent.WorldPosition
+        local dirX = self:GetFacingX(casterEntity)
+        local range = skillData.range
+        if range <= 0 then range = 1 end
+        local hitRuid = self:GetSpecRuid(skillId, "impact")
+        skillAttack.PendingImpactRuid = hitRuid
+        skillAttack:EnsureShape()
+        skillAttack.Shape.Position = Vector2(p.x + dirX * range / 2, p.y + self.LineHeight / 2)
+        skillAttack.Shape.Size = Vector2(range, self.LineHeight)
+        skillAttack.Shape.Angle = 0
+        skillAttack:CapTargetsByShape(skillId, skillAttack.Shape, skillAttack.PendingMaxTargets)
+        skillAttack:BeginPass(skillId, level, mul, 1)
+        skillAttack:AttackFast(skillAttack.Shape, skillId, CollisionGroups.Monster)
+        skillAttack:EndPass()
+        local firstOfWindow = (k == 1) or (k == math.floor(n / 2) + 1)
+        if hitRuid ~= "" and firstOfWindow then
+            local m = self.LineHitEffects
+            for j = 1, m do
+                local ex = p.x + dirX * range * j / (m + 1)
+                local ey = p.y + 0.6
+                _TimerService:SetTimerOnce(function()
+                    if not isvalid(casterEntity) then return end
+                    _EffectService:PlayEffect(hitRuid, casterEntity, Vector3(ex, ey, p.z), 0, Vector3(1, 1, 1), false)
+                end, j * 0.08)
+            end
+        end
+        log("SkillExecutors: LINE " .. skillId .. " split hit " .. tostring(k) .. "/" .. tostring(n) .. " x" .. string.format("%.3f", mul) .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range))
     end
 
     @ExecSpace("ServerOnly")
@@ -3475,11 +3983,38 @@ script SkillExecutors extends Logic
         if delay <= 0 then delay = 0.6 end
         local detonateStart = delay - 0.15 - (n - 1) * self.MesoExplodeInterval
         if detonateStart < 0 then detonateStart = 0 end
+        -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05): 영상이 있으면 동전 k 번째 폭발 = 타이밍 파일 시각(02:08 · 02:13 · 02:19 · 03:00 · 03:04 → 남는 동전은 04:11~끝에 고르게 ·
+        --   UltimateHitTimes). 동전 하나 = 50% 1타는 그대로(타수 = 동전 수 · 합계 = 50% × N). 중심 폭발 그림 · 명중음은 첫 동전 시각에. 영상이 없으면 예전(Duration − 0.15 s 에 마지막 동전).
+        local coinTimes = self:UltimateHitTimes(skillId, n)
+        local useVideoTimes = (n > 0 and #coinTimes == n)
+        if useVideoTimes then delay = coinTimes[1] end
         -- 소환 동전: 시전 순간 그 자리에 나타나(MesoSummonCoinRuid · 반복) 자기 폭발 차례에 사라진다.
         local summonSerials = {}
         for j, sp in ipairs(summonPoints) do
             if self.MesoSummonCoinRuid ~= "" then
                 summonSerials[j] = _EffectService:PlayEffect(self.MesoSummonCoinRuid, casterEntity, Vector3(sp.x, sp.y + 0.2, sp.z), 0, Vector3(1, 1, 1), true)
+            end
+        end
+        -- 동전 소리(#40 5988188093): 시전 한 번의 상태 — 튼 개수 · 마지막 소리 시각(서버 시계). 터지는 순간 coinSound 를 부른다.
+        local hitSound = self:GetExtraSound(skillId, "hit")
+        local soundState = { played = 0, lastAt = -1 }
+        local function coinSound(sx, sy, sz, k)
+            if hitSound == "" or soundState.played >= self.MesoCoinSoundMax then return end
+            soundState.played = soundState.played + 1
+            local now = _UtilLogic.ServerElapsedSeconds
+            local at = now
+            if soundState.lastAt >= 0 and at < soundState.lastAt + self.MesoCoinSoundGap then at = soundState.lastAt + self.MesoCoinSoundGap end
+            soundState.lastAt = at
+            local nth = soundState.played
+            local play = function()
+                if not isvalid(casterEntity) then return end
+                self:PlaySoundRuid(hitSound, casterEntity, Vector3(sx, sy, sz))
+                log(string.format("SkillExecutors: MESO %s coin %d sound %d/%d (+%.2fs late)", skillId, k, nth, self.MesoCoinSoundMax, at - now))
+            end
+            if at - now > 0.001 then
+                _TimerService:SetTimerOnce(play, at - now)
+            else
+                play()
             end
         end
         local order = 0
@@ -3506,7 +4041,8 @@ script SkillExecutors extends Logic
                 end
                 if isvalid(coin) then coin:Destroy() end
                 self:MesoCoinBlast(skillId, casterEntity, level, ex, ey + 0.3, k, n)
-            end, detonateStart + (order - 1) * self.MesoExplodeInterval)
+                coinSound(ex, ey + 0.3, ez, k)
+            end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
         for j, sp in ipairs(summonPoints) do
             order = order + 1
@@ -3520,7 +4056,8 @@ script SkillExecutors extends Logic
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(sp.x, sp.y + 0.3, sp.z), 0, Vector3(1, 1, 1), false)
                 end
                 self:MesoCoinBlast(skillId, casterEntity, level, sp.x, sp.y + 0.3, k, n)
-            end, detonateStart + (order - 1) * self.MesoExplodeInterval)
+                coinSound(sp.x, sp.y + 0.3, sp.z, k)
+            end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
         log("SkillExecutors: MESO " .. skillId .. " source floor=" .. tostring(#coins) .. " summoned=" .. tostring(#summonPoints)
             .. " (useFloor=" .. tostring(self.MesoUseFloorCoins) .. " pickpocketOnly=" .. tostring(self.MesoPickpocketCoinsOnly)
@@ -3529,16 +4066,22 @@ script SkillExecutors extends Logic
             if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
             local p = casterEntity.TransformComponent.WorldPosition
             self:PlayStageEffect(skillId, "impact", casterEntity, Vector3(p.x, p.y + 0.5, p.z), nil)
-            -- 명중 사운드(extraSounds[skill].hit · 메소 익스플로젼 4210014/Hit): 중심 폭발과 함께 시전 한 번에 한 번.
-            --   동전마다 틀면 N 겹 · 첫 동전 폭발(+1.15s 안팎)은 시전 사운드(2.0s)에 묻혀 안 들렸다(사용자 Play A/B 2026-10-03 → 중심 폭발 시점 선택).
-            local hitSound = self:GetExtraSound(skillId, "hit")
-            if hitSound ~= "" and n > 0 then
-                self:PlaySoundRuid(hitSound, casterEntity, Vector3(p.x, p.y + 0.5, p.z))
-                log("SkillExecutors: MESO " .. skillId .. " hit sound once (" .. hitSound .. ") with the center blast at +" .. tostring(delay) .. "s · " .. tostring(n) .. " coins")
-            end
+            -- 명중 사운드는 동전마다(coinSound · 최대 MesoCoinSoundMax · #40 5988188093). 예전 = 여기서 한 번(사용자 Play A/B 2026-10-03).
         end, delay)
-        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval)
+        local timesText = ""
+        if useVideoTimes then
+            local parts = {}
+            for _, t in ipairs(coinTimes) do table.insert(parts, string.format("%.2f", t)) end
+            timesText = " · video times +[" .. table.concat(parts, ", ") .. "]s"
+        end
+        log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval) .. timesText
             .. "s · each blast r=" .. tostring(self.MesoCoinBlastRadius) .. " x " .. tostring(_SkillDatabase:RatioAt(skillId, level)) .. "% · center fx at +" .. tostring(delay) .. "s (" .. uid .. ")")
+    end
+
+    method number MesoCoinTime(boolean useVideoTimes, table coinTimes, number detonateStart, integer order)
+        -- 메소 익스플로전 동전 order 번째의 폭발 시각(시전 뒤 초): 영상 타이밍이 있으면 그 표(UltimateHitTimes) · 없으면 예전 간격(detonateStart + (order − 1) × MesoExplodeInterval).
+        if useVideoTimes and coinTimes[order] ~= nil then return coinTimes[order] end
+        return detonateStart + (order - 1) * self.MesoExplodeInterval
     end
 
     @ExecSpace("ServerOnly")
@@ -3569,6 +4112,13 @@ script SkillExecutors extends Logic
         local waves = self.BarrageWaves
         if waves < 1 then waves = 1 end
         if waves > hitCount then waves = hitCount end
+        -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05): 영상이 있으면 파 = 타이밍 파일의 점 시각(02:15 · 06:01 → 2파 · UltimateHitTimes) ·
+        --   HitCount(30)를 그 파 수로 나눈다(15 + 15 · 합계 30 × 150% 그대로). 영상이 없으면 예전(BarrageWaves 파 · Duration 부터 BarrageInterval 간격).
+        local waveTimes = self:UltimateHitTimes(skillId, 0)
+        if #waveTimes > 0 then
+            waves = #waveTimes
+            if waves > hitCount then waves = hitCount end
+        end
         local perWave = math.floor(hitCount / waves)
         local remainder = hitCount - perWave * waves
         local lead = skillData.duration
@@ -3605,10 +4155,22 @@ script SkillExecutors extends Logic
                     skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "targetHit")
                     skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, hits, hits)
                     log("SkillExecutors: BARRAGE " .. skillId .. " wave " .. tostring(w) .. "/" .. tostring(waves) .. " hits=" .. tostring(hits) .. " r=" .. tostring(radius))
-                end, lead + (w - 1) * self.BarrageInterval)
+                end, self:BarrageWaveTime(waveTimes, lead, w))
             end
         end
-        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits from +" .. tostring(lead) .. "s every " .. tostring(self.BarrageInterval) .. "s")
+        local whenText = "from +" .. tostring(lead) .. "s every " .. tostring(self.BarrageInterval) .. "s"
+        if #waveTimes > 0 then
+            local parts = {}
+            for w = 1, waves do table.insert(parts, string.format("%.2f", waveTimes[w])) end
+            whenText = "at video times +[" .. table.concat(parts, ", ") .. "]s"
+        end
+        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits " .. whenText)
+    end
+
+    method number BarrageWaveTime(table waveTimes, number lead, integer w)
+        -- 함포 사격 w 번째 파의 시각(시전 뒤 초): 영상 타이밍이 있으면 그 점 시각 · 없으면 예전(lead + (w − 1) × BarrageInterval).
+        if waveTimes ~= nil and waveTimes[w] ~= nil then return waveTimes[w] end
+        return lead + (w - 1) * self.BarrageInterval
     end
 
     @ExecSpace("ServerOnly")
@@ -3844,18 +4406,19 @@ script SkillExecutors extends Logic
         end
         local hitRuid = self:GetSpecRuid(skillId, "impact")
         local hitRuid2 = self:GetSpecRuid(skillId, "impact2")
-        ---@type Entity
-        local target = nil
-        if isvalid(skillAttack) then target = skillAttack:FindSkillTarget(skillId, box, false) end
+        -- 대상(2026-10-05 b/skill-balance-x3 · A 요청): 앞쪽 상자(box · 그대로) 안 **전부**를 시전 순간 고정한다(예전 = 최근접 하나 · FindSkillTarget).
+        --   피해 · 크리는 시전 순간 한 번 정해 모든 대상에 같게 · 접촉 순간 대상마다 한 번 · 타격 그림은 대상마다 · 명중음은 시전당 한 번.
+        local targets = {}
+        if isvalid(skillAttack) then targets = skillAttack:SnapshotTargets(skillId, box, 0) end
         local amount = 0
         if uid ~= "" then amount = math.floor(_SkillDatabase:DamageAt(skillId, level, uid)) end
         local crit = 0
         if uid ~= "" and _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(uid) then crit = 1 end
-        local targetName = "none"
-        if isvalid(target) then targetName = tostring(target.Name) end
-        log("SkillExecutors: POWER STRIKE locked target=" .. targetName .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " lv=" .. tostring(level) .. " motion=" .. motionName .. " hit@" .. tostring(hitAt))
+        local names = {}
+        for _, t in ipairs(targets) do if isvalid(t) then table.insert(names, tostring(t.Name)) end end
+        log("SkillExecutors: POWER STRIKE locked targets=" .. tostring(#names) .. " [" .. table.concat(names, ",") .. "] amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " lv=" .. tostring(level) .. " motion=" .. motionName .. " hit@" .. tostring(hitAt))
         self:ScheduleSwingTrail(skillId, casterEntity, motionName, hitAt)
-        if not isvalid(target) then
+        if #names == 0 then
             log("SkillExecutors: POWER STRIKE no target in front — swing only (cast consumed)")
             return
         end
@@ -3864,32 +4427,35 @@ script SkillExecutors extends Logic
                 log("SkillExecutors: POWER STRIKE caster gone before contact — no hit")
                 return
             end
-            if not isvalid(target) or not isvalid(target.TransformComponent) then
-                log("SkillExecutors: POWER STRIKE locked target " .. targetName .. " gone before contact — no hit")
-                return
-            end
-            local tp = target.TransformComponent.WorldPosition
-            local hit = skillAttack:DealSkillDamageToTargetAmount(skillId, level, target, amount, 1, crit)
+            local hits = 0
             local layers = 0
-            if hit then
-                -- hit/0 · hit/1 을 같은 자리에 겹쳐 한 번(시전당 1회 · 각 클립의 pivot 이 그림 자리를 잡는다).
-                local fxPos = Vector3(tp.x, tp.y + 0.5, tp.z)
-                if hitRuid ~= "" then
-                    _EffectService:PlayEffect(hitRuid, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
-                    layers = layers + 1
-                end
-                if hitRuid2 ~= "" then
-                    _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
-                    layers = layers + 1
-                end
-                -- 명중 사운드(extraSounds.SK_W11.hit · 비어 있으면 몬스터 기본 소리만): 명중 한 번에 한 번(1 대상 · 1타).
-                local hitSound = self:GetExtraSound(skillId, "hit")
-                if hitSound ~= "" then
-                    self:PlaySoundRuid(hitSound, casterEntity, fxPos)
-                    log("SkillExecutors: POWER STRIKE hit sound once (" .. hitSound .. ")")
+            local soundPos = nil
+            for _, target in ipairs(targets) do
+                if isvalid(target) and isvalid(target.TransformComponent) then
+                    local tp = target.TransformComponent.WorldPosition
+                    if skillAttack:DealSkillDamageToTargetAmount(skillId, level, target, amount, 1, crit) then
+                        hits = hits + 1
+                        -- hit/0 · hit/1 을 같은 자리에 겹쳐 대상마다 한 번(각 클립의 pivot 이 그림 자리를 잡는다).
+                        local fxPos = Vector3(tp.x, tp.y + 0.5, tp.z)
+                        if soundPos == nil then soundPos = fxPos end
+                        if hitRuid ~= "" then
+                            _EffectService:PlayEffect(hitRuid, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
+                            layers = layers + 1
+                        end
+                        if hitRuid2 ~= "" then
+                            _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
+                            layers = layers + 1
+                        end
+                    end
                 end
             end
-            log("SkillExecutors: POWER STRIKE contact target=" .. targetName .. " hit=" .. tostring(hit) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
+            -- 명중 사운드(extraSounds.SK_W11.hit · 비어 있으면 몬스터 기본 소리만): 시전당 한 번(맞은 대상이 있을 때 · 레이징 블로우와 같은 규칙).
+            local hitSound = self:GetExtraSound(skillId, "hit")
+            if hits > 0 and hitSound ~= "" then
+                self:PlaySoundRuid(hitSound, casterEntity, soundPos)
+                log("SkillExecutors: POWER STRIKE hit sound once (" .. hitSound .. ")")
+            end
+            log("SkillExecutors: POWER STRIKE contact targets=" .. tostring(hits) .. "/" .. tostring(#names) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
         end, hitAt)
     end
 
