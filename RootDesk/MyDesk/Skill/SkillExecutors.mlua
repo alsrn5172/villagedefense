@@ -112,6 +112,9 @@ script SkillExecutors extends Logic
     -- TAUNT: Duration(CSV) 이 0 일 때 쓰는 고정 추격 시간(초).
     property number TauntDefaultSeconds = 5
 
+    -- TAUNT: 끌어온 자리(시전자 발 높이 ± 간격)에서 위 · 아래로 발판을 찾는 거리(world unit · TauntLandingPoint). 2026-10-06 A 요청 "끌려온 몹이 떨어진다".
+    property number TauntFloorSearch = 3
+
     -- [서버] 도발로 SetTarget 한 몬스터의 원래 IsChaseNearPlayer 값 복구용: entity -> { value, stamp }
     property table tauntRestore = {}
 
@@ -4665,14 +4668,19 @@ script SkillExecutors extends Logic
                     taunted = taunted + 1
                 end
                 local isBoss = isvalid(mob:GetComponent("script.BossSkillRunner"))
+                -- 미니언(script.MinionUnit · 레인 유닛 · 파병 포함 · FactionAttack / TurretAI 와 같은 판정)은 끌지 않는다(A 요청 2026-10-06).
+                local isMinion = isvalid(mob.MinionUnit)
                 local body = mob.RigidbodyComponent
-                if self.TauntPull and not isBoss and isvalid(body) then
+                if self.TauntPull and not isBoss and not isMinion and isvalid(body) then
                     slot = slot + 1
                     local side = 1
                     if slot % 2 == 0 then side = -1 end
                     local offset = side * self.TauntPullSpacing * math.ceil(slot / 2)
-                    body:SetWorldPosition(Vector2(pos.x + offset, pos.y))
+                    -- 끌어온 자리 = 그 x 에서 시전자 발 높이에 가장 가까운 발판(위 · 아래). 예전엔 발판이 없는 허공(절벽 밖 · 틈)에 놓여 떨어졌다(A 요청 2026-10-06).
+                    body:SetWorldPosition(self:TauntLandingPoint(mob.CurrentMap, pos.x + offset, pos.y, pos.x))
                     pulled = pulled + 1
+                elseif isMinion then
+                    log("SkillExecutors: TAUNT skip pull " .. tostring(mob.Name) .. " (minion)")
                 end
                 -- 원작 노블 디맨드의 "mob" 클립을 끌려온/도발된 몬스터마다 붙인다(있을 때만).
                 self:PlayMobEffect(skillId, mob)
@@ -4686,6 +4694,71 @@ script SkillExecutors extends Logic
         end
         log("SkillExecutors: TAUNT " .. skillId .. " radius=" .. tostring(radius) .. " candidates=" .. tostring(#found)
             .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " for " .. tostring(seconds) .. "s")
+    end
+
+    @ExecSpace("ServerOnly")
+    method Vector2 TauntLandingPoint(Entity map, number x, number y, number casterX)
+        -- 도발로 끌어온 몬스터를 놓을 자리(A 요청 2026-10-06 "끌려온 몹이 떨어진다"): (x, y) = 시전자 발 높이 ± 간격.
+        --   ① x 에서 위 · 아래 TauntFloorSearch 안의 가로 발판 중 높이가 y 에 가장 가까운 것 → (x, 그 발판 높이).
+        --   ② x 에 발판이 없으면(절벽 밖 · 틈) (x, y) 에서 가장 가까운 가로 발판의 안쪽 끝 쪽으로 x 를 당겨 그 위에.
+        --   ③ 그것도 없으면 시전자 자리(casterX, y) — 시전자는 발판 위에 서 있다.
+        -- 발판 = 맵의 FootholdComponent(GroundDrop.FootholdsOf · BossSkillRunner.FindFootholdComponent 와 같은 탐색). 세로 발판(벽)은 뺀다.
+        local fc = nil
+        if isvalid(map) then
+            fc = map.FootholdComponent
+            if not isvalid(fc) then
+                local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+                if found ~= nil then
+                    for _, c in ipairs(found) do
+                        if isvalid(c) then
+                            fc = c
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        if not isvalid(fc) then
+            log("SkillExecutors: TAUNT land (" .. string.format("%.2f,%.2f", x, y) .. ") — no FootholdComponent, kept")
+            return Vector2(x, y)
+        end
+        local search = self.TauntFloorSearch
+        if search <= 0 then search = 3 end
+        local best = nil
+        local bestDist = math.huge
+        local hits = fc:RaycastAll(Vector2(x, y + search), Vector2(0, -1), search * 2)
+        if hits ~= nil then
+            for _, fh in ipairs(hits) do
+                if fh ~= nil and not fh:IsVertical() then
+                    local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
+                    local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
+                    if x >= lo and x <= hi then
+                        local fy = fh:GetYByX(x)
+                        local d = math.abs(fy - y)
+                        if d < bestDist then
+                            bestDist = d
+                            best = fy
+                        end
+                    end
+                end
+            end
+        end
+        if best ~= nil then
+            log("SkillExecutors: TAUNT land (" .. string.format("%.2f,%.2f", x, y) .. ") -> floor y=" .. string.format("%.2f", best) .. " (dy " .. string.format("%+.2f", best - y) .. ")")
+            return Vector2(x, best)
+        end
+        local near = fc:GetNearestFootholdByPoint(Vector2(x, y), search)
+        if near ~= nil and not near:IsVertical() then
+            local lo = math.min(near.StartPoint.x, near.EndPoint.x)
+            local hi = math.max(near.StartPoint.x, near.EndPoint.x)
+            local margin = math.min(0.05, (hi - lo) / 2)
+            local cx = math.max(lo + margin, math.min(hi - margin, x))
+            local fy = near:GetYByX(cx)
+            log("SkillExecutors: TAUNT land (" .. string.format("%.2f,%.2f", x, y) .. ") no floor at x -> nearest foothold (" .. string.format("%.2f,%.2f", cx, fy) .. ")")
+            return Vector2(cx, fy)
+        end
+        log("SkillExecutors: TAUNT land (" .. string.format("%.2f,%.2f", x, y) .. ") no floor within " .. tostring(search) .. " -> caster spot x=" .. string.format("%.2f", casterX))
+        return Vector2(casterX, y)
     end
 
     @ExecSpace("ServerOnly")
