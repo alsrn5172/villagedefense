@@ -15,9 +15,9 @@
 
 | 곳 | 내용 |
 |---|---|
-| `ExecuteTaunt` | 미니언(`mob.MinionUnit` 이 있음 · `FactionAttack:119` · `TurretAI:163` · `LaneStateService:938` 과 같은 판정 · 파병 유닛 포함)은 끌지 않는다 · 로그 `TAUNT skip pull <name> (minion)`. 끌어온 자리는 `TauntLandingPoint` |
+| `ExecuteTaunt` | 미니언(`mob.MinionUnit` 이 있음 · `FactionAttack:119` · `TurretAI:163` · `LaneStateService:938` 과 같은 판정 · 파병 유닛 포함)은 도발이 **아무것도 안 한다** — 안 끌고 연출 클립도 안 붙인다(사용자 결정 2026-10-06) · 로그 `TAUNT skip <name> (minion)`. 끌어온 자리는 `TauntLandingPoint` |
 | `TauntLandingPoint(map, x, y, casterX)` 새 | ① x 에서 위 · 아래 `TauntFloorSearch`(3) 안의 가로 발판 중 높이가 y 에 가장 가까운 것 ② 없으면(절벽 밖 · 틈) 가장 가까운 가로 발판의 안쪽으로 x 를 당겨 그 위 ③ 그것도 없으면 시전자 자리. 세로 발판(벽) 제외. 로그 `TAUNT land (x,y) -> floor y=… (dy …)` |
 | `TauntFloorSearch` 새 속성 | 3 (world unit) |
 
-- 미니언은 `StateChaseMonster` 가 없어 예전에도 대상 전환(추격 고정)은 걸리지 않았다 — 끌기만 빠진다. 도발 연출 클립(`PlayMobEffect`)은 미니언에도 예전처럼 붙는다.
+- 미니언은 `StateChaseMonster` 가 없어 예전에도 대상 전환(추격 고정)은 걸리지 않았다. 이제 끌기와 도발 연출 클립(`PlayMobEffect`)도 빠진다.
 - **Play 안 함** — 숫자 N13 · 모습 R34.
