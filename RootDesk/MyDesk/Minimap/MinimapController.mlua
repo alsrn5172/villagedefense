@@ -81,6 +81,11 @@ script MinimapController extends Logic
 	@HideFromInspector
 	property string NodeTableName = "WorldMapNodes"
 
+	-- 기능 NPC 표(FunctionalNpcCatalog)에서 Hidden=true 인 NPC(예: 차원 관문)는 미니맵에 그리지 않는다(사용자 2026-10-06).
+	-- 그런 NPC 는 엔티티가 켜진 채 모양만 투명하다(Npc/NpcSpawner.mlua:96) → 표를 직접 읽어 거른다.
+	@HideFromInspector
+	property string NpcCatalogTableName = "FunctionalNpcCatalog"
+
 	-- 머리줄 마을 문장 RUID — CommonNpcUIController.EmblemRuids(디자이너 emblem_* 그림)와 같은 값을 복사해 둔다(A 파일은 읽지도 고치지도 않는다).
 	-- 문장이 없는 지역(리스항구 · 여섯갈래길 · 슬리피우드 …)은 둥근 금화 배지에 지역 첫 글자를 쓴다.
 	@HideFromInspector
@@ -235,6 +240,26 @@ script MinimapController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method boolean IsHiddenNpc(string catalogNpcId)
+		-- FunctionalNpcCatalog 의 Hidden 열이 true 인 NPC 인가. 표는 처음 한 번만 읽어 둔다.
+		if self._T.hiddenNpcs == nil then
+			local hidden = {}
+			local tbl = _DataService:GetTable(self.NpcCatalogTableName)
+			if tbl ~= nil then
+				for i = 1, tbl:GetRowCount() do
+					local id = tbl:GetCell(i, "CatalogNpcId") or ""
+					local h = string.lower(tostring(tbl:GetCell(i, "Hidden") or ""))
+					if id ~= "" and (h == "true" or h == "1" or h == "yes") then hidden[id] = true end
+				end
+			else
+				log_warning("[Minimap] dataset not found: " .. self.NpcCatalogTableName)
+			end
+			self._T.hiddenNpcs = hidden
+		end
+		return self._T.hiddenNpcs[catalogNpcId] == true
+	end
+
+	@ExecSpace("ClientOnly")
 	method string MapLabel(string mapName)
 		-- 맵 한글 이름. 표에 없으면 맵 엔티티 이름.
 		self:LoadNodeTable()
@@ -261,11 +286,8 @@ script MinimapController extends Logic
 	@ExecSpace("ClientOnly")
 	method string EmblemRuidOf(string region)
 		-- EmblemRuids "Region=ruid;…" 에서 그 지역 문장. 없으면 "".
-		for pair in string.gmatch(self.EmblemRuids or "", "([^;]+)") do
-			local eq = (string.find(pair, "=", 1, true))
-			if eq ~= nil and string.sub(pair, 1, eq - 1) == region then
-				return string.sub(pair, eq + 1)
-			end
+		for k, v in string.gmatch(self.EmblemRuids or "", "([^;=]+)=([^;]+)") do
+			if k == region then return v end
 		end
 		return ""
 	end
@@ -618,7 +640,7 @@ script MinimapController extends Logic
 			---@type VillageNpcInteractor
 			local npc = c
 			local e = npc.Entity
-			if isvalid(e) and e.EnabledInHierarchy and e.TransformComponent ~= nil then
+			if isvalid(e) and e.EnabledInHierarchy and e.TransformComponent ~= nil and not self:IsHiddenNpc(npc.CatalogNpcId or "") then
 				local wp = e.TransformComponent.WorldPosition
 				local route = npc.ActionRoute or ""
 				if string.sub(route, 1, 5) == "shop_" then

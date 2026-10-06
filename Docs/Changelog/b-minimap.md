@@ -45,4 +45,5 @@
   - 문장 = 헤네시스 · 커닝시티 · 엘리니아 · 노틸러스 · 페리온은 디자이너 문장 그림(`CommonNpcUIController.EmblemRuids` 값 복사). 나머지(리스항구 · 여섯갈래길 · 슬리피우드)는 둥근 금화 배지 + 지역 첫 글자.
 - 표식을 크고 둥글게 · 어두운 1px 외곽선 + 하이라이트: 나 노랑 원 13px · 다른 플레이어 빨강 원 10px · 포탈 = 원작처럼 파랑 동심원(고리 · 틈 · 밝은 심) · 포탑 초록 둥근 네모 · 상인 주황 역삼각형 · NPC 흰 타원. 전부 공용 스킨 막대를 줄 단위로 쌓은 픽셀 도형이라 원형 스프라이트 그림은 쓰지 않는다(규칙 §7.4 "원형 스프라이트 금지"와 충돌 없음).
 - 지형: 발판 3px 밝은 회청 · 줄/사다리 2px 밧줄색. 사다리 조각 사이 틈 0.35 이하는 한 줄로.
+- 숨김 NPC 제외(사용자 2026-10-06): `FunctionalNpcCatalog` 의 `Hidden=true`(현재 차원 관문 `VD_COMMON_DIMENSION_GATE` 하나)는 미니맵에 그리지 않는다. 이런 NPC 는 클릭을 살리려고 엔티티가 켜진 채 모양만 투명해서(`Npc/NpcSpawner.mlua:96`) 클라에서 표(`serveronly: false`)를 직접 읽어 `CatalogNpcId` 로 거른다.
 - 오프라인 미리보기(실제 UI 파일 좌표 + 맵 발판 데이터로 그린 그림 · 런타임 아님): `villagedefense-harness/minimap-check/preview/v2-*.png`.
