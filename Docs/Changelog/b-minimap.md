@@ -38,3 +38,11 @@
 - (4) 로비 숨김: `hidden (lobby) map=Orbis_Lobby_VictoriaStation` · 배 `Orbis_Lobby_VictoriaShip` 도 숨김 → 실제 로비 흐름(`RequestCreateMatch(1)` → `RequestStartMatch()` → 인스턴스 룸 `match_m1_1`) 으로 리스항구 입장 시 나타남. 매치 안 맵 이동(북쪽 언덕)도 다시 그림.
 - 런타임 경고 32건은 전부 `SkillWindowLogic.SetSortOrder`(기존) · Minimap 0 · 오류 0.
 - 미확인: 실제 2인 빨강 점 · 실제 포탑 · 채팅 입력 중 N 무시 · `MinimapEnabled = false` · 모바일 화면.
+
+### 디자인 v2 — 원작 미니맵 느낌 · 둥글게 · 보기 쉽게 (사용자 2026-10-06 · Play 미확인)
+- 패널 340×230(접으면 72): 밝은 둥근 테두리 + 남색 바탕 + 머리줄 띠. 머리줄 = 노란 `MINI MAP` · 왼쪽 둥근 문장 · "지역 · 종류"(작은 글씨 · 예 `헤네시스 · 사냥터`) · 맵 이름(굵게) · 오른쪽 `N` 칩.
+  - 지역 · 종류 = `WorldMapNodes` 의 `Region` · `Type` 을 읽어 `WorldMapController.RegionLabel` · `KindLabel` 과 같은 문구로(표 복사 · A 파일 수정 없음). 표에 없는 맵은 이름 앞 토막(예 `Orbis` → 오르비스).
+  - 문장 = 헤네시스 · 커닝시티 · 엘리니아 · 노틸러스 · 페리온은 디자이너 문장 그림(`CommonNpcUIController.EmblemRuids` 값 복사). 나머지(리스항구 · 여섯갈래길 · 슬리피우드)는 둥근 금화 배지 + 지역 첫 글자.
+- 표식을 크고 둥글게 · 어두운 1px 외곽선 + 하이라이트: 나 노랑 원 13px · 다른 플레이어 빨강 원 10px · 포탈 = 원작처럼 파랑 동심원(고리 · 틈 · 밝은 심) · 포탑 초록 둥근 네모 · 상인 주황 역삼각형 · NPC 흰 타원. 전부 공용 스킨 막대를 줄 단위로 쌓은 픽셀 도형이라 원형 스프라이트 그림은 쓰지 않는다(규칙 §7.4 "원형 스프라이트 금지"와 충돌 없음).
+- 지형: 발판 3px 밝은 회청 · 줄/사다리 2px 밧줄색. 사다리 조각 사이 틈 0.35 이하는 한 줄로.
+- 오프라인 미리보기(실제 UI 파일 좌표 + 맵 발판 데이터로 그린 그림 · 런타임 아님): `villagedefense-harness/minimap-check/preview/v2-*.png`.
