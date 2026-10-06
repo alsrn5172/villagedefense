@@ -501,7 +501,7 @@ script LaneStateService extends Logic
 		-- front = 마지막으로 수비대에 알린 최전방 시설 (Changed 에서 바뀌면 DefenderService.Regroup).
 		v = { id = villageId, towers = {}, defenders = {}, cap = 10, train = { MELEE = 1, RANGED = 1, TANK = 1 }, storage = {}, mon = {}, front = "TOWER" }
 		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
-			v.towers[stage] = { lv = 1, hp = self:MaxHp(stage, 1), alive = true }
+			v.towers[stage] = { lv = 1, hp = self:MaxHpOf(villageId, stage, 1), alive = true }
 		end
 		self.states[villageId] = v
 		return v
@@ -528,7 +528,7 @@ script LaneStateService extends Logic
 		local v = self:EnsureVillage(villageId)
 		if v == nil or v.towers[stage] == nil then return nil end
 		local t = v.towers[stage]
-		return { lv = t.lv, hp = t.hp, max = self:MaxHp(stage, t.lv), alive = t.alive }
+		return { lv = t.lv, hp = t.hp, max = self:MaxHpOf(villageId, stage, t.lv), alive = t.alive }
 	end
 
 	@ExecSpace("ServerOnly")
@@ -541,7 +541,7 @@ script LaneStateService extends Logic
 		if v == nil or d == nil or v.towers[stage] == nil then return 0 end
 		local t = v.towers[stage]
 		t.lv = math.max(1, math.min(lv, #d.maxHp))
-		t.hp = self:MaxHp(stage, t.lv)
+		t.hp = self:MaxHpOf(villageId, stage, t.lv)
 		t.alive = true
 		self:Changed(villageId, stage)
 		return t.lv
@@ -555,7 +555,7 @@ script LaneStateService extends Logic
 		if v == nil or v.towers[stage] == nil then return false end
 		local t = v.towers[stage]
 		if not t.alive then return false end
-		local max = self:MaxHp(stage, t.lv)
+		local max = self:MaxHpOf(villageId, stage, t.lv)
 		t.hp = math.max(1, math.min(max, math.floor(max * pct / 100)))
 		self:Changed(villageId, stage)
 		return true
@@ -612,7 +612,7 @@ script LaneStateService extends Logic
 		-- ② 재건(비용 없이 · 억제기가 살아 있으니 규칙상 허용) → 재파괴
 		local tw = v.towers["TOWER"]
 		tw.alive = true
-		tw.hp = self:MaxHp("TOWER", tw.lv)
+		tw.hp = self:MaxHpOf(villageId, "TOWER", tw.lv)
 		self:Changed(villageId, "TOWER")
 		table.insert(r, self:ApplyDamage(villageId, "TOWER", big, "DO_T4"))
 		-- ③ 억제기: 두 번 (폭발 1회)
@@ -653,6 +653,18 @@ script LaneStateService extends Logic
 		local d = self.towerDef[stage]
 		if d == nil then return 1 end
 		return d.maxHp[math.min(lv, #d.maxHp)] or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer MaxHpOf(string villageId, string stage, integer lv)
+		-- 마을을 반영한 최대 HP = TowerConfig 표값(MaxHp) × 그 마을 · 시설의 MAX_HP_MUL 특성(VillageFacilityTrait · 행이 없으면 1배).
+		-- 예: 페리온 억제기 0.5(사용자 2026-10-06). 소수는 내림 · 최소 1. 시설 HP 를 읽는 곳은 전부 이 함수를 쓴다(표가 마을 구분이 없어서).
+		local base = self:MaxHp(stage, lv)
+		local mul = self:TraitValue(villageId, stage, "MAX_HP_MUL", lv)
+		if mul > 0 and mul ~= 1 then
+			return math.max(1, math.floor(base * mul))
+		end
+		return base
 	end
 
 	@ExecSpace("ServerOnly")
@@ -982,7 +994,7 @@ script LaneStateService extends Logic
 		if v == nil then return 0 end
 		local t = v.towers[stage]
 		if t == nil or not t.alive or amount <= 0 then return 0 end
-		local max = self:MaxHp(stage, t.lv)
+		local max = self:MaxHpOf(villageId, stage, t.lv)
 		if t.hp >= max then
 			t.regenCarry = 0
 			return 0
@@ -1028,7 +1040,7 @@ script LaneStateService extends Logic
 		local last = v.alertAt[stage]
 		if last ~= nil and now - last < self.HitAlertInterval then return end
 		v.alertAt[stage] = now
-		local pct = math.floor(100 * t.hp / math.max(1, self:MaxHp(stage, t.lv)))
+		local pct = math.floor(100 * t.hp / math.max(1, self:MaxHpOf(v.id, stage, t.lv)))
 		log("[Lane] " .. v.id .. " " .. stage .. " hit alert " .. tostring(pct) .. "%")
 		self:FacilityAlert(v.id, self.towerDef[stage].name .. " 피격! (" .. tostring(pct) .. "%)")
 	end
@@ -1132,7 +1144,7 @@ script LaneStateService extends Logic
 			for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
 				local t = v.towers[stage]
 				local d = self.towerDef[stage]
-				local max = self:MaxHp(stage, t.lv)
+				local max = self:MaxHpOf(v.id, stage, t.lv)
 				local upCost = d.upgrade[t.lv] or 0
 				local repCost = math.ceil((max - t.hp) * d.repairPerHp)
 				local rebCost = d.rebuild
@@ -1152,7 +1164,7 @@ script LaneStateService extends Logic
 			local front = self:FrontStage(v)
 			local t = v.towers[front]
 			-- 7·8번 = 마을별 아이콘 RUID + 상하반전 (2026-09-08 추가 · append-only).
-			add({ "FRONT", front, self.towerDef[front].name, tostring(t.hp), tostring(self:MaxHp(front, t.lv)), b2s(t.alive),
+			add({ "FRONT", front, self.towerDef[front].name, tostring(t.hp), tostring(self:MaxHpOf(v.id, front, t.lv)), b2s(t.alive),
 				self:FacilityIconRuid(v.id, front), b2s(self:FacilityFlipY(v.id, front)) })
 			local slots = {}
 			for _, d in ipairs(v.defenders) do table.insert(slots, d.key .. ":" .. tostring(d.qty)) end
@@ -1325,7 +1337,7 @@ script LaneStateService extends Logic
 		local t = v.towers[stage]
 		local d = self.towerDef[stage]
 		if t == nil or d == nil then return end
-		local max = self:MaxHp(stage, t.lv)
+		local max = self:MaxHpOf(v.id, stage, t.lv)
 		local cost = 0
 		local msg = ""
 		if action == "upgrade" then
@@ -1347,7 +1359,7 @@ script LaneStateService extends Logic
 		end
 		if action == "upgrade" then
 			t.lv = t.lv + 1
-			t.hp = self:MaxHp(stage, t.lv)
+			t.hp = self:MaxHpOf(v.id, stage, t.lv)
 			msg = d.name .. " Lv" .. tostring(t.lv) .. " 강화"
 		elseif action == "repair" then
 			t.hp = max
