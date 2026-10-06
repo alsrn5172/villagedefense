@@ -43,6 +43,8 @@ script SkillProjectile extends AttackComponent
 
     @HideFromInspector
     property number lived = 0
+    -- 최소 비행 시간(A #40 5988188261 · SkillAttack.FlightFor 가 넣는다): 이 시간(초)이 지나기 전엔 맞히지 않는다 — 붙어 선 대상에도 화살이 보이게. 0 = 끔.
+    property number MinFlightTime = 0
 
     -- Damage/hit config - set by SkillAttack.SpawnProjectile right after spawn, before
     -- SetDirection fires. Damage still comes from _SkillDatabase:DamageAt(skillId, level,
@@ -70,6 +72,10 @@ script SkillProjectile extends AttackComponent
 
     -- true = 피해 없음(연출만). 볼리의 2발째부터. 수명·이동·유도는 그대로.
     property boolean VisualOnly = false
+
+    -- true = 원거리 기본 공격(b/playerattack-ranged-basic · SkillAttack.FireBasicProjectile). 피해 · 크리는 스킬 표가 아니라 시전자의 PlayerAttack
+    -- (CalcPlayerDamage · MISS · 쉐도우 파트너 · 매직 가드 · 픽파켓 · 닷지 확정 크리)가 정하고 DamageMul(무기별 배율 · 기본 1)을 곱한다. 픽파켓은 거기서 한 번만.
+    property boolean BasicAttack = false
 
     -- 따라다니기(b/skill-pirate-motion · 슈퍼 트랜스폼 변신 외형 SkillExecutors.SpawnBuffForm): 값이 있으면 매 프레임(서버 OnUpdate) 이 엔티티의 WorldPosition 을
     -- FollowTarget 의 WorldPosition + (FollowOffsetX, FollowOffsetY) 로 맞춘다(Translate 이동은 건너뜀). 플레이어 자식으로 붙이는 대신 맵 아래에 두고 따라가게 — 투사체가 매 프레임
@@ -407,10 +413,15 @@ script SkillProjectile extends AttackComponent
         if self.consumed or self.VisualOnly then
             return
         end
-
         -- Hit interval gate - matches SkillAttack's reusable-Shape pattern (BoxShape built once
         -- in OnBeginPlay, repositioned/resized per check) instead of allocating one every frame.
+        -- 간격 카운터는 최소 비행(MinFlightTime) 게이트보다 먼저 쌓는다(2026-10-05 · 사용자 결정): 게이트가 닫힌 동안에도 lived 와 같은 delta 가 쌓여
+        --   0.1 s 간격 투사체의 첫 판정이 lived ≥ 0.1 인 첫 프레임(허용되는 가장 이른 순간)에 온다 — 게이트가 없던 때와 같은 박자(먼 대상은 예전 그대로).
+        --   예전(0a1db91): 게이트 뒤에서 쌓아 첫 판정이 ≈ 0.2 s 였다(활 · 아대 기본 공격 · 럭키 세븐 · 에너지볼트 · 달팽이 세마리 · 볼리 발도 같음). 매 프레임 판정(HitInterval 0)은 그대로 0.1 s.
         self.accumulator = self.accumulator + delta
+        if self.lived < self.MinFlightTime then
+            return
+        end
         if self.accumulator < self.HitInterval then
             return
         end
@@ -683,7 +694,8 @@ script SkillProjectile extends AttackComponent
                 log("[SkillProjectile] EXPLODE hit #" .. tostring(self.explodeHits) .. " " .. tostring(defender.Name) .. " (" .. self.SkillId .. ")")
             end
             -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
-            if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
+            -- 기본 공격(BasicAttack)은 PlayerAttack.CalcDamage 가 명중(피해 > 0)일 때 이미 떨궜다 → 여기서 또 부르면 2개 + MISS 에도 1개.
+            if _SkillBuffs ~= nil and self.CasterUserId ~= "" and not self.BasicAttack then
                 _SkillBuffs:OnSkillHitMonster(self.CasterUserId, defender, self.SkillId)
             end
         end
@@ -747,6 +759,16 @@ script SkillProjectile extends AttackComponent
         -- from spawn time instead of re-derived from `attacker`, because `attacker` here is this
         -- projectile entity, not the caster - it has no PlayerComponent to read a userId from.
         -- DamageMul: N발 스킬의 첫 투사체는 ×N (표시는 GetDisplayHitCount 가 N타로 나눈다). 발마다 1타 볼리는 1.
+        -- 원거리 기본 공격: 시전자의 PlayerAttack.CalcDamage(근접과 같은 공식 · 버프 · 픽파켓) × DamageMul. 시전자가 없으면 0.
+        if self.BasicAttack then
+            local caster = self:CasterEntity()
+            ---@type PlayerAttack
+            local pa = self:CasterPlayerAttack(caster)
+            if pa == nil then return 0 end
+            local dmg = pa:CalcDamage(caster, defender, "ranged")
+            if dmg > 0 and self.DamageMul > 0 and self.DamageMul ~= 1 then dmg = math.floor(dmg * self.DamageMul) end
+            return dmg
+        end
         local dmg = _SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId)
         if self.BaseDamageMul ~= 1 then
             -- BaseDamageMul: 매직 가드 추가 피해는 배율 밖(같은 서버 프레임 · 같은 MP 로 다시 읽으니 DamageAt 이 더한 값과 같다).
@@ -757,6 +779,22 @@ script SkillProjectile extends AttackComponent
             dmg = scaled
         end
         return math.floor(dmg * self.DamageMul)
+    end
+
+    method any CasterEntity()
+        -- 시전자 플레이어 엔티티(CasterUserId). 없으면 nil. ExecSpace 없음 = 서버 피격 파이프라인에서만 부른다.
+        if self.CasterUserId == "" then return nil end
+        local caster = _UserService:GetUserEntityByUserId(self.CasterUserId)
+        if not isvalid(caster) then return nil end
+        return caster
+    end
+
+    method any CasterPlayerAttack(any caster)
+        -- 시전자의 script.PlayerAttack(원거리 기본 공격 피해 · 크리 판정용). 없으면 nil.
+        if caster == nil or not isvalid(caster) then return nil end
+        local pa = caster:GetComponent("script.PlayerAttack")
+        if not isvalid(pa) then return nil end
+        return pa
     end
 
     method boolean IsAttackTarget(Entity defender, string attackInfo)
@@ -855,6 +893,14 @@ script SkillProjectile extends AttackComponent
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
         -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 예전처럼 false(스킬엔 확률 크리 없음).
         -- ⚠ 부모(AttackComponent.CalcCritical)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐.
+        -- 원거리 기본 공격: 근접 기본 공격과 같은 크리 판정(닷지 확정 크리 · LUK 확률 · PlayerAttack.CalcCritical).
+        if self.BasicAttack then
+            local caster = self:CasterEntity()
+            ---@type PlayerAttack
+            local pa = self:CasterPlayerAttack(caster)
+            if pa == nil then return false end
+            return pa:CalcCritical(caster, defender, "ranged")
+        end
         local crit = false
         if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
             crit = _SkillBuffs:IsGuaranteedCrit(self.CasterUserId)
