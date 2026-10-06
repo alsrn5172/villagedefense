@@ -458,16 +458,32 @@ script SkillAttack extends AttackComponent
         --   막으면 치명타(HP 0)에는 반사가 사라진다(시전과 무관 · 2026-09-25 Play 에서 발견) → #95 이전처럼 치명타에도 반사.
         if attackInfo ~= self.FlatTag and isvalid(self.Entity.PlayerComponent) and (self.Entity.PlayerComponent.Hp <= 0 or self.Entity.PlayerComponent:IsDead()) then return false end
         if self.SingleTarget ~= nil then
-            return defender == self.SingleTarget
+            if defender ~= self.SingleTarget then return false end
+            return self:PassHitRoll(defender, attackInfo)
         end
         -- 대상 상한(CapTargetsByShape): 목록에 든 대상만.
         if self.CappedTargets ~= nil then
             for _, e in ipairs(self.CappedTargets) do
-                if e == defender then return true end
+                if e == defender then return self:PassHitRoll(defender, attackInfo) end
             end
             return false
         end
-        return true
+        return self:PassHitRoll(defender, attackInfo)
+    end
+
+    method boolean PassHitRoll(Entity defender, string attackInfo)
+        -- 스킬 명중 판정(b/skill-hit-miss · A #40 6005930861): 다른 판정을 다 통과한 대상마다 패스당 한 번 SkillDatabase.RollSkillHit.
+        --   빗나간 대상은 이 패스에서 아예 안 맞는다 — 피해 · 크리 · 넉백 · impact · 명중음(OnAttack) · 픽파켓 · 궁 합계 모두 없음 · MISS 글자만(RollSkillHit).
+        --   평값 패스(FlatTag · 아이언 바디 반사 = 버프로 나는 피해)는 늘 명중. 궁(ORIGIN)은 RollSkillHit 가 늘 명중.
+        --   연속 타격(DealSequenceHit · 피스트인레인지 10타)은 1타째 판정을 남은 타가 그대로 쓴다(_T.seqRolls) — 한 번 시전이 대상마다 통째로 맞거나 빗나간다.
+        -- ExecSpace 없음: IsAttackTarget(서버 피격 파이프라인)에서만 부른다.
+        if attackInfo == self.FlatTag then return true end
+        if _SkillDatabase == nil or not isvalid(self.Entity.PlayerComponent) then return true end
+        local seq = self._T.seqRolls
+        if seq ~= nil and seq[defender] ~= nil then return seq[defender] end
+        local hit = _SkillDatabase:RollSkillHit(self.Entity.PlayerComponent.UserId, defender, self:BaseSkillId(attackInfo))
+        if seq ~= nil then seq[defender] = hit end
+        return hit
     end
 
     method Vector2 BodyBoxBandOf(Entity e)
@@ -648,7 +664,12 @@ script SkillAttack extends AttackComponent
         self:BeginPass(skillId, level, 1, 1)
         self.CappedTargets = targets
         if self.CappedTargets == nil then self.CappedTargets = {} end
+        -- 명중 판정(PassHitRoll · b/skill-hit-miss): 1타째에 대상마다 새로 굴리고 2타째부터는 그 결과를 쓴다(시전당 대상마다 한 번). 이 패스 동안만 켠다.
+        if self._T.seqRollsBySkill == nil then self._T.seqRollsBySkill = {} end
+        if hitIndex == nil or hitIndex <= 1 or self._T.seqRollsBySkill[skillId] == nil then self._T.seqRollsBySkill[skillId] = {} end
+        self._T.seqRolls = self._T.seqRollsBySkill[skillId]
         self:AttackFast(self.Shape, info, CollisionGroups.Monster)
+        self._T.seqRolls = nil
         self:EndPass()
         log("SkillAttack: sequence hit " .. info .. " lv=" .. tostring(level) .. " targets=" .. tostring(#targets))
     end

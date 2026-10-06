@@ -792,11 +792,33 @@ script SkillProjectile extends AttackComponent
             return false
         end
         if self.AllowedTargets ~= nil then
-            return self.AllowedTargets[defender] == true
+            if self.AllowedTargets[defender] ~= true then return false end
+            return self:PassHitRoll(defender)
         end
         -- 화살 하나 = 몬스터 1마리(더블 샷): 다른 판정을 다 통과한 대상 중 하나만.
-        if self.OneTargetPerArrow then return self:AcceptOneTarget(defender) end
-        return true
+        if self.OneTargetPerArrow and not self:AcceptOneTarget(defender) then return false end
+        return self:PassHitRoll(defender)
+    end
+
+    method boolean PassHitRoll(Entity defender)
+        -- 스킬 명중 판정(b/skill-hit-miss · A #40 6005930861): 다른 판정을 다 통과한 대상마다 이 투사체에서 한 번 SkillDatabase.RollSkillHit(SkillAttack.PassHitRoll 과 같은 판정).
+        --   투사체는 날아가는 동안 HitInterval 마다 판정하므로 대상마다 결과를 남긴다(_T.hitRolls) — 다음 틱에 다시 굴려 결국 맞히는 일이 없게.
+        --   빗나간 대상은 안 맞는다(피해 · 크리 · impact · 명중음 · 픽파켓 없음 · MISS 글자만). 맞으면 사라지는 투사체(DestroyOnHit)는 빗나가도 맞았을 때처럼 사라진다
+        --   (폭발 패스는 Explode 가 지운다). 볼리의 발 · 더블 샷 화살은 투사체마다 따로 굴린다(발마다 한 패스).
+        -- ExecSpace 없음: IsAttackTarget(서버 피격 파이프라인)에서만 부른다. 클라에서 불리면 RollSkillHit 가 판정 없이 true.
+        if _SkillDatabase == nil or self.CasterUserId == "" then return true end
+        if self._T.hitRolls == nil then self._T.hitRolls = {} end
+        local prev = self._T.hitRolls[defender]
+        if prev ~= nil then return prev end
+        local hit = _SkillDatabase:RollSkillHit(self.CasterUserId, defender, self.SkillId)
+        self._T.hitRolls[defender] = hit
+        if not hit and self.DestroyOnHit and not self.consumed and not self.explodePass and self:IsServer() then
+            self.consumed = true
+            if self.HideOnHit then self:HideSprite() end
+            self.Entity:Destroy(0.05)
+            log("[SkillProjectile] " .. self.SkillId .. " MISS on " .. tostring(defender.Name) .. " — projectile removed like a hit")
+        end
+        return hit
     end
 
     method boolean AcceptOneTarget(Entity defender)
