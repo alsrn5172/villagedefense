@@ -31,3 +31,9 @@
 - 실행기가 따로 그리는 연출은 판정 전이라 빗나간 대상에도 나온다: 파워 스트라이크 접촉 순간 명중 그림 · 명중음, 피스트인레인지 펀치 impact · 1타 명중음 등. 바꿀지는 모습 확인 뒤.
 - 엔진이 한 패스에서 같은 대상에 `IsAttackTarget` 을 두 번 부르면 판정도 두 번(MISS 두 번)이다 — N12 에서 `[SkillHit]` 줄 수로 확인.
 - 볼리(더블 샷 등 발마다 1타)는 발마다 따로 굴린다 — 앞 화살이 빗나가도 뒤 화살은 따로 맞을 수 있다.
+
+## 2026-10-06 (2) — main 합침 · 원거리 기본 공격 가드 (A #184 6010371510 · #40 6010297013)
+
+- `origin/main` `0f04db8`(#183 · #179 · #161 머지) 합침 — 충돌 없음. 이제 이 PR 의 diff 에 #183 커밋이 보이지 않는다.
+- `SkillProjectile.PassHitRoll` 맨 앞 `if self.BasicAttack then return true end` — #161 의 활 · 아대 기본 공격 투사체(`SkillId = "BASIC"` · `BasicAttack = true`)는 여기서 굴리지 않는다. 명중은 `CalcDamage` → `PlayerAttack.CalcDamage` → `StatService.CalcPlayerDamage` 가 한 번 맡는다(두 번 굴리면 명중률이 제곱 · 90% → 약 81%).
+- 근접 기본 공격은 `SkillAttack` 을 지나지 않아(PlayerAttack 자기 AttackComponent) 원래 한 번만 굴린다.
