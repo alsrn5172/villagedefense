@@ -74,6 +74,12 @@
 - **이 브랜치 규칙에 맞게 고친 것**: ① Esc 는 `UIEscStack` 한 곳만 받는다(디자이너 `OnKeyDown` 의 Esc 처리 · `CoachMarkController.OnKeyDown` 제거 · 안내가 다른 창에 비켜 선 동안(`paused`)은 Esc 대상 아님) ② 채팅 입력 중 H · ← → 무시 유지 ③ 시작 킷 자동 착용(§2-4)이 들어왔으므로 안내 매치 시작 묶음에서 '장비' 단계를 뺐다(디자이너 인계 사항 · 무기 카드는 무기 칸이 비었을 때만 뜨므로 그대로) ④ 도감 · 소개 글을 이 브랜치 규칙에 맞춤: 사망은 언제나 메소 5,000 / 경험치 50% 선택(⑬) · 물약 9가지 30 ~ 900(§2-9) · 빅토리아 주화 엘리트 20 · 40 · 60개 + 웨이브 미니언 20 ~ 30% 로 10개(§2-13) · 꿈의 조각 지역 보스 60개 · 엘리트 8 · 16 · 24개(§2-1 · §2-16) · 자동 AP 분배 문장(§2-3).
 - 내가 읽은 디자이너 보고서(Artifact)는 Chrome 으로 열어서 봤다(Artifact 도구가 남의 글 읽기 승인을 요구하는데 이 세션은 승인 창을 못 띄워서).
 
+### ⑲ 사용자 Maker 맵 편집 16개 + 직접 만든 `clickhereEntity` 모델 합침 (사용자 2026-10-06 "맵 바뀐 것들이라 중요함")
+- Maker 가 물린 폴더(`villagedefense-worktrees/a/patch-1005`)의 미커밋 작업을 로컬 백업 브랜치(`wip/maker-1006`)에 먼저 커밋해 두고(푸시 안 함 · UI 27개의 Maker 재저장 = GroupOrder 순위 · 컨테이너 크기뿐이라 이쪽에만 둔다) 이 브랜치 끝 위에 얹었다.
+- 얹은 것: 맵 16개(엘리니아 3 · 헤네시스 3 · 커닝 2 · 리스항구 3 · 노틸러스 마을 · 페리온 4 — 발판 · 밧줄 · 포탈 · 레인 바닥 자리 편집 + 커닝 · 노틸러스 마을에 놓은 `clickhereEntity`) · `RootDesk/MyDesk/clickhereEntity.model`(Transform + SpriteRenderer · 사용자가 만든 "클릭하세요" 그림 · SpriteRUID `26e79722…`).
+- 레인 바닥(⑧ 절반 크기)은 사용자 맵 위에서 `Docs/tools/lane-floor/apply.cjs` 로 다시 깔았다(레인 = `LaneGround_*` 의 밟는 선 범위라 사용자가 고친 발판에 맞춰 다시 계산됨 · 10개 맵).
+- ⚠ **클릭 표시(§2-6)**: 서버가 `auracircle` 로 만드는 지금 방식 대신 사용자의 `clickhereEntity` 를 쓰는 쪽으로 바꿀 예정(맵에 이미 놓인 엔티티를 주인이 생기면 끄는 방식) — 노틸러스 마을 맵에도 하나 놓여 있어 노틸러스 제외 규칙과 맞는지 확인 필요.
+
 ### WO-050 §2 보완 요청 22건 (사용자 "보상 2배 · 자동 AP · 시작 장비 · 노틸러스 NPC · 신규 물약 · 명중 회피 · 로딩 화면 · 피격 넉백 등 고치자 / 다같이해" · 구현 = A · Codex gpt-6-luna 분담)
 - **2-1 사냥 보상 2배** — `SummonManager.HuntRewardMul = 2.0`(정식 밸런스 · 테스트 임시값 아님)을 `FarmReward`(일반 · 엘리트 메소 · 미니언 `MonsterId=0` 제외) · `DropTableLogic`(젬 · 몬스터 재료 · `REGION_*` 제외) · `EliteSpawner`(꿈 조각 · 영혼석)에서 한 번씩만 곱한다. `EliteSpawner.EliteDreamMul = 2`(엘리트 전용 꿈 조각 ×2 · 사냥 ×2 와 겹쳐 ×4).
 - **2-2 `REGION_LOCAL` 원복** — `DropTable.csv` GROUND 사냥터1/2/3 `REGION_LOCAL` 3행을 2배 변경 전 값(0.35×1 · 0.75×1 · 1.0×3~4)으로 손으로 되돌렸다. `MONSTER` 행 · ★5 `REGION_DROP_MUL` 은 그대로.
