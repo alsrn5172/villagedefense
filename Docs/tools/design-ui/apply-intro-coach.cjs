@@ -337,14 +337,14 @@ function buildTutorialPage(K) {
   K.box(P, PANE, { enable: false });
   K.text(P + '/Num', '8 / 8', [BODY_X, 240 + PY, 48, 24], { font: 'Maple', size: 16, color: C.gold, h: 'left' });
   K.text(P + '/Title', '튜토리얼', [BODY_X + 54, 226 + PY, 1100, 42], { font: 'Maple', size: 30, color: C.title, h: 'left', shadow: true });
-  const IL = [BODY_X, ILLU_Y, BODY_W, 440];
+  const IL = [BODY_X, ILLU_Y, BODY_W, 468];
   K.img(P + '/Illu', 'panel_inner', IL);
   K.img(P + '/Illu/Crest', 'deco_crest', [810, IL[1] + 26, 300, 88]);
   // 문구는 스크립트가 처음 하는 사람 · 매치 중에 맞게 바꾼다(RefreshTutorialPage)
-  K.text(P + '/Ask', '처음 오셨군요!\n튜토리얼을 진행하시겠습니까?', [BODY_X, IL[1] + 120, BODY_W, 110], { font: 'Maple', size: 38, color: C.title, shadow: true });
-  K.text(P + '/Note', '혼자 들어가는 연습 판에서 한 판의 흐름을 직접 해 봐요 · 결과는 계정에 남지 않아요', [BODY_X, IL[1] + 236, BODY_W, 34], { font: 'Noto500', size: 19, color: C.sub });
-  K.btn(P + '/BtnStart', '튜토리얼 시작하기', [660, IL[1] + 286, 600, 104], { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' }, { font: 'Maple', size: 36, color: C.goldInk });
-  K.btn(P + '/BtnNo', '아니오', [860, IL[1] + 400, 200, 56], { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' }, { font: 'Maple', size: 20, color: C.ivory, shadow: true });
+  K.text(P + '/Ask', '처음 오셨군요!\n튜토리얼을 진행하시겠습니까?', [BODY_X, IL[1] + 112, BODY_W, 110], { font: 'Maple', size: 38, color: C.title, shadow: true });
+  K.text(P + '/Note', '혼자 들어가는 연습 판에서 한 판의 흐름을 직접 해 봐요 · 결과는 계정에 남지 않아요', [BODY_X, IL[1] + 226, BODY_W, 34], { font: 'Noto500', size: 19, color: C.sub });
+  K.btn(P + '/BtnStart', '튜토리얼 시작하기', [660, IL[1] + 270, 600, 100], { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' }, { font: 'Maple', size: 36, color: C.goldInk });
+  K.btn(P + '/BtnNo', '아니오', [860, IL[1] + 390, 200, 52], { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' }, { font: 'Maple', size: 20, color: C.ivory, shadow: true });
   K.fill(P + '/KeyLine', C.gold, 0.16, KEY);
   K.solid(P + '/KeyLine/Bar', C.gold, 1, [KEY[0], KEY[1], 3, KEY[3]]);
   K.img(P + '/KeyLine/Chip', 'chip_gold', [372, 798 + PY, 54, 24]);
@@ -369,11 +369,11 @@ function buildTutorial() {
   K.box('Root/Card', [0, 0, 1920, 1080], { enable: false });
   K.solid('Root/Card/Dimmer', C.veil, 0.55, [0, 0, 1920, 1080], { anchor: 'stretch', raycast: true });
   K.img('Root/Card/Window', 'panel_window', [540, 250, 840, 560], { raycast: true });
-  K.img('Root/Card/Window/Chip', 'chip_gold', [580, 292, 160, 30]);
-  K.text('Root/Card/Window/Chip/Text', '튜토리얼', [580, 292, 160, 30], { font: 'Maple', size: 15, color: C.goldInk });
-  K.text('Root/Card/Window/Title', '이 게임은 이렇게 이겨요', [580, 332, 760, 50], { font: 'Maple', size: 32, color: C.title, h: 'left', shadow: true });
-  K.raw('Root/Card/Window/Emblem', ELLINIA_EMBLEM, [580, 400, 120, 120], { enable: false });
-  K.text('Root/Card/Window/Body', '', [580, 400, 760, 236], { font: 'Noto500', size: 21, color: C.ivory, h: 'left', v: 'top' });
+  K.img('Root/Card/Window/Chip', 'chip_gold', [584, 312, 160, 30]);
+  K.text('Root/Card/Window/Chip/Text', '튜토리얼', [584, 312, 160, 30], { font: 'Maple', size: 15, color: C.goldInk });
+  K.text('Root/Card/Window/Title', '이 게임은 이렇게 이겨요', [584, 350, 756, 50], { font: 'Maple', size: 32, color: C.title, h: 'left', shadow: true });
+  K.raw('Root/Card/Window/Emblem', ELLINIA_EMBLEM, [580, 418, 120, 120], { enable: false });
+  K.text('Root/Card/Window/Body', '', [580, 418, 760, 218], { font: 'Noto500', size: 21, color: C.ivory, h: 'left', v: 'top' });
   K.box('Root/Card/Window/Hp', [720, 642, 600, 52], { enable: false });
   K.text('Root/Card/Window/Hp/Text', '엘리니아 넥서스 18%', [740, 642, 560, 24], { font: 'Noto700', size: 16, color: C.coral, h: 'left' });
   K.solid('Root/Card/Window/Hp/Track', '#1A2238', 1, [740, 670, 560, 16]);
@@ -649,17 +649,19 @@ function buildCoach() {
 // StatusHUD.ui 는 건드리지 않는다(새 파일) — 누르면 GameIntroController 가 소개를 연다.
 function buildHelp() {
   const b = new UIBuilder('HelpHudGroup', 2, true);
-  const CONT = [1349, 20, 64, 85];
-  S.newBox(b, 'Shortcut', { anchor: 'top-right', pivot: [1, 1], pos: [-(1920 - 1413), -20], size: [CONT[2], CONT[3]] });
-  const BTN = [1349, 20, 64, 64]; const P = 'Shortcut/BtnHelp';
+  // WO-051(2026-10-06 · fix-topright-hud.cjs): 캐릭터 · 스킬이 오른쪽 두 칸으로 옮겨 가 도움말도 +152 · 위 37.
+  const X = 1501;
+  const CONT = [X, 20, 64, 85];
+  S.newBox(b, 'Shortcut', { anchor: 'top-right', pivot: [1, 1], pos: [-(1920 - (X + 64)), -37], size: [CONT[2], CONT[3]] });
+  const BTN = [X, 20, 64, 64]; const P = 'Shortcut/BtnHelp';
   b.button(P, '', { anchor: 'middle-center', pos: S.at(...BTN, CONT), rect_size: [64, 64], pivot: [0.5, 0.5], image_ruid: S.R('slot_frame') });
   S.button(b, P, { normal: 'slot_frame', hover: 'slot_frame_hover', pressed: 'slot_frame_hover' });
   S.font(b, P, { text: '' });
-  S.newImage(b, P + '/Icon', 'icon_help', { pos: S.at(1349 + 14, 34, 36, 36, BTN), size: [36, 36] });
+  S.newImage(b, P + '/Icon', 'icon_help', { pos: S.at(X + 14, 34, 36, 36, BTN), size: [36, 36] });
   const KB1 = S.roleBox('key1');
-  S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(1349 + 70 - KB1[0], 68, KB1[0], KB1[1], BTN), size: [KB1[0], KB1[1]] });
+  S.newImage(b, P + '/KeyChip', 'chip_gold_sm', { pos: S.at(X + 70 - KB1[0], 68, KB1[0], KB1[1], BTN), size: [KB1[0], KB1[1]] });
   S.newText(b, P + '/KeyChip/Text', 'H', { font: 'Maple', size: 13, color: C.goldInk, pos: [0, 0], rect: [KB1[0], KB1[1]] });
-  S.newText(b, P + '/Label', '도움말', { font: 'Noto700', size: 13, color: C.ivory, shadow: true, pos: S.at(1349 - 4, 87, 72, 18, BTN), rect: [72, 18] });
+  S.newText(b, P + '/Label', '도움말', { font: 'Noto700', size: 13, color: C.ivory, shadow: true, pos: S.at(X - 4, 87, 72, 18, BTN), rect: [72, 18] });
   const touched = S.chipText(b);
   console.log('[help] chipText', touched.length, '· entities', b.listEntities().length);
   b.write(path.join(WORLD, 'ui', 'HelpHudGroup.ui'), { lint_verbose: !!process.env.LINT_V, bind: { mlua: INTRO_MLUA, props: { btnHelp: 'Shortcut/BtnHelp' } } });
@@ -953,6 +955,101 @@ function buildTip() {
   });
 }
 
+// ─────────────────────────────────────────── 접속 외형 선택 (WO-051 · 사용자 2026-10-06 "원래 있던 ui 파일들로 잘딱깔끔하게") ───────────────────────────────────────────
+// 예전 AvatarSelectGroup(WO-032 · 회색 판)을 시안 스킨으로 다시 만든다 — 창 틀 · 문장 · 제목 띠 · 안쪽 판 카드 3장 · 금 버튼.
+// 미리보기 아바타(AvatarGUIRenderer + CostumeManager)의 컴포넌트 값은 옛 파일에서 그대로 옮긴다. 스위치 칸은 흰 9-slice(스크립트가 켜짐 초록 · 꺼짐 붉은색으로 칠함).
+// 명시적으로 'look' 을 줄 때만 돈다(인자 없이 돌려도 만들지 않는다).
+const LOOK_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Item/AvatarSelectUIController.mlua');
+function buildLook() {
+  const FILE = path.join(WORLD, 'ui', 'AvatarSelectGroup.ui');
+  const old = UIBuilder.load(FILE);
+  const avatarComps = {};
+  for (const k of ['M', 'F', 'My']) {
+    const pth = `Root/Window/Card${k}/Stage/Avatar`;
+    avatarComps[k] = { ag: old.getComponent(pth, 'MOD.Core.AvatarGUIRendererComponent'), cm: old.getComponent(pth, 'MOD.Core.CostumeManagerComponent') };
+  }
+  const b = new UIBuilder('AvatarSelectGroup', 16, true);
+  const K = kit(b);
+  K.root('Root', false);
+  K.solid('Root/Dimmer', C.veil, 0.86, [0, 0, 1920, 1080], { anchor: 'stretch', raycast: true });
+  const WINR = [290, 96, 1340, 888];
+  K.img('Root/Window', 'panel_window', WINR, { raycast: true });
+  K.img('Root/Window/Crest', 'deco_crest', [810, WINR[1] - 52, 300, 88]);
+  K.img('Root/Window/Band', 'panel_title_bar', [408, WINR[1] + 22, 1104, 64]);
+  const TITLE = '외형 선택';
+  const tw = estW(TITLE, 30); const tl = 960 - tw / 2; const tr = 960 + tw / 2;
+  K.text('Root/Window/Title', TITLE, [760, WINR[1] + 33, 400, 42], { font: 'Maple', size: 30, color: C.title, shadow: true });
+  K.img('Root/Window/Title/SparkleL', 'deco_sparkle', [Math.round(tl - 40), WINR[1] + 45, 18, 18]);
+  K.img('Root/Window/Title/SparkleR', 'deco_sparkle', [Math.round(tr + 22), WINR[1] + 45, 18, 18]);
+  K.text('Root/Window/Sub', '게임에서 쓸 모습을 골라요 · 접속할 때마다 한 번 고릅니다', [400, WINR[1] + 100, 1120, 30], { font: 'Noto500', size: 19, color: C.sub });
+  const CARDS = [
+    ['M', '모험가 (남)', '기본 모험가 옷차림 위에\n게임에서 얻은 장비가 그대로 보여요'],
+    ['F', '모험가 (여)', '기본 모험가 옷차림 위에\n게임에서 얻은 장비가 그대로 보여요'],
+    ['My', '내 아바타', '내 계정 아바타 그대로예요\n게임에서 입은 장비는 보이지 않아요'],
+  ];
+  const CW = 392; const GAP = 22; const X0 = 960 - (CW * 3 + GAP * 2) / 2; const CY = WINR[1] + 150; const CH = 690;
+  CARDS.forEach(([k, title, desc], i) => {
+    const x = X0 + i * (CW + GAP);
+    const P = `Root/Window/Card${k}`;
+    K.img(P, 'panel_inner', [x, CY, CW, CH]);
+    // 머리: 칩 + 카드 이름
+    K.img(P + '/Chip', k === 'My' ? 'chip_blue' : 'chip_gold', [x + 24, CY + 22, 86, 26]);
+    K.text(P + '/Chip/Text', k === 'My' ? '계정' : '추천', [x + 24, CY + 22, 86, 26], { font: 'Maple', size: 14, color: k === 'My' ? C.white : C.goldInk });
+    K.text(P + '/Title', title, [x + 120, CY + 16, CW - 140, 38], { font: 'Maple', size: 26, color: C.title, h: 'left', shadow: true });
+    // 무대: 남색 칸 + 바닥 그림자 + 아바타
+    K.fill(P + '/Stage', C.navy800, 1, [x + 26, CY + 66, CW - 52, 300]);
+    K.fill(P + '/Stage/Floor', '#000000', 0.28, [x + 26 + (CW - 52) / 2 - 70, CY + 66 + 262, 140, 16]);
+    const AV = [x + 26 + (CW - 52) / 2 - 90, CY + 66 + 40, 180, 240];
+    const ag = avatarComps[k].ag || {}; const cm = avatarComps[k].cm;
+    b.avatar(P + '/Stage/Avatar', { anchor: 'middle-center', pivot: [0.5, 0.5], pos: S.at(AV[0], AV[1], AV[2], AV[3], [x + 26, CY + 66, CW - 52, 300]), rect_size: [AV[2], AV[3]], raycast: false, preserve_avatar: ag.PreserveAvatar != null ? ag.PreserveAvatar : 1 });
+    if (cm) b.upsertComponent(P + '/Stage/Avatar', 'MOD.Core.CostumeManagerComponent', cm);
+    else b.addComponent(P + '/Stage/Avatar', 'MOD.Core.CostumeManagerComponent');
+    // 설명 두 줄
+    K.text(P + '/Desc', desc, [x + 26, CY + 382, CW - 52, 64], { font: 'Noto500', size: 18, color: C.ivory });
+    if (k !== 'My') {
+      // "전직 시 외형 변경" [On | Off] — 칸 색은 스크립트(PaintSwitch)가 칠한다
+      K.fill(P + '/JobRow', C.navy900, 0.55, [x + 26, CY + 462, CW - 52, 54]);
+      K.text(P + '/JobLabel', '전직 시 외형 변경', [x + 42, CY + 462, 190, 54], { font: 'Noto700', size: 17, color: C.ivory, h: 'left' });
+      K.fill(P + '/JobSwitch', '#0A0F1C', 1, [x + CW - 26 - 16 - 148, CY + 471, 148, 36]);
+      const SW = [x + CW - 26 - 16 - 148, CY + 471, 148, 36];
+      for (const [n, label, dx] of [['On', 'On', 2], ['Off', 'Off', 76]]) {
+        const R = [SW[0] + dx, SW[1] + 2, 70, 32];
+        quietBtn(b, `${P}/JobSwitch/${n}`, label, R, SW);
+      }
+      K.text(P + '/Hint', '전직하면 직업 외형으로 고정돼요', [x + 26, CY + 524, CW - 52, 28], { font: 'Noto500', size: 15, color: C.sub });
+    } else {
+      K.text(P + '/Note', '계정 아바타에 무기가 없으면\n모험가 무기를 쥐여 줘요', [x + 26, CY + 470, CW - 52, 60], { font: 'Noto500', size: 15, color: C.sub });
+    }
+    K.btn(P + '/Pick', '이 모습으로 시작', [x + (CW - 280) / 2, CY + CH - 98, 280, 66], { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' }, { font: 'Maple', size: 22, color: C.goldInk });
+  });
+  const touched = S.chipText(b, { extra: { 'Root/Window/CardM/Chip': ['Root/Window/CardM/Chip/Text'], 'Root/Window/CardF/Chip': ['Root/Window/CardF/Chip/Text'], 'Root/Window/CardMy/Chip': ['Root/Window/CardMy/Chip/Text'] } });
+  console.log('[look] chipText', touched.length, '· entities', b.listEntities().length);
+  b.write(FILE, {
+    lint_verbose: !!process.env.LINT_V,
+    bind: {
+      mlua: LOOK_MLUA,
+      props: {
+        root: 'Root',
+        avatarM: 'Root/Window/CardM/Stage/Avatar', avatarF: 'Root/Window/CardF/Stage/Avatar', avatarMy: 'Root/Window/CardMy/Stage/Avatar',
+        btnPickM: 'Root/Window/CardM/Pick', btnPickF: 'Root/Window/CardF/Pick', btnPickMy: 'Root/Window/CardMy/Pick',
+        btnOnM: 'Root/Window/CardM/JobSwitch/On', btnOffM: 'Root/Window/CardM/JobSwitch/Off',
+        btnOnF: 'Root/Window/CardF/JobSwitch/On', btnOffF: 'Root/Window/CardF/JobSwitch/Off',
+        textOnM: 'Root/Window/CardM/JobSwitch/On', textOffM: 'Root/Window/CardM/JobSwitch/Off',
+        textOnF: 'Root/Window/CardF/JobSwitch/On', textOffF: 'Root/Window/CardF/JobSwitch/Off',
+        hintM: 'Root/Window/CardM/Hint', hintF: 'Root/Window/CardF/Hint',
+      },
+    },
+  });
+}
+// 흰 9-slice 글자 버튼(스위치 칸) — 색은 스크립트가 칠한다.
+function quietBtn(b, p, label, r, parent) {
+  const q = console.log; console.log = () => {};
+  try {
+    b.button(p, label, { anchor: 'middle-center', pos: S.at(r[0], r[1], r[2], r[3], parent), rect_size: [r[2], r[3]], pivot: [0.5, 0.5], image_ruid: WHITE, bg_color: { r: 0.10, g: 0.12, b: 0.16, a: 1 }, font_size: 16 });
+    S.font(b, p, { text: label, font: 'Noto700', size: 16, color: C.faint, h: 'center', v: 'middle', outline: false });
+  } finally { console.log = q; }
+}
+
 // ─────────────────────────────────────────── 실행 ───────────────────────────────────────────
 const ARGS = process.argv.slice(2).map((a) => a.toLowerCase());
 const want = (k) => ARGS.length === 0 || ARGS.includes(k);
@@ -962,4 +1059,5 @@ if (want('coach')) buildCoach();
 if (want('hud') || want('help')) buildHelp();
 if (want('tip')) buildTip();
 if (want('tutorial')) buildTutorial();
+if (ARGS.includes('look')) buildLook();
 console.log('끝 — ' + (ARGS.length ? ARGS.join(' · ') : 'intro · coach · hud · tip · tutorial'));

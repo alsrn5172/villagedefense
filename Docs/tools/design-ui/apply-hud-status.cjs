@@ -86,12 +86,13 @@ for (const k of ['Hp', 'Mp', 'Exp']) {
 const CONT = [1604, 20, 292, 85];
 // 🔴 오른쪽 끝 자리는 MSW 엔진 기본 버튼(친구 · 더보기 · 캔버스 x 1725~1897)이 차지한다(스크립트로 못 숨기고 못 바꾼다) → 시안 좌표(오른쪽 여백 24)를 그대로 쓰면 그 위에 겹친다.
 //    그래서 4칸 묶음 전체를 엔진 버튼 왼쪽(오른쪽 끝 1717 = 오른쪽 여백 203)으로 옮긴다. 칸 사이 간격 · 칩 · 이름 위치는 시안 그대로.
-S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-203, -20], size: [CONT[2], CONT[3]] });
+// WO-051(2026-10-06 · fix-topright-hud.cjs): 친구 · 메뉴를 끈 뒤 남은 캐릭터 · 스킬을 오른쪽 두 칸으로 · 위 37(엔진 기본 버튼 가운데 높이).
+S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-203, -37], size: [CONT[2], CONT[3]] });
 const SHORT = [
-  { id: 'BtnCharacter', x: 1604, icon: 'ico_user', key: 'C', label: '캐릭터', alert: true },
-  { id: 'BtnSkill', x: 1680, icon: 'ico_star', key: 'K', label: '스킬', alert: true },
-  { id: 'BtnFriend', x: 1756, icon: 'ico_party', key: 'F', label: '친구' },          // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
-  { id: 'BtnMenu', x: 1832, icon: null, key: null, label: '메뉴' },                    // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
+  { id: 'BtnCharacter', x: 1756, icon: 'ico_user', key: 'C', label: '캐릭터', alert: true },
+  { id: 'BtnSkill', x: 1832, icon: 'ico_star', key: 'K', label: '스킬', alert: true },
+  { id: 'BtnFriend', x: 1604, icon: 'ico_party', key: 'F', label: '친구' },          // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
+  { id: 'BtnMenu', x: 1680, icon: null, key: null, label: '메뉴' },                    // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
 ];
 for (const s of SHORT) {
   const BTN = [s.x, 20, 64, 64];
