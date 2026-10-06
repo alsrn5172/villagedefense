@@ -8,7 +8,9 @@
 - `MinionWave.csv` — `P3-6`~`P3-13` 8행을 LIVE · TEST 각각 추가(헤더 변경 없음). LIVE 시각 1800 · 1920 · … · 2640(30:00 → 44:00 · 2분 간격) · TEST 는 ÷8 반올림(225 … 330). 체력 · 공격력은 기존 `P3-1` 값(5,000 / 1,850)에서 웨이브마다 +5%: `round(기준 × 1.05^k)`(기존 5행이 이 식으로 정확히 재현됨을 확인). 좀비 수는 기존 규칙(웨이브 2개마다 +1)을 이어 `P3-13` 에서 7. `P3-5` 의 "마지막 행" 비고는 `P3-13` 로 옮김(표가 끝난 뒤 반복 간격 = 마지막 두 행 차이 → 120초 · TEST 15초).
 - `Lane/DefenderService.mlua` — 수비대 스탯을 `MonsterRecruit.GuardHp/GuardAttack` 에서 가져오던 옛 식(Lv1 = ×0.9 · Lv5 = 18,300 / 3,400 으로 기하 보간)을 버리고 **티어별 표**로 교체: 속성 `T1HpLv1`…`T3Atk` + 메서드 `GuardHpOf(tier, lv)` · `GuardAtkOf(tier, lv)`. `GuardHpAtMax` · `GuardAtkAtMax` · `GuardLv1Mul` 삭제.
 - **매치 길이 30분 → 45분** (사용자 지시 "MatchConfig 의 30분 제한을 45분으로 · 이거부터") — `MatchConfig.csv` `DEFAULT` LIVE 1800 → **2700** · TEST 225 → **338**(÷8 올림 · `MULTI` TEST 와 같은 값). 헤더 변경 없음. `Match/MatchSessionLogic.mlua` 의 표가 없을 때 기본값(`MatchDuration` · `LoadMatchConfig` fallback)도 2700 / 338 로. `MinionPhaseConfig` 비고(만료 값 · 3P 웨이브 간격) · `Docs/스키마-계약.md`(A-2-5a: 4행 · 45분) · `VillageDefense-M1-GDD.md` · `VillageDefense-Roadmap.md` 의 "30분" 문구를 45분으로. 이제 혼자(DEFAULT)도 멀티(MULTI)와 같은 45분이라 44:00 웨이브가 솔로에서도 나온다.
-- `MonsterRecruit.csv` 는 **안 바꿨다**(값 · 헤더 그대로). 이 열은 이제 **파병 유닛**(`MinionFlowService.SpawnDispatched` = `GuardHp × 훈련 StatMul`)만 읽는다.
+- `MonsterRecruit.csv` 는 **안 바꿨다**(값 · 헤더 그대로). 이 열은 이제 **아무도 읽지 않는다**(수비대도 파병도 티어 표 사용).
+- **파병 유닛도 수비대 표를 따른다** (사용자 2026-10-06 "파병유닛도 수비대표 따라 가야지 · 강력한 수비대를 파병보내는 만큼 적에게도 부담 · 대신 체력은 수비대의 절반 수준으로"): 공격력 = 같은 티어 · 레벨 수비대 값 · 체력 = 그 ×0.5(`DefenderService.DispatchHpMul`). 레벨 = 보낸 묶음의 훈련 레벨 — `DefenderService.TakeUnits` 가 `upgradeLevel` 을 돌려주고, `LaneStateService` 가 `DispatchService.Submit` 의 새 인자로 넘기고, `MinionFlowService.SpawnDispatched` 가 `DispatchHpOf` · `GuardAtkOf` 로 계산(옛 `GuardHp × StatMul` 식은 모집 행이 없을 때의 폴백만).
+- 수리비: 포탑 체력이 절반이 되며 수리비도 같이 절반이 되는 걸 **그대로 확정**(사용자 2026-10-06 "수리비 절반 변경 굿" · #190).
 - `Docs/스키마-계약.md` — 웨이브 표 서술(P3-13 · 시각 · 반복 간격 · 좀비 수) · `MonsterRecruit` 열 설명 · 수비대 티어 표 · 변경 이력 1행.
 
 ## 수비대 스탯 (정수 · 소수 계산 후 반올림 · 중간 레벨은 기하 보간)
@@ -24,6 +26,16 @@
 
 기준 웨이브: T1 Lv1 = `P1-0`(1,000 / 300) 체력 ×2 · 공격력 같게 / T1 Lv5 = `P2-3`(3,520 / 750) ×2 · ×2 / T2 Lv1 = `P2-1`(2,560 / 630) 체력 ×2 · 공격력 같게 / T2 Lv5 · T3 Lv1 = `P3-5`(6,078 / 2,249) 체력 ×2 · 공격력 ×2 / T3 체력 = Lv1 × 레벨(1.0 · 2.0 · 3.0 · 4.0 · 5.0) · 공격력 고정.
 
+## 파병 유닛 스탯 (체력 / 공격력 · 체력은 위 수비대 표의 절반)
+
+| 티어 | Lv1 | Lv2 | Lv3 | Lv4 | Lv5 |
+|---|---|---|---|---|---|
+| T1 | 1,000 / 300 | 1,370 / 449 | 1,876 / 671 | 2,570 / 1,003 | 3,520 / 1,500 |
+| T2 | 2,560 / 630 | 3,178 / 1,030 | 3,945 / 1,683 | 4,897 / 2,752 | 6,078 / 4,498 |
+| T3 | 6,078 / 4,498 | 12,156 / 4,498 | 18,234 / 4,498 | 24,312 / 4,498 | 30,390 / 4,498 |
+
+(체력 = 수비대 체력 × 0.5 반올림 0.5 올림)
+
 ## 계산 검증
 
 - Codex(`gpt-6-luna` · 읽기 전용)를 같은 프롬프트로 **2회** 돌려 대조했다 — **두 답이 갈렸고 둘 다 일부 틀렸다**(예: `P3-8` 공격력 2,604 · `P3-9` 2,734 는 오답 · 정답 2,603 · 2,733 / T1 Lv4 체력 5,134 · T2 Lv3 9,588 은 한쪽 오답). 그래서 소수점 10진(`Decimal` · 반올림 = 0.5 올림) 으로 직접 다시 계산해 확정했다.
@@ -33,4 +45,5 @@
 
 - [x] mLua 진단 `DefenderService.mlua` 이슈 0.
 - [ ] `node Docs/tools/check-integrity.cjs` 통과(push 전).
+- [ ] Maker Play: 파병 → 대상 마을 레인에 나온 유닛의 체력 · 공격력이 위 파병 표와 같은지(`[Dispatch] spawn` 로그)
 - [ ] Maker Play: 수비대 모집 → 체력 · 공격력 로그(`[Defender] spawn … hp= atk=`) 가 위 표와 같은지(T1 · T2 · T3 각각 Lv1 · Lv5) · 3페이즈 웨이브가 44:00 까지 2분마다 나오는지(TEST 프로필 330초).
