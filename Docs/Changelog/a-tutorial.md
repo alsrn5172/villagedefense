@@ -49,6 +49,7 @@
 - **월드맵 노드 세로 위치**: 지도 그림은 원본 2095x1614 의 위아래 38px 를 잘라 1098x806 에 띄우는데 노드 Y 는 자르기 전 높이로 환산돼 있었다(가운데에서 멀수록 어긋남 · 페리온 보스 화면 −12px). 33곳 다시 환산(`fix-worldmap-node-y.cjs` · `WorldMapNodes.csv` Y). 사용자 실측 30곳과 0px · 빠진 3곳(골렘의 사원 · 북쪽 언덕 · 남쪽 능선)은 화면 실측과 5~10px. Play 에서 hover 점을 다 켜 그림 점과 겹치는 것 확인.
 - **내 위치 · 목표 핀이 안내창 뒤로**: Board 자식 순서 HereMarker · GoalMarker_* → Tooltip 앞(Play sibling 16 · 17 < 23).
 - **계정 기록 창 어둡게 판**: `AccountRecordGroup/Dimmer` 100x100 → 1920x1080(창 뒤 화면 전체 어둡게 · 창 밖 클릭 막힘 · `fix-minimap-stretch-sizes.cjs AccountRecordGroup`).
+- **커닝시티 "클릭하세요" 표시**: 마을 맵에 놓인 `clickhereEntity` x −10.99 → −9.99(+1.0 · MapBuilder · 바뀐 값은 이것 하나).
 - **커닝시티 기능 NPC 간격** 0.5 → 0.9(`VillageNpcSector` KERNING 4행 · 밧줄 x −7.84 · 1.19 · 포탈 3.63 피함 · 수비 시설 묶음은 왼쪽 끝 −9.6). 사용자 Play 확인("잘 됐네").
 
 ## 맵 정리(사용자 2026-10-06)
