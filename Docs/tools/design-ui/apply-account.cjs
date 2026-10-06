@@ -86,7 +86,7 @@ function grid(p, r, cell, fixed, spacing, padRight, visible) {
   ctr(p, r, PANE);
   b.patchComponent(p, 'MOD.Core.GridViewComponent', {
     CellSize: { x: cell[0], y: cell[1] }, FixedCount: fixed, FixedType: 0, Spacing: { x: spacing[0], y: spacing[1] },
-    Padding: { left: 0, right: padRight, top: 0, bottom: 0 }, ScrollBarThickness: 16, ScrollBarVisible: visible,
+    Padding: { left: 0, right: padRight, top: 0, bottom: 0 }, ScrollBarThickness: 16, ScrollBarVisible: 2, // 엔진 막대는 숨김 — 막대는 fix-scrollbars.cjs + UIScrollBars (2026-10-07)
     ScrollBarBackgroundImageRUID: { DataId: S.R('scroll_track') }, ScrollBarHandleImageRUID: { DataId: S.R('scroll_thumb') },
     ScrollBarBackgroundColor: S.C(C.white, 1), ScrollBarHandleColor: S.C(C.white, 1),
   });
