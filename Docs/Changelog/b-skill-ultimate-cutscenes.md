@@ -65,3 +65,5 @@
 - **동전 소리 ×2.0 · 시전자 자리**(사용자 결정 · R16 "영상 소리에 살짝 묻힌다" → A + B): `MesoCoinSoundVolume` 2.0 · `MesoCoinSoundAtCaster` true → `PlaySkillSoundToMap(hit, 시전자 자리, 시전자, 2.0)`. 개수 10 · 간격 0.12 s · 터지는 시각 그대로. 영상 소리 낮추기(D) 없음.
   - 파일 실측으로 남는 차이: 8번째(+5.28 s) ≈0.6 dB · 10번째(+5.94 s) ≈1.7 dB 아직 영상 소리 아래 · 9번째 ≈같음 · 나머지 0.6~3.1 dB 위.
 - 점검: LSP(SkillExecutors) 깨끗 · `check-integrity` 전부 통과(경고 3 = main) · CRLF 유지 — 로그 `villagedefense-harness/pirate-check/after-maker-free/166-*.txt`. **Play 안 함** — 다음 빌드 RELOOK R11d(배경음악 · 비율 고르기) · R16b · N8(첫 시전 지연).
+- **궁 영상 1280×720 기본**(사용자 R11c "다섯 직업 다 1280" · 2026-10-06 업로드): 마법사 75 · 궁수 62 · 도적 62 · 해적 52장(팀 저장소 mIYbC · 이름 `ULT1280_SK_<직업>_fNNN` · 실패 0 · 184,039,871 B) + 전사 56장(10-05 A/B 때 올린 것). `CutsceneFrameSet1280`(gen_frames1280.py · 다 올라간 직업만 · 소리 · 배율은 640 세트 그대로) · `CutsceneFrames1280` true = 1280, false = 640(되돌리기 · 하네스 F6). 로그 `frames ready … src=WxH`.
+  - 점검: LSP 깨끗 · `check-integrity` 전부 통과(경고 3 = main) · CRLF 유지 — `villagedefense-harness/pirate-check/after-maker-free/followup-1280-*.txt`. **Play 안 함** — 다음 빌드 RELOOK R11e–R11h(직업별 1280 영상) · 첫 시전 예열 시간(1280 은 640 보다 큼).
