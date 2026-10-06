@@ -7,6 +7,7 @@
 
 - `MinionWave.csv` — `P3-6`~`P3-13` 8행을 LIVE · TEST 각각 추가(헤더 변경 없음). LIVE 시각 1800 · 1920 · … · 2640(30:00 → 44:00 · 2분 간격) · TEST 는 ÷8 반올림(225 … 330). 체력 · 공격력은 기존 `P3-1` 값(5,000 / 1,850)에서 웨이브마다 +5%: `round(기준 × 1.05^k)`(기존 5행이 이 식으로 정확히 재현됨을 확인). 좀비 수는 기존 규칙(웨이브 2개마다 +1)을 이어 `P3-13` 에서 7. `P3-5` 의 "마지막 행" 비고는 `P3-13` 로 옮김(표가 끝난 뒤 반복 간격 = 마지막 두 행 차이 → 120초 · TEST 15초).
 - `Lane/DefenderService.mlua` — 수비대 스탯을 `MonsterRecruit.GuardHp/GuardAttack` 에서 가져오던 옛 식(Lv1 = ×0.9 · Lv5 = 18,300 / 3,400 으로 기하 보간)을 버리고 **티어별 표**로 교체: 속성 `T1HpLv1`…`T3Atk` + 메서드 `GuardHpOf(tier, lv)` · `GuardAtkOf(tier, lv)`. `GuardHpAtMax` · `GuardAtkAtMax` · `GuardLv1Mul` 삭제.
+- **매치 길이 30분 → 45분** (사용자 지시 "MatchConfig 의 30분 제한을 45분으로 · 이거부터") — `MatchConfig.csv` `DEFAULT` LIVE 1800 → **2700** · TEST 225 → **338**(÷8 올림 · `MULTI` TEST 와 같은 값). 헤더 변경 없음. `Match/MatchSessionLogic.mlua` 의 표가 없을 때 기본값(`MatchDuration` · `LoadMatchConfig` fallback)도 2700 / 338 로. `MinionPhaseConfig` 비고(만료 값 · 3P 웨이브 간격) · `Docs/스키마-계약.md`(A-2-5a: 4행 · 45분) · `VillageDefense-M1-GDD.md` · `VillageDefense-Roadmap.md` 의 "30분" 문구를 45분으로. 이제 혼자(DEFAULT)도 멀티(MULTI)와 같은 45분이라 44:00 웨이브가 솔로에서도 나온다.
 - `MonsterRecruit.csv` 는 **안 바꿨다**(값 · 헤더 그대로). 이 열은 이제 **파병 유닛**(`MinionFlowService.SpawnDispatched` = `GuardHp × 훈련 StatMul`)만 읽는다.
 - `Docs/스키마-계약.md` — 웨이브 표 서술(P3-13 · 시각 · 반복 간격 · 좀비 수) · `MonsterRecruit` 열 설명 · 수비대 티어 표 · 변경 이력 1행.
 
