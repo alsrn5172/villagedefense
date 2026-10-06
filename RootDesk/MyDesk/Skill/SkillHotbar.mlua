@@ -46,6 +46,25 @@ script SkillHotbar extends Logic
 
     property string JumpActionName = "Jump"
 
+    -- 엔진 기본 바인딩의 두 번째 점프 액션(사용자 Play 2026-10-05 R18 FAIL · N2b `sitting-8efe928/N2b-default-jump2.txt`): 기본 LeftAlt = "Jump2"(Space = "Jump" 와 다른 액션).
+    --   "Jump" 만 걸면 Alt 기본 바인딩에선 더블 점프가 안 나간다 → 두 액션 모두 같은 판정(OnJumpKeyDown · OnJumpActionAttempt)으로. "" 이면 끈다.
+    property string JumpActionName2 = "Jump2"
+
+    -- 점프 키가 무엇이든 더블 점프(b/skill-double-jump-any-key · 사용자 제보 2026-10-05 "점프 키를 Alt 로 쓰면 Alt 두 번에 더블 점프가 안 나간다"):
+    --   예전 = KeyDownEvent 키 → GetActionName(key) == "Jump" 또는 Space 일 때만(OnJumpKeyDown). Alt 는 이 길로 잡히지 않았다.
+    --   지금 = 그 길 + 엔진 점프 액션 자체(PlayerControllerComponent:AddCondition("Jump") · 어느 키로 묶였든 점프 액션이 시도될 때 부른다 → OnJumpActionAttempt).
+    --   키를 누르고 있는 동안 액션이 매 프레임 시도되면(꾹 누르기) 처음 한 번만 누름으로 본다: 앞 시도와 JumpPressGap 초보다 가까우면 같은 누름.
+    --   두 길이 같은 누름을 둘 다 잡아도 TryAirJumpTeleport 의 공중 1회 · 디바운스(AirJumpTeleportDebounce)가 한 번만 낸다.
+    property boolean JumpActionHook = true
+
+    property number JumpPressGap = 0.1
+
+    @HideFromInspector
+    property number lastJumpAttemptAt = -10
+
+    @HideFromInspector
+    property boolean jumpConditionInstalled = false
+
     -- 더블 점프(SK_N02 · b/skill-novice-double-jump 2026-10-02): 공중 점프 키 = 마법사면 텔레포트(위 TeleportOnAirJump · 기획 "초보자 스킬의 더블 점프가 텔레포트로 바뀜"),
     --   그 밖(초보자 · 전사 · 궁수 · 도적 · 해적)은 SK_N02 를 배웠으면 더블 점프(SkillMovement.TryDoubleJump → SkillExecutors.RequestDoubleJump).
     --   전직 뒤에도 남는다 = B 기본값(#40 5954262491 → A 결정 5977728018 · 2026-10-04 기본값 OK · DoubleJumpKeepAfterJob 으로 끈다 — false 면 초보자만).
@@ -142,6 +161,21 @@ script SkillHotbar extends Logic
 
         self.actionEventHandler = player:ConnectEvent(PlayerActionEvent, self.OnPlayerAction)
         self.jumpKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyDown)
+        -- 점프 액션 자체에 걸기(JumpActionHook): 어느 키로 묶였든(Space · Alt · 사용자 설정) 점프가 시도될 때 OnJumpActionAttempt. 조건은 늘 true(점프를 막지 않는다).
+        --   한 번만 건다(컨트롤러가 조건을 쌓는다 · SkillCaster 의 시전 락 조건과 함께 돈다).
+        --   "Jump" 와 "Jump2"(기본 LeftAlt) 둘 다 — 같은 OnJumpActionAttempt 라 꾹 누르기 · 공중 1회 · 디바운스 판정도 한 벌이다.
+        if self.JumpActionHook and isvalid(controller) and not self.jumpConditionInstalled then
+            self.jumpConditionInstalled = true
+            local actions = { self.JumpActionName }
+            if self.JumpActionName2 ~= "" and self.JumpActionName2 ~= self.JumpActionName then table.insert(actions, self.JumpActionName2) end
+            for _, actionName in ipairs(actions) do
+                controller:AddCondition(actionName, function()
+                    self:OnJumpActionAttempt()
+                    return true
+                end)
+            end
+            log("SkillHotbar: double jump follows the '" .. table.concat(actions, "' + '") .. "' action(s) (any bound key)")
+        end
         self.isWired = true
         log("SkillHotbar: wired 8 hotbar keys (Skill1-Skill8)")
     end
@@ -230,10 +264,27 @@ script SkillHotbar extends Logic
         local controller = player.PlayerControllerComponent
         local isJumpKey = false
         if isvalid(controller) then
-            isJumpKey = controller:GetActionName(event.key) == self.JumpActionName
+            local actionName = controller:GetActionName(event.key)
+            isJumpKey = actionName == self.JumpActionName or (self.JumpActionName2 ~= "" and actionName == self.JumpActionName2)
         end
         if not isJumpKey and event.key == KeyboardKey.Space then isJumpKey = true end
+        if (event.key == KeyboardKey.LeftAlt or event.key == KeyboardKey.RightAlt) and isvalid(controller) then
+            -- 진단(b/skill-double-jump-any-key): Alt 가 어떤 액션으로 묶였는지 — 더블 점프는 이 길이 아니어도 점프 액션 훅(OnJumpActionAttempt)이 잡는다.
+            log("HOTBAR: key " .. tostring(event.key) .. " action='" .. tostring(controller:GetActionName(event.key)) .. "' jumpKey=" .. tostring(isJumpKey))
+        end
         if not isJumpKey then return end
+        self:TryAirJumpTeleport()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnJumpActionAttempt()
+        -- 엔진이 점프 액션을 시도할 때(어느 키든 · AddCondition). 꾹 누르기로 매 프레임 오면 첫 시도만 누름으로 본다(JumpPressGap).
+        -- 공중이면 더블 점프 / 마법사 공중 텔레포트(TryAirJumpTeleport · 지상이면 거기서 그냥 돌아온다 = 엔진 첫 점프).
+        local now = _UtilLogic.ElapsedSeconds
+        local fresh = now - self.lastJumpAttemptAt > self.JumpPressGap
+        self.lastJumpAttemptAt = now
+        if not fresh then return end
+        if not self.TeleportOnAirJump and not self.DoubleJumpOnAirJump then return end
         self:TryAirJumpTeleport()
     end
 
