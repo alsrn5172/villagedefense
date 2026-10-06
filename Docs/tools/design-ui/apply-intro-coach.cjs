@@ -3,8 +3,10 @@
 //   ui/CoachMarkGroup.ui  처음 하는 사람 안내(클릭 유도) — 시안 WIN_COACH (spot · coach)                         GroupOrder 18
 //   ui/HelpHudGroup.ui    HUD '도움말 H' 버튼 — 시안 상시 HUD 오른쪽 위 줄(H 도움말)                                GroupOrder 2
 //   ui/TipGroup.ui        2차 알림 카드(화면 오른쪽 가운데 · TipController)                                         GroupOrder 5
+//   ui/TutorialGroup.ui   튜토리얼(WO-051) 페이드 · 단계 칩 · 큰 설명창 · [그만두기] + 확인창(TutorialDirector)          GroupOrder 19
+//   WO-051: 소개 8쪽(튜토리얼 시작 페이지) · 탭 줄 오른쪽 [튜토리얼] + [안내 켜짐/꺼짐] 토글 · 45분(매치 기본 제한 시간)
 //   (그리는 순서는 런타임 /ui 형제 순서라 GroupOrder 만으로 정해지지 않는다 — 컨트롤러가 열 때 부활 팝업 바로 아래로 올린다)
-// 실행(월드 루트에서): node Docs/tools/design-ui/apply-intro-coach.cjs [intro] [coach] [hud] [tip]
+// 실행(월드 루트에서): node Docs/tools/design-ui/apply-intro-coach.cjs [intro] [coach] [hud] [tip] [tutorial]
 //   🔴 인자로 고른 파일만 다시 만든다(인자 없으면 넷 다). 다시 만들면 그 파일의 UUID 가 전부 새로 나오고(스크립트 주입도 새로) Maker 에서
 //   손댄 좌표 · 색(S2)이 지워진다 → 바꾼 파일만 골라서 돌린다.
 // 좌표 = 1920x1080 캔버스 왼쪽 위 기준 [x, y, w, h] (시안 px 그대로) → skin.cjs 의 at() 로 부모 가운데 기준 위치로 바꾼다.
@@ -29,6 +31,7 @@ const C = S.COLOR;
 const INTRO_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Onboarding/GameIntroController.mlua');
 const COACH_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Onboarding/CoachMarkController.mlua');
 const TIP_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Onboarding/TipController.mlua');
+const TUT_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Onboarding/TutorialDirector.mlua');
 
 // 틴트용 흰 9-slice(협업-규칙 6-4 · 64x64 반경 12 · border 14) — 막대 · 키 · 점처럼 모서리만 둥근 칸
 const WHITE = 'f5e5fbd6dd224f2d8a5af320436b95f0';
@@ -147,7 +150,7 @@ const PANE = [324, 220 + PY, 1272, 636];   // 탭 내용 상자(소개 쪽 · �
 const TABS = [348, 181, 1224, 56];         // 탭 줄(디자인 시스템 '창 탭' 56 · 계정 창 apply-account.cjs:62-74 조립)
 
 // 쪽 제목 · 핵심 한 줄 (시안 INTRO_T · INTRO_M) — 고친 곳: 4쪽 제목의 긴 줄표(메이플체에 없음) · 4 · 5 · 7쪽 핵심
-const TITLES = ['어떤 게임인가요?', '30분의 흐름', '레벨업 길잡이', '전직 · Lv 10 · 20 · 30', '내 마을 차지하고 지키기', '이기는 법', '조작키'];
+const TITLES = ['어떤 게임인가요?', '45분의 흐름', '레벨업 길잡이', '전직 · Lv 10 · 20 · 30', '내 마을 차지하고 지키기', '이기는 법', '조작키'];
 const KEYLINES = [
   'Lv 30까지 키우고, 내 마을을 지키면서, 발록을 가장 먼저 쓰러뜨리면 이겨요.',
   '1페이즈(4:30) 전까지는 사냥에 집중하고, Lv 10이 되면 바로 전직 → 마을 차지.',
@@ -164,7 +167,7 @@ const r = (t) => `<color=${CORAL}><b>${t}</b></color>`;
 //   2차(실제 게임에 맞춤): 2쪽 1 · 2페이즈(파병은 1페이즈부터 · DispatchRule.csv · 2페이즈 = 부활 비용 · PlayerRespawnService)
 //   4쪽 3줄(2 · 3차는 Lv 20 · 30 에 저절로 · PlayerSkillState.TryAdvanceTier) · 5쪽 2 · 3줄(주화 = 엘리트 · 시설 = 방어 시설 관리인 · 수비대 = 몬스터 재료)
 const BULLETS = [
-  [`<b>5명</b>이 빅토리아 아일랜드에서 <b>30분</b> 동안 겨루는 생존 게임이에요.`,
+  [`<b>5명</b>이 빅토리아 아일랜드에서 <b>45분</b> 동안 겨루는 생존 게임이에요.`,
     `다섯 마을(헤네시스 · 페리온 · 엘리니아 · 커닝시티 · 노틸러스) 중 <b>하나를 먼저 차지</b>해 내 마을로 키워요.`,
     `직업(전사 · 마법사 · 궁수 · 도적 · 해적)은 마을과 상관없이 <b>자유롭게</b> 골라요.`,
     `${g('가장 먼저 발록을 쓰러뜨리면 즉시 승리')}. 넥서스가 부서지면 탈락이에요.`],
@@ -218,7 +221,7 @@ function buildIntro() {
     const P = PAGE(i);
     K.box(P, PANE, { enable: i === 0 });
     // 머리줄: 금색 "n / 7" + 큰 쪽 제목 (시안 K5)
-    K.text(P + '/Num', `${i + 1} / 7`, [BODY_X, 240 + PY, 48, 24], { font: 'Maple', size: 16, color: C.gold, h: 'left' });
+    K.text(P + '/Num', `${i + 1} / 8`, [BODY_X, 240 + PY, 48, 24], { font: 'Maple', size: 16, color: C.gold, h: 'left' });
     K.text(P + '/Title', TITLES[i], [BODY_X + 54, 226 + PY, 1100, 42], { font: 'Maple', size: 30, color: C.title, h: 'left', shadow: true });
     // 그림 판 (시안 K10)
     const IL = [BODY_X, ILLU_Y, BODY_W, ILLU_H[i]];
@@ -244,6 +247,7 @@ function buildIntro() {
     K.text(P + '/KeyLine/Chip/Text', '핵심', [372, 798 + PY, 54, 24], { font: 'Maple', size: 14, color: C.goldInk });
     K.text(P + '/KeyLine/Text', KEYLINES[i], [440, 795 + PY, 1110, 30], { font: 'Noto700', size: 18, color: C.ivory, h: 'left' });
   }
+  buildTutorialPage(K);
 
   // 2차 탭 내용(재화 · 아이템 / 마을 NPC / 조작키) — 처음엔 꺼 둔다(GameIntroController.GoTab)
   buildCur(K);
@@ -255,7 +259,7 @@ function buildIntro() {
   K.solid('Root/Window/Foot/Bg', C.navy900, 0.3, [324, 857 + PY, 1272, 99]);
   K.solid('Root/Window/Foot/TopLine', '#E9B24A', 0.35, [324, 856 + PY, 1272, 1]);
   K.box('Root/Window/Foot/Dots', [350, 901 + PY, 140, 10]);
-  for (let d = 0; d < 7; d++) {
+  for (let d = 0; d < 8; d++) {
     // 왼쪽 끝 기준(middle-left) — 스크립트(LayoutDots)가 쪽마다 폭 · 색 · 위치를 다시 준다
     const w = d === 0 ? 28 : 10; const x = d === 0 ? 14 : 28 + 6 + (d - 1) * 16 + 5;
     b.sprite(`Root/Window/Foot/Dots/D${d + 1}`, { anchor: 'middle-left', pivot: [0.5, 0.5], pos: [x, 0], rect_size: [w, 10], image_ruid: WHITE, sprite_type: 1, color: d === 0 ? C.gold : '#3E5282', alpha: 1, raycast: false });
@@ -286,7 +290,9 @@ function buildIntro() {
         btnPrev: 'Root/Window/Foot/BtnPrev', btnNext: 'Root/Window/Foot/BtnNext', btnSkip: 'Root/Window/Foot/BtnSkip', btnClose: 'Root/Window/BtnClose',
         footIntro: 'Root/Window/Foot', footAlt: 'Root/Window/FootAlt', footHint: 'Root/Window/FootAlt/Hint', btnClose2: 'Root/Window/FootAlt/BtnClose',
         tabsRoot: 'Root/Window/Tabs', tab1: 'Root/Window/Tabs/Tab1', tab2: 'Root/Window/Tabs/Tab2', tab3: 'Root/Window/Tabs/Tab3', tab4: 'Root/Window/Tabs/Tab4',
-        btnReplay: 'Root/Window/Tabs/BtnReplay',
+        btnTutTab: 'Root/Window/Tabs/BtnTutorial', btnGuideToggle: 'Root/Window/Tabs/BtnGuide',
+        guideToggleText: 'Root/Window/Tabs/BtnGuide/Label', guideToggleOn: 'Root/Window/Tabs/BtnGuide/SelBg',
+        tutAskText: 'Root/Window/Pages/P8/Ask', btnTutStart: 'Root/Window/Pages/P8/BtnStart', btnTutNo: 'Root/Window/Pages/P8/BtnNo', tutNoteText: 'Root/Window/Pages/P8/Note',
         paneCur: 'Root/Window/TabCur', paneNpc: 'Root/Window/TabNpc', paneKeys: 'Root/Window/TabKey',
         curList: 'Root/Window/TabCur/List', curDetail: 'Root/Window/TabCur/Detail',
       },
@@ -299,7 +305,7 @@ function buildIntro() {
 // 시안 디자인 시스템 '탭 3단계' 중 '창 탭'(금 · 파랑 버튼 56 · 글자 24). 오른쪽 끝은 '안내 다시 보기'(시안 WIN_COACH: 이후 도움말에서 다시 본다).
 const TAB_DEFS = [['게임 소개', 'ico_book'], ['재화 · 아이템', 'ico_coin'], ['마을 NPC', 'ico_home'], ['조작키', 'ico_gear']];
 function buildTabs(K) {
-  const TW = 250; const GAP = 8;
+  const TW = 230; const GAP = 8;   // WO-051: 250 → 230 — 오른쪽에 [튜토리얼] · [안내] 토글 두 칸
   K.box('Root/Window/Tabs', TABS);
   TAB_DEFS.forEach((t, i) => {
     const R = [TABS[0] + i * (TW + GAP), TABS[1], TW, TABS[3]];
@@ -310,11 +316,94 @@ function buildTabs(K) {
     K.img(P + '/Icon', t[1], [x0, R[1] + 15, 26, 26]);
     K.text(P + '/Label', t[0], [x0 + 34, R[1], lw + 12, R[3]], { font: 'Maple', size: 24, color: i === 0 ? C.goldInk : C.ivory, h: 'left' });
   });
-  const x = TABS[0] + 4 * (TW + GAP); const RP = [x, TABS[1], TABS[0] + TABS[2] - x, TABS[3]];
-  K.btn('Root/Window/Tabs/BtnReplay', '', RP, { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' });
-  const lw = Math.ceil(estW('안내 다시 보기', 17)); const total = 24 + 6 + lw; const x0 = RP[0] + (RP[2] - total) / 2;
-  K.img('Root/Window/Tabs/BtnReplay/Icon', 'icon_help', [x0, RP[1] + 16, 24, 24]);
-  K.text('Root/Window/Tabs/BtnReplay/Label', '안내 다시 보기', [x0 + 30, RP[1], lw + 10, RP[3]], { font: 'Noto700', size: 17, color: C.ivory, h: 'left' });
+  // WO-051: '안내 다시 보기' 자리 → [튜토리얼](소개 8쪽짜리를 1쪽부터) + [안내 켜짐/꺼짐] 토글(켜짐 = 금 바탕 SelBg · 스크립트가 바꾼다)
+  const x = TABS[0] + 4 * (TW + GAP); const W2 = TABS[0] + TABS[2] - x;
+  const RT = [x, TABS[1], Math.floor((W2 - GAP) * 0.48), TABS[3]];
+  const RG = [RT[0] + RT[2] + GAP, TABS[1], TABS[0] + TABS[2] - (RT[0] + RT[2] + GAP), TABS[3]];
+  K.btn('Root/Window/Tabs/BtnTutorial', '', RT, { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' });
+  { const lw = Math.ceil(estW('튜토리얼', 17)); const total = 22 + 6 + lw; const x0 = RT[0] + (RT[2] - total) / 2;
+    K.img('Root/Window/Tabs/BtnTutorial/Icon', 'ico_book', [x0, RT[1] + 17, 22, 22]);
+    K.text('Root/Window/Tabs/BtnTutorial/Label', '튜토리얼', [x0 + 28, RT[1], lw + 10, RT[3]], { font: 'Noto700', size: 17, color: C.ivory, h: 'left' }); }
+  K.btn('Root/Window/Tabs/BtnGuide', '', RG, { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' });
+  K.img('Root/Window/Tabs/BtnGuide/SelBg', 'btn_gold_default', RG);
+  { const lw = Math.ceil(estW('안내 켜짐', 17)); const total = 22 + 6 + lw; const x0 = RG[0] + (RG[2] - total) / 2;
+    K.img('Root/Window/Tabs/BtnGuide/Icon', 'icon_help', [x0, RG[1] + 17, 22, 22]);
+    K.text('Root/Window/Tabs/BtnGuide/Label', '안내 켜짐', [x0 + 28, RG[1], lw + 12, RG[3]], { font: 'Noto700', size: 17, color: C.goldInk, h: 'left' }); }
+}
+
+// ── 8쪽: 튜토리얼 시작 (WO-051 · 사용자 2026-10-06 "맨 마지막에 튜토리얼 시작하기! 대문짝만하게 · 예 아니오") ──
+function buildTutorialPage(K) {
+  const P = 'Root/Window/Pages/P8';
+  K.box(P, PANE, { enable: false });
+  K.text(P + '/Num', '8 / 8', [BODY_X, 240 + PY, 48, 24], { font: 'Maple', size: 16, color: C.gold, h: 'left' });
+  K.text(P + '/Title', '튜토리얼', [BODY_X + 54, 226 + PY, 1100, 42], { font: 'Maple', size: 30, color: C.title, h: 'left', shadow: true });
+  const IL = [BODY_X, ILLU_Y, BODY_W, 440];
+  K.img(P + '/Illu', 'panel_inner', IL);
+  K.img(P + '/Illu/Crest', 'deco_crest', [810, IL[1] + 26, 300, 88]);
+  // 문구는 스크립트가 처음 하는 사람 · 매치 중에 맞게 바꾼다(RefreshTutorialPage)
+  K.text(P + '/Ask', '처음 오셨군요!\n튜토리얼을 진행하시겠습니까?', [BODY_X, IL[1] + 120, BODY_W, 110], { font: 'Maple', size: 38, color: C.title, shadow: true });
+  K.text(P + '/Note', '혼자 들어가는 연습 판에서 한 판의 흐름을 직접 해 봐요 · 결과는 계정에 남지 않아요', [BODY_X, IL[1] + 236, BODY_W, 34], { font: 'Noto500', size: 19, color: C.sub });
+  K.btn(P + '/BtnStart', '튜토리얼 시작하기', [660, IL[1] + 286, 600, 104], { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' }, { font: 'Maple', size: 36, color: C.goldInk });
+  K.btn(P + '/BtnNo', '아니오', [860, IL[1] + 400, 200, 56], { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' }, { font: 'Maple', size: 20, color: C.ivory, shadow: true });
+  K.fill(P + '/KeyLine', C.gold, 0.16, KEY);
+  K.solid(P + '/KeyLine/Bar', C.gold, 1, [KEY[0], KEY[1], 3, KEY[3]]);
+  K.img(P + '/KeyLine/Chip', 'chip_gold', [372, 798 + PY, 54, 24]);
+  K.text(P + '/KeyLine/Chip/Text', '핵심', [372, 798 + PY, 54, 24], { font: 'Maple', size: 14, color: C.goldInk });
+  K.text(P + '/KeyLine/Text', '튜토리얼은 도움말(H) 위쪽 [튜토리얼] 버튼으로 언제든 다시 할 수 있어요.', [440, 795 + PY, 1110, 30], { font: 'Noto700', size: 18, color: C.ivory, h: 'left' });
+}
+
+// ─────────────────────────────────────────── 튜토리얼 화면 (WO-051) ───────────────────────────────────────────
+// 페이드(검은 막 · 스크립트가 알파) · 위 가운데 단계 칩(매치 시계 자리) · 오른쪽 위 [그만두기](MSW 기본 메뉴 아래) · 큰 설명창 · 그만두기 확인창.
+// 강조 막(CoachMarkGroup) 위에 그려야 해서 TutorialDirector 가 장면마다 부활 팝업 바로 아래로 올린다.
+const ELLINIA_EMBLEM = 'a67009c937104506b1f2d178e6477c1b';
+function buildTutorial() {
+  const b = new UIBuilder('TutorialGroup', 19, true);
+  const K = kit(b);
+  K.root('Root', false);
+  K.solid('Root/Fade', '#000000', 1, [0, 0, 1920, 1080], { anchor: 'stretch', raycast: true, enable: false });
+  K.box('Root/Step', [690, 14, 540, 52]);
+  K.img('Root/Step/Bg', 'panel_tooltip', [690, 14, 540, 52]);
+  K.text('Root/Step/Text', '1단계 · 전직과 마을 차지', [690, 14, 540, 52], { font: 'Maple', size: 22, color: C.title, shadow: true });
+  K.btn('Root/BtnQuit', '그만두기', [1756, 120, 144, 52], { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' }, { font: 'Maple', size: 20, color: C.ivory, shadow: true });
+  // 큰 설명창: 창 [540, 250, 840, 560] · 몸은 창 가운데 기준(스크립트가 문장 아이콘 유무로 x 0 / 70 · 폭 760 / 620)
+  K.box('Root/Card', [0, 0, 1920, 1080], { enable: false });
+  K.solid('Root/Card/Dimmer', C.veil, 0.55, [0, 0, 1920, 1080], { anchor: 'stretch', raycast: true });
+  K.img('Root/Card/Window', 'panel_window', [540, 250, 840, 560], { raycast: true });
+  K.img('Root/Card/Window/Chip', 'chip_gold', [580, 292, 160, 30]);
+  K.text('Root/Card/Window/Chip/Text', '튜토리얼', [580, 292, 160, 30], { font: 'Maple', size: 15, color: C.goldInk });
+  K.text('Root/Card/Window/Title', '이 게임은 이렇게 이겨요', [580, 332, 760, 50], { font: 'Maple', size: 32, color: C.title, h: 'left', shadow: true });
+  K.raw('Root/Card/Window/Emblem', ELLINIA_EMBLEM, [580, 400, 120, 120], { enable: false });
+  K.text('Root/Card/Window/Body', '', [580, 400, 760, 236], { font: 'Noto500', size: 21, color: C.ivory, h: 'left', v: 'top' });
+  K.box('Root/Card/Window/Hp', [720, 642, 600, 52], { enable: false });
+  K.text('Root/Card/Window/Hp/Text', '엘리니아 넥서스 18%', [740, 642, 560, 24], { font: 'Noto700', size: 16, color: C.coral, h: 'left' });
+  K.solid('Root/Card/Window/Hp/Track', '#1A2238', 1, [740, 670, 560, 16]);
+  // 체력 채움: 왼쪽 끝 고정(피벗 왼쪽) — 스크립트가 폭만 바꾼다(560 × 비율)
+  b.sprite('Root/Card/Window/Hp/Fill', { anchor: 'middle-left', pivot: [0, 0.5], pos: [20, -10], rect_size: [560, 16], color: '#E0484E', alpha: 1, sprite_type: 1, raycast: false });
+  b.patchComponent('Root/Card/Window/Hp/Fill', S.SPR, { ImageRUID: { DataId: '' }, Type: 1 });
+  K.btn('Root/Card/Window/BtnNext', '다음', [1140, 718, 200, 62], { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' }, { font: 'Maple', size: 22, color: C.goldInk });
+  // 그만두기 확인창
+  K.box('Root/Confirm', [0, 0, 1920, 1080], { enable: false });
+  K.solid('Root/Confirm/Dimmer', C.veil, 0.6, [0, 0, 1920, 1080], { anchor: 'stretch', raycast: true });
+  K.img('Root/Confirm/Window', 'panel_window', [660, 380, 600, 320], { raycast: true });
+  K.text('Root/Confirm/Window/Title', '튜토리얼을 그만둘까요?', [700, 420, 520, 50], { font: 'Maple', size: 28, color: C.title, shadow: true });
+  K.text('Root/Confirm/Window/Body', '진행한 내용은 남지 않고 로비로 돌아가요.', [700, 484, 520, 60], { font: 'Noto500', size: 19, color: C.ivory });
+  K.btn('Root/Confirm/Window/BtnYes', '그만두기', [720, 592, 220, 62], { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed' }, { font: 'Maple', size: 22, color: C.ivory, shadow: true });
+  K.btn('Root/Confirm/Window/BtnNo', '계속하기', [980, 592, 220, 62], { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' }, { font: 'Maple', size: 22, color: C.goldInk });
+  const touched = S.chipText(b, { extra: { 'Root/Card/Window/Chip': ['Root/Card/Window/Chip/Text'] } });
+  console.log('[tutorial] chipText', touched.length, '· entities', b.listEntities().length);
+  b.write(path.join(WORLD, 'ui', 'TutorialGroup.ui'), {
+    lint_verbose: !!process.env.LINT_V,
+    bind: {
+      mlua: TUT_MLUA,
+      props: {
+        root: 'Root', fade: 'Root/Fade', stepRoot: 'Root/Step', stepText: 'Root/Step/Text', btnQuit: 'Root/BtnQuit',
+        card: 'Root/Card', cardChip: 'Root/Card/Window/Chip/Text', cardTitle: 'Root/Card/Window/Title', cardBody: 'Root/Card/Window/Body',
+        cardEmblem: 'Root/Card/Window/Emblem', cardHp: 'Root/Card/Window/Hp', cardHpFill: 'Root/Card/Window/Hp/Fill', cardHpText: 'Root/Card/Window/Hp/Text',
+        btnCardNext: 'Root/Card/Window/BtnNext',
+        confirm: 'Root/Confirm', btnConfirmYes: 'Root/Confirm/Window/BtnYes', btnConfirmNo: 'Root/Confirm/Window/BtnNo',
+      },
+    },
+  });
 }
 
 // ── 쪽 그림 (시안 p1 ~ p7 · 판 안쪽 사각형 IN = 판 - 여백 22) ──
@@ -872,4 +961,5 @@ if (want('intro')) buildIntro();
 if (want('coach')) buildCoach();
 if (want('hud') || want('help')) buildHelp();
 if (want('tip')) buildTip();
-console.log('끝 — ' + (ARGS.length ? ARGS.join(' · ') : 'intro · coach · hud · tip'));
+if (want('tutorial')) buildTutorial();
+console.log('끝 — ' + (ARGS.length ? ARGS.join(' · ') : 'intro · coach · hud · tip · tutorial'));

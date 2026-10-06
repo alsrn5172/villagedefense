@@ -221,13 +221,14 @@ script CoachMarkController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnMatchStart()
-		-- OnboardingService 가 새 판 시작을 알렸다: ★1 + 안내 켬이면 마을 자동 단계를 켜고, 처음 하는 사람이면 2초 뒤 매치 시작 묶음.
+		-- OnboardingService 가 새 판 시작을 알렸다: 안내 켬이면 마을 자동 단계를 켜고 2초 뒤 매치 시작 묶음.
+		--   WO-051(사용자 2026-10-06 "안내 다시 보기 = 토글 · on 이면 항상 계속 뜨고 off 면 안 뜨게"): 처음 하는 사람 · ★1 조건 없이 토글만 본다.
 		local ob = _OnboardingService
 		self.armed = ob ~= nil and ob.guideOn == true
 		self.autoDone = {}
 		self.wantKey = ""
 		self.startAt = 0
-		if self.armed and ob.firstTimer == true then
+		if self.armed then
 			self.startAt = _UtilLogic.ElapsedSeconds + self.matchStartDelay
 		end
 		log("[Coach] match start armed=" .. tostring(self.armed) .. " first=" .. tostring(ob ~= nil and ob.firstTimer) .. " seqAt=" .. string.format("%.1f", self.startAt))
@@ -268,6 +269,51 @@ script CoachMarkController extends Logic
 		-- 첫 전직 성공 뒤 대화창이 닫힌 다음 표시. 난이도·초보 안내 설정과 무관하게 한 번 안내한다.
 		self:Close("first-job")
 		self._T.mirrorGuidePending = true
+	end
+
+	-- ── 외부 단계(튜토리얼 · WO-051) ──
+	--   TutorialDirector 가 단계 정의 하나를 넘겨 막 · 구멍 · 말풍선만 그리게 한다. 진행(다음 단계)은 부른 쪽이 정한다.
+	--   def: title · text · chip(머리 칩 글자) · side · w · btn(다음 버튼 글자 · nil = 버튼 없음 = 행동해야 넘어감) · pulse · finger · noDim
+	--        대상(하나): ui(경로) · uiEntity(Entity) · world({ e = Entity, x1, y1, x2, y2, px, py } · 엔티티 기준 유닛) · rect({ x1, y1, x2, y2 } 막 루트 로컬) · 없으면 막만 깔고 말풍선은 가운데
+	--   [다음] = onNext() · 건너뛰기 · Esc 는 받지 않는다(튜토리얼은 오른쪽 위 [그만두기] 로만 나간다).
+
+	@ExecSpace("ClientOnly")
+	method void ShowCustom(any def, any onNext)
+		-- 외부 단계 하나를 그린다(이미 떠 있으면 내용만 바꾼다).
+		if not isvalid(self.root) or def == nil then
+			return
+		end
+		self._T.customNext = onNext
+		self.defs["__custom"] = def
+		local was = self.active and self.seq ~= nil and self.seq.name == "custom"
+		self.seq = { name = "custom", keys = { "__custom" } }
+		if not was then
+			self.active = true
+			self.paused = false
+			if self.tickTimer ~= 0 then
+				_TimerService:ClearTimer(self.tickTimer)
+			end
+			self.tickTimer = _TimerService:SetTimerRepeat(function() self:Tick() end, 1 / self.tickHz)
+		end
+		self:BringToFront()
+		self.root.Enable = true
+		self:GoStep(1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideCustom(string reason)
+		-- 외부 단계를 내린다(튜토리얼 장면 사이 · 끝).
+		if self.seq ~= nil and self.seq.name == "custom" then
+			self._T.customNext = nil
+			self.active = true
+			self:Close("custom:" .. reason)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsCustom()
+		-- 지금 외부 단계(튜토리얼)를 그리는 중인가.
+		return self.active and self.seq ~= nil and self.seq.name == "custom"
 	end
 
 	@ExecSpace("ClientOnly")
@@ -349,6 +395,11 @@ script CoachMarkController extends Logic
 		if not self.active then
 			return
 		end
+		-- 튜토리얼 외부 단계는 HideCustom(custom:*) 으로만 내린다 — 건너뛰기 · Esc · 소개 · 죽음으로 막이 걷히면 다른 곳을 누를 수 있게 된다(WO-051).
+		if self.seq ~= nil and self.seq.name == "custom" and string.sub(reason, 1, 7) ~= "custom:" then
+			log("[Coach] close ignored in tutorial step (" .. reason .. ")")
+			return
+		end
 		self.active = false
 		self.paused = false
 		self._T.busy = false
@@ -366,6 +417,13 @@ script CoachMarkController extends Logic
 	method void OnNextClicked()
 		-- 말풍선 [다음]. 월드맵 열기 단계는 월드맵을 열고 다음으로.
 		--   월드맵을 여는 동안 Tick 이 "열림"을 먼저 보고 넘길 수 있다 → 누른 때의 단계에서만 한 번 넘긴다(2026-10-05 Play: 두 번 넘김).
+		if self.seq ~= nil and self.seq.name == "custom" then
+			local fn = self._T.customNext
+			if fn ~= nil then
+				fn()
+			end
+			return
+		end
 		local from = self.step
 		local s = self.defs[self.cur]
 		if s ~= nil and s.openMap == true then
@@ -411,7 +469,9 @@ script CoachMarkController extends Logic
 		end
 		local total = #self.seq.keys
 		if isvalid(self.chipText) then
-			if self.seq.name == "single" then
+			if self.seq.name == "custom" then
+				self.chipText.Text = s.chip or "튜토리얼"
+			elseif self.seq.name == "single" then
 				self.chipText.Text = "안내"
 			else
 				self.chipText.Text = tostring(n) .. " / " .. tostring(total)
@@ -529,6 +589,11 @@ script CoachMarkController extends Logic
 		if not self.active or self._T.busy == true then
 			return
 		end
+		if self.seq ~= nil and self.seq.name == "custom" then
+			-- 튜토리얼: 창 · 맵 · 죽음 판단은 TutorialDirector 가 한다. 여기서는 대상 자리만 다시 맞춘다.
+			self:Layout()
+			return
+		end
 		local p = _UserService.LocalPlayer
 		if self.cur == "taxi" and isvalid(p) and p.CurrentMapName ~= "LithHarbor_Village_MinimiMain" then
 			self:Close("mirror-map-left")
@@ -629,6 +694,17 @@ script CoachMarkController extends Logic
 			local t = self.btnSkip.Entity.UITransformComponent
 			t.anchoredPosition = Vector2(-(bw + 12), 0)
 			t.RectSize = Vector2(t.RectSize.x, t.RectSize.y)
+		end
+		-- 튜토리얼 외부 단계: 건너뛰기는 없고, [다음]은 btn 이 있을 때만(없으면 밝힌 곳을 눌러야 넘어간다) · 진행 점 대신 칩.
+		local custom = self.seq ~= nil and self.seq.name == "custom"
+		if isvalid(self.btnSkip) then
+			self.btnSkip.Entity.Enable = not custom
+		end
+		if isvalid(self.btnNext) then
+			self.btnNext.Entity.Enable = (not custom) or s.btn ~= nil
+		end
+		if custom and isvalid(self.dotsRoot) then
+			self.dotsRoot.Enable = false
 		end
 	end
 
@@ -833,6 +909,31 @@ script CoachMarkController extends Logic
 				end
 			end
 			return nil
+		end
+		if s.uiEntity ~= nil then
+			if isvalid(s.uiEntity) and s.uiEntity.EnabledInHierarchy then
+				local r = self:RectOfUI(s.uiEntity)
+				if r ~= nil then
+					return { r = r, px = (r.x1 + r.x2) / 2, py = (r.y1 + r.y2) / 2, name = s.uiEntity.Name }
+				end
+			end
+			return nil
+		end
+		if s.world ~= nil then
+			-- 튜토리얼: 월드 엔티티 기준 상자(유닛) · 엔티티가 사라지면 nil(막만)
+			local w = s.world
+			if not isvalid(w.e) or w.e.TransformComponent == nil then
+				return nil
+			end
+			local wp = w.e.TransformComponent.WorldPosition
+			local a = self:LocalOfWorld(wp.x + (w.x1 or -0.6), wp.y + (w.y1 or -0.3))
+			local b = self:LocalOfWorld(wp.x + (w.x2 or 0.6), wp.y + (w.y2 or 1.2))
+			local m = self:LocalOfWorld(wp.x + (w.px or 0), wp.y + (w.py or 0.5))
+			return { r = { x1 = math.min(a.x, b.x), y1 = math.min(a.y, b.y), x2 = math.max(a.x, b.x), y2 = math.max(a.y, b.y) }, px = m.x, py = m.y, name = "world:" .. w.e.Name }
+		end
+		if s.rect ~= nil then
+			local q = s.rect
+			return { r = { x1 = q.x1, y1 = q.y1, x2 = q.x2, y2 = q.y2 }, px = (q.x1 + q.x2) / 2, py = (q.y1 + q.y2) / 2, name = "rect" }
 		end
 		if s.target == "hunt" then
 			return self:HuntTarget()
@@ -1161,7 +1262,7 @@ script CoachMarkController extends Logic
 			self:PlaceRect(self.finger, 0, 0, 0, 0)
 		end
 		self:PlaceBubble(s, tg, hole, B, forceSide)
-		if s.mapMark == true then
+		if s.mapMark == true or s.noDim == true then
 			-- 거울 안내 중에는 길과 게임 화면을 가리지 않는다. 대상 금테·고리·화살표·말풍선만 남긴다.
 			for _, e in ipairs({ self.dimTop, self.dimBottom, self.dimLeft, self.dimRight }) do
 				if isvalid(e) then e.Enable = false end

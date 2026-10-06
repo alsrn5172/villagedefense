@@ -1235,6 +1235,8 @@ script LaneStateService extends Logic
 			-- V|id|name|own|claimed — 주인 없는 마을은 파병 대상이 아니다(클라가 회색 처리).
 			for _, vv in ipairs(self.villages) do
 				local claimed = (_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(vv.id) ~= "") or false
+				-- 튜토리얼(WO-051): 혼자 룸이라 상대가 없다 → 가상 상대 마을 하나를 주인 있는 마을로 보여 준다(5-2 파병 장면).
+				if self:IsTutorialRival(vv.id) then claimed = true end
 				add({ "V", vv.id, vv.name, b2s(vv.id == own), b2s(claimed) })
 			end
 			if _DispatchService ~= nil then
@@ -1569,7 +1571,8 @@ script LaneStateService extends Logic
 		if targetVillageId == v.id then self:Toast(uid, "내 마을에는 파병할 수 없습니다") self:Push(uid, "dispatch") return end
 		local targetName = self:VillageName(targetVillageId)
 		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(targetVillageId) or ""
-		if owner == "" then self:Toast(uid, targetName .. " 는 주인이 없습니다 — 파병 대상이 아닙니다") self:Push(uid, "dispatch") return end
+		local rival = self:IsTutorialRival(targetVillageId)
+		if owner == "" and not rival then self:Toast(uid, targetName .. " 는 주인이 없습니다 — 파병 대상이 아닙니다") self:Push(uid, "dispatch") return end
 		local rule = _DispatchService:CurrentRule()
 		if not rule.enabled then self:Toast(uid, "지금 페이즈에는 파병을 접수하지 않습니다") self:Push(uid, "dispatch") return end
 		local cap = math.floor(rule.villageCap or 0)
@@ -1620,10 +1623,32 @@ script LaneStateService extends Logic
 			-- 🔴 방어자에게는 **총량 등급만** 알린다 (GDD §4.3 정보 비대칭 — 누가·무엇을 보냈는지는 공개하지 않는다).
 			--    접수 순간엔 아직 안 섞였다 → "온다" 로 알리고, 실제로 섞이는 투입 순간은 DispatchService.Release 가 알린다 + 레인 HUD 배지(WO-031 묶음 1).
 			local grade = _DispatchService:GradeOf(targetVillageId)
-			if grade ~= "" then self:Toast(owner, "내 레인으로 파병이 옵니다 — 다음 투입 때 섞임 · 총량 " .. grade) end
+			if grade ~= "" and owner ~= "" then self:Toast(owner, "내 레인으로 파병이 옵니다 — 다음 투입 때 섞임 · 총량 " .. grade) end
 		end
 		self:Push(uid, "dispatch")
 		self:Push(uid, "recruit")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsTutorialRival(string villageId)
+		-- 튜토리얼 룸의 가상 상대 마을인가(WO-051 · TutorialService.RivalVillageId).
+		return _TutorialService ~= nil and _TutorialService.Active and villageId == _TutorialService.RivalVillageId
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer TutorialEnsureDefenders(string userId, integer monsterId)
+		-- 튜토리얼 5-2 파병 장면 전: 수비대가 하나도 없으면(3-7 웨이브에서 다 죽음) 해금 · 모집과 같은 길로 한 묶음 채운다. 돌려주는 값 = 묶음 수.
+		local v = self:StateOfUser(userId)
+		if v == nil then return 0 end
+		if #v.defenders > 0 then return #v.defenders end
+		if self:MonLevel(v, monsterId) < 1 then v.mon[monsterId] = 1 end
+		local rr = self:RecruitRow(monsterId)
+		local size = (rr ~= nil) and rr.bundleSize or 5
+		local spawned = (_DefenderService ~= nil) and _DefenderService:SpawnBundle(v.id, monsterId, self:MonMul(v, monsterId), 1, size, self:FrontStage(v)) or 0
+		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
+		table.insert(v.defenders, { key = tostring(monsterId), name = name, qty = spawned, lv = self:MonLevel(v, monsterId) })
+		log("[Lane] tutorial ensure defenders " .. v.id .. " mob=" .. tostring(monsterId) .. " spawned=" .. tostring(spawned) .. " (" .. userId .. ")")
+		return #v.defenders
 	end
 
 	@ExecSpace("Server")

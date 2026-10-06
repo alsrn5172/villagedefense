@@ -168,6 +168,23 @@ script CommonNpcUIController extends Logic
 	@HideFromInspector
 	property boolean taxiJobOk = false
 
+	-- 2 · 3차 전직 자동 창(WO-051 · 사용자 2026-10-06 "10렙은 직접 전직 · 20 · 30렙은 자동으로 열리게"): 직업별 전직관 그림 · 이름(apply-intro-coach.cjs NPC 표와 같은 그림)
+	property string JobNpcRuids = "WARRIOR=ec40238056d14dc895e93767d9bf6f90;MAGICIAN=fb911e3df47b4b54997950df0726285a;ARCHER=4d71a2a1d659408fbdf5dac3152134e6;THIEF=4801a0f7b2664b8da9b73d2b3ea25fd4;PIRATE=f389034efb9b4e29bba08efad1147a24"
+
+	property string JobNpcNames = "WARRIOR=주먹펴고 일어서;MAGICIAN=하인즈;ARCHER=헬레나;THIEF=다크로드;PIRATE=카이린"
+
+	-- 레벨 확인 간격(초)
+	property number AdvancePollSeconds = 0.5
+
+	@HideFromInspector
+	property any advancePrompted = nil
+
+	@HideFromInspector
+	property number advanceAcc = 0
+
+	@HideFromInspector
+	property integer advanceTier = 0
+
 	method void OnBeginPlay()
 		-- 클라만 배선.
 		if self:IsClient() then self:SetupClient() end
@@ -224,12 +241,17 @@ script CommonNpcUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
-		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6).
+		-- NPC 라우터: 이 그룹 앞으로 온 Pending 요청을 소비한다 (§5-6). + 2 · 3차 전직 자동 창 확인(WO-051).
 		local r = _VillageNpcUIController
 		if r ~= nil and r.HasPendingRequest and r.PendingUiGroupName == "CommonNpcGroup" then
 			self:Open(r.PendingUiRoute)
 			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
 			r:ClearPendingRequest()
+		end
+		self.advanceAcc = self.advanceAcc + delta
+		if self.advanceAcc >= self.AdvancePollSeconds then
+			self.advanceAcc = 0
+			self:CheckTierAdvance()
 		end
 	end
 
@@ -496,6 +518,58 @@ script CommonNpcUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void CheckTierAdvance()
+		-- 전직한 사람이 다음 차수 레벨(JobTier.ReqLevel · 20 · 30)에 닿으면 전직 창을 한 번 연다(차수마다 한 번).
+		--   실제 차수 올리기는 B 의 서버 TryAdvanceTier(RequestSync) — 창을 닫아도 시전 · 동기화 때 서버가 올린다(예전 동작 그대로).
+		if self.isOpen or _PlayerSkillState == nil or _JobDatabase == nil then return end
+		local job = _PlayerSkillState:LocalJobId() or ""
+		if job == "" or job == (_PlayerSkillState.NoviceJobId or "NOVICE") then return end
+		local tier = math.floor(_PlayerSkillState:LocalTier() or 0)
+		local nextTier = tier + 1
+		local req = _JobDatabase:GetRequiredLevel(job, nextTier)
+		if req == nil or req <= 0 then return end
+		local level = _PlayerSkillState:LocalLevel() or 1
+		if level < req then return end
+		if self.advancePrompted == nil then self.advancePrompted = {} end
+		if self.advancePrompted[nextTier] == true then return end
+		self.advancePrompted[nextTier] = true
+		self:OpenTierAdvance(job, nextTier, req)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string PairOf(string csv, string key)
+		-- "KEY=값;..." 에서 key 의 값(없으면 "").
+		for pair in string.gmatch(csv, "([^;]+)") do
+			local k, v = string.match(pair, "^([^=]+)=(.*)$")
+			if k == key then return v or "" end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenTierAdvance(string job, integer nextTier, number req)
+		-- 2 · 3차 전직 창: 전직관 대화창(talkRoot)을 그대로 쓴다 · [전직하기] = B PlayerSkillState.RequestSync(서버 TryAdvanceTier).
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("CommonNpcGroup") end
+		self.route = "advance"
+		self.jobId = job
+		self.advanceTier = nextTier
+		self.isOpen = true
+		if isvalid(self.dimmer) then self.dimmer.Enable = true end
+		if isvalid(self.window) then self.window.Enable = false end
+		if isvalid(self.talkName) then self.talkName.Text = self:PairOf(self.JobNpcNames, job) end
+		local ruid = self:PairOf(self.JobNpcRuids, job)
+		if isvalid(self.talkPortrait) and ruid ~= "" then self.talkPortrait.ImageRUID = DataRef(ruid) end
+		local line = tostring(math.floor(req)) .. "레벨이 됐군!
+
+이제 " .. tostring(nextTier) .. "차 전직을 할 수 있네. 전직하면 새 스킬을 배울 수 있지.
+준비됐다면 아래 전직하기를 눌러 주게."
+		if isvalid(self.talkLine) then self.talkLine.Text = line end
+		if isvalid(self.btnTalkYes) then self.btnTalkYes.Entity.Enable = true end
+		if isvalid(self.talkRoot) then self.talkRoot.Enable = true end
+		log("[Common] tier advance window job=" .. job .. " tier=" .. tostring(nextTier) .. " req=" .. tostring(req))
+	end
+
+	@ExecSpace("ClientOnly")
 	method string FindNpcSprite(string catalogNpcId)
 		-- 지금 맵에서 NpcSpawner 가 만든 "Npc_<CatalogNpcId>_<순번>" 엔티티를 찾아 SpriteRUID 를 돌려준다. 없으면 "".
 		if catalogNpcId == "" then return "" end
@@ -513,6 +587,13 @@ script CommonNpcUIController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnTalkYes()
 		-- [예] = B 전직 요청 후 닫기. 결과(전직 · 차수)는 B PushState 로 스킬 창 · HUD 에 반영된다.
+		--   2 · 3차 자동 창(route advance · WO-051)은 B 의 RequestSync → 서버 TryAdvanceTier 가 레벨만큼 차수를 올린다.
+		if self.route == "advance" then
+			if _PlayerSkillState ~= nil then _PlayerSkillState:RequestSync() end
+			log("[Common] tier advance request tier=" .. tostring(self.advanceTier))
+			self:Close()
+			return
+		end
 		if self.jobId ~= "" and _PlayerSkillState ~= nil then
 			_PlayerSkillState:RequestChooseJob(self.jobId)
 			log("[Common] jobchange request job=" .. self.jobId)

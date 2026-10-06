@@ -46,6 +46,10 @@ script OnboardingService extends Logic
 	@HideFromInspector
 	property string ownVillage = ""
 
+	-- 계정 "안내 끄기" 값(도움말 토글 표시 · WO-051)
+	@HideFromInspector
+	property boolean guideOff = false
+
 	method void OnBeginPlay()
 		-- 서버: 대기표 준비 · 클라: 지금 상태를 한 번 묻는다.
 		if self:IsServer() then
@@ -104,8 +108,11 @@ script OnboardingService extends Logic
 				village = _VillageOwnership:VillageOf(uid) or ""
 			end
 		end
-		log("[Onboard] state user=" .. uid .. " first=" .. tostring(first) .. " (exp " .. tostring(exp) .. ") match=" .. tostring(inMatch) .. " serial=" .. tostring(serial) .. " guide=" .. tostring(guideOn) .. " village=" .. village .. " reason=" .. reason)
-		self:PushState(first, inMatch, serial, guideOn, village, reason, uid)
+		-- 튜토리얼에서 막 돌아왔나(WO-051 · 로비에서 도움말 1쪽을 연다 · 한 번만).
+		local afterTut = _TutorialService ~= nil and _TutorialService:ConsumeReturned(uid)
+		local off = _AccountData ~= nil and _AccountData:IsGuideOff(uid)
+		log("[Onboard] state user=" .. uid .. " first=" .. tostring(first) .. " (exp " .. tostring(exp) .. ") match=" .. tostring(inMatch) .. " serial=" .. tostring(serial) .. " guide=" .. tostring(guideOn) .. " village=" .. village .. " afterTut=" .. tostring(afterTut) .. " reason=" .. reason)
+		self:PushState(first, inMatch, serial, guideOn, village, afterTut, off, reason, uid)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -167,9 +174,12 @@ script OnboardingService extends Logic
 	end
 
 	@ExecSpace("Client")
-	method void PushState(boolean first, boolean inMatch, integer serial, boolean guideOn, string village, string reason)
+	method void PushState(boolean first, boolean inMatch, integer serial, boolean guideOn, string village, boolean afterTut, boolean off, string reason)
 		-- 서버 → 이 클라: 상태를 적고 소개 · 안내 · 알림에 알린다. 같은 판(serial)의 시작은 한 번만 넘긴다.
+		--   afterTut = 튜토리얼을 끝내고(그만두고) 로비로 막 돌아왔다 → 도움말 1쪽(WO-051 · 사용자 "튜토리얼 끝나면 도움말 자동").
 		local newMatch = inMatch and serial > 0 and serial ~= self.matchSerial
+		local guideFlip = self.known and inMatch and not newMatch and self.guideOn ~= guideOn
+		self.guideOff = off
 		self.known = true
 		self.firstTimer = first
 		self.inMatch = inMatch
@@ -181,6 +191,19 @@ script OnboardingService extends Logic
 		log("[Onboard] state first=" .. tostring(first) .. " match=" .. tostring(inMatch) .. " serial=" .. tostring(serial) .. " guide=" .. tostring(guideOn) .. " village=" .. village .. " new=" .. tostring(newMatch) .. " reason=" .. reason)
 		if _GameIntroController ~= nil then
 			_GameIntroController:OnOnboardState()
+			if afterTut and not inMatch then
+				_GameIntroController:OpenTab("intro", 1, "tutorial-return")
+			end
+		end
+		-- 매치 도중 안내를 켜고 끄면(도움말 토글 · 목표 바 · L) 마을 자동 안내 · 알림 카드도 따라간다(WO-051).
+		if guideFlip then
+			if _CoachMarkController ~= nil then
+				_CoachMarkController.armed = guideOn
+			end
+			if _TipController ~= nil then
+				_TipController.armed = guideOn
+			end
+			log("[Onboard] guide flipped in match -> " .. tostring(guideOn))
 		end
 		if newMatch then
 			if _CoachMarkController ~= nil then
