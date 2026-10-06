@@ -56,46 +56,31 @@ script LaneFacilityService extends Logic
 	-- (옛 값 150 — 사용자 2026-09-15 "타일보다 앞에" — 은 같은 층의 몬스터(3)를 시설이 가렸다.)
 	property integer FacilityOrderInLayer = 2
 
-	-- 주인 없는 넥서스 위 "클릭하세요" 표시(WO-050 §2-6 · 사용자 2026-10-05): 고리 + 손가락. 주인이 생기면 지운다.
-	-- 그림 = 처음 안내(코치 마크)와 같은 coach_ring / coach_finger. 모양을 따로 받으면 아래 RUID 만 바꾼다.
+	-- 주인 없는 넥서스 위 "클릭하세요" 표시(WO-050 §2-6 · 사용자 2026-10-05): 주인이 생기면 지운다.
+	-- 그림 = 사용자가 직접 만든 모델 clickhereEntity(RootDesk/MyDesk/clickhereEntity.model · 2026-10-06). 마을 맵에 사용자가 Maker 로 미리 놓은 clickhereEntity 가 있으면 그것을 쓰고,
+	-- 없는 마을(노틸러스 제외)은 아래 오프셋 자리에 같은 모델을 스폰한다.
 	property boolean ClickHereEnabled = true
 
-	-- 표시를 안 놓는 마을(쉼표). 노틸러스 넥서스는 그림 없는 HIDDEN 시설이라 제외.
+	-- 맵에 놓인 게 없을 때 표시를 안 만드는 마을(쉼표). 노틸러스 넥서스는 그림 없는 HIDDEN 시설이라 제외. 맵에 이미 놓인 것은 이 목록과 상관없이 쓴다.
 	property string ClickHereExclude = "NAUTILUS"
 
-	-- 그림을 얹는 모델(AuraEmitter 가 쓰는 SpriteRenderer 만 있는 모델 · 서버가 스폰하면 모두에게 보인다).
-	property string ClickHereModelId = "auracircle"
+	-- 사용자 모델의 Id(model://a340de12-…).
+	property string ClickHereModelId = "a340de12-4977-4e3d-a7a0-c74fa1da07b3"
 
-	property string ClickHereRingRUID = "4263cccdbec141a0b890bc65dd4919eb"
+	-- 맵에 놓인 표시를 찾는 이름 접두(대소문자 무시): clickhereEntity · clickhereEntity_1 …
+	property string ClickHereNamePrefix = "clickhereEntity"
 
-	property string ClickHereFingerRUID = "87acffbd5d8b4786a5e7738159a4c952"
-
-	-- 고리 중심 위치 = 넥서스 슬롯(+GroundOffset) + 이 오프셋 "x,y". 마을마다 다르면 "HENESYS=x,y;KERNING=x,y" 로 덮는다(없는 마을은 기본).
+	-- 스폰할 때 위치 = 넥서스 슬롯(+GroundOffset) + 이 오프셋 "x,y". 마을마다 다르면 "HENESYS=x,y;KERNING=x,y" 로 덮는다.
 	property string ClickHereOffset = "-0.8,2.2"
 
-	property string ClickHereOffsetByVillage = ""
+	property string ClickHereOffsetByVillage = "ELLINIA=-0.8,1.2"
 
-	-- 그림 크기 배율(그림 한 변 px / 100 = 월드 단위): 고리 224px · 손가락 88px.
-	property number ClickHereRingScale = 0.7
-
-	property number ClickHereFingerScale = 0.9
-
-	-- 손가락 끝(그림 왼쪽 위 모서리)이 고리 가운데에 오도록 손가락 중심을 고리 중심에서 옮기는 값(배율 적용 전 그림 크기 기준)
-	property number ClickHereFingerShiftX = 0.29
-
-	property number ClickHereFingerShiftY = -0.33
-
-	-- 손가락 흔들림 폭 · 속도
-	property number ClickHereBobAmp = 0.12
-
-	property number ClickHereBobSpeed = 5
-
-	-- 그리는 층 = DamageSkin(데미지 숫자가 그려지는 층 · 사용자 Maker 스크린샷으로 확인 2026-10-06 · 시설 · 몬스터 · 플레이어보다 위). 순서는 층 안에서의 값.
+	-- 스폰할 때 그리는 층 = DamageSkin(데미지 숫자 층 · 사용자 Maker 목록으로 확인 2026-10-06). 맵에 놓은 것은 그 엔티티 값을 쓴다.
 	property string ClickHereLayer = "DamageSkin"
 
 	property integer ClickHereOrder = 0
 
-	-- 마을 → { ring, finger }
+	-- 마을 → { ents = { 엔티티, … } }
 	@HideFromInspector
 	property any clickHere = nil
 
@@ -499,12 +484,23 @@ script LaneFacilityService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method any FindClickHereEntities(Entity map)
+		-- 마을 맵에 사용자가 미리 놓은 표시(이름이 ClickHereNamePrefix 로 시작) 목록.
+		local list = {}
+		local prefix = string.lower(self.ClickHereNamePrefix)
+		for _, ch in ipairs(map.Children) do
+			if isvalid(ch) and string.sub(string.lower(ch.Name), 1, string.len(prefix)) == prefix then
+				table.insert(list, ch)
+			end
+		end
+		return list
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SpawnClickHere(string villageId)
-		-- 주인 없는 넥서스 왼쪽 위에 고리 + 손가락을 놓는다(서버 스폰 → 모두에게 보임). 제외 마을 · 이미 주인 있음 · 이미 있음이면 건너뜀.
+		-- 주인 없는 마을의 "클릭하세요": 맵에 놓인 clickhereEntity 가 있으면 그것을 두고, 없으면(노틸러스 제외) 넥서스 왼쪽 위에 같은 모델을 스폰한다.
 		if not self.ClickHereEnabled then return end
-		if self:ClickHereExcluded(villageId) then return end
 		if self.clickHere[villageId] ~= nil then return end
-		if _VillageOwnership ~= nil and _VillageOwnership:OwnerOf(villageId) ~= "" then return end
 		local row = self:LaneRow(villageId, self:RoleOfStage("CORE"))
 		if row == nil then return end
 		local map = _EntityService:GetEntityByPath("/maps/" .. row.mapName)
@@ -512,52 +508,42 @@ script LaneFacilityService extends Logic
 			log_warning("[Facility] clickhere: map not loaded " .. row.mapName)
 			return
 		end
+		local placed = self:FindClickHereEntities(map)
+		if _VillageOwnership ~= nil and _VillageOwnership:OwnerOf(villageId) ~= "" then
+			for _, e in ipairs(placed) do e:Destroy() end
+			return
+		end
+		if #placed > 0 then
+			self.clickHere[villageId] = { ents = placed }
+			log("[Facility] clickhere +" .. villageId .. " (map-placed x" .. tostring(#placed) .. ")")
+			return
+		end
+		if self:ClickHereExcluded(villageId) then return end
 		local off = self:ClickHereOffsetOf(villageId)
 		local cx = row.slotX + off.x
 		local cy = row.slotY + self:GroundOffset(villageId, "CORE") + off.y
-		local function make(suffix, ruid, scale, x, y, bobAmp)
-			local e = _SpawnService:SpawnByModelId(self.ClickHereModelId, "ClickHere" .. suffix .. "_" .. villageId, Vector3(x, y, 0), map)
-			if not isvalid(e) then
-				log_error("[Facility] clickhere spawn failed model=" .. self.ClickHereModelId .. " " .. villageId)
-				return nil
-			end
-			local sr = e.SpriteRendererComponent
-			if isvalid(sr) then
-				sr.SpriteRUID = ruid
-				sr.SortingLayer = self.ClickHereLayer
-				sr.OrderInLayer = self.ClickHereOrder
-				sr.Color = Color(1, 1, 1, 1)
-			end
-			e.TransformComponent.Scale = Vector3(scale, scale, 1)
-			local mk = e:AddComponent("script.ClickHereMarker")
-			if not isvalid(mk) then mk = e.ClickHereMarker end
-			if isvalid(mk) then
-				mk.MarkerOrder = self.ClickHereOrder
-				mk.BobAmp = bobAmp
-				mk.BobSpeed = self.ClickHereBobSpeed
-				mk.BaseX = x
-				mk.BaseY = y
-			else
-				log_warning("[Facility] clickhere component add failed " .. villageId)
-			end
-			return e
+		local e = _SpawnService:SpawnByModelId(self.ClickHereModelId, "ClickHere_" .. villageId, Vector3(cx, cy, 0), map)
+		if not isvalid(e) then
+			log_error("[Facility] clickhere spawn failed model=" .. self.ClickHereModelId .. " " .. villageId)
+			return
 		end
-		local fx = cx + self.ClickHereFingerShiftX * self.ClickHereFingerScale
-		local fy = cy + self.ClickHereFingerShiftY * self.ClickHereFingerScale
-		local ring = make("Ring", self.ClickHereRingRUID, self.ClickHereRingScale, cx, cy, 0)
-		local finger = make("Finger", self.ClickHereFingerRUID, self.ClickHereFingerScale, fx, fy, self.ClickHereBobAmp)
-		if ring == nil and finger == nil then return end
-		self.clickHere[villageId] = { ring = ring, finger = finger }
-		log("[Facility] clickhere +" .. villageId .. " pos=(" .. tostring(cx) .. "," .. tostring(cy) .. ")")
+		local sr = e.SpriteRendererComponent
+		if isvalid(sr) then
+			sr.SortingLayer = self.ClickHereLayer
+			sr.OrderInLayer = self.ClickHereOrder
+		end
+		self.clickHere[villageId] = { ents = { e } }
+		log("[Facility] clickhere +" .. villageId .. " (spawned) pos=(" .. tostring(cx) .. "," .. tostring(cy) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
 	method void RemoveClickHere(string villageId, string reason)
-		-- 표시를 지운다(주인이 생김 · 정리).
+		-- 표시를 지운다(주인이 생김). 맵에 놓인 것도 이 매치 방에서는 지운다(방마다 맵 복사본이라 다른 방 · 다음 매치에는 영향 없음).
 		local h = (self.clickHere ~= nil) and self.clickHere[villageId] or nil
 		if h == nil then return end
-		if isvalid(h.ring) then h.ring:Destroy() end
-		if isvalid(h.finger) then h.finger:Destroy() end
+		for _, e in ipairs(h.ents or {}) do
+			if isvalid(e) then e:Destroy() end
+		end
 		self.clickHere[villageId] = nil
 		log("[Facility] clickhere -" .. villageId .. " (" .. tostring(reason) .. ")")
 	end
