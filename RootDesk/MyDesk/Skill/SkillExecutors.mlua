@@ -234,6 +234,13 @@ script SkillExecutors extends Logic
 
     property number MesoCoinSoundGap = 0.12
 
+    -- 동전 소리 크기 · 자리(사용자 결정 2026-10-05 통합 Play R16 "영상 소리에 살짝 묻힌다" → A + B): 크기 ×2.0(+6 dB · 궁 소리와 같은 상한) · 동전 자리가 아니라 **시전자 자리**에서
+    --   (동전이 시전자에서 최대 ≈4.7 떨어져 거리만큼 작아졌다). 개수 상한 · 간격 · 터지는 시각은 그대로. 파일 실측: 동전 −17.2 → −11.2 LUFS(×2.0) ↔ 영상 소리 −9.5…−14.3 —
+    --   8번째(+5.28 s) ≈0.6 dB · 10번째(+5.94 s) ≈1.7 dB 아직 아래(`pirate-check/sitting-8efe928/R16-loudness.txt`). 영상 소리 낮추기(D)는 하지 않는다.
+    property number MesoCoinSoundVolume = 2.0
+
+    property boolean MesoCoinSoundAtCaster = true
+
     -- 동전 하나의 폭발 반지름(world unit · B 기본값 · #40 5884390073 5번 "동전마다 그 자리에서 터져 그 주변 적만 때린다 · 반경은 B 기본값"):
     --   1.0 u = 100 px. 픽파켓 동전은 맞은 몬스터 발밑 ±0.3 u 에 떨어지고 포물선으로 ±0.5 u 안에 앉는다(MesoCoin.ArcSpread) → 1.0 이면 동전을 떨군 몬스터가
     --   조금 움직여도 맞고, 옆 몬스터(≈1 u 떨어짐)는 가장자리만 걸친다. 모인 동전은 같은 적을 여러 번 때린다(동전 하나 = 50% 1타).
@@ -396,6 +403,48 @@ script SkillExecutors extends Logic
     --   한 장씩 sprite 로. 프레임 세트가 있는 궁은 이 경로 · 없으면 예전 클립 경로. false = 예전 클립 경로로 되돌림.
     property boolean CutsceneVideoFrames = true
 
+    -- 궁 영상 1280×720 세트(사용자 결정 2026-10-05 R11c "다섯 직업 다 1280" · 2026-10-06 업로드): 1280 세트가 다 올라간 직업은 그 세트를 쓴다.
+    --   CutsceneFrameSet1280 에 없는 직업(업로드 미완 · 실패 프레임)은 640 세트 그대로. false = 전부 640(되돌리기 · 시험 키트 F6).
+    property boolean CutsceneFrames1280 = true
+
+    -- 궁 영상 동안 배경음악 낮추기(사용자 결정 2026-10-05 통합 Play R11b · "궁 소리를 더 키우지 말고 배경음악을 낮춘다" · 궁 소리 배율은 그대로):
+    --   시전자 = 영상이 켜질 때(StartCutsceneFramesUI) 내리고 꺼질 때(HideCutsceneUI · 영상 끝) 되돌린다. 다른 클라 = 서버가 영상 소리를 틀 때(PlayUltimateCastSound →
+    --   DuckBgmForUltimateSound · 모든 클라 = 그 소리를 듣는 클라) 영상 길이만큼. 끊기면 곧바로 되돌린다: 맵이 바뀜(매치 나가기 포함) · 로컬 플레이어 사망 · 룸을 떠남(OnEndPlay).
+    --   크기 = 맵 배경음악 원래 크기(맵 SoundComponent · Bgm 의 Volume · 없으면 1) × UltimateBgmDuckRatio → _SoundService:SetBGMVolume(클라). 페이드 = 내릴 때 · 올릴 때 따로.
+    --   비율 후보 20 % · 10 % · 3 %(사용자 · 다음 Play 에서 하네스 키로 고름) — 기본 10 %. false = 끔.
+    property boolean UltimateBgmDuck = true
+
+    property number UltimateBgmDuckRatio = 0.1
+
+    property number UltimateBgmFadeDownSeconds = 0.25
+
+    property number UltimateBgmFadeUpSeconds = 0.5
+
+    -- 클라: 낮추기 상태(BeginUltimateBgmDuck · EndUltimateBgmDuck). until = 되돌릴 시각(ElapsedSeconds) · soundUntil = 다른 유저 영상 소리 몫(내 영상이 일찍 꺼져도 그때까지는 낮춘 채).
+    @HideFromInspector
+    property boolean bgmDuckActive = false
+
+    @HideFromInspector
+    property number bgmDuckLevel = 1
+
+    @HideFromInspector
+    property number bgmDuckUntil = 0
+
+    @HideFromInspector
+    property number bgmDuckSoundUntil = 0
+
+    @HideFromInspector
+    property any bgmDuckMap = nil
+
+    @HideFromInspector
+    property integer bgmDuckFadeTimer = 0
+
+    @HideFromInspector
+    property integer bgmDuckEndTimer = 0
+
+    @HideFromInspector
+    property integer bgmDuckPollTimer = 0
+
     -- 클라: 영상 프레임 넘기기 타이머 id(새 컷신 · 끄기 때 지운다).
     property integer cutsceneFrameTimer = 0
 
@@ -432,8 +481,12 @@ script SkillExecutors extends Logic
         end, self.CutsceneMeasureDelay)
     end
 
-    @ExecSpace("ServerOnly")
     method void OnEndPlay()
+        -- 서버: 예열 이벤트 · 숫자 간격 타이머 정리. 클라(UltimateBgmDuck · 2026-10-05): 룸을 떠날 때 낮춘 배경음악을 원래 크기로 — 그래서 ExecSpace 를 두지 않고 갈라 쓴다.
+        if self:IsClient() then
+            self:EndUltimateBgmDuck("end play")
+            return
+        end
         if self.prewarmEnterHandler ~= nil then
             _UserService:DisconnectEvent(UserEnterEvent, self.prewarmEnterHandler)
             self.prewarmEnterHandler = nil
@@ -531,6 +584,9 @@ script SkillExecutors extends Logic
             local ruids = self:PrewarmRuidsFor(jobId)
             -- b/skill-archer-effects(2026-09-28 Play): prewarmFrames = true 인 스킬의 sprite 순서표(더블 샷 분홍 불꽃 · 폭발: 첫 시전만 sprite 로드 전이라 흰 공처럼 보였다).
             local frameRuids = self:PrewarmFrameRuidsFor(jobId)
+            -- 궁 영상 소리도 미리(2026-10-05 사용자 요청 · #166): 그 직업 궁의 프레임 세트 sound 를 그 유저 클라에서 LoadSound(프레임은 위 PrewarmRuidsFor 에 이미 있다).
+            local soundIds = self:PrewarmUltimateSoundsFor(jobId)
+            if #soundIds > 0 then self:PreloadUltimateSoundsOnClient(table.concat(soundIds, ","), userId) end
             if #ruids == 0 and #frameRuids == 0 then
                 log("SkillExecutors: prewarm " .. jobId .. " — nothing to prewarm (" .. userId .. ")")
                 return
@@ -2089,7 +2145,7 @@ script SkillExecutors extends Logic
             local t0 = _UtilLogic.ElapsedSeconds
             _ResourceService:PreloadAsync(fs.frames, function()
                 if token ~= self.cutsceneUiToken then return end
-                log(string.format("SkillExecutors: cutscene video %s frames ready x%d in %.2fs", skillId, #fs.frames, _UtilLogic.ElapsedSeconds - t0))
+                log(string.format("SkillExecutors: cutscene video %s frames ready x%d in %.2fs src=%dx%d", skillId, #fs.frames, _UtilLogic.ElapsedSeconds - t0, fs.width or 640, fs.height or 360))
                 self:StartCutsceneFramesUI(skillId, fs, token)
             end)
             return
@@ -2158,6 +2214,8 @@ script SkillExecutors extends Logic
             end
         end, 1 / (fps * 2))
         log(string.format("SkillExecutors: cutscene video %s on — %d frames @ %d fps = %.2fs · rect %.0fx%.0f overscan %.2f", skillId, n, fps, n / fps, fw * scale, fh * scale, over))
+        -- 영상이 켜지는 순간 배경음악을 낮춘다(UltimateBgmDuck · 시전자 클라). 되돌리기 = HideCutsceneUI · 영상 길이 타이머 · 끊김 감시.
+        self:BeginUltimateBgmDuck(skillId, n / fps, "video")
     end
 
     @ExecSpace("ServerOnly")
@@ -2232,6 +2290,10 @@ script SkillExecutors extends Logic
         -- 궁 컷신 영상 프레임 세트(b/skill-ultimate-cutscenes · 서버 · 클라 양쪽에서 부른다 — 상태 없는 리터럴이라 클라 인스턴스에서도 같다).
         --   { fps, width, height, sound, frames = { RUID … } } · 없으면 nil(예전 클립 경로). 값은 villagedefense-harness/pirate-check/ultimates/manifest-*.json 에서 만든다(gen_frames.py).
         --   원본 = share-mp4/<직업>.mp4 (1280×720 · 24 fps) → 8 fps · 640×360 PNG(lanczos). sound = 같은 이름 wav 를 ogg 로 올린 것(ApplyCutsceneSounds 가 castSounds 로).
+        if self.CutsceneFrames1280 then
+            local hi = self:CutsceneFrameSet1280(skillId)
+            if hi ~= nil then return hi end
+        end
         -- @@ULT_FRAMES_BEGIN
         -- SK_W31 전사.mp4 · 56 frames @ 8 fps = 7.00 s · sound 전사.wav (ogg) → castSounds.SK_W31 by ApplyCutsceneSounds
         if skillId == "SK_W31" then
@@ -2340,6 +2402,117 @@ script SkillExecutors extends Logic
         -- @@ULT_FRAMES_END
     end
 
+    method table CutsceneFrameSet1280(string skillId)
+        -- 궁 영상 1280×720 세트(2026-10-06 · 팀 저장소 mIYbC · 이름 ULT1280_SK_<직업>_fNNN · 전사는 10-05 A/B 때 올린 56장). 모양은 CutsceneFrameSet 과 같다.
+        --   값은 villagedefense-harness/pirate-check/ultimates/manifest-*-1280.json 에서 만든다(gen_frames1280.py · 다 올라간 직업만 · 소리는 640 세트와 같은 것).
+        -- @@ULT_FRAMES1280_BEGIN
+        -- SK_W31 전사.mp4 · 56 frames 1280x720 @ 8 fps = 7.00 s · sound = the 640 set's
+        if skillId == "SK_W31" then
+            return { fps = 8, width = 1280, height = 720, sound = "e57394c215da4de5b781951bb0d745e6", soundVolume = 1.74, frames = {
+                "64c686f905234c9f93e06432e8b5d36c", "f02f90acef6f4b3588afa5de0d6532ee", "c1fd038eb2a4436aafdea4367370438f", "d5cf21bd80a24c0fb7f7e80793221ede",
+                "b0417be57c0345329c913b3695d9bbfb", "c50f8d9c0b82441cb5e78f1f54053ef5", "63243d037d644e4bb9b6615e37313cbd", "f3562d50913d45ca8bd1664b9bfb9640",
+                "e288ca52ef4649f3b0312c88d2eeb8c4", "f1203765a3f34f6aa22dbf9826ac263d", "48681f2ccf874ae2aa331ef03699b9eb", "8ff8fd8accc44b35ba78833cd7e98096",
+                "db1051311d7241ab9778a41a227b878e", "03930923588f4006a19f58d6d29da953", "4ba3e8f5c35c43f3a7694a6be276a509", "7ebe382d4ec4498b8f41e23c44185f3a",
+                "e3f1115bc8ff48e490a7e02b47d2fba5", "d5f049a3c9564c3b94ffe0dc465e830e", "a8bb7a522eb14917ab04bd231ec62514", "793366170257427fa6d013a00f3d1eed",
+                "d24bc09fe2fa43d6a1acfc646b50a317", "0906fd3771894c99bab7ce157efb1ba1", "26196bc1dc244c0a99127f8eef18c6e8", "1e0be915452e414da898179abc8b6044",
+                "58e26b6ca56a4179ab73d688d802083b", "b0da4b14620e4e51bef66505d219fb48", "6473d69d23ba4e0bbfdfbcc35a9ef4cb", "6e943400dce0432ea823991339ef0264",
+                "3398f22b478342c7967fcf315920ae07", "0f67c1f2fa0e491fb778c4895d0e69f0", "22ee918a66dc4c13b73284936ee25a2f", "5e6ea6594f6848929de007572de3266c",
+                "31a873881845488a9655d5293f21bb53", "b9c7ec0d2edb4948a72f4b6d5f38fad8", "5df38d1d6f1547c385d75ad0beb950a6", "ab43bbe5c0f04540befb87f5b771de22",
+                "e2a3165a831f42deb29443fb5c5d0d85", "42f8009690fd436b8297c9a0fab4d48a", "ad03340d39ba4c1c9462386daafde6dd", "efa4286d96d14644bea20dcf6c9f9649",
+                "d9e2b1e1b84743f2a9efe0322a91ec94", "9a4b200f6b1e43fd850109af2a028bd5", "f7afc6673bb14bd8a22627ff12b1395d", "0cbdf1aea05e46228fe11af999460d26",
+                "898fffdda3454d01968e03bc99d17996", "ca46287dfa1241ffba5eb91b8ba9920e", "b515ce201f9c41e7b41993d91c8e5370", "e2e2002afd024c52a7058660b6c26e24",
+                "c187f72f338d455597690d6c2f011e9e", "caaaab11f26a42a983d601ed3a9aa05e", "db4129ed04004e93bad43fb68b9f273d", "ad7c4a465e864c55b52f0de7d5c8fa5f",
+                "0bb646e4fb8344ef99e72258879839b9", "a7e487b794874b9fbbacd2284fd57e3e", "736ecfb04014423e8269689524ea15b9", "bea45df6e45043d59859d44e217f4947",
+            } }
+        end
+        -- SK_M31 마법사.mp4 · 75 frames 1280x720 @ 8 fps = 9.38 s · sound = the 640 set's
+        if skillId == "SK_M31" then
+            return { fps = 8, width = 1280, height = 720, sound = "8c0c6ccc31df4644af7cd58e34353a7d", soundVolume = 1.2, frames = {
+                "78673c003fb4457eaab675a11b1fd894", "931fb07c249c4a6eb6f00236efcbf052", "cef9849a917d45099f67c48945f35860", "35f1a7a961fb47fbaa2cfbc0905cc102",
+                "0927839aba824ab9b5623b2a8972e1db", "93aeb7e3a12542a0bd6bc783b4d87f49", "cd1b26419d5849179533d71b91b88343", "ea25e57ad6b3482199bf85c13923026a",
+                "c25d16fd00594ebbb0a11da502945b9d", "83783a8446744c9c82b073f9e1291d29", "62eb16d1c22f4200b6b19e7dcdaf2e21", "b9a250a6a9df4ec991f91e7c402aa129",
+                "863f8917f46b4fc79c8f0b52b05218ef", "a20e8da6c9d94e03b34adf6714133903", "37533eef70ff4f6db9580d4e9a825da7", "2d11bfe49c3742c9bd9a60a37d845d8a",
+                "5561df7c84ba452e999b25dd7bbca504", "b019da98656d4efca8b21d0e6fa945e8", "f2927edb7c7c43c1886de5607b69a92b", "15d1eaa75f0e4dd0abc3e3cd3acf1a8b",
+                "4d809a490bad4b7a9c72997772cc00e9", "c967a17e43184922999346866759b80e", "c9074b2beb7640cb9270a38f971e45bc", "3a7ff641126f494ca129746f54783450",
+                "fbb573ff861d4d1e9a13a8d36ffc1583", "7b8c517b5916494c8a6eadb0c1136898", "a3e0fa8491f6405fb96fed165bb3dd34", "c85bb8b36cd64ba8ba76554265f99d26",
+                "57748fbaa874410cb189e650da64a375", "91c9e012b2484d1fa40a2be772154490", "95556058ea864621964af41d32d82d6a", "1a33996fec5a4212b4d29f649929522f",
+                "57251d417a7d4408a640427d1e9b6285", "62e81bfe60734ab08594feb3c2829e1d", "1b0466f3ac2b45eeaed3c8244b8e9ab3", "0cd19ee00ad14811b24c21b5f394aff1",
+                "495f96545d004b85981b3bed30e0819f", "daf8c1d2b8a14190b6dbae214e5cab92", "2bb943f3b6dd43d0a14b5e03be7054c5", "9af9de72276f409dbeefe092b943b774",
+                "8f9333157d0a465ca8f2c50cd27f327f", "529666c422974f9e91bcea6dcf1e429b", "e9d9d7a346d34ff882552238b7a7a803", "de31b20eab4d4b338379d1411a12a8b0",
+                "90f9847e199d4250b86e6e0e0ef9c18f", "06e37722d57b4ceb981855f5fe0adee9", "a3701018f07743cf9abe23bfe56e6551", "502faef6772a45bd8c0a8e021fc3bf3d",
+                "e1d535a83fb843d4be2cdc91653b44d2", "ba05e4124ccf4d4e87e453b8c9c78027", "6d6f1b96c3d640838bebd9612acec999", "8f9760b2f1894f4c873b309ada57d2c4",
+                "920940759b2e4b0aa5f3e4d65cc2145f", "2ce01f71f7314f2180ad4291d74a8e73", "df0ce0cc2d0f4e418678017f9beec6e4", "86f8f3072e524cf7a6a951a266755528",
+                "3e52f63479754a13806272001014fa10", "4005a8ff4ca8442a9a16d66cab9b3fbe", "bce1ddc41b5d4cd0a2e43ba955aa3573", "c09c356046c54860b261247d1d773888",
+                "492a1376356f4de5b204015e333483a1", "09aea487aa434ba088c8883197898e61", "bfdd1e1801994419916bae1344e770e9", "70a8b19f7263420d80d56cdf7e3b2e1f",
+                "6fda004105de4652b74fc62050da390e", "c7ccc0fdd79949a6924877240c80b7e0", "1117a5528e854a55b7eb00c270510231", "8fcdf9329dce4b23a7f5aaeacabfabd8",
+                "a32fb4d5bf8f47a29937830fb6436e68", "0835ba79af2f431daeb64b40910258fc", "3bad0786b11042bea4d1418dfa0d43cc", "a837273fac4e4ed3baa7db1cbd7021b5",
+                "f64ab931f22b484ea4d691d15047e034", "80eb3bd6fe644d4aa6aa39771fe8580b", "21b88afa90ad42e9b419a800f10f1568",
+            } }
+        end
+        -- SK_A31 궁수.mp4 · 62 frames 1280x720 @ 8 fps = 7.75 s · sound = the 640 set's
+        if skillId == "SK_A31" then
+            return { fps = 8, width = 1280, height = 720, sound = "4558ebf913f9448cb6e0d23d82edf7d3", soundVolume = 1.93, frames = {
+                "5801cf0a70c04dd79575b37823093bc3", "599d9e5f7d3940bab599834f4e3a7da7", "d0bbd5dd058040b6aec1fe9fb392df3d", "7f1645c25f604e738335ad090524b3cf",
+                "9c5815ade4b6497da28a4619178624bf", "5bbf54da5bf047689e09087c03d1cede", "a48b8dbccf34457c81bd164c3a55ecc5", "a898d7328ec2436b96735bd564d46e1d",
+                "9a3d9958f2184a18aa2f528e91adbb39", "7d2e1da5a5b2433094e90b2a307ba2d9", "9d8464117d8a43c39846484191ac4cd9", "49aae5f3a6ec4a118e94ebd72d523e8e",
+                "b7aadac52b7f4f1b8e88952febf1c9ab", "5497504972384f20b96ca070739d9dcf", "49ac344f48a649058da8cff7dbe8891a", "2a65293beee34cda90d6b74b6836596d",
+                "7ffff4a004f749db9f13d71f4a16d618", "e98d627ca9af4a8db417097d8250bf8e", "f2922afa10034c668cb12c5a23dfee7d", "b4f70d657afd4d0aa8839e75000112e7",
+                "f31050d42d0c48b8ba9c14d85be54b44", "50c4180a1f3a487dbe852be424c184a5", "cfe0511abec74ab7bddd11f10cfd1d08", "a8d6251e45e848718a56ace42b2f9bbd",
+                "c7450b8e592247bdaa94bbd7a4510ad2", "cedeb1eb07444256a141485958bc9668", "629f00ca9afd4a51b85c9b5beb67cbbe", "299262981a1847c7a528b3b4abe23fa6",
+                "0f4ec3702cf54b72ae9fabf3269fef54", "a77f7dd699584930b65039d27cdef744", "fbbd82b7a8e343afa6c9f70173d55cb8", "073e948f71c04f7b9fb776caa20d6cd6",
+                "d767b04a8ca146b09590818e7a8a0b48", "900cb64f23ae49758dfe7dc96ac19340", "adb0e55ec88f4773aa28269072765864", "1315f6c4fb9d407bb4f62691f06bd2c4",
+                "cf337b1825b4432794f404533ec49bd0", "f36ad52f0d5344c7aa2705aa14ad566b", "1ec0bf7b8d8a426a898917168cb8fa6e", "22fc390f220d44cd91d33759c1face1b",
+                "a695f1879b7d459db4ce624705ca117d", "e4a05e7e8e0b48f0864cd4a1d221c147", "4f070b8441c84accb7fa3ecf80e120a9", "5fb0a1927071481a91d308ff9a2635bf",
+                "5b4fe112aecb4ee69172c2806c30b509", "f23283e03cff4bd0bbafad8425c14c69", "908530f0b0674dafbc4b845bc12cc209", "dcb34d5a121649d6ac1f0de614a54a57",
+                "d550f0877198424cbd5f5dbf8d4c5d1c", "e537709c09a74a3c8b18365fbae2bd9b", "32a55c3cfc764791af7e5d670b4bf9cf", "0492b18afca9499e91b97ace9afb40a1",
+                "d01ad8d2964045e38cbfd9c0d45445e0", "0333dacd555a4c09950c979da7074228", "8bb95ec4f2174e06b3ad543f938b95e4", "ec5fe31ad2dc41069cc8524b244e3f36",
+                "35a1d45b15a0419280f082a1f46c52ff", "4fc7ecfa13894ab6a5c710c11c48d5c2", "be350f18d772496787d4f1ecf90673ed", "0d86d9ad600d408dbf61741fbddaa51a",
+                "8bf87eda99894185afc883312f00fa02", "46d7702eda444d49b80d11bff515cba1",
+            } }
+        end
+        -- SK_T31 도적.mp4 · 62 frames 1280x720 @ 8 fps = 7.75 s · sound = the 640 set's
+        if skillId == "SK_T31" then
+            return { fps = 8, width = 1280, height = 720, sound = "730975854cb64e33b1fbefccdae05713", soundVolume = 1.86, frames = {
+                "32b7bbccc2c340a09394b99209bd4475", "8c828d185a52401eae2469c0550f30ac", "f1630d4cc868459d9757e994e76c0e47", "31d8c5691b334e5e98f011a794ad6157",
+                "f571afe40b6b45aab6324db36575f479", "a549ece2bc334e85b51bafd8c9333343", "ad756c1dcaf84c62a3abd5bcb5f6071f", "8894663607c4421e9afbd61a3cbf2fe2",
+                "15fdb1131aeb42dbbee3cb1bf3a5a26c", "d3bc7de140c64480a99920281f39de61", "b900ddccb9f24a75b974bd2f762c2d6f", "35ea5dd1a8484fddb341b0150c142906",
+                "e749736e4fc34871b81d093df19058c6", "0253a3b3c2a543b1b0a73570bec8e72f", "167f4d7996b14bc6a04beea056e63c2c", "859f2c5c222649f7ac49b7944e05d9a9",
+                "7b2fe82b2eac41878094142d12c75388", "8b9761bcb906464d815921904e553386", "e23cd62f2fa343659e673b9e79c5b4b0", "bd31deac58694ed4bc26a7a2972dd084",
+                "454b4a2a6c324aa8b16a460cacd426b8", "2945120ea03647ecba0767ca61595e9c", "b41fe19401f44523ade8b7fc261f76ef", "27686aaf5674470684e4f47a2c7b2862",
+                "7a7f1c7d96fe4b82a2ab5a3738273d13", "d40fa3fc69df4e0890e5d899bfb60455", "745438abf01e47d785dfb732f69bf998", "2e1634ac1e104872b73d71d343526d73",
+                "6f3a30a59e85457a99b9438a47a14e0f", "757e94be98554ccda1fb459d4a4c1e84", "a22f57bea8894d7a94980ccfdf4cc873", "72e78010c0f148a8b7926e856a5df489",
+                "881de0dd48e848f2a95de8bb761d883c", "01904cdbce974b5c997ebaa0267330ea", "7140356ef2ae450e80bcf0860de147df", "49eee6dfb4184a47984259bdf215bc59",
+                "580abc498d664836a9b587c8a562e6ff", "cc61f64d1f424ab78013813223d7e763", "ea3312018bff456a8cdb67c7764664eb", "bd40ecf16375433ebccb832277c97372",
+                "ef9f7864691d44ebbeb63421c952b2b6", "5212893d83314a30a8241e45a83b5c51", "85e12c7da4cf4b369eab07b63d3d1713", "0f7ad3ae75e74f9d9b0c2a627e4467ab",
+                "a7e66b33a50341eea3efb50fbf7a9002", "1bfc281c877144eb9645f76940194166", "f8313d19cc014db4bd03c169ef81c6c8", "12f56f406a5742268f502e0149d752de",
+                "97d1f18b79534c97a15cd177b418f3d7", "14589d7a2c18476f944657a99c21cbae", "74418d4cb3a34188941faf33c1ae0001", "de243864305c47c3b97d876359b006cf",
+                "82e9f16a2b2f498b95540c1eb50133e4", "82c1d8a14e47474aa068109618c31107", "b4e3056647bc4913af7b3e612cacc07e", "283c2a030ade4692b3b323a2b996b5d2",
+                "97be30b5d4164315a21e770ac72dce7c", "347ef5697b9f40ae8d9ed708cf4ce801", "5373b75ea8324a7a9e82b68f6bc6128c", "05b78fb44dbb436d990455b0e4612115",
+                "2cb0a2ba5f524fc8be46ad1a7f791065", "6ac5359bd56a414d8ab4f96c5b3a86cb",
+            } }
+        end
+        -- SK_P31 해적.mp4 · 52 frames 1280x720 @ 8 fps = 6.50 s · sound = the 640 set's
+        if skillId == "SK_P31" then
+            return { fps = 8, width = 1280, height = 720, sound = "9e24e46382434cb39cde4dc5084e05ce", soundVolume = 1.86, frames = {
+                "042da3b935274f0891d1f777dde60e45", "6256debd9f9c40da893e750aeccaf8aa", "7f7098aac0a2472d8bee14440c9ddc5e", "215e661855304322a7d2d44c0c0c4584",
+                "d682fd0a01f34499862504a9998af366", "a6c5e7384eed4a28acea87b34940a698", "244621bc47f34082bfe108355931e10d", "2da92a8ac50949fb9ed80559374a50df",
+                "c652205985ed48168680a7f2e1ab7c74", "7c0068848a0148a885350a082bdc3879", "9cb07efd64994ecf879a0f43eceb20f2", "a7005679385141f0b6fd5cdb859a4bd1",
+                "7d22d8ee43f74cf7bfc14a4e5ed76d0e", "8cb8fe5a517a4f87baf3dc9fab1c9696", "e244eabe7f1f4814adbd67cf2d552900", "77ba38046c774c4b8554d348e5bc991f",
+                "3ad0628f69604cb382ccb6a4dce5ba3c", "70b931d5f90c47ffa4776d9aa75a9535", "7084dc7fb81b4c17831beb6c53706205", "ed30140ee69f4915865c1bb07c8e90ef",
+                "9afdd92a8dd64da1986af12c39915fba", "d4e0117b32bc4c56b08ae1cb20c39a09", "bbb9e367745a4ca590b8e1c5315b072d", "1e46bca2a9094d5b9668049e3ae9e941",
+                "64628b60e9e54a0186ebf29d2507d627", "b827820dcd7e4a22bba923e0e8f60614", "8e1d190a64634a0ab296cffe67e7a236", "9ba948bcada04fbf9ad3962f7925de7c",
+                "f59e4916f1694510b484d518bc143f46", "9b0df187fea44779bb0cb96b27bdb69a", "b8b4f28c3f414fc3bca7f3b7e36a8d59", "0e134a33a75543fc92018711eb738bac",
+                "eeffc0db1afb40119f5f2a2cfba84d49", "740921cb7be14ff59fcc4d1d66960847", "15f35437d5a6425bab6ea48f3d1342f9", "cea6b48ef5764f6d8f0934adedab2e02",
+                "f7bdab061ed34d58a2eb68caf3c92853", "d4127fe2f865435db7de2a6eefd9f310", "8a0b688a223747be955f3665d64c300f", "c7d5a252e6d145ca9a154d943190f69c",
+                "7004b62f8aeb49189790425a1fc84f30", "661bcbc600d84b728203c41b3952d78c", "521949bb933e45d3850f7b19a2931121", "071a825d91264026bb0385725695da55",
+                "d5b0492f56594850ac953ba0c5f8757f", "03109dbb044940648fbfc2b65531b6b5", "6c20cd26711441d1892b0494e883e998", "76474bbfb7934315b978dc8f4d160bd8",
+                "dcc02ec87d0a4ab6ad2899f618980dc8", "c871dd9e60b34fde833cabbef1af1861", "50a63f92fb424ff8af17f23046dd0faf", "fb6455239994416d80a0a1348457437e",
+            } }
+        end
+        return nil
+        -- @@ULT_FRAMES1280_END
+    end
+
     @ExecSpace("ServerOnly")
     method void ApplyCutsceneSounds()
         -- 궁 컷신 영상 소리(b/skill-ultimate-cutscenes): 프레임 세트의 sound 로 그 궁의 시전 소리(castSounds)를 바꾼다(모두가 듣는 소리 · 예전 값은 BuildCastSounds 표에 그대로).
@@ -2355,6 +2528,35 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method table PrewarmUltimateSoundsFor(string jobId)
+        -- 그 직업(SkillInfo.ReqJob = jobId) 궁 중 영상이 있는 것의 소리 RUID(CutsceneFrameSet.sound · 같은 RUID 는 한 번). 영상이 꺼져 있으면 빈 표.
+        _SkillDatabase:EnsureLoaded()
+        local out = {}
+        if not self.CutsceneVideoFrames then return out end
+        local seen = {}
+        for _, skillId in ipairs({ "SK_W31", "SK_M31", "SK_A31", "SK_T31", "SK_P31" }) do
+            local skill = _SkillDatabase:GetSkill(skillId)
+            local fs = self:CutsceneFrameSet(skillId)
+            if skill ~= nil and skill.requiredJobLine == jobId and fs ~= nil and fs.sound ~= nil and fs.sound ~= "" and not seen[fs.sound] then
+                seen[fs.sound] = true
+                table.insert(out, fs.sound)
+            end
+        end
+        return out
+    end
+
+    @ExecSpace("Client")
+    method void PreloadUltimateSoundsOnClient(string soundCsv)
+        -- 서버(PrewarmCutscenesFor)가 그 유저 클라에만 보낸다: 궁 영상 소리를 _SoundService:LoadSound 로 받아 둔다(재생하지 않는다).
+        local n = 0
+        for id in string.gmatch(soundCsv, "[^,]+") do
+            _SoundService:LoadSound(id)
+            n = n + 1
+        end
+        log("SkillExecutors: client ultimate sound preload x" .. tostring(n) .. " [" .. soundCsv .. "]")
+    end
+
+    @ExecSpace("ServerOnly")
     method void PlayUltimateCastSound(string skillId, Entity casterEntity)
         -- 궁 시전 소리(b/skill-ultimate-cutscenes · R11 2026-10-05 "배경음악에 묻힌다"): 영상이 있는 궁은 프레임 세트의 soundVolume(다른 스킬 소리보다 3 dB 위 = −12.6 LUFS · 상한 ×2.0)으로,
         --   없으면 예전 PlayCastSound(×1.0). PlayCastSound 줄은 #158(유저별 소리)이 고치는 줄이라 건드리지 않는다 — #158 이 먼저 머지되면 이 호출도 유저별 경로로 옮긴다.
@@ -2367,6 +2569,10 @@ script SkillExecutors extends Logic
         local soundId = self.castSounds[skillId] or self.defaultCastSound
         _SoundService:PlaySoundAtPos(soundId, casterEntity.TransformComponent.WorldPosition, casterEntity, fs.soundVolume)
         log("SkillExecutors: ultimate cast sound " .. skillId .. " " .. tostring(soundId) .. " x" .. tostring(fs.soundVolume))
+        -- 이 소리를 받는 클라(대상 없이 = 모두)가 영상 길이만큼 배경음악을 낮춘다(UltimateBgmDuck · 시전자 본인은 영상 켜기/끄기가 맡는다).
+        if self.UltimateBgmDuck and isvalid(casterEntity.PlayerComponent) then
+            self:DuckBgmForUltimateSound(skillId, casterEntity.PlayerComponent.UserId, self:CutsceneVideoSeconds(skillId))
+        end
     end
 
     method number CutsceneVideoSeconds(string skillId)
@@ -2521,6 +2727,129 @@ script SkillExecutors extends Logic
         end
         self:ResetCutsceneUIAlpha()
         log("SkillExecutors: cutscene UI " .. skillId .. " off")
+        -- 영상이 꺼지면(끝 · 일찍 끊김) 배경음악을 되돌린다 — 다른 유저 영상 소리 몫(bgmDuckSoundUntil)이 남았으면 그때까지(EndUltimateBgmDuck).
+        self:EndUltimateBgmDuck("video off")
+    end
+
+    @ExecSpace("ClientOnly")
+    method number UltimateBgmBaseVolume()
+        -- 지금 맵 배경음악의 원래 크기 = 로컬 플레이어 맵 엔티티 SoundComponent(Bgm = true) 의 Volume. 못 찾으면 1.
+        local p = _UserService.LocalPlayer
+        if isvalid(p) and isvalid(p.CurrentMap) then
+            local sc = p.CurrentMap.SoundComponent
+            if isvalid(sc) and sc.Bgm then return sc.Volume end
+        end
+        return 1
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyUltimateBgmLevel(number level)
+        -- 배경음악 = 원래 크기 × level(1 = 원래대로). 맵이 바뀌어도 그 맵의 원래 크기를 다시 읽는다.
+        self.bgmDuckLevel = level
+        _SoundService:SetBGMVolume(self:UltimateBgmBaseVolume() * level)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void FadeUltimateBgmTo(number target, number seconds)
+        -- 지금 level 에서 target 으로 seconds 동안 1/30 s 마다 선형으로. 0 이하면 곧바로. 앞 페이드는 멈춘다.
+        if self.bgmDuckFadeTimer ~= 0 then
+            _TimerService:ClearTimer(self.bgmDuckFadeTimer)
+            self.bgmDuckFadeTimer = 0
+        end
+        if seconds <= 0 then
+            self:ApplyUltimateBgmLevel(target)
+            return
+        end
+        local from = self.bgmDuckLevel
+        local t0 = _UtilLogic.ElapsedSeconds
+        self.bgmDuckFadeTimer = _TimerService:SetTimerRepeat(function()
+            local f = (_UtilLogic.ElapsedSeconds - t0) / seconds
+            if f >= 1 then
+                if self.bgmDuckFadeTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckFadeTimer) end
+                self.bgmDuckFadeTimer = 0
+                self:ApplyUltimateBgmLevel(target)
+                return
+            end
+            self:ApplyUltimateBgmLevel(from + (target - from) * f)
+        end, 1 / 30)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BeginUltimateBgmDuck(string skillId, number seconds, string source)
+        -- 배경음악을 UltimateBgmDuckRatio 로 내리고 seconds 뒤 되돌린다(source "video" = 내 영상 · "sound" = 다른 유저 영상 소리). 이미 낮춘 중이면 되돌릴 시각만 늦춘다.
+        --   낮춘 동안 0.2 s 마다: 맵이 바뀌었거나(매치 나가기 포함) 로컬 플레이어가 죽었으면 곧바로 되돌린다.
+        if not self.UltimateBgmDuck or seconds <= 0 then return end
+        local now = _UtilLogic.ElapsedSeconds
+        local untilAt = now + seconds
+        if source == "sound" and untilAt > self.bgmDuckSoundUntil then self.bgmDuckSoundUntil = untilAt end
+        if self.bgmDuckActive and self.bgmDuckUntil > untilAt then untilAt = self.bgmDuckUntil end
+        self.bgmDuckUntil = untilAt
+        if not self.bgmDuckActive then
+            self.bgmDuckActive = true
+            local p = _UserService.LocalPlayer
+            self.bgmDuckMap = nil
+            if isvalid(p) then self.bgmDuckMap = p.CurrentMap end
+            self:FadeUltimateBgmTo(self.UltimateBgmDuckRatio, self.UltimateBgmFadeDownSeconds)
+            if self.bgmDuckPollTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckPollTimer) end
+            self.bgmDuckPollTimer = _TimerService:SetTimerRepeat(function()
+                local lp = _UserService.LocalPlayer
+                if not isvalid(lp) then
+                    self:EndUltimateBgmDuck("no player")
+                    return
+                end
+                if lp.CurrentMap ~= self.bgmDuckMap then
+                    self:EndUltimateBgmDuck("map change")
+                    return
+                end
+                if isvalid(lp.PlayerComponent) and lp.PlayerComponent:IsDead() then self:EndUltimateBgmDuck("death") end
+            end, 0.2)
+        end
+        if self.bgmDuckEndTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckEndTimer) end
+        self.bgmDuckEndTimer = _TimerService:SetTimerOnce(function()
+            self.bgmDuckEndTimer = 0
+            self:EndUltimateBgmDuck("end")
+        end, untilAt - now)
+        log(string.format("SkillExecutors: BGM duck %s (%s) to %d%% of %.2f for %.2fs", skillId, source, math.floor(self.UltimateBgmDuckRatio * 100 + 0.5), self:UltimateBgmBaseVolume(), untilAt - now))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EndUltimateBgmDuck(string reason)
+        -- 낮춘 배경음악을 되돌린다. "video off"(내 영상이 꺼짐)인데 다른 유저 영상 소리 몫이 남았으면 그때까지 미룬다.
+        --   맵 바뀜 · 플레이어 없음 · 룸 떠남은 페이드 없이 곧바로(새 맵 배경음악이 낮은 채로 시작하지 않게) · 그 밖은 UltimateBgmFadeUpSeconds.
+        if not self.bgmDuckActive then return end
+        local now = _UtilLogic.ElapsedSeconds
+        if reason == "video off" and self.bgmDuckSoundUntil > now + 0.05 then
+            self.bgmDuckUntil = self.bgmDuckSoundUntil
+            if self.bgmDuckEndTimer ~= 0 then _TimerService:ClearTimer(self.bgmDuckEndTimer) end
+            self.bgmDuckEndTimer = _TimerService:SetTimerOnce(function()
+                self.bgmDuckEndTimer = 0
+                self:EndUltimateBgmDuck("end")
+            end, self.bgmDuckSoundUntil - now)
+            log(string.format("SkillExecutors: BGM duck kept %.2fs more (another ultimate sound)", self.bgmDuckSoundUntil - now))
+            return
+        end
+        self.bgmDuckActive = false
+        self.bgmDuckMap = nil
+        if self.bgmDuckEndTimer ~= 0 then
+            _TimerService:ClearTimer(self.bgmDuckEndTimer)
+            self.bgmDuckEndTimer = 0
+        end
+        if self.bgmDuckPollTimer ~= 0 then
+            _TimerService:ClearTimer(self.bgmDuckPollTimer)
+            self.bgmDuckPollTimer = 0
+        end
+        local fade = self.UltimateBgmFadeUpSeconds
+        if reason == "map change" or reason == "no player" or reason == "end play" then fade = 0 end
+        self:FadeUltimateBgmTo(1, fade)
+        log(string.format("SkillExecutors: BGM restore (%s) to %.2f fade %.2fs", reason, self:UltimateBgmBaseVolume(), fade))
+    end
+
+    @ExecSpace("Client")
+    method void DuckBgmForUltimateSound(string skillId, string casterUserId, number seconds)
+        -- 서버(PlayUltimateCastSound)가 궁 영상 소리를 틀 때 대상 없이 부른다 = 그 소리를 받는 모든 클라. 시전자 본인은 영상 켜기 · 끄기가 맡으므로 건너뛴다.
+        local p = _UserService.LocalPlayer
+        if isvalid(p) and isvalid(p.PlayerComponent) and p.PlayerComponent.UserId == casterUserId then return end
+        self:BeginUltimateBgmDuck(skillId, seconds, "sound")
     end
 
     @ExecSpace("ClientOnly")
@@ -4018,8 +4347,11 @@ script SkillExecutors extends Logic
             local nth = soundState.played
             local play = function()
                 if not isvalid(casterEntity) then return end
-                self:PlaySoundRuid(hitSound, casterEntity, Vector3(sx, sy, sz))
-                log(string.format("SkillExecutors: MESO %s coin %d sound %d/%d (+%.2fs late)", skillId, k, nth, self.MesoCoinSoundMax, at - now))
+                -- 시전자 자리(MesoCoinSoundAtCaster · 터지는 순간의 자리) · ×MesoCoinSoundVolume. 유저별 경로(PlaySkillSoundToMap · #158) — 듣는 사람 = 각 클라의 자기 캐릭터.
+                local spos = Vector3(sx, sy, sz)
+                if self.MesoCoinSoundAtCaster and isvalid(casterEntity.TransformComponent) then spos = casterEntity.TransformComponent.WorldPosition end
+                self:PlaySkillSoundToMap(hitSound, spos, casterEntity, self.MesoCoinSoundVolume)
+                log(string.format("SkillExecutors: MESO %s coin %d sound %d/%d (+%.2fs late) x%.1f at %s", skillId, k, nth, self.MesoCoinSoundMax, at - now, self.MesoCoinSoundVolume, self.MesoCoinSoundAtCaster and "caster" or "coin"))
             end
             if at - now > 0.001 then
                 _TimerService:SetTimerOnce(play, at - now)
