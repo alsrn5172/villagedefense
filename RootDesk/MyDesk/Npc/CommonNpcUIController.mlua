@@ -73,6 +73,11 @@ script CommonNpcUIController extends Logic
 
 	property TextGUIRendererComponent haveNote = "29cea027-0dfc-4e58-9cea-6d65110a3ae5"
 
+	-- 보낼 묶음 고르기(사용자 2026-10-07 "내 수비대 주황버섯 5마리를 눌러서 파병 보내기"): 칸 B_0~B_9(Sel · Icon · Label) · 없을 때 안내. fix-dispatch-pick.cjs 가 만든다.
+	property Entity pickRoot = "a6f7b255-029f-41df-a89e-5ea672c7aee0"
+
+	property Entity pickEmpty = "2aa5ab99-3665-4e06-86a3-92e30af56585"
+
 	property TextGUIRendererComponent queueCount = "6669bb2a-434f-455a-841c-047faca6f6c8"
 
 	property Entity queueEmpty = "4fad555d-10ea-486d-a4bb-01b9499f9ab8"
@@ -149,6 +154,16 @@ script CommonNpcUIController extends Logic
 	@HideFromInspector
 	property integer cart = 1
 
+	-- 보유 묶음(서버 B 행) · 고른 순번 집합 · 묶음 구성 서명(바뀌면 고른 것을 비운다)
+	@HideFromInspector
+	property any pool = nil
+
+	@HideFromInspector
+	property any picked = nil
+
+	@HideFromInspector
+	property string poolSig = ""
+
 	-- 대기열 행 i → orderId. 취소 요청에 쓴다.
 	@HideFromInspector
 	property any queue = nil
@@ -215,6 +230,17 @@ script CommonNpcUIController extends Logic
 				if string.sub(name, 1, 7) == "Target_" then
 					local idx = tonumber(string.sub(name, 8)) or 0
 					bind(row, function() self:OnTarget(idx) end)
+				end
+			end
+		end
+		self.pool = {}
+		self.picked = {}
+		if isvalid(self.pickRoot) then
+			for _, tile in ipairs(self.pickRoot.Children) do
+				local name = tile.Name
+				if string.sub(name, 1, 2) == "B_" then
+					local idx = tonumber(string.sub(name, 3)) or 0
+					bind(tile, function() self:OnPick(idx) end)
 				end
 			end
 		end
@@ -641,6 +667,7 @@ script CommonNpcUIController extends Logic
 		self.villages = {}
 		self.queue = {}
 		self.vnames = {}
+		local pool = {}
 		local units, cap = "0", "10"
 		local villageCap, mesoCost, ruleOn = 0, 0, true
 		for _, f in ipairs(rows) do
@@ -656,10 +683,19 @@ script CommonNpcUIController extends Logic
 				ruleOn = (f[4] == "1")
 			elseif f[1] == "Q" then
 				table.insert(self.queue, { id = f[2], target = f[3], name = f[4], qty = tonumber(f[5]) or 0 })
+			elseif f[1] == "B" then
+				-- B|순번|몬스터id|이름|마릿수|아이콘|강화Lv
+				table.insert(pool, { idx = math.floor(tonumber(f[2]) or 0), mid = f[3], name = f[4] or "", qty = tonumber(f[5]) or 0, icon = f[6] or "", lv = tonumber(f[7]) or 1 })
 			end
 		end
 		self.ruleOn = ruleOn
-		if self.cart > self.bundles then self.cart = math.max(1, self.bundles) end
+		-- 묶음 구성이 바뀌면(파병 · 모집 · 전사) 고른 것을 비운다 — 순번이 다른 묶음을 가리키게 되기 때문.
+		local sig = ""
+		for _, b in ipairs(pool) do sig = sig .. tostring(b.idx) .. ":" .. b.mid .. ":" .. tostring(b.qty) .. ";" end
+		if sig ~= self.poolSig then self.picked = {} end
+		self.poolSig = sig
+		self.pool = pool
+		self:RenderPick()
 		if isvalid(self.targetRoot) then
 			for i = 0, 4 do
 				local row = self.targetRoot:GetChildByName("Target_" .. tostring(i))
@@ -740,15 +776,16 @@ script CommonNpcUIController extends Logic
 				end
 			end
 		end
-		if isvalid(self.cartCount) then self.cartCount.Text = "<color=#F3EEE2>" .. tostring(self.cart) .. "</color><color=#AEB8CF>묶음</color>" end
-		if isvalid(self.btnCartMinus) then self.btnCartMinus.Enable = (self.cart > 1) end
-		if isvalid(self.btnCartPlus) then self.btnCartPlus.Enable = (self.cart < self.bundles) end
+		-- 보낼 묶음 수 = 고른 칸 수(예전 −/+ 스테퍼는 끔 · 2026-10-07).
+		self.cart = self:PickedCount()
 		local v = nil
 		for _, x in ipairs(self.villages) do if x.id == self.selVillage then v = x end end
 		-- 하단 띠: 고르기 전 · 못 보내는 이유 = 안내 아이콘 + 글 / 고른 뒤 = 마을 문장 + "○○ 로 파병 N묶음"(금색 강조)
 		if not self.ruleOn then self:SetFooterHint("접수 중지 - 지금은 보낼 수 없어요")
 		elseif v == nil then self:SetFooterHint("대상 마을을 고르세요")
 		elseif not v.claimed then self:SetFooterHint(v.name .. " 는 주인이 없어 파병할 수 없습니다")
+		elseif self.pool == nil or #self.pool == 0 then self:SetFooterHint("보낼 수비대가 없어요 — 몬스터 모집관에서 모집하세요")
+		elseif self.cart == 0 then self:SetFooterHint("보낼 수비대 묶음을 눌러 고르세요")
 		else self:SetFooterCost("<color=#E8B64C>" .. v.name .. "</color> 로 파병 <color=#E8B64C>" .. tostring(self.cart) .. "묶음</color>", v.id) end
 		self:SetPrimaryEnabled(v ~= nil and v.claimed and self.ruleOn and self.bundles >= self.cart and self.cart > 0 and not self.waiting)
 	end
@@ -759,6 +796,62 @@ script CommonNpcUIController extends Logic
 		local v = self.villages[i + 1]
 		self.selVillage = (v ~= nil) and v.id or ""
 		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderPick()
+		-- 보유 묶음 칸: 몬스터 그림 + "이름 ×마릿수" · 고른 칸 = Sel. 영문 괄호는 뺀다. 칸(10)보다 많으면 앞 10개.
+		if self.picked == nil then self.picked = {} end
+		local pool = self.pool or {}
+		if isvalid(self.pickRoot) then
+			for i = 0, 9 do
+				local tile = self.pickRoot:GetChildByName("B_" .. tostring(i))
+				local b = pool[i + 1]
+				if isvalid(tile) then
+					tile.Enable = (b ~= nil)
+					if b ~= nil then
+						local nm = string.match(b.name, "^(.-)%s*%(") or b.name
+						if nm == "" then nm = b.name end
+						self:SetText(tile, "Label", "<color=#F3EEE2>" .. nm .. "</color> <color=#E8B64C>×" .. tostring(b.qty) .. "</color>")
+						self:SetIcon(tile, "Icon", b.icon, Color(1, 1, 1, 1))
+						self:Show(tile, "Sel", self.picked[b.idx] == true)
+					end
+				end
+			end
+		end
+		if isvalid(self.pickEmpty) then self.pickEmpty.Enable = (#pool == 0) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPick(integer i)
+		-- 묶음 칸 클릭 = 고름/풀기(여러 개 가능 · 서버가 마을당 동시 묶음 상한을 다시 본다).
+		local b = (self.pool or {})[i + 1]
+		if b == nil then return end
+		if self.picked == nil then self.picked = {} end
+		if self.picked[b.idx] == true then self.picked[b.idx] = nil else self.picked[b.idx] = true end
+		log("[Common] dispatch pick " .. tostring(b.idx) .. " on=" .. tostring(self.picked[b.idx] == true) .. " count=" .. tostring(self:PickedCount()))
+		self:RenderPick()
+		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer PickedCount()
+		-- 고른 묶음 수.
+		local n = 0
+		for _, b in ipairs(self.pool or {}) do
+			if self.picked ~= nil and self.picked[b.idx] == true then n = n + 1 end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method string PickedCsv()
+		-- 고른 묶음 순번 "1,3".
+		local t = {}
+		for _, b in ipairs(self.pool or {}) do
+			if self.picked ~= nil and self.picked[b.idx] == true then table.insert(t, tostring(b.idx)) end
+		end
+		return table.concat(t, ",")
 	end
 
 	@ExecSpace("ClientOnly")
@@ -916,7 +1009,7 @@ script CommonNpcUIController extends Logic
 		self.waiting = true
 		self:SetPrimaryEnabled(false)
 		if _LaneStateService == nil then return end
-		if self.route == "dispatch" then _LaneStateService:RequestDispatch(self.selVillage, self.cart)
+		if self.route == "dispatch" then _LaneStateService:RequestDispatchPick(self.selVillage, self:PickedCsv())
 		elseif self.route == "taxi" then _LaneStateService:RequestTaxi(self.selVillage)
 		else _LaneStateService:RequestDimensionGate(self.selVillage) end
 	end

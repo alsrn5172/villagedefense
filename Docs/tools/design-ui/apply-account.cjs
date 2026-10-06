@@ -71,6 +71,8 @@ for (const [name, x, icon, label] of TAB) {
   img(p + '/SelBg', 'btn_gold_default', T, T, { enable: false });
   img(p + '/Icon', icon, [x + 89.5, 211, 26, 26], T);
   txt(p + '/Label', label, [x + 123.5, 196, 80, 56], T, { font: 'Maple', size: 24, color: C.ivory, h: 'left' });
+  // 새로 얻은 업적 · 칭호 알림(fix-account-tab-alert.cjs 와 같은 값 · 2026-10-07)
+  if (name === 'Tab_achievement' || name === 'Tab_title') S.newImage(b, p + '/Alert', 'badge_alert', { pos: S.at(x + 231, 188, 24, 24, T), size: [24, 24], enable: false });
 }
 
 // ═══ 안쪽 판 + 페이지 4개 ═══
@@ -84,7 +86,7 @@ function grid(p, r, cell, fixed, spacing, padRight, visible) {
   ctr(p, r, PANE);
   b.patchComponent(p, 'MOD.Core.GridViewComponent', {
     CellSize: { x: cell[0], y: cell[1] }, FixedCount: fixed, FixedType: 0, Spacing: { x: spacing[0], y: spacing[1] },
-    Padding: { left: 0, right: padRight, top: 0, bottom: 0 }, ScrollBarThickness: 16, ScrollBarVisible: visible,
+    Padding: { left: 0, right: padRight, top: 0, bottom: 0 }, ScrollBarThickness: 16, ScrollBarVisible: 2, // 엔진 막대는 숨김 — 막대는 fix-scrollbars.cjs + UIScrollBars (2026-10-07)
     ScrollBarBackgroundImageRUID: { DataId: S.R('scroll_track') }, ScrollBarHandleImageRUID: { DataId: S.R('scroll_thumb') },
     ScrollBarBackgroundColor: S.C(C.white, 1), ScrollBarHandleColor: S.C(C.white, 1),
   });

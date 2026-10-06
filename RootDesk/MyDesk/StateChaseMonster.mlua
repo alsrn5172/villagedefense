@@ -223,8 +223,9 @@ script StateChaseMonster extends StateComponent
 		local tPos = tTr.WorldPosition
 		local dx = tPos.x - myPos.x
 		local dy = tPos.y - myPos.y
-		-- 위아래로 자기 키보다 멀어지면(다른 층 · 점프로 크게 벗어남) 놓는다(사용자 2026-10-06 "y축 범위를 자기 키만큼").
-		if math.abs(dy) > self:ChaseHeight() then
+		-- 위아래로 자기 키보다 멀어지면(다른 층) 놓는다(사용자 2026-10-06 "y축 범위를 자기 키만큼").
+		-- 단 같은 발판 줄(경사 · 점프 중인 대상의 발밑 포함)이면 키와 무관하게 쫓는다(InVerticalRange).
+		if not self:InVerticalRange(tgt, dy) then
 			return false
 		end
 		return math.sqrt(dx * dx + dy * dy) < self.DetectionRange
@@ -247,6 +248,100 @@ script StateChaseMonster extends StateComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean InVerticalRange(Entity tgt, number dy)
+		-- 세로 판정 (사용자 2026-10-07 "주니어 레이스 · 초록 나무 둥치 몹이 chase 를 잘 안 한다").
+		--   자기 키(ChaseHeight)만 보면 키 작은 몹(주니어 레이스 0.36 · 커즈아이 · 슬라임 0.52)은 대상이 살짝 점프하거나
+		--   경사(나무 둥치)에서 몇 걸음만 떨어져도 세로 차가 키를 넘어 바로 놓쳤다.
+		--   → 키 안이면 통과 · 아니면 "내 발밑에서 대상 발밑까지 걸어갈 수 있는 바닥이 이어지는가"(SameFloor)로 본다.
+		--     다른 층(끊긴 바닥 · 높은 턱 너머)은 예전대로 놓친다.
+		if math.abs(dy) <= self:ChaseHeight() then return true end
+		return self:SameFloor(tgt)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SameFloor(Entity tgt)
+		-- WalkableTo 결과를 대상별로 0.25초 기억한다(IDLE 탐색은 매 프레임 돈다 · 레이 여러 번이라 아낀다).
+		local now = _UtilLogic.ElapsedSeconds
+		if self._T.sfTarget == tgt and self._T.sfAt ~= nil and now - self._T.sfAt < 0.25 then
+			return self._T.sfResult == true
+		end
+		local r = self:WalkableTo(tgt)
+		self._T.sfTarget = tgt
+		self._T.sfAt = now
+		self._T.sfResult = r
+		return r
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean WalkableTo(Entity tgt)
+		-- 내 발 높이에서 대상 x 까지 0.25 간격으로 바닥을 짚는다: 매 칸 바로 아래 바닥이 있고 높이 차가 0.45 이하(경사 · 발판 이음매 · 낮은 턱)면 이어진 바닥.
+		--   끝에서 대상 발밑 바닥(점프 중이면 바로 아래 바닥)과 높이가 맞으면 같은 바닥.
+		--   🔴 발판 Next/Previous 연결로 보면 안 된다 — 가져온 원작 맵은 같은 높이 바닥도 여러 조각으로 끊겨 있다(지하철 1호선 실측 · 한 줄에 3조각).
+		local comp = self:MapFootholds()
+		local rb = self.Entity.RigidbodyComponent
+		if comp == nil or not isvalid(rb) then return false end
+		local mine = rb:GetCurrentFoothold()
+		if mine == nil or mine:IsVertical() then return false end
+		local ttr = tgt.TransformComponent
+		if not isvalid(ttr) then return false end
+		local tp = ttr.WorldPosition
+		local gy = self:GroundYOf(tgt, tp)
+		if gy == nil then return false end
+		local mx = self.Entity.TransformComponent.WorldPosition.x
+		local y = mine:GetYByX(mx)
+		local dist = tp.x - mx
+		local span = math.abs(dist)
+		local steps = math.ceil(span / 0.25)
+		if steps > 40 then return false end
+		local dir = 1
+		if dist < 0 then dir = -1 end
+		for i = 1, steps do
+			local x = mx + dir * math.min(i * 0.25, span)
+			local f = comp:Raycast(Vector2(x, y + 0.6), Vector2(0, -1), 1.2)
+			if f == nil or f:IsVertical() then return false end
+			local ny = f:GetYByX(x)
+			if math.abs(ny - y) > 0.45 then return false end
+			y = ny
+		end
+		return math.abs(gy - y) <= 0.45
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GroundYOf(Entity e, Vector3 p)
+		-- 대상 발밑 바닥 높이 · 공중(점프)이면 바로 아래 3 유닛 안의 바닥. 없으면 nil.
+		local f = nil
+		local trb = e.RigidbodyComponent
+		if isvalid(trb) then f = trb:GetCurrentFoothold() end
+		if f == nil or f:IsVertical() then
+			local comp = self:MapFootholds()
+			if comp == nil then return nil end
+			f = comp:Raycast(Vector2(p.x, p.y + 0.05), Vector2(0, -1), 3.0)
+		end
+		if f == nil or f:IsVertical() then return nil end
+		return f:GetYByX(p.x)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any MapFootholds()
+		-- 맵의 FootholdComponent (루트에 없으면 자식에서 찾는다 · NpcSpawner 와 같은 방식). 한 번 찾고 기억한다.
+		if self._T.fhComp ~= nil then return self._T.fhComp end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then return nil end
+		local comp = map.FootholdComponent
+		if not isvalid(comp) then
+			comp = nil
+			local found = map:GetChildComponentsByTypeName("FootholdComponent", true)
+			if found ~= nil then
+				for _, c in ipairs(found) do
+					if isvalid(c) then comp = c break end
+				end
+			end
+		end
+		self._T.fhComp = comp
+		return comp
+	end
+
+	@ExecSpace("ServerOnly")
 	method any AcquireTarget()
 		-- Nearest-player scan within DetectionRange; SetTarget-only mode returns nil.
 		if not self.IsChaseNearPlayer then
@@ -263,11 +358,7 @@ script StateChaseMonster extends StateComponent
 		local myPos = myTr.WorldPosition
 		local shortestDist = self.DetectionRange
 		local best = nil
-		-- 세로 범위 = 자기 키(사용자 2026-10-06) · 끝까지 쫓는 몹(보스)은 예전처럼 거리만 본다.
-		local maxDy = 1000000
-		if not self.KeepTargetForever then
-			maxDy = self:ChaseHeight()
-		end
+		-- 세로 범위 = 자기 키(사용자 2026-10-06) · 같은 발판 줄이면 키 무관(InVerticalRange) · 끝까지 쫓는 몹(보스)은 예전처럼 거리만 본다.
 		for _, u in ipairs(users) do
 			-- 관전자의 숨은 캐릭터(2026-09-09) · 다크 사이트 은신 중인 플레이어(2026-09-29 WO-034)는 추격 대상이 아니다.
 			if _FactionLogic:IsTargetable(u) then
@@ -277,7 +368,7 @@ script StateChaseMonster extends StateComponent
 					local dx = upos.x - myPos.x
 					local dy = upos.y - myPos.y
 					local d = math.sqrt(dx * dx + dy * dy)
-					if d < shortestDist and math.abs(dy) <= maxDy then
+					if d < shortestDist and (self.KeepTargetForever or self:InVerticalRange(u, dy)) then
 						shortestDist = d
 						best = u
 					end

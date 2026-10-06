@@ -1,0 +1,136 @@
+@Logic
+script UIScrollBars extends Logic
+
+	-- 공용 스크롤바 (사용자 2026-10-07 "UI 스크롤들이 스크롤바가 위아래로 움직이면서 나타나야 하는데 이상하게 구현돼 있음").
+	--   엔진 스크롤바는 창마다 모양이 제각각이고(그림형 · 금색 평면 · 회색 · 숨김) 손잡이 그림이 늘어나 찌그러졌다
+	--   → 엔진 막대는 숨기고(ScrollBarVisible = Hide), 시안 그림(scroll_track · scroll_thumb_1x)으로 만든 막대를 여기서 움직인다.
+	--   짝 규칙: 목록 엔티티 X 의 형제 "XScrollTrack"(트랙) + 그 자식 "Thumb"(손잡이) — Docs/tools/design-ui/fix-scrollbars.cjs 가 만든다.
+	--   내용이 다 보이면 막대를 숨기고, 스크롤 위치(0 = 맨 위)에 맞춰 손잡이를 위아래로 옮긴다 · 손잡이 길이 = 보이는 비율.
+
+	-- 트랙 안쪽 위아래 여백(px) · 손잡이 최소 길이(px)
+	property number Inset = 2
+
+	property number MinThumb = 24
+
+	-- ScrollLayoutGroup(세로) 손잡이가 거꾸로 움직이면 true (GridView 는 0 = 맨 위 · 2026-10-07 실측)
+	property boolean InvertScrollLayout = false
+
+	@HideFromInspector
+	property any bars = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 가 다 깔린 뒤 한 번 찾는다(바로 찾으면 그룹이 아직 없을 수 있다).
+		self.bars = {}
+		_TimerService:SetTimerOnce(function() self:Scan() end, 1.0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Scan()
+		-- /ui 아래에서 이름이 "...ScrollTrack" 인 엔티티를 찾아 같은 부모의 목록과 짝짓는다.
+		local ui = _EntityService:GetEntityByPath("/ui")
+		if not isvalid(ui) then
+			_TimerService:SetTimerOnce(function() self:Scan() end, 1.0)
+			return
+		end
+		local found = {}
+		local function walk(e, depth)
+			if depth > 14 then return end
+			for _, ch in ipairs(e.Children:ToTable()) do
+				local n = ch.Name or ""
+				if #n > 11 and string.sub(n, -11) == "ScrollTrack" then
+					table.insert(found, ch)
+				else
+					walk(ch, depth + 1)
+				end
+			end
+		end
+		walk(ui, 0)
+		self.bars = {}
+		for _, track in ipairs(found) do
+			local listName = string.sub(track.Name, 1, #track.Name - 11)
+			local list = isvalid(track.Parent) and track.Parent:GetChildByName(listName, false) or nil
+			local thumb = track:GetChildByName("Thumb", false)
+			if isvalid(list) and isvalid(thumb) then
+				track.Enable = false
+				table.insert(self.bars, { list = list, track = track, thumb = thumb, lastY = -1, lastH = -1 })
+			else
+				log_warning("[ScrollBar] pair missing for " .. tostring(track.Path))
+			end
+		end
+		log("[ScrollBar] scan bars=" .. tostring(#self.bars))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 보이는 목록만 맞춘다.
+		if self.bars == nil then return end
+		for _, b in ipairs(self.bars) do
+			self:Sync(b)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Sync(any b)
+		-- 내용 높이 · 보이는 높이 · 스크롤 위치 → 트랙 표시 여부 · 손잡이 위치/길이.
+		if not isvalid(b.list) or not isvalid(b.track) or not isvalid(b.thumb) then return end
+		if not b.list.EnabledInHierarchy then
+			if b.track.Enable then b.track.Enable = false end
+			return
+		end
+		local lt = b.list.UITransformComponent
+		if lt == nil then return end
+		local viewH = lt.RectSize.y
+		local contentH = 0
+		local t = 0
+		local grid = b.list.GridViewComponent
+		local scroll = b.list.ScrollLayoutGroupComponent
+		if isvalid(grid) then
+			if grid.FixedType ~= GridViewFixedType.ColumnCountFixed then return end
+			local cols = math.max(1, grid.FixedCount)
+			local rows = math.ceil(math.max(0, grid.TotalCount) / cols)
+			local pad = grid.Padding
+			contentH = pad.top + pad.bottom + rows * grid.CellSize.y + math.max(0, rows - 1) * grid.Spacing.y
+			t = grid:GetScrollNormalizedPosition(UITransformAxis.Vertical)
+		elseif isvalid(scroll) then
+			if scroll.Type ~= LayoutGroupType.Vertical then return end
+			local pad = scroll.Padding
+			local n = 0
+			local sum = 0
+			for _, ch in ipairs(b.list.Children:ToTable()) do
+				if ch.Enable and ch.UITransformComponent ~= nil then
+					n = n + 1
+					sum = sum + ch.UITransformComponent.RectSize.y
+				end
+			end
+			contentH = pad.top + pad.bottom + sum + math.max(0, n - 1) * scroll.Spacing
+			t = scroll:GetScrollNormalizedPosition(UITransformAxis.Vertical)
+			-- 아래→위(BottomToTop · 기본값) 막대는 0 이 맨 아래다 → 맨 위 기준으로 뒤집는다.
+			local flip = scroll.VerticalDirection == VerticalScrollBarDirection.BottomToTop
+			if self.InvertScrollLayout then flip = not flip end
+			if flip then t = 1 - t end
+		else
+			return
+		end
+		local show = contentH > viewH + 1
+		if b.track.Enable ~= show then
+			b.track.Enable = show
+			b.lastY = -1
+		end
+		if not show then return end
+		local tt = b.track.UITransformComponent
+		local ht = b.thumb.UITransformComponent
+		if tt == nil or ht == nil then return end
+		local inner = math.max(1, tt.RectSize.y - self.Inset * 2)
+		local thumbH = math.min(inner, math.max(self.MinThumb, inner * viewH / contentH))
+		if t < 0 then t = 0 elseif t > 1 then t = 1 end
+		local y = self.Inset + (inner - thumbH) * t
+		if math.abs(y - b.lastY) > 0.5 or math.abs(thumbH - b.lastH) > 0.5 then
+			ht.anchoredPosition = Vector2(0, -y)
+			ht.RectSize = Vector2(ht.RectSize.x, thumbH)
+			b.lastY = y
+			b.lastH = thumbH
+		end
+	end
+
+end

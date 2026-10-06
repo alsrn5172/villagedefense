@@ -7,15 +7,57 @@ script AccountRecordService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestView(string tab)
-		-- 클라(창 열기 · 탭 바꾸기)가 부른다.
+		-- 클라(창 열기 · 탭 바꾸기)가 부른다. 업적 · 칭호 탭을 보면 그 탭의 새로 얻음 알림(!)을 지운다(본 개수 저장).
+		self:MarkSeen(senderUserId, tab)
 		self:PushView(senderUserId, tab)
 	end
 
 	@ExecSpace("ServerOnly")
 	method void PushView(string userId, string tab)
-		-- 그 탭 뷰를 그 사람에게(서버 쪽에서 바뀐 뒤 다시 보낼 때도 — 예: 칭호 장착).
+		-- 그 탭 뷰를 그 사람에게(서버 쪽에서 바뀐 뒤 다시 보낼 때도 — 예: 칭호 장착) + 탭 알림.
 		local csv = self:BuildView(userId, tab)
-		if _AccountRecordUIController ~= nil then _AccountRecordUIController:SetView(tab, csv, userId) end
+		if _AccountRecordUIController ~= nil then
+			_AccountRecordUIController:SetView(tab, csv, userId)
+			_AccountRecordUIController:SetBadges(self:BuildBadges(userId), userId)
+		end
+	end
+
+	-- ── 새로 얻음 알림(업적 · 칭호 탭의 ! · 사용자 2026-10-07) ──
+	--   AccountAchievement.s = 그 탭에서 마지막으로 본 개수(t = 보유 칭호 · a = 달성 업적). 지금 개수가 더 많으면 !.
+
+	@ExecSpace("ServerOnly")
+	method integer TitleCount(string userId)
+		-- 보유 칭호 개수.
+		local n = 0
+		if _AccountData == nil then return 0 end
+		for _id in string.gmatch(_AccountData:GetTitles(userId), "([^,]+)") do n = n + 1 end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method string BuildBadges(string userId)
+		-- "title=1;achievement=0" · 기록이 아직 안 불러와졌으면 "" (클라는 그대로 둔다).
+		local ach = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "ach") or nil
+		if ach == nil or ach.s == nil then return "" end
+		local t = self:TitleCount(userId)
+		local a = _AccountRecordData:CountKeys(ach.d)
+		return "title=" .. ((t > ach.s.t) and "1" or "0") .. ";achievement=" .. ((a > ach.s.a) and "1" or "0")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MarkSeen(string userId, string tab)
+		-- 업적 · 칭호 탭을 봤다 → 지금 개수를 본 개수로(바뀌었을 때만 저장 표시).
+		if tab ~= "title" and tab ~= "achievement" then return end
+		local ach = (_AccountRecordData ~= nil) and _AccountRecordData:Get(userId, "ach") or nil
+		if ach == nil then return end
+		if ach.s == nil then ach.s = { t = 0, a = 0 } end
+		local key = (tab == "title") and "t" or "a"
+		local n = (tab == "title") and self:TitleCount(userId) or _AccountRecordData:CountKeys(ach.d)
+		if ach.s[key] ~= n then
+			ach.s[key] = n
+			_AccountRecordData:Touch(userId, "ach")
+			log("[AcctRec] seen " .. tab .. "=" .. tostring(n) .. " (" .. userId .. ")")
+		end
 	end
 
 	@ExecSpace("ServerOnly")

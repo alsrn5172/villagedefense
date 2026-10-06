@@ -5,7 +5,9 @@ script TutorialService extends Logic
 	--   룸 안의 매치 엔진은 그대로 돈다(마을 · 시설 · NPC 창이 진짜로 동작). Active 인 동안 각 서비스가 이 값을 보고
 	--   시계 · 웨이브 표 · 미점령 탈락 · 결과 · 계정 기록(업적 · 도감 · 플레이 기록 · 순위 보상)을 끈다 — 튜토리얼 결과는 전부 휘발.
 	--   장면 진행은 클라 TutorialDirector 가 하고, 서버는 장면이 부르는 일(RequestAction)만 한다: 달팽이 스폰 · 레벨 · 연출용 재화 · 웨이브 1회 · 순간이동.
-	--   Maker 는 방이 하나라 룸을 만들지 않고 지금 방에서 튜토리얼 모드로 시작한다(InPlace · 매치 시험이 StartMatch 로 지금 방에서 연 것과 같다).
+	--   이미 인스턴스 룸 안이면(Maker 에서 매치 맵을 바로 열고 Play = TestPlayInstance) 룸을 만들지 않고 지금 방에서 시작한다(InPlace).
+	--   🔴 로비(정적 룸)에서는 Maker 여도 룸을 만든다 — 시작 맵이 인스턴스 맵이라 정적 룸에서는 MoveToMapPosition 이 조용히 안 넘어간다
+	--   (사용자 2026-10-07 "튜토리얼 시작하기 눌러도 튜토리얼 맵으로 이동을 안 한다" · 매치 출발도 Maker 에서 룸을 만든다).
 	--   끝 · 그만두기(RequestExit) → 원장 초기화 → 로비. 로비에 도착하면 도움말 1쪽이 열린다(OnboardingService 상태의 afterTutorial).
 
 	property string RoomPrefix = "tutorial_"
@@ -55,8 +57,8 @@ script TutorialService extends Logic
 
 	property integer WaveAttack = 60
 
-	-- 5단계 마을 보스(머쉬맘) 체력 — 기본 공격 몇 번에 쓰러지게.
-	property integer BossWeakHp = 1500
+	-- 5단계 마을 보스(머쉬맘) 체력 = 1 — 한 대에 쓰러진다(사용자 2026-10-07 "튜토리얼 머쉬맘은 체력 1").
+	property integer BossWeakHp = 1
 
 	-- 클라도 읽는다: 이 방이 튜토리얼인가.
 	@Sync
@@ -106,7 +108,7 @@ script TutorialService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestStart()
-		-- 클라(로비) → 서버: 튜토리얼 시작. 매치 · 매치 대기 중이면 거절. Maker 면 지금 방, 아니면 인스턴스 룸.
+		-- 클라(로비) → 서버: 튜토리얼 시작. 매치 · 매치 대기 중이면 거절. 이미 인스턴스 룸 안이면 지금 방, 로비(정적 룸)면 튜토리얼 룸.
 		local uid = senderUserId
 		if uid == nil or uid == "" then
 			return
@@ -129,7 +131,7 @@ script TutorialService extends Logic
 			self:Toast(uid, "다른 매치가 진행 중이라 튜토리얼을 시작할 수 없습니다")
 			return
 		end
-		if Environment:IsMakerPlay() or _RoomService == nil or _RoomService:IsInstanceRoom() then
+		if _RoomService == nil or _RoomService:IsInstanceRoom() then
 			self:StartInPlace(uid)
 			return
 		end
@@ -146,9 +148,12 @@ script TutorialService extends Logic
 		end
 		self.roomSeq = self.roomSeq + 1
 		local key = self.RoomPrefix .. tostring(self.roomSeq)
+		-- 룸 생성 + 매치 맵 로딩이 길다 → 누르자마자 로딩 화면(사용자 2026-10-07). 실패하면 아래에서 걷는다.
+		self:ShowLoading(uid, self.StartMapId)
 		local room = _RoomService:CreateInstanceRoom(key, gw.matchMaps, self.RoomFirstUserWaitSeconds)
 		if room == nil or not room:IsValid() then
 			log_error("[Tutorial] CreateInstanceRoom failed key=" .. key)
+			self:HideLoading(uid)
 			self:Toast(uid, "튜토리얼 룸을 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요")
 			return
 		end
@@ -160,6 +165,7 @@ script TutorialService extends Logic
 		end
 		if not wrote then
 			log_error("[Tutorial] handoff write failed key=" .. key .. " code=" .. tostring(code))
+			self:HideLoading(uid)
 			self:Toast(uid, "튜토리얼 룸을 준비하지 못했습니다. 잠시 뒤 다시 시도해 주세요")
 			_RoomService:DeleteSharedMemoryAsync(key, function(c) end)
 			return
@@ -178,6 +184,7 @@ script TutorialService extends Logic
 		log("[Tutorial] room " .. key .. " moved=" .. tostring(moved) .. " (" .. uid .. ")")
 		if moved <= 0 then
 			_RoomService:DeleteSharedMemoryAsync(key, function(c) end)
+			self:HideLoading(uid)
 			self:Toast(uid, "튜토리얼 룸으로 이동하지 못했습니다. 잠시 뒤 다시 시도해 주세요")
 		end
 	end
@@ -218,6 +225,9 @@ script TutorialService extends Logic
 		self.begun = true
 		self.userId = uid
 		self:SetInvulnerable(uid, true)
+		-- 지금 방 시작(InPlace)에서 다른 맵이면 로딩 화면 · 룸으로 온 경우는 이미 시작 맵이라 띄우지 않는다.
+		local pl = _UserService:GetUserEntityByUserId(uid)
+		if isvalid(pl) and pl.CurrentMapName ~= self.StartMapId and _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(self.StartMapId, uid) end
 		local pos = self:SpawnPointOf(self.StartMapId)
 		self:MoveTo(uid, self.StartMapId, pos)
 		log("[Tutorial] begin user=" .. uid .. " inPlace=" .. tostring(self.InPlace) .. " start=" .. self.StartMapId)
@@ -250,9 +260,10 @@ script TutorialService extends Logic
 		local kind = parts[1] or ""
 		local ok = true
 		if kind == "snail" then
-			ok = self:SpawnNear(uid, 100000, 1, 1.6)
+			-- 첫 기본 공격 연습: 바로 눈앞에 · 움직이지 않게(사용자 2026-10-07)
+			ok = self:SpawnNear(uid, 100000, 1, 0.9, true)
 		elseif kind == "orange" then
-			ok = self:SpawnNear(uid, self.OrangeMonsterId, self.OrangeCount, 1.4)
+			ok = self:SpawnNear(uid, self.OrangeMonsterId, self.OrangeCount, 1.4, false)
 		elseif kind == "lv" then
 			ok = self:RaiseLevel(uid, math.floor(tonumber(parts[2]) or 1))
 		elseif kind == "grant" then
@@ -300,8 +311,9 @@ script TutorialService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean SpawnNear(string uid, integer monsterId, integer count, number gap)
+	method boolean SpawnNear(string uid, integer monsterId, integer count, number gap, boolean hold)
 		-- 플레이어 앞(바라보는 쪽 · 모르면 오른쪽)에 몬스터를 gap 간격으로 count 마리. MonsterSpawner.SpawnSlot 과 같은 뒷손질(체력 · FarmReward).
+		--   hold = 그 자리에 세워 둔다(이동 속도 0 · 추격 AI 정지) — 첫 공격 연습용.
 		local p = _UserService:GetUserEntityByUserId(uid)
 		if not isvalid(p) or not isvalid(p.CurrentMap) or _MonsterCatalog == nil then
 			return false
@@ -329,6 +341,17 @@ script TutorialService extends Logic
 				local reward = unit:AddComponent("script.FarmReward")
 				if isvalid(reward) then
 					reward.MonsterId = monsterId
+				end
+				if hold then
+					if isvalid(unit.MovementComponent) then
+						unit.MovementComponent.InputSpeed = 0
+					end
+					if isvalid(unit.RigidbodyComponent) then
+						unit.RigidbodyComponent.WalkSpeed = 0
+					end
+					if isvalid(unit.StateChaseMonster) then
+						unit.StateChaseMonster.CastFreezeLeft = 999999
+					end
 				end
 				table.insert(self.spawned, unit)
 				n = n + 1
@@ -564,7 +587,11 @@ script TutorialService extends Logic
 		if _AvatarLookService ~= nil then
 			_AvatarLookService:MarkReturnTutorial(uid)
 		end
-		local ok = _RoomService:MoveUserToStaticRoom(uid, (_MatchLobbyGateway ~= nil) and _MatchLobbyGateway.StationMapId or "Orbis_Lobby_VictoriaStation")
+		local station = (_MatchLobbyGateway ~= nil) and _MatchLobbyGateway.StationMapId or "Orbis_Lobby_VictoriaStation"
+		-- 정적 룸(로비)으로 돌아가는 것도 오래 걸린다 → 로딩 화면(사용자 2026-10-07).
+		self:ShowLoading(uid, station)
+		local ok = _RoomService:MoveUserToStaticRoom(uid, station)
+		if not ok then self:HideLoading(uid) end
 		log("[Tutorial] return to station ok=" .. tostring(ok) .. " (" .. uid .. ")")
 	end
 
@@ -648,6 +675,18 @@ script TutorialService extends Logic
 			return
 		end
 		p.PlayerComponent:MoveToMapPosition(mapId, pos)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ShowLoading(string uid, string mapId)
+		-- 룸을 넘는 이동 전에 그 사람에게만 로딩 화면(긴 기다림 상한).
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowRoomFor(mapId, uid) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void HideLoading(string uid)
+		-- 이동 실패 → 로딩 화면을 걷는다.
+		if _LoadingScreenController ~= nil then _LoadingScreenController:HideFor(uid) end
 	end
 
 	@ExecSpace("ServerOnly")

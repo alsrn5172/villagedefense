@@ -118,11 +118,9 @@ for (let i = 0; i < 6; i++) {
   S.back(b, P + '/Sel');
 }
 
-// 스크롤 막대(시안 s5 #9): 줄이 6개를 넘을 때만 스크립트가 켜고, 막대 길이 = 보이는 줄 / 전체 줄. 진짜 스크롤은 안 된다(표시용 · 2단계).
-// 위쪽 왼쪽 기준(트랙 x512 y242 16x510 · 막대 x514 y242 12x377.5).
-const sbTrack = tl(512 - MATCH[0], 242 - MATCH[1], 16, 510, [0, 0]);
-S.newImage(b, M + '/ScrollTrack', 'scroll_track', Object.assign({}, sbTrack, { enable: false }));
-S.newImage(b, M + '/ScrollThumb', 'scroll_thumb', Object.assign({}, tl(514 - MATCH[0], 242 - MATCH[1], 12, 377.5, [0, 0]), { enable: false }));
+// 스크롤 막대(시안 s5 #9)는 지웠다(사용자 2026-10-07 "가짜 막대 삭제") — 목록이 실제로 스크롤되지 않는데 막대만 보여 헷갈렸다.
+//   넘치는 매치는 보조 글 "외 N개 더 있음" 으로 알린다. 지운 건 fix-scrollbars.cjs 가 한다.
+for (const n of [M + '/ScrollTrack', M + '/ScrollThumb']) if (S.has(b, n)) b.remove(n);
 
 // ═══ 오른쪽 판: 난이도 ═══
 const D = W + '/Difficulty';

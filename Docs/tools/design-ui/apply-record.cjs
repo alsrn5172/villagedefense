@@ -81,7 +81,7 @@ const GR = [150, 234, 906, 422];
 ctr(CO + '/CollGrid', GR, CNT);
 b.patchComponent(CO + '/CollGrid', GRID, {
   CellSize: { x: 139.5, y: 134 }, FixedCount: 6, FixedType: 0, Spacing: { x: 9.7, y: 10 }, Padding: { left: 0, right: 20, top: 0, bottom: 0 },
-  ScrollBarThickness: 16, ScrollBarVisible: 0,
+  ScrollBarThickness: 16, ScrollBarVisible: 2, // 엔진 막대는 숨김 — 막대는 fix-scrollbars.cjs + UIScrollBars (2026-10-07)
   ScrollBarBackgroundImageRUID: { DataId: S.R('scroll_track') }, ScrollBarHandleImageRUID: { DataId: S.R('scroll_thumb') },
   ScrollBarBackgroundColor: S.C(C.white, 1), ScrollBarHandleColor: S.C(C.white, 1),
 });
