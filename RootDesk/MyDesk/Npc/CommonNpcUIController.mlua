@@ -3,7 +3,7 @@ script CommonNpcUIController extends Logic
 
 	-- 공용 창(CommonNpcGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 dispatch(파병 담당관) / dimensiongate(차원 관문) / jobchange:<JobId>(리스항구 직업별 전직관 · 2026-09-26).
 	-- dispatch: 대상 마을 4개(내 마을 제외) + 보낼 묶음 수 스테퍼 → RequestDispatch. 아래 대기열 4행은 아직 투입 전인 내 파병 — 누르면 취소(WO-014 · 2026-09-09).
-	-- gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → RequestDimensionGate(스텁).
+	-- gate: 5지역 카드(보스 · 지역재화 보유/25) + 에너지 코어 → 입장권과 코어를 확인한 뒤 보스방 이동.
 	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). 확인 팝업(PopupGroup)은 M1 뼈대에서 생략(미결). UUID 는 UIBuilder write({bind}) 주입.
 
 	property Entity dimmer = "761c1f5d-c934-4d9b-b573-3c61c3b1b5b3"
@@ -159,6 +159,11 @@ script CommonNpcUIController extends Logic
 	@HideFromInspector
 	property integer cores = 0
 
+	-- 차원의 거울에서는 같은 칩을 "순간이동" 라벨로 재사용한다. 기본 관문 라벨보다 한 단계 크게 잡아 작은 글자 문제를 피한다.
+	property number GateCoreLabelFontSize = 20
+
+	property number TaxiLabelFontSize = 30
+
 	-- 택시(WO-046): 서버가 알려 준 "전직했나". 아니면 [이동]이 잠긴다(최종 판정은 서버 RequestTaxi).
 	@HideFromInspector
 	property boolean taxiJobOk = false
@@ -277,8 +282,33 @@ script CommonNpcUIController extends Logic
 		if isvalid(self.contentGate) then self.contentGate.Enable = (route == "dimensiongate" or route == "taxi") end
 		-- 택시는 코어 칩 판을 "순간이동" 글자 칩으로 쓴다(WO-049 ② · 판만 켜 두면 빈 칸으로 보였다). 개수 · 아이콘은 관문만.
 		if isvalid(self.coreText) then
+			self.coreText.Font = "Maple"
+			self.coreText.BestFit = false
+			self.coreText.HorizontalAlignment = TextHorizontalAlignmentOption.Center
+			self.coreText.VerticalAlignment = TextVerticalAlignmentOption.Middle
+			self.coreText.Entity.UITransformComponent.RectSize = Vector2(210, 42)
 			self.coreText.Entity.Enable = (route == "dimensiongate" or route == "taxi")
-			if route == "taxi" then self.coreText.Text = "순간이동" end
+			if route == "taxi" then
+				self.coreText.Entity.UITransformComponent.anchoredPosition = Vector2(0, 218)
+				self.coreText.Text = "순간이동"
+				self.coreText.FontSize = self.TaxiLabelFontSize
+				self.coreText.FontStyle = FontStyleType.Bold
+				if isvalid(self.titleText) then
+					self.coreText.Font = self.titleText.Font
+					self.coreText.FontSize = self.titleText.FontSize
+					self.coreText.FontStyle = self.titleText.FontStyle
+					self.coreText.FontColor = self.titleText.FontColor
+					self.coreText.Underlay = self.titleText.Underlay
+					self.coreText.UnderlayColor = self.titleText.UnderlayColor
+					self.coreText.UnderlayOffsetX = self.titleText.UnderlayOffsetX
+					self.coreText.UnderlayOffsetY = self.titleText.UnderlayOffsetY
+				end
+			else
+				self.coreText.Entity.UITransformComponent.anchoredPosition = Vector2(-12, 218)
+				self.coreText.Entity.UITransformComponent.RectSize = Vector2(168, 42)
+				self.coreText.FontSize = self.GateCoreLabelFontSize
+				self.coreText.FontStyle = FontStyleType.Normal
+			end
 		end
 		if isvalid(self.coreCount) then self.coreCount.Entity.Enable = (route == "dimensiongate") end
 		if isvalid(self.coreIcon) then self.coreIcon.Enable = (route == "dimensiongate") end
@@ -393,7 +423,8 @@ script CommonNpcUIController extends Logic
 		if not self.isOpen then return end
 		local rows = _VillageNpcUIController:SplitRows(csv)
 		if kind == "dispatch" and self.route == "dispatch" then self:RenderDispatch(rows)
-		elseif kind == "gate" and self.route == "dimensiongate" then self:RenderGate(rows)
+		elseif kind == "gate" and self.route == "dimensiongate" then
+			if rows[1] ~= nil and rows[1][1] == "DONE" then self:Close() else self:RenderGate(rows) end
 		elseif kind == "taxi" and self.route == "taxi" then
 			-- 이동 성공 = DONE → 창을 닫는다(곧 맵이 바뀐다).
 			if rows[1] ~= nil and rows[1][1] == "DONE" then self:Close() else self:RenderTaxi(rows) end
@@ -423,7 +454,7 @@ script CommonNpcUIController extends Logic
 		end
 		self.route = "jobchange"
 		self.isOpen = true
-		if isvalid(self.dimmer) then self.dimmer.Enable = false end
+		if isvalid(self.dimmer) then self.dimmer.Enable = true end
 		if isvalid(self.window) then self.window.Enable = false end
 		if isvalid(self.talkName) then self.talkName.Text = npcName end
 		-- 초상 = 지금 맵에 서 있는 그 전직관의 스프라이트(모델이 정본 · 여기에 RUID 를 적지 않는다).
@@ -455,7 +486,7 @@ script CommonNpcUIController extends Logic
 		elseif myLevel < req then
 			line = "아직은 이르네. " .. tostring(math.floor(req)) .. "레벨이 되면 다시 찾아오게."
 		else
-			line = subject .. " 되고 싶은가?"
+			line = subject .. " 되고 싶은가?\n\n전직하면 전용 스킬을 배우고 마을을 차지할 수 있네.\n준비됐다면 아래 전직하기를 눌러 주게."
 			canAsk = true
 		end
 		if isvalid(self.talkLine) then self.talkLine.Text = line end
@@ -646,7 +677,9 @@ script CommonNpcUIController extends Logic
 			self.coreCount.FontColor = (self.cores >= 1) and Color(0.91, 0.714, 0.298, 1) or self.ColCoral
 		end
 		self:RenderGateCards()
-		if isvalid(self.gateStatus) then self.gateStatus.Text = "관문은 에너지 코어 1개 · 도착 보스맵 입장권은 지역재화 25개 별도 · 실제 이동은 Map 포탈 연동 후" end
+		if isvalid(self.gateStatus) then
+			self.gateStatus.Text = "에너지 코어 1개 + 도착 지역 입장권을 함께 소모합니다 · 재화 부족 시 이동/차감 없음"
+		end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -704,7 +737,8 @@ script CommonNpcUIController extends Logic
 			end
 			if isvalid(self.costHave) then self.costHave.Text = "보유 " .. tostring(self.cores) end
 		end
-		self:SetPrimaryEnabled(g ~= nil and not g.own and self.cores >= 1 and not self.waiting)
+		if g ~= nil and g.have < g.need then self:SetFooterHint("지역재화 부족: " .. tostring(g.have) .. "/" .. tostring(g.need) .. " · 코어 소모 없음") end
+		self:SetPrimaryEnabled(g ~= nil and not g.own and self.cores >= 1 and g.have >= g.need and not self.waiting)
 	end
 
 	@ExecSpace("ClientOnly")

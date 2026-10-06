@@ -177,6 +177,7 @@ script CoachMarkController extends Logic
 			ap = { title = "능력치를 찍어요", text = "빨간 알림 = 찍을 <b>AP</b>가 있어요.\n<b>캐릭터</b>(C)를 눌러 <b>자동 분배</b>를 누르면 끝!", ui = "/ui/StatusHUD/Shortcuts/BtnCharacter", side = "t", w = 430, win = "char" },
 			goalpin = { title = "Lv 10! 전직하러 가요", text = "<color=#E8B64C><b>목표 핀</b></color>이 전직관 5명이 있는 곳이에요.", target = "goalpin", side = "auto", w = 420, needMap = true },
 			job = { title = "원하는 직업을 골라요", text = "전사 · 마법사 · 궁수 · 도적 · 해적 전직관이 나란히 있어요.\n원하는 전직관을 <b>클릭</b>해 말을 걸어요.\n직업은 마을과 상관없이 <b>자유</b>예요.", target = "jobnpc", side = "t", w = 480, pulse = true, finger = true },
+			taxi = { title = "전직 완료! 위쪽 거울로 가요", text = "<color=#E8B64C><b>차원의 거울</b></color>을 클릭해 빈 마을로 순간이동하세요.\n도착하면 <b>넥서스</b>를 눌러 내 마을로 만들어요.", target = "taxinpc", side = "t", w = 480, pulse = true, finger = true, win = "taxi", mapMark = true },
 			nexus = { title = "넥서스를 눌러 내 마을로", text = "아무도 없는 마을의 <b>넥서스</b>를 누르면 내 마을이 돼요.\n먼저 누른 사람이 주인!", target = "nexus", side = "auto", w = 440, pulse = true, finger = true },
 			claimed = { title = "내 마을이 생겼어요!", text = "마을 <b>NPC</b>에게서 포탑을 강화하고 수비대를 모아요.\n누가 무엇을 하는지는 <b>도움말</b>(H) → 마을 NPC!", ui = "/ui/HelpHudGroup/Shortcut/BtnHelp", side = "t", w = 470, btn = "확인", btnW = 120, win = "help" },
 		}
@@ -260,6 +261,13 @@ script CoachMarkController extends Logic
 	method void ShowKey(string key)
 		-- 이름으로 한 단계(개발 · 미리보기).
 		self:BeginSingle(key, "key")
+	end
+
+	@ExecSpace("Client")
+	method void ShowFirstJobMirrorGuide()
+		-- 첫 전직 성공 뒤 대화창이 닫힌 다음 표시. 난이도·초보 안내 설정과 무관하게 한 번 안내한다.
+		self:Close("first-job")
+		self._T.mirrorGuidePending = true
 	end
 
 	@ExecSpace("ClientOnly")
@@ -501,7 +509,9 @@ script CoachMarkController extends Logic
 	@ExecSpace("ClientOnly")
 	method boolean WinOpen(string w)
 		-- 단계가 지켜보는 창이 열려 있나.
-		if w == "char" then
+		if w == "taxi" then
+			return _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen == true and _CommonNpcUIController.route == "taxi"
+		elseif w == "char" then
 			return _StatUIController ~= nil and _StatUIController.isOpen == true
 		elseif w == "skill" then
 			return _SkillWindowLogic ~= nil and isvalid(_SkillWindowLogic.rootGroup) and _SkillWindowLogic.rootGroup.Enable == true
@@ -520,6 +530,10 @@ script CoachMarkController extends Logic
 			return
 		end
 		local p = _UserService.LocalPlayer
+		if self.cur == "taxi" and isvalid(p) and p.CurrentMapName ~= "LithHarbor_Village_MinimiMain" then
+			self:Close("mirror-map-left")
+			return
+		end
 		if isvalid(p) and p.PlayerComponent ~= nil and p.PlayerComponent:IsDead() then
 			self:Close("dead")
 			return
@@ -623,6 +637,17 @@ script CoachMarkController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
 		-- 매치 중(★1 + 안내 켬)에만: 매치 시작 묶음 예약 · 마을 자동 단계 조건 확인(0.5초마다) · 맞은 시각 기록.
+		if self._T.mirrorGuidePending == true then
+			local player = _UserService.LocalPlayer
+			if isvalid(player) and isvalid(player.CurrentMap) then
+				if player.CurrentMapName ~= "LithHarbor_Village_MinimiMain" then
+					self._T.mirrorGuidePending = false
+				elseif self:IsSafe(player, _UtilLogic.ElapsedSeconds, false) then
+					self._T.mirrorGuidePending = false
+					self:BeginSingle("taxi", "first-job-success")
+				end
+			end
+		end
 		if not self.armed then
 			return
 		end
@@ -817,6 +842,8 @@ script CoachMarkController extends Logic
 			return self:GuideBarTarget()
 		elseif s.target == "jobnpc" then
 			return self:JobNpcTarget()
+		elseif s.target == "taxinpc" then
+			return self:MirrorTarget()
 		elseif s.target == "nexus" then
 			return self:NexusTarget()
 		elseif s.target == "matchguide" then
@@ -906,13 +933,18 @@ script CoachMarkController extends Logic
 	@ExecSpace("ClientOnly")
 	method any CachedEntities(string kind)
 		-- 월드 대상 엔티티는 단계마다 한 번만 찾는다(2차 · 30Hz 로 맵 자식을 전부 훑던 것을 줄임 · 위치는 매번 다시 잰다).
-		if self.cache ~= nil and self.cache.kind == kind then
+		local p = _UserService.LocalPlayer
+		local mapName = isvalid(p) and p.CurrentMapName or ""
+		if self.cache ~= nil and self.cache.kind == kind and self.cache.mapName == mapName and #self.cache.list > 0 then
 			return self.cache.list
 		end
 		local list = {}
-		local p = _UserService.LocalPlayer
 		if isvalid(p) and isvalid(p.CurrentMap) then
-			if kind == "jobnpc" then
+			if kind == "taxinpc" then
+				for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
+					if string.find(c.Name, "Npc_VD_LITH_TAXI_", 1, true) == 1 and isvalid(c.TransformComponent) then table.insert(list, c) end
+				end
+			elseif kind == "jobnpc" then
 				for _, c in ipairs(p.CurrentMap.Children:ToTable()) do
 					if string.sub(c.Name, 1, 11) == "Npc_VD_JOB_" and c.TransformComponent ~= nil then
 						table.insert(list, c)
@@ -942,9 +974,24 @@ script CoachMarkController extends Logic
 				end
 			end
 		end
-		self.cache = { kind = kind, list = list }
+		self.cache = { kind = kind, mapName = mapName, list = list }
 		log("[Coach] targets " .. kind .. " = " .. tostring(#list))
 		return list
+	end
+
+	@ExecSpace("ClientOnly")
+	method any MirrorTarget()
+		-- 기존 월드→UI 변환을 그대로 사용해 실제 거울 몸 위에 고리와 손가락을 붙인다.
+		for _, e in ipairs(self:CachedEntities("taxinpc")) do
+			if isvalid(e) and isvalid(e.TransformComponent) then
+				local wp = e.TransformComponent.WorldPosition
+				local a = self:LocalOfWorld(wp.x - 0.7, wp.y - 0.35)
+				local b = self:LocalOfWorld(wp.x + 0.7, wp.y + 1.5)
+				local m = self:LocalOfWorld(wp.x, wp.y + 0.8)
+				return { r = { x1 = math.min(a.x, b.x), y1 = math.min(a.y, b.y), x2 = math.max(a.x, b.x), y2 = math.max(a.y, b.y) }, px = m.x, py = m.y, name = "taxinpc" }
+			end
+		end
+		return nil
 	end
 
 	@ExecSpace("ClientOnly")
@@ -1114,6 +1161,12 @@ script CoachMarkController extends Logic
 			self:PlaceRect(self.finger, 0, 0, 0, 0)
 		end
 		self:PlaceBubble(s, tg, hole, B, forceSide)
+		if s.mapMark == true then
+			-- 거울 안내 중에는 길과 게임 화면을 가리지 않는다. 대상 금테·고리·화살표·말풍선만 남긴다.
+			for _, e in ipairs({ self.dimTop, self.dimBottom, self.dimLeft, self.dimRight }) do
+				if isvalid(e) then e.Enable = false end
+			end
+		end
 		-- 대상 사각형을 1920 캔버스(왼쪽 위 원점) 값으로 찍는다(탐색으로 잰 HUD 사각형과 맞춰 보기 위함).
 		--   UI 대상은 사각형이 바뀔 때마다 · 월드 대상(전직관 · 넥서스 · 매치 안내원)은 화면 안/밖이 바뀔 때만
 		--   (걸어가는 동안 좌표가 매 틱 바뀌어 15Hz 로 찍혔다 · 2차).
@@ -1125,7 +1178,7 @@ script CoachMarkController extends Logic
 				msg = msg .. " offscreen " .. off
 			end
 			key = msg
-			if s.target == "jobnpc" or s.target == "nexus" or s.target == "matchguide" then
+			if s.target == "jobnpc" or s.target == "nexus" or s.target == "matchguide" or s.target == "taxinpc" then
 				key = tg.name .. "|" .. off
 			end
 		end
@@ -1235,6 +1288,7 @@ script CoachMarkController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnEndPlay()
 		-- 연결 · 타이머 해제.
+		self._T.mirrorGuidePending = false
 		if self.handlers ~= nil then
 			for _, x in ipairs(self.handlers) do
 				if isvalid(x.e) then

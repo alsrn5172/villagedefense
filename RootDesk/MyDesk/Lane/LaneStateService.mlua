@@ -1252,6 +1252,7 @@ script LaneStateService extends Logic
 				if isvalid(p) and isvalid(p.CurrentMap) then own = self:VillageOfMap(p.CurrentMap.Name) end
 			end
 			local core = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "ENERGY_CORE") or 0
+			local entryCost = (_PortalNetwork ~= nil) and _PortalNetwork.BossEntryCost or 25
 			add({ "CORE", tostring(core) })
 			local bi = _DataService:GetTable("BossInfo")
 			for _, vv in ipairs(self.villages) do
@@ -1263,7 +1264,7 @@ script LaneStateService extends Logic
 					end
 				end
 				local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, vv.mat) or 0
-				add({ "G", vv.id, vv.name, bossName, vv.mat, tostring(have), "25", b2s(vv.id == own) })
+				add({ "G", vv.id, vv.name, bossName, vv.mat, tostring(have), tostring(entryCost), b2s(vv.id == own) })
 			end
 		elseif kind == "taxi" then
 			-- 리스항구 택시(차원의 거울 · WO-046): JOB|전직했나 · T|villageId|이름|주인 있음|내 마을
@@ -1657,16 +1658,57 @@ script LaneStateService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestDimensionGate(string targetVillageId)
-		-- 차원 관문(스텁): 에너지 코어 1 소모. 실제 이동은 Map/ 포탈 훅 연결 후.
+		-- 목적지·입장권·코어를 먼저 전부 확인한다. 거절은 무차감, 성공은 두 비용을 한 번 내고 보스방으로 이동한다.
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
-		if targetVillageId == self:VillageOfUser(uid) then self:Toast(uid, "내 마을은 걸어서 갑니다") return end
-		if _InventoryService == nil or _InventoryService:CountItem(uid, "ENERGY_CORE") < 1 then self:Toast(uid, "에너지 코어가 없습니다") return end
-		_InventoryService:RemoveItem(uid, "ENERGY_CORE", 1)
+		local player = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) or player.PlayerComponent:IsDead() then return end
+		if player.CurrentMapName ~= "SixPathCrossway" then self:Toast(uid, "여섯갈래길의 차원 관문에서 이용하세요") self:Push(uid, "gate") return end
+		local own = self:VillageOfUser(uid)
+		if own == "" then own = self:VillageOfMap(player.CurrentMapName) end
+		if targetVillageId == own then self:Toast(uid, "내 마을 보스는 걸어서 입장하세요") self:Push(uid, "gate") return end
+		local destination = ""
+		local config = _DataService:GetTable("VillageConfig")
+		if config ~= nil then
+			for i = 1, config:GetRowCount() do
+				if config:GetCell(i, "VillageId") == targetVillageId and string.lower(config:GetCell(i, "Enabled") or "") == "true" then
+					destination = config:GetCell(i, "BossMapName") or ""
+					break
+				end
+			end
+		end
+		local item = (_DropTableLogic ~= nil) and _DropTableLogic:RegionItemOfMap(destination) or ""
+		local cost = math.max(0, (_PortalNetwork ~= nil) and _PortalNetwork.BossEntryCost or 25)
+		if destination == "" or item == "" or _InventoryService == nil then
+			log_warning("[Lane] gate denied: invalid destination " .. tostring(targetVillageId))
+			self:Toast(uid, "관문 목적지 정보를 찾지 못했습니다. 재화는 소모되지 않습니다") self:Push(uid, "gate") return
+		end
+		local cores = _InventoryService:CountItem(uid, "ENERGY_CORE")
+		local have = _InventoryService:CountItem(uid, item)
+		if cores < 1 or have < cost then
+			log("[Lane] gate denied: core=" .. tostring(cores) .. " region=" .. tostring(have) .. "/" .. tostring(cost) .. " consumed=0 (" .. uid .. ")")
+			self:Toast(uid, cores < 1 and "에너지 코어가 없습니다" or ("지역재화가 부족합니다: " .. tostring(have) .. "/" .. tostring(cost) .. " · 에너지 코어는 소모되지 않습니다"))
+			self:Push(uid, "gate") return
+		end
+		local map = _EntityService:GetEntityByPath("/maps/" .. destination)
+		local spawn = isvalid(map) and map:GetChildByName("SpawnLocation") or nil
+		if not isvalid(spawn) or not isvalid(spawn.TransformComponent) then
+			log_warning("[Lane] gate denied: destination unavailable " .. destination .. " consumed=0")
+			self:Toast(uid, "관문 목적지를 준비하지 못했습니다. 재화는 소모되지 않습니다") self:Push(uid, "gate") return
+		end
+		-- 이 구간에는 대기/RPC가 없다. 두 번째 차감이 실패하면 첫 번째 입장권을 그대로 돌려준다.
+		if cost > 0 and not _InventoryService:RemoveItem(uid, item, cost) then self:Push(uid, "gate") return end
+		if not _InventoryService:RemoveItem(uid, "ENERGY_CORE", 1) then
+			if cost > 0 then _InventoryService:GiveItem(uid, item, cost) end
+			self:Push(uid, "gate") return
+		end
 		_InventoryService:PushInventory(uid)
-		log("[Lane] gate -> " .. targetVillageId .. " core-1 (" .. uid .. ")")
-		self:Toast(uid, targetVillageId .. " 차원 관문 (에너지 코어 -1 · 이동은 포탈 연동 후)")
-		self:Push(uid, "gate")
+		local pos = spawn.TransformComponent.WorldPosition
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(destination, uid) end
+		player.PlayerComponent:MoveToMapPosition(destination, Vector2(pos.x, pos.y))
+		log("[Lane] gate -> " .. destination .. " core-1 " .. item .. "-" .. tostring(cost) .. " (" .. uid .. ")")
+		self:Toast(uid, self:VillageName(targetVillageId) .. " 보스방으로 이동합니다")
+		if _VillageNpcUIController ~= nil then _VillageNpcUIController:SetView("gate", "DONE", uid) end
 	end
 
 	-- ── 리스항구 택시 (차원의 거울 · WO-046 · 사용자 2026-10-05) ─────────────
