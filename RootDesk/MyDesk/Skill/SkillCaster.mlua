@@ -589,6 +589,8 @@ script SkillCaster extends Logic
             self.castLockTimerId = 0
         end
 
+        -- 땅 락이었는가(좌우 이동 입력을 MoveLeft / MoveRight 조건으로 막은 락) — 아래에서 캐시를 지우기 전에 잡아 둔다(ResumeHeldMove).
+        local wasGroundLock = self.hasCachedInputSpeed
         local player = _UserService.LocalPlayer
         if isvalid(player) then
             local movement = player.MovementComponent
@@ -610,6 +612,41 @@ script SkillCaster extends Logic
         self.castLockActive = false
         self.activeCastId = 0
         log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")")
+        if wasGroundLock and why ~= "dead" then self:ResumeHeldMove(castId) end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ResumeHeldMove(integer castId)
+        -- 락이 풀릴 때 좌우 방향키를 아직 누르고 있으면 곧바로 걷고 그쪽을 본다(#177 · 사용자 2026-10-06 · 스킬 · 기본 공격 락 공통 — ReleaseCastLock 에서만 부른다).
+        -- 왜 필요한가: 땅 락 동안 MoveLeft / MoveRight 조건(LockPresentation)이 거짓이라 컨트롤러가 그 키의 누름(KeyDown)을 버린다.
+        --   컨트롤러는 누르는 순간에만 이동을 시작하므로, 락 전에 누르고 있던 키든 락 중에 누른 키든 풀린 뒤에도 다시 누르기 전까지 서 있었다.
+        -- 고침: 풀린 순간(조건이 이미 참) 누르고 있는 방향키의 KeyDown 을 InputService 로 한 번 다시 보낸다 — 조이스틱이 이동을 넣는 것과 같은 이벤트라
+        --   컨트롤러가 평소처럼 걷기 · 시선 · 상태기(MOVE)를 처리한다. 지금 누르고 있지 않은 키(락 중에 눌렀다 뗀 키 포함)는 아무것도 안 한다.
+        --   좌우를 둘 다 누르고 있으면 보내지 않는다(어느 쪽인지 정할 수 없음). 락 동안에는 부르지 않는다 — 락 중 움직임 없음은 그대로.
+        -- 키 = 아래 목록 중 컨트롤러가 MoveLeft / MoveRight 에 묶은 키(GetActionName · 기본 ← →). 다른 키를 이동에 묶으면 목록에 더한다.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local controller = player.PlayerControllerComponent
+        if not isvalid(controller) then return end
+        local keys = { KeyboardKey.LeftArrow, KeyboardKey.RightArrow }
+        local leftKey = nil
+        local rightKey = nil
+        for _, key in ipairs(keys) do
+            if _InputService:IsKeyPressed(key) then
+                local action = controller:GetActionName(key)
+                if action == "MoveLeft" and leftKey == nil then leftKey = key end
+                if action == "MoveRight" and rightKey == nil then rightKey = key end
+            end
+        end
+        if leftKey == nil and rightKey == nil then return end
+        if leftKey ~= nil and rightKey ~= nil then
+            log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — left and right both held, no resume")
+            return
+        end
+        local key = leftKey
+        if key == nil then key = rightKey end
+        _InputService:SendEvent(KeyDownEvent(key))
+        log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — held " .. tostring(key) .. " → move resumed (KeyDown re-sent)")
     end
 
     @ExecSpace("Server")

@@ -31,3 +31,12 @@
   - 이어지는 락은 처음 캐시한 이동 속도를 지킨다(`LockPresentation` 이 다시 캐시하지 않는다 — 다시 캐시하면 0 을 담아 풀린 뒤 못 걷는다).
   - 피해 · 판정 시각 · 서버 쪽은 그대로(서버 `PlayerAttack` 무변경).
 - 런타임 미검증: 클라에서 `PlayerActionEvent` "Attack" 이 나는지(API 문서: Space Server, Client) · 상태기를 켠 채 MoveLeft/MoveRight 조건만으로 제자리 걷기 모션이 안 나오는지 — `RUN-rope.md` RO-8 · RELOOK R27.
+
+## 2026-10-06 (4) — 락이 풀릴 때 누르고 있던 방향키로 곧바로 걷기 (사용자 결정)
+
+> 시전 락 · 기본 공격 락(0.8 s) 동안 누른 방향키가 버려져, 락이 끝나도 키를 다시 눌러야 걸었다. 락이 끝날 때 방향키를 누르고 있으면(락 전에 눌렀든 락 중에 눌렀든) 곧바로 걷고 그쪽을 본다. 락 중에 눌렀다 뗀 키는 아무것도 안 하고, 락 동안은 계속 아무것도 안 움직인다.
+
+- 원인: 땅 락 동안 `MoveLeft` / `MoveRight` 조건(`LockPresentation` · 제자리 걷기 모션을 막으려고 2026-09-09 에 넣음)이 거짓이라 컨트롤러가 그 키의 누름을 버린다. 컨트롤러는 누르는 순간에만 이동을 시작하므로 조건이 다시 참이 돼도 이미 누르고 있는 키는 다시 읽지 않는다.
+- 고침(`Skill/SkillCaster.mlua` · B 파일 하나): 공통 해제 길 `ReleaseCastLock` 끝에서 땅 락이었으면(`hasCachedInputSpeed`) `ResumeHeldMove` — ← / → 중 `MoveLeft` / `MoveRight` 에 묶인 키를 지금 누르고 있으면 그 키의 `KeyDownEvent` 를 `_InputService` 로 한 번 다시 보낸다(조이스틱이 이동을 넣는 것과 같은 이벤트). 둘 다 누르고 있으면 보내지 않는다. 사망 해제(`dead`)와 공중 락(조건이 막지 않음)은 건드리지 않는다. 로그 `cast lock OFF #n — held <key> → move resumed (KeyDown re-sent)`.
+- 스킬 락 · 기본 공격 락 · 이어진 락(Ctrl 연타 · Ctrl → 스킬)은 모두 마지막 `ReleaseCastLock` 한 번에서만 부른다. 서버 · 피해 · 락 길이 변경 없음.
+- **Play 안 함.** 합성 `KeyDownEvent` 를 컨트롤러가 실제 키처럼 받는지는 런타임 미검증(숫자 RO-10 · RELOOK R33).
