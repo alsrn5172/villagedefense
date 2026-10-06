@@ -37,6 +37,8 @@
 - **노틸러스 원본 NPC 삭제**: 노틸러스호 안 30명 · 선착장 6명(`MapNpcs` 36행) — 기능 NPC(노틸러스호 갑판 10명)만 남음. Play 확인.
 - **엘리니아 사냥터 3(거대한 나무) NPC 이름표 끔**: 맵에 직접 놓인 `npc-7046` 의 `NameTagComponent.Enable = false`(MapBuilder · 줄바꿈 CRLF 유지). Play 확인.
 
+- **기능 NPC 이름표 = 엔진 기본 이름표**(사용자 "이름 뒤 검은 배경이 안 생김 · 정확하게 안 나올 가능성 없이"): `NpcSpawner.AttachNameTag` 가 월드 이름표(업로드 초록 판 · 판 RUID 가 스크립트 문자열뿐이라 출시본에서 빠짐) 대신 모델의 `NameTagComponent`(검은 반투명 배경 + 흰 글씨 · 엔진이 그림)를 켠다. 모델에 이름표가 없을 때만 예전 월드 이름표. Maker Play 화면으로 리스항구 NPC 전원 확인.
+
 ## 계약
 - 스키마-계약 §0-3 룸 키 `tutorial_{세대}` · A-4 `AvatarLookRecord` 4번째 칸 `T`. 새 CSV · 열 · 이벤트 · 저장 필드 없음.
 
