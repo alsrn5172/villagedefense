@@ -38,6 +38,12 @@ script SkillDatabase extends Logic
 
     property string NoviceJobLine = "NOVICE"
 
+    -- 스킬 명중 판정(RollSkillHit · b/skill-hit-miss · A #40 6005930861). false = 판정 없이 늘 명중(예전).
+    property boolean SkillHitCheckEnabled = true
+
+    -- RollSkillHit 판정마다 로그 한 줄(숫자 확인용). false = MISS 만.
+    property boolean LogHitRolls = true
+
     method void OnBeginPlay()
         -- Loads every SkillInfo + JobTier row once, into skillsById / jobsByKey.
         self:EnsureLoaded()
@@ -470,6 +476,41 @@ script SkillDatabase extends Logic
             log("SkillDatabase: DamageAt " .. skillId .. " base=" .. tostring(base) .. " +magicGuard=" .. tostring(bonus))
         end
         return base + bonus
+    end
+
+    method boolean RollSkillHit(string userId, Entity defender, string skillId)
+        -- 스킬 명중 판정(b/skill-hit-miss · A #40 6005930861 "스킬 명중/회피는 B 가 계산한다"): 기본 공격(StatService.CalcPlayerDamage)과 같은 식을 그대로 쓴다 —
+        --   _DamageFormula:HitCheck(명중, 내 레벨, 대상 레벨) · 빗나가면 _DamageFormula:ShowMiss(대상)로 MISS 글자를 띄우고 false.
+        --   명중 = StatService 원장 final.accuracy · 내 레벨 = StatService.GetPlayerLevel · 대상 레벨 = 스폰 행 SpawnLevel > MonsterCatalog 레벨 > 1(CalcPlayerDamage 와 같은 순서).
+        -- 판정 없이 true: 클라(원장 없음) · 꺼짐(SkillHitCheckEnabled) · 궁(Behavior ORIGIN · 사용자 결정 2026-10-06 "궁 · 소환 · 버프로 나는 피해는 늘 명중") · 시전자 / 원장 없음.
+        -- 부르는 곳 = SkillAttack / SkillProjectile.IsAttackTarget(서버 피격 파이프라인 · 대상마다 패스당 한 번). ExecSpace 없음(서버에서만 의미 · 클라면 위에서 true).
+        if not self:IsServer() then return true end
+        if not self.SkillHitCheckEnabled then return true end
+        if _DamageFormula == nil or _StatService == nil or userId == nil or userId == "" or not isvalid(defender) then return true end
+        local skill = self.skillsById[skillId]
+        if skill ~= nil and skill.behavior == "ORIGIN" then return true end
+        local u = _StatService:GetLedger(userId)
+        if u == nil or u.final == nil then return true end
+        local accuracy = u.final.accuracy or 0
+        local level = _StatService:GetPlayerLevel(userId)
+        local targetLevel = 1
+        local fr = defender.FarmReward
+        if isvalid(fr) then
+            if fr.SpawnLevel ~= nil and fr.SpawnLevel > 0 then
+                targetLevel = fr.SpawnLevel
+            elseif _MonsterCatalog ~= nil then
+                local lv = _MonsterCatalog:GetLevel(fr.MonsterId)
+                if lv > 0 then targetLevel = lv end
+            end
+        end
+        local hit = _DamageFormula:HitCheck(accuracy, level, targetLevel)
+        if self.LogHitRolls or not hit then
+            local verdict = "HIT"
+            if not hit then verdict = "MISS" end
+            log("[SkillHit] " .. tostring(skillId) .. " " .. verdict .. " vs " .. tostring(defender.Name) .. " Lv" .. tostring(targetLevel) .. " (acc " .. tostring(accuracy) .. " · Lv" .. tostring(level) .. " · " .. userId .. ")")
+        end
+        if not hit then _DamageFormula:ShowMiss(defender) end
+        return hit
     end
 
     method number StackDamageAt(string skillId, number level, string userId)
