@@ -58,6 +58,17 @@ script SkillHotbar extends Logic
 
     property string AirTeleportJobId = "MAGICIAN"
 
+    -- Shift = 점프 · 더블 점프(b/skill-shift-double-jump · 사용자 결정 2026-10-06): Shift 슬롯의 byJob 값이 ShiftJumpToken 인 직업(초보자 · 전사 · 궁수 · 도적 · 해적)은
+    --   Shift 를 엔진 점프 액션(JumpActionName)에 묶는다 — 땅 = 보통 점프(엔진 · 시전 락 "Jump" 조건 · 줄 · 사다리 처리 그대로), 공중 = 더블 점프(OnJumpKeyDown → TryAirDoubleJump · Alt/Space 와 같은 길).
+    --   더블 점프(DoubleJumpSkillId)를 배웠을 때만 묶는다(ShiftJumpNeedsDoubleJump) — 안 배웠으면 Shift 는 빈 슬롯(예전 전사 · 도적 · 해적과 같다).
+    --   마법사는 Shift = 텔레포트 그대로(byJob "TELEPORT"). 직업 · 배움이 바뀌면 다음 프레임에 다시 묶는다(ApplyShiftBinding). 스킬 HUD Shift 칸은 이 직업들에 안 보인다(ResolveSlotSkillId = "").
+    property string ShiftJumpToken = "JUMP"
+
+    property boolean ShiftJumpNeedsDoubleJump = true
+
+    @HideFromInspector
+    property string shiftBoundAction = ""
+
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
         self:BuildSlotTable()
@@ -86,13 +97,14 @@ script SkillHotbar extends Logic
         --   전사 (b/skill-warrior): Q 파워 스트라이크 · W 하이퍼 바디 · E 도발 · R 불굴의 진. 아이언 바디는 패시브라 키 없음.
         -- byJob 에 없는 직업/슬롯은 빈 슬롯("empty" 로그만, Cast 호출 없음). 패시브는 SkillCaster 가 시전 거절.
         -- 🟡 Shift 를 SetActionKey 로 묶는 것은 런타임 미검증(수식 키가 PlayerActionEvent 를 내는지) — "SkillHotbar: wired" 뒤 Shift 로그로 확인.
-        --   궁수 (b/skill-archer-thief-pirate): Q 더블 샷 · W 스나이핑 · E 닷지(D 슬롯 · 이동기라 Shift 로도) · R 폭풍의 화살. 포커스는 패시브.
+        --   궁수 (b/skill-archer-thief-pirate): Q 더블 샷 · W 스나이핑 · E 닷지(D 슬롯) · R 폭풍의 화살. 포커스는 패시브.
+        --   Shift(b/skill-shift-double-jump · 2026-10-06): 마법사 = 텔레포트 · 그 밖 = 점프 / 더블 점프("JUMP" · ShiftJumpToken · ApplyShiftBinding). 예전 궁수 Shift 닷지는 뺐다(닷지는 E 그대로).
         --   도적: Q 럭키 세븐 · W 다크 사이트 · E 쉐도우 파트너 · R 메소 익스플로전. 픽파켓은 패시브.
         --   해적: Q 섬머솔트 킥 · W 에너지 차지(차지 중 W 재입력 = 10연타 주먹) · E 에너지 쉴드 · R 함포 사격. 선원 관리는 패시브.
         self.slots = {
             -- NOVICE = 달팽이 세마리(b/skill-novice-snails · A 요청 #40 5875058360 4번 "초보자일 땐 Q 에 자동 등록"). 전직하면 byJob 이 직업 스킬로 바꾼다(요청 5번 · 구조는 그대로).
             { slot = 1, key = KeyboardKey.Q, keyName = "Q", action = "Skill1", byJob = { NOVICE = "SK_N01", MAGICIAN = "SK_M11", WARRIOR = "SK_W11", ARCHER = "SK_A11", THIEF = "SK_T11", PIRATE = "SK_P11" } },
-            { slot = 2, key = KeyboardKey.LeftShift, altKey = KeyboardKey.RightShift, keyName = "Shift", action = "Skill2", byJob = { MAGICIAN = "TELEPORT", ARCHER = "SK_A22" } },
+            { slot = 2, key = KeyboardKey.LeftShift, altKey = KeyboardKey.RightShift, keyName = "Shift", action = "Skill2", byJob = { MAGICIAN = "TELEPORT", NOVICE = "JUMP", WARRIOR = "JUMP", ARCHER = "JUMP", THIEF = "JUMP", PIRATE = "JUMP" } },
             { slot = 3, key = KeyboardKey.E, keyName = "E", action = "Skill3", byJob = { MAGICIAN = "SK_M22", WARRIOR = "SK_W22", ARCHER = "SK_A22", THIEF = "SK_T22", PIRATE = "SK_P22" } },
             { slot = 4, key = KeyboardKey.R, keyName = "R", action = "Skill4", byJob = { MAGICIAN = "SK_M31", WARRIOR = "SK_W31", ARCHER = "SK_A31", THIEF = "SK_T31", PIRATE = "SK_P31" } },
             { slot = 5, key = KeyboardKey.W, keyName = "W", action = "Skill5", byJob = { WARRIOR = "SK_W21", ARCHER = "SK_A21", THIEF = "SK_T21", PIRATE = "SK_P21" } },
@@ -110,6 +122,7 @@ script SkillHotbar extends Logic
         -- identical poll is not a race (disjoint keys/action names, no shared mutable state).
         if self.isWired then
             self:TrackGround()
+            self:ApplyShiftBinding()
             return
         end
         self:TryWireKeys()
@@ -144,6 +157,32 @@ script SkillHotbar extends Logic
         self.jumpKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyDown)
         self.isWired = true
         log("SkillHotbar: wired 8 hotbar keys (Skill1-Skill8)")
+        self.shiftBoundAction = ""
+        self:ApplyShiftBinding()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ApplyShiftBinding()
+        -- Shift(슬롯 2 · 좌우 둘 다)를 지금 직업 · 더블 점프 배움에 맞는 액션에 묶는다. 바뀔 때만 SetActionKey 를 다시 부른다(매 프레임 비교만).
+        --   byJob = ShiftJumpToken 이고(초보자 · 전사 · 궁수 · 도적 · 해적) 더블 점프를 배웠으면 → 엔진 점프 액션(JumpActionName) = 땅 점프 · 공중 더블 점프.
+        --   그 밖(마법사 · 안 배움) → 슬롯 액션(Skill2) = 예전 그대로(마법사 텔레포트 · 빈 슬롯 "empty" 로그).
+        local entry = self:FindSlotByAction("Skill2")
+        if entry == nil or _PlayerSkillState == nil then return end
+        local want = entry.action
+        local job = _PlayerSkillState:LocalJobId()
+        if entry.byJob[job] == self.ShiftJumpToken then
+            local learned = _PlayerSkillState:LocalSkillLevel(self.DoubleJumpSkillId) > 0
+            if learned or not self.ShiftJumpNeedsDoubleJump then want = self.JumpActionName end
+        end
+        if want == self.shiftBoundAction then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local controller = player.PlayerControllerComponent
+        if not isvalid(controller) then return end
+        controller:SetActionKey(entry.key, want)
+        if entry.altKey ~= nil then controller:SetActionKey(entry.altKey, want) end
+        log("SkillHotbar: Shift -> '" .. want .. "' (job=" .. tostring(job) .. " doubleJumpLv=" .. tostring(_PlayerSkillState:LocalSkillLevel(self.DoubleJumpSkillId)) .. ")")
+        self.shiftBoundAction = want
     end
 
     @ExecSpace("ClientOnly")
@@ -186,6 +225,8 @@ script SkillHotbar extends Logic
         local job = _PlayerSkillState:LocalJobId()
         local id = entry.byJob[job]
         if id == nil then return "" end
+        -- Shift 점프 자리(ShiftJumpToken)는 스킬 시전이 아니다(엔진 점프 · 공중 더블 점프 · ApplyShiftBinding) → "" = 시전 없음 · 스킬 HUD Shift 칸 숨김.
+        if id == self.ShiftJumpToken then return "" end
         if id == "TELEPORT" then
             return self:ResolveTeleportSkillId()
         end
@@ -202,6 +243,8 @@ script SkillHotbar extends Logic
             local id = entry.byJob[job]
             if id ~= nil then
                 if id == skillId then return entry.keyName end
+                -- Shift 점프 자리(ShiftJumpToken)는 더블 점프(DoubleJumpSkillId) 툴팁에 "Shift" 로 보인다(b/skill-shift-double-jump · Alt · Space 도 그대로 된다).
+                if id == self.ShiftJumpToken and skillId == self.DoubleJumpSkillId then return entry.keyName end
                 -- "TELEPORT" 슬롯은 배움 상태로 SK_M13/SK_M21 중 하나를 시전한다 - 둘 다 그 키로 표시한다.
                 if id == "TELEPORT" and (skillId == self.TeleportBaseSkillId or skillId == self.TeleportMasterySkillId) then
                     return entry.keyName
