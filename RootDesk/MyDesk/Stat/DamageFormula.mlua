@@ -13,17 +13,15 @@ script DamageFormula extends Logic
 	-- 방어력 감산 상수. 방어 100 이면 50% 감산.
 	property number DefenseK = 100
 
-	-- 명중·회피 공식 튜닝값(WO-050 §2-12). 몹 회피와 명중은 레벨에서 파생한다.
-	property number MobAvoidBase = 4
+	-- 명중 공식(1.1-A04 · A05 · A06 · 단위 %p): 명중 확률 = 100 + 명중률 − 레벨 역보정 × (대상 레벨 − 내 레벨, 높을 때만) − 대상 회피율 · 판정만 0~100% 로 자른다.
+	-- 몬스터 회피율은 고정이다 — 일반 10% · 보스 20% (원문 L42~L45). 대상 레벨 · 분류는 StatService.ResolveTarget 한 곳에서 정한다.
+	property number MobAvoidPct = 10
 
-	property number MobAvoidPerLevel = 1.0
+	property number BossAvoidPct = 20
 
-	property number AvoidWeight = 0.2
+	property number HitPenaltyPerLevel = 10
 
-	property number HitPenaltyPerLevel = 0.05
-
-	property number HitFloor = 0.10
-
+	-- 몹 → 플레이어 회피 공식 튜닝값(WO-050 §2-12 · 회피 개편은 1.1-A08 ~ A11).
 	property number MobAccBase = 10
 
 	property number MobAccPerLevel = 4
@@ -66,17 +64,17 @@ script DamageFormula extends Logic
 		return minDmg + math.floor(_UtilLogic:RandomDouble() * (maxDmg - minDmg + 1))
 	end
 
-	method boolean HitCheck(number accuracy, integer attackerLevel, integer targetLevel)
-		-- 몹 회피를 반영한 명중률에 레벨 차 페널티를 적용한다.
-		local mobAvoid = self.MobAvoidBase + self.MobAvoidPerLevel * targetLevel
-		local denom = accuracy + mobAvoid * self.AvoidWeight
-		local base = 1
-		if denom > 0 then base = accuracy / denom end
+	method number HitChance(number accuracyPct, integer attackerLevel, integer targetLevel, number targetAvoidPct)
+		-- 최종 명중 확률(0~1) — 100 + 명중률 − 10×(대상이 높은 레벨 차) − 대상 회피율(1.1-A06). 최저 10% 보장은 없다. 0 이하 = 반드시 MISS · 100 이상 = 반드시 명중.
 		local gap = math.max(0, targetLevel - attackerLevel)
-		local rate = base - self.HitPenaltyPerLevel * gap
-		if rate < self.HitFloor then rate = self.HitFloor end
-		if rate > 1 then rate = 1 end
-		return _UtilLogic:RandomDouble() < rate
+		local pct = 100 + accuracyPct - self.HitPenaltyPerLevel * gap - targetAvoidPct
+		if pct < 0 then pct = 0 elseif pct > 100 then pct = 100 end
+		return pct / 100
+	end
+
+	method boolean HitCheck(number accuracyPct, integer attackerLevel, integer targetLevel, number targetAvoidPct)
+		-- 명중 판정 한 번. RandomDouble 이 [0,1) 이라 확률 0 은 늘 MISS, 1 은 늘 명중.
+		return _UtilLogic:RandomDouble() < self:HitChance(accuracyPct, attackerLevel, targetLevel, targetAvoidPct)
 	end
 
 	method boolean DodgeCheck(number avoid, integer playerLevel, integer mobLevel)
@@ -132,11 +130,6 @@ script DamageFormula extends Logic
 		local rate = self.CritBase + luk * self.CritPerLuk
 		if rate > self.CritCap then rate = self.CritCap end
 		return rate
-	end
-
-	method integer DerivedAccuracy(integer dex, integer luk)
-		-- 스탯에서 파생되는 명중률 (메이플 원본: DEX×0.8 + LUK×0.5).
-		return math.floor(dex * 0.8 + luk * 0.5)
 	end
 
 	method integer DerivedAvoid(integer dex, integer luk)

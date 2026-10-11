@@ -31,6 +31,12 @@ script StatService extends Logic
 	-- STR 1당 방어 (B4 · 사용자 2026-09-22 신설). Recalculate 에서 최종 방어에 더한다.
 	property number DefensePerStr = 0.2
 
+	-- 주스탯 · 부스탯이 아닌 스탯의 추가효과 효율(1.1-G01 · 원문 "그 외 스탯은 추가효과만 10%"). 스탯 숫자 · 스탯공격력(주×4+부)은 줄이지 않는다.
+	property number NonCoreEffectMul = 0.1
+
+	-- DEX 1당 명중률 %p (1.1-A02 · G04 · 주 · 부스탯 직업 0.15 · 그 외 ×NonCoreEffectMul). LUK 은 명중에 안 더한다.
+	property number AccuracyPerDex = 0.15
+
 	-- 이동 기준값 (SPEED · JUMP 100 일 때 · WO-046 · 2026-10-05). 예전엔 매치 초기화 때 엔티티의 **현재** 값을 기준으로 다시 읽어서
 	-- 이전 판의 이속·점프 보너스가 기준에 눌러앉아 판마다 불어났다 → 고정값으로 둔다.
 	-- 걷기 속도 = 사용자 2026-10-05 "과도하게 빠르다 · 절반" → 엔진 기본 1.4 의 절반. DefaultPlayer 모델 값과 같게 둔다.
@@ -131,6 +137,43 @@ script StatService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method any ResolveTarget(Entity defender)
+		-- 명중 판정 대상의 레벨 · 회피율 한 곳(1.1-A05): { level, avoid }. 기본 공격(CalcPlayerDamage)과 스킬(SkillDatabase.RollSkillHit)이 같이 쓴다.
+		-- 보스(보스 모델 소환수 포함 · BossSkillRunner) = BossInfo.Level · 회피 20%. 그 밖 = MonsterCatalog.LevelOfEntity(사냥터 덮어쓰기 > 미니언 웨이브 > 수비대 > 도감) · 회피 10%. 모르면 Lv1.
+		local level = 1
+		local avoid = _DamageFormula.MobAvoidPct
+		if isvalid(defender) then
+			---@type BossSkillRunner
+			local runner = defender.BossSkillRunner
+			if isvalid(runner) then
+				avoid = _DamageFormula.BossAvoidPct
+				local info = (_BossCatalog ~= nil) and _BossCatalog:GetInfo(runner.BossId) or nil
+				if info ~= nil and (info.level or 0) > 0 then level = math.floor(info.level) end
+			elseif _MonsterCatalog ~= nil then
+				local lv = _MonsterCatalog:LevelOfEntity(defender)
+				if lv > 0 then level = lv end
+			end
+		end
+		return { level = level, avoid = avoid }
+	end
+
+	@ExecSpace("ServerOnly")
+	method number EffectEff(string userId, string statKey)
+		-- 그 유저 직업 기준 스탯 추가효과 효율(1.1-G01): 주 · 부스탯 1.0 · 그 외 NonCoreEffectMul(0.1). statKey = "str" | "dex" | "int" | "luk".
+		local u = self:EnsureUser(userId)
+		if u == nil then return 1.0 end
+		return self:EffectEffOfJob(u.job, statKey)
+	end
+
+	@ExecSpace("ServerOnly")
+	method number EffectEffOfJob(string jobId, string statKey)
+		-- 직업 기준 효율(JobInfo.PrimaryStat · SecondaryStat). 초보자(NOVICE)는 STR · DEX 가 주 · 부(명세 권장 그대로).
+		local j = self:GetJob(jobId)
+		if statKey == j.primary or statKey == j.secondary then return 1.0 end
+		return self.NonCoreEffectMul
+	end
+
+	@ExecSpace("ServerOnly")
 	method any EnsureUser(string userId)
 		-- 유저 스탯 원장을 반환한다. 없으면 초보자 1레벨 기본치로 만든다.
 		if userId == nil or userId == "" then
@@ -141,7 +184,7 @@ script StatService extends Logic
 			u = {
 				level = 1,
 				job = "NOVICE",
-				-- accuracy 20 = 기본 명중(레벨 무관). 파생치(DEX·LUK)는 Recalculate 에서 더해진다. 첫 검증에서 0 이면 Lv1 몹도 50% 빗나갔다.
+				-- accuracy 20 = 기본 명중률 20%p(레벨 무관 · 1.1-A02). DEX 항은 Recalculate 에서 더해진다(DEX 1당 0.15%p × 효율).
 				base = { str = 12, dex = 5, int = 4, luk = 4, attack = self.BaseAttack, magic = 0, defense = 0,
 					speed = 100, jump = 100, accuracy = 20, avoid = 0, maxhp = 0, maxmp = 0 },
 				equip = {}, enhance = {}, buff = {}, dev = {},
@@ -369,7 +412,14 @@ script StatService extends Logic
 		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "magic", "defense", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
 			f[k] = (u.base[k] or 0) + (u.equip[k] or 0) + (u.enhance[k] or 0) + (u.buff[k] or 0) + (u.dev[k] or 0)
 		end
-		f.accuracy = f.accuracy + _DamageFormula:DerivedAccuracy(f.dex, f.luk)
+		-- 스탯 추가효과 효율(1.1-G01): 주 · 부스탯 1.0 · 그 외 0.1. 아래 파생치(명중 · 회피 · HP · MP · 방어 · 치명)가 쓴다.
+		local job = self:GetJob(u.job)
+		local function eff(k)
+			if k == job.primary or k == job.secondary then return 1.0 end
+			return self.NonCoreEffectMul
+		end
+		-- 명중률 %p(1.1-A02 · G04): 기본 20 + 장비 · 강화 · 버프(효율 없이) + DEX × 0.15 × 효율. LUK 은 명중에 안 더한다. 소수 3자리.
+		f.accuracy = math.floor((f.accuracy + (f.dex or 0) * self.AccuracyPerDex * eff("dex")) * 1000 + 0.5) / 1000
 		f.avoid = f.avoid + _DamageFormula:DerivedAvoid(f.dex, f.luk)
 		-- 방어 += STR × DefensePerStr (B4 · 사용자 2026-09-22 신설 규칙 · 전사 Lv30 STR 114 → +23).
 		f.defense = f.defense + math.floor((f.str or 0) * self.DefensePerStr)
@@ -539,27 +589,20 @@ script StatService extends Logic
 		end
 		local range = self:GetRange(userId)
 
-		-- 대상 레벨·방어: 스폰 행의 SpawnLevel 이 있으면 LevelOverride 반영 실레벨을 우선한다.
-		local targetLevel = 1
+		-- 대상 레벨 · 회피율(1.1-A05 · ResolveTarget 한 곳) · 방어(1.1-E21 · 스폰한 곳이 Monster.Defense 에 도감 값을 넣는다).
+		local t = self:ResolveTarget(defender)
+		local targetLevel = t.level
 		local targetDefense = 0
 		if isvalid(defender) then
-			local fr = defender.FarmReward
-			if isvalid(fr) then
-				if fr.SpawnLevel ~= nil and fr.SpawnLevel > 0 then
-					targetLevel = fr.SpawnLevel
-				elseif _MonsterCatalog ~= nil then
-					local lv = _MonsterCatalog:GetLevel(fr.MonsterId)
-					if lv > 0 then targetLevel = lv end
-				end
-			end
-			-- 대상 방어(1.1-E21): 스폰한 곳이 Monster.Defense 에 도감 값을 넣는다(일반 몹 · 소환수 · 자이언트 · 보스). 없으면 0.
 			---@type Monster
 			local mon = defender.Monster
 			if isvalid(mon) and (mon.Defense or 0) > 0 then targetDefense = mon.Defense end
 		end
 
-		if not _DamageFormula:HitCheck(u.final.accuracy or 0, u.level or 1, targetLevel) then
-			log("[Stat] MISS acc=" .. tostring(u.final.accuracy) .. " vs Lv" .. tostring(targetLevel))
+		-- 명중 판정(1.1-A06): 100 + 명중률 − 10 × (대상이 높은 레벨 차) − 대상 회피율.
+		if not _DamageFormula:HitCheck(u.final.accuracy or 0, u.level or 1, targetLevel, t.avoid) then
+			log("[Stat] MISS acc=" .. tostring(u.final.accuracy) .. " vs Lv" .. tostring(targetLevel) .. " avoid=" .. tostring(t.avoid)
+				.. " chance=" .. tostring(_DamageFormula:HitChance(u.final.accuracy or 0, u.level or 1, targetLevel, t.avoid)))
 			_DamageFormula:ShowMiss(defender)
 			return 0
 		end
