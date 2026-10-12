@@ -104,7 +104,18 @@ script SkillExecutors extends Logic
     property number MeleeArcHeight = 1.5
 
     -- TAUNT: 상자 안 적을 시전자 위치로 끌어모을지(false 면 대상 전환만). 보스(script.BossSkillRunner)는 값과 무관하게 끌지 않는다.
-    property boolean TauntPull = true
+    -- 1.1-B01: 끌어오기 해제(false) — 도발은 방어력 저하 · 피해 1 · 나를 추격만.
+    property boolean TauntPull = false
+
+    -- TAUNT 방어력 저하(1.1-B02): 대상 방어 −SecondaryAt(0/5/10/15/20). 보스는 이 배율(절반). 기록 = tauntDefense · 읽기 = GetTauntDefenseDelta(DamageFormula.TargetDefenseOf).
+    property number TauntBossDefenseMul = 0.5
+
+    -- TAUNT 피해(1.1-B01 · 사용자 2026-10-12): 도발한 몬스터마다 이 고정 피해(평값 · 치명 · 방어 없음).
+    property integer TauntFlatDamage = 1
+
+    -- [서버] 도발 방어 저하 기록: entity -> { delta(0 이하), untilAt(_UtilLogic.ElapsedSeconds) }. 재도발은 덮어쓴다(누적 없음).
+    @HideFromInspector
+    property table tauntDefense = {}
 
     -- TAUNT: 끌어모을 때 시전자 좌우로 벌리는 간격(world unit). i번째 몬스터는 ±(간격 × ceil(i/2)).
     property number TauntPullSpacing = 0.6
@@ -222,6 +233,13 @@ script SkillExecutors extends Logic
     property integer BarrageBombsPerWave = 3
 
     property number BarrageScatter = 0.6
+
+    -- 함포 사격 파 안 나눠 치기(1.1-C13 · 사용자 결정 2026-10-12 "연출 구간에 나눠 치기 · 해적은 파마다 짧게"): 한 파의 타수를 이 타수씩 여러 패스로 나눠
+    --   파 시각부터 BarrageSubPassSpan 초 안에 고르게 친다(패스 표시 = 그 패스 타수 · 합계 그대로). 15 = 1.1 이전 한 파의 모양(30타 ÷ 2파). 0 이하 = 한 파 한 패스(예전).
+    --   0.4초 = 영상 끝(6.50 s) 전에 둘째 파(06:01 = 6.04 s)가 다 들어가는 길이(궁 합계가 영상 끝 + 0.1 s 에 닫힌다).
+    property integer BarrageSubPassHits = 15
+
+    property number BarrageSubPassSpan = 0.4
 
     -- 폭풍의 화살(line): 직선 상자 높이(world unit · 발부터 위로) · 직선 위에 순차 재생할 hit 클립 개수.
     property number LineHeight = 2.5
@@ -508,8 +526,14 @@ script SkillExecutors extends Logic
     -- 클라: 영상 프레임 넘기기 타이머 id(새 컷신 · 끄기 때 지운다).
     property integer cutsceneFrameTimer = 0
 
-    -- 폭풍의 화살(SK_A31) 영상 타격 타수(사용자 결정 2026-10-05 · #40 5986277680 · A 확인 대기): 4000% 1타를 영상의 두 구간에 이만큼 나눠 친다(한 타 = 합계 ÷ 이 값). 1 = 예전처럼 1타(첫 구간 가운데).
-    property integer StormArrowSplitHits = 8
+    -- 폭풍의 화살(SK_A31) 영상 타격 타수(사용자 결정 2026-10-05 · #40 5986277680): 표 피해(BaseEffect × HitCount)를 영상의 두 구간에 이만큼 나눠 친다(한 타 = 합계 ÷ 이 값).
+    --   1.1-C11: 8 → 100(= CSV HitCount 100 → 한 타 650% × 1). 구간 몫은 구간 길이에 비례(UltimateHitTimes · 1.1-C13). 1 = 예전처럼 1타(첫 구간 가운데).
+    property integer StormArrowSplitHits = 100
+
+    -- 폭풍의 화살 나눠 친 타 연출(1.1-C13): 앞 타와 이 초보다 멀면 새 구간의 첫 타(직선 위 hit 클립) · 대상마다 hit 클립은 이 타수마다 한 번(100타 전부 틀면 대상마다 100겹 · 12 ≈ 예전 8타의 밀도).
+    property number StormArrowWindowGap = 1.0
+
+    property integer StormArrowImpactEvery = 12
 
     -- 백덤블링 뒤로 밀림(2026-09-14 사용자 요청 "고정점에서 도는 게 아니라 조금 뒤로 이동하면서 돌게"): 소유 클라가 회전 동안 플레이어 루트를 바라보는 반대쪽으로 이만큼(월드 단위) 옮긴다.
     -- spec.backflip.driftX 가 있으면 그것. 0 = 제자리.
@@ -948,9 +972,9 @@ script SkillExecutors extends Logic
                 },
                 -- 명중 5종: 시전 순번으로 하나를 골라 맞은 대상마다 4번(hitInterval 간격 · SkillAttack.PendingImpactRepeat).
                 hitClips = { "b79cbdf6d06b487382f03d625a1fc464", "a5fa2b779db14f93b881a873f36b7eac", "1ce3b9be19764a70a6229665e15adf42", "79132eeadd9b4ab090bf4845bfcfdbdb", "3720a775e9c241fbb547c81d76598843" },
-                -- 4타 · 타마다 파워 스트라이크 % × 0.8 · 앞 3.5 × 높이 2.5 · 최대 6명. hitAt 0.28 = 원작 첫 피해(영상 2013 실측 ≈ +0.28 s · 후보 E · 예전 0.12).
-                --   2026-10-05 b/skill-balance-x3(A 요청): maxTargets 6 → 0 = 상자 안 전부(상자 그대로) · 피해는 파워 스트라이크 % 를 따라 ×3(SkillInfo.csv).
-                hits = 4, damageMul = 0.8, maxTargets = 0, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
+                -- 4타 · 타마다 파워 스트라이크 % × 0.6(1.1-B05 · 예전 0.8) · 앞 3.5 × 높이 2.5. hitAt 0.28 = 원작 첫 피해(영상 2013 실측 ≈ +0.28 s · 후보 E · 예전 0.12).
+                --   2026-10-05 b/skill-balance-x3(A 요청): maxTargets 6 → 0 = 상자 안 전부(상자 그대로). Lv1 405% × 0.6 = 243% × 4 · Lv5 810% × 0.6 = 486% × 4.
+                hits = 4, damageMul = 0.6, maxTargets = 0, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
             },
             SK_M11_FH = {   -- 플레임 헤이즈 — 원작 skill/212.img/skill/2121011: 몸 동작 flameHaze(기본 액션 2프레임) · 시전 · 투사체 · 폭발 hit/0 · 불꽃 5종(연출만) · 소리 Use · Hit
                 baseSkillId = "SK_M11",
@@ -1068,6 +1092,8 @@ script SkillExecutors extends Logic
                 -- 예전 = skill/1100.img/skill/11001002(시그너스 소울마스터 · effect aae5027d… + hit/0 88a17d40… + hit/1 c07906d7… 두 겹).
                 -- hitAt = 폴백 타격 시점(초). 정상 경로는 모션 세트(Skill/SkillMotionSet.csv)에서 고른 모션의 HitTime — 세트가 없을 때만 이 값.
                 -- 둘 다 0.45 = 휘두르기 6종(swingO1~3 · swingT1~3) 2프레임(칼이 앞으로 내려온 접촉 프레임) 시작 · 2026-09-25 Play 실측(프레임 0.30/0.15/0.35s).
+                -- 판정 상자 위쪽 = 발 위 1.2(1.1-B04 · 예전 MeleeArcHeight 1.5). 앞은 Range 그대로. MeleeArcHeight 자체는 에너지 차지 주먹이 같이 써서 안 바꾼다.
+                box = { up = 1.2 },
                 cast = { ruid = "522793cef4ff4b79bdf73b9eda9386f8" },
                 impact = { ruid = "dad03b3a528348bf98295b01edd621a4" },
                 hitAt = 0.45,
@@ -1113,7 +1139,7 @@ script SkillExecutors extends Logic
                 -- 클립 pivot 이 정중앙(0.5, 0.5)이라 발 위치(0)에 붙이면 아래 절반이 땅 밑으로 간다 → 카메라 중심(≈ 발 +1.0 unit)까지 올린다.
                 -- 원본 픽셀 크기가 1920×1080 화면보다 작아 scale 1.4 로 화면을 채운다 (2026-09-10 사용자 제보 "화면을 못 채우고 낮다" → 1차 보정 · 스크린샷으로 재조정).
                 -- cutsceneSeconds 4.8 = 컷신 표시 + 실측 실패 때의 대체 길이(2026-09-13 Play 스크린샷으로 잰 89프레임 ≈ 4.8s · 실제 길이는 MeasureCutsceneClips). buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 불굴의 진 버프(HP 고정 · 경직 없음 ·
-                --   피격 무적 절반)를 시전 즉시 걸되 길이 = 컷신 + CSV Duration(8) → 컷신이 걷힌 뒤에도 8초. 전사는 다른 직업의 "피격 무시" 궁 무적 대신 이 고정으로 버틴다(SkillCaster.GetUltimateInvulnMul SK_W31 = 0).
+                --   피격 무적 25% · 1.1-B08)를 시전 즉시 걸되 길이 = 컷신 + CSV Duration(15 · 1.1-B07) → 컷신이 걷힌 뒤에도 15초. 전사는 다른 직업의 "피격 무시" 궁 무적 대신 이 고정으로 버틴다(SkillCaster.GetUltimateInvulnMul SK_W31 = 0).
                 cast = { ruid = "132f5fc6a6614ea4bc9a52f27877c1ce", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.8 },
                 buffExtendsByCutscene = true,
             },
@@ -1338,7 +1364,8 @@ script SkillExecutors extends Logic
                 --     "밀림 없음" 상태에서 잰 값이고, 1번째 시전(오른쪽 봄 · 밀리는 중)에서도 호는 몸 기준 −0.38~+0.73 캐릭터 키에 붙어 따라간다(시전자 부착) → 그대로.
                 -- box(2026-09-27): 판정 = 원작 최신(KMS 360~389 · 라이브) lt(-170,-185) rb(90,5) → 앞 1.7 · 뒤 0.9 · 위 1.85 유닛(CSV Range 2 = 앞쪽만 2 는 이 스킬에선 안 쓴다).
                 --   대상 상한 = skillTargetCaps.SK_P11(원작 mobCount 6). 예전 = 앞쪽 Range 2 × MeleeArcHeight 1.5 · 상한 없음.
-                box = { front = 1.7, back = 0.9, up = 1.85 },
+                -- 1.1-C02: 뒤 0.9 → 0.2 · 위 1.85 → 1.295(×0.7) · 앞 1.7 그대로.
+                box = { front = 1.7, back = 0.2, up = 1.295 },
             },
             SK_P21 = {   -- 에너지 차지(2026-09-16 · 슈퍼 트랜스폼 교체) — 레벨 구간마다 다른 팩을 쓴다. 구간 표는 chargeTiers 한 곳(BuildHandlerTable).
                 --   tiers[*].cast      차지 진입 때 시전자에게 1회 (팩의 effect/0 · 17프레임 · 모여드는 소용돌이가 마지막 프레임에서 불꽃으로 자란다)
@@ -1924,6 +1951,19 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method number MotionRateMul(string uid, string motionId)
+        -- 공격속도 모션 배율(1.1-B21): motionId 의 스킬(SK_XNN · 순서 단계 접미사 무시 · _RECAST 는 재시전 공격)이 공격 시전(SkillCaster.IsAttackSpeedCast)이면 GetAttackSpeedMul, 아니면 1.
+        if _SkillBuffs == nil or _SkillCaster == nil or motionId == nil then return 1 end
+        local mul = _SkillBuffs:GetAttackSpeedMul(uid)
+        if mul == 1 then return 1 end
+        local id = string.match(motionId, "^(SK_%u%d%d)")
+        if id == nil then return 1 end
+        local isRecast = string.find(motionId, "_RECAST", 1, true) ~= nil
+        if not _SkillCaster:IsAttackSpeedCast(_SkillDatabase:GetSkill(id), isRecast) then return 1 end
+        return mul
+    end
+
+    @ExecSpace("ServerOnly")
     method boolean PlayMotion(string uid, string motionId, boolean ownRowOnly)
         -- WeaponMotion 행을 찾아(ResolveMotionRow) 그 유저의 클라에서 재생한다(A 의 PlayerMotion.PlayAction 을 그대로 부른다 · A 파일 편집 없음).
         -- ownRowOnly = 스킬 전용 행만 재생(무기 기본 공격 행으로의 폴백 금지 · 이동 스킬 / 순서 단계).
@@ -1931,9 +1971,11 @@ script SkillExecutors extends Logic
         -- 모션 세트(SkillMotionSet · A-2-23 · 2026-09-24 #83)가 있으면 그게 먼저다 — 세트에서 하나 골라 재생하고 WeaponMotion 은 보지 않는다.
         -- 버프 변형 키(SK_W11_RB · SK_M11_FH)는 WeaponMotion 행이 없다 → PlayVariantMotion(원작 동작 또는 원래 스킬 모션).
         if motionId == "SK_W11_RB" or motionId == "SK_M11_FH" then return self:PlayVariantMotion(uid, motionId) end
+        -- 공격속도(1.1-B21 · 쉐도우 파트너 ×1.2): 공격 스킬 시전 모션만 빠르게(버프 · 궁 · 이동은 그대로 · MotionRateMul).
+        local rateMul = self:MotionRateMul(uid, motionId)
         local picked = self:PickMotionFromSet(uid, motionId)
         if picked ~= nil then
-            _PlayerMotion:PlayAction(picked.row.core, picked.row.parts, picked.row.rate, "ONETIME", uid)
+            _PlayerMotion:PlayAction(picked.row.core, picked.row.parts, picked.row.rate * rateMul, "ONETIME", uid)
             self:PlayShadowMimic(uid, picked.row.core)
             return true
         end
@@ -1949,7 +1991,7 @@ script SkillExecutors extends Logic
             -- 프레임 붙잡기(motionHoldFrames): A 의 PlayAction 에는 프레임 인자가 없어 B 의 클라 RPC 로 같은 body 이벤트를 보낸다.
             self:PlayHeldAction(res.row.core, res.row.parts, holdFrame, uid)
         else
-            _PlayerMotion:PlayAction(res.row.core, res.row.parts, res.row.rate, res.row.playType, uid)
+            _PlayerMotion:PlayAction(res.row.core, res.row.parts, res.row.rate * rateMul, res.row.playType, uid)
         end
         -- 쉐도우 파트너 분신이 켜져 있으면 같은 동작을 시전자 뒤에서 따라 한다(b/skill-thief-motion · 분신이 없으면 아무것도 안 한다).
         self:PlayShadowMimic(uid, res.row.core)
@@ -2774,10 +2816,11 @@ script SkillExecutors extends Logic
 
     method table UltimateHitTimes(string skillId, integer count)
         -- 궁 피해 시각(시전 뒤 초 · 오름차순) — 기획 `컷신_타격_타이밍.txt`(초:프레임 · 24 fps) 그대로(사용자 결정 2026-10-05 · #166).
-        --   점 시각(points)을 앞에서부터 쓰고, 타수가 점보다 많으면 남는 타를 구간(windows)에 고르게 나눈다(구간마다 같은 수 · 나머지는 앞 구간부터 ·
-        --   구간 안에서는 길이를 타수로 나눈 칸의 가운데). count 가 0 이면 점 시각만. 구간 끝 −1 = 영상 끝(CutsceneVideoSeconds).
+        --   점 시각(points)을 앞에서부터 쓰고, 타수가 점보다 많으면 남는 타를 구간(windows)에 나눈다 — 구간 길이에 비례(1.1-C13 · 2026-10-12 · 예전 = 구간마다 같은 수) ·
+        --   나머지는 소수 부분이 큰 구간부터 · 구간 안에서는 길이를 타수로 나눈 칸의 가운데. count 가 0 이면 점 시각만. 구간 끝 −1 = 영상 끝(CutsceneVideoSeconds).
+        --   1.1-C13: 마법사는 06:04 점 + 06:04~끝 구간(첫 타는 폭발 순간 그대로 · 나머지는 영상 끝까지) · 궁수 100타 = 0.50 s : 1.29 s → 28 : 72.
         --   영상이 없거나 이 궁의 표가 없으면 빈 표 → 부르는 쪽이 예전 시각(CSV Duration 등)을 쓴다.
-        --   불굴의 진(SK_W31)은 표에 피해가 없다(8초 버프 · skill-spec.md) → 파일의 전사 시각 4개(1:04 · 1:11 · 4:16 · 5:00)는 쓰지 않는다.
+        --   불굴의 진(SK_W31)은 표에 피해가 없다(컷신 + 15초 버프 · 1.1-B07) → 파일의 전사 시각 4개(1:04 · 1:11 · 4:16 · 5:00)는 쓰지 않는다.
         local out = {}
         local video = self:CutsceneVideoSeconds(skillId)
         if video <= 0 then return out end
@@ -2785,6 +2828,7 @@ script SkillExecutors extends Logic
         local windows = {}
         if skillId == "SK_M31" then
             points = { 6 + 4 / 24 }                                                         -- 마법사 06:04
+            windows = { { 6 + 4 / 24, -1 } }                                                --        06:04~끝 (1.1-C13)
         elseif skillId == "SK_A31" then
             windows = { { 3 + 16 / 24, 4 + 4 / 24 }, { 6 + 11 / 24, -1 } }                  -- 궁수 03:16~04:04 · 06:11~끝
         elseif skillId == "SK_T31" then
@@ -2802,16 +2846,36 @@ script SkillExecutors extends Logic
         for i = 1, math.min(count, #points) do table.insert(out, points[i]) end
         local rest = count - #points
         if rest > 0 and #windows > 0 then
-            local base = math.floor(rest / #windows)
-            local extra = rest - base * #windows
+            local spans = {}
+            local total = 0
             for w, win in ipairs(windows) do
-                local n = base
-                if w <= extra then n = n + 1 end
                 local a = win[1]
                 local b = win[2]
                 if b < 0 then b = video end
                 if b < a then b = a end
-                for k = 1, n do table.insert(out, a + (k - 0.5) * (b - a) / n) end
+                spans[w] = { a = a, b = b }
+                total = total + (b - a)
+            end
+            local counts = {}
+            local fracs = {}
+            local used = 0
+            for w, s in ipairs(spans) do
+                local share = rest / #spans
+                if total > 0 then share = rest * (s.b - s.a) / total end
+                counts[w] = math.floor(share)
+                used = used + counts[w]
+                table.insert(fracs, { w = w, f = share - counts[w] })
+            end
+            table.sort(fracs, function(x, y)
+                if x.f == y.f then return x.w < y.w end
+                return x.f > y.f
+            end)
+            for i = 1, math.min(rest - used, #fracs) do
+                counts[fracs[i].w] = counts[fracs[i].w] + 1
+            end
+            for w, s in ipairs(spans) do
+                local n = counts[w]
+                for k = 1, n do table.insert(out, s.a + (k - 0.5) * (s.b - s.a) / n) end
             end
         end
         table.sort(out)
@@ -3504,7 +3568,10 @@ script SkillExecutors extends Logic
         if spec.behindPlayer then self:ApplyShadowSorting(opt, player) end
         _EffectService:PlayEffectAttached(ruid, player, Vector3((spec.offsetX or 0) * facing, spec.offsetY or 0, 0), 0, Vector3(s, s, 1), false, opt)
 
-        self:ScheduleShadowRestore(uid, self.ShadowMimicSeconds)
+        -- 분신 모션 복귀 대기도 공격속도로 한 번 나눈다(1.1-B20 · 원본 모션이 1.2배 빨라진 만큼).
+        local mimicSeconds = self.ShadowMimicSeconds
+        if _SkillBuffs ~= nil then mimicSeconds = mimicSeconds / math.max(0.01, _SkillBuffs:GetAttackSpeedMul(uid)) end
+        self:ScheduleShadowRestore(uid, mimicSeconds)
         log("SkillExecutors: shadow mimic " .. action .. " facing=" .. tostring(facing) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]) .. " (" .. uid .. ")")
     end
 
@@ -3994,7 +4061,7 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void PlayAimMarker(string skillId, table skillData, Entity casterEntity)
-        -- 선딜 중 조준 대상 표시(b/skill-archer-motion): effectOverrides[skillId].mob 가 있으면 SpawnProjectile 과 같은 앞쪽 상자(Range × SkillAttack.AimSearchHeight · 보스 우선)의
+        -- 선딜 중 조준 대상 표시(b/skill-archer-motion): effectOverrides[skillId].mob 가 있으면 SpawnProjectile 과 같은 앞쪽 상자(SkillAttack.AimSearchShape · 1.1-C14 · 보스 우선)의
         -- 대상에 한 번 붙인다(PlayMobEffect). 발사 시점의 대상은 SpawnProjectile 이 다시 고른다 — 그 사이 죽거나 움직이면 달라질 수 있는 표시일 뿐이다.
         local entry = self.effectOverrides[skillId]
         if entry == nil or entry.mob == nil or entry.mob.ruid == nil then return end
@@ -4006,12 +4073,7 @@ script SkillExecutors extends Logic
         local dirX = self:GetFacingX(casterEntity)
         local range = skillData.range
         if range <= 0 then range = 1 end
-        local h = skillAttack.AimSearchHeight
-        if h == nil or h <= 0 then h = 2.5 end
-        local target = skillAttack:FindSkillTarget(skillId, {
-            posX = pos.x + dirX * range / 2, posY = pos.y + h / 2,
-            sizeX = range, sizeY = h, floorY = pos.y,
-        }, self.projectilePreferBoss[skillId] == true)
+        local target = skillAttack:FindSkillTarget(skillId, skillAttack:AimSearchShape(pos, dirX, range), self.projectilePreferBoss[skillId] == true)
         if not isvalid(target) then
             log("SkillExecutors: aim marker " .. skillId .. " no target in front (range=" .. tostring(range) .. ")")
             return
@@ -4024,6 +4086,9 @@ script SkillExecutors extends Logic
     method void FireProjectile(string skillId, table skillData, Entity casterEntity, number level, boolean withCastBeat)
         -- 시전 연출 + 투사체 스폰. ExecuteProjectile 이 즉시(withCastBeat=true) 또는 선딜 뒤(false · 조준 연출과 소리는 시전 순간에 이미 났다)에 부른다.
         local pos = casterEntity.TransformComponent.WorldPosition
+        -- 공격속도(1.1-B20 · 쉐도우 파트너 ×1.2): 팔 잔상 표시 시각 · 길이 · 투사체 발사 지연을 나눈다. 시전 이펙트 · 소리 시작은 시전 순간 그대로.
+        local atkSpeed = 1
+        if _SkillBuffs ~= nil and isvalid(casterEntity.PlayerComponent) then atkSpeed = math.max(0.01, _SkillBuffs:GetAttackSpeedMul(casterEntity.PlayerComponent.UserId)) end
         if withCastBeat then
             self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Charge)
             self:PlayCastSound(skillId, casterEntity)
@@ -4036,7 +4101,7 @@ script SkillExecutors extends Logic
                 local sx = arc.scaleX or 1
                 if sx <= 0 then sx = 1 end
                 local ox = (arc.offsetX or 0) + (arc.frontTip or 0) * (1 - sx)
-                self:PlaySpriteFlashXY(arc.sprite, casterEntity, ox, arc.offsetY or 0, sx, arc.scaleY or 1, arc.showAt or 0, arc.seconds or 0.25, skillId .. "_arc", -1, arc.alpha or 1)
+                self:PlaySpriteFlashXY(arc.sprite, casterEntity, ox, arc.offsetY or 0, sx, arc.scaleY or 1, (arc.showAt or 0) / atkSpeed, (arc.seconds or 0.25) / atkSpeed, skillId .. "_arc", -1, arc.alpha or 1)
             end
         end
 
@@ -4062,9 +4127,10 @@ script SkillExecutors extends Logic
             if entry.spawn.delay ~= nil then spawnDelay = entry.spawn.delay end
             if entry.spawn.scale ~= nil then spriteScale = entry.spawn.scale end
         end
+        if spawnDelay > 0 and atkSpeed ~= 1 then spawnDelay = spawnDelay / atkSpeed end
         local function spawnNow()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
-            -- 다중 대상(projectileTargetCount · 스나이핑 3명): 앞쪽 상자(SpawnProjectile 조준과 같은 Range × AimSearchHeight · 몸 띠) 안 N명에게 한 발씩 —
+            -- 다중 대상(projectileTargetCount · 스나이핑 3명): 앞쪽 상자(SpawnProjectile 조준과 같은 SkillAttack.AimSearchShape · 몸 띠 · 1.1-C14) 안 N명에게 한 발씩 —
             --   projectilePreferBoss 면 보스가 먼저 한 자리(사용자 2026-10-05 "보스 우선 · 나머지는 가까운 순 · 모두 3명") · 그다음 가까운 순.
             --   발마다 CSV HitCount 타(첫 발 ×hitCount · 표시 hitCount 타) · 화살은 한 발(PendingProjectileSingleArrow) · 대상 고정(PendingProjectileTarget).
             local wanted = self.projectileTargetCount[skillId]
@@ -4073,12 +4139,7 @@ script SkillExecutors extends Logic
                 local dirX = self:GetFacingX(casterEntity)
                 local range = skillData.range
                 if range <= 0 then range = 1 end
-                local h = skillAttack.AimSearchHeight
-                if h == nil or h <= 0 then h = 2.5 end
-                local targets = skillAttack:FindSkillTargetsNearest(skillId, {
-                    posX = cp.x + dirX * range / 2, posY = cp.y + h / 2,
-                    sizeX = range, sizeY = h, floorY = cp.y,
-                }, math.floor(wanted), self.projectilePreferBoss[skillId] == true)
+                local targets = skillAttack:FindSkillTargetsNearest(skillId, skillAttack:AimSearchShape(cp, dirX, range), math.floor(wanted), self.projectilePreferBoss[skillId] == true)
                 if #targets > 0 then
                     for _, t in ipairs(targets) do
                         skillAttack.PendingProjectileTarget = t
@@ -4683,16 +4744,17 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method void ExecuteBlast(string skillId, table skillData, Entity casterEntity, number level, Vector3 finalPos, any skillAttack)
+    method void ExecuteBlast(string skillId, table skillData, Entity casterEntity, number level, Vector3 finalPos, any skillAttack, number mul, integer display)
         -- 대마법(SK_M31) = 화면 전체 광역기 (사용자(강민구) 결정 #40 5884706734 · 5885126414 · 2026-09-29).
-        --   피해   = 화면 안 적 전부(ScreenBoxSize 상자 · 다른 ORIGIN 의 "화면 전체" 와 같은 상자) · 대상 상한 없음 · 대상마다 BaseEffect 6000% × HitCount(1).
+        --   피해   = 화면 안 적 전부(ScreenBoxSize 상자 · 다른 ORIGIN 의 "화면 전체" 와 같은 상자) · 대상 상한 없음 · 대상마다 BaseEffect 1100% × mul · 표시 display 타.
+        --            1.1-C13: 영상이 있으면 첫 타(mul 1 · 표시 1)만 여기서, 나머지 99타는 BlastSplitHit(영상 06:04~끝) · 영상이 없으면 한 패스 × HitCount(100).
         --            대상 고르기(보스 우선 · 최근접) 없음 — 광역이라 필요 없다(5884706734). 예전 반지름(CircleShape) 피해도 없다.
         --   연출   = 시전자 앞 Range 지점(0 이면 BlastDefaultRadius)에 impact(원작 hit 오버라이드 · 없으면 Nova) → 오버라이드가 없을 때만 반지름 안 BigExplosion 연쇄 + SparkRadialExplosion.
-        --            반지름은 연출 배치에만 쓴다.
+        --            반지름은 연출 배치에만 쓴다. 연출 · 명중음은 이 첫 타에만.
         local radius = skillData.range
         if radius <= 0 then radius = self.BlastDefaultRadius end
-        local hitCount = skillData.hitCount
-        if hitCount <= 0 then hitCount = 1 end
+        local hitCount = display
+        if hitCount == nil or hitCount <= 0 then hitCount = 1 end
 
         local cx = finalPos.x + self:GetFacingX(casterEntity) * radius
         local cy = finalPos.y + 0.3
@@ -4708,7 +4770,7 @@ script SkillExecutors extends Logic
         local inScreen = skillAttack:FindSkillTargets(skillId, screen)
         local names = {}
         for _, e in ipairs(inScreen) do table.insert(names, tostring(e.Name)) end
-        skillAttack:DealSkillDamage(skillId, level, screen)
+        self:ScreenPass(skillAttack, skillId, level, finalPos.x, finalPos.y, mul, hitCount)
         -- 명중 사운드(extraSounds[skill].hit · 대마법 = 썬더 스톰): 맞은 대상이 있으면 폭발 자리에서 한 번만(화면 전체 대상마다 틀면 수십 겹).
         local hitSound = self:GetExtraSound(skillId, "hit")
         if #inScreen > 0 and hitSound ~= "" then
@@ -4716,7 +4778,7 @@ script SkillExecutors extends Logic
             log("SkillExecutors: BLAST " .. skillId .. " hit sound once (" .. hitSound .. ") for " .. tostring(#inScreen) .. " targets")
         end
         log("SkillExecutors: BLAST " .. skillId .. " screen-wide box=" .. tostring(self.ScreenBoxSize.x) .. "x" .. tostring(self.ScreenBoxSize.y)
-            .. " at (" .. tostring(finalPos.x) .. "," .. tostring(finalPos.y) .. ") targets=" .. tostring(#inScreen) .. " (no cap) hits=" .. tostring(hitCount)
+            .. " at (" .. tostring(finalPos.x) .. "," .. tostring(finalPos.y) .. ") targets=" .. tostring(#inScreen) .. " (no cap) mul=" .. tostring(mul) .. " hits=" .. tostring(hitCount)
             .. " [" .. table.concat(names, ",") .. "] art=(" .. tostring(cx) .. "," .. tostring(cy) .. ") r=" .. tostring(radius))
 
         -- 원작 RUID(effectOverrides.impact)가 있으면 그 한 클립이 폭발 연출 전부다 — 엔진 파티클 연쇄(BigExplosion·SparkRadialExplosion)는 겹쳐 재생하지 않는다 (2026-09-10 사용자 요청).
@@ -4745,6 +4807,37 @@ script SkillExecutors extends Logic
         end, (count + 1) * self.BlastExplosionInterval)
     end
 
+    @ExecSpace("ServerOnly")
+    method void ScreenPass(any skillAttack, string skillId, number level, number x, number y, number mul, integer display)
+        -- 화면 상자(ScreenBoxSize · 중심 (x, y)) 한 패스: 안의 적 전부에 표 피해 × mul · 표시 display 타. SkillAttack 의 패스 순서
+        --   (EnsureShape → CapTargetsByShape → BeginPass → AttackFast → EndPass · StormArrowSplitHit 과 같음)를 그대로 쓴다 — DealSkillDamage 는 배율 = 표시라 따로 못 준다.
+        skillAttack:EnsureShape()
+        skillAttack.Shape.Position = Vector2(x, y)
+        skillAttack.Shape.Size = Vector2(self.ScreenBoxSize.x, self.ScreenBoxSize.y)
+        skillAttack.Shape.Angle = 0
+        skillAttack:CapTargetsByShape(skillId, skillAttack.Shape, skillAttack.PendingMaxTargets)
+        skillAttack:BeginPass(skillId, level, mul, display)
+        skillAttack:AttackFast(skillAttack.Shape, skillId, CollisionGroups.Monster)
+        skillAttack:EndPass()
+    end
+
+    @ExecSpace("ServerOnly")
+    method void BlastSplitHit(string skillId, Entity casterEntity, number level, number mul, integer k, integer n)
+        -- 대마법 나눠 친 한 타(1.1-C13 · 사용자 결정 2026-10-12 "연출 구간에 나눠 치기"): 그 순간 시전자 중심 화면 상자 안 전부에 표 피해 × mul · 표시 1타.
+        --   첫 타(연출 · 명중음 포함)는 ExecuteBlast 가 낸다 — 이 메서드는 2타째부터 피해만. 로그는 둘째 · 마지막 타만(100타 전부 찍으면 수백 줄).
+        if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping split blast hit for " .. skillId)
+            return
+        end
+        local p = casterEntity.TransformComponent.WorldPosition
+        self:ScreenPass(skillAttack, skillId, level, p.x, p.y, mul, 1)
+        if k == 2 or k == n then
+            log("SkillExecutors: BLAST " .. skillId .. " split hit " .. tostring(k) .. "/" .. tostring(n) .. " x" .. string.format("%.3f", mul) .. " at (" .. string.format("%.2f", p.x) .. "," .. string.format("%.2f", p.y) .. ")")
+        end
+    end
+
     method void ExecuteOrigin(string skillId, table skillData, Entity casterEntity, number level)
         -- Charge immediately, then BigExplosion + damage after skillData.duration seconds (the
         -- telegraph) - one hit covering "everything on screen", not hit_count times (hit_count
@@ -4768,7 +4861,7 @@ script SkillExecutors extends Logic
         -- 궁 합계 데미지(#40 5988188679): 영상이 있으면 이 시전의 타격 피해를 영상 끝까지 모은다.
         self:OpenUltimateTally(skillId, casterEntity)
 
-        -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 시전 즉시 버프를 Duration(8초) 동안 켠다.
+        -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 시전 즉시 버프를 컷신 + Duration(15초 · 1.1-B07) 동안 켠다.
         -- 컷신은 SkillCaster.castLockOverrides 가 만들고, 무적 판정은 SkillBuffs.IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
         if skillData.buffTag ~= nil and skillData.buffTag ~= "" and skillData.effectUnit ~= "ATK_PCT" then
             if _SkillBuffs == nil or not isvalid(casterEntity.PlayerComponent) then
@@ -4777,7 +4870,7 @@ script SkillExecutors extends Logic
             end
             local duration = _SkillDatabase:DurationAt(skillId, level)
             -- buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 버프 길이 = 컷신(cast.cutsceneSeconds) + CSV Duration — 시전 즉시 걸어 컷신 내내 HP 고정·반사가 살아 있고
-            -- 컷신이 걷힌 뒤에도 Duration(8초) 만큼 이어진다. 다른 직업의 궁은 SkillCaster 의 "피격 무시" 무적 창(컷신 길이)을 쓰고 전사는 이 고정으로 버틴다(GetUltimateInvulnMul SK_W31 = 0).
+            -- 컷신이 걷힌 뒤에도 Duration(15초 · 1.1-B07 · 사용자 결정 2026-10-12 "컷신 끝난 뒤 15초") 만큼 이어진다. 다른 직업의 궁은 SkillCaster 의 "피격 무시" 무적 창(컷신 길이)을 쓰고 전사는 이 고정으로 버틴다(GetUltimateInvulnMul SK_W31 = 0).
             local extra = 0
             local entry = self.effectOverrides[skillId]
             if entry ~= nil and entry.buffExtendsByCutscene then extra = self:GetCutsceneSeconds(skillId) end
@@ -4804,10 +4897,31 @@ script SkillExecutors extends Logic
         end
 
         -- 피해 시각(b/skill-ultimate-cutscenes · 대마법 SK_M31): 영상이 있으면 타이밍 파일의 시각(06:04 = 6.17 s · UltimateHitTimes), 없으면 예전대로 CSV Duration.
+        --   1.1-C13(사용자 결정 2026-10-12 "연출 구간에 나눠 치기"): 폭발형(originSingleTarget)은 HitCount(100)타를 06:04 ~ 영상 끝에 고르게 —
+        --   첫 타 = ExecuteBlast(연출 · 명중음 · 표 피해 × 1 · 표시 1) · 나머지 = BlastSplitHit. 영상이 없으면 예전대로 CSV Duration 에 한 패스 × HitCount.
         local hitDelay = skillData.duration
-        local hitTimes = self:UltimateHitTimes(skillId, 1)
+        local hitCount = math.floor(skillData.hitCount)
+        if hitCount < 1 then hitCount = 1 end
+        local timesCount = 1
+        if self.originSingleTarget[skillId] then timesCount = hitCount end
+        local hitTimes = self:UltimateHitTimes(skillId, timesCount)
         if #hitTimes > 0 then hitDelay = hitTimes[1] end
-        log("SkillExecutors: ORIGIN " .. skillId .. " hit at +" .. string.format("%.2f", hitDelay) .. "s (CSV Duration " .. tostring(skillData.duration) .. " · video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
+        local blastMul = hitCount
+        local blastDisplay = hitCount
+        local splitN = #hitTimes
+        if splitN > 1 then
+            blastMul = hitCount / splitN
+            blastDisplay = 1
+            for k = 2, splitN do
+                local idx = k
+                _TimerService:SetTimerOnce(function()
+                    self:BlastSplitHit(skillId, casterEntity, level, blastMul, idx, splitN)
+                end, hitTimes[k])
+            end
+        end
+        local splitText = ""
+        if splitN > 1 then splitText = " · split " .. tostring(splitN) .. " hits x" .. string.format("%.3f", blastMul) .. " until +" .. string.format("%.2f", hitTimes[splitN]) .. "s" end
+        log("SkillExecutors: ORIGIN " .. skillId .. " hit at +" .. string.format("%.2f", hitDelay) .. "s (CSV Duration " .. tostring(skillData.duration) .. " · video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)" .. splitText)
         _TimerService:SetTimerOnce(function()
             if chargeSerial ~= 0 then _ParticleService:RemoveParticle(chargeSerial) end
             if not isvalid(casterEntity) then return end
@@ -4827,7 +4941,7 @@ script SkillExecutors extends Logic
 
             if self.originSingleTarget[skillId] then
                 -- 대마법(SK_M31): 폭발형 — 화면 안 적 전부(상한 없음) 피해 + 시전자 앞 폭발 연출 (ExecuteBlast).
-                self:ExecuteBlast(skillId, skillData, casterEntity, level, finalPos, skillAttack)
+                self:ExecuteBlast(skillId, skillData, casterEntity, level, finalPos, skillAttack, blastMul, blastDisplay)
                 return
             end
 
@@ -4839,26 +4953,30 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method void ExecuteLineOrigin(string skillId, table skillData, Entity casterEntity, number level)
         -- 폭풍의 화살(SK_A31 · 추가기획1 궁수 궁 "직선 관통 초고피해 (컷신)"): 컷신(cast · 파이널 에임 screen)이 돈 뒤 CSV Duration 시점에
-        -- 앞쪽 직선 상자(가로 Range(15) · 세로 LineHeight) 안 몬스터 전부에 BaseEffect 4000% HitCount 회 — 상자라 전부 "관통" 이다.
+        -- 앞쪽 직선 상자(가로 Range(15) · 세로 LineHeight) 안 몬스터 전부에 BaseEffect 650% × HitCount(100 · 1.1-C11) — 상자라 전부 "관통" 이다.
         -- 연출: 맞은 대상마다 hit/0(SkillAttack.OnAttack) + 직선 위 LineHitEffects 지점에 순차 hit/0(대상이 없어도 화살이 지나간 것을 보인다).
         local delay = skillData.duration
         if delay < 0 then delay = 0 end
         -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05 · #40 5986277680): 영상의 화살비 구간 두 개(03:16~04:04 · 06:11~끝)에
-        --   StormArrowSplitHits(8)타로 나눠 고르게 — 한 타 = 표 피해(4000% × HitCount) ÷ 8 = 500%. 합계는 그대로. 영상이 없으면 예전 1타(CSV Duration).
+        --   StormArrowSplitHits(100)타로 나눠 — 한 타 = 표 피해(650% × HitCount 100) ÷ 100 = 650%. 합계는 그대로. 영상이 없으면 예전 1타(CSV Duration · 한 패스 × HitCount).
+        --   1.1-C13: 구간 몫은 길이에 비례(28 + 72) · 앞 타와 StormArrowWindowGap 보다 멀면 새 구간의 첫 타(직선 위 hit 클립).
         local splitTimes = self:UltimateHitTimes(skillId, self.StormArrowSplitHits)
         if #splitTimes > 0 then
             local baseHits = skillData.hitCount
             if baseHits <= 0 then baseHits = 1 end
-            local mul = baseHits / #splitTimes
-            local parts = {}
+            local n = #splitTimes
+            local mul = baseHits / n
+            local firsts = {}
             for k, t in ipairs(splitTimes) do
-                table.insert(parts, string.format("%.2f", t))
+                local fx = (k == 1) or (t - splitTimes[k - 1] > self.StormArrowWindowGap)
+                if fx then table.insert(firsts, tostring(k) .. "@" .. string.format("%.2f", t)) end
                 local idx = k
                 _TimerService:SetTimerOnce(function()
-                    self:StormArrowSplitHit(skillId, skillData, casterEntity, level, mul, idx, #splitTimes)
+                    self:StormArrowSplitHit(skillId, skillData, casterEntity, level, mul, idx, n, fx)
                 end, t)
             end
-            log("SkillExecutors: LINE " .. skillId .. " split " .. tostring(#splitTimes) .. " hits x" .. string.format("%.3f", mul) .. " of the table damage at +[" .. table.concat(parts, ", ") .. "]s (video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
+            log("SkillExecutors: LINE " .. skillId .. " split " .. tostring(n) .. " hits x" .. string.format("%.3f", mul) .. " of the table damage +" .. string.format("%.2f", splitTimes[1]) .. "~" .. string.format("%.2f", splitTimes[n])
+                .. "s window firsts [" .. table.concat(firsts, ", ") .. "] (video " .. string.format("%.2f", self:CutsceneVideoSeconds(skillId)) .. "s)")
             return
         end
         _TimerService:SetTimerOnce(function()
@@ -4915,10 +5033,11 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method void StormArrowSplitHit(string skillId, table skillData, Entity casterEntity, number level, number mul, integer k, integer n)
+    method void StormArrowSplitHit(string skillId, table skillData, Entity casterEntity, number level, number mul, integer k, integer n, boolean firstOfWindow)
         -- 폭풍의 화살 나눠 친 한 타(b/skill-ultimate-cutscenes): 그 순간 시전자 앞 직선 상자(Range × LineHeight · 예전 1타와 같은 상자) 안 전부에 표 피해 × mul · 표시 1타.
         --   SkillAttack 의 패스 순서(EnsureShape → CapTargetsByShape → BeginPass → AttackFast → EndPass)를 그대로 쓴다 — DealSkillDamage 와 같지만 배율을 따로 준다.
-        --   대상마다 hit/0(PendingImpactRuid) · 직선 위 hit/0 은 구간의 첫 타에만(같은 그림이 매 타 겹치지 않게).
+        --   직선 위 hit/0 은 구간의 첫 타(firstOfWindow · 부르는 쪽이 시각 간격으로 정한다)에만 · 대상마다 hit/0(PendingImpactRuid)은 StormArrowImpactEvery 타마다(1.1-C13 · 100타).
+        --   로그는 구간 첫 타 · 마지막 타만.
         if not isvalid(casterEntity) or not isvalid(casterEntity.TransformComponent) then return end
         local skillAttack = casterEntity:GetComponent("script.SkillAttack")
         if not isvalid(skillAttack) then
@@ -4930,7 +5049,9 @@ script SkillExecutors extends Logic
         local range = skillData.range
         if range <= 0 then range = 1 end
         local hitRuid = self:GetSpecRuid(skillId, "impact")
-        skillAttack.PendingImpactRuid = hitRuid
+        local every = self.StormArrowImpactEvery
+        if every < 1 then every = 1 end
+        if (k - 1) % every == 0 then skillAttack.PendingImpactRuid = hitRuid end
         skillAttack:EnsureShape()
         skillAttack.Shape.Position = Vector2(p.x + dirX * range / 2, p.y + self.LineHeight / 2)
         skillAttack.Shape.Size = Vector2(range, self.LineHeight)
@@ -4939,7 +5060,6 @@ script SkillExecutors extends Logic
         skillAttack:BeginPass(skillId, level, mul, 1)
         skillAttack:AttackFast(skillAttack.Shape, skillId, CollisionGroups.Monster)
         skillAttack:EndPass()
-        local firstOfWindow = (k == 1) or (k == math.floor(n / 2) + 1)
         if hitRuid ~= "" and firstOfWindow then
             local m = self.LineHitEffects
             for j = 1, m do
@@ -4951,7 +5071,9 @@ script SkillExecutors extends Logic
                 end, j * 0.08)
             end
         end
-        log("SkillExecutors: LINE " .. skillId .. " split hit " .. tostring(k) .. "/" .. tostring(n) .. " x" .. string.format("%.3f", mul) .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range))
+        if firstOfWindow or k == n then
+            log("SkillExecutors: LINE " .. skillId .. " split hit " .. tostring(k) .. "/" .. tostring(n) .. " x" .. string.format("%.3f", mul) .. " dir=" .. tostring(dirX) .. " range=" .. tostring(range))
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -5160,9 +5282,10 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ExecuteBarrageOrigin(string skillId, table skillData, Entity casterEntity, number level)
-        -- 함포 사격(SK_P31 · 추가기획1 해적 궁 "광역 연속 폭격 (컷신) · 150% × 30회"): 컷신(cast · 드레드노트 screen) 뒤 CSV Duration 시점부터
-        --   HitCount(30)를 BarrageWaves(6) 파로 나눠 BarrageInterval(0.58s · 원작 풍랑 1.02~3.9s · 몬스터 무적 0.4s 보다 길게) 간격으로 시전자 중심 반지름 Range(8) 안(파마다 가까운 순 최대 15명 · skillTargetCaps)에
-        --   파당 타수 × 150% (DealSkillDamageCircleScaled · 표시 = 파당 타수). 합계 = 30 × 150%. 파마다 폭탄 hit 클립 BarrageBombsPerWave 개 + wave 사운드.
+        -- 함포 사격(SK_P31 · 추가기획1 해적 궁 "광역 연속 폭격 (컷신)" · 1.1-C10 480% × 300회): 컷신(cast · 드레드노트 screen) 뒤 CSV Duration 시점부터
+        --   HitCount(300)를 BarrageWaves(6) 파로 나눠 BarrageInterval(0.58s · 원작 풍랑 1.02~3.9s) 간격으로 시전자 중심 반지름 Range(8) 안(패스마다 가까운 순 최대 15명 · skillTargetCaps)에
+        --   파당 타수 × 480% (DealSkillDamageCircleScaled). 합계 = 300 × 480%. 파마다 폭탄 hit 클립 BarrageBombsPerWave 개 + wave 사운드.
+        --   1.1-C13: 한 파는 BarrageSubPassHits(15)타씩 여러 패스(표시 = 패스 타수)로 BarrageSubPassSpan(0.4 s) 안에 나눠 친다.
         local radius = skillData.range
         if radius <= 0 then radius = 3 end
         local hitCount = math.floor(skillData.hitCount)
@@ -5171,7 +5294,7 @@ script SkillExecutors extends Logic
         if waves < 1 then waves = 1 end
         if waves > hitCount then waves = hitCount end
         -- 컷신 영상 타이밍(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05): 영상이 있으면 파 = 타이밍 파일의 점 시각(02:15 · 06:01 → 2파 · UltimateHitTimes) ·
-        --   HitCount(30)를 그 파 수로 나눈다(15 + 15 · 합계 30 × 150% 그대로). 영상이 없으면 예전(BarrageWaves 파 · Duration 부터 BarrageInterval 간격).
+        --   HitCount(300)를 그 파 수로 나눈다(150 + 150 · 합계 300 × 480% 그대로). 영상이 없으면 예전(BarrageWaves 파 · Duration 부터 BarrageInterval 간격).
         local waveTimes = self:UltimateHitTimes(skillId, 0)
         if #waveTimes > 0 then
             waves = #waveTimes
@@ -5184,36 +5307,56 @@ script SkillExecutors extends Logic
         local bombRuid = self:GetSpecRuid(skillId, "impact")
         local bombScale = self:GetSpecScale(skillId, "impact")
         local waveSound = self:GetExtraSound(skillId, "wave")
+        local passText = ""
         for w = 1, waves do
             local hits = perWave
             if w <= remainder then hits = hits + 1 end
             if hits > 0 then
-                _TimerService:SetTimerOnce(function()
-                    if not isvalid(casterEntity) then return end
-                    local skillAttack = casterEntity:GetComponent("script.SkillAttack")
-                    if not isvalid(skillAttack) then
-                        log_warning("SkillExecutors: no script.SkillAttack on caster, skipping barrage wave for " .. skillId)
-                        return
-                    end
-                    local p = casterEntity.TransformComponent.WorldPosition
-                    if bombRuid ~= "" then
-                        for b = 1, self.BarrageBombsPerWave do
-                            -- 결정적 흩뿌림(한 프레임 안의 RandomDouble 은 거의 같은 값): 파·폭탄 번호로 각도와 거리를 정한다.
-                            local angle = w * 0.9 + b * 2.1
-                            local dist = radius * self.BarrageScatter * (0.35 + 0.65 * (((b + w) % 3) / 2))
-                            local bx = p.x + math.cos(angle) * dist
-                            local by = p.y + 0.4 + math.abs(math.sin(angle)) * dist * 0.35
-                            _EffectService:PlayEffect(bombRuid, casterEntity, Vector3(bx, by, p.z), 0, Vector3(bombScale, bombScale, 1), false)
+                -- 1.1-C13(사용자 결정 2026-10-12 "연출 구간에 나눠 치기 · 해적은 파마다 짧게"): 파의 타수를 BarrageSubPassHits(15)타 안팎의 패스로 고르게 나눠
+                --   파 시각부터 BarrageSubPassSpan(0.4 s) 안에 친다(패스 표시 = 그 패스 타수 · 합계 그대로). 폭탄 그림 · 파 소리 · 대상 hit 클립은 파의 첫 패스에만(예전 한 파와 같은 그림).
+                local passes = 1
+                if self.BarrageSubPassHits > 0 then passes = math.ceil(hits / self.BarrageSubPassHits) end
+                if passes < 1 then passes = 1 end
+                local passBase = math.floor(hits / passes)
+                local passExtra = hits - passBase * passes
+                local gap = 0
+                if passes > 1 then gap = self.BarrageSubPassSpan / (passes - 1) end
+                local t0 = self:BarrageWaveTime(waveTimes, lead, w)
+                if w == 1 then passText = " · " .. tostring(passes) .. " passes x~" .. tostring(passBase) .. " over " .. string.format("%.2f", gap * (passes - 1)) .. "s per wave" end
+                for s = 1, passes do
+                    local passHits = passBase
+                    if s <= passExtra then passHits = passHits + 1 end
+                    _TimerService:SetTimerOnce(function()
+                        if not isvalid(casterEntity) then return end
+                        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+                        if not isvalid(skillAttack) then
+                            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping barrage wave for " .. skillId)
+                            return
                         end
-                    end
-                    self:PlaySoundRuid(waveSound, casterEntity, p)
-                    skillAttack.PendingMaxTargets = self:TargetCapOf(skillId)
-                    -- 맞은 대상마다 드레드노트 hit/0(원작처럼 대상 위 · targetHit).
-                    skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "targetHit")
-                    skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "targetHit")
-                    skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, hits, hits)
-                    log("SkillExecutors: BARRAGE " .. skillId .. " wave " .. tostring(w) .. "/" .. tostring(waves) .. " hits=" .. tostring(hits) .. " r=" .. tostring(radius))
-                end, self:BarrageWaveTime(waveTimes, lead, w))
+                        local p = casterEntity.TransformComponent.WorldPosition
+                        if s == 1 then
+                            if bombRuid ~= "" then
+                                for b = 1, self.BarrageBombsPerWave do
+                                    -- 결정적 흩뿌림(한 프레임 안의 RandomDouble 은 거의 같은 값): 파·폭탄 번호로 각도와 거리를 정한다.
+                                    local angle = w * 0.9 + b * 2.1
+                                    local dist = radius * self.BarrageScatter * (0.35 + 0.65 * (((b + w) % 3) / 2))
+                                    local bx = p.x + math.cos(angle) * dist
+                                    local by = p.y + 0.4 + math.abs(math.sin(angle)) * dist * 0.35
+                                    _EffectService:PlayEffect(bombRuid, casterEntity, Vector3(bx, by, p.z), 0, Vector3(bombScale, bombScale, 1), false)
+                                end
+                            end
+                            self:PlaySoundRuid(waveSound, casterEntity, p)
+                            -- 맞은 대상마다 드레드노트 hit/0(원작처럼 대상 위 · targetHit).
+                            skillAttack.PendingImpactRuid = self:GetSpecRuid(skillId, "targetHit")
+                            skillAttack.PendingImpactScale = self:GetSpecScale(skillId, "targetHit")
+                        end
+                        skillAttack.PendingMaxTargets = self:TargetCapOf(skillId)
+                        skillAttack:DealSkillDamageCircleScaled(skillId, level, p.x, p.y + 0.5, radius, passHits, passHits)
+                        if s == 1 or s == passes then
+                            log("SkillExecutors: BARRAGE " .. skillId .. " wave " .. tostring(w) .. "/" .. tostring(waves) .. " pass " .. tostring(s) .. "/" .. tostring(passes) .. " hits=" .. tostring(passHits) .. " (wave " .. tostring(hits) .. ") r=" .. tostring(radius))
+                        end
+                    end, t0 + (s - 1) * gap)
+                end
             end
         end
         local whenText = "from +" .. tostring(lead) .. "s every " .. tostring(self.BarrageInterval) .. "s"
@@ -5222,7 +5365,7 @@ script SkillExecutors extends Logic
             for w = 1, waves do table.insert(parts, string.format("%.2f", waveTimes[w])) end
             whenText = "at video times +[" .. table.concat(parts, ", ") .. "]s"
         end
-        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits " .. whenText)
+        log("SkillExecutors: BARRAGE " .. skillId .. " scheduled " .. tostring(waves) .. " waves x" .. tostring(perWave) .. "(+" .. tostring(remainder) .. ") hits " .. whenText .. passText)
     end
 
     method number BarrageWaveTime(table waveTimes, number lead, integer w)
@@ -5830,9 +5973,9 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
-        -- 도발(SK_W22 · 추가기획1 전사 D "주변 몬스터를 한곳에 모음"): 반경(BaseEffect 3→5 · RatioAt) 상자 안의 적 몬스터를
-        --   ① 시전자 발 위치로 끌어모으고(RigidbodyComponent.SetWorldPosition · StateChaseMonster.GuardAgainstFlyAway 와 같은 호출 · 보스 제외)
-        --   ② Duration 동안 시전자를 고정 추격하게 한다(StateChaseMonster.SetTarget = 자동 탐색 잠금). 만료 시 원래 IsChaseNearPlayer 로 되돌린다.
+        -- 도발(SK_W22): 반경(BaseEffect 3→5 · RatioAt) 상자 안의 적 몬스터에게 (1.1-B01 · B02 · 2026-10-12)
+        --   ① Duration 동안 방어력 −SecondaryAt(보스 절반 · tauntDefense) ② 고정 피해 TauntFlatDamage(1) ③ 시전자를 고정 추격(StateChaseMonster.SetTarget · 만료 시 원래 IsChaseNearPlayer).
+        --   끌어오기(TauntPull)는 1.1 에서 껐다 — 코드는 남겨 둔다.
         -- A 의 Monster 훅 `Taunt(target, seconds)`(구현항목-결정 §3) 가 생기면 이 두 줄을 그 호출로 바꾸면 된다. 🟡 끌어모으기(발판 다른 몹)는 런타임 미검증.
         local pos = casterEntity.TransformComponent.WorldPosition
         self:PlayStageEffect(skillId, "cast", casterEntity, pos, BasicParticleType.Nova)
@@ -5882,6 +6025,14 @@ script SkillExecutors extends Logic
                     taunted = taunted + 1
                 end
                 local isBoss = isvalid(mob:GetComponent("script.BossSkillRunner"))
+                -- 방어력 저하(1.1-B02): 추격 컴포넌트 유무와 무관하게 대상마다. 보스는 절반.
+                local delta = -(_SkillDatabase:SecondaryAt(skillId, level))
+                if isBoss then delta = delta * self.TauntBossDefenseMul end
+                if delta < 0 then
+                    self.tauntDefense[mob] = { delta = delta, untilAt = _UtilLogic.ElapsedSeconds + seconds }
+                end
+                -- 피해 1(1.1-B01 · 사용자 2026-10-12 "대상마다 피해 1"): 평값 패스(치명 · 방어 · 명중 판정 없음).
+                if self.TauntFlatDamage > 0 then skillAttack:DealFlatDamageToTarget(mob, self.TauntFlatDamage, skillId) end
                 local body = mob.RigidbodyComponent
                 if self.TauntPull and not isBoss and isvalid(body) then
                     slot = slot + 1
@@ -5903,7 +6054,19 @@ script SkillExecutors extends Logic
             end, seconds)
         end
         log("SkillExecutors: TAUNT " .. skillId .. " radius=" .. tostring(radius) .. " candidates=" .. tostring(#found)
-            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " for " .. tostring(seconds) .. "s")
+            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " def-" .. tostring(_SkillDatabase:SecondaryAt(skillId, level)) .. " for " .. tostring(seconds) .. "s")
+    end
+
+    method number GetTauntDefenseDelta(Entity mob)
+        -- 도발 방어력 저하(1.1-B02): 걸려 있으면 delta(0 이하), 아니면 0. 만료된 기록은 지운다. 서버 원장(클라는 늘 0).
+        if mob == nil or self.tauntDefense == nil then return 0 end
+        local rec = self.tauntDefense[mob]
+        if rec == nil then return 0 end
+        if rec.untilAt <= _UtilLogic.ElapsedSeconds then
+            self.tauntDefense[mob] = nil
+            return 0
+        end
+        return rec.delta
     end
 
     @ExecSpace("ServerOnly")

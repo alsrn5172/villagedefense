@@ -106,15 +106,31 @@ script DamageFormula extends Logic
 		return true
 	end
 
+	method number DefenseFactor(number defense)
+		-- 방어 배율 = K / (방어 + K) (1.1-B02): 양수 방어는 예전 식(1 − 방어/(방어+K))과 같은 값 · 음수 방어(도발 저하)는 1 보다 커져 받는 피해가 는다.
+		-- 방어가 −K 이하로 가면 배율이 무한대가 되므로 −(K−1) 에서 자른다.
+		local d = math.max(defense, -(self.DefenseK - 1))
+		return self.DefenseK / (d + self.DefenseK)
+	end
+
 	method integer ApplyDefense(integer raw, number defense)
-		-- 방어력 감산. 방어 0 이면 그대로. 최소 1.
-		if defense <= 0 then
-			if raw < 1 then return 1 end
-			return raw
-		end
-		local final = math.floor(raw * (1 - defense / (defense + self.DefenseK)))
+		-- 방어력 감산(음수 방어면 증가 · DefenseFactor). 방어 0 이면 그대로. 최소 1.
+		if raw < 1 then raw = 1 end
+		if defense == 0 then return raw end
+		local final = math.floor(raw * self:DefenseFactor(defense))
 		if final < 1 then final = 1 end
 		return final
+	end
+
+	method number TargetDefenseOf(Entity defender)
+		-- 몬스터 · 보스의 지금 방어 = Monster.Defense(스폰한 곳이 도감 값을 넣음) + 도발 방어력 저하(1.1-B02 · 0 이하 · 서버 기록). Monster 가 없으면 0.
+		if not isvalid(defender) then return 0 end
+		---@type Monster
+		local mon = defender.Monster
+		if not isvalid(mon) then return 0 end
+		local def = mon.Defense or 0
+		if _SkillExecutors ~= nil then def = def + _SkillExecutors:GetTauntDefenseDelta(defender) end
+		return def
 	end
 
 	method integer ApplyPlayerDefense(Entity defender, integer raw)
@@ -130,15 +146,11 @@ script DamageFormula extends Logic
 
 	method integer ApplyTargetDefense(Entity defender, integer raw)
 		-- 몬스터 · 보스가 받는 피해 공용 헬퍼 (1.1-E21 · 사용자 2026-10-12: 기본 공격 · 스킬 모두, 보스 포함).
-		-- 방어 = 대상 Monster.Defense(스폰한 곳이 도감 값을 넣음) · raw × 100/(100+방어) · 최소 1. Monster 가 없거나 방어 0 이면 raw 그대로.
-		-- 호출: 기본 공격(StatService.CalcPlayerDamage) · 스킬(SkillAttack · SkillProjectile CalcDamage). 고정 피해 · 반사 경로는 부르지 않는다.
+		-- 방어 = TargetDefenseOf(Monster.Defense + 도발 저하) · raw × 100/(100+방어) · 최소 1. 도발로 음수가 되면 피해가 는다(1.1-B02). Monster 가 없거나 방어 0 이면 raw 그대로.
+		-- 호출: 기본 공격(StatService.CalcPlayerDamage) · 스킬(SkillAttack · SkillProjectile CalcDamage). 고정 피해 · 반사 · 도발 피해 1 경로는 부르지 않는다.
 		if raw < 1 then raw = 1 end
-		if not isvalid(defender) then return raw end
-		---@type Monster
-		local mon = defender.Monster
-		if not isvalid(mon) then return raw end
-		local def = mon.Defense or 0
-		if def <= 0 then return raw end
+		local def = self:TargetDefenseOf(defender)
+		if def == 0 then return raw end
 		return self:ApplyDefense(raw, def)
 	end
 

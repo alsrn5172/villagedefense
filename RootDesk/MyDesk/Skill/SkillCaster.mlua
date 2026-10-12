@@ -54,6 +54,9 @@ script SkillCaster extends Logic
 
     property table castLockOverrides = {}
 
+    -- 락 키 → 락 길이 배율(GetCastLockSeconds 가 마지막에 곱한다 · 1.1-C05). OnBeginPlay 가 채운다(서버 · 클라 둘 다).
+    property table castLockScale = {}
+
     -- 시전 락 길이를 클립에서 재는 스킬: <락 키> -> AnimationClip RUID. 락 키는 CastLockKey(재시전은 `_RECAST` 접미).
     -- 에너지 차지 2단(피스트인레인지) = 피스트 인레이지 VI effect(514.img/5141000 · 16프레임 · 2026-09-27 b/skill-pirate-effects). 이 클립이 도는 동안 같은 키 입력을 삼킨다.
     -- 예전 = 4차 피스트 인레이지 effect 7995fc62…(10프레임 · 0.78s). ⚠ 4차 팩의 effect0(66d87241c10743baab0f673ad4347454)은 우리 플레이어와 다른 변신 몸을 그려 쓰지 않는다.
@@ -169,6 +172,10 @@ script SkillCaster extends Logic
             SK_P21_RECAST = 0.6,   -- 2단 주먹의 **폴백값**. 정상 경로는 clipLockCache(공격 클립 길이) — 아래 WarmClipLockCache 참조
             SK_P22 = 0.6,   -- 에너지 쉴드
             SK_P31 = 3.5,   -- 함포 사격: 첫 파 = CSV Duration 1(+1.0s) · 6파 폭격 0.58s 간격(2026-09-27 · 마지막 파 ≈3.9s = 락 뒤 · 파는 시전자 지금 위치 기준이라 문제없음). 컷신 클립은 실측 4.89s 지만 **표시는 +1.0s 에 끝난다**(SkillExecutors SK_P31 cast.cutsceneDisplaySeconds · 0.2s 페이드 · 2026-09-28 사용자 결정) · 무적 창 = 컷신 길이 1.0 + 0.15 = 1.15s(SkillExecutors SK_P31 cast.cutsceneLengthSeconds · #40 5897840056 · 2026-10-01 · 예전 = 클립 실측 4.89 + 0.15). 이 락 3.5 는 그대로. 원작 시전 동작 6thWarship = 4.74s
+        }
+        -- 락 길이 배율(1.1-C05): 피스트인레인지(에너지 차지 2단 주먹) 시전 중 못 움직이는 시간 20% 감소(×0.8 한 번 · 모션 · 이펙트 재생 속도는 그대로).
+        self.castLockScale = {
+            SK_P21_RECAST = 0.8,
         }
         self:WarmClipLockCache()
     end
@@ -361,8 +368,18 @@ script SkillCaster extends Logic
         end
         if v == nil then v = self.castLockOverrides[skillId] end
         if v == nil then v = self.DefaultCastLockSeconds end
+        -- 락 길이 배율(1.1-C05 · castLockScale): 측정값 · 폴백 · 기본값 어느 경로로 오든 한 번 곱한다(피스트인레인지 0.930 → 0.744).
+        local scale = self.castLockScale[skillId]
+        if scale ~= nil then v = v * scale end
         if v < 0 then v = 0 end
         return v
+    end
+
+    method boolean IsAttackSpeedCast(table skill, boolean isRecast)
+        -- 공격속도(1.1-B18 · B19)를 받는 시전인가: 피해를 주는 시전(IsDamagingCast)이고 궁극기(ORIGIN · 컷신)가 아닌 것. 버프 · 이동 · 도발은 아니다.
+        if skill == nil then return false end
+        if skill.behavior == "ORIGIN" then return false end
+        return self:IsDamagingCast(skill, isRecast)
     end
 
     method string CastLockKey(string skillId, boolean isRecast)
@@ -455,6 +472,8 @@ script SkillCaster extends Logic
         local lockKey = self:CastLockKey(skillId, isRecast)
         if variant ~= "" then lockKey = variant end
         local lockSeconds = self:GetCastLockSeconds(lockKey)
+        -- 공격속도(1.1-B19 · 쉐도우 파트너 ×1.2): 공격 시전의 락을 나눈다(럭키 세븐 0.4 → 0.333). 서버 RequestCast 와 같은 규칙.
+        if _SkillBuffs ~= nil and self:IsAttackSpeedCast(skill, isRecast) then lockSeconds = lockSeconds / math.max(0.01, _SkillBuffs:LocalAttackSpeedMul()) end
         if self.castLockActive and self.lockIsBasic and self.castLockTimerId ~= 0 then
             -- 기본 공격 락 위에 스킬: 기본 공격 락 타이머를 지우고 이 스킬 락이 이어받는다(이동 캐시는 LockPresentation 이 그대로 둔다).
             _TimerService:ClearTimer(self.castLockTimerId)
@@ -484,6 +503,8 @@ script SkillCaster extends Logic
         if self:LocalIsClimbing() then return end
         local seconds = self.BasicAttackLockSeconds
         if seconds <= 0 then return end
+        -- 공격속도(1.1-B19 · 쉐도우 파트너 ×1.2): 기본 공격 락(이동 · 시선)도 나눈다(0.8 → 0.667).
+        if _SkillBuffs ~= nil then seconds = seconds / math.max(0.01, _SkillBuffs:LocalAttackSpeedMul()) end
         if self.castLockActive and self.castLockTimerId ~= 0 then
             -- 이어진 기본 공격: 앞 락 타이머를 지운다(castId 가 달라 어차피 무시되지만 남겨 둘 이유가 없다). 걸어 둔 이동 캐시는 LockPresentation 이 그대로 이어 쓴다.
             _TimerService:ClearTimer(self.castLockTimerId)
@@ -839,6 +860,8 @@ script SkillCaster extends Logic
         local lockKey = self:CastLockKey(skillId, isRecast)
         if variant ~= "" then lockKey = variant end
         local lockSeconds = self:GetCastLockSeconds(lockKey)
+        -- 공격속도(1.1-B19): 클라 Cast 와 같은 배율 — 서버 락 · 다음 공격 허용 시점도 같이 짧아진다.
+        if _SkillBuffs ~= nil and self:IsAttackSpeedCast(skill, isRecast) then lockSeconds = lockSeconds / math.max(0.01, _SkillBuffs:GetAttackSpeedMul(uid)) end
         if isMove then
             lockSeconds = 0   -- 이동 스킬은 락을 걸지도, 진행 중 락을 늘리지도 않는다.
         else
