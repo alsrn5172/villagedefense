@@ -849,7 +849,9 @@ script WorkshopUIController extends Logic
 		local haveGems = #self.chosenGems
 		if row ~= nil then
 			local c = (haveGems < row.gemCount) and "#FF8A7A" or "#7FD6A4"
-			self:SetText(root, "GemBar/GemNeed", "<color=" .. c .. ">이번 단계 보석 " .. tostring(haveGems) .. " / " .. tostring(row.gemCount) .. "</color>")
+			-- 한벌옷은 칸마다 보석 2개(1.1-F20) — 칸 수는 그대로라 안내만 덧붙인다.
+			local perSlotText = (def ~= nil and _ItemCatalog:PieceCount(def) > 1) and (" · 칸마다 " .. tostring(_ItemCatalog:PieceCount(def)) .. "개") or ""
+			self:SetText(root, "GemBar/GemNeed", "<color=" .. c .. ">이번 단계 보석 " .. tostring(haveGems) .. " / " .. tostring(row.gemCount) .. perSlotText .. "</color>")
 		else
 			self:SetText(root, "GemBar/GemNeed", "")
 		end
@@ -889,7 +891,7 @@ script WorkshopUIController extends Logic
 				local baseParts = {}
 				for _, k in ipairs({ "attack", "defense", "str", "dex", "int", "luk", "maxmp", "speed", "accuracy", "maxhp" }) do
 					if (fixedSum[k] or 0) ~= 0 then
-						table.insert(baseParts, self:StatLabel(k) .. " +" .. tostring(fixedSum[k]))
+						table.insert(baseParts, self:StatLabel(k) .. " +" .. _ItemCatalog:FmtStat(fixedSum[k], k))
 					end
 				end
 				if #baseParts > 0 then base = "기본 " .. table.concat(baseParts, " · ") end
@@ -905,7 +907,8 @@ script WorkshopUIController extends Logic
 							local gem = _ItemCatalog:GetGem(g)
 							local amt = _ItemCatalog:GemAmount(def, nextLv, g) * _ItemCatalog:PieceCount(def)
 							if gem ~= nil and amt ~= 0 then
-								table.insert(parts, gem.name .. " 1개 = " .. self:StatLabel(gem.statKey) .. " +" .. tostring(amt))
+								-- 한 칸 몫: 한벌옷은 칸마다 2개가 들고 효과도 2배라 "2개 = +8" 로 적는다(1.1-F20 · 2026-10-12).
+								table.insert(parts, gem.name .. " " .. tostring(_ItemCatalog:PieceCount(def)) .. "개 = " .. self:StatLabel(gem.statKey) .. " +" .. _ItemCatalog:FmtStat(amt, gem.statKey))
 							end
 						end
 					end
@@ -914,19 +917,35 @@ script WorkshopUIController extends Logic
 					end
 				end
 				range = "+" .. tostring(it.enh or 0) .. " → +" .. tostring(nextLv)
+				-- 판에 4줄만 들어간다(높이 212). 넘치면 보석이 올리는 줄을 먼저 보인다 — 고정 상승은 위 "기본 …" 글에 다 나온다
+				-- (1.1-F30: 앱솔 신발 +오팔이면 방어력 · STR · DEX · 이동속도 뒤 회피율이 잘리던 것).
+				local gemRows = {}
+				local fixedRows = {}
 				for _, k in ipairs({ "attack", "magic", "defense", "str", "dex", "int", "luk", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
-					if (sum[k] or 0) ~= 0 and #rows < 4 then
-						-- "+4 (초록 +2 · 보라 +2)" — 기본 고정치와 보석치를 색으로 구분
+					if (sum[k] or 0) ~= 0 then
+						-- "+4 (초록 +2 · 보라 +2)" — 기본 고정치와 보석치를 색으로 구분 · 수치 글자는 FmtStat(1.1-F16)
 						local f = fixedSum[k] or 0
 						local gm = gemSum[k] or 0
 						local parts = {}
-						if f ~= 0 then table.insert(parts, "<color=#7FD6A4>+" .. tostring(f) .. "</color>") end
-						if gm ~= 0 then table.insert(parts, "<color=#C3A6FF>+" .. tostring(gm) .. "</color>") end
-						local value = "+" .. tostring(sum[k])
+						if f ~= 0 then table.insert(parts, "<color=#7FD6A4>+" .. _ItemCatalog:FmtStat(f, "") .. "</color>") end
+						if gm ~= 0 then table.insert(parts, "<color=#C3A6FF>+" .. _ItemCatalog:FmtStat(gm, "") .. "</color>") end
+						local value = "+" .. _ItemCatalog:FmtStat(sum[k], k)
 						if #parts > 0 then value = value .. " <color=#7C88A4>(</color>" .. table.concat(parts, " ") .. "<color=#7C88A4>)</color>" end
-						table.insert(rows, { label = self:StatLabel(k), value = value })
+						table.insert((gm ~= 0) and gemRows or fixedRows, { label = self:StatLabel(k), value = value, order = #gemRows + #fixedRows })
 					end
 				end
+				local picked = {}
+				if #gemRows + #fixedRows <= 4 then
+					for _, r in ipairs(gemRows) do table.insert(picked, r) end
+					for _, r in ipairs(fixedRows) do table.insert(picked, r) end
+				else
+					for _, r in ipairs(gemRows) do if #picked < 4 then table.insert(picked, r) end end
+					for _, r in ipairs(fixedRows) do if #picked < 4 then table.insert(picked, r) end end
+					log("[Workshop] preview rows " .. tostring(#gemRows + #fixedRows) .. " > 4 → gem rows first")
+				end
+				-- 보이는 줄은 원래 키 순서대로 다시 세운다.
+				table.sort(picked, function(a, b) return a.order < b.order end)
+				for _, r in ipairs(picked) do table.insert(rows, r) end
 			end
 			self:SetText(sp, "PreviewTitle", "상승 능력치")
 			self:SetText(sp, "PreviewRange", range)
@@ -981,7 +1000,11 @@ script WorkshopUIController extends Logic
 			if _EnhanceService ~= nil and isvalid(lp) and isvalid(lp.PlayerComponent) then
 				mesoCost = _EnhanceService:EnhanceMesoCost(lp.PlayerComponent.UserId, def, row)
 			end
-			costText = "메소 " .. tostring(mesoCost) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
+			-- 보석 칩은 실제로 드는 개수(한벌옷 = 칸마다 2개 · 1.1-F20). 준비 판정은 칸 수 그대로.
+			local perSlot = _ItemCatalog:PieceCount(def)
+			local gemNeedTotal = row.gemCount * perSlot
+			local gemHaveTotal = have * perSlot
+			costText = "메소 " .. tostring(mesoCost) .. " · 보석 " .. tostring(gemHaveTotal) .. " / " .. tostring(gemNeedTotal)
 			ready = (have == row.gemCount)
 			-- 칩 2개: 메소(보유 = 클라 캐시) · 보석(보유 = 지금 넣은 수). 모자라면 붉게. 메소는 서버가 최종 판정하므로 버튼은 막지 않는다(옛 동작 그대로).
 			local meso = self:MesoNow()
@@ -992,7 +1015,7 @@ script WorkshopUIController extends Logic
 			end
 			self:ShowFootChips({
 				{ icon = self.RuidMeso, label = "메소", num = self:Fmt(mesoCost), hold = "보유 " .. self:Fmt(meso), short = meso < mesoCost },
-				{ icon = gemIcon, label = "보석", num = tostring(row.gemCount), hold = "보유 " .. tostring(have) .. ((have < row.gemCount) and " · 부족" or ""), short = have < row.gemCount },
+				{ icon = gemIcon, label = "보석", num = tostring(gemNeedTotal), hold = "보유 " .. tostring(gemHaveTotal) .. ((have < row.gemCount) and " · 부족" or ""), short = have < row.gemCount },
 			}, costText)
 		elseif def ~= nil then
 			costText = "최대 강화 단계"
@@ -1153,11 +1176,12 @@ script WorkshopUIController extends Logic
 				local gemId = string.sub(name, 6)
 				local gem = _ItemCatalog:GetGem(gemId)
 				local have = self:CountGem(gemId)
-				-- 이미 고른 개수는 보유에서 뺀다 (같은 보석 여러 개)
-				for _, g in ipairs(self.chosenGems) do if g == gemId then have = have - 1 end end
+				-- 한벌옷은 보석 칸마다 2개씩 든다(1.1-F20 · 사용자 2026-10-12). 이미 고른 칸 수 × 칸당 개수를 보유에서 뺀다.
+				local perSlot = (def ~= nil) and _ItemCatalog:PieceCount(def) or 1
+				for _, g in ipairs(self.chosenGems) do if g == gemId then have = have - perSlot end end
 				local amt = (def ~= nil) and (_ItemCatalog:GemAmount(def, nextLv, gemId) * _ItemCatalog:PieceCount(def)) or 0
 				local locked = (amt == 0)
-				local zero = (not locked) and have <= 0
+				local zero = (not locked) and have < perSlot
 				local stat = (gem ~= nil) and self:StatLabel(gem.statKey) or ""
 				local cnt = child:GetChildByName("Count")
 				if isvalid(cnt) and cnt.TextGUIRendererComponent ~= nil then
@@ -1168,7 +1192,7 @@ script WorkshopUIController extends Logic
 				local lab = child:GetChildByName("StatLabel")
 				if isvalid(lab) and lab.TextGUIRendererComponent ~= nil and gem ~= nil then
 					lab.Enable = not locked
-					lab.TextGUIRendererComponent.Text = stat .. " +" .. tostring(amt)
+					lab.TextGUIRendererComponent.Text = stat .. " +" .. _ItemCatalog:FmtStat(amt, gem.statKey)
 					lab.TextGUIRendererComponent.FontColor = self:Hex(zero and "#7C88A4" or "#7FD6A4", 1)
 				end
 				local nm = child:GetChildByName("Name")
@@ -1195,7 +1219,7 @@ script WorkshopUIController extends Logic
 				self:SetText(child, "NoFx/Text", stat .. " 효과 없음")
 				-- 받침(행 판)은 정상 칸에서만 보인다 — 비활성 이유 그림이 대신 깔린다.
 				self:SetTint(child, "#FFFFFF", (locked or zero) and 0 or 1)
-				if child.ButtonComponent ~= nil then child.ButtonComponent.Enable = (have > 0 and amt ~= 0) end
+				if child.ButtonComponent ~= nil then child.ButtonComponent.Enable = (have >= perSlot and amt ~= 0) end
 			end
 		end
 	end
