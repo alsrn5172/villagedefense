@@ -4,6 +4,8 @@ script TutorialDirector extends Logic
 	--   장면 종류: card(큰 설명창 · TutorialGroup) · coach(막 + 구멍 + 말풍선 · CoachMarkController 외부 단계) · act(서버 일 · 페이드 순간이동) · wait(조건)
 	--   입력은 "의도한 하나만": 이동 · 점프 · 공격 = PlayerControllerComponent:AddCondition · UI 단축키 = 키 처리 파일마다 KeyAllowed 한 줄 · 클릭 = 막(구멍 밖은 막이 먹는다)
 	--   · 허락 안 한 창(캐릭터 · 스킬 · 월드맵 · 도움말 · NPC 창)은 열리면 바로 닫는다. 나가기는 오른쪽 위 [그만두기] + 확인창뿐.
+	--   · 좌우 방향 전환(MoveLeft · MoveRight)은 늘 허락한다 — 걷는 것은 이동 잠금(ApplyMoveLock · 걷기 속도 0)이 막는다(1.1-K05 · K06).
+	--   · 스킬 시전(Q W E R · 스킬 칸) = CastAllowed 가 장면 allow.cast 로 판정한다(SkillCaster.Cast 맨 앞이 묻는다 · 1.0.3-M8-04).
 	--   글자는 이 표에 있다(문구만 바꾸기 쉽게). UUID 는 Docs/tools/design-ui/apply-tutorial.cjs 가 주입한다.
 
 	property Entity root = "3de33912-8344-410b-b4b0-94448c5bc9dc"
@@ -94,6 +96,13 @@ script TutorialDirector extends Logic
 
 	@HideFromInspector
 	property boolean ended = false
+
+	-- 이동 잠금(1.1-K06): 이동이 막힌 장면에서 걷기 속도를 0 으로 눌러 두는 중인가 · 풀 때 되돌릴 걷기 속도(-1 = 모름)
+	@HideFromInspector
+	property boolean moveLocked = false
+
+	@HideFromInspector
+	property number lockedWalkSpeed = -1
 
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
@@ -191,6 +200,7 @@ script TutorialDirector extends Logic
 		end
 		self.ended = true
 		self.active = false
+		self:ReleaseMoveLock()   -- 1.1-K06: 눌러 둔 걷기 속도를 되돌린다(로비에서 못 걷는 일 방지)
 		if _CoachMarkController ~= nil then
 			_CoachMarkController:HideCustom(why)
 		end
@@ -234,9 +244,12 @@ script TutorialDirector extends Logic
 
 	@ExecSpace("ClientOnly")
 	method boolean ActionAllowed(string name)
-		-- 튜토리얼이 아니면 늘 허락. 공격 = 장면 allow.attack · 나머지(이동 · 점프) = allow.move.
+		-- 튜토리얼이 아니면 늘 허락. 좌우 방향 전환(MoveLeft · MoveRight)도 늘 허락(걷는 것은 ApplyMoveLock 이 막는다 · 1.1-K05) · 공격 = 장면 allow.attack · 나머지(위아래 · 점프) = allow.move.
 		if not self.active then
 			return true
+		end
+		if name == "MoveLeft" or name == "MoveRight" then
+			return true   -- 방향 전환은 늘 허락. 걸어서 움직이는 것은 ApplyMoveLock 이 막는다(1.1-K06).
 		end
 		local s = self:Cur()
 		local allow = (s ~= nil) and s.allow or nil
@@ -247,6 +260,80 @@ script TutorialDirector extends Logic
 			return allow.attack == true
 		end
 		return allow.move == true
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean MoveFree()
+		-- 지금 장면이 걷기 · 점프를 허락하나(전투 장면 2-4 · 3-7 · 5-0b 와 6-3b 가 true · 1.1-K06). 튜토리얼이 아니면 true.
+		if not self.active then
+			return true
+		end
+		local s = self:Cur()
+		return s ~= nil and s.allow ~= nil and s.allow.move == true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyMoveLock()
+		-- 이동이 막힌 장면에서 로컬 플레이어의 걷기 속도(RigidbodyComponent.WalkSpeed)를 0 으로 눌러 둔다(1.1-K06).
+		--   MoveLeft/MoveRight 는 K05 로 허락돼 있으니 키를 누르면 방향만 바뀌고 제자리에 선다. pollHz(10Hz) 마다 다시 눌러 서버가 되쓴 값(StatService.ApplyMovementOnClient)을 이긴다.
+		if self:MoveFree() then
+			self:ReleaseMoveLock()
+			return
+		end
+		local p = _UserService.LocalPlayer
+		if not isvalid(p) then
+			return
+		end
+		local rb = p.RigidbodyComponent
+		if not isvalid(rb) then
+			return
+		end
+		if rb.WalkSpeed > 0 then
+			self.lockedWalkSpeed = rb.WalkSpeed   -- 서버가 되쓴 값(레벨 · 장비)을 기억해 둔다
+		end
+		if rb.WalkSpeed ~= 0 then
+			rb.WalkSpeed = 0
+		end
+		if not self.moveLocked then
+			self.moveLocked = true
+			log("[Tutorial] move lock on (walk was " .. tostring(self.lockedWalkSpeed) .. ")")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ReleaseMoveLock()
+		-- 잠금 해제: 기억한 걷기 속도를 되돌린다(없으면 StatService.BaseWalkSpeed = 0.7). 마지막으로 0 을 누른 뒤 서버가 새로 쓴 값(0 보다 큼)이 있으면 그 값이 최신이라 그대로 둔다.
+		if not self.moveLocked then
+			return
+		end
+		self.moveLocked = false
+		local p = _UserService.LocalPlayer
+		if isvalid(p) and isvalid(p.RigidbodyComponent) then
+			local v = self.lockedWalkSpeed
+			if p.RigidbodyComponent.WalkSpeed > 0 then
+				v = p.RigidbodyComponent.WalkSpeed
+			end
+			if v <= 0 then
+				v = (_StatService ~= nil) and _StatService.BaseWalkSpeed or 0.7
+			end
+			p.RigidbodyComponent.WalkSpeed = v
+		end
+		self.lockedWalkSpeed = -1
+		log("[Tutorial] move lock off")
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CastAllowed()
+		-- 지금 장면이 스킬 시전(Q W E R · 스킬 HUD 칸)을 허락하나(1.0.3-M8-04). 튜토리얼이 아니면 늘 true · 확인창이 떠 있으면 false · 장면 allow.cast 가 true 인 전투 장면만 true.
+		--   SkillCaster.Cast 맨 앞이 부른다(키 · HUD 칸 터치가 전부 그 입구를 지난다). allow.win.skill(스킬 창)과 헷갈리지 않게 필드 이름은 cast.
+		if not self.active then
+			return true
+		end
+		if isvalid(self.confirm) and self.confirm.Enable then
+			return false
+		end
+		local s = self:Cur()
+		return s ~= nil and s.allow ~= nil and s.allow.cast == true
 	end
 
 	@ExecSpace("ClientOnly")
@@ -999,8 +1086,11 @@ script TutorialDirector extends Logic
 		local bossMap = "Henesys_Boss_Mushmom"
 		local balrogVillage = "Sleepywood_Village_MinimiMain"
 		local weapon = "WEAPON_WARRIOR_T10"
-		local hat = "ABSOLAB_HAT_WARRIOR"
+		local glove = "ABSOLAB_GLOVES_WARRIOR"   -- 5단계 봉인석 교환 대상(1.1-K01 · 옛 앱솔랩스 모자 ABSOLAB_HAT_WARRIOR)
 		local mat = "MAT_1210102"
+		-- 주니어 발록 레벨(5-0g2 카드 문장 · 1.1-K02) = BossInfo.Level (BossCatalog.GetInfo: ExecSpace 없음 · 서버 · 클라 각자 적재). 보스 ID 는 BalrogRoomService.BossId 와 같은 상수 · 읽지 못하면 40.
+		local balrogInfo = (_BossCatalog ~= nil) and _BossCatalog:GetInfo("8130100") or nil
+		local balrogLv = (balrogInfo ~= nil and (balrogInfo.level or 0) > 0) and math.floor(balrogInfo.level) or 40
 		local S1 = "1단계 · 전직과 마을 차지"
 		local S2 = "2단계 · 월드맵과 사냥"
 		local S3 = "3단계 · 미니언 막기"
@@ -1239,14 +1329,18 @@ script TutorialDirector extends Logic
 		add({ id = "5-0d2", kind = "coach", step = S5, title = "특수 칸을 눌러요", text = G("앱솔랩스 장비") .. "는 " .. G("특수") .. " 칸에 있어요.", finger = true, side = "b", allow = { win = { npc = true } }, keep = "npc",
 			target = function(d) local c = _WorkshopUIController if c == nil or not isvalid(c.contentCraft) then return nil end return d:UiTarget(c.contentCraft:GetChildByName("Slot_SPECIAL")) end,
 			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.craftSlot == "SPECIAL" end })
-		add({ id = "5-0e", kind = "coach", step = S5, title = "앱솔랩스 장비", text = G(self:ItemName(hat)) .. "를 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
-			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:GridItemTarget(c.craftGrid, c.craftView, "resultItemId", hat) end,
-			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.craftSel == "RECIPE_" .. hat end })
+		-- 봉인석 1개로 바꾸는 장비 = 앱솔랩스 장갑(1.1-K01 · 옛 모자): 명중률을 올려 주는 장갑을 발록 전에 챙기게 한다(5-0g2 카드).
+		add({ id = "5-0e", kind = "coach", step = S5, title = "앱솔랩스 장비", text = G(self:ItemName(glove)) .. "를 골라요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
+			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:GridItemTarget(c.craftGrid, c.craftView, "resultItemId", glove) end,
+			done = function(d) return _WorkshopUIController ~= nil and _WorkshopUIController.craftSel == "RECIPE_" .. glove end })
 		add({ id = "5-0f", kind = "coach", step = S5, title = "교환을 눌러요", text = "단풍 봉인석 1개로 " .. G("교환") .. "해요.", finger = true, side = "t", allow = { win = { npc = true } }, keep = "npc",
 			target = function(d) local c = _WorkshopUIController if c == nil then return nil end return d:UiTarget(c.btnPrimary.Entity) end,
-			done = function(d) return d:ItemCount(hat) > 0 end })
+			done = function(d) return d:ItemCount(glove) > 0 end })
 		add({ id = "5-0g", kind = "coach", step = S5, title = "교환 완료!", text = "앱솔랩스 장비는 캐릭터 창에서 입을 수 있어요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
 			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
+		-- 발록 대비 안내(1.1-K02): 장갑이 명중률을 올려 주고 발록은 레벨 차이로 MISS 가 자주 난다. 레벨 숫자는 BossInfo(8130100).Level 에서(balrogLv).
+		add({ id = "5-0g2", kind = "card", step = S5, chip = "발록 대비", title = "발록은 MISS 가 자주 나요",
+			body = G("주니어 발록") .. "은 " .. G("레벨 " .. tostring(balrogLv)) .. "이라 레벨 차이로 " .. R("MISS") .. "가 자주 나요.\n" .. G("명중률을 올려 주는 장갑") .. "을 꼭 사서\n" .. G("많이 강화") .. "해야 해요!", allow = none })
 		add({ id = "5-0h", kind = "card", step = S5, chip = "발록 입장 재료", title = "낙인의 영혼석", body = "주니어 발록 입장 재료 " .. G("낙인의 영혼석") .. "은\n" .. G("엘리트 몬스터도 주지만 보스가 훨씬 많이 줘요") .. " (방금 20개!).", allow = none })
 
 		-- ── 6단계 ──
@@ -1256,8 +1350,9 @@ script TutorialDirector extends Logic
 			done = function(d) return d:Tier() >= 3 end, timeout = 30 })
 		add({ id = "6-1", kind = "card", step = S6, chip = "견제", title = "저 사람 발록 잡으러 가요!!", emblem = self.rivalEmblem, hp = 0.18, hpText = self.rivalName .. " 넥서스 18%",
 			body = G("가상 상대") .. "가 주니어 발록에 도전하러 갔어요. 무척 세 보이는데…\n방어는 어느 정도 해 놓았지만 " .. R("넥서스 체력이 간당간당") .. "하네요!!\n곧 미니언 웨이브이기도 하니 " .. G("내 마을에 배치된 수비대") .. "를 파병 보내서\n미니언 공격에 가담해요!", allow = none })
-		add({ id = "6-1b", kind = "card", step = S6, chip = "견제 규칙", title = "직접 때릴 수 있는 것 · 없는 것",
-			body = "상대 마을의 " .. G("수비대 몬스터는 직접 공격할 수 있어요") .. "(쓰러뜨리면 그 마을 지역 재화 2개).\n하지만 " .. R("포탑 · 억제기 · 넥서스는 직접 공격할 수 없어요") .. " — 파병한 수비대와 미니언이 부숴요.\n\n그리고 " .. R("상대 포탑은 플레이어에게 10배 피해") .. "를 주니\n가까이 가지 않는 게 좋아요!", allow = none })
+		-- 시설 공격 안내(1.1-K03 · 패치 글 최종 문구): 포탑 · 억제기 · 넥서스도 때릴 수 있다 — 단 시설 사거리 안에 적팀 미니언이 없으면 플레이어 피해가 5%(LaneFacility · 1.1-H10).
+		add({ id = "6-1b", kind = "card", step = S6, chip = "견제 규칙", title = "시설도 때릴 수 있어요",
+			body = "상대 마을의 " .. G("수비대 몬스터는 직접 공격할 수 있어요") .. "(쓰러뜨리면 그 마을 지역 재화 2개).\n" .. G("포탑, 억제기, 넥서스는 공격 가능해요") .. ". 하지만\n" .. R("시설 사거리 안에 적팀 미니언이 없으면 데미지가 매우 적게 들어가요") .. ".\n\n그리고 " .. R("상대 포탑은 플레이어에게 10배 피해") .. "를 주니\n가까이 가지 않는 게 좋아요!", allow = none })
 		add({ id = "6-2d", kind = "act", action = "ensuredef", allow = none })
 		add({ id = "6-2m", kind = "act", action = "near:" .. villageMap .. ":Npc_VD_COMMON_DISPATCH_OFFICER_:-1.4", fade = true, map = villageMap, allow = none })
 		add({ id = "6-2", kind = "coach", step = S6, title = "파병 담당관", text = G("파병 담당관") .. "을 눌러요.", finger = true, allow = { win = { npc = true } }, keep = "npc",
@@ -1296,7 +1391,8 @@ script TutorialDirector extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnEndPlay()
-		-- 연결 해제.
+		-- 연결 해제. 이동 잠금이 남아 있으면 걷기 속도를 되돌린다(1.1-K06).
+		self:ReleaseMoveLock()
 		if self.handlers ~= nil then
 			for _, x in ipairs(self.handlers) do
 				if isvalid(x.e) then
