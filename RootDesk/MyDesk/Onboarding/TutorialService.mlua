@@ -4,7 +4,7 @@ script TutorialService extends Logic
 	--   처음 온 사람이 소개 8쪽 [튜토리얼 시작하기] · 도움말 [튜토리얼] 을 누르면(RequestStart) 매치처럼 인스턴스 룸(룸 키 tutorial_<번호>)을 만들어 혼자 보낸다.
 	--   룸 안의 매치 엔진은 그대로 돈다(마을 · 시설 · NPC 창이 진짜로 동작). Active 인 동안 각 서비스가 이 값을 보고
 	--   시계 · 웨이브 표 · 미점령 탈락 · 결과 · 계정 기록(업적 · 도감 · 플레이 기록 · 순위 보상)을 끈다 — 튜토리얼 결과는 전부 휘발.
-	--   장면 진행은 클라 TutorialDirector 가 하고, 서버는 장면이 부르는 일(RequestAction)만 한다: 달팽이 스폰 · 레벨 · 연출용 재화 · 웨이브 1회 · 순간이동.
+	--   장면 진행은 클라 TutorialDirector 가 하고, 서버는 장면이 부르는 일(RequestAction)만 한다: 달팽이 스폰 · 레벨 · 연출용 재화 · 웨이브 1회 · 순간이동 · 전사 스킬 지급(skill) · 전투 구간 이탈 복귀(back).
 	--   이미 인스턴스 룸 안이면(Maker 에서 매치 맵을 바로 열고 Play = TestPlayInstance) 룸을 만들지 않고 지금 방에서 시작한다(InPlace).
 	--   🔴 로비(정적 룸)에서는 Maker 여도 룸을 만든다 — 시작 맵이 인스턴스 맵이라 정적 룸에서는 MoveToMapPosition 이 조용히 안 넘어간다
 	--   (사용자 2026-10-07 "튜토리얼 시작하기 눌러도 튜토리얼 맵으로 이동을 안 한다" · 매치 출발도 Maker 에서 룸을 만든다).
@@ -294,6 +294,12 @@ script TutorialService extends Logic
 			ok = self:PrepareBoss(uid)
 		elseif kind == "ensuredef" then
 			ok = _LaneStateService ~= nil and _LaneStateService:TutorialEnsureDefenders(uid, self.OrangeMonsterId) > 0
+		elseif kind == "back" then
+			-- back:<맵>:<x>:<y> — 전투 구간 이탈 복귀(TutorialDirector.TickLeash · 1.0.3-M8-03)
+			ok = self:MoveBack(uid, parts[2] or "", tonumber(parts[3]) or 0, tonumber(parts[4]) or 0)
+		elseif kind == "skill" then
+			-- skill:<SkillId>[,<SkillId>…]:<레벨> — 전사 전직 스킬을 SP 없이(2-4k · 1.0.3-M8-05)
+			ok = self:GrantSkills(uid, parts[2] or "", math.floor(tonumber(parts[3]) or 1))
 		else
 			ok = false
 			log_warning("[Tutorial] unknown action " .. action)
@@ -679,6 +685,33 @@ script TutorialService extends Logic
 			return
 		end
 		p.PlayerComponent:MoveToMapPosition(mapId, pos)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean MoveBack(string uid, string mapId, number x, number y)
+		-- 전투 구간 이탈 복귀(1.0.3-M8-03): 지금 그 맵에 있을 때만(맵이 바뀐 요청은 무시) 시작점 +0.3(발판보다 조금 위)으로 순간이동하고 토스트로 알린다.
+		local p = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(p) or mapId == "" or p.CurrentMapName ~= mapId then
+			return false
+		end
+		self:MoveTo(uid, mapId, Vector2(x, y + 0.3))
+		self:Toast(uid, "너무 멀리 왔어요. 처음 자리로 돌아가요")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean GrantSkills(string uid, string ids, integer level)
+		-- 전사 전직 스킬을 SP 없이 준다(2-4k · 1.0.3-M8-05). ids = 쉼표로 이은 스킬 ID. 하나라도 못 주면 false(나머지는 그대로 준다).
+		local n = 0
+		local all = true
+		for id in string.gmatch(ids, "[^,]+") do
+			n = n + 1
+			if _PlayerSkillState == nil or not _PlayerSkillState:GrantSkillLevel(uid, id, level) then
+				all = false
+				log_warning("[Tutorial] skill grant failed " .. id .. " (" .. uid .. ")")
+			end
+		end
+		return n > 0 and all
 	end
 
 	@ExecSpace("ServerOnly")
