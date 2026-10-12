@@ -153,8 +153,19 @@ img(AAP, 'btn_blue_default', RAA, LEFT);
 if (!b.hasComponent(AAP, 'MOD.Core.ButtonComponent')) b.addComponent(AAP, 'MOD.Core.ButtonComponent');
 S.button(b, AAP, { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed', disabled: 'btn_blue_disabled' });
 b.patchComponent(AAP, S.SPR, { RaycastTarget: true });
-txt(AAP + '/Label', '레벨업 자동 분배', [84, 724, 300, 44], RAA, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', v: 'middle' });
+// 라벨 오른쪽 끝을 줄여(폭 160 · 안 들어가면 BestFit 로 18 → 12 까지 줄어든다) 방식 칩 자리를 비운다 (1.1-G09).
+txt(AAP + '/Label', '레벨업 자동 분배', [84, 724, 160, 44], RAA, { font: 'Noto700', size: 18, color: C.ivory, h: 'left', v: 'middle' });
+b.patchComponent(AAP + '/Label', S.TXT, { BestFit: true, MinSize: 12, MaxSize: 18 });
 img(AAP + '/Toggle', 'toggle_on', [432, 728.5, 64, 35], RAA);
+// 레벨업 자동 분배 방식 칩 2개 (1.1-G09 · 계정 저장 · 기본 밸런스형). 고른 칩만 금색 — 그림 · 글자색은 Stat/StatUIController.SetApMode 가 서버 apmode= 에 맞춰 바꾼다(그래서 버튼 전환은 끈다).
+// 칩은 자동 분배 줄(AutoAp) 자식이고 RaycastTarget 이 켜져 있어 부모 버튼보다 먼저 클릭을 받는다. 토글(432~496)과 12px 떨어진다.
+[['ModeBalance', '밸런스형', [252, 728.5, 80, 35], true], ['ModeAttack', '공격형', [340, 728.5, 80, 35], false]].forEach(([id, label, r, on]) => {
+  const p = AAP + '/' + id;
+  b.button(p, label, { anchor: 'middle-center', pos: S.at(r[0], r[1], r[2], r[3], RAA), rect_size: [r[2], r[3]], pivot: [0.5, 0.5], font_size: 16, image_ruid: S.R(on ? 'btn_gold_default_sm' : 'btn_blue_disabled'), sprite_type: 1 });
+  b.patchComponent(p, S.SPR, { Color: S.C('#FFFFFF'), Type: 1, RaycastTarget: true });
+  noTransition(p);
+  font(p, { font: 'Maple', size: 16, color: on ? C.goldInk : '#E4E8EF', h: 'center', v: 'middle' });
+});
 
 // 오른쪽: 소제목 · 남은 AP 칩 · 기본 능력치 4줄 · 전투 능력치 판 + 6줄
 txt(ST + '/Right/HeadBasic', '기본 능력치', [522, 238.5, 160, 25], RIGHT, { font: 'Maple', size: 18, color: C.title, h: 'left' });
@@ -323,6 +334,8 @@ b.write(path.join(WORLD, 'ui', 'CharacterGroup.ui'), {
       apChipText: ST + '/Right/ApChip/Text',
       avatarPreviewEquip: AV,
       btnAutoAp: ST + '/Left/AutoAp',
+      btnApBalance: ST + '/Left/AutoAp/ModeBalance',
+      btnApAttack: ST + '/Left/AutoAp/ModeAttack',
     },
   },
 });

@@ -54,6 +54,16 @@ script StatService extends Logic
 	-- DEX 1당 명중률 %p (1.1-A02 · G04 · 주 · 부스탯 직업 0.15 · 그 외 ×NonCoreEffectMul). LUK 은 명중에 안 더한다.
 	property number AccuracyPerDex = 0.15
 
+	-- 1차 전직 AP 초기화(1.1-G10): 시작 스탯도 이 값으로 내리고 차이를 AP 로 돌려준다(STR 12 → 4 = 8 · DEX 5 → 4 = 1 · INT 4 · LUK 4 는 그대로 → 합계 +9).
+	-- 원문 "STR · DEX · INT · LUK 을 모두 4로 맞추고". 직접 · 자동으로 찍은 AP 는 예전처럼 전부 돌려준다.
+	property integer JobResetStr = 4
+
+	property integer JobResetDex = 4
+
+	property integer JobResetInt = 4
+
+	property integer JobResetLuk = 4
+
 	-- 이동 기준값 (SPEED · JUMP 100 일 때 · WO-046 · 2026-10-05). 예전엔 매치 초기화 때 엔티티의 **현재** 값을 기준으로 다시 읽어서
 	-- 이전 판의 이속·점프 보너스가 기준에 눌러앉아 판마다 불어났다 → 고정값으로 둔다.
 	-- 걷기 속도 = 사용자 2026-10-05 "과도하게 빠르다 · 절반" → 엔진 기본 1.4 의 절반. DefaultPlayer 모델 값과 같게 둔다.
@@ -96,9 +106,9 @@ script StatService extends Logic
 		-- 1차 전직(초보자 → 직업)에서만 환급한다(WO-050 §2-3 · 사용자 보완 "1차 전직에서만"). 2차 이상은 초기화하지 않는다.
 		if prev == "NOVICE" and event.NewJobId ~= "NOVICE" then
 			local refunded = self:ResetAp(uid, "JOB")
-			-- 자동 분배가 켜져 있으면 돌려받은 AP 만 새 직업 비율로 다시 나눈다(남아 있던 AP · 이미 찍은 스탯은 유지).
+			-- 자동 분배가 켜져 있으면 돌려받은 AP 만 고른 방식(밸런스형 3:2 · 공격형 5:0 · 1.1-G07)으로 새 직업에 다시 나눈다(남아 있던 AP · 이미 찍은 스탯은 유지).
 			if refunded > 0 and self:IsAutoApOn(uid) then
-				self:AllocateByJob(uid, refunded, "job-refund")
+				self:AllocateByMode(uid, refunded, "job-refund")
 			end
 		end
 		log("[Stat] job " .. uid .. " " .. prev .. " -> " .. event.NewJobId .. " (tier " .. tostring(event.Tier) .. ")")
@@ -270,7 +280,7 @@ script StatService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer ResetAp(string userId, string reason)
-		-- 찍은 AP 를 전부 되돌린다: base 에서 빼고 원장(SummonManager econ.ap)에 돌려준다. 시작 기본치(STR 12 · DEX 5 · INT 4 · LUK 4)는 그대로.
+		-- 찍은 AP 를 전부 되돌린다: base 에서 빼고 원장(SummonManager econ.ap)에 돌려준다. 시작 기본치(STR 12 · DEX 5)도 JobReset* (4)로 내리고 그 차이(+9)를 AP 로 돌려준다(1.1-G10).
 		-- 전직 때(사용자 2026-10-05 "전직하면 AP 전부 리셋 · 마법사는 INT 가 주스탯") — 새 직업 주스탯에 다시 찍게 한다. 반환 = 돌려준 AP.
 		local u = self:EnsureUser(userId)
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
@@ -283,6 +293,15 @@ script StatService extends Logic
 				total = total + n
 			end
 			u.apAlloc[k] = 0
+		end
+		-- 시작값도 JobReset* 로 내리고 차이를 AP 로 돌려준다(1.1-G10). 한 번 내리면 다시 target 이라 같은 판에 ResetAp 가 또 불려도 over 는 0 이다(+9 는 한 번뿐).
+		local target = { str = self.JobResetStr, dex = self.JobResetDex, int = self.JobResetInt, luk = self.JobResetLuk }
+		for _, k in ipairs({ "str", "dex", "int", "luk" }) do
+			local over = (u.base[k] or 0) - target[k]
+			if over > 0 then
+				u.base[k] = target[k]
+				total = total + over
+			end
 		end
 		if total <= 0 then return 0 end
 		e.ap = (e.ap or 0) + total
@@ -342,13 +361,13 @@ script StatService extends Logic
 
 	@ExecSpace("Server")
 	method void RequestAutoAllocateAp()
-		-- 캐릭터 창 "자동 분배": 남은 AP 전부를 직업 비율(JobInfo.ApRatio* · 없으면 NOVICE 6:4)로. 나머지는 주스탯.
+		-- 캐릭터 창 "자동 분배": 남은 AP 전부를 고른 방식(1.1-G07 · 밸런스형 = 직업 비율 JobInfo.ApRatio* 0.6/0.4 · 공격형 = 전부 주스탯)으로. 나머지는 주스탯.
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local u = self:EnsureUser(uid)
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(uid) or nil
 		if u == nil or e == nil or (e.ap or 0) <= 0 then return end
-		self:AllocateByJob(uid, e.ap, "auto")
+		self:AllocateByMode(uid, e.ap, "auto")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -370,6 +389,24 @@ script StatService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method integer AllocateByMode(string userId, integer amount, string source)
+		-- 계정에 저장한 자동 분배 방식(1.1-G07 · AccountData.GetApMode)대로 amount 만큼 찍는다. 반환 = 실제 쓴 AP.
+		--   밸런스형(BALANCE · 기본) = JobInfo.ApRatio* (0.6 / 0.4) → AP 5 = 주 3 · 부 2 (AllocateByJob 그대로)
+		--   공격형(ATTACK) = 전부 주스탯 → AP 5 = 주 5 · 부 0
+		local u = self:EnsureUser(userId)
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		if u == nil or e == nil or amount <= 0 or amount > (e.ap or 0) then return 0 end
+		local mode = (_AccountData ~= nil) and _AccountData:GetApMode(userId) or "BALANCE"
+		if mode == "ATTACK" then
+			local job = self:GetJob(u.job)
+			local alloc = { str = 0, dex = 0, int = 0, luk = 0 }
+			alloc[job.primary] = amount
+			return self:Allocate(userId, alloc, source)
+		end
+		return self:AllocateByJob(userId, amount, source)
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean IsAutoApOn(string userId)
 		-- 레벨업 자동 AP 분배 설정(계정 저장 · 기본 켬).
 		if _AccountData == nil then return true end
@@ -381,8 +418,9 @@ script StatService extends Logic
 		-- 레벨업으로 새로 얻은 AP 만 자동 분배(설정이 켜져 있을 때). 남아 있던 AP · 이미 찍은 스탯은 그대로(WO-050 §2-3).
 		if gained == nil or gained <= 0 then return end
 		if not self:IsAutoApOn(userId) then return end
-		local used = self:AllocateByJob(userId, gained, "levelup")
-		log("[Stat] AP auto " .. tostring(used) .. "/" .. tostring(gained) .. " (levelup · " .. userId .. ")")
+		local used = self:AllocateByMode(userId, gained, "levelup")
+		local mode = (_AccountData ~= nil) and _AccountData:GetApMode(userId) or "BALANCE"
+		log("[Stat] AP auto " .. tostring(used) .. "/" .. tostring(gained) .. " mode=" .. mode .. " (levelup · " .. userId .. ")")
 	end
 
 	@ExecSpace("Server")
@@ -395,6 +433,21 @@ script StatService extends Logic
 		log("[Stat] auto AP " .. (on and "on" or "off") .. " (" .. uid .. ")")
 		if _UIToast ~= nil then
 			_UIToast:ShowMessage(on and "레벨업 자동 분배를 켰습니다 (계정에 저장)" or "레벨업 자동 분배를 껐습니다 (계정에 저장)", uid)
+		end
+		self:PushToClient(uid)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetApMode(string mode)
+		-- 캐릭터 창 "밸런스형 / 공격형" 칩(1.1-G09): 레벨업 자동 분배 방식을 바꾼다(계정에 저장 · 기본 밸런스형). 화면은 서버가 보낸 SetStatsCsv 의 apmode= 로만 바뀐다.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local uid = senderUserId
+		if uid == nil or uid == "" or _AccountData == nil then return end
+		local m = (mode == "ATTACK") and "ATTACK" or "BALANCE"
+		_AccountData:SetApMode(uid, m)
+		log("[Stat] AP mode " .. m .. " (" .. uid .. ")")
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(m == "ATTACK" and "레벨업 자동 분배: 공격형 (계정에 저장)" or "레벨업 자동 분배: 밸런스형 (계정에 저장)", uid)
 		end
 		self:PushToClient(uid)
 	end
@@ -759,14 +812,26 @@ script StatService extends Logic
 			end
 		end
 
+		-- 능력치 칸 글자(1.1-I01) = 총(기본+AP + 나머지). 총 = 최종값 · 기본+AP = 시작치 + 직접 · 자동으로 찍은 AP(u.base) · 나머지 = 장비 · 강화 · 보석 · 버프 · DEV(음수면 45(48-3)).
+		-- 직업별 10% 효율(1.1-I02)은 추가효과 계산(Recalculate 의 eff)에만 곱하므로 여기 총 스탯은 줄어들지 않는다.
+		local function comp(k)
+			local total = math.floor(f[k] or 0)
+			local base = math.floor(u.base[k] or 0)
+			local rest = total - base
+			local restText = (rest >= 0) and ("+" .. tostring(rest)) or tostring(rest)
+			return tostring(total) .. "(" .. tostring(base) .. restText .. ")"
+		end
+
 		return "job=" .. job.name .. ";level=" .. tostring(level) .. ";exp=" .. expText .. ";sp=" .. tostring(sp) .. ";ap=" .. tostring(ap)
-			.. ";str=" .. tostring(f.str) .. ";dex=" .. tostring(f.dex) .. ";int=" .. tostring(f.int) .. ";luk=" .. tostring(f.luk)
+			.. ";str=" .. comp("str") .. ";dex=" .. comp("dex") .. ";int=" .. comp("int") .. ";luk=" .. comp("luk")
 			.. ";attack=" .. tostring(range.min) .. " ~ " .. tostring(range.max)
 			.. ";defense=" .. tostring(f.defense) .. ";speed=" .. tostring(f.speed) .. ";jump=" .. tostring(f.jump)
 			.. ";accuracy=" .. self:FmtPct(f.accuracy or 0) .. ";avoid=" .. self:FmtPct(f.avoid or 0)
 			-- 치명타율 칸(사용자 2026-10-12 신설): 원확률 그대로(100% 를 넘으면 넘친 몫이 치명타 피해로 간다 · 1.1-A07 원수치 표시).
 			.. ";crit=" .. self:FmtPct(_DamageFormula:CritRawRate(self:EffLukOf(u)) * 100)
 			.. ";autoap=" .. (self:IsAutoApOn(userId) and "1" or "0")
+			-- 레벨업 자동 분배 방식(1.1-G07 · 계정 저장): 클라 SetStatsCsv 가 칩 모양을 맞춘다. 모르는 키는 옛 클라가 무시한다.
+			.. ";apmode=" .. ((_AccountData ~= nil and _AccountData:GetApMode(userId) == "ATTACK") and "ATTACK" or "BALANCE")
 	end
 
 	@ExecSpace("ServerOnly")

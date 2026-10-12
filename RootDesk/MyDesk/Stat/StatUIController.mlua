@@ -49,6 +49,14 @@ script StatUIController extends Logic
 	@HideFromInspector
 	property boolean autoApOn = true
 
+	-- 레벨업 자동 분배 방식 칩 2개(1.1-G09 · Left/AutoAp/ModeBalance · ModeAttack · 계정 저장). UUID 는 UIBuilder write({bind}) 가 주입한다 — 손으로 쓰지 않는다.
+	property ButtonComponent btnApBalance = "606246e1-367f-4770-9edf-76455a60861d"
+
+	property ButtonComponent btnApAttack = "b37087bb-cc3a-4f88-a23e-8012d95b0b3f"
+
+	@HideFromInspector
+	property string apMode = "BALANCE"
+
 	property ButtonComponent btnPlusStr = "ba1acb80-1fe9-4314-95fb-76a2b16f9541"
 
 	property ButtonComponent btnPlusDex = "77a61180-8f2a-4834-82e1-f234e288f823"
@@ -186,11 +194,14 @@ script StatUIController extends Logic
 		end
 		bindAp(self.btnAuto, function() self:OnAuto() end)
 		bindAp(self.btnAutoAp, function() self:OnAutoApToggle() end)
+		bindAp(self.btnApBalance, function() self:OnApMode("BALANCE") end)
+		bindAp(self.btnApAttack, function() self:OnApMode("ATTACK") end)
 		bindAp(self.btnPlusStr, function() self:OnPlus("str") end)
 		bindAp(self.btnPlusDex, function() self:OnPlus("dex") end)
 		bindAp(self.btnPlusInt, function() self:OnPlus("int") end)
 		bindAp(self.btnPlusLuk, function() self:OnPlus("luk") end)
 		self:SetApButtons(0)
+		self:SetApMode(self.apMode)
 		self:UpdateSkillButton(0)
 		self:UpdateExpFill("")
 
@@ -424,8 +435,8 @@ script StatUIController extends Logic
 
 	@ExecSpace("Client")
 	method void SetStatsCsv(string csv)
-		-- "job=전사;level=10;exp=120/500;sp=3;str=12;dex=5;int=4;luk=4;attack=88~120;defense=12;speed=100;jump=100;accuracy=20.8%;avoid=0.2%;crit=5.1%"
-		-- 서버(StatService)가 소유 클라에만 보낸다(호출부 마지막 인자 = targetUserId). any/table 은 못 넘어서(LEA-3036) 한 줄 문자열.
+		-- "job=전사;level=10;exp=120/500;sp=3;ap=0;str=45(18+27);dex=12(9+3);int=4(4+0);luk=4(4+0);attack=88 ~ 120;defense=12;speed=100;jump=100;accuracy=20.8%;avoid=0.2%;crit=5.1%;autoap=1;apmode=BALANCE"
+		-- 능력치 4칸은 "총(기본+직접 AP + 나머지)" 글자 그대로(1.1-I01). 서버(StatService)가 소유 클라에만 보낸다(호출부 마지막 인자 = targetUserId). any/table 은 못 넘어서(LEA-3036) 한 줄 문자열.
 		for key, val in string.gmatch(csv, "([^;=]+)=([^;]*)") do
 			self:SetCell(key, val)
 		end
@@ -461,6 +472,8 @@ script StatUIController extends Logic
 			self:SetApButtons(math.floor(tonumber(val) or 0))
 		elseif key == "autoap" then
 			self:SetAutoAp(val == "1")
+		elseif key == "apmode" then
+			self:SetApMode(val)
 		end
 		if isvalid(target) then
 			target.Text = val
@@ -536,6 +549,31 @@ script StatUIController extends Logic
 			local toggle = e:GetChildByName("Toggle")
 			if isvalid(toggle) and toggle.SpriteGUIRendererComponent ~= nil then
 				toggle.SpriteGUIRendererComponent.ImageRUID = on and self.ruidToggleOn or self.ruidToggleOff
+			end
+		end
+		-- 끔이면 방식 칩 두 개도 비활성 모양(1.1-G09).
+		self:SetApMode(self.apMode)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnApMode(string mode)
+		-- "밸런스형 / 공격형" 칩(1.1-G09): 서버에 요청(계정 저장). 화면은 서버가 보낸 SetStatsCsv 의 apmode= 로만 바뀐다(낙관적 UI 없음). 자동 분배가 꺼져 있으면 칩이 비활성이라 막는다.
+		if mode == self.apMode or not self.autoApOn then return end
+		if _StatService ~= nil then _StatService:RequestSetApMode(mode) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetApMode(string mode)
+		-- 서버 → 소유 클라: 방식 칩 모양을 맞춘다(고른 칩 = 금 버튼 + 어두운 글자 / 아닌 칩 = 파랑 버튼 + 밝은 글자 / 자동 분배 끔 = 둘 다 비활성 파랑).
+		self.apMode = (mode == "ATTACK") and "ATTACK" or "BALANCE"
+		for _, c in ipairs({ { b = self.btnApBalance, m = "BALANCE" }, { b = self.btnApAttack, m = "ATTACK" } }) do
+			if isvalid(c.b) then
+				local sel = self.autoApOn and (self.apMode == c.m)
+				c.b.Enable = self.autoApOn
+				local sp = c.b.Entity.SpriteGUIRendererComponent
+				if sp ~= nil then sp.ImageRUID = sel and self.ruidBtnGoldSm or self.ruidBtnBlueDisabled end
+				local tx = c.b.Entity.TextGUIRendererComponent
+				if tx ~= nil then tx.FontColor = sel and Color(0.11, 0.078, 0.02, 1) or Color(0.894, 0.91, 0.937, 1) end
 			end
 		end
 	end
