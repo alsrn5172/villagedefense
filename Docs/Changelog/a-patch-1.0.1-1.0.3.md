@@ -105,7 +105,7 @@
 - **레벨업 자동 분배 방식** (1.1-G07 · G09): 밸런스형(주 3 · 부 2 = `JobInfo` 5직업 `ApRatio*` 0.7/0.3 → 0.6/0.4 · 전직 후 레벨업 부스탯 1 → 2) / 공격형(주스탯 5 · `StatService.AllocateByMode`). 레벨업 · "자동 분배" 버튼 · 전직 환급 재분배가 모두 고른 방식을 따른다. `RequestSetApMode`(계정 저장 · 토스트) · `BuildUiCsv` `;apmode=` · 캐릭터 창 `AutoAp` 줄에 칩 2개(`ModeBalance` · `ModeAttack`) · 토글을 끄면 칩 비활성.
 - **전직 AP 초기화** (1.1-G10): 1차 전직 때 직접 찍은 AP 전부 + 시작 스탯 STR 12 → 4(+8) · DEX 5 → 4(+1) = **+9** 를 AP 로 돌려준다(`JobResetStr/Dex/Int/Luk = 4`).
 - **스탯 칸 표시** (1.1-I01 · I02): STR · DEX · INT · LUK 칸이 `총(기본+AP + 나머지)` (예 `45(18+27)`). 직업별 10% 효율은 추가효과 계산에만 곱해 표시 총합은 줄지 않는다(코드 변경 없음 확인).
-- **통계 분석관 삭제 → 플레이어 상태 전광판** (1.1-I11 · I13 · I14 · I15): `FunctionalNpcCatalog` `VD_RECORD_STATS` `Enabled=false`(행 · 모델 유지) + 신규 `VD_RECORD_BOARD`(`UiRoute=board` · 클릭 없음). 새 모델 `vd_record_board`(`Plate` + `Title` + `Row1~5` TextRenderer · 층 Default/2 · 3) · 새 `Npc/StatusBoard`(서버가 1초마다 참가자 전원의 닉네임 · 레벨 · 상태를 `Lines`(@Sync)에 씀 · 클라가 그림 · 내 줄 금색) · `NpcSpawner` 가 `board` 행에는 이름표 · `VillageNpcInteractor` 를 안 붙임. 상태 = 탈락 > 발록 도전 중(`BalrogRoomService.IsChallenging`) > 쓰러짐 > 지금 있는 맵(`WorldMapNodes`). 칠판 그림은 임시(`plate_dark` 늘림).
+- **통계 분석관 삭제 → 플레이어 상태 전광판** (1.1-I11 · I13 · I14 · I15): `FunctionalNpcCatalog` `VD_RECORD_STATS` `Enabled=false`(행 · 모델 유지) + 신규 `VD_RECORD_BOARD`(`UiRoute=board` · 클릭 없음). 새 모델 `vd_record_board`(`Plate` + `Title` + `Row1~5` TextRenderer · 층 Default/2 · 3) · 새 `Npc/StatusBoard`(서버가 1초마다 참가자 전원의 닉네임 · 레벨 · 상태를 `Lines`(@Sync)에 씀 · 클라가 그림 · 내 줄 금색) · `NpcSpawner` 가 `board` 행에는 이름표 · `VillageNpcInteractor` 를 안 붙임. 상태 = 탈락 > 발록 도전 중(`BalrogRoomService.IsChallenging`) > 쓰러짐 > 지금 있는 맵(`WorldMapNodes`).
 - **안내 게이트** (1.1-I16): `GuideService.IsGuideMatch` = ★1 매치만(★3 · ★5 는 목표 바 · 체크리스트 · 안내 토스트 · 알림 카드 · 코치마크 · 월드맵 목표 마커를 표시하지 않음).
 - **문구** (1.1-G11 · I12 · G12): 도움말 4쪽 자동 분배 안내 · 마을 NPC 탭 기록 구역 카드(통계 분석관 → 상태 전광판) · `구현항목-결정.md` L27 갱신. 디스코드 글은 머지 뒤.
 - I03: 새 `Monster/MonsterNameTag.mlua`(@Logic). 서버 `Attach(ent, 이름, 레벨)` = 엔진 `NameTagComponent` 를 런타임에 붙여 `Lv.N 이름`(끝의 영문 괄호 제거 · Bold · 기본 판 = NPC 와 같은 검은 반투명). 레벨 = `MonsterCatalog.LevelOfEntity`(0 이면 1). property `Enabled` `LevelPrefix "Lv."` `LogAttach true`.
@@ -117,6 +117,7 @@
 - I10: 죽으면 `Monster.Dead` 가 이름표를 끄고 `Respawn` 이 켠다.
 - I18: 보스 스킬 소환수 `BossSkillRunner.FireSummon` 에도 이름표.
 - I19: 나에게 적대하지 않는 몬스터(내 수비대 · 내가 보낸 파병 · 다른 마을로 가는 미니언)는 이름이 초록 #6BE36B, 나머지는 흰색. 각 클라가 0.5초마다 칠한다. `FactionLogic.RelationOfTeams` 신설(`GetRelation` 본문 이동 · 동작 그대로) · `LaneFacilityService.TeamSlot` ExecSpace 제거.
+- **상태 전광판 칠판 그림** (1.1-I13 · 사용자 결정 2026-10-12): 판 그림을 임시 `plate_dark` 늘림에서 메이플 맵 오브젝트 칠판(`e0202d1d3248439bb37e47e47835ecd5` · 192×152 · 수상한 연구실 · 히든스트리트)으로 교체. 모델 `vd_record_board` 의 `Plate` = Simple 그리기 + 배율 1.4(틀 바깥 2.07×1.60 · 칠판 면 1.79×1.30), `Title`/`Row1~5` 자리를 칠판 면 안쪽으로 다시 맞춤(줄 간격 0.19 · 글자 1.0 · 제목 1.2) · `StatusBoard.RowMaxWidth` 1.75 → 1.6. 층은 그대로(판 Default/2 · 글자 Default/3 · 플레이어 Default/4). 같은 모양의 후보 `e6a5dd678c0c48e3b6f2bb3dc32c214c`(RUID 만 바꾸면 됨) · 지붕 달린 세움 칠판 `6aa2c44c90fa4ddcac827682ac766e1f`.
 
 ## 10단계 — 상점 (1.1-J01 ~ J06)
 
@@ -134,6 +135,7 @@
 - 새 카드 5-0g2 "발록은 MISS 가 자주 나요"(5-0g 와 5-0h 사이): 발록 레벨 = `BossInfo` 8130100 `Level`(없으면 40 · 지금 40) · 장면 총수 120 → 121
 - 6-1b 제목 "시설도 때릴 수 있어요" · "포탑, 억제기, 넥서스는 공격 가능해요. 하지만 시설 사거리 안에 적팀 미니언이 없으면 데미지가 매우 적게 들어가요"(옛 "직접 공격할 수 없어요" 삭제 · 수비대 처치 보상 괄호와 끝 문단 유지)
 - 입력 문: 튜토리얼 중 `MoveLeft` · `MoveRight` 항상 허락 · 이동이 막힌 장면은 이동 잠금(`ApplyMoveLock` = 로컬 플레이어 `RigidbodyComponent.WalkSpeed` 0 · 10Hz 다시 누름 · 이동이 열린 장면 · 끝 · `OnEndPlay` 에서 되돌림)이 걷기를 막고 방향만 바뀜 · 로그 `[Tutorial] move lock on/off`
+- **시설 공격 안내 문구** (사용자 결정 2026-10-12): "적팀 미니언" → "그 시설을 공격하는 미니언"(코드가 세는 것 = 그 시설을 공격하는 쪽 미니언 · 플레이어가 반대로 읽지 않게) — 튜토리얼 시설 안내 장면(6-1b) · 패치 원고(합본 · 1.0.2) · 유저 패치노트 데이터. 디스코드 글도 머지 뒤 같은 말로.
 
 ## 12단계 — 소리 · 버그 수정 (1.1-L01 ~ L07)
 
@@ -144,6 +146,7 @@
 - [1.1-L05] effectOverrides.SK_M13/SK_M21.impact.localFirst=true — 서버 재생은 시전자를 뺀 같은 맵 유저에게만(PlayCastSoundExcept · PlaySkillSoundToMapExcept · PlayBlinkImpactToOthers → Client PlayBlinkImpactLocal). 닷지 SK_A22 불변. 로그 `[Skill] blink impact … other user(s)`.
 - [1.1-L06] 페리온 반사 진단 로그: `[Facility] REFLECT skipped` · `[Facility] reflect landed|MISSED n=` · `[PlayerHit] reflect refused by immunity`. 값 변경 없음.
 - [1.1-L07] 조건부 — PlayerHit.ReflectBypassImmunity(기본 false). L06 로그로 무적이 원인일 때만 true.
+- **페리온 반사 무적 통과** (1.1-L07 · 사용자 결정 2026-10-12): Play 로그에서 무적 거절(`[PlayerHit] reflect refused by immunity`)이 확인되면 `PlayerHit.ReflectBypassImmunity` 를 켠다(확인 대기).
 
 ## 13단계 — 스킬 판정 ↔ 이펙트 일치 (1.0.3-M1)
 
@@ -154,6 +157,11 @@
 - [M1-04 · 06 · 07 · 08] 코드 변경 없음 — 클립 합집합 실측만 기록(방향은 사용자 결정). M1-06 은 L05 경로에 offsetY 연결.
 - [M1-09 · 10] 제외 목록 · 새 이펙트 시안 절차 · 규격식을 SkillExecutors 주석에 고정(선택 전 ruid 변경 금지).
 - [M1-11] 파워 스트라이크 접촉 명중 그림 · 명중음은 실제로 맞은 대상(PassHitCount>0)에만. 피스트인레인지 폭발은 DealSequenceHit 먼저 → 맞은 대상(HitInLastSequencePass)에만. 로그 `missed=` · `blasts=`.
+- (사용자 결정 2026-10-12) [M1-02 · 04 · 05 · 06 · 07] "이펙트를 판정에 맞춤"(판정 값 불변): PlayStageEffect 가 scaleX/scaleY(가로세로 따로)를 읽고, 텔레포트 강화 도착 고리 경로(effectOverrides · SkillMovement.blinkLocalFx · PlayBlinkImpactToOthers/PlayBlinkImpactLocal)도 가로세로를 따로 받는다.
+  값: 파워 스트라이크 시전 광선 1.303×1.002 · 앞으로 1.21 · 위로 0.38 / 잔상 6종 모션별(O3 2.5×2.0 · T2 1.736×1.364 정확 일치 · T1 · T3 어긋남 0.06~0.08) / 섬머솔트 킥 호 0.957×0.736 · −0.16 · −0.09 / 피스트인레인지 punchCast · punchCast0 0.399×0.313 · 앞 0.93 · 위 0.56 / 텔레포트 강화 도착 고리 1.27×0.977 · 위 0.38.
+- 도발: effectOverrides.SK_W22.castFit(레벨 칸 · radius 확인용) + SkillExecutors.stageFit / LevelFitOf — 시전 이펙트 크기를 반경 3 / 3.5 / 4 / 4.5 / 5 에 맞춘다(scale 2.469 ~ 4.115 · 네 변 어긋남 ≤ 0.02 · 찌그러짐 없음).
+- 가로세로 비 상한 1.3배(그 이상은 눈에 띄게 찌그러짐). 상한에 묶여 허용 0.10 을 넘은 파워 스트라이크 시전 광선(0.18) · 한손 잔상 O1(0.19) · O2(0.21) · 섬머솔트 킥 호(0.17) · 텔레포트 강화 고리(0.12)는 새 시안 요청 대상.
+- 레이징 블로우 · 파워 스트라이크 명중 그림 · 피스트인레인지 폭발은 변경 없음.
 
 ## 14단계 — ESC · 관전 · 채팅 · 노틸러스호 복귀 포탈 (1.0.3 §3 · §4 · §5)
 
@@ -184,6 +192,7 @@
 - [M6-03] TryDoubleJump UP/NORMAL 분기(SetForce 한 번) · UpJumpLift 1.4 · UpJumpForwardMul 0 = 자리표시값(M6-01 과 같은 Play 에서 확정).
 - [M6-04] SkillHotbar.TryAirDoubleJump 줄·사다리 가드(일반 더블 점프 포함) · RequestDoubleJump(dirX, up) · 로그 kind= / up=.
 - [M6-05] SkillInfo.csv SK_N02 Description 에 "↑ 를 누른 채 점프 키를 누르면 위로 뛴다." (첫 문장 뒤).
+- (사용자 결정 2026-10-12) [M6-05] SkillInfo.csv SK_N02 Description 첫 문장 "바라보는 쪽으로" → "누른 방향(없으면 바라보는 쪽)으로"(코드 동작과 맞춤).
 
 ## 18단계 — 스탯창(C) · 아이템창(V) 단축키 · 우측 상단 버튼 (1.0.3-M7)
 
