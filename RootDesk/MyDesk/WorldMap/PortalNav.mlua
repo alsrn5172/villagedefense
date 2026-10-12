@@ -6,7 +6,8 @@ script PortalNav extends Logic
 	--   머리 위에 다음 포탈 쪽 키캡 화살표(← → · 포탈이 위/아래 층이면 ↑ ↓)를 띄운다. 그 포탈 위에 서면 "↑ 포탈" 키캡.
 	--   맵이 바뀔 때마다 다시 찾는다(길을 벗어나도 그 자리에서 다시 계산).
 	--   끝내기(사용자 선택): 도착하면 자동 · 화살표 옆 [X] · 같은 곳 다시 더블클릭 · 다른 곳 더블클릭 = 목적지 바꿈.
-	--   막힌 곳은 안내하지 않고 토스트로 이유만(사용자 선택): 4:30 뒤 리스항구(밖 → 안) · 입장료 있는 마을 보스 맵 · 주니어 발록 방. 튜토리얼 중엔 안 쓴다.
+	--   막힌 곳은 안내하지 않고 토스트로 이유만(사용자 선택): 4:30 뒤 리스항구(밖 → 안) · 입장료 있는 마을 보스 맵. 튜토리얼 중엔 안 쓴다.
+	--   주니어 발록 지역은 안내한다(1.0.3 · 길 끝 ↑ 포탈은 서버가 입장을 판정하고 도착하면 안내는 조용히 끝남 · 방 1~6 은 서버가 정하므로 SameSpot 으로 한 곳 취급).
 	--   그림 = MSW 공식 "범용 리소스 모음"(크리에이터 센터 postId=936)의 화살표 · 포탈 안내 키캡 첫 장 — PortalNavGroup 에 다섯 장을 다 박아 두고 켜고 끄기만 한다
 	--   (그림 RUID 를 스크립트 문자열로만 들면 출시본에서 빠질 수 있다 · 2026-10-06 이름표 판 사례).
 	--   UUID 는 Docs/tools/design-ui/apply-portal-nav.cjs 가 write({bind}) 로 넣는다. 손으로 고치지 않는다.
@@ -46,6 +47,9 @@ script PortalNav extends Logic
 	-- 리스항구 입장이 열린 마지막 페이즈 번호(MatchSessionLogic.CurrentPhase · @Sync · 1 = PHASE0-1 · 2 = PHASE0-2).
 	--   PortalNetwork.IsLithOpen 은 CurrentPhaseName(동기화 안 됨)을 읽어 클라에선 늘 열림이라 못 쓴다. LithOpenPhases 를 바꾸면 이것도 같이.
 	property integer LithOpenMaxPhase = 2
+
+	-- 발록 방 맵 이름 앞토막(방 1 = 이 이름 그대로 · 방 2~6 = 뒤에 번호). PlayerRespawnService.BalrogMapPrefix · DifficultyService.BalrogMapPrefix 와 같은 이름 · 값 관례 (1.0.3-M2-06).
+	property string BalrogMapPrefix = "Sleepywood_Boss_JrBalrog"
 
 	@HideFromInspector
 	property string target = ""
@@ -132,7 +136,8 @@ script PortalNav extends Logic
 			return false
 		end
 		local here = self:CurrentMapName()
-		if here == mapName then
+		if self:SameSpot(here, mapName) then
+			-- 발록 방 3 에 서 있는데 발록 지역을 고르면 "이미 여기예요" (1.0.3-M2-06)
 			self:Toast(name .. " — 이미 여기예요")
 			return false
 		end
@@ -220,8 +225,10 @@ script PortalNav extends Logic
 			self:ShowOnly("")
 			return
 		end
-		if here == self.target then
-			self:Stop("arrive")
+		if self:SameSpot(here, self.target) then
+			-- 발록 도착은 조용히 끝낸다: 서버가 같은 순간 "발록 방 N — 90초"(BalrogRoomService.Arrive)를 토스트로 보내는데
+			-- UIToast 는 한 칸이라 "도착 — …" 가 뒤에 오면 그 안내를 덮는다 (1.0.3-M2-06).
+			self:Stop(self:IsBalrogRoom(self.target) and "quiet" or "arrive")
 			return
 		end
 		local phase = (_MatchSessionLogic ~= nil) and (_MatchSessionLogic.CurrentPhase or 1) or 1
@@ -328,6 +335,21 @@ script PortalNav extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method boolean IsBalrogRoom(string mapName)
+		-- 주니어 발록 방(1~6)인가 — 맵 이름이 BalrogMapPrefix 로 시작하면 (1.0.3-M2-06).
+		return mapName ~= nil and mapName ~= "" and string.find(mapName, self.BalrogMapPrefix, 1, true) == 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean SameSpot(string a, string b)
+		-- 같은 곳인가. 발록 방은 서버가 사람마다 1~6 중 하나를 정하므로 6개 모두 "발록 지역" 한 곳으로 본다 (1.0.3-M2-06).
+		if a == b then
+			return true
+		end
+		return self:IsBalrogRoom(a) and self:IsBalrogRoom(b)
+	end
+
+	@ExecSpace("ClientOnly")
 	method boolean LithClosed()
 		-- 리스항구(밖 → 안) 입장이 닫혔나 — 1페이즈부터(4:30).
 		if _MatchSessionLogic == nil then
@@ -343,9 +365,7 @@ script PortalNav extends Logic
 		if pn == nil then
 			return ""
 		end
-		if toMap == pn.GatedToMap or string.find(toMap, "Sleepywood_Boss_JrBalrog", 1, true) == 1 then
-			return "주니어 발록 방은 길안내를 하지 않아요"
-		end
+		-- (1.0.3-M2-06) 주니어 발록 방 목적지 막힘을 풀었다: 발록 지역은 길안내 대상이다. 방 2~6 은 .ui 노드가 없어 목적지가 될 수 없다.
 		if pn:IsBossEntry(toMap) then
 			return "입장료가 있는 마을 보스 맵은 길안내를 하지 않아요"
 		end
@@ -356,14 +376,15 @@ script PortalNav extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method boolean EdgeAllowed(string fromMap, string toMap)
-		-- 길 중간에 탈 수 있는 포탈인가(막힌 곳으로 들어가는 포탈은 뺀다).
+	method boolean EdgeAllowed(string fromMap, string toMap, string finalMap)
+		-- 길 중간에 탈 수 있는 포탈인가(막힌 곳으로 들어가는 포탈은 뺀다). finalMap = 최종 목적지.
 		local pn = _PortalNetwork
 		if pn == nil then
 			return true
 		end
 		if toMap == pn.GatedToMap then
-			return false
+			-- 발록 방 입구 간선은 발록이 목적지일 때만 탄다(다른 목적지의 길 중간에는 안 나온다 · 1.0.3-M2-06)
+			return toMap == finalMap
 		end
 		if pn:IsBossEntry(toMap) then
 			return false
@@ -439,7 +460,7 @@ script PortalNav extends Logic
 			local nexts = self.order[m]
 			if nexts ~= nil then
 				for _, to in ipairs(nexts) do
-					if not seen[to] and self:EdgeAllowed(m, to) then
+					if not seen[to] and self:EdgeAllowed(m, to, toMap) then
 						seen[to] = true
 						prev[to] = m
 						table.insert(queue, to)

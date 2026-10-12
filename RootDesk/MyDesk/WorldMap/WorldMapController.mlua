@@ -197,6 +197,10 @@ script WorldMapController extends Logic
 	-- 목표 핀(GoalMarker_0~5)을 그릴지. 사용자 2026-10-06 "월드맵에 뜨는 목표 핀 없애" → false. 내 위치 핀은 그대로.
 	property boolean ShowGoalPins = false
 
+	-- 몹 목록 대신 툴팁에 흐리게 보여 줄 안내 줄(1.0.3-M2-07). 형식 "맵이름 앞토막=줄1|줄2;앞토막=…" (MinimapController.ExtraLabels 와 같은 모양 · 줄은 최대 5).
+	--   발록 지역은 MapMonsters 에 몹 행이 없다(MonsterSpawner 가 같은 표를 읽고 MonsterInfo 에 발록 id 가 없다) → 안내 문구로 채운다. 줄 폭 약 300 이라 한 줄을 짧게 쪼갠다.
+	property string MapNotes = "Sleepywood_Boss_JrBalrog=슬리피우드 마을의 발록 포탈에서|↑ 로 도전해요"
+
 	@HideFromInspector
 	property integer selectedIndex = 0
 
@@ -496,6 +500,15 @@ script WorldMapController extends Logic
 
 		if isvalid(self.tooltipTitle) then
 			self.tooltipTitle.Text = r.name
+			-- 긴 이름(발록 지역 "금지된 제단(저주받은 신전)" 15글자 · Maple 24 로는 폭 300 을 넘길 수 있다)만 BestFit 으로 줄인다.
+			-- 짧은 이름은 예전처럼 24 고정(BestFit 끔) — 지금 노드 이름은 전부 8글자 이하라 모양이 안 바뀐다 (1.0.3-M2-04).
+			local okLen, nameLen = pcall(utf8.len, r.name)
+			local longName = okLen and nameLen ~= nil and nameLen > 11
+			self.tooltipTitle.BestFit = longName
+			if longName then
+				self.tooltipTitle.MaxSize = 24
+				self.tooltipTitle.MinSize = 14
+			end
 			self:SetAnchored(self.tooltipTitle.Entity, 44 + dx + 150 - 310, -(14 + 16.75), 300, 33.5)
 		end
 
@@ -617,9 +630,12 @@ script WorldMapController extends Logic
 		--   아래 target.UITransformComponent 에서 LIA-1114 오탐을 낸다(regions 가 any 라서).
 		---@type Entity
 		local target = nil
+		local targetMap = myMap
 		for _, r in ipairs(self.regions) do
-			if r.mapName == myMap and isvalid(r.ent) then
+			-- 발록 방 1~6 은 서버가 사람마다 정하므로 어느 방이든 표의 발록 지역 한 곳으로 본다(PortalNav.SameSpot · 일반 맵은 이름이 같을 때만 · 1.0.3-M2-07).
+			if isvalid(r.ent) and (r.mapName == myMap or (_PortalNav ~= nil and _PortalNav:SameSpot(r.mapName, myMap))) then
 				target = r.ent
+				targetMap = r.mapName
 				break
 			end
 		end
@@ -632,7 +648,7 @@ script WorldMapController extends Logic
 			return
 		end
 
-		self.hereMapName = myMap
+		self.hereMapName = targetMap -- 목표 핀 겹침 판정(ApplyGoalMarkers)은 표의 맵 이름과 비교한다 — 발록 방 2~6 이면 방 1 이름 (1.0.3-M2-07)
 		self:HideOutsideChip()
 		local tp = target.UITransformComponent.anchoredPosition
 		self.hereBaseY = tp.y + self.hereMarkerOffsetY
@@ -647,7 +663,7 @@ script WorldMapController extends Logic
 		end
 		self.hereTimer = _TimerService:SetTimerRepeat(function() self:TickHereFloat() end, 1 / 60)
 		
-		log("[WorldMap] here marker at " .. myMap)
+		log("[WorldMap] here marker at " .. myMap .. ((targetMap ~= myMap) and (" (node " .. targetMap .. ")") or ""))
 	end
 
 	@ExecSpace("Client")
@@ -905,6 +921,21 @@ script WorldMapController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method any NoteOf(string mapName)
+		-- 몹 목록 대신 보여 줄 안내 줄들: MapNotes "앞토막=줄1|줄2;…" 에서 맵 이름 앞토막이 맞는 첫 항목의 줄 목록. 없으면 빈 목록 (1.0.3-M2-07).
+		local lines = {}
+		for prefix, rest in string.gmatch(self.MapNotes or "", "([^;=]+)=([^;]+)") do
+			if string.sub(mapName, 1, #prefix) == prefix then
+				for line in string.gmatch(rest, "[^|]+") do
+					table.insert(lines, line)
+				end
+				return lines
+			end
+		end
+		return lines
+	end
+
+	@ExecSpace("ClientOnly")
 	method integer FillTooltipRows(string mapName, string fallback)
 		-- 도감(MapMonsters)에서 이 맵의 고유번호 목록을 받아 행을 채운다. 표시한 행 수를 돌려준다.
 		-- (fallback 은 예전 호출 모양을 지키려고 남겨 둔 인자 — 지역·종류는 이제 머리줄이 보여 주므로 쓰지 않는다)
@@ -934,6 +965,22 @@ script WorldMapController extends Logic
 		-- ⚠ 안농 빅토리아 맵들은 이 월드의 MapMonsters 표에 없어서 여기로 온다 — 정상이다.
 		--   두 월드를 병합하면 몹 목록이 자동으로 채워진다.
 		if shown == 0 then
+			-- 발록 지역처럼 안내 문구를 둔 곳(MapNotes)은 몹 없음 문장 대신 그 문구를 줄마다 보여 준다 (1.0.3-M2-07).
+			local notes = self:NoteOf(mapName)
+			local noteRows = 0
+			for i, line in ipairs(notes) do
+				local s = slots[i]
+				if s ~= nil then
+					self:FillRowNote(s, line)
+					if isvalid(s.row) then
+						s.row.Enable = true
+					end
+					noteRows = noteRows + 1
+				end
+			end
+			if noteRows > 0 then
+				return noteRows
+			end
 			local first = slots[1]
 			if first ~= nil then
 				self:FillRowNote(first, "등장 몬스터 정보 없음")

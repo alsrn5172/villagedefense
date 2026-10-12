@@ -83,13 +83,19 @@ if (b.find(LGN)) b.remove(LGN);
 // 🔴 새 지도(f01)는 점이 그림에 박혀 있다 → 평소 점(Dot)은 그리지 않고, 마우스를 올렸을 때 hover 점(DotHover)만 그림 점 위에 겹친다
 //    (WorldMapController.SetDotHover 는 Dot 이 없으면 건너뛴다). hover 점 크기 = 그림 점 지름(화면 기준 허브 32 · 마을/보스 28 · 사냥터 18)의 약 1.15배가 되게.
 //    여섯갈래길은 그림이 분홍이라 보스 hover 점 · 리스항구 길은 그림이 별이라 hover 점도 없다(안내창만).
-//    노틸러스호만 그림에 점이 없어 게임이 마을 점을 그린다(사용자 결정 2026-10-04).
+//    노틸러스호만 그림에 점이 없어 게임이 마을 점을 그린다(사용자 결정 2026-10-04). 1.0.3 부터 슬리피우드 마을 · 발록 지역(작은 핑크 점)도 같다(DRAWN_BY_GAME · 지도 그림에 둘 다 없다).
 const csv = fs.readFileSync(path.join(WORLD, 'RootDesk/MyDesk/WorldMapNodes.csv'), 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
 const head = csv[0].split(',');
 const iEnt = head.indexOf('NodeEntity'), iType = head.indexOf('Type'), iReg = head.indexOf('Region'), iX = head.indexOf('X'), iY = head.indexOf('Y');
 const kindOf = {}, regionOf = {}, xyOf = {};
 csv.slice(1).forEach((ln) => { const c = ln.split(','); if (c[iEnt]) { kindOf[c[iEnt]] = c[iType]; regionOf[c[iEnt]] = c[iReg]; xyOf[c[iEnt]] = [Number(c[iX]), Number(c[iY])]; } });
-const DRAWN_BY_GAME = { Node_Nautilus_Village_MinimiShip: ['map_dot_town', 30] };
+// 값 = [점 그림 키, 점 지름, (선택) hover 점 지름 — 없으면 아래 HOVER 표].
+// 1.0.3(M2-03 · M2-05): 슬리피우드 마을 · 발록 지역 핑크 점도 그림에 점이 없어 게임이 그린다(핑크 점은 "작은" 점 24 · hover 36). 컨테이너는 이 스크립트가 만들지 않는다 — UIBuilder 로 먼저(스크립트 아래 순회는 이미 있는 노드만).
+const DRAWN_BY_GAME = {
+  Node_Nautilus_Village_MinimiShip: ['map_dot_town', 30],
+  Node_Sleepywood_Village_MinimiMain: ['map_dot_town', 30],
+  Node_Sleepywood_Boss_JrBalrog: ['map_dot_boss', 24, 36],
+};
 const HOVER = {
   Hub: ['map_dot_boss_hover', 49],
   Village: ['map_dot_town_hover', 42],
@@ -107,7 +113,8 @@ b.entities.filter((e) => e.path.startsWith('/ui/WorldMapGroup/' + NODES + '/') &
   else if (b.find(`${np}/Dot`)) b.remove(`${np}/Dot`);
   if (regionOf[name] === 'LithHarbor') { if (b.find(`${np}/DotHover`)) b.remove(`${np}/DotHover`); return; }
   const h = HOVER[kind] || HOVER.Hunt; // Temp 등 모르는 종류는 사냥터 점
-  S.newImage(b, `${np}/DotHover`, h[0], { size: [h[1], h[1]], pos: [0, 0], enable: false });
+  const hs = (own && own[2]) || h[1]; // 게임이 그리는 점이 표 크기와 다르면(작은 핑크 점) hover 크기도 따로
+  S.newImage(b, `${np}/DotHover`, h[0], { size: [hs, hs], pos: [0, 0], enable: false });
 });
 
 // ═══ 내 위치 · 목표 핀 ═══
@@ -195,7 +202,7 @@ S.newText(b, OB + '/KeyChip/Text', 'M', { font: 'Maple', size: 13, color: C.titl
 S.before(b, BD + '/Frame', BD + '/Title');
 S.before(b, BD + '/MapArt', BD + '/Frame');
 S.before(b, BD + '/MapBg', BD + '/MapArt');
-S.before(b, BD + '/Legend', BD + '/Title');
+if (b.find(BD + '/Legend')) S.before(b, BD + '/Legend', BD + '/Title'); // 범례는 위에서 지운다 → 없으면 건너뜀(예전엔 없는 엔티티라 스크립트가 여기서 죽었다)
 S.before(b, BD + '/Crest', BD + '/Title');
 S.before(b, BD + '/TitleBand', BD + '/Title');
 S.before(b, BD + '/TitleIcon', BD + '/Title');
