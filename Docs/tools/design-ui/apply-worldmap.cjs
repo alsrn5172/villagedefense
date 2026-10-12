@@ -91,6 +91,8 @@ const kindOf = {}, regionOf = {}, xyOf = {};
 csv.slice(1).forEach((ln) => { const c = ln.split(','); if (c[iEnt]) { kindOf[c[iEnt]] = c[iType]; regionOf[c[iEnt]] = c[iReg]; xyOf[c[iEnt]] = [Number(c[iX]), Number(c[iY])]; } });
 // 값 = [점 그림 키, 점 지름, (선택) hover 점 지름 — 없으면 아래 HOVER 표].
 // 1.0.3(M2-03 · M2-05): 슬리피우드 마을 · 발록 지역 핑크 점도 그림에 점이 없어 게임이 그린다(핑크 점은 "작은" 점 24 · hover 36). 컨테이너는 이 스크립트가 만들지 않는다 — UIBuilder 로 먼저(스크립트 아래 순회는 이미 있는 노드만).
+// 2026-10-13(사용자 "다닥다닥 붙여서"): 두 점을 바짝 붙였다 — 슬리피우드 (36, 6) · 발록 (59.3, 21.5) = 중심 거리 28.0 · 그림 여백(점 그림은 칸의 92.1%만 보인다)을 빼면 보이는 틈 약 3px.
+//   두 노드의 터치 판은 점 크기(30 · 24)로 줄였다(판이 점보다 크면 붙은 판이 서로의 점 위를 덮어 hover · 클릭이 엉킨다). 판 크기는 이 스크립트가 안 건드리고, 위치만 WorldMapNodes.csv X,Y 를 따른다.
 const DRAWN_BY_GAME = {
   Node_Nautilus_Village_MinimiShip: ['map_dot_town', 30],
   Node_Sleepywood_Village_MinimiMain: ['map_dot_town', 30],

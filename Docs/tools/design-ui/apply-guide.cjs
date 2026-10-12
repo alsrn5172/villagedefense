@@ -6,6 +6,11 @@ const S = require('./skin.cjs');
 const WORLD = path.resolve(__dirname, '..', '..', '..');
 const b = S.open(WORLD, 'GuideGroup');
 
+// 사용자 결정 2026-10-13(Play 확인 B1-8b): 우측 상단 V(아이템) · H(도움말) 버튼의 라벨 · 키 배지(화면 위에서 122px 까지)를 바가 가려서
+// 바 · 체크리스트 판 · 안내 켜기 칩 셋을 같이 40px 아래로 내렸다(바 y -84 → -124). 자식(깃발 · 문구 · 게이지 · 안내 끄기)은 바 기준 상대 좌표라
+// 아래 시안 상자(BAR · PLATE · CP)는 그대로 둔다 — 놓는 자리(S.place 의 pos)에만 DROP 을 더한다.
+const DROP = 40;
+
 const BAR = [40, 84, 1120, 64];          // 시안 캔버스에서 목표 바 상자
 const PLATE = [784, 101, 176, 30.5];     // 게이지 받침(폭 176 고정 · 오른쪽 끝 960)
 const CP = [100, 160, 1000, 348.5];      // 체크리스트 판
@@ -16,7 +21,7 @@ const atL = (x, y, h, par) => [r2(x - (par[0] + par[2] / 2)), r2(-((y + h / 2) -
 const atR = (xr, y, h, par) => atL(xr, y, h, par);
 
 // ── 목표 바 ──
-S.place(b, 'Bar', { pos: [0, -84], size: [1120, 64] });
+S.place(b, 'Bar', { pos: [0, -84 - DROP], size: [1120, 64] });
 S.image(b, 'Bar', 'bar_goal');              // 바 전체가 눌림(ButtonComponent 그대로 · 색 전환)
 S.font(b, 'Bar', { text: '', outline: false });   // 예전 글자는 비움(문구는 GoalText 가 맡는다)
 
@@ -46,7 +51,7 @@ S.font(b, 'Bar/BtnOff', { font: 'Noto700', size: 16, color: S.COLOR.ivory, h: 'c
 S.back(b, 'Bar/BarWarn');
 
 // ── 체크리스트 판 ──
-S.place(b, 'CheckPanel', { pos: [0, -160], size: [1000, 348.5] });
+S.place(b, 'CheckPanel', { pos: [0, -160 - DROP], size: [1000, 348.5] });   // 바 바로 아래 12px 띄움(바 따라 같이 내림)
 S.image(b, 'CheckPanel', 'panel_tooltip');
 S.place(b, 'CheckPanel/Text', { enable: false });   // 한 덩어리 글자는 끔(스크립트가 잡고 있어 지우지 않는다)
 S.place(b, 'CheckPanel/Title', { anchor: 'middle-center', pivot: [0, 0.5], pos: atL(122, 176, 33.5, CP), size: [190, 34] });
@@ -66,7 +71,7 @@ for (let i = 1; i <= 13; i++) {
 }
 
 // ── 안내 켜기 칩(시안 실측 폭 그대로 · 시안은 가운데보다 16 왼쪽) ──
-S.place(b, 'Chip', { pos: [-16, -84], size: [118, 40] });
+S.place(b, 'Chip', { pos: [-16, -84 - DROP], size: [118, 40] });          // 바가 꺼지면 바 자리에 뜨므로 바와 같이 내림
 S.image(b, 'Chip', 'plate_dark');
 S.font(b, 'Chip', { font: 'Noto700', size: 16, color: S.COLOR.sub, h: 'center', v: 'middle', outline: false });
 b.patchComponent('Chip', S.TXT, { Padding: { left: 36, right: 8, top: 0, bottom: 0 } });   // 깃발 자리 비움

@@ -118,6 +118,8 @@
 - I18: 보스 스킬 소환수 `BossSkillRunner.FireSummon` 에도 이름표.
 - I19: 나에게 적대하지 않는 몬스터(내 수비대 · 내가 보낸 파병 · 다른 마을로 가는 미니언)는 이름이 초록 #6BE36B, 나머지는 흰색. 각 클라가 0.5초마다 칠한다. `FactionLogic.RelationOfTeams` 신설(`GetRelation` 본문 이동 · 동작 그대로) · `LaneFacilityService.TeamSlot` ExecSpace 제거.
 - **상태 전광판 칠판 그림** (1.1-I13 · 사용자 결정 2026-10-12): 판 그림을 임시 `plate_dark` 늘림에서 메이플 맵 오브젝트 칠판(`e0202d1d3248439bb37e47e47835ecd5` · 192×152 · 수상한 연구실 · 히든스트리트)으로 교체. 모델 `vd_record_board` 의 `Plate` = Simple 그리기 + 배율 1.4(틀 바깥 2.07×1.60 · 칠판 면 1.79×1.30), `Title`/`Row1~5` 자리를 칠판 면 안쪽으로 다시 맞춤(줄 간격 0.19 · 글자 1.0 · 제목 1.2) · `StatusBoard.RowMaxWidth` 1.75 → 1.6. 층은 그대로(판 Default/2 · 글자 Default/3 · 플레이어 Default/4). 같은 모양의 후보 `e6a5dd678c0c48e3b6f2bb3dc32c214c`(RUID 만 바꾸면 됨) · 지붕 달린 세움 칠판 `6aa2c44c90fa4ddcac827682ac766e1f`.
+- **상태 전광판 키우기 · 한 줄에 위치 · 전투력** (1.1-I13 ~ I15 · 사용자 결정 2026-10-13): 칠판 그림(틀 · 면)을 2배(모델 `Plate` 배율 1.4 → 2.8 · 틀 바깥 4.14×3.19 · 면 3.58×2.60)로, 글자(제목 · 줄)를 1.5배(제목 1.8 · 줄 1.5)로 키우고(바닥 닿는 선은 그대로) `StatusBoard.RowMaxWidth` 를 1.6 → 3.2 로 맞춤. 한 줄 = `닉네임 Lv.N · 위치 · 전투력 N`(위치 = 지금 있는 맵 또는 탈락 · 발록 도전 중 · 쓰러짐 · 숫자는 천 단위 쉼표 · 내 줄 금색 · `Lines` 칸 6개). 전투력 = 스탯 공격력 최대치 × (1.0 + 숙련도) ÷ 2 — `StatService.Recalculate` 가 스탯이 바뀔 때만 한 번 계산해 사용자별로 저장(`u.combatPower` · 로그 `combatPower=`)하고 칠판은 `GetCombatPower(uid)` 로 읽기만 한다. 전투력은 원래 전광판 비공개 필드였으나 사용자 결정으로 공개(재화 · 시설 · 수비대 · 장비는 그대로 비공개). 칠판 갱신은 그 마을 맵에 플레이어가 1명 이상 있을 때만(`StatusBoard.HasPlayers`). 틀이 커져 이웃 NPC 를 가려(Play 확인) 마을마다 전용 `BOARD` 구역(`VillageNpcSector` 행 5개 · `FunctionalNpcCatalog` SectorId `BOARD`)으로 옮김: 헤네시스 (8.10, -0.04) · 엘리니아 (3.50, -0.91) · 커닝 (3.40, 1.44) · 페리온 (17.60, 2.93) · 노틸러스호 (-3.60, 0.32) — 엘리니아는 깨끗한 자리가 없어 1층 바닥 오른쪽 끝(바닥 끝 1.41 넘음).
+- `MonsterNameTag.LogAttach` 기본 false(2026-10-13 · Play 확인이 끝나 로그 양을 줄임 · 다시 볼 때만 켠다).
 
 ## 10단계 — 상점 (1.1-J01 ~ J06)
 
@@ -136,6 +138,8 @@
 - 6-1b 제목 "시설도 때릴 수 있어요" · "포탑, 억제기, 넥서스는 공격 가능해요. 하지만 시설 사거리 안에 적팀 미니언이 없으면 데미지가 매우 적게 들어가요"(옛 "직접 공격할 수 없어요" 삭제 · 수비대 처치 보상 괄호와 끝 문단 유지)
 - 입력 문: 튜토리얼 중 `MoveLeft` · `MoveRight` 항상 허락 · 이동이 막힌 장면은 이동 잠금(`ApplyMoveLock` = 로컬 플레이어 `RigidbodyComponent.WalkSpeed` 0 · 10Hz 다시 누름 · 이동이 열린 장면 · 끝 · `OnEndPlay` 에서 되돌림)이 걷기를 막고 방향만 바뀜 · 로그 `[Tutorial] move lock on/off`
 - **시설 공격 안내 문구** (사용자 결정 2026-10-12): "적팀 미니언" → "그 시설을 공격하는 미니언"(코드가 세는 것 = 그 시설을 공격하는 쪽 미니언 · 플레이어가 반대로 읽지 않게) — 튜토리얼 시설 안내 장면(6-1b) · 패치 원고(합본 · 1.0.2) · 유저 패치노트 데이터. 디스코드 글도 머지 뒤 같은 말로.
+- `6-1b` 카드 줄바꿈: 낱글자로 떨어지던 두 줄("지역 재화 / 2개)." · "들어 / 가요.")을 낱말 단위 `\n` 으로 다시 나눔(문구 · 금 · 빨강 강조 그대로 · 8줄)
+- 1.0.6 #23(튜토리얼 머쉬맘 Lv25)은 1차(#205)에서 먼저 처리 — 1.0.6 쪽에서는 다시 하지 않는다. 판정 연결은 BossSkillRunner.LevelOverride(개체별 덮어쓰기)
 
 ## 12단계 — 소리 · 버그 수정 (1.1-L01 ~ L07)
 
@@ -146,7 +150,7 @@
 - [1.1-L05] effectOverrides.SK_M13/SK_M21.impact.localFirst=true — 서버 재생은 시전자를 뺀 같은 맵 유저에게만(PlayCastSoundExcept · PlaySkillSoundToMapExcept · PlayBlinkImpactToOthers → Client PlayBlinkImpactLocal). 닷지 SK_A22 불변. 로그 `[Skill] blink impact … other user(s)`.
 - [1.1-L06] 페리온 반사 진단 로그: `[Facility] REFLECT skipped` · `[Facility] reflect landed|MISSED n=` · `[PlayerHit] reflect refused by immunity`. 값 변경 없음.
 - [1.1-L07] 조건부 — PlayerHit.ReflectBypassImmunity(기본 false). L06 로그로 무적이 원인일 때만 true.
-- **페리온 반사 무적 통과** (1.1-L07 · 사용자 결정 2026-10-12): Play 로그에서 무적 거절(`[PlayerHit] reflect refused by immunity`)이 확인되면 `PlayerHit.ReflectBypassImmunity` 를 켠다(확인 대기).
+- **페리온 반사 무적 통과** (1.1-L07 · 사용자 결정 2026-10-12): Play 로그에서 무적 거절(`[PlayerHit] reflect refused by immunity`)이 확인되면 `PlayerHit.ReflectBypassImmunity` 를 켰다(2026-10-13 · Play 로그에서 평타 0.6초 간격의 둘째 반사가 `left=0.40` 로 거절되는 것을 확인).
 
 ## 13단계 — 스킬 판정 ↔ 이펙트 일치 (1.0.3-M1)
 
@@ -171,6 +175,7 @@
 - **미니맵** (M4-03): `Visible == false` 인 유저는 빨간 점을 안 찍는다. **채팅** (M4-04 · M4-05 · M4-06): 관전 중 서버 `RequestSend` 차단 · 클라 입력 줄 숨김 · Enter 토스트 "관전 중에는 채팅할 수 없습니다" · 줄 안내 "관전 중에는 채팅할 수 없어요"(`SpectateToastText` · `SpectateHintText`) · 관전 종료 때 복구. **포탈** (M4-07): 관전 중 ↑ 포탈 이동 · `RequestEnterLith` · `RequestEnterBoss` 차단.
 - **노틸러스호 복귀 포탈** (M3-01 ~ M3-03): 맵 `Portal_14`(아래 갑판) 켬 + `Portal_16`(위 갑판) 숨김 표식 · `PortalRoutes` `NS01` 같은 맵 노선(첫 `FromMap = ToMap`) · `TryMoveByUpArrow` 같은 맵 이동은 로딩 그림 없이 0.5초 재이동 잠금. 미니맵은 숨김 표식 포탈을 점으로 안 찍는다.
 - 🔴 검증 대기: `a-unclaimed-elimination.md` L32 "마감 순간 죽어 있던 사람: 관전으로 들어가고, 부활해도 다시 보이지 않는다." 체크박스는 Play(2클라) 결과를 적는다.
+- **관전 상단 바가 안 닫히던 것** (M4-06 보강 · 이번 패치 전부터 있던 버그 · Play 확인): `SpectateUIController.SetActive(false)` 가 직전 대상 목록 때문에 `SetOpen(true)` 로 바를 다시 열었다 → 끝낼 때 `ClearTargets()` 로 목록 · 탭 칩을 비우고 닫는다.
 
 ## 15단계 — 발록 알림 확인 · 슬리피우드/발록 지역 월드맵 · 길안내 (1.0.3 §2)
 
@@ -178,6 +183,8 @@
 - **월드맵** (M2-03 · M2-04 · M2-05): 슬리피우드 마을 노드 켬 (36, 6) · 발록 지역(`Sleepywood_Boss_JrBalrog` · `금지된 제단(저주받은 신전)` · Boss) 작은 핑크 점 (84, 38) · 점은 지도 그림에 없어 게임이 그린다(마을 30 · 핑크 24 · hover 42/36) · `apply-worldmap.cjs` `DRAWN_BY_GAME` 갱신(+ 범례 가드 버그 수정).
 - **길안내** (M2-06 · M2-10): `PortalNav` 발록 지역 허용 — 길 끝 ↑ 는 서버가 입장 판정, 도착하면 안내는 조용히 끝남 · 방 1~6 = `SameSpot`. **월드맵 안내** (M2-07): 방 2~6 에서도 내 위치 깃발 · 툴팁에 안내 2줄(`MapNotes`) · 긴 이름만 제목 BestFit.
 - **★1 전용 안내** (M2-09 · I17): 가드 확인만 — `ShowGoalPins=false` 유지 · 게이트는 1.1-I16(`IsGuideMatch`) 한 곳 · `GuideStep.csv` G14 `#Note` 문장 갱신.
+- **월드맵 보스 툴팁 = 일반 몹 줄** (M2-07 갱신 · 사용자 "일반몹처럼 · 보스라고 차별하지 말고"): 지역 보스 7곳(마노 · 머쉬맘 · 킹슬라임 · 스텀피 · 에피네아 · 피아누스 · 주니어 발록)이 안내 문구 대신 썸네일 · 이름 · `Lv N` 줄로 나온다 — 데이터 `BossCatalog.GetMapBosses`(BossInfo Enabled 행 · 레벨은 1.1 값) · 썸네일 `BossIcons`(= 보스 모델 SpriteRUID). 맵에 일반 몹이 있으면(마노 · 머쉬맘) 보스 아래에 이어진다. `MapNotes` 기본값은 비움(기능은 유지).
+- **발록 핑크 점 붙이기** (사용자 "다닥다닥 붙여서"): 발록 점 (84, 38) → (59.3, 21.5) = 슬리피우드 점과 보이는 틈 약 3px · 두 점의 터치 판을 점 크기로(30 · 24) 줄여 서로의 점을 안 덮게.
 
 ## 16단계 — 헤네시스 NPC 오른쪽 이동 (1.0.3 §6 · M5-01 ~ 03)
 
@@ -193,6 +200,7 @@
 - [M6-04] SkillHotbar.TryAirDoubleJump 줄·사다리 가드(일반 더블 점프 포함) · RequestDoubleJump(dirX, up) · 로그 kind= / up=.
 - [M6-05] SkillInfo.csv SK_N02 Description 에 "↑ 를 누른 채 점프 키를 누르면 위로 뛴다." (첫 문장 뒤).
 - (사용자 결정 2026-10-12) [M6-05] SkillInfo.csv SK_N02 Description 첫 문장 "바라보는 쪽으로" → "누른 방향(없으면 바라보는 쪽)으로"(코드 동작과 맞춤).
+- **위 힘 값 확정** (1.0.3-M6-01 · M6-03 · 사용자 결정 2026-10-13 · 로비 실측: 정점에서 눌러 더 오르는 높이 1.4 → +0.05 · 3.0 → +0.2 · 6.0 → +0.90 · 8.0 → +1.60 · 일반 점프 정점 +0.97): 옆 더블 점프 `DoubleJumpLift` 1.4 → **3.0**(살짝 위로 +0.2) · 윗방향 점프 `UpJumpLift` 1.4 → **10.9**(일반 점프의 3배 높이 +2.9 · 실측 곡선 외삽 · Play 로 확정).
 
 ## 18단계 — 스탯창(C) · 아이템창(V) 단축키 · 우측 상단 버튼 (1.0.3-M7)
 
@@ -200,6 +208,7 @@
 - **우측 상단 아이템 버튼** (M7-03 · M7-04): `StatusHUD` `Shortcuts/BtnItem`(V · ico_bag · "아이템" · 가운데 −114 빈 슬롯) · `StatusHUDController` 가 캐릭터 버튼 = `ToggleTab(0)` · 아이템 버튼 = `ToggleTab(1)`. 생성 스크립트 `Docs/tools/design-ui/add-item-shortcut.cjs`(신규 · 다시 돌려도 같음).
 - **도움말 · 안내 문구** (M7-05 · M7-06): 8쪽 키보드 V 칸 초록 + "아이템" · 조작키 탭 '창 열기' 5줄(`캐릭터(스탯)` · `아이템(장비 · 인벤토리)`) · 알림 카드 `potion` · `weapon` 의 C → V.
 - 호환 점검 (M7-07): 튜토리얼 중 V 무시 · ESC 한 번에 닫힘 · 채팅 입력 중 V 무시. 변경 없음.
+- **★1 안내 바 40px 아래** (Play 확인 · V 버튼 라벨 · 키 배지 가림 · 사용자 결정 2026-10-13): `GuideGroup` `Bar` y −84 → −124 · `CheckPanel` −160 → −200 · `Chip`(안내 켜기) −84 → −124(자식은 바 기준이라 따라감 · 생성 스크립트 사본 `apply-guide.cjs` `DROP = 40`). V · H 버튼과 겹침 8곳 → 0. 토스트(156~242)와 새 바 아래 32px 가 겹칠 수 있어 눈 확인 필요.
 
 ## 19단계 — 튜토리얼 전투 구간 이동 · 스킬 (1.0.3 §10 · M8-01 ~ 07)
 
@@ -207,3 +216,5 @@
 - 스킬: 새 act 2-4k(`skill:SK_W11,SK_W21,SK_W22:1`) → `PlayerSkillState.GrantSkillLevel`(SP 없이 Lv1 · 직업 줄 불일치 거절 · 튜토리얼 끝나면 `ResetMatchState` 가 비움). W · E 는 2차 전직 요건이라 5-0b 에서 열림
 - `SkillCaster.Cast` 맨 앞이 `_TutorialDirector:CastAllowed()` 를 묻는다(장면 `allow.cast` · 전투 3장면만 true) — 카드 · NPC 창 · 6-3c 발록 방에서는 시전 거절. 장면 총수 121 → 122
 - 안내 문장 한 줄 추가(2-4 · 3-7 · 5-0b) · 진행 조건(done) 3종 유지
+- 튜토리얼 머쉬맘 Lv25: `TutorialService.TutorialBossLevel = 25` → `PrepareBoss` 가 튜토리얼 룸의 보스 개체에 `BossSkillRunner.LevelOverride` 를 걸고 이름표를 "Lv.25 머쉬맘" 으로 다시 닮(명중 · 보스 공격 회피 · 소환수 판정이 25) · 실제 매치의 머쉬맘은 Lv30 그대로 · 로그 `[Tutorial] boss level override=25`
+- 6-3m 발록 포탈 앞 도착 x 를 포탈 x − 0.9 → − 0.3 으로(옛 도착은 포탈 판정 상자 |dx| ≤ 0.58 밖이라 ↑ 가 안 먹었음 · 포탈 앞 near 도착은 이 장면뿐)
