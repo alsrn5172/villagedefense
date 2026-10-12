@@ -67,7 +67,7 @@ S.font(b, `${CR}/Slot_BULK/Label`, { text: '일괄' })
 const BP = `${CR}/BulkPanel`
 S.newImage(b, BP, 'panel_inner', { pos: [-173, 14], size: [586, 404], raycast: true, enable: false })
 S.newText(b, BP + '/Title', '레벨제 일괄 구매', { font: 'Maple', size: 24, color: C.title, pos: [0, 160], rect: [400, 34] })
-S.newText(b, BP + '/Hint', '버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 사요\n재화가 모자라면 거기서 멈춰요', { font: 'Noto700', size: 15, color: C.sub, pos: [0, 118], rect: [540, 44] })
+S.newText(b, BP + '/Hint', '버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 사요\n재화가 모자란 렙제는 잠겨요', { font: 'Noto700', size: 15, color: C.sub, pos: [0, 118], rect: [540, 44] })
 S.newText(b, BP + '/PartsLabel', '살 부위 (눌러서 빼기)', { font: 'Noto700', size: 14, color: C.faint, pos: [0, 86], rect: [300, 22] })
 
 // 부위 토글 5개: 부위 칩(Slot_ALL)을 본보기로 96x38. 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(컨트롤러가 On 을 켜고 끈다).

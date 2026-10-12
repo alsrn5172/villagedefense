@@ -1315,7 +1315,35 @@ script WorkshopUIController extends Logic
 
 	-- ── 레벨제 일괄 구매 (1.1-J02 · J03) ─────────────────────────
 	-- 제작 창 "일괄" 칸(Slot_BULK)을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다: 살 부위 토글 5개(눌러서 빼기) + 10 · 15 · 20 · 25 · 30렙제 버튼 5개.
-	-- 렙제 버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 산다(서버 CraftService.RequestCraftBulk · 재화가 모자라면 거기서 멈춤).
+	-- 렙제 버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 전부 산다(서버 CraftService.RequestCraftBulk).
+	-- 켜 둔 부위 전체를 살 메소 · 재료 합이 모자라면 그 렙제 버튼은 처음부터 잠긴다 — 일부만 사는 일은 없다(사용자 2026-10-13 · 디자인 사이트 N-34).
+
+	@ExecSpace("ClientOnly")
+	method string BulkShort(string key, integer tier, string parts)
+		-- 그 렙제 · 켜 둔 부위 전체의 메소 · 재료 합을 지금 가진 것과 비교(클라 캐시 · N-34). 다 있으면 "" · 모자라면 첫 부족 이름(재료 이름 또는 "메소").
+		-- 서버 RequestCraftBulk 의 BulkShortfall 과 같은 계산이다(서버가 최종 판정 · 여기는 버튼 잠금용).
+		local need = {}
+		local order = {}
+		local meso = 0
+		for _, r in ipairs(_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts)) do
+			meso = meso + r.mesoCost
+			for _, m in ipairs(_ItemCatalog:RecipeMats(r, key)) do
+				if need[m.itemId] == nil then
+					need[m.itemId] = 0
+					table.insert(order, m.itemId)
+				end
+				need[m.itemId] = need[m.itemId] + m.count
+			end
+		end
+		for _, id in ipairs(order) do
+			if self:CountItem(id) < need[id] then
+				local d = _ItemCatalog:Get(id)
+				return (d ~= nil) and d.name or id
+			end
+		end
+		if meso > 0 and self:MesoNow() < meso then return "메소" end
+		return ""
+	end
 
 	@ExecSpace("ClientOnly")
 	method string BulkPartsCsv()
@@ -1329,8 +1357,17 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method string BulkFootText()
-		-- 일괄 칸의 바닥 띠 안내(1.1-J02): 켜 둔 부위가 하나도 없으면 그 안내(렙제 버튼이 다 잠겨 눌러 볼 수 없다), 아니면 사용법 한 줄.
-		if self:BulkPartsCsv() == "" then return "살 부위를 하나 이상 켜 주세요" end
+		-- 일괄 칸의 바닥 띠 안내(1.1-J02): 켜 둔 부위가 하나도 없으면 그 안내(렙제 버튼이 다 잠겨 눌러 볼 수 없다),
+		-- 재화가 모자라 잠긴 렙제가 하나라도 있으면 그 안내(N-34), 아니면 사용법 한 줄.
+		local parts = self:BulkPartsCsv()
+		if parts == "" then return "살 부위를 하나 이상 켜 주세요" end
+		local key = self:ShopKey()
+		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
+			local n = math.floor(tonumber(t) or 0)
+			if #_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0 and self:BulkShort(key, n, parts) ~= "" then
+				return "재화가 모자란 렙제는 잠겨요"
+			end
+		end
 		return "렙제 버튼을 누르면 바로 구매해요"
 	end
 
@@ -1354,6 +1391,13 @@ script WorkshopUIController extends Logic
 			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
 			return
 		end
+		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34).
+		local short = self:BulkShort(key, tier, parts)
+		if short ~= "" then
+			self:ShowFootInfo(short .. " 이(가) 모자라요")
+			self:RefreshBulkPanel()
+			return
+		end
 		self.waiting = true
 		self:SetPrimary(false, "")
 		self:RefreshBulkPanel()
@@ -1365,7 +1409,7 @@ script WorkshopUIController extends Logic
 	method void RefreshBulkPanel()
 		-- 일괄 판 그리기(1.1-J02). 켜짐 조건 = 부위 칸이 BULK 이고 마을 장비 상인(IsRegionShop). 아니면 판을 끄고 끝.
 		--   부위 토글 5개: 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(RefreshCraftSlotTabs 의 부위 칩과 같은 모양).
-		--   렙제 버튼 5개: 살 장비가 있고 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩).
+		--   렙제 버튼 5개: 살 장비가 있고 · 그 전부를 살 메소 · 재료가 있고(BulkShort · N-34) · 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩).
 		if not isvalid(self.contentCraft) then return end
 		-- 제작 화면이 아닌 라우트(물약 · 수리 · 강화)에서는 건드리지 않는다 — 바닥 띠 안내가 그 화면 것을 덮으면 안 된다(OnMatchStart 가 창이 열린 채 부를 수 있다).
 		if self.route ~= "craft" and self.route ~= "shop_equip" then return end
@@ -1388,7 +1432,8 @@ script WorkshopUIController extends Logic
 		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
 			local btn = panel:GetChildByName("Tier_" .. t)
 			if isvalid(btn) then
-				local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, tonumber(t), parts) > 0)
+				local n = math.floor(tonumber(t) or 0)
+				local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0) and (self:BulkShort(key, n, parts) == "")
 				if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = can end
 				self:SetOn(btn, "On", can)
 				self:ChipLabelStyle(self:Kid(btn, "Label"), can and "ink" or "", "#F3EEE2")

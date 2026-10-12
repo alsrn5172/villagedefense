@@ -218,3 +218,11 @@
 - 안내 문장 한 줄 추가(2-4 · 3-7 · 5-0b) · 진행 조건(done) 3종 유지
 - 튜토리얼 머쉬맘 Lv25: `TutorialService.TutorialBossLevel = 25` → `PrepareBoss` 가 튜토리얼 룸의 보스 개체에 `BossSkillRunner.LevelOverride` 를 걸고 이름표를 "Lv.25 머쉬맘" 으로 다시 닮(명중 · 보스 공격 회피 · 소환수 판정이 25) · 실제 매치의 머쉬맘은 Lv30 그대로 · 로그 `[Tutorial] boss level override=25`
 - 6-3m 발록 포탈 앞 도착 x 를 포탈 x − 0.9 → − 0.3 으로(옛 도착은 포탈 판정 상자 |dx| ≤ 0.58 밖이라 ↑ 가 안 먹었음 · 포탈 앞 near 도착은 이 장면뿐)
+
+## 10/13 후속 — 디자인 사이트 피드백 · 복제타 치명 (사용자 결정 2026-10-13)
+
+- **도적 열화 투사체(쉐도우 파트너 복제타)도 치명타** (1.1-B17 · DPS 실측 대조): `SkillProjectile.CalcCritical` 의 열화 조기 `false` 를 지움 → 원본과 같은 판정(닷지 확정 · 기본 공격 = `PlayerAttack.CalcCritical` · 럭키 세븐 = LUK 확률). 피해 = floor(원본의 치명 전 확정 피해 × 비율%) 에 치명이면 치명타 배수. 원고(1.0.2 · 합본) "별도의 치명타 계산 … 하지 않는다" 문장을 같은 줄에서 고침.
+- **파병 접수 창 출발 방식 칸** (N31-1 · 1.1-H05): 고른 칸 = 기존 초록 칩(chip_green `c15a5263…`) + 흰 글자 · 안 고른 칸 = 짙은 회색 칩(chip_gray_dark `59baa8df…`) + sub 색 글자 · Sel 판 안 씀(`CommonNpcUIController.RenderMode` · `ModeOnRUID` / `ModeOffRUID`).
+- **레벨제 일괄 구매 = 전부 아니면 안 삼** (N-34 · 1.1-J01 · J02): 서버 `RequestCraftBulk` 가 사기 전에 목록 전체 메소 · 재료 합을 보고(`BulkShortfall`) 모자라면 하나도 안 사고 거절. 클라 `WorkshopUIController.BulkShort` 로 그런 렙제 버튼을 렙제마다 미리 잠금 · 바닥 띠 "재화가 모자란 렙제는 잠겨요" · 판 안내 둘째 줄 "재화가 모자란 렙제는 잠겨요"(`VillageWorkshopGroup` `BulkPanel/Hint` · 생성 스크립트 사본 `apply-workshop-bulk.cjs` 같이). "…개만 구매" 토스트는 안전장치로만 남음.
+- **월드맵 툴팁 보스 줄 Lv 칩 빨강** (N43 · 1.0.3-M2): 보스 줄은 일반 몹 줄과 같은 1줄(썸네일 · 이름 · Lv) · Lv 칩만 chip_red(`c2532f00…` · 머리 줄 보스 칩과 같은 그림) · 일반 줄은 짙은 파랑으로 되돌림(`WorldMapController.FillRowEntry(…, isBoss)` · `LvChipRUID` / `BossLvChipRUID`).
+- **상태 전광판 칠판 그림 교체** (N44 · 1.1-I13): 메이플 고등학교 교실 칠판 `f68089a2c14c4dedaa42224a9104992a`(512×228)을 가로 1.0 · 세로 1.4 로 늘려 씀 · 안에 흰 글자(제목도 흰색 · 내 줄 금색 유지). `VD_RECORD_BOARD` `Plate` (0, 1.484) · 배율 (1, 1.4) → 틀 바깥 5.0 × 3.04 · 면 4.62 × 2.48 · 제목 y 2.436 · 줄 2.073 ~ 0.621(간격 0.363) · 줄 상자 4.22 · `StatusBoard.RowMaxWidth` 3.2 → 4.17. 자리(`VillageNpcSector` BOARD): 헤네시스 8.10 → 7.85 · 커닝 3.40 → 3.20(틀이 바닥 끝을 넘지 않게) · 나머지 그대로(엘리니아는 여전히 깨끗한 자리 없음 — 사용자 확인 대기).
