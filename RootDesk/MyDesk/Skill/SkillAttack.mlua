@@ -104,8 +104,13 @@ script SkillAttack extends AttackComponent
     -- 몬스터 무적 0.4s(A 의 Faction/MonsterHit.IsHitTarget)를 "같은 시전의 다음 타격" 만 건너뛰게 할 때 A 가 이 표식을 본다(#40 제안). 피해 값은 BaseSkillId 로 원래 id.
     property string SequenceHitTag = "#"
 
-    -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
+    -- 크리티컬 배율 폴백(StatService 가 없을 때만). 실제 배율 = StatService.GetCritDamageRate(200% + 넘친 원확률 · 1.1-A13).
     property number CritDamageRate = 2.0
+
+    -- 한 타격의 피해 굴림 공유(1.1-A16: 스킬 피해가 범위에서 굴린 값이 됐다). 엔진의 CalcDamage 와 궁 합계용 CalcCritical 이
+    -- 같은 대상 · 같은 attackInfo 로 부르면 먼저 부른 쪽이 굴린 값을 다른 쪽이 그대로 쓴다(순서 무관 · 둘 다 쓰면 비움).
+    @HideFromInspector
+    property any rollCache = nil
 
     -- Per-caster spawn counter for unique projectile entity names (map-wide uniqueness
     -- requirement - msw-combat-system/references/projectile.md "Name uniqueness"). Prefixed
@@ -351,10 +356,26 @@ script SkillAttack extends AttackComponent
             log_warning("SkillAttack: CalcDamage attacker has no PlayerComponent, cannot resolve userId for " .. tostring(attackInfo))
             return 0
         end
+        return self:DefendedAmount(defender, self:RolledAmount(attacker, defender, attackInfo, "dmg"))
+    end
+
+    method integer RolledAmount(Entity attacker, Entity defender, string attackInfo, string who)
+        -- 스킬 표 피해(방어 전) 한 타격분. DamageAt 이 스탯공격력 범위에서 굴리므로(1.1-A16) 같은 타격을 두 번 부르면 값이 달라진다 →
+        -- 엔진 피해(who = "dmg")와 궁 합계(who = "crit")가 같은 값을 쓰게 rollCache 로 한 번만 굴린다.
+        local key = (isvalid(defender) and defender.Id or "") .. "|" .. tostring(attackInfo)
+        local c = self.rollCache
+        if c ~= nil and c.key == key and not c[who] then
+            c[who] = true
+            if c.dmg and c.crit then self.rollCache = nil end
+            return c.value
+        end
         local userId = attacker.PlayerComponent.UserId
         -- 연속 타격(DealSequenceHit)의 2타째부터는 attackInfo = "<스킬>#k" — 피해 값은 스킬 id 로 찾는다.
         local amount = math.floor(_SkillDatabase:DamageAt(self:BaseSkillId(attackInfo), self.PendingLevel, userId) * self.PendingDamageMul)
-        return self:DefendedAmount(defender, amount)
+        local nc = { key = key, value = amount }
+        nc[who] = true
+        self.rollCache = nc
+        return amount
     end
 
     method integer DefendedAmount(Entity defender, integer amount)
@@ -373,22 +394,33 @@ script SkillAttack extends AttackComponent
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
-        -- 닷지(SK_A22 · GUARANTEED_CRIT · b/skill-archer-thief-pirate) 활성이면 반드시 크리티컬. 그 외엔 false(스킬엔 확률 크리 없음 · 예전과 같다).
+        -- 닷지(SK_A22 · GUARANTEED_CRIT · b/skill-archer-thief-pirate) 활성이면 반드시 크리티컬. 아니면 LUK 확률 치명타(StatService.RollCritical) —
+        -- 기본 공격 · 스킬 · 궁극기 구분 없이 모두(1.1-A14 · 사용자 2026-10-12). 반사 같은 평값 · probe 패스는 치명 없음.
         -- ⚠ 부모에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐이라 ServerOnly 인 SkillBuffs 를 불러도 된다.
         if attackInfo == self.FlatTag or attackInfo == self.ProbeTag then return false end
         local crit = false
         if self.PendingCritOverride >= 0 then
-            -- 시전 순간에 고정한 크리(DealSkillDamageToTargetAmount 의 critLocked). 타격 시점에 다시 판정하지 않는다.
+            -- 시전 순간에 고정한 크리(DealSkillDamageToTargetAmount 의 critLocked · 파워 스트라이크). 타격 시점에 다시 판정하지 않는다.
             crit = self.PendingCritOverride == 1
-        elseif _SkillBuffs ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
-            crit = _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId)
+        elseif isvalid(attacker) and isvalid(attacker.PlayerComponent) then
+            if _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(attacker.PlayerComponent.UserId) then
+                crit = true
+            elseif _StatService ~= nil then
+                crit = _StatService:RollCritical(attacker)
+            end
         end
         -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)를 더한다.
         if _SkillExecutors ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
             local uid = attacker.PlayerComponent.UserId
             local base = self:BaseSkillId(attackInfo)
             if _SkillExecutors:IsUltimateTallyOpen(uid, base) then
-                local dmg = self:CalcDamage(attacker, defender, attackInfo)
+                -- 엔진 피해와 같은 굴림을 쓴다(RolledAmount · who = "crit"). 평값 · 고정 패스는 CalcDamage 그대로.
+                local dmg = 0
+                if attackInfo ~= self.FlatTag and self.PendingDamageOverride < 0 then
+                    dmg = self:DefendedAmount(defender, self:RolledAmount(attacker, defender, attackInfo, "crit"))
+                else
+                    dmg = self:CalcDamage(attacker, defender, attackInfo)
+                end
                 if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
                 _SkillExecutors:AddUltimateTally(uid, base, dmg)
             end
@@ -397,6 +429,10 @@ script SkillAttack extends AttackComponent
     end
 
     method float GetCriticalDamageRate()
+        -- 치명타 피해 배율(1.1-A13): 200% + 넘친 원확률(닷지 확정 크리 중엔 200%). 이 컴포넌트는 시전자 플레이어에 붙어 있다(SkillCaster.AddComponent).
+        if _StatService ~= nil and isvalid(self.Entity) and isvalid(self.Entity.PlayerComponent) then
+            return _StatService:GetCritDamageRate(self.Entity.PlayerComponent.UserId)
+        end
         return self.CritDamageRate
     end
 

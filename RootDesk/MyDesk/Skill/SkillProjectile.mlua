@@ -15,7 +15,7 @@ script SkillProjectile extends AttackComponent
     --   · DamageMul / DisplayHits: "60x2%" 같은 N발 스킬은 첫 투사체 하나가 피해 ×N · 표시 N타를 지고 나머지는 VisualOnly(피해 없음 · 연출만).
     --     당시엔 몬스터 피격 무적(MonsterHit.ImmuneCooldown 0.4s) 때문에 두 번째 투사체 피해가 무효였다. #120(2026-09-29)이 그 무적을 뺐다(IsHitTarget 항상 true)
     --     → 더블 샷은 발마다 ×1(SkillAttack.IsPerArrowVolley · Volley) · 럭키 세븐도 발마다 1타(아래 perProjectileHit).
-    --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 배율 2.0.
+    --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 아니면 LUK 확률(StatService.RollCritical · 1.1-A14) · 배율 StatService.GetCritDamageRate.
     --   · OnAttack: hit 사운드(HitSoundRUID) + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
     -- b/skill-thief-effects: SingleTargetOnly(럭키 세븐 · #40 5884390073 7번) = 판정마다 상자 안 몬스터 하나만(조준 대상 우선 · 없으면 가장 가까운 것).
     --   럭키 세븐은 발마다 1타(DamageMul 1 · 2발째도 진짜 투사체 · SkillAttack.SpawnProjectile perProjectileHit).
@@ -115,8 +115,12 @@ script SkillProjectile extends AttackComponent
     -- 스킬별 값 = SkillExecutors.effectOverrides[skill].impact.offsetY (SkillAttack.SpawnOneProjectile 이 넣는다 · 없으면 0).
     property number HitEffectOffsetY = 0
 
-    -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
+    -- 크리티컬 배율 폴백(StatService 가 없을 때만). 실제 배율 = StatService.GetCritDamageRate(200% + 넘친 원확률 · 1.1-A13) — 원거리 기본 공격도 이 메서드를 쓴다.
     property number CritDamageRate = 2.0
+
+    -- 한 타격의 피해 굴림 공유(1.1-A16 · SkillAttack.rollCache 와 같은 규칙): 엔진 CalcDamage 와 궁 합계용 CalcCritical 이 같은 값을 쓴다.
+    @HideFromInspector
+    property any rollCache = nil
 
     -- 같은 층 판정(b/skill-thief-motion · 2026-09-13 제보 "2층에서 던진 표창이 아래층 몬스터도 죽였다"): true 면 발이 FloorY − FloorTolerance 보다 낮은 몬스터는 맞지 않는다
     -- (IsAttackTarget). SkillAttack.SpawnProjectile 이 시전자 발 높이(FloorY)와 AimFloorTolerance 를 넣는다. 판정 상자(RangeX/Y 0.8)가 발 아래로 내려가도 아래층은 안 맞는다.
@@ -769,6 +773,22 @@ script SkillProjectile extends AttackComponent
             if dmg > 0 and self.DamageMul > 0 and self.DamageMul ~= 1 then dmg = math.floor(dmg * self.DamageMul) end
             return dmg
         end
+        local amount = self:RolledAmount(defender, attackInfo, "dmg")
+        -- 대상(몬스터 · 보스) 방어(1.1-E21 · 사용자 2026-10-12 "스킬에도 적용"). 위 원거리 기본 공격은 StatService.CalcPlayerDamage 에서 이미 깎는다.
+        if amount > 0 and _DamageFormula ~= nil then amount = _DamageFormula:ApplyTargetDefense(defender, amount) end
+        return amount
+    end
+
+    method integer RolledAmount(Entity defender, string attackInfo, string who)
+        -- 스킬 투사체 피해(방어 전) 한 타격분. DamageAt 이 스탯공격력 범위에서 굴리므로(1.1-A16) 엔진 피해(who = "dmg")와 궁 합계(who = "crit")가
+        -- 같은 대상 · 같은 attackInfo 면 한 번만 굴린 값을 같이 쓴다(순서 무관 · 둘 다 쓰면 비움).
+        local key = (isvalid(defender) and defender.Id or "") .. "|" .. tostring(attackInfo)
+        local c = self.rollCache
+        if c ~= nil and c.key == key and not c[who] then
+            c[who] = true
+            if c.dmg and c.crit then self.rollCache = nil end
+            return c.value
+        end
         local dmg = _SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId)
         if self.BaseDamageMul ~= 1 then
             -- BaseDamageMul: 매직 가드 추가 피해는 배율 밖(같은 서버 프레임 · 같은 MP 로 다시 읽으니 DamageAt 이 더한 값과 같다).
@@ -779,8 +799,9 @@ script SkillProjectile extends AttackComponent
             dmg = scaled
         end
         local amount = math.floor(dmg * self.DamageMul)
-        -- 대상(몬스터 · 보스) 방어(1.1-E21 · 사용자 2026-10-12 "스킬에도 적용"). 위 원거리 기본 공격은 StatService.CalcPlayerDamage 에서 이미 깎는다.
-        if amount > 0 and _DamageFormula ~= nil then amount = _DamageFormula:ApplyTargetDefense(defender, amount) end
+        local nc = { key = key, value = amount }
+        nc[who] = true
+        self.rollCache = nc
         return amount
     end
 
@@ -921,7 +942,7 @@ script SkillProjectile extends AttackComponent
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
-        -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 예전처럼 false(스킬엔 확률 크리 없음).
+        -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 LUK 확률 치명타(아래 · 1.1-A14).
         -- ⚠ 부모(AttackComponent.CalcCritical)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐.
         -- 원거리 기본 공격: 근접 기본 공격과 같은 크리 판정(닷지 확정 크리 · LUK 확률 · PlayerAttack.CalcCritical).
         if self.BasicAttack then
@@ -931,13 +952,20 @@ script SkillProjectile extends AttackComponent
             if pa == nil then return false end
             return pa:CalcCritical(caster, defender, "ranged")
         end
+        -- 스킬 투사체: 닷지 확정 크리, 아니면 LUK 확률 치명타(기본 공격 · 스킬 · 궁극기 모두 · 1.1-A14 · B22 · 사용자 2026-10-12).
         local crit = false
-        if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
-            crit = _SkillBuffs:IsGuaranteedCrit(self.CasterUserId)
+        if self.CasterUserId ~= "" then
+            if _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(self.CasterUserId) then
+                crit = true
+            elseif _StatService ~= nil then
+                local caster = self:CasterEntity()
+                if caster ~= nil then crit = _StatService:RollCritical(caster) end
+            end
         end
-        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)를 더한다.
+        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(같은 굴림 × 크리 배율)를 더한다.
         if _SkillExecutors ~= nil and self.CasterUserId ~= "" and _SkillExecutors:IsUltimateTallyOpen(self.CasterUserId, self.SkillId) then
-            local dmg = self:CalcDamage(attacker, defender, attackInfo)
+            local dmg = self:RolledAmount(defender, attackInfo, "crit")
+            if dmg > 0 and _DamageFormula ~= nil then dmg = _DamageFormula:ApplyTargetDefense(defender, dmg) end
             if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
             _SkillExecutors:AddUltimateTally(self.CasterUserId, self.SkillId, dmg)
         end
@@ -945,6 +973,10 @@ script SkillProjectile extends AttackComponent
     end
 
     method float GetCriticalDamageRate()
+        -- 치명타 피해 배율(1.1-A13): 시전자 기준 200% + 넘친 원확률(닷지 확정 크리 중엔 200%). 원거리 기본 공격 투사체도 여기(PlayerAttack 이 아니라)를 쓴다.
+        if _StatService ~= nil and self.CasterUserId ~= "" then
+            return _StatService:GetCritDamageRate(self.CasterUserId)
+        end
         return self.CritDamageRate
     end
 

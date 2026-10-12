@@ -28,8 +28,25 @@ script StatService extends Logic
 	@HideFromInspector
 	property any jobs = nil
 
-	-- STR 1당 방어 (B4 · 사용자 2026-09-22 신설). Recalculate 에서 최종 방어에 더한다.
-	property number DefensePerStr = 0.2
+	-- STR 추가효과(1.1-G02): STR 1당 방어 +0.1 · 최대 HP +20 (주 · 부스탯 아닌 직업은 ×NonCoreEffectMul → 0.01 · 2). Recalculate 에서 최종치에 더한다.
+	property number DefensePerStr = 0.1
+
+	property integer HpPerStr = 20
+
+	-- INT 추가효과(1.1-G03 · B11): INT 1당 최대 MP +20 (비주력 ×0.1 → 2). 최종 maxmp 로 들어가 SummonManager.RecomputeMaxMp 가 더한다. 총 MP 배수는 만들지 않는다(원문 값 없음).
+	property integer MpPerInt = 20
+
+	-- LUK 추가효과(1.1-A08 · G05): LUK 1당 회피율 +0.05%p (비주력 0.005). DEX 는 회피에 안 더한다. 기본 회피 0%.
+	property number AvoidPerLuk = 0.05
+
+	-- 숙련도(1.1-A15): 무기 기본 0.5 + 최종 부스탯 200 이상이면 +0.2 + DEX 300 초과 1당 +0.001 × 효율 · 상한 1.0(DamageFormula.MasteryMax).
+	property integer SecondaryMasteryThreshold = 200
+
+	property number SecondaryMasteryBonus = 0.2
+
+	property integer DexMasteryThreshold = 300
+
+	property number DexMasteryPerPoint = 0.001
 
 	-- 주스탯 · 부스탯이 아닌 스탯의 추가효과 효율(1.1-G01 · 원문 "그 외 스탯은 추가효과만 10%"). 스탯 숫자 · 스탯공격력(주×4+부)은 줄이지 않는다.
 	property number NonCoreEffectMul = 0.1
@@ -194,6 +211,8 @@ script StatService extends Logic
 				-- 캐릭터 창에서 직접 · 자동으로 찍은 AP(스탯별). 전직하면 이만큼 base 에서 빼고 AP 로 돌려준다(WO-049 ①).
 				apAlloc = { str = 0, dex = 0, int = 0, luk = 0 },
 				hpBonusApplied = 0,
+				-- 처음 엔티티에 반영할 때 HP 를 가득 채운다(사용자 2026-10-12 "시작 때만 가득" · 1.1-G02). 그 뒤엔 최대치만 늘린다.
+				fillPending = true,
 			}
 			self.users[userId] = u
 			self:Recalculate(userId, "INIT")
@@ -420,9 +439,12 @@ script StatService extends Logic
 		end
 		-- 명중률 %p(1.1-A02 · G04): 기본 20 + 장비 · 강화 · 버프(효율 없이) + DEX × 0.15 × 효율. LUK 은 명중에 안 더한다. 소수 3자리.
 		f.accuracy = math.floor((f.accuracy + (f.dex or 0) * self.AccuracyPerDex * eff("dex")) * 1000 + 0.5) / 1000
-		f.avoid = f.avoid + _DamageFormula:DerivedAvoid(f.dex, f.luk)
-		-- 방어 += STR × DefensePerStr (B4 · 사용자 2026-09-22 신설 규칙 · 전사 Lv30 STR 114 → +23).
-		f.defense = f.defense + math.floor((f.str or 0) * self.DefensePerStr)
+		-- 회피율 %p(1.1-A08 · G05): 기본 0 + 장비 · 오팔 · 버프(효율 없이) + LUK × 0.05 × 효율. DEX 는 안 더한다. 소수 3자리.
+		f.avoid = math.floor((f.avoid + (f.luk or 0) * self.AvoidPerLuk * eff("luk")) * 1000 + 0.5) / 1000
+		-- STR(1.1-G02): 방어 +0.1 · 최대 HP +20 (× 효율). INT(1.1-G03 · B11): 최대 MP +20 (× 효율).
+		f.defense = f.defense + math.floor((f.str or 0) * self.DefensePerStr * eff("str") + 1e-6)
+		f.maxhp = f.maxhp + math.floor((f.str or 0) * self.HpPerStr * eff("str") + 1e-6)
+		f.maxmp = f.maxmp + math.floor((f.int or 0) * self.MpPerInt * eff("int") + 1e-6)
 		u.final = f
 
 		self:ApplyToEntity(userId, u)
@@ -479,7 +501,23 @@ script StatService extends Logic
 				if pc.Hp > pc.MaxHp then pc.Hp = pc.MaxHp end
 				u.hpBonusApplied = bonus
 			end
+			-- 시작 때만 가득(사용자 2026-10-12): 원장을 새로 만든 뒤 처음 반영할 때 한 번. 매치 시작은 MatchResetService 가 FillToMax 로 장비까지 낀 뒤 한 번 더 채운다.
+			if u.fillPending then
+				pc.Hp = pc.MaxHp
+				u.fillPending = false
+			end
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FillToMax(string userId)
+		-- HP · MP 를 최대치로 채운다(매치 시작 · MatchResetService.ResetUser 끝 · 시작 킷까지 낀 뒤). 그 밖엔 최대치가 늘어도 현재치는 그대로다(사용자 2026-10-12).
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) and isvalid(player.PlayerComponent) then
+			player.PlayerComponent.Hp = player.PlayerComponent.MaxHp
+		end
+		if _SummonManager ~= nil then _SummonManager:FillMp(userId) end
+		log("[Stat] fill HP/MP to max (" .. tostring(userId) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -516,7 +554,7 @@ script StatService extends Logic
 	end
 
 	method integer GetDefense(string userId)
-		-- 최종 방어(장비+강화+STR×0.2). 서버 원장이 없으면(클라) 0. DamageFormula.ApplyPlayerDefense 가 부른다 (B4).
+		-- 최종 방어(장비+강화+STR×0.1 · 비주력 ×0.01). 서버 원장이 없으면(클라) 0. DamageFormula.ApplyPlayerDefense 가 부른다 (B4).
 		if self.users == nil then return 0 end
 		local u = self.users[userId]
 		if u == nil or u.final == nil then return 0 end
@@ -524,11 +562,39 @@ script StatService extends Logic
 	end
 
 	method integer GetAttackPower(string userId)
-		-- 최종 총공격력(무기+강화+버프). B 의 SkillDatabase.GetAttackPower 가 JobTier.BaseAttack(75) 대신 이걸 읽으면 스킬 피해가 장비·강화를 탄다 (B4 · WO-029 §3).
+		-- 최종 총공격력(마법사는 마력 · TotalAttackOf). 스킬 피해의 폴백 입력(SkillDatabase.RollStatAttack 이 범위를 못 굴릴 때).
 		if self.users == nil then return 0 end
 		local u = self.users[userId]
 		if u == nil or u.final == nil then return 0 end
-		return math.floor(u.final.attack or 0)
+		return math.floor(self:TotalAttackOf(u))
+	end
+
+	method number TotalAttackOf(any u)
+		-- 피해에 쓰는 총공격력(1.1-A16 · 사용자 2026-10-12 "마법사는 예외 · 무조건 마력"):
+		--   마법사 = 레벨 기본 공격력(10 + 레벨 − 1 · base.attack) + 최종 마력(완드 마력 · 강화 고정치 · 사파이어 · 버프). 다이아 등 '공격력' 은 안 센다.
+		--   그 밖 = 최종 공격력(레벨 기본 + 무기 + 강화 고정치 · 다이아 + 버프).
+		if u == nil or u.final == nil then return 0 end
+		if u.job == "MAGICIAN" then
+			return (u.base.attack or 0) + (u.final.magic or 0)
+		end
+		return u.final.attack or 0
+	end
+
+	method number MasteryOf(any u)
+		-- 최종 숙련도(1.1-A15): 무기 숙련도(ItemInfo.Mastery 0.5 · 무기 없으면 DefaultMastery) + 최종 부스탯 200 이상 0.2 + DEX 300 초과 1당 0.001 × DEX 효율 · 상한 1.0.
+		--   매번 최종 스탯으로 계산하므로 버프가 끝나거나 장비를 바꾸면 바로 따라간다(저장값 u.mastery 는 무기 몫만).
+		local job = self:GetJob(u.job)
+		local m = u.mastery or self.DefaultMastery
+		if (u.final[job.secondary] or 0) >= self.SecondaryMasteryThreshold then
+			m = m + self.SecondaryMasteryBonus
+		end
+		local over = (u.final.dex or 0) - self.DexMasteryThreshold
+		if over > 0 then
+			local eff = self.NonCoreEffectMul
+			if job.primary == "dex" or job.secondary == "dex" then eff = 1.0 end
+			m = m + over * self.DexMasteryPerPoint * eff
+		end
+		return math.min(_DamageFormula.MasteryMax, m)
 	end
 
 	method integer GetPlayerLevel(string userId)
@@ -548,7 +614,8 @@ script StatService extends Logic
 		end
 		local job = self:GetJob(u.job)
 		local sv = _DamageFormula:StatValue(u.final[job.primary] or 0, u.final[job.secondary] or 0)
-		return _DamageFormula:CalcRange(sv, u.final.attack or 0, u.mastery)
+		-- 총공격력(마법사는 마력 · 1.1-A16) · 최종 숙련도(1.1-A15). 기본 공격과 스킬(SkillDatabase.RollStatAttack)이 같은 범위를 쓴다.
+		return _DamageFormula:CalcRange(sv, self:TotalAttackOf(u), self:MasteryOf(u))
 	end
 
 	method boolean IsUnarmed(string userId)
@@ -622,7 +689,7 @@ script StatService extends Logic
 	end
 
 	method boolean RollCritical(Entity attacker)
-		-- PlayerAttack.CalcCritical 이 부른다. LUK 기반 확률.
+		-- LUK 확률 치명타 한 번(1.1-A12). 기본 공격(PlayerAttack) · 스킬(SkillAttack · SkillProjectile) · 궁극기 · 파워 스트라이크 시전 고정이 모두 부른다(사용자 2026-10-12).
 		if self.users == nil or not isvalid(attacker) or not isvalid(attacker.PlayerComponent) then
 			return false
 		end
@@ -630,7 +697,32 @@ script StatService extends Logic
 		if u == nil then
 			return false
 		end
-		return _UtilLogic:RandomDouble() < _DamageFormula:CritRate(u.final.luk or 0)
+		return _UtilLogic:RandomDouble() < _DamageFormula:CritRate(self:EffLukOf(u))
+	end
+
+	method number EffLukOf(any u)
+		-- 유효 LUK = 최종 LUK × LUK 추가효과 효율(주 · 부스탯 1.0 · 그 외 0.1 · 1.1-G05).
+		if u == nil or u.final == nil then return 0 end
+		local job = self:GetJob(u.job)
+		local eff = self.NonCoreEffectMul
+		if job.primary == "luk" or job.secondary == "luk" then eff = 1.0 end
+		return (u.final.luk or 0) * eff
+	end
+
+	method number GetCritDamageRate(string userId)
+		-- 치명타 피해 배율(1.1-A13) = 200% + 넘친 원확률. 닷지 확정 크리 중엔 200% 고정(DPS표 "확정 200%"). 서버 원장이 없으면(클라) 200%.
+		if self.users == nil or userId == nil or userId == "" then return _DamageFormula.CritDamageBase end
+		local u = self.users[userId]
+		if u == nil or u.final == nil then return _DamageFormula.CritDamageBase end
+		if _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(userId) then return _DamageFormula.CritDamageBase end
+		return _DamageFormula:CritDamageRate(self:EffLukOf(u))
+	end
+
+	method string FmtPct(number v)
+		-- 화면 % 글자(1.1-A07): 소수 한 자리 반올림 · ".0" 은 뺀다 · 100% 를 넘어도 원수치 그대로(20.75 → 20.8% · 35 → 35%).
+		local r = math.floor(v * 10 + 0.5) / 10
+		if r == math.floor(r) then return tostring(math.floor(r)) .. "%" end
+		return string.format("%.1f", r) .. "%"
 	end
 
 	@ExecSpace("ServerOnly")
@@ -661,7 +753,9 @@ script StatService extends Logic
 			.. ";str=" .. tostring(f.str) .. ";dex=" .. tostring(f.dex) .. ";int=" .. tostring(f.int) .. ";luk=" .. tostring(f.luk)
 			.. ";attack=" .. tostring(range.min) .. " ~ " .. tostring(range.max)
 			.. ";defense=" .. tostring(f.defense) .. ";speed=" .. tostring(f.speed) .. ";jump=" .. tostring(f.jump)
-			.. ";accuracy=" .. tostring(f.accuracy) .. ";avoid=" .. tostring(f.avoid)
+			.. ";accuracy=" .. self:FmtPct(f.accuracy or 0) .. ";avoid=" .. self:FmtPct(f.avoid or 0)
+			-- 치명타율 칸(사용자 2026-10-12 신설): 원확률 그대로(100% 를 넘으면 넘친 몫이 치명타 피해로 간다 · 1.1-A07 원수치 표시).
+			.. ";crit=" .. self:FmtPct(_DamageFormula:CritRawRate(self:EffLukOf(u)) * 100)
 			.. ";autoap=" .. (self:IsAutoApOn(userId) and "1" or "0")
 	end
 

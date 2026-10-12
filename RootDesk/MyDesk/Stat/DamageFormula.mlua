@@ -4,7 +4,7 @@ script DamageFormula extends Logic
 	-- 순수 계산만 모아둔 Logic (상태 없음 · 서버/클라 어디서든 같은 결과). 계획서 §1-3 메이플 원본식.
 	--   StatValue = 주스탯×4 + 부스탯
 	--   DamageMax = StatValue × 총공격력 ÷ 100
-	--   DamageMin = DamageMax × 숙련도(0.15~0.9)
+	--   DamageMin = DamageMax × 숙련도(0.15~1.0 · 1.1-A15)
 	--   Raw       = [Min, Max] 균등 랜덤   ← "범위 랜덤 공격력"
 	--   방어 감산  = Raw × (1 − Def ÷ (Def + DefenseK)),  최소 1
 	--   B4/WO-050: 명중 = HitCheck · 회피 = DodgeCheck · 치명 상한 100% · 받는 피해 방어는 ApplyPlayerDefense
@@ -32,13 +32,19 @@ script DamageFormula extends Logic
 
 	property number DodgeCap = 0.35
 
-	-- 크리티컬 확률 = CritBase + LUK × CritPerLuk, 상한 CritCap
+	-- 치명타(1.1-A12 · A13 · G05): 원확률 = CritBase + 유효 LUK × CritPerLuk (유효 LUK = 최종 LUK × LUK 추가효과 효율 · 주 · 부스탯 1.0 / 그 외 0.1).
+	--   실제 확률 = min(원확률, CritCap) · 치명타 피해 = CritDamageBase + (원확률 − 1, 넘칠 때만). 기본 공격 · 스킬 · 궁극기 모두 같은 판정(사용자 2026-10-12).
 	property number CritBase = 0.05
 
-	-- B4: 만렙 도적 올-LUK 보석 LUK 358 에서 95%p → (1 − 0.05) ÷ 358. 상한 100%.
-	property number CritPerLuk = 0.00265
+	-- 유효 LUK 1당 +0.3%p (원문 L591 · 1.0.2 확정). 예: 주 · 부스탯 LUK 100 → 35% · 비주력 LUK 100 → 8%.
+	property number CritPerLuk = 0.003
 
 	property number CritCap = 1.0
+
+	property number CritDamageBase = 2.0
+
+	-- 숙련도 상한(1.1-A15 · 0.9 → 1.0). 하한 0.15 는 그대로.
+	property number MasteryMax = 1.0
 
 	method number StatValue(integer primary, integer secondary)
 		-- 메이플 원본 스탯값: 주스탯×4 + 부스탯.
@@ -46,9 +52,9 @@ script DamageFormula extends Logic
 	end
 
 	method any CalcRange(number statValue, number totalAttack, number mastery)
-		-- 데미지 범위 { min, max } (정수). mastery 는 0.15~0.9 로 클램프.
+		-- 데미지 범위 { min, max } (정수). mastery 는 0.15~MasteryMax(1.0) 로 클램프.
 		if mastery < 0.15 then mastery = 0.15 end
-		if mastery > 0.9 then mastery = 0.9 end
+		if mastery > self.MasteryMax then mastery = self.MasteryMax end
 		local maxDmg = math.floor(statValue * totalAttack / 100)
 		if maxDmg < 1 then maxDmg = 1 end
 		local minDmg = math.floor(maxDmg * mastery)
@@ -102,7 +108,7 @@ script DamageFormula extends Logic
 
 	method integer ApplyPlayerDefense(Entity defender, integer raw)
 		-- 플레이어가 받는 피해 공용 헬퍼 (B4 · WO-027 §9-0): raw × 100/(100+방어) · 최소 1. 플레이어가 아니면 raw 그대로.
-		-- 방어 = StatService 최종치(장비+강화+STR×0.2). 호출: 일반몹 접촉(MonsterAttack) · 보스 스킬/투사체 · 시설/수비대(FactionAttack · ×PlayerDamageMul 뒤).
+		-- 방어 = StatService 최종치(장비+강화+STR×0.1 · 비주력 ×0.01). 호출: 일반몹 접촉(MonsterAttack) · 보스 스킬/투사체 · 시설/수비대(FactionAttack · ×PlayerDamageMul 뒤).
 		-- PlayerHit(B) 은 손대지 않는다. 클라에서 불리면 StatService 원장이 없어 방어 0 = 감산 없음(표시용).
 		if raw < 1 then raw = 1 end
 		if not isvalid(defender) or not isvalid(defender.PlayerComponent) then return raw end
@@ -125,16 +131,21 @@ script DamageFormula extends Logic
 		return self:ApplyDefense(raw, def)
 	end
 
-	method number CritRate(integer luk)
-		-- 크리티컬 확률 (스탯 기반 · 임시식).
-		local rate = self.CritBase + luk * self.CritPerLuk
+	method number CritRawRate(number effLuk)
+		-- 치명타 원확률(100% 를 넘을 수 있다 · 1.1-A12). effLuk = 최종 LUK × LUK 효율.
+		return self.CritBase + effLuk * self.CritPerLuk
+	end
+
+	method number CritRate(number effLuk)
+		-- 실제 치명타 확률 = min(원확률, CritCap). 넘친 몫은 CritDamageRate 가 피해로 바꾼다.
+		local rate = self:CritRawRate(effLuk)
 		if rate > self.CritCap then rate = self.CritCap end
 		return rate
 	end
 
-	method integer DerivedAvoid(integer dex, integer luk)
-		-- 스탯에서 파생되는 회피율 (메이플 원본: DEX×0.25 + LUK×0.5).
-		return math.floor(dex * 0.25 + luk * 0.5)
+	method number CritDamageRate(number effLuk)
+		-- 치명타 피해 배율(1.1-A13) = 200% + 100% 를 넘은 원확률만큼. 예: 원확률 125% → 실제 100% · 피해 225%.
+		return self.CritDamageBase + math.max(self:CritRawRate(effLuk) - 1.0, 0)
 	end
 
 	-- MISS 글자를 띄울 데미지 스킨 ID(몬스터가 쓰는 스킨과 같은 것 · Monster.DamageSkinRUID). 스킨에 MISS 모양이 없으면 글자가 안 보일 수 있다.
