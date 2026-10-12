@@ -35,6 +35,19 @@ script DispatchService extends Logic
 	@HideFromInspector
 	property integer badgeTimerId = 0
 
+	-- 즉시 파병(1.1-H04): 접수 뒤 이 초가 지나면 웨이브를 기다리지 않고 대상 마을 레인에서 출발한다. 취소 불가 · 그동안 대기열(상한 PendingCount)에 포함.
+	property number ImmediateDelaySeconds = 10
+
+	-- 받는 쪽 알림 문장(1.1-H06). " — " 를 쓰지 않는다(UIToast 가 그 자리에서 두 줄로 가른다).
+	--   Mixed = 미니언과 함께 파병이 웨이브에 섞인 순간(Release) · Immediate = 즉시 파병 접수 순간(LaneStateService.DispatchPicked).
+	property string MixedAlertText = "미니언 속에 상대 공격대가 함께 있어요!! 조심!!"
+
+	property string ImmediateAlertText = "상대 공격대가 지금 즉시 공격하러 오고 있어요!!"
+
+	-- 매치 번호: ResetBadges(매치 끝)가 올린다 — 남은 즉시 파병 타이머가 다음 판에 유닛을 풀지 않게.
+	@HideFromInspector
+	property integer matchSerial = 0
+
 	method void OnBeginPlay()
 		-- 서버만 원장.
 		if not self:IsServer() then return end
@@ -144,17 +157,62 @@ script DispatchService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method string Submit(string fromUserId, string senderVillageId, string targetVillageId, integer monsterId, string name, integer qty, number statMul, integer upgradeLevel)
+	method string Submit(string fromUserId, string senderVillageId, string targetVillageId, integer monsterId, string name, integer qty, number statMul, integer upgradeLevel, string mode)
 		-- 묶음 1개를 대기열에 넣고 orderId 를 돌려준다. 검증은 부르는 쪽(LaneStateService)이 한다. upgradeLevel = 보낸 묶음의 훈련 레벨(파병 유닛 스탯 = 수비대 표 · 2026-10-06).
+		-- mode(1.1-H04) = "WAVE"(미니언과 함께 · 다음 웨이브 Release 가 푼다 · 기본) / "NOW"(즉시 · ImmediateDelaySeconds 뒤 ReleaseImmediate 가 이 주문만 푼다).
 		self.orderSeq = self.orderSeq + 1
 		local id = "D" .. tostring(self.orderSeq)
+		local m = "WAVE"
+		if mode == "NOW" then m = "NOW" end
 		local order = { id = id, sender = fromUserId, senderVillage = senderVillageId, target = targetVillageId,
-			monsterId = monsterId, name = name, qty = qty, statMul = statMul, upgradeLevel = math.max(1, math.floor(upgradeLevel or 1)) }
+			monsterId = monsterId, name = name, qty = qty, statMul = statMul, upgradeLevel = math.max(1, math.floor(upgradeLevel or 1)), mode = m }
 		table.insert(self:Queue(targetVillageId), order)
+		if m == "NOW" then
+			local serial = self.matchSerial
+			_TimerService:SetTimerOnce(function() self:ReleaseImmediate(id, targetVillageId, serial) end, self.ImmediateDelaySeconds)
+		end
 		log("[Dispatch] submit order=" .. id .. " " .. tostring(senderVillageId) .. " -> " .. targetVillageId
 			.. " mon=" .. tostring(monsterId) .. " qty=" .. tostring(qty) .. " mul=" .. tostring(statMul) .. " lv=" .. tostring(order.upgradeLevel)
-			.. " pending=" .. tostring(self:PendingCount(targetVillageId)) .. " (" .. fromUserId .. ")")
+			.. " mode=" .. m .. " pending=" .. tostring(self:PendingCount(targetVillageId)) .. " (" .. fromUserId .. ")")
 		return id
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReleaseImmediate(string orderId, string targetVillageId, integer serial)
+		-- 즉시 파병(1.1-H04): 접수 ImmediateDelaySeconds 뒤 그 주문 하나만 대상 마을 레인에 푼다.
+		--   매치가 끝났거나(serial) 주문이 이미 빠졌으면(탈락 정리) 아무것도 안 한다. 배지는 갱신하지 않는다 — 즉시 유닛(이름 접두 J)은 배지 집계 대상이 아니다(H06).
+		if serial ~= self.matchSerial or self.orders == nil or _MinionFlowService == nil then return end
+		local list = self.orders[targetVillageId]
+		if list == nil then return end
+		local order = nil
+		for i, o in ipairs(list) do
+			if o.id == orderId then
+				order = o
+				table.remove(list, i)
+				break
+			end
+		end
+		if order == nil then return end
+		local owner = (_VillageOwnership ~= nil) and _VillageOwnership:OwnerOf(targetVillageId) or ""
+		if owner == "" then
+			log("[Dispatch] immediate drop order=" .. orderId .. " target=" .. targetVillageId .. " (no owner)")
+			return
+		end
+		local spawned = _MinionFlowService:SpawnDispatched(targetVillageId, order)
+		log("[Dispatch] immediate release order=" .. orderId .. " target=" .. targetVillageId .. " spawned=" .. tostring(spawned))
+		if _LaneStateService ~= nil then _LaneStateService:Push(owner, "defense") end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsImmediate(string orderId)
+		-- 즉시 파병 주문인가(취소 불가 판정 · 1.1-H04).
+		if self.orders == nil then return false end
+		for _, list in pairs(self.orders) do
+			for _, o in ipairs(list) do
+				if o.id == orderId then return o.mode == "NOW" end
+			end
+		end
+		return false
 	end
 
 	@ExecSpace("ServerOnly")
@@ -219,17 +277,27 @@ script DispatchService extends Logic
 					-- 그 사이 탈락했다: 조용히 버린다.
 					self:CancelAllOfVillage(villageId)
 				else
+					-- 즉시 주문(mode NOW · 1.1-H04)은 자기 타이머(ReleaseImmediate)가 푼다 → 건너뛰고 대기열에 남긴다.
 					local spawned = 0
+					local released = 0
+					local keep = {}
 					for _, o in ipairs(list) do
-						spawned = spawned + _MinionFlowService:SpawnDispatched(villageId, o)
+						if o.mode == "NOW" then
+							table.insert(keep, o)
+						else
+							spawned = spawned + _MinionFlowService:SpawnDispatched(villageId, o)
+							released = released + 1
+						end
 					end
-					self.orders[villageId] = {}
+					self.orders[villageId] = keep
 					total = total + spawned
-					log("[Dispatch] release " .. villageId .. " orders=" .. tostring(#list) .. " spawned=" .. tostring(spawned) .. " phase=" .. tostring(phaseName))
+					if released > 0 then
+						log("[Dispatch] release " .. villageId .. " orders=" .. tostring(released) .. " keptNow=" .. tostring(#keep) .. " spawned=" .. tostring(spawned) .. " phase=" .. tostring(phaseName))
+					end
 					if spawned > 0 then
-						-- 🔴 방어자에게는 **섞였다는 사실 + 총량 등급만** (WO-031 묶음 1 · 예전엔 정확한 마릿수를 토스트로 알렸다).
+						-- 🔴 방어자에게는 **섞였다는 사실만** 문장으로(1.1-H06) · 총량 등급(소/중/대)은 레인 HUD 배지가 보여 준다(WO-031 묶음 1).
 						if _LaneStateService ~= nil then
-							_LaneStateService:Toast(owner, "파병이 웨이브에 섞였습니다 — 총량 " .. self:GradeForUnits(spawned))
+							_LaneStateService:Toast(owner, self.MixedAlertText)
 							_LaneStateService:Push(owner, "defense")
 						end
 						self:RefreshBadge(villageId)
@@ -331,6 +399,9 @@ script DispatchService extends Logic
 	@ExecSpace("ServerOnly")
 	method void ResetBadges()
 		-- 매치 종료: 배지 원장을 비우고 마지막 수신자들 HUD 를 끈다.
+		-- 1.1-H04: 매치 번호를 올려 남은 즉시 파병 타이머를 무효화하고 이전 판 주문을 버린다. 🔴 아래 early return 보다 앞에 둔다.
+		self.matchSerial = self.matchSerial + 1
+		self.orders = {}
 		if self.badge == nil then return end
 		for _, rec in pairs(self.badge) do
 			if rec ~= nil and rec.owner ~= nil and rec.owner ~= "" then self:SendBadge("", rec.owner) end

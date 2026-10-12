@@ -41,9 +41,13 @@ script LaneStateService extends Logic
 	property number TaxiSideOffset = 1.5
 
 	-- ── 침범 안정장치 (WO-016 · 추가기획2) — 잠정값은 전부 property (미정-값.md E-1·E-2). 값이 정해지면 여기만 바꾼다. ──
-	-- 수비대·포탑(공격하는 억제기 포함)이 **플레이어**를 때릴 때 곱하는 계수. 원문 "(계수-기본10)배" → 기본 10.0 (E-1 잠정).
-	-- 읽는 곳 = DefenderService.SpawnOne · LaneFacilityService.ApplyCombat 두 군데뿐. 미니언에는 안 붙는다(FactionAttack 기본 1.0).
+	-- **수비대**가 플레이어를 때릴 때 곱하는 계수. 원문 "(계수-기본10)배" → 기본 10.0 (E-1 잠정).
+	-- 읽는 곳 = DefenderService.SpawnOne 한 곳. 시설(포탑 · 공격하는 억제기)은 1.1-H11 부터 플레이어 배수가 없다(×1 · 대신 FacilityNoMinionAtkMul). 미니언에는 안 붙는다(FactionAttack 기본 1.0).
 	property number PlayerDamageMul = 12.0
+
+	-- 시설 공격 보정(1.1-H11): 시설 구역 안에 적팀 미니언이 1마리도 없으면 시설의 기본 피해 × 이 값(플레이어 · 미니언 공통). 미니언이 있으면 ×1.
+	--   LaneFacilityService.ApplyCombat 이 FactionAttack.NoMinionMul 로 넣는다.
+	property number FacilityNoMinionAtkMul = 10.0
 
 	-- 억제기 파괴 폭발 (B3 · 사용자 2026-09-22 · 전 마을 공통): 파괴 순간 반경 안의 **미니언에게만** 고정 피해. 연출 = ICBM special 클립(×0.8) + Hit 사운드.
 	property number SuppressorBoomDamage = 10000
@@ -232,7 +236,7 @@ script LaneStateService extends Logic
 	method void LoadTowerDef()
 		-- TowerConfig.csv(계약서 A-2-4 · Stage 3값 · 비용 = 주화). 없으면 결정 §1-1 기본값.
 		self.towerDef = {
-			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, attackSpeed = { 1.5, 1.3, 1.1 }, range = { 3.0, 3.5, 4.0 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.05, rebuild = 30 },
+			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, attackSpeed = { 1.5, 1.3, 1.1 }, range = { 4.5, 5.0, 5.5 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.05, rebuild = 30 },
 			SUPPRESSOR = { name = "억제기", maxHp = { 1200, 1800, 2600 }, attack = { 0, 0, 0 }, attackSpeed = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 30, 60, 0 }, repairPerHp = 0.05, rebuild = 50, hpMul = 1.3, atkMul = 1.3, expMul = 1.2 },
 			CORE = { name = "넥서스", maxHp = { 2000 }, attack = { 0 }, attackSpeed = { 0 }, range = { 0 }, upgrade = { 0 }, repairPerHp = 0.1, rebuild = 0 },
 		}
@@ -1249,10 +1253,11 @@ script LaneStateService extends Logic
 			end
 			if _DispatchService ~= nil then
 				local rule = _DispatchService:CurrentRule()
-				add({ "RULE", tostring(math.floor(rule.villageCap or 0)), tostring(math.floor(rule.mesoCost or 0)), b2s(rule.enabled) })
-				-- Q|orderId|대상마을이름|몬스터이름|마릿수 — 내가 보낸 대기 묶음(투입 전이라 취소 가능).
+				-- RULE|동시상한|메소|켜짐|즉시출발초(1.1-H04 · append-only)
+				add({ "RULE", tostring(math.floor(rule.villageCap or 0)), tostring(math.floor(rule.mesoCost or 0)), b2s(rule.enabled), tostring(math.floor(_DispatchService.ImmediateDelaySeconds)) })
+				-- Q|orderId|대상마을이름|몬스터이름|마릿수|출발방식(WAVE/NOW · 1.1-H04 · append-only) — 내가 보낸 대기 묶음(WAVE 는 투입 전 취소 가능 · NOW 는 취소 불가).
 				for _, o in ipairs(_DispatchService:PendingOf(userId)) do
-					add({ "Q", o.id, self:VillageName(o.target), tostring(o.name or o.monsterId), tostring(o.qty) })
+					add({ "Q", o.id, self:VillageName(o.target), tostring(o.name or o.monsterId), tostring(o.qty), tostring(o.mode or "WAVE") })
 				end
 			end
 		elseif kind == "gate" then
@@ -1571,12 +1576,13 @@ script LaneStateService extends Logic
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local picks = {}
 		for i = 1, math.floor(bundles or 0) do table.insert(picks, i) end
-		self:DispatchPicked(senderUserId, targetVillageId, picks)
+		self:DispatchPicked(senderUserId, targetVillageId, picks, "WAVE")
 	end
 
 	@ExecSpace("Server")
-	method void RequestDispatchPick(string targetVillageId, string picks)
+	method void RequestDispatchPick(string targetVillageId, string picks, string mode)
 		-- 파병 창에서 고른 묶음만 보낸다(보유 수비대 순번 1-based · 쉼표 · 사용자 2026-10-07 "내 수비대를 눌러서 파병 보내기").
+		-- mode(1.1-H04 · H05) = 파병 창에서 고른 출발 방식. 서버는 "NOW"(즉시)만 인정하고 그 밖은 "WAVE"(미니언과 함께).
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local list = {}
 		local seen = {}
@@ -1588,13 +1594,16 @@ script LaneStateService extends Logic
 			end
 		end
 		table.sort(list)
-		self:DispatchPicked(senderUserId, targetVillageId, list)
+		local m = "WAVE"
+		if mode == "NOW" then m = "NOW" end
+		self:DispatchPicked(senderUserId, targetVillageId, list, m)
 	end
 
 	@ExecSpace("ServerOnly")
-	method void DispatchPicked(string fromUserId, string targetVillageId, any picks)
+	method void DispatchPicked(string fromUserId, string targetVillageId, any picks, string mode)
 		-- 보유 수비대 중 picks(오름차순 순번) 묶음을 **통째로** 빼내 대상 마을 대기열에 넣는다.
-		-- 실제 이동은 다음 웨이브다 — MatchSessionLogic 이 SpawnWave 직후 DispatchService.Release 를 부른다. 그 전까지 취소할 수 있다.
+		-- mode "WAVE"(미니언과 함께): 실제 이동은 다음 웨이브다 — MatchSessionLogic 이 SpawnWave 직후 DispatchService.Release 를 부른다. 그 전까지 취소할 수 있다.
+		-- mode "NOW"(즉시 · 1.1-H04): DispatchService.ImmediateDelaySeconds(10) 뒤 출발 · 취소 불가 · 상한(동시 묶음)은 같은 대기열로 센다.
 		-- 원장(v.defenders)과 엔티티(DefenderService.units) 를 **함께** 비운다. 원장만 지우면 몬스터가 마을에 남는다(예전 스텁의 버그).
 		local uid = fromUserId
 		local v = self:StateOfUser(uid)
@@ -1643,7 +1652,7 @@ script LaneStateService extends Logic
 				upgradeLevel = math.max(1, math.floor(took.upgradeLevel or upgradeLevel))
 			end
 			if qty > 0 then
-				_DispatchService:Submit(uid, v.id, targetVillageId, monsterId, d.name or tostring(monsterId), qty, statMul, upgradeLevel)
+				_DispatchService:Submit(uid, v.id, targetVillageId, monsterId, d.name or tostring(monsterId), qty, statMul, upgradeLevel, mode)
 				sent = sent + 1
 				units = units + qty
 			end
@@ -1651,15 +1660,18 @@ script LaneStateService extends Logic
 		-- 업적 DISPATCH_UNITS(파병 보낸 개체 수 누적 · WO-031 묶음 5).
 		if units > 0 and _AchievementService ~= nil then _AchievementService:Add(uid, "DISPATCH_UNITS", 0, units) end
 		log("[Lane] " .. v.id .. " dispatch " .. tostring(sent) .. " bundles (" .. tostring(units) .. " units) -> "
-			.. targetVillageId .. " cost=" .. tostring(cost) .. " (" .. uid .. ")")
+			.. targetVillageId .. " cost=" .. tostring(cost) .. " mode=" .. tostring(mode) .. " (" .. uid .. ")")
 		if sent == 0 then
 			self:Toast(uid, "보낼 수 있는 수비대가 없습니다")
 		else
-			self:Toast(uid, targetName .. " 로 " .. tostring(sent) .. "묶음(" .. tostring(units) .. "마리) 파병 접수 — 다음 투입 때 합류합니다 (그 전까지 취소 가능)")
-			-- 🔴 방어자에게는 **총량 등급만** 알린다 (GDD §4.3 정보 비대칭 — 누가·무엇을 보냈는지는 공개하지 않는다).
-			--    접수 순간엔 아직 안 섞였다 → "온다" 로 알리고, 실제로 섞이는 투입 순간은 DispatchService.Release 가 알린다 + 레인 HUD 배지(WO-031 묶음 1).
-			local grade = _DispatchService:GradeOf(targetVillageId)
-			if grade ~= "" and owner ~= "" then self:Toast(owner, "내 레인으로 파병이 옵니다 — 다음 투입 때 섞임 · 총량 " .. grade) end
+			if mode == "NOW" then
+				self:Toast(uid, targetName .. " 로 " .. tostring(sent) .. "묶음(" .. tostring(units) .. "마리) 즉시 파병 — " .. tostring(math.floor(_DispatchService.ImmediateDelaySeconds)) .. "초 뒤 출발합니다 (취소 불가)")
+				-- 받는 쪽(1.1-H06): 즉시 파병은 접수 순간 문장 하나만(접수당 1회 · 누가 · 무엇을 · 몇 마리인지는 GDD §4.3 대로 감춘다).
+				if owner ~= "" then self:Toast(owner, _DispatchService.ImmediateAlertText) end
+			else
+				self:Toast(uid, targetName .. " 로 " .. tostring(sent) .. "묶음(" .. tostring(units) .. "마리) 파병 접수 — 다음 투입 때 합류합니다 (그 전까지 취소 가능)")
+				-- 받는 쪽(1.1-H06): 미니언과 함께는 접수 순간 알리지 않는다 — 실제로 섞이는 투입 순간 DispatchService.Release 가 문장(MixedAlertText) + 레인 HUD 배지(총량 등급)로 알린다.
+			end
 		end
 		self:Push(uid, "dispatch")
 		self:Push(uid, "recruit")
@@ -1694,6 +1706,12 @@ script LaneStateService extends Logic
 		local uid = senderUserId
 		local v = self:StateOfUser(uid)
 		if v == nil or _DispatchService == nil then return end
+		-- 즉시 파병은 취소할 수 없다(1.1-H04 · 받는 쪽에 이미 알림이 나갔다).
+		if _DispatchService:IsImmediate(orderId) then
+			self:Toast(uid, "즉시 파병은 취소할 수 없어요")
+			self:Push(uid, "dispatch")
+			return
+		end
 		if not _DispatchService:CanCancel() then
 			self:Toast(uid, "투입이 임박해 취소할 수 없습니다")
 			self:Push(uid, "dispatch")

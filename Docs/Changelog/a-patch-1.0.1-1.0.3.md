@@ -84,3 +84,18 @@
 - **상대 수비대 처치 보상** (D21 · D22): 다른 마을 플레이어(투사체 포함)가 수비대를 잡으면 그 마을 지역 재화 2개(`DefenderUnit.RewardKiller` · `DropTableLogic.RegionItemOfVillage` · `DefenderService.KillRewardCount` · 튜토리얼 상대 제외).
 - **문구** (D23 · D25): ★1 로비 설명 "경험치와 사냥 보상 2배 · … · 보스 HP와 공격 절반 (발록 공격 1/4)"(4토막) · 가이드 G12 · 튜토리얼 3-7b · 6-1b · 소개 창 재화 탭(메소 · 주화 · 꿈의 조각 · 영혼석 · 지역 재화 줄 · 웨이브 미니언 칩 줄에서 "경험치" 칩 끔) · 주석 · `TowerConfig` 노트 · 계약서(`DifficultyRuleKey` · 확정값 · `CoinDrop`).
 - 🔴 디스코드(D24): `build-db.cjs` 가 지워진 `HuntRewardMul` 을 읽으므로 머지 직후 같이 고친다.
+
+## 8단계 — 레인 · 파병 · 시설 (1.1-H 나머지)
+
+- **시설 공격 시작 범위 = 공격 상자** (H16): `TurretAI` 가 원(위로도 사거리만큼) 대신 `FactionAttack.InAttackBox`(좌우 = 사거리 · 바닥에서 위로 4.0)로 표적을 고른다. FactionAttack 이 없는 포탑만 옛 원.
+- **사거리** (H17 · H18 · H19): `TowerConfig` 포탑 · 억제기 `Range` 3.0/3.5/4.0 → **4.5/5.0/5.5** · 수비대 사거리 = 포탑 Lv1(4.5 · 목줄 3.6 · 탐지 6.5) · 코드 기본값도 4.5.
+- **미니언 조건 공통 판정** (H09): `LaneFacility.HasEnemyMinionInRange` — 구역(가로 반폭 `RangeHalfW` · 바닥에서 위로 4.0) 안에 살아 있는 적팀 미니언(파병 · 좀비머쉬맘 포함 · 플레이어 제외)이 있는가 · 0.2초 캐시. 구역 = 포탑 사거리 / 억제기 SUPPRESSOR `Range` / 넥서스 CORE `Range` **4.5**(새 값).
+- **시설 방어 보정** (H10): 플레이어 피해는 구역 안 적팀 미니언이 없으면 5%(`NoMinionDamageMul` · 옛 `PlayerDamageMulBeforePhase3`) · 있으면 100% — **페이즈 무관**.
+- **시설 공격 보정** (H11): 구역 안 적팀 미니언이 없으면 시설 기본 피해 ×10(`LaneStateService.FacilityNoMinionAtkMul` → `FactionAttack.NoMinionMul`) · 시설의 대플레이어 배수(`PlayerDamageMul` 12) 삭제(×1) — 수비대는 12 유지.
+- **3페이즈 전 방어막 그림** (H12 · 표시 전용): 사용자 RUID `bb9087a1…`(애니메이션)를 시설 자식 `FacilityShield`(`AuraCircle` 모델 재사용)로 덮는다 — 주인 있는 마을 · 살아 있는 시설 · PHASE3/EXPIRED 전. 크기 = 피격 상자 × 1.15 · 층 2(클라 보정). 피해 계산은 그림과 무관.
+- **페리온 억제기 반사** (H15): 미니언 · 파병 유닛 = `REFLECT` 10 → **5** · 플레이어 = 새 키 `REFLECT_PLAYER` **1**(행 추가 · 미니언 조건으로 깎인 뒤의 실제 피해 기준).
+- **억제기 오라 가로** (H20 ~ H22): `AuraWidthMul` 3 → 8 = 가로 **16.0**(커닝 · 엘리니아 · 노틸러스).
+- **즉시 파병** (H04 · H05 · H06): 파병 창 푸터에 출발 방식 칸 2개("미니언과 함께" · "즉시" · 열 때마다 함께로) · 즉시 = 접수 10초 뒤(`DispatchService.ImmediateDelaySeconds`) 그 주문만 출발 · 취소 불가 · 이름 접두 `J`(배지 제외) · 동시 상한은 합산 · 매치 끝에 남은 타이머 무효화(`matchSerial`). 받는 쪽: 즉시 = 접수 순간 "상대 공격대가 지금 즉시 공격하러 오고 있어요!!" · 함께 = 섞이는 순간 "미니언 속에 상대 공격대가 함께 있어요!! 조심!!"(접수 순간 알림 없앰 · 배지 유지). 뷰 RULE 5번째 칸 · Q 6번째 칸 append.
+- **발록 도전 알림** (H07 · H08): 도착 순간 도전자를 뺀 참가자 전원에게 "{마을} 마을의 주인이 발록에 도전하고 있어요!" · `BalrogRoomService.IsChallenging`(전광판 9단계가 읽음 · 통계 창 쪽 공급은 I11 로 불필요).
+- **문구 · 문서**: 게임 소개 창 파병 담당관 설명 "1페이즈부터 · 미니언과 함께 또는 즉시" · 계약서(`TraitKey` `REFLECT_PLAYER` · 반사 · 오라 16.0 · `Range` 의미 · 파병 출발 방식) · GDD 시설 저항 문장 2곳. 튜토리얼 · 알림 카드 문구(K03 · K04)는 11단계.
+- 🔴 디스코드: `build-db.cjs` 가 `PlayerDamageMulBeforePhase3` 를 읽으므로(L679/L682) 머지 직후 `NoMinionDamageMul` 로 같이 고친다.
