@@ -3,6 +3,7 @@ script CraftService extends Logic
 
 	-- 제작 장인 · 지역 장비 상인 (같은 표 CraftRecipe · 계약서 A-2-8c). 서버 권한: 지역 검증 → 메소·재료 검증 → 차감 → 지급 → ItemCraftedEvent → 인벤토리 갱신 → 결과 RPC.
 	-- 실패는 Deny 로 돌려보낸다(아무것도 안 바꿈). 클라는 응답으로만 화면을 바꾼다 (§5-5).
+	-- 한 건 처리(CraftOne)는 단건 제작(RequestCraft)과 레벨제 일괄 구매(RequestCraftBulk · 1.1-J01)가 같이 쓴다.
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -24,28 +25,39 @@ script CraftService extends Logic
 		local mapName = ""
 		if isvalid(player) and isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
 		local here = _ItemCatalog:ShopKeyOfMap(mapName)
+		-- 한 건 처리(지역 → 결과 정의 → 재료 → 메소 검증 후 차감 · 지급 · 이벤트 · 성장 점수). 실패면 사유 문장(1.1-J01 · 예전 Deny 문장 그대로).
+		local why = self:CraftOne(userId, recipe, here)
+		if why ~= "" then
+			self:Deny(userId, recipeId, why)
+			return
+		end
+		_InventoryService:PushInventory(userId)
+		local def = _ItemCatalog:Get(recipe.resultItemId)
+		self:Result(userId, recipeId, true, ((def ~= nil) and def.name or recipe.resultItemId) .. " 획득")
+	end
+
+	@ExecSpace("ServerOnly")
+	method string CraftOne(string userId, any recipe, string here)
+		-- 레시피 한 건을 처리한다(1.1-J01 · 단건 RequestCraft 에서 뺀 본문). 성공 "" / 실패 = 거절 사유 문장(예전 Deny 에 넘기던 문장 그대로 · 실패하면 아무것도 안 바꿨다).
+		-- 인벤토리 푸시와 결과 RPC(토스트 · 공방 창)는 부르는 쪽이 한다 — 일괄 구매는 마지막에 한 번만 푸시한다. 건마다 ItemCraftedEvent · 성장 점수(CRAFT_FIRST)는 단건과 똑같이 나간다.
 		-- 공용 행(EQUIP)은 어느 마을 상인이든 판다 · 재료의 REGION_LOCAL 은 그 마을 지역 재화 (2026-10-01).
 		if not _ItemCatalog:RecipeAvailableAt(recipe, here) then
-			self:Deny(userId, recipeId, "이 지역에서는 만들 수 없습니다")
-			return
+			return "이 지역에서는 만들 수 없습니다"
 		end
 		local mats = _ItemCatalog:RecipeMats(recipe, here)
 		local def = _ItemCatalog:Get(recipe.resultItemId)
 		if def == nil then
-			self:Deny(userId, recipeId, "결과 아이템 정의가 없습니다: " .. recipe.resultItemId)
-			return
+			return "결과 아이템 정의가 없습니다: " .. recipe.resultItemId
 		end
 		for _, m in ipairs(mats) do
 			if _InventoryService:CountItem(userId, m.itemId) < m.count then
 				local md = _ItemCatalog:Get(m.itemId)
-				self:Deny(userId, recipeId, ((md ~= nil) and md.name or m.itemId) .. " 이(가) 부족합니다 (" .. tostring(m.count) .. "개 필요)")
-				return
+				return ((md ~= nil) and md.name or m.itemId) .. " 이(가) 부족합니다 (" .. tostring(m.count) .. "개 필요)"
 			end
 		end
 		local econ = _SummonManager:GetEcon(userId)
 		if recipe.mesoCost > 0 and (econ == nil or econ.meso < recipe.mesoCost) then
-			self:Deny(userId, recipeId, "메소가 부족합니다 (" .. tostring(recipe.mesoCost) .. ")")
-			return
+			return "메소가 부족합니다 (" .. tostring(recipe.mesoCost) .. ")"
 		end
 
 		for _, m in ipairs(mats) do
@@ -58,19 +70,70 @@ script CraftService extends Logic
 
 		local ev = ItemCraftedEvent()
 		ev.UserId = userId
-		ev.RecipeId = recipeId
+		ev.RecipeId = recipe.id
 		ev.ResultItemId = recipe.resultItemId
 		ev.Count = given
 		ev.MesoCost = recipe.mesoCost
 		self:SendEvent(ev)
 
-		_InventoryService:PushInventory(userId)
 		local matLog = ""
 		for _, m in ipairs(mats) do matLog = matLog .. " " .. m.itemId .. "-" .. tostring(m.count) end
-		log("[Item] craft OK " .. recipeId .. " → " .. recipe.resultItemId .. " x" .. tostring(given) .. " meso-" .. tostring(recipe.mesoCost) .. matLog .. " at " .. here .. " (" .. userId .. ")")
+		log("[Item] craft OK " .. recipe.id .. " → " .. recipe.resultItemId .. " x" .. tostring(given) .. " meso-" .. tostring(recipe.mesoCost) .. matLog .. " at " .. here .. " (" .. userId .. ")")
 		-- 마을 성장도: 레시피 첫 완성 (WO-031 묶음 2 · GrowthPoint CRAFT_FIRST · 같은 레시피는 매치당 1번).
-		if _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(userId, "CRAFT_FIRST", recipeId, 0) end
-		self:Result(userId, recipeId, true, def.name .. " 획득")
+		if _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(userId, "CRAFT_FIRST", recipe.id, 0) end
+		return ""
+	end
+
+	@ExecSpace("Server")
+	method void RequestCraftBulk(integer tier, string job, string partsCsv)
+		-- 레벨제 일괄 구매(1.1-J01): 그 렙제 · 그 직업의 장비를 켜 둔 부위만 무기 → 옷 → 모자 → 장갑 → 신발 순서로 한 건씩 산다(인자는 integer · string 만 — any/table 은 LEA-3036).
+		-- ① 순서 = 목록 순서 ② 재화(메소 · 지역 재화)가 모자라는 첫 건에서 멈춘다 — 뒤의 더 싼 건을 건너뛰어 사지 않는다 ③ 멈추기 전에 산 것은 되돌리지 않는다
+		-- ④ 이미 가진 장비를 건너뛰지 않는다(보유 검사 없음) ⑤ 건마다 ItemCraftedEvent · 성장 점수가 단건과 똑같이 나간다(CraftOne).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local userId = senderUserId
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local mapName = ""
+		if isvalid(player) and isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
+		local here = _ItemCatalog:ShopKeyOfMap(mapName)
+		if not _ItemCatalog:IsRegionShop(here) then
+			self:Deny(userId, "BULK", "이 지역에서는 만들 수 없습니다")
+			return
+		end
+		local parts = partsCsv or ""
+		if not _ItemCatalog:IsBulkTier(tier) or not _ItemCatalog:IsBulkJob(job) or #parts > 64 then
+			self:Deny(userId, "BULK", "잘못된 요청입니다")
+			return
+		end
+		local list = _ItemCatalog:BulkRecipes(here, job, tier, parts)
+		if #list == 0 then
+			self:Deny(userId, "BULK", "살 장비가 없습니다")
+			return
+		end
+		local bought = 0
+		local stopName = ""
+		local why = ""
+		for _, r in ipairs(list) do
+			why = self:CraftOne(userId, r, here)
+			if why ~= "" then
+				local d = _ItemCatalog:Get(r.resultItemId)
+				stopName = (d ~= nil) and d.name or r.resultItemId
+				break
+			end
+			bought = bought + 1
+		end
+		-- 인벤토리 푸시는 마지막에 한 번.
+		if bought > 0 then _InventoryService:PushInventory(userId) end
+		log("[Item] craft bulk tier=" .. tostring(tier) .. " job=" .. job .. " parts=" .. parts .. " bought=" .. tostring(bought) .. "/" .. tostring(#list)
+			.. ((why ~= "") and (" stop=" .. stopName .. ": " .. why) or "") .. " at " .. here .. " (" .. userId .. ")")
+		if bought == 0 then
+			-- 하나도 못 샀다: CraftOne 이 준 사유 그대로.
+			self:Deny(userId, "BULK", why)
+		elseif why ~= "" then
+			-- 토스트 문장에는 " — " 를 쓰지 않는다(UIToast 가 그 자리에서 두 줄로 가른다).
+			self:Result(userId, "BULK", true, tostring(tier) .. "렙제 " .. tostring(bought) .. "개만 구매 · " .. stopName .. "부터 재화가 모자라요")
+		else
+			self:Result(userId, "BULK", true, tostring(tier) .. "렙제 " .. tostring(bought) .. "개 구매")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
