@@ -1096,7 +1096,9 @@ script SkillExecutors extends Logic
                 -- hitAt = 폴백 타격 시점(초). 정상 경로는 모션 세트(Skill/SkillMotionSet.csv)에서 고른 모션의 HitTime — 세트가 없을 때만 이 값.
                 -- 둘 다 0.45 = 휘두르기 6종(swingO1~3 · swingT1~3) 2프레임(칼이 앞으로 내려온 접촉 프레임) 시작 · 2026-09-25 Play 실측(프레임 0.30/0.15/0.35s).
                 -- 판정 상자 위쪽 = 발 위 1.2(1.1-B04 · 예전 MeleeArcHeight 1.5). 앞은 Range 그대로. MeleeArcHeight 자체는 에너지 차지 주먹이 같이 써서 안 바꾼다.
-                box = { up = 1.2 },
+                -- 1.0.3-M1-02: 세 변을 모두 적는다(앞 2.5 · 뒤 0 · 위 1.2 = 지금 실제 판정 그대로 · 값은 안 바뀌었다). front 를 적으면 CSV Range 2.5 는 이 스킬에서 안 쓰인다(섬머솔트 킥과 같은 관례 · SkillInfo.csv #Note).
+                --   이펙트와의 일치(앞 2.5 가 시전 클립 · 잔상보다 훨씬 길다)는 실측 뒤 결정한다 — 어느 쪽을 맞출지는 사용자 결정(보고서 "사용자 질문"). 로그: SkillAttack.LogShape "shape find SK_W11".
+                box = { front = 2.5, back = 0, up = 1.2 },
                 cast = { ruid = "522793cef4ff4b79bdf73b9eda9386f8" },
                 impact = { ruid = "dad03b3a528348bf98295b01edd621a4" },
                 hitAt = 0.45,
@@ -1864,6 +1866,8 @@ script SkillExecutors extends Logic
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
             skillAttack.PendingImpactRuid = hitRuid
+            -- 1.0.3-M1-03: 명중 그림 크기 손잡이(effectOverrides.SK_W11_RB.hitScale · 없으면 1 = 예전과 같다). 그림 크기만 — 범위 표지는 아니다.
+            skillAttack.PendingImpactScale = entry.hitScale or 1
             skillAttack.PendingImpactRepeat = entry.hits
             skillAttack.PendingImpactInterval = entry.hitInterval
             skillAttack.PendingHitSound = ""
@@ -4597,11 +4601,9 @@ script SkillExecutors extends Logic
         local hitCount = skillData.hitCount
         if hitCount <= 0 then hitCount = 1 end
         -- 상자는 시전 순간 자리(시전 락 동안 못 움직인다 · 섬머솔트 킥과 같은 규칙).
-        local box = {
-            posX = pos.x + dirX * range / 2, posY = pos.y + self.MeleeArcHeight / 2,
-            sizeX = range, sizeY = self.MeleeArcHeight,
-            hitCount = hitCount,
-        }
+        -- 1.0.3-M1-05: 근접 상자 helper(ResolveMeleeBox) 공용 — effectOverrides.SK_P21.box 가 없으면 예전 식(앞 Range · 위 MeleeArcHeight · 뒤/아래 0)과 같다.
+        local box = self:ResolveMeleeBox(skillId, pos, dirX, range, self.MeleeArcHeight)
+        box.hitCount = hitCount
         local entry = self.effectOverrides[skillId]
         local hitDelay = 0
         if entry ~= nil and entry.punchHitDelay ~= nil and entry.punchHitDelay > 0 then hitDelay = entry.punchHitDelay end
@@ -4609,7 +4611,7 @@ script SkillExecutors extends Logic
         if entry ~= nil and entry.punchImpact ~= nil and entry.punchImpact.repeatInterval ~= nil then interval = entry.punchImpact.repeatInterval end
         if self.PunchSequenceHits and hitCount > 1 and interval > 0 then
             -- 🔴 2026-09-27: 폭발 1번 = 타격 1번. 대상은 첫 타 때 고정(가까운 순 · 상한 skillTargetCaps) · k번째 타격 = hitDelay + (k−1) × interval · 표 % × 1.
-            --   폭발(연출)은 타격이 막혀도 고정한 대상 위에 제때 튼다(몬스터 피격 무적은 #120 에서 없어졌지만 main 을 합치기 전 판에서도 화면은 원작 그대로).
+            --   폭발(연출)은 고정한 대상 중 **실제로 맞은 대상 위에만** 제때 튼다(1.0.3-M1-11 · 명중 판정 MISS 한 대상은 10타 내내 폭발 없음 · 예전에는 타격이 막혀도 전원에게 틀었다).
             --   명중음(extraSounds.hit)은 **시전당 한 번**(b/skill-pirate-followup · 2026-10-04): 첫 타(idx == 1)에서 실제로 맞은 대상이 하나라도 있으면(PassHitCount) 첫 대상 자리에서 한 번.
             --     예전 = 대상마다 첫 타에 한 번(4명이면 4번 겹침 · 레이징 블로우처럼 한 번으로).
             local fireSeq = function()
@@ -4623,21 +4625,25 @@ script SkillExecutors extends Logic
                     local idx = k
                     _TimerService:SetTimerOnce(function()
                         if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+                        -- 1.0.3-M1-11: 판정(DealSequenceHit)을 먼저 돌리고 **실제로 맞은 대상 위에만** 폭발을 튼다(같은 서버 틱이라 화면 순서 차이는 없다).
+                        --   예전에는 폭발을 먼저 고정 대상 전원에게 틀어, 1타째에 MISS 한 대상에게도 폭발 10번이 떴다. 명중 판정은 1타째 결과를 10타가 그대로 쓰므로(PassHitRoll seqRolls) 빗나간 대상은 폭발이 없다.
+                        skillAttack:DealSequenceHit(skillId, level, box, targets, idx)
                         local soundPos = nil
+                        local blasts = 0
                         for _, t in ipairs(targets) do
-                            if isvalid(t) and isvalid(t.TransformComponent) then
+                            if isvalid(t) and isvalid(t.TransformComponent) and skillAttack:HitInLastSequencePass(t) then
                                 local tp = t.TransformComponent.WorldPosition
                                 if impact ~= "" then
                                     _EffectService:PlayEffect(impact, casterEntity, Vector3(tp.x, tp.y + 0.5, tp.z), 0, Vector3(sc, sc, 1), false)
+                                    blasts = blasts + 1
                                 end
                                 if soundPos == nil then soundPos = tp end
                             end
                         end
-                        skillAttack:DealSequenceHit(skillId, level, box, targets, idx)
                         if idx == 1 then
                             local hits = skillAttack.PassHitCount
                             if hits > 0 and soundPos ~= nil then self:PlaySoundRuid(hitSound, casterEntity, soundPos) end
-                            log("SkillExecutors: PUNCH hit sound once targets=" .. tostring(#targets) .. " hit=" .. tostring(hits) .. " sound=" .. tostring(hits > 0 and soundPos ~= nil))
+                            log("SkillExecutors: PUNCH hit sound once targets=" .. tostring(#targets) .. " hit=" .. tostring(hits) .. " blasts=" .. tostring(blasts) .. " sound=" .. tostring(hits > 0 and soundPos ~= nil))
                         end
                     end, (idx - 1) * interval)
                 end
@@ -5398,6 +5404,38 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method table ResolveMeleeBox(string skillId, Vector3 pos, number dirX, number defaultFront, number defaultUp)
+        -- 1.0.3-M1-05: 근접 판정 상자 한 곳(ExecuteMeleeArc · ExecuteChargePunch 공용). 시전자 발(pos) 기준 · 바라보는 쪽(dirX ±1)이 +x.
+        -- 기본 = 앞 defaultFront · 뒤 0 · 위 defaultUp · 아래 0(발에서 시작). effectOverrides[skillId].box = { front, back, up, down } 가 있으면 있는 키만 덮는다.
+        --   down 은 신규 키(기본 0) — 0 이면 posY = pos.y + up/2 · sizeY = up 으로 예전 식과 같다(파워 스트라이크 · 섬머솔트 킥 판정 그대로).
+        -- 반환 { posX, posY, sizeX, sizeY } — SkillAttack 상자 표와 같은 꼴. hitCount 는 부르는 쪽이 덧붙인다.
+        --
+        -- ── 1.0.3 §1 스킬 판정 ↔ 이펙트 일치 (M1) — 한눈에 ──
+        --   대상(근접 · 범위): 파워 스트라이크 SK_W11(M1-02) · 레이징 블로우 SK_W11_RB(M1-03) · 섬머솔트 킥 SK_P11(M1-04) · 피스트인레인지 SK_P21 재시전(M1-05) · 텔레포트 강화 도착 광역 SK_M21(M1-06) · 도발 SK_W22(M1-07) · 궁 4종(M1-08 · 점검만).
+        --   제외(M1-09): 투사체가 날아가 맞히는 스킬(SK_N01 · SK_M11 · SK_M11_FH · SK_A11 · SK_A21 · SK_T11) · 그 폭발 상자(effectOverrides.*.explode) · 원거리/근접 기본 공격(PlayerAttack.AttackNormal 의 1×1 상자 — 스킬이 아니다).
+        --   정본 = 판정 상자(1.1 패치노트가 수치를 공개했다). 이펙트는 scale / offset 으로 맞춘다 · 허용 오차 = 각 변 ±0.10 유닛. 맞춰 보는 법 = SkillAttack.LogShape 로그("SkillAttack: shape ..." — 상자 네 변 · 후보 몬스터 좌표)와 이펙트 가장자리 대조.
+        --   새 이펙트가 필요할 때(M1-10): 시안(HTML)을 만들어 사용자에게 보고하고 **사용자가 고르기 전에는 effectOverrides 의 ruid 를 바꾸지 않는다**(자리표시자 "<<...>>" 도 넣지 않는다 — cast 에는 HasValidFrames 거름이 안 통한다).
+        --     고른 뒤: 시안을 스프라이트/클립으로 업로드(그룹 리소스 mIYbC) → ruid · scale · offset 재산정 → LogShape + 스크린샷으로 ±0.10 재확인.
+        --     시안 규격(왼쪽을 본 그림 · 코드가 오른쪽을 볼 때 FlipX): 폭 px = (front + back) × 100 · 높이 px = (up + down) × 100 · pivot x(왼쪽에서) = front × 100 · pivot y(아래에서) = down × 100.
+        local front = defaultFront
+        local back = 0
+        local up = defaultUp
+        local down = 0
+        local entry = self.effectOverrides[skillId]
+        if entry ~= nil and entry.box ~= nil then
+            local b = entry.box
+            front = b.front or front
+            back = b.back or back
+            up = b.up or up
+            down = b.down or down
+        end
+        return {
+            posX = pos.x + dirX * (front - back) / 2, posY = pos.y + (up - down) / 2,
+            sizeX = front + back, sizeY = up + down,
+        }
+    end
+
+    @ExecSpace("ServerOnly")
     method void ExecuteMeleeArc(string skillId, table skillData, Entity casterEntity, number level)
         -- 근접 호(파워 스트라이크·섬머솔트 킥): 시전자 앞쪽 Range 폭의 상자에 HitCount 회.
         -- 바라보는 방향은 서버에서 PlayerControllerComponent.LookDirectionX 로 읽는다(SkillAttack.SpawnProjectile 와 동일).
@@ -5417,23 +5455,10 @@ script SkillExecutors extends Logic
         local hitCount = skillData.hitCount
         if hitCount <= 0 then hitCount = 1 end
 
-        local box = {
-            posX = pos.x + dirX * range / 2, posY = pos.y + self.MeleeArcHeight / 2,
-            sizeX = range, sizeY = self.MeleeArcHeight,
-            hitCount = hitCount,
-        }
-        -- 스킬별 판정 상자(effectOverrides[skill].box · world unit · 앞 front / 뒤 back / 위 up · 2026-09-27 섬머솔트 킥 = 원작 lt/rb). 있으면 CSV Range 상자 대신.
-        local boxEntry = self.effectOverrides[skillId]
-        if boxEntry ~= nil and boxEntry.box ~= nil then
-            local b = boxEntry.box
-            local front = b.front or range
-            local back = b.back or 0
-            local up = b.up or self.MeleeArcHeight
-            box.posX = pos.x + dirX * (front - back) / 2
-            box.sizeX = front + back
-            box.posY = pos.y + up / 2
-            box.sizeY = up
-        end
+        -- 스킬별 판정 상자(effectOverrides[skill].box · world unit · 앞 front / 뒤 back / 위 up / 아래 down · 2026-09-27 섬머솔트 킥 = 원작 lt/rb). 있으면 CSV Range 상자 대신.
+        -- 1.0.3-M1-05: 상자 만들기는 ResolveMeleeBox 한 곳(피스트인레인지 ExecuteChargePunch 와 공용) — down 이 없으면(기본 0) 예전 식과 같다.
+        local box = self:ResolveMeleeBox(skillId, pos, dirX, range, self.MeleeArcHeight)
+        box.hitCount = hitCount
 
         if skillId == "SK_W11" then
             -- 파워 스트라이크: 1타 · 시전 순간 대상·피해·크리 고정 → 칼이 닿는 순간 한 번(2026-09-24 사용자 결정 · #83 · 9/13 히어로식 2단 콤보를 대체).
@@ -5777,6 +5802,9 @@ script SkillExecutors extends Logic
         end
         local hitRuid = self:GetSpecRuid(skillId, "impact")
         local hitRuid2 = self:GetSpecRuid(skillId, "impact2")
+        -- 명중 그림 크기(1.0.3-M1-02): effectOverrides.SK_W11.impact / impact2 의 scale(없으면 1 = 예전과 같다). 예전에는 (1,1,1) 이 박혀 있어 scale 키를 읽지 않았다.
+        local hitScale = self:GetSpecScale(skillId, "impact")
+        local hitScale2 = self:GetSpecScale(skillId, "impact2")
         -- 대상(2026-10-05 b/skill-balance-x3 · A 요청): 앞쪽 상자(box · 그대로) 안 **전부**를 시전 순간 고정한다(예전 = 최근접 하나 · FindSkillTarget).
         --   피해 · 크리는 시전 순간 한 번 정해 모든 대상에 같게 · 접촉 순간 대상마다 한 번 · 타격 그림은 대상마다 · 명중음은 시전당 한 번.
         local targets = {}
@@ -5801,23 +5829,30 @@ script SkillExecutors extends Logic
                 return
             end
             local hits = 0
+            local missed = 0
             local layers = 0
             local soundPos = nil
             for _, target in ipairs(targets) do
                 if isvalid(target) and isvalid(target.TransformComponent) then
                     local tp = target.TransformComponent.WorldPosition
                     if skillAttack:DealSkillDamageToTargetAmount(skillId, level, target, amount, 1, crit) then
-                        hits = hits + 1
-                        -- hit/0 · hit/1 을 같은 자리에 겹쳐 대상마다 한 번(각 클립의 pivot 이 그림 자리를 잡는다).
-                        local fxPos = Vector3(tp.x, tp.y + 0.5, tp.z)
-                        if soundPos == nil then soundPos = fxPos end
-                        if hitRuid ~= "" then
-                            _EffectService:PlayEffect(hitRuid, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
-                            layers = layers + 1
-                        end
-                        if hitRuid2 ~= "" then
-                            _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(1, 1, 1), false)
-                            layers = layers + 1
+                        -- 1.0.3-M1-11: DealSkillDamageToTargetAmount 는 타격을 "시도" 했으면 true 라 명중 판정(MISS)에 빗나간 대상에도 true 였다 → 명중 그림 · 명중음이 MISS 대상에도 떴다.
+                        --   방금 패스에서 실제로 맞았을 때만(SkillAttack.PassHitCount > 0 · OnAttack 마다 +1) 그림을 틀고 hits 를 올린다. 빗나간 대상은 MISS 글자만(RollSkillHit).
+                        if skillAttack.PassHitCount > 0 then
+                            hits = hits + 1
+                            -- hit/0 · hit/1 을 같은 자리에 겹쳐 대상마다 한 번(각 클립의 pivot 이 그림 자리를 잡는다).
+                            local fxPos = Vector3(tp.x, tp.y + 0.5, tp.z)
+                            if soundPos == nil then soundPos = fxPos end
+                            if hitRuid ~= "" then
+                                _EffectService:PlayEffect(hitRuid, casterEntity, fxPos, 0, Vector3(hitScale, hitScale, 1), false)
+                                layers = layers + 1
+                            end
+                            if hitRuid2 ~= "" then
+                                _EffectService:PlayEffect(hitRuid2, casterEntity, fxPos, 0, Vector3(hitScale2, hitScale2, 1), false)
+                                layers = layers + 1
+                            end
+                        else
+                            missed = missed + 1
                         end
                     end
                 end
@@ -5828,7 +5863,7 @@ script SkillExecutors extends Logic
                 self:PlaySoundRuid(hitSound, casterEntity, soundPos)
                 log("SkillExecutors: POWER STRIKE hit sound once (" .. hitSound .. ")")
             end
-            log("SkillExecutors: POWER STRIKE contact targets=" .. tostring(hits) .. "/" .. tostring(#names) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
+            log("SkillExecutors: POWER STRIKE contact targets=" .. tostring(hits) .. "/" .. tostring(#names) .. " missed=" .. tostring(missed) .. " amount=" .. tostring(amount) .. " crit=" .. tostring(crit) .. " hitFx=" .. tostring(layers))
         end, hitAt)
     end
 
@@ -5848,7 +5883,10 @@ script SkillExecutors extends Logic
         local showAt = hitAt - lead
         if showAt < 0 then showAt = 0 end
         log(string.format("SkillExecutors: swing trail %s %s at +%.2fs (contact %.2f − lead %.2f) for %.2fs", skillId, motionName, showAt, hitAt, lead, seconds))
-        self:PlaySpriteFlash(spec.ruid, casterEntity, spec.offsetX or 0, spec.offsetY or 0, spec.scale or 1, showAt, seconds, skillId .. "_trail_" .. motionName, spec.holdFrame or -1, entry.trailAlpha or -1)
+        -- 1.0.3-M1-02: 가로 · 세로를 따로 맞출 수 있다 — trail.<모션>.scaleX / scaleY 가 있으면 그 값, 없으면 scale(균등 · 예전과 같다). PlaySpriteFlashXY 는 sprite 경로라 비균등을 이미 받는다.
+        local sx = spec.scaleX or spec.scale or 1
+        local sy = spec.scaleY or spec.scale or 1
+        self:PlaySpriteFlashXY(spec.ruid, casterEntity, spec.offsetX or 0, spec.offsetY or 0, sx, sy, showAt, seconds, skillId .. "_trail_" .. motionName, spec.holdFrame or -1, entry.trailAlpha or -1)
     end
 
     method any PickWeaponSpec(string skillId, string key, string weaponType)
