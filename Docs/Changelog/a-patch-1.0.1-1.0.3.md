@@ -44,4 +44,11 @@
 - **숙련도** (A15): 무기 0.5 + 최종 부스탯 200 이상 +0.2 + DEX 300 초과 1당 +0.001 × 효율 · 상한 0.9 → 1.0(`StatService.MasteryOf` · `DamageFormula.MasteryMax`).
 - **스킬 피해 = 스탯공격력 범위** (A16): 스킬 % 의 기준이 기본 공격과 같은 [최저, 최대] 범위에서 굴린 값(`SkillDatabase.RollStatAttack`). 궁 합계 표시는 같은 타격의 굴림을 공유한다(`RolledAmount`).
 - **마법사 = 마력** (사용자 2026-10-12 "마법사는 예외 · 무조건 마력"): 마법사 총공격력 = 레벨 기본 공격력 + 최종 마력(`StatService.TotalAttackOf`) · 마법사 무기의 강화 고정치는 마력으로 오른다(`ItemCatalog.ComputeEnhance`) · 다이아(공격력)는 마법사 피해에 안 들어간다.
-- **화면** (A07 · 사용자 2026-10-12): 캐릭터 창 명중률 · 회피율 = % · 소수 한 자리 · 100% 를 넘어도 원수치. **치명타율 칸 신설**(전투 능력치 맨 아래 `Right/Row10` · 원확률) — 같은 판에 7줄이 들어가게 줄 높이 36 → 30(간격 31)으로 재배치 · 치명타율 아이콘은 그림이 없어 꺼 둠(디자이너 요청). 툴팁 · 공방의 이동속도 · 명중률 · 회피율은 괄호 안 내역 숫자에도 %.
+- **화면(3단계)** (A07 · 사용자 2026-10-12): 캐릭터 창 명중률 · 회피율 = % · 소수 한 자리 · 100% 를 넘어도 원수치. **치명타율 칸 신설**(전투 능력치 맨 아래 `Right/Row10` · 원확률) — 같은 판에 7줄이 들어가게 줄 높이 36 → 30(간격 31)으로 재배치 · 치명타율 아이콘은 그림이 없어 꺼 둠(디자이너 요청). 툴팁 · 공방의 이동속도 · 명중률 · 회피율은 괄호 안 내역 숫자에도 %.
+
+## 4단계 — 회피 · 오라 · 레벨 공급
+
+- **플레이어 회피 판정** (1.1-A09 · A10 · 사용자 2026-10-12): 회피 확률 = 회피율 + 나보다 낮은 몬스터 1레벨당 10%p − 몬스터 명중률 보정 · 0 아래만 자르고 상한 없음(`DamageFormula.DodgeChance` · 옛 몹 명중 · 상한 35% 상수 삭제). 명중률 보정은 회피 합계에서 뺀다.
+- **보스 공격도 회피** (A11 ② · 사용자 2026-10-12): 보스 접촉 · 스킬 · 투사체가 보스 레벨(BossInfo.Level)로 같은 회피 판정을 받는다(`DamageFormula.TryPlayerDodge` · `BossSkillRunner.BossLevel` · `BossProjectileAttack.SourceLevel`). 포탑 · 억제기 공격은 그대로 회피 없음.
+- **판정 레벨 공급** (H01 · H02 · H03): 웨이브 미니언 = `MinionWave.Level`(12 ~ 39 · 좀비 · 물버섯도 같은 웨이브 값 · ★1 3페이즈는 P2-3 의 27) → `MinionUnit.Level` · 수비대 = 도감 레벨 + 강화 1단계당 2(`DefenderService.DefenderLevelOf` · 리본돼지 17 → 강화 Lv5 25) → `DefenderUnit.Level` · 파병 유닛도 같은 식 · 보스 일반 몹 소환수 = `Monster.Level`(SetupSummon · 없으면 Lv1 로 보여 전부 회피됐다). 몹 · 미니언 · 수비대의 회피 판정 레벨은 플레이어 명중과 같은 `StatService.ResolveTarget` 한 곳에서 읽는다.
+- **커닝 억제기 명중 오라** (A10 · A17 · H13 · H14 · 사용자 2026-10-12 "%p 더하기"): `VillageFacilityTrait` `KERNING SUPPRESSOR AURA_ACC 20/30/40`(%p) · 범위 안 아군 플레이어 = 최종 명중률에 더함(`StatService.SetAuraAccuracy` · 캐릭터 창에도 보임) · 아군 수비대 = `Buff.AccAdd` → 그 수비대의 공격을 피할 플레이어 회피에서 뺌 · 미니언은 안 받음(`FactionAuraController.AllyAccBonus`). 계약서 `TraitKey` 목록 · 키 표에 `AURA_ACC`.
