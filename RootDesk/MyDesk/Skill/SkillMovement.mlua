@@ -46,9 +46,19 @@ script SkillMovement extends Logic
     -- 더블 점프(SK_N02 · 초보자 스킬 · b/skill-novice-double-jump 2026-10-02 · A 답 #40 5927820330 Q6). SkillHotbar 가 공중 점프 키에서 부른다.
     --   플레이어 위치의 소유자는 그 클라다(위 텔레포트와 같은 원칙) → 소유 클라가 RigidbodyComponent:SetForce 로 바로 민다. 서버는 이펙트 · 소리 · MP · 로그만(SkillExecutors.RequestDoubleJump).
     --   앞 힘 = 스킬 거리값(SkillDatabase.RatioAt · CSV BaseEffect 1.5 + 0.5/레벨) × DoubleJumpForceScale · 위 힘 = DoubleJumpLift. 둘 다 임시값 — Play 에서 착지 거리를 재서 맞춘다.
+    --   윗방향 점프(1.0.3-M6 · 위쪽 방향키 ↑ 를 누른 채 공중 점프 키): ↑ 입력(IsUpHeld)이면 일반 더블 점프 대신 위 힘 UpJumpLift 로 민다. 앞 힘은 좌우 키를 같이 누른 경우에만
+    --   (앞 힘 × UpJumpForwardMul · 0 이면 순수 수직). 🟡 UpJumpLift · UpJumpForwardMul 은 자리표시값(= DoubleJumpLift · 0) — DoubleJumpLift 와 같은 Play 에서 함께 재서 정한다(확정 아님).
+    --   SetForce 는 TryDoubleJump 에서 분기 뒤 한 번만 부른다 = 한 번의 점프 입력에 두 동작이 겹치지 않는다. ↑ 판정은 TryDoubleJump 안에서 한 번만(SkillHotbar 입구 둘이 따로 읽지 않는다).
     property number DoubleJumpForceScale = 2.0
 
     property number DoubleJumpLift = 1.4
+
+    property number UpJumpLift = 1.4
+
+    property number UpJumpForwardMul = 0
+
+    -- 모바일 ↑ 판정(방향 입력 변수 MoveVelocity.y 가 이 값 이상이면 ↑ 를 누른 것으로 본다). 자리표시로 MoveInputDeadZone 과 같다 — 조이스틱이 이 값을 채우는지는 런타임 미확인.
+    property number UpJumpStickThreshold = 0.3
 
     -- 스폰 로케이션으로 가는 BLINK 행(skillId -> true). BuildTables 에서 채운다. 닷지 SK_A22.
     property table spawnBlinkSkills = {}
@@ -114,8 +124,10 @@ script SkillMovement extends Logic
 
     @ExecSpace("ClientOnly")
     method table TryDoubleJump(string skillId, number level)
-        -- 로컬 플레이어를 공중에서 한 번 더 민다. 반환 { ok, reason, dirX, fx, fy, fromX, fromY }. ok=false 면 아무것도 안 바꿨다.
+        -- 로컬 플레이어를 공중에서 한 번 더 민다. 반환 { ok, reason, dirX, fx, fy, up, kind, fromX, fromY }. ok=false 면 아무것도 안 바꿨다.
         -- 방향 = 누른 좌우 방향키 → 없으면 바라보는 쪽(ResolveDirection 의 좌우 · 위/아래만 눌렸으면 바라보는 쪽).
+        -- 윗방향 점프(1.0.3-M6-03): ↑ 를 누른 채(IsUpHeld · 여기서 단 한 번 읽는다)면 위 힘 UpJumpLift · 앞 힘 = (좌우를 같이 누른 경우만) 앞 힘 × UpJumpForwardMul. 아니면 예전 일반 더블 점프 그대로.
+        -- SetForce 는 분기 뒤 한 번만 부른다 — 한 번의 점프 입력에 두 동작이 겹치지 않는다. up · kind 는 호출부(SkillHotbar)가 서버 알림 · 로그에 쓴다.
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return { ok = false, reason = "no local player" } end
         local body = player.RigidbodyComponent
@@ -123,18 +135,63 @@ script SkillMovement extends Logic
         if body:IsOnGround() then return { ok = false, reason = "on ground" } end
         local controller = player.PlayerControllerComponent
         local dir = self:ResolveDirection(controller, body)
-        local dirX = dir.x
+        -- pressedX = 누른 좌우(±1) · ↑/↓ 만 눌렀으면 0 · 아무 입력도 없으면 ResolveDirection 폴백이 바라보는 쪽 ±1 을 준다(0 이 아님). dirX 는 이펙트 FlipX 용으로 항상 ±1.
+        local pressedX = dir.x
+        local dirX = pressedX
         if dirX == 0 then
             dirX = 1
             if isvalid(controller) and controller.LookDirectionX < 0 then dirX = -1 end
         end
+        local up = self:IsUpHeld(body)
         local dist = _SkillDatabase:RatioAt(skillId, level)
-        local fx = dirX * dist * self.DoubleJumpForceScale
-        local fy = self.DoubleJumpLift
+        local fx = 0
+        local fy = 0
+        local kind = "NORMAL"
+        if up then
+            fx = pressedX * dist * self.DoubleJumpForceScale * self.UpJumpForwardMul
+            fy = self.UpJumpLift
+            kind = "UP"
+        else
+            fx = dirX * dist * self.DoubleJumpForceScale
+            fy = self.DoubleJumpLift
+        end
         local p = player.TransformComponent.WorldPosition
+        -- 시전 직전 세로 속도(상승 중 / 낙하 중 구분 · 1.0.3-M6-01 실측용). RealMoveVelocity 를 못 읽으면 0.
+        local vy = 0
+        local rv = body.RealMoveVelocity
+        if rv ~= nil then vy = rv.y end
         body:SetForce(Vector2(fx, fy))
-        log("SkillMovement: DOUBLE JUMP " .. skillId .. " lv=" .. tostring(level) .. " dist=" .. tostring(dist) .. " force=(" .. tostring(fx) .. "," .. tostring(fy) .. ") from (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
-        return { ok = true, reason = "ok", dirX = dirX, fx = fx, fy = fy, fromX = p.x, fromY = p.y }
+        log("SkillMovement: DOUBLE JUMP " .. skillId .. " kind=" .. kind .. " upHeld=" .. tostring(up) .. " lv=" .. tostring(level) .. " dist=" .. tostring(dist) .. " force=(" .. tostring(fx) .. "," .. tostring(fy)
+            .. ") vy=" .. string.format("%.3f", vy) .. " from (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
+        return { ok = true, reason = "ok", dirX = dirX, fx = fx, fy = fy, up = up, kind = kind, fromX = p.x, fromY = p.y }
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean IsUpHeld(any body)
+        -- 1.0.3-M6-02: 지금 ↑(위쪽 방향) 입력이 눌려 있는가. PC = 방향키 ↑ (좌우 입력과 무관 · ↑↓ 같이면 상쇄 = ResolveDirection 규칙과 같다) /
+        -- 모바일 · 키 없음 = 방향 입력 변수 RigidbodyComponent.MoveVelocity.y 가 UpJumpStickThreshold 이상. W 키 등 방향키 밖 입력은 보지 않는다(W 는 스킬 슬롯 5 키).
+        -- ResolveDirection 은 좌우가 눌리면 ↑ 를 버리므로(텔레포트 방향 규칙) 반환 규칙을 안 바꾸고 따로 읽는다. 호출은 TryDoubleJump 한 곳(입구 둘이 같은 누름을 따로 읽지 않게).
+        local up = _InputService:IsKeyPressed(KeyboardKey.UpArrow)
+        local down = _InputService:IsKeyPressed(KeyboardKey.DownArrow)
+        local mvx = 0
+        local mvy = 0
+        if isvalid(body) then
+            local mv = body.MoveVelocity
+            if mv ~= nil then
+                mvx = mv.x
+                mvy = mv.y
+            end
+        end
+        local result = false
+        if up and not down then
+            result = true
+        elseif up and down then
+            result = false
+        elseif mvy >= self.UpJumpStickThreshold then
+            result = true
+        end
+        log("SkillMovement: upHeld=" .. tostring(result) .. " mv=(" .. string.format("%.2f", mvx) .. "," .. string.format("%.2f", mvy) .. ")")
+        return result
     end
 
     @ExecSpace("ClientOnly")
