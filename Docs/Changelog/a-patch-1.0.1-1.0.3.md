@@ -63,3 +63,13 @@
 - **궁극기 피해 · 타수** (C09 ~ C11 · C13 · 사용자 2026-10-12 "연출 구간에 나눠 치기"): 대마법 1,100% × 100타 = 06:04 첫 타(폭발 연출 · 명중음) + 99타를 영상 끝까지(`BlastSplitHit`) · 폭풍의 화살 650% × 100타 = 두 화살비 구간에 길이 비율(28 + 72 · `UltimateHitTimes` 구간 몫 비례) · 함포 사격 480% × 300타 = 파마다 150타를 15타 × 10패스로 0.4초 안에(`BarrageSubPassHits` · `BarrageSubPassSpan`). 합계 피해는 한 패스와 같다.
 - **원거리 조준 띠** (C14 · C15): 조준 · 명중 세로 띠 = 발 −0.35 ~ 발 +1.4(키 × 0.5 / × 2.0 · `SkillAttack.CasterBandOf` · `CasterHeightOf`) · 탐색 상자 = `AimSearchShape`(투사체 · 기본 공격 · 조준 표시 · 스나이핑 3명 공용) · 아래층 제외(발 0.6 · `AimFloorTolerance` · `SkillProjectile.FloorTolerance`) 삭제 — 폭발 이웃도 거름 없음. 초보자 달팽이 세마리도 같은 띠.
 - **로그** : `FindSkillTarget` 의 `belowFloor` 칸 삭제 · 나눠 친 궁 타격은 첫 · 마지막 타만 남긴다(`BLAST … split hit` · `LINE … split hit` · `BARRAGE … pass s/n`).
+
+## 6단계 — 몬스터 · 보스 HP/공격 (1.1-E)
+
+- **레벨 HP 배율** (E01 · E02 · E03 · E05): `MonsterCatalog.HpLevelMul` = 유효 레벨 11 이상이면 min(레벨 − 10, 25)(Lv17 ×7 · Lv24 ×14 · Lv30 ×20 · Lv35+ ×25) · `LevelHp`(기초 HP × 배율 · 반올림 한 번). 사냥터(`MonsterSpawner` · LevelOverride 레벨) · 자이언트(`EliteMonsterInfo.Level` · E1210101 49,000) · 보스 소환수(모든 소환수 · 아이언호그 37,500 · 좀비버섯 22,500)에 곱한다.
+- **보스 HP 일원화** (E04 · E08 · E09 · E28): `BossCatalog.FinalMaxHp` = MaxHp × 레벨 배율 × ★ 배율 — `BossSpawner`(스폰 · 난이도) · `BalrogRoomService.BossMaxHp` 공용. 주니어 발록 Lv40 · 기초 136,800 · 접촉 2,520 → ★1/3/5 1,710,000 / 3,420,000 / 6,840,000 · 지역 보스 5종 Lv30 ×20 · 마노 기초 600.
+- **보스 공격** (E10 · E12 · E13 · E14 ~ E19): 스킬 피해도 ★ 공격 배율(`BossSkillRunner.AttackMul` · 접촉 · 즉발 · 투사체) · 발록 ★1 공격 0.25 · 발록 스킬 2,220 / 4,440 / 6,660 · 지역 보스 공격 · 스킬 ×2.5(머쉬맘 375 · 킹슬라임 450 · 스텀피 450/연사 113/지면 540 · 에피네아 750/600/900 · 피아누스 825/660/990). ★1 소개 문구 "발록 HP 절반·공격 1/4 · 지역 보스 HP와 공격 절반".
+- **발록 HP 15% 소환 = 아이언호그 3마리** (E11) · **돼지 해변 18곳 모두 리본돼지 Lv7** (E23 · 권장대로).
+- **웨이브 미니언 · 수비대 · 파병 HP** (E06 · E07 · 사용자 2026-10-12 "원문대로"): 미니언 = 행 HP × 웨이브 레벨(12~39) 배율(`MinionFlowService.QueueWave` · P1-0 2,000 · P3-1 100,000 · P3-13 224,475) · 수비대 · 파병 = 표 HP × 수비대 레벨(도감 + 강화×2) 배율(리본돼지 T2 Lv1 35,840 · Lv5 182,340 · 파병 절반). 튜토리얼 웨이브는 레벨 0 → ×1(E31).
+- **좀비머쉬맘** (E24 · E25 · E29): 기초 HP 60,000 · 3페이즈 웨이브마다 HP · 공격 +10% 누적(`MatchSessionLogic.ZombieWaveGrowth` · `p3Index`) · 레벨 = 그 웨이브 레벨(H01) → 25분 1,200,000 · 30분 1,932,620 · 44분 4,707,650.
+- **비용** (E26 · E27): 발록 도전 ★5 200 → 100 · 지역 보스 입장 ★1 50 · ★3 100 · ★5 100(`DifficultyRule.BOSS_ENTRY_COST` 새 키 · `PortalNetwork.BossEntryCostFor` · 차원 관문 · 안내 T14 같은 값 · 매치 밖 100). 안내 · 튜토리얼 · 소개 창 문구와 계약서(`DifficultyRuleKey` · 확정값 · 보스 HP 규칙) 갱신.

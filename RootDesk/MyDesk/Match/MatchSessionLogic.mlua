@@ -130,6 +130,11 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property any zombieTemplate = nil
 
+	-- 좀비머쉬맘 웨이브마다 강화(1.1-E24): 3페이즈 n 번째 웨이브(P3-1 = 0)의 좀비 HP · 공격 = 템플릿(P3-ZOMBIE 행) × (1 + 이 값)^n (누적 · 반올림 한 번).
+	--   25분 60,000 / 2,500 → 30분 96,631 / 4,026 → 44분 188,306 / 7,846. 표가 끝난 뒤 반복 웨이브는 마지막 행 값 그대로(권장대로 · LIVE 는 반복 전에 매치가 끝난다).
+	--   최종 HP 는 여기에 웨이브 레벨 배율(1.1-E06 · MinionFlowService.QueueWave)이 한 번 더 곱해진다. 공격은 레벨 배율 없음.
+	property number ZombieWaveGrowth = 0.1
+
 	-- 미점령 탈락 (WO-044 · 사용자 2026-10-05): 이 페이즈가 시작될 때까지 넥서스를 못 잡은 참가자는 탈락(관전 전환). "" 이면 끈다.
 	property string UnclaimedDeadlinePhase = "PHASE1"
 
@@ -601,6 +606,14 @@ script MatchSessionLogic extends Logic
 			end
 		end
 		table.sort(self.waves, function(x, y) return x.start < y.start end)
+		-- 3페이즈 순번(1.1-E24 · 좀비 강화 지수): 시각 순서로 P3-1 = 0 … P3-13 = 12. 프로필(LIVE/TEST)과 무관한 순번이라 TEST 의 ÷8 시각에도 맞는다.
+		local p3 = 0
+		for _, w in ipairs(self.waves) do
+			if w.phase == "PHASE3" then
+				w.p3Index = p3
+				p3 = p3 + 1
+			end
+		end
 		local n = #self.waves
 		if n >= 2 then self.waveRepeatGap = math.max(1, self.waves[n].start - self.waves[n - 1].start) end
 		log("[Match] MinionWave loaded: " .. tostring(n) .. " waves (profile=" .. self.Profile .. ") repeatGap=" .. tostring(self.waveRepeatGap) .. "s zombieTemplate=" .. tostring(self.zombieTemplate ~= nil))
@@ -622,10 +635,17 @@ script MatchSessionLogic extends Logic
 			end
 			zombies = math.floor(zombies * _DifficultyService:GetMul("ZOMBIE_MUL") + 0.5)
 		end
+		-- 좀비머쉬맘 웨이브 강화(1.1-E24): 템플릿 사본에 (1 + ZombieWaveGrowth)^p3Index 를 곱한다(원본 템플릿은 그대로 · 반복 웨이브 = 마지막 행 순번).
+		local zombieTpl = self.zombieTemplate
+		if zombieTpl ~= nil and row.phase == "PHASE3" and (row.p3Index or 0) > 0 then
+			local g = (1 + self.ZombieWaveGrowth) ^ row.p3Index
+			zombieTpl = { monsterId = zombieTpl.monsterId, exp = zombieTpl.exp, meso = zombieTpl.meso, level = zombieTpl.level,
+				hp = math.floor(zombieTpl.hp * g + 0.5), attack = math.floor(zombieTpl.attack * g + 0.5) }
+		end
 		local villages = 0
 		if _MinionFlowService ~= nil then
 			local coinChance = self:CoinChanceOf(row.phase)
-			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, monsterId, hp, attack, exp, meso, zombies, self.zombieTemplate, coinChance, level)
+			villages = _MinionFlowService:QueueWave(row.key, row.phase, row.count, row.gap, monsterId, hp, attack, exp, meso, zombies, zombieTpl, coinChance, level)
 			log("[Match] wave coinChance phase=" .. row.phase .. " base=" .. tostring(coinChance))
 		end
 		-- 파병은 이 웨이브의 일반 미니언(count 마리)이 다 나간 직후에 푼다 — 큐에 같이 넣어 순서를 지킨다(Codex 리뷰 2026-09-23). 큐가 없으면 즉시.
@@ -637,7 +657,9 @@ script MatchSessionLogic extends Logic
 		if self.waveIndex == 1 and _UIToast ~= nil then
 			for _, uid in ipairs(self.participants or {}) do self:ToastHere(uid, "미니언이 생성되었습니다") end
 		end
-		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " lv=" .. tostring(level) .. " hp=" .. tostring(hp) .. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies) .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
+		local zText = ""
+		if zombieTpl ~= nil and zombies > 0 then zText = " zombieBase=" .. tostring(zombieTpl.hp) .. "/" .. tostring(zombieTpl.attack) .. " (p3 #" .. tostring(row.p3Index or 0) .. ")" end
+		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " lv=" .. tostring(level) .. " hp=" .. tostring(hp) .. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies) .. zText .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
 	end
 
 	@ExecSpace("ServerOnly")

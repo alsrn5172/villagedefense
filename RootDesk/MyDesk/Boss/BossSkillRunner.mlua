@@ -48,6 +48,9 @@ script BossSkillRunner extends AttackComponent
 	-- BossSpawner 가 BossInfo.AttackPower 를 넣어준다. 접촉 데미지가 이 값을 쓴다.
 	property number AttackPower = 1
 
+	-- 스킬 피해 ★ 공격 배율(1.1-E12 · BossSpawner.ApplyDifficulty 가 BALROG_|BOSS_ATK_MUL 을 넣는다 · 매치 밖 · 소환수 = 1). 접촉은 AttackPower 에 이미 들어 있다.
+	property number AttackMul = 1
+
 	-- 시전 중 제자리에 서 있는 최소 시간.
 	-- 🔴 기본 0 이다. 정지는 "실제 시전 길이"만큼만 건다.
 	--    예전엔 2.0 이 최소값이라, 시전이 끝나 판정이 났는데도 남은 시간 동안
@@ -1272,10 +1275,14 @@ script BossSkillRunner extends AttackComponent
 			return
 		end
 
+		-- 최대 HP = 도감 HP × 레벨 배율(1.1-E05 · 권장대로 모든 소환수 — E22 "소환수는 일반 몬스터와 같다"): 아이언호그 Lv30 1,875 → 37,500 · 좀비버섯 Lv25 1,500 → 22,500.
+		--   ★ 배율은 지금처럼 곱하지 않는다.
+		local summonHp = math.max(1, math.floor(tonumber(info.maxHp) or 1))
+		if _MonsterCatalog ~= nil then summonHp = _MonsterCatalog:LevelHp(info.maxHp, info.level) end
 		local monster = unit.Monster
 		if isvalid(monster) then
-			monster.MaxHp = info.maxHp
-			monster.Hp = info.maxHp
+			monster.MaxHp = summonHp
+			monster.Hp = summonHp
 			-- 소환수는 죽으면 그냥 사라진다. 부활하면 무한 증식이다.
 			monster.RespawnOn = false
 			if info.damagedSoundRuid ~= nil then
@@ -1304,7 +1311,7 @@ script BossSkillRunner extends AttackComponent
 		if isvalid(contact) and not isvalid(runner) and (tonumber(info.attack) or 0) > 0 then
 			contact.SummonAttack = math.floor(tonumber(info.attack))
 		end
-		log("[BossSkillRunner] summon setup " .. tostring(summonId) .. " lv=" .. tostring(tonumber(info.level) or 0) .. " hp=" .. tostring(info.maxHp) .. " def=" .. tostring(tonumber(info.defense) or 0)
+		log("[BossSkillRunner] summon setup " .. tostring(summonId) .. " lv=" .. tostring(tonumber(info.level) or 0) .. " hp=" .. tostring(summonHp) .. " (base " .. tostring(info.maxHp) .. ") def=" .. tostring(tonumber(info.defense) or 0)
 			.. " contact=" .. tostring(isvalid(contact) and contact.SummonAttack or -1))
 
 		-- 소환수도 한 번 붙으면 놓지 않는다. 안 그러면 소환해놓고 그 자리에 서 있는다.
@@ -1509,7 +1516,8 @@ script BossSkillRunner extends AttackComponent
 
 		local atk = proj.BossProjectileAttack
 		if isvalid(atk) then
-			atk.Damage = skill.damage
+			-- ★ 공격 배율(1.1-E12): 투사체 스킬도 접촉 · 즉발 스킬과 같은 배율.
+			atk.Damage = math.floor(skill.damage * self.AttackMul + 0.5)
 			atk.HitCount = skill.hitCount
 			atk.RangeX = skill.rangeX
 			atk.RangeY = skill.rangeY
@@ -1855,7 +1863,7 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)
-		-- 접촉은 BossInfo.AttackPower, 스킬은 그 스킬의 Damage 를 쓴다.
+		-- 접촉은 BossInfo.AttackPower(★ 배율 포함), 스킬은 그 스킬의 Damage × ★ 공격 배율(1.1-E12 · AttackMul)을 쓴다.
 		-- ⚠️ 부모에 @ExecSpace 가 없다. 붙이면 LEA-3014.
 		-- 플레이어 회피(1.1-A11 ② · 사용자 2026-10-12): 보스 레벨로 일반 몹과 같은 회피 판정. 피하면 0(MISS).
 		if self:IsServer() and _DamageFormula ~= nil and _DamageFormula:TryPlayerDodge(defender, self:BossLevel(), 0, tostring(self.Entity.Name)) then return 0 end
@@ -1863,7 +1871,7 @@ script BossSkillRunner extends AttackComponent
 		if attackInfo == "contact" then
 			d = math.floor(self.AttackPower)
 		elseif self.activeSkill ~= nil then
-			d = math.floor(self.activeSkill.damage)
+			d = math.floor(self.activeSkill.damage * self.AttackMul + 0.5)
 		end
 		-- 플레이어 방어 감산 (B4 · 공용 헬퍼 · 접촉·스킬 공통).
 		if _DamageFormula ~= nil then d = _DamageFormula:ApplyPlayerDefense(defender, d) end
