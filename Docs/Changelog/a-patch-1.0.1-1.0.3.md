@@ -99,3 +99,102 @@
 - **발록 도전 알림** (H07 · H08): 도착 순간 도전자를 뺀 참가자 전원에게 "{마을} 마을의 주인이 발록에 도전하고 있어요!" · `BalrogRoomService.IsChallenging`(전광판 9단계가 읽음 · 통계 창 쪽 공급은 I11 로 불필요).
 - **문구 · 문서**: 게임 소개 창 파병 담당관 설명 "1페이즈부터 · 미니언과 함께 또는 즉시" · 계약서(`TraitKey` `REFLECT_PLAYER` · 반사 · 오라 16.0 · `Range` 의미 · 파병 출발 방식) · GDD 시설 저항 문장 2곳. 튜토리얼 · 알림 카드 문구(K03 · K04)는 11단계.
 - 🔴 디스코드: `build-db.cjs` 가 `PlayerDamageMulBeforePhase3` 를 읽으므로(L679/L682) 머지 직후 `NoMinionDamageMul` 로 같이 고친다.
+
+## 9단계 — 캐릭터 창 · 몬스터 이름표 · 상태 전광판 · 안내 게이트 (1.1-G · I)
+
+- **레벨업 자동 분배 방식** (1.1-G07 · G09): 밸런스형(주 3 · 부 2 = `JobInfo` 5직업 `ApRatio*` 0.7/0.3 → 0.6/0.4 · 전직 후 레벨업 부스탯 1 → 2) / 공격형(주스탯 5 · `StatService.AllocateByMode`). 레벨업 · "자동 분배" 버튼 · 전직 환급 재분배가 모두 고른 방식을 따른다. `RequestSetApMode`(계정 저장 · 토스트) · `BuildUiCsv` `;apmode=` · 캐릭터 창 `AutoAp` 줄에 칩 2개(`ModeBalance` · `ModeAttack`) · 토글을 끄면 칩 비활성.
+- **전직 AP 초기화** (1.1-G10): 1차 전직 때 직접 찍은 AP 전부 + 시작 스탯 STR 12 → 4(+8) · DEX 5 → 4(+1) = **+9** 를 AP 로 돌려준다(`JobResetStr/Dex/Int/Luk = 4`).
+- **스탯 칸 표시** (1.1-I01 · I02): STR · DEX · INT · LUK 칸이 `총(기본+AP + 나머지)` (예 `45(18+27)`). 직업별 10% 효율은 추가효과 계산에만 곱해 표시 총합은 줄지 않는다(코드 변경 없음 확인).
+- **통계 분석관 삭제 → 플레이어 상태 전광판** (1.1-I11 · I13 · I14 · I15): `FunctionalNpcCatalog` `VD_RECORD_STATS` `Enabled=false`(행 · 모델 유지) + 신규 `VD_RECORD_BOARD`(`UiRoute=board` · 클릭 없음). 새 모델 `vd_record_board`(`Plate` + `Title` + `Row1~5` TextRenderer · 층 Default/2 · 3) · 새 `Npc/StatusBoard`(서버가 1초마다 참가자 전원의 닉네임 · 레벨 · 상태를 `Lines`(@Sync)에 씀 · 클라가 그림 · 내 줄 금색) · `NpcSpawner` 가 `board` 행에는 이름표 · `VillageNpcInteractor` 를 안 붙임. 상태 = 탈락 > 발록 도전 중(`BalrogRoomService.IsChallenging`) > 쓰러짐 > 지금 있는 맵(`WorldMapNodes`). 칠판 그림은 임시(`plate_dark` 늘림).
+- **안내 게이트** (1.1-I16): `GuideService.IsGuideMatch` = ★1 매치만(★3 · ★5 는 목표 바 · 체크리스트 · 안내 토스트 · 알림 카드 · 코치마크 · 월드맵 목표 마커를 표시하지 않음).
+- **문구** (1.1-G11 · I12 · G12): 도움말 4쪽 자동 분배 안내 · 마을 NPC 탭 기록 구역 카드(통계 분석관 → 상태 전광판) · `구현항목-결정.md` L27 갱신. 디스코드 글은 머지 뒤.
+- I03: 새 `Monster/MonsterNameTag.mlua`(@Logic). 서버 `Attach(ent, 이름, 레벨)` = 엔진 `NameTagComponent` 를 런타임에 붙여 `Lv.N 이름`(끝의 영문 괄호 제거 · Bold · 기본 판 = NPC 와 같은 검은 반투명). 레벨 = `MonsterCatalog.LevelOfEntity`(0 이면 1). property `Enabled` `LevelPrefix "Lv."` `LogAttach true`.
+- I04: 사냥터 `MonsterSpawner.SpawnSlot` — 레벨 = `FarmReward.SpawnLevel`(사냥터 레벨 덮어쓰기 반영). 튜토리얼 몬스터 `TutorialService.SpawnNear` 도 같은 호출(도감 레벨).
+- I05: 자이언트 `EliteSpawner.SpawnElite` — 레벨 = `EliteMonsterInfo.Level`.
+- I06: 보스 `BossSpawner.SpawnBoss`(발록 방 6개 포함) — `BossInfo.Name` / `Level`.
+- I07 · I08: 미니언 · 파병 `MinionFlowService.SpawnMinion` — `spec.level`(웨이브 레벨 / 파병 = 수비대 식). 레인 맵 경계 이어 스폰도 레벨 유지.
+- I09: 수비대 `DefenderService.SpawnOne` — `DefenderLevelOf`(원래 레벨 + 강화 1단계당 2). 재집결도 같은 레벨.
+- I10: 죽으면 `Monster.Dead` 가 이름표를 끄고 `Respawn` 이 켠다.
+- I18: 보스 스킬 소환수 `BossSkillRunner.FireSummon` 에도 이름표.
+- I19: 나에게 적대하지 않는 몬스터(내 수비대 · 내가 보낸 파병 · 다른 마을로 가는 미니언)는 이름이 초록 #6BE36B, 나머지는 흰색. 각 클라가 0.5초마다 칠한다. `FactionLogic.RelationOfTeams` 신설(`GetRelation` 본문 이동 · 동작 그대로) · `LaneFacilityService.TeamSlot` ExecSpace 제거.
+
+## 10단계 — 상점 (1.1-J01 ~ J06)
+
+- J01: `ItemCatalog.BulkTiers "10,15,20,25,30"` · `BulkPartOrder "WEAPON,CLOTH,HAT,GLOVES,SHOES"` · `BulkJobs` · `BulkRecipes`. `CraftService` 한 건 처리를 `CraftOne` 으로 분리(단건 동작 그대로) + 새 RPC `RequestCraftBulk(tier, job, partsCsv)` — 재화가 모자라는 첫 건에서 멈춤, 산 것은 되돌리지 않음, 보유 장비도 또 삼, 방패 · 앱솔랩스 제외.
+- J02: 제작 창 "일괄" 칸(`Slot_BULK`) + 일괄 판(`BulkPanel` = 부위 토글 5 · 10/15/20/25/30렙제 버튼 5). 부위 칩 폭 76→64.
+- J03: 부위 토글은 클라에만 두고 새 매치마다 전부 켬(`OnboardingService.PushState` → `WorkshopUIController.OnMatchStart`).
+- J04: 물약 수량 버튼 `+5` `+10` 추가(MaxCount 에서 비활성).
+- J05: 물약 가격 −50%: 주황 75 · 하얀 125 · 마나 엘릭서 150 · 맑은 물 300 · 장어구이 325 (`ShopItem.PriceMeso`). `apply.py` 의 `"price"` 3곳도 같이.
+- J06: 자동 습득(자석) 반경 3.0→4.5 · 속도 1.5→3.0 (`MesoCoin` · `ItemDrop`). 도적 메소 익스플로전은 자석에 먼저 빨려가 4.5~6.0 구간 동전만 터진다(원문 변경의 부수 효과).
+
+## 11단계 — 튜토리얼: 장갑 · 시설 안내 · 방향 전환 (1.1-K01 · K02 · K03 · K05 · K06)
+
+- 시설 공격 안내 — `TipController` `phase3` 카드를 "웨이브가 훨씬 자주 와요." 로 교체(1.1-K04 · 시설 피해가 페이즈와 무관해져 옛 "다른 마을 시설에도 피해가 100%" 가 거짓). (B1)
+- 5단계 봉인석 교환 대상 앱솔랩스 모자 → 장갑(`ABSOLAB_GLOVES_WARRIOR`): 5-0e 금테 · 완료 조건 `RECIPE_ABSOLAB_GLOVES_WARRIOR` · 5-0f `ItemCount`
+- 새 카드 5-0g2 "발록은 MISS 가 자주 나요"(5-0g 와 5-0h 사이): 발록 레벨 = `BossInfo` 8130100 `Level`(없으면 40 · 지금 40) · 장면 총수 120 → 121
+- 6-1b 제목 "시설도 때릴 수 있어요" · "포탑, 억제기, 넥서스는 공격 가능해요. 하지만 시설 사거리 안에 적팀 미니언이 없으면 데미지가 매우 적게 들어가요"(옛 "직접 공격할 수 없어요" 삭제 · 수비대 처치 보상 괄호와 끝 문단 유지)
+- 입력 문: 튜토리얼 중 `MoveLeft` · `MoveRight` 항상 허락 · 이동이 막힌 장면은 이동 잠금(`ApplyMoveLock` = 로컬 플레이어 `RigidbodyComponent.WalkSpeed` 0 · 10Hz 다시 누름 · 이동이 열린 장면 · 끝 · `OnEndPlay` 에서 되돌림)이 걷기를 막고 방향만 바뀜 · 로그 `[Tutorial] move lock on/off`
+
+## 12단계 — 소리 · 버그 수정 (1.1-L01 ~ L07)
+
+- 레벨업 효과음 볼륨 1.0 → 0.5 (1.1-L01 · `StatusHUDController.LevelUpSoundVolume`). (B1)
+- 6-3b `noDim = true`(강조 막 4장이 구멍 밖 터치를 전부 막던 것 해제) + `side = "b"`(말풍선을 포탈 위로)
+- [1.1-L02] 피해 직후 HP<=0 인데 IsDead 가 아니면 PlayerHit.EnsureDeath 가 DeathCheckDelay 0.2초 뒤 서버에서 ProcessDead(userId). Hp<=0 이면 넉백 생략. 로그 `[PlayerHit] hp<=0 after hit` · `hp<=0 but not dead after hit -> ProcessDead`.
+- [1.1-L04] 텔레포트(SK_M13 · SK_M21) 시전자 클라가 키를 누른 프레임에 도착 이펙트 · 시전음 즉시 재생(SkillCaster.Cast → SkillMovement.PlayBlinkLocalFx · 표 blinkLocalFx = 서버 effectOverrides · castSounds 복사본). 로그 `[Skill] blink local fx`.
+- [1.1-L05] effectOverrides.SK_M13/SK_M21.impact.localFirst=true — 서버 재생은 시전자를 뺀 같은 맵 유저에게만(PlayCastSoundExcept · PlaySkillSoundToMapExcept · PlayBlinkImpactToOthers → Client PlayBlinkImpactLocal). 닷지 SK_A22 불변. 로그 `[Skill] blink impact … other user(s)`.
+- [1.1-L06] 페리온 반사 진단 로그: `[Facility] REFLECT skipped` · `[Facility] reflect landed|MISSED n=` · `[PlayerHit] reflect refused by immunity`. 값 변경 없음.
+- [1.1-L07] 조건부 — PlayerHit.ReflectBypassImmunity(기본 false). L06 로그로 무적이 원인일 때만 true.
+
+## 13단계 — 스킬 판정 ↔ 이펙트 일치 (1.0.3-M1)
+
+- [M1-01] SkillAttack.LogShape(+LookSign · LogShapes 기본 false — 진단할 때만 켬): 판정 상자 네 변 · 시전자 · 후보 몬스터 좌표/몸 상자 로그(deal · scaled · find · snap).
+- [M1-05] SkillExecutors.ResolveMeleeBox(앞/뒤/위/아래 · down 신규 키 기본 0) — ExecuteMeleeArc · ExecuteChargePunch 공용. 판정 값 불변.
+- [M1-02] effectOverrides.SK_W11.box 세 변 명시(2.5 / 0 / 1.2 · 값 불변) · 명중 그림 impact/impact2 scale 읽기 · 잔상 trail.<모션>.scaleX/scaleY 손잡이. SkillInfo.csv SK_W11 #Note.
+- [M1-03] effectOverrides.SK_W11_RB.hitScale 손잡이(없으면 1).
+- [M1-04 · 06 · 07 · 08] 코드 변경 없음 — 클립 합집합 실측만 기록(방향은 사용자 결정). M1-06 은 L05 경로에 offsetY 연결.
+- [M1-09 · 10] 제외 목록 · 새 이펙트 시안 절차 · 규격식을 SkillExecutors 주석에 고정(선택 전 ruid 변경 금지).
+- [M1-11] 파워 스트라이크 접촉 명중 그림 · 명중음은 실제로 맞은 대상(PassHitCount>0)에만. 피스트인레인지 폭발은 DealSequenceHit 먼저 → 맞은 대상(HitInLastSequencePass)에만. 로그 `missed=` · `blasts=`.
+
+## 14단계 — ESC · 관전 · 채팅 · 노틸러스호 복귀 포탈 (1.0.3 §3 · §4 · §5)
+
+- **ESC 로 매칭 창이 사라지던 것** (M3-04 · M3-05): `UIEscStack` 키 목록 · `IsOpen` · `CloseWindow` 에서 `lobby` 삭제(방 화면 · 승강장 모달 모두 ESC 로 안 닫힘 — 모달은 X 버튼) + `LobbyUIController.Close()` 는 `mode == "room"` 이면 무시(로그 `[Lobby] Close ignored (room)`).
+- **관전자 숨김** (M4-01): `SpectateService.ApplyHidden`(숨김 · 컨트롤러/피격 끔 · 중력 0 · 말풍선 비움) · `Reassert`(`Rebind` 때마다) · 서버 감시 `ReassertInterval` 1.0초(깨졌으면 경고 `hidden state broken` 후 다시 건다 — "의심 현상" 확정용 증거).
+- **죽은 채 탈락** (M4-02): `PlayerRespawnService.CancelFor`(팝업 · 대기 · 이동 확인 정리) + `OnDeath`/`Choose`/`OnRevive` 관전자 가드 — 사망 페널티 면제 · 부활 이동 없음.
+- **미니맵** (M4-03): `Visible == false` 인 유저는 빨간 점을 안 찍는다. **채팅** (M4-04 · M4-05 · M4-06): 관전 중 서버 `RequestSend` 차단 · 클라 입력 줄 숨김 · Enter 토스트 "관전 중에는 채팅할 수 없습니다" · 줄 안내 "관전 중에는 채팅할 수 없어요"(`SpectateToastText` · `SpectateHintText`) · 관전 종료 때 복구. **포탈** (M4-07): 관전 중 ↑ 포탈 이동 · `RequestEnterLith` · `RequestEnterBoss` 차단.
+- **노틸러스호 복귀 포탈** (M3-01 ~ M3-03): 맵 `Portal_14`(아래 갑판) 켬 + `Portal_16`(위 갑판) 숨김 표식 · `PortalRoutes` `NS01` 같은 맵 노선(첫 `FromMap = ToMap`) · `TryMoveByUpArrow` 같은 맵 이동은 로딩 그림 없이 0.5초 재이동 잠금. 미니맵은 숨김 표식 포탈을 점으로 안 찍는다.
+- 🔴 검증 대기: `a-unclaimed-elimination.md` L32 "마감 순간 죽어 있던 사람: 관전으로 들어가고, 부활해도 다시 보이지 않는다." 체크박스는 Play(2클라) 결과를 적는다.
+
+## 15단계 — 발록 알림 확인 · 슬리피우드/발록 지역 월드맵 · 길안내 (1.0.3 §2)
+
+- **발록 도전 알림** (M2-01): 8단계 `AlertChallenge` 가 이미 구현 — 1.0.3 은 코드 변경 없음(확인만). 가시성 보완(M2-02)은 Play 후 결정.
+- **월드맵** (M2-03 · M2-04 · M2-05): 슬리피우드 마을 노드 켬 (36, 6) · 발록 지역(`Sleepywood_Boss_JrBalrog` · `금지된 제단(저주받은 신전)` · Boss) 작은 핑크 점 (84, 38) · 점은 지도 그림에 없어 게임이 그린다(마을 30 · 핑크 24 · hover 42/36) · `apply-worldmap.cjs` `DRAWN_BY_GAME` 갱신(+ 범례 가드 버그 수정).
+- **길안내** (M2-06 · M2-10): `PortalNav` 발록 지역 허용 — 길 끝 ↑ 는 서버가 입장 판정, 도착하면 안내는 조용히 끝남 · 방 1~6 = `SameSpot`. **월드맵 안내** (M2-07): 방 2~6 에서도 내 위치 깃발 · 툴팁에 안내 2줄(`MapNotes`) · 긴 이름만 제목 BestFit.
+- **★1 전용 안내** (M2-09 · I17): 가드 확인만 — `ShowGoalPins=false` 유지 · 게이트는 1.1-I16(`IsGuideMatch`) 한 곳 · `GuideStep.csv` G14 `#Note` 문장 갱신.
+
+## 16단계 — 헤네시스 NPC 오른쪽 이동 (1.0.3 §6 · M5-01 ~ 03)
+
+- `VillageNpcSector` HENESYS `AnchorX`: WORKSHOP −14.8 → −13.6 · LIFE −6 → −5.4 · RECORD −1.5 → −0.3 · DEFENSE 2 → 3.2 (구역별 이동량 +1.2 / +0.6 / +1.2 / +1.2 · 이유: 모바일 맨 왼쪽 가시성 · 상한: 넥서스 왼쪽 0.4(물약 상인 −10.0) · 조련사 −3.0 이 통로 포탈 상자 왼쪽 끝 −2.76 에서 0.24)
+- 튜토리얼 강조 · 안내 위치는 NPC 엔티티 기준이라 코드 변경 없음. `near:` 도착만 `3-2m`(도감 관리인) `:-1.4` → `:-1.0`. 제작 장인 앞 도착이 땅 밖(−16.2)이던 것이 −15.0 으로 땅 안에 들어옴
+
+## 17단계 — 더블 점프 위 힘 · 윗방향 점프 (1.0.3-M6)
+
+- 도움말 조작키 탭 점프 줄에 "↑ 누른 채 = 위로" (1.0.3-M6-05 · 06). (B1)
+- [M6-01] DoubleJumpLift 1.4 유지(임시) · 로그에 시전 직전 vy.
+- [M6-02] SkillMovement.IsUpHeld — PC ↑ 키 / 모바일 MoveVelocity.y >= UpJumpStickThreshold 0.3.
+- [M6-03] TryDoubleJump UP/NORMAL 분기(SetForce 한 번) · UpJumpLift 1.4 · UpJumpForwardMul 0 = 자리표시값(M6-01 과 같은 Play 에서 확정).
+- [M6-04] SkillHotbar.TryAirDoubleJump 줄·사다리 가드(일반 더블 점프 포함) · RequestDoubleJump(dirX, up) · 로그 kind= / up=.
+- [M6-05] SkillInfo.csv SK_N02 Description 에 "↑ 를 누른 채 점프 키를 누르면 위로 뛴다." (첫 문장 뒤).
+
+## 18단계 — 스탯창(C) · 아이템창(V) 단축키 · 우측 상단 버튼 (1.0.3-M7)
+
+- **공용 열기** (M7-01 · M7-02): `StatUIController.ToggleTab(0|1)` — 그 탭이 보이면 닫고 · 다른 탭이면 전환 · 닫혔으면 열고 그 탭으로. **C = 스탯 탭 · V = 장비 · 인벤토리 탭**(마지막 탭 유지는 사라짐). `Toggle()` 은 스탯 탭 위임(상태창 위 투명 버튼).
+- **우측 상단 아이템 버튼** (M7-03 · M7-04): `StatusHUD` `Shortcuts/BtnItem`(V · ico_bag · "아이템" · 가운데 −114 빈 슬롯) · `StatusHUDController` 가 캐릭터 버튼 = `ToggleTab(0)` · 아이템 버튼 = `ToggleTab(1)`. 생성 스크립트 `Docs/tools/design-ui/add-item-shortcut.cjs`(신규 · 다시 돌려도 같음).
+- **도움말 · 안내 문구** (M7-05 · M7-06): 8쪽 키보드 V 칸 초록 + "아이템" · 조작키 탭 '창 열기' 5줄(`캐릭터(스탯)` · `아이템(장비 · 인벤토리)`) · 알림 카드 `potion` · `weapon` 의 C → V.
+- 호환 점검 (M7-07): 튜토리얼 중 V 무시 · ESC 한 번에 닫힘 · 채팅 입력 중 V 무시. 변경 없음.
+
+## 19단계 — 튜토리얼 전투 구간 이동 · 스킬 (1.0.3 §10 · M8-01 ~ 07)
+
+- 2-4 · 3-7 · 5-0b `allow = fight`(이동 · 기본 공격 · 스킬) · 시작점에서 `leash` 범위(2-4 · 3-7 가로 8.0 세로 2.5 / 5-0b 가로 12.0 세로 2.5 · 보스 처치 뒤 감시 끔)를 넘으면 서버 `back` 액션이 시작점으로 되돌리고 토스트
+- 스킬: 새 act 2-4k(`skill:SK_W11,SK_W21,SK_W22:1`) → `PlayerSkillState.GrantSkillLevel`(SP 없이 Lv1 · 직업 줄 불일치 거절 · 튜토리얼 끝나면 `ResetMatchState` 가 비움). W · E 는 2차 전직 요건이라 5-0b 에서 열림
+- `SkillCaster.Cast` 맨 앞이 `_TutorialDirector:CastAllowed()` 를 묻는다(장면 `allow.cast` · 전투 3장면만 true) — 카드 · NPC 창 · 6-3c 발록 방에서는 시전 거절. 장면 총수 121 → 122
+- 안내 문장 한 줄 추가(2-4 · 3-7 · 5-0b) · 진행 조건(done) 3종 유지
