@@ -53,6 +53,10 @@ script SkillMovement extends Logic
     -- 스폰 로케이션으로 가는 BLINK 행(skillId -> true). BuildTables 에서 채운다. 닷지 SK_A22.
     property table spawnBlinkSkills = {}
 
+    -- [클라] 텔레포트 시전자 즉시 재생표(1.1-L04): skillId -> { ruid, scale, flipWithFacing, soundRuid, offsetY }. OnBeginPlay 에서 채운다.
+    -- 클라 인스턴스의 SkillExecutors.effectOverrides/castSounds 는 비어 있다(SkillExecutors.OnBeginPlay 가 ServerOnly) → 클라가 RUID 를 따로 알아야 한다.
+    property table blinkLocalFx = {}
+
     -- [클라] 이 맵에 들어온 위치(닷지 폴백 · SpawnLocation 선택 기준). OnUpdate 가 CurrentMap 이름이 바뀌는 순간 기록한다.
     @HideFromInspector
     property string lastMapName = ""
@@ -77,6 +81,14 @@ script SkillMovement extends Logic
     method void OnBeginPlay()
         self.spawnBlinkSkills = {
             SK_A22 = true,
+        }
+        -- 1.1-L04: 시전자 클라에서 즉시 재생할 도착 이펙트 · 시전음. 🔴 값은 서버 쪽과 **같아야 한다**(한쪽만 바꾸면 시전자와 다른 유저 화면이 어긋난다):
+        --   이펙트 = SkillExecutors.effectOverrides.SK_M13.impact / SK_M21.impact (ruid · scale · flipWithFacing · offsetY)
+        --   소리   = SkillExecutors.castSounds.SK_M13 / SK_M21
+        --   서버의 같은 두 impact 에는 localFirst = true 가 붙어 있다(그 표식이 있어야 서버 재생이 시전자를 건너뛴다 · 1.1-L05).
+        self.blinkLocalFx = {
+            SK_M13 = { ruid = "1fc628fe0f0d40c9bce10b1a3b434b89", scale = 1.15, flipWithFacing = true, offsetY = 0, soundRuid = "6046095db6a24eaab07d268f7d3040c2" },
+            SK_M21 = { ruid = "5acb898b8198481ca425148da2193feb", scale = 1.0, flipWithFacing = true, offsetY = 0, soundRuid = "7c1c509dc17c459da9a496da153e8d4b" },
         }
     end
 
@@ -174,6 +186,35 @@ script SkillMovement extends Logic
             .. ") to=(" .. tostring(dest.x) .. "," .. tostring(dest.y) .. ") branch=" .. dest.branch .. " dist=" .. tostring(distance))
         return { ok = true, reason = dest.branch, fromX = origin.x, fromY = origin.y, toX = dest.x, toY = dest.y,
                  dirX = dir.x, dirY = dir.y, branch = dest.branch }
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlayBlinkLocalFx(string skillId, table moved)
+        -- 1.1-L04: 텔레포트 성공 직후(SkillCaster.Cast) 시전자 클라에서 도착 이펙트 + 시전음을 즉시 재생한다. moved = TryTeleport 반환(toX · toY · dirX).
+        -- 서버의 같은 재생은 시전자를 건너뛴다(SkillExecutors.ExecuteBlink localFirst) — 다른 유저에게 보이는 타이밍은 예전 그대로(도착 위치 동기화 뒤 0.15초 + 전달).
+        -- blinkLocalFx 에 없는 스킬(닷지 SK_A22 등)은 아무것도 안 한다 = 예전 그대로.
+        local fx = self.blinkLocalFx[skillId]
+        if fx == nil or moved == nil or moved.toX == nil or moved.toY == nil then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.TransformComponent) then return end
+        -- 바라보는 쪽: 좌우로 텔레포트했으면 누른 방향(곧 바라보게 되는 쪽 — 서버가 0.15초 뒤 읽는 LookDirectionX 와 같다), 상하이면 지금 바라보는 쪽. 서버 SkillExecutors.GetFacingX 와 같은 규칙.
+        local facing = 1
+        if moved.dirX ~= nil and moved.dirX ~= 0 then
+            if moved.dirX < 0 then facing = -1 end
+        else
+            local controller = player.PlayerControllerComponent
+            if isvalid(controller) and controller.LookDirectionX < 0 then facing = -1 end
+        end
+        local opt = nil
+        if fx.flipWithFacing and facing > 0 then
+            opt = {}
+            opt["FlipX"] = true
+        end
+        local z = player.TransformComponent.WorldPosition.z
+        local s = fx.scale or 1
+        _EffectService:PlayEffect(fx.ruid, player, Vector3(moved.toX, moved.toY + (fx.offsetY or 0), z), 0, Vector3(s, s, 1), false, opt)
+        if fx.soundRuid ~= nil and fx.soundRuid ~= "" then _SoundService:PlaySound(fx.soundRuid, 1.0) end
+        log("[Skill] blink local fx " .. skillId .. " at (" .. tostring(moved.toX) .. "," .. tostring(moved.toY) .. ") flip=" .. tostring(opt ~= nil))
     end
 
     @ExecSpace("Server")

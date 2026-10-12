@@ -1059,13 +1059,16 @@ script SkillExecutors extends Logic
             -- 마법사 (2026-09-10 · 사용자 요청): 텔레포트·매직 가드·대마법 컷신도 원작 팩 RUID. 텔레포트 출발 파티클은 TeleportDepartParticle(property) 그대로.
             SK_M13 = {   -- 텔레포트 — skill/200.img/skill/2001009 (텔레포트): effect 6프레임 = 도착 지점
                 -- 2026-09-26 사용자 Play 선택: 오른쪽을 볼 때 뒤집기(flipWithFacing) · 크기 1.15("캐릭터보다 조금 크게").
-                impact = { ruid = "1fc628fe0f0d40c9bce10b1a3b434b89", scale = 1.15, flipWithFacing = true },
+                -- localFirst(1.1-L04/L05 텔레포트 즉시 재생): 시전자 클라가 도착 이펙트 · 시전음을 먼저 틀므로(SkillMovement.blinkLocalFx — ruid · scale · flipWithFacing · 소리 RUID 를 **같은 값으로 복사**해 뒀다)
+                --   서버 재생(ExecuteBlink)은 시전자를 뺀 다른 유저에게만 보낸다. 이 표식이 없는 BLINK(닷지 SK_A22)는 예전 그대로.
+                impact = { ruid = "1fc628fe0f0d40c9bce10b1a3b434b89", scale = 1.15, flipWithFacing = true, localFirst = true },
             },
             SK_M21 = {   -- 텔레포트 강화 — 도착 이펙트 = skill/221.img/skill/2211017 텔레포트 부스트(썬콜) effect 11프레임 · 145×147 · 60ms (작은 구 → 푸른 소용돌이 고리)
                 -- b/skill-magician-effects 2026-09-26 사용자 Play 선택 "keep": 예전 211.img/2111007 텔레포트 마스터리(불독) 불꽃 8e1130db… → 썬콜 포털. 우리 마법사 궁이 썬콜 프로즌 라이트닝이고
                 -- 라이브러리에 썬콜·비숍 텔레포트 마스터리 팩이 없어서 같은 썬콜의 텔레포트 이동 연출을 쓴다. 기준점 = 발(원작 origin 이 고리 중심 아래 ≈0.34) → 오프셋 없음.
                 -- 2026-09-26 사용자 Play 선택: 오른쪽을 볼 때 뒤집기(flipWithFacing · 텔레포트와 같게) · 크기는 그대로 1.0.
-                impact = { ruid = "5acb898b8198481ca425148da2193feb", flipWithFacing = true },
+                -- localFirst: SK_M13 과 같다(시전자 클라 먼저 · 서버는 다른 유저에게만 · SkillMovement.blinkLocalFx 와 같은 값). hit(몬스터 위 그림)은 서버가 그대로 맡는다.
+                impact = { ruid = "5acb898b8198481ca425148da2193feb", flipWithFacing = true, localFirst = true },
                 -- hit = 도착 피해에 맞은 몬스터마다(ExecuteBlink → SkillAttack.OnAttack · 몸 중심 · 크기 1.0 · 뒤집기 없음) — b/skill-magician-effects 2026-09-27 Round 9 사용자 keep.
                 -- 원작 텔레포트 마스터리의 hit: 라이브러리엔 불독 211.img/2111007 hit/0 (5프레임 × 90ms · 94×96 · KMS v359 시기 · 이 스킬 아이콘·사운드와 같은 팩)만 있다(썬콜 2211007 · 비숍 2311007 없음).
                 hit = { ruid = "66e6b33e109e45ec939b347b4f6202f4" },
@@ -4235,6 +4238,8 @@ script SkillExecutors extends Logic
         local departName = self.TeleportDepartParticle
         if dealsArrivalDamage then departName = self.TeleportEnhancedDepartParticle end
         local entry = self.effectOverrides[skillId]
+        -- 1.1-L05: impact.localFirst = 시전자 클라가 도착 이펙트 · 시전음을 이미 틀었다(SkillMovement.PlayBlinkLocalFx) → 서버 재생은 시전자를 뺀 다른 유저에게만 보낸다.
+        local localFirst = (entry ~= nil and entry.impact ~= nil and entry.impact.localFirst == true)
         -- depart.atOrigin(b/skill-archer-effects 2026-09-28 Play · 닷지): 클라가 먼저 옮겨서 여기의 from 은 이미 도착점이었다 →
         --   클라가 옮기기 전에 보낸 출발 좌표(SkillMovement.ReportBlinkOrigin)를 쓴다. 없거나 늦으면 예전처럼 지금 위치.
         if entry ~= nil and entry.depart ~= nil and entry.depart.atOrigin == true and _SkillMovement ~= nil and isvalid(casterEntity.PlayerComponent) then
@@ -4252,7 +4257,12 @@ script SkillExecutors extends Logic
             self:PlayStageEffect(skillId, "depart", casterEntity, from, self:ParticleByName(departName))
         end
         log("SkillExecutors: BLINK " .. skillId .. " depart particle=" .. departName)
-        self:PlayCastSound(skillId, casterEntity)
+        if localFirst and isvalid(casterEntity.PlayerComponent) then
+            -- 시전음: 시전자는 키를 누른 순간 클라에서 이미 들었다(1.1-L04) → 서버는 시전자를 뺀 맵 전원에게만.
+            self:PlayCastSoundExcept(skillId, casterEntity, casterEntity.PlayerComponent.UserId)
+        else
+            self:PlayCastSound(skillId, casterEntity)
+        end
 
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) then return end
@@ -4260,7 +4270,12 @@ script SkillExecutors extends Logic
             -- 도착 링(CircleBurst)은 마법사 텔레포트 공통 (2026-09-10 최종: 일반 = 링만, 강화 = 출발 폭발 EnergyExplosion + 링 + 피해). 버프형 BLINK(닷지)는 링 없음(직업 간 겹침 방지).
             local ringFallback = BasicParticleType.CircleBurst
             if hasBuff then ringFallback = nil end
-            self:PlayStageEffect(skillId, "impact", casterEntity, to, ringFallback)
+            if localFirst then
+                -- 도착 이펙트: 시전자 클라가 이미 틀었다(1.1-L04) → 시전자를 뺀 다른 유저에게만(도착 위치 동기화 뒤 BlinkArrivalDelay 0.15s + 전달 = 예전 타이밍 그대로).
+                self:PlayBlinkImpactToOthers(skillId, casterEntity, to)
+            else
+                self:PlayStageEffect(skillId, "impact", casterEntity, to, ringFallback)
+            end
             log("SkillExecutors: BLINK " .. skillId .. " server saw from=(" .. tostring(from.x) .. "," .. tostring(from.y)
                 .. ") to=(" .. tostring(to.x) .. "," .. tostring(to.y) .. ") arrivalDamage=" .. tostring(dealsArrivalDamage) .. " buff=" .. tostring(skillData.buffTag))
             if hasBuff and _SkillBuffs ~= nil and isvalid(casterEntity.PlayerComponent) then
@@ -6161,6 +6176,14 @@ script SkillExecutors extends Logic
         self:PlaySkillSoundToMap(soundId, pos, casterEntity, 1.0)
     end
 
+    @ExecSpace("ServerOnly")
+    method void PlayCastSoundExcept(string skillId, Entity casterEntity, string exceptUserId)
+        -- 1.1-L05: PlayCastSound 와 같되 exceptUserId(시전자) 한 명을 뺀다. 텔레포트(SK_M13 · SK_M21)는 시전자 클라가 키를 누른 순간 시전음을 이미 틀었다(SkillMovement.PlayBlinkLocalFx · 1.1-L04).
+        local soundId = self.castSounds[skillId] or self.defaultCastSound
+        local pos = casterEntity.TransformComponent.WorldPosition
+        self:PlaySkillSoundToMapExcept(soundId, pos, casterEntity, 1.0, exceptUserId)
+    end
+
     @ExecSpace("Server")
     method void RequestDoubleJump(number dirX)
         -- 더블 점프(SK_N02) 서버 몫: 레벨 · 직업 확인 → MP(있으면 · 지금 0) → 뛴 자리에 레벨별 그림 + Use 소리 · 로그. 밀기는 이미 소유 클라가 했다(SkillMovement.TryDoubleJump).
@@ -6228,6 +6251,27 @@ script SkillExecutors extends Logic
         end
     end
 
+    @ExecSpace("ServerOnly")
+    method void PlaySkillSoundToMapExcept(string ruid, Vector3 pos, Entity source, number volume, string exceptUserId)
+        -- 1.1-L05: PlaySkillSoundToMap 과 같되 exceptUserId 인 유저는 건너뛴다(그 유저의 클라가 이미 직접 틀었다). 기존 PlaySkillSoundToMap 은 그대로(호출처 영향 0).
+        -- 로그의 n 은 건너뛴 만큼 제외한 실제 전송 인원.
+        if ruid == nil or ruid == "" or not isvalid(source) then return end
+        local map = source.CurrentMap
+        if not isvalid(map) or not isvalid(map.MapComponent) then return end
+        local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+        if users == nil then return end
+        local n = 0
+        for _, u in ipairs(users) do
+            if isvalid(u) and isvalid(u.PlayerComponent) and u.PlayerComponent.UserId ~= exceptUserId then
+                self:PlaySkillSoundLocal(ruid, volume, pos.x, pos.y, pos.z, u.PlayerComponent.UserId)
+                n = n + 1
+            end
+        end
+        if self.SkillSoundLog then
+            log("[Skill] sound " .. string.sub(ruid, 1, 8) .. " from " .. tostring(source.Name) .. " on " .. tostring(map.Name) .. " -> " .. tostring(n) .. " user(s) (except " .. tostring(exceptUserId) .. ")")
+        end
+    end
+
     @ExecSpace("Client")
     method void PlaySkillSoundLocal(string ruid, number volume, number x, number y, number z)
         -- 받는 유저의 클라에서 재생. 인자는 원시 타입만(ExecSpace 너머 · Monster.PlaySoundLocal 과 같은 이유). 듣는 사람 = 이 클라의 로컬 플레이어.
@@ -6237,6 +6281,47 @@ script SkillExecutors extends Logic
             return
         end
         _SoundService:PlaySoundAtPos(ruid, Vector3(x, y, z), listener, volume)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayBlinkImpactToOthers(string skillId, Entity casterEntity, Vector3 pos)
+        -- 1.1-L05: 텔레포트 도착 이펙트(effectOverrides[skill].impact)를 시전자를 뺀 같은 맵 유저에게만 보낸다(시전자 클라는 SkillMovement.PlayBlinkLocalFx 로 이미 틀었다).
+        -- 뒤집기 · 크기 · 높이 보정은 PlayStageEffect 의 비-cast 분기(고정 위치)와 같은 값: flipWithFacing 이고 서버 기준 오른쪽을 볼 때 FlipX · scale · offsetY.
+        -- 받는 클라 재생은 PlayBlinkImpactLocal(Client RPC · 마지막 인자 = 받는 유저 userId · 원시 타입만).
+        local entry = self.effectOverrides[skillId]
+        if entry == nil or entry.impact == nil or entry.impact.ruid == nil then return end
+        local spec = entry.impact
+        if not isvalid(casterEntity) then return end
+        local map = casterEntity.CurrentMap
+        if not isvalid(map) or not isvalid(map.MapComponent) then return end
+        local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+        if users == nil then return end
+        local casterUid = ""
+        if isvalid(casterEntity.PlayerComponent) then casterUid = casterEntity.PlayerComponent.UserId end
+        local flip = (spec.flipWithFacing == true and self:GetFacingX(casterEntity) > 0)
+        local scale = spec.scale or 1
+        local y = pos.y + (spec.offsetY or 0)
+        local n = 0
+        for _, u in ipairs(users) do
+            if isvalid(u) and isvalid(u.PlayerComponent) and u.PlayerComponent.UserId ~= casterUid then
+                self:PlayBlinkImpactLocal(spec.ruid, scale, flip, pos.x, y, pos.z, u.PlayerComponent.UserId)
+                n = n + 1
+            end
+        end
+        log("[Skill] blink impact " .. skillId .. " -> " .. tostring(n) .. " other user(s) flip=" .. tostring(flip) .. " at (" .. tostring(pos.x) .. "," .. tostring(y) .. ")")
+    end
+
+    @ExecSpace("Client")
+    method void PlayBlinkImpactLocal(string ruid, number scale, boolean flip, number x, number y, number z)
+        -- 1.1-L05: 받는 유저의 클라에서 텔레포트 도착 이펙트 재생(고정 위치). 인자는 원시 타입만(PlaySkillSoundLocal 과 같은 이유 — ExecSpace 너머로 table/any 금지).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local opt = nil
+        if flip then
+            opt = {}
+            opt["FlipX"] = true
+        end
+        _EffectService:PlayEffect(ruid, player, Vector3(x, y, z), 0, Vector3(scale, scale, 1), false, opt)
     end
 
 end

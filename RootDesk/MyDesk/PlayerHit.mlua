@@ -4,6 +4,17 @@ script PlayerHit extends HitComponent
 	@MinValue(0)
 	property number ImmuneCooldown = 1
 
+	-- 1.1-L02: 피해 직후 HP <= 0 인데 IsDead() 가 안 켜졌을 때 사망 처리(EnsureDeath)를 거는 유예(초). 엔진 자체의 사망 전이가 먼저 끝나도록 주는 짧은 시간.
+	-- 0.2 는 근거가 약한 값(엔진 전이 시점 비공개) — Play 로그 [PlayerHit] hp<=0 but not dead 가 찍히는지로 정한다. 0 이면 엔진 전이와 겹쳐 ProcessDead 가 두 번 걸릴 수 있다.
+	@MinValue(0)
+	property number DeathCheckDelay = 0.2
+
+	@HideFromInspector
+	property boolean deathCheckPending = false
+
+	-- 1.1-L07(조건부): true 면 시설 반사(attackInfo "reflect")가 피격 무적 1초를 통과한다. 기본 false — L06 로그("reflect refused by immunity")로 원인이 무적임이 확인된 뒤 true 로.
+	property boolean ReflectBypassImmunity = false
+
 	property number PlayerKnockbackX = 2.0
 
 	property number PlayerKnockbackY = 1.2
@@ -47,6 +58,9 @@ script PlayerHit extends HitComponent
 	method boolean IsHitTarget(string attackInfo)
 		-- 피격 무적 시간(ImmuneCooldown 1s). 불굴의 진(SK_W31) 동안은 B SkillBuffs.GetHitImmuneMul(0.5) 배 = 절반 (2026-09-13 사용자 요청).
 		-- ⚠ @ExecSpace 를 붙이거나 파라미터를 바꾸면 LEA-3014 SignatureMismatch (Faction/MonsterHit 과 같은 규칙).
+		-- 1.1-L07(조건부 · 기본 꺼짐): 시설 반사(FactionAttack.DoReflect → attackInfo "reflect")가 피격 무적(1초)을 통과하게 하는 스위치. 켜면 무적 시간을 보지 않고 LastHitTime 도 갱신하지 않는다
+		--   (반사가 다음 일반 피격의 무적을 먹지 않게). 🔴 L06 로그 "[PlayerHit] reflect refused by immunity" 가 Play 에서 확인될 때만 켠다 — 원인이 무적이 아니면 켜지 않는다.
+		if attackInfo == "reflect" and self.ReflectBypassImmunity then return true end
 		local currentTime = _UtilLogic.ElapsedSeconds
 		local cooldown = self.ImmuneCooldown
 		if self:IsServer() and _SkillBuffs ~= nil then
@@ -57,6 +71,10 @@ script PlayerHit extends HitComponent
 			return true
 		end
 
+		-- 1.1-L06(페리온 반사 진단): 반사가 무적에 막혀 조용히 사라지던 것을 로그로 남긴다(left = 무적이 풀리기까지 남은 초).
+		if attackInfo == "reflect" then
+			log("[PlayerHit] reflect refused by immunity uid=" .. self:OwnerUserId() .. " left=" .. string.format("%.2f", self.LastHitTime + cooldown - currentTime))
+		end
 		return false
 	end
 
@@ -94,7 +112,12 @@ script PlayerHit extends HitComponent
 		__base:OnHit(attacker, damage, isCritical, attackInfo, hitCount)
 		if not self:IsServer() or damage <= 0 then return end
 		local player = self.Entity.PlayerComponent
-		if not isvalid(player) or player:IsDead() then return end
+		if not isvalid(player) then return end
+		-- 1.1-L02(사망 판정 버그 수정): 피해를 넣은 직후 HP 가 0 이하인데 사망(IsDead)이 안 켜졌으면 서버가 그 유저 클라에 ProcessDead 를 건다(EnsureDeath · 짧은 유예 뒤 재확인).
+		-- 사망 판정은 PlayerRespawnService 가 IsDead() 만 폴링해서, HP 0 인데 IsDead 가 꺼진 채로 남으면 아무도 되살리지 못했다.
+		if player.Hp <= 0 and not player:IsDead() then self:EnsureDeath(player.UserId) end
+		-- 죽는 중(HP <= 0)이거나 이미 죽은 플레이어에게는 넉백을 주지 않는다(예전 조건 IsDead() 가 Hp <= 0 까지 넓어졌다).
+		if player.Hp <= 0 or player:IsDead() then return end
 		local userId = player.UserId
 		if userId == nil or userId == "" or not isvalid(_UserService:GetUserEntityByUserId(userId)) then return end
 		if not isvalid(attacker) or not isvalid(attacker.TransformComponent) or not isvalid(self.Entity.TransformComponent) then return end
@@ -124,6 +147,27 @@ script PlayerHit extends HitComponent
 		end
 		log("[PlayerHit] knockback dir=" .. tostring(dirX) .. " (" .. userId .. ")")
 		self:ApplyHitKnockback(dirX, userId)
+	end
+
+	method void EnsureDeath(string userId)
+		-- 1.1-L02: 맞은 직후 HP <= 0 인데 IsDead() 가 안 켜진 플레이어를 DeathCheckDelay 뒤에 다시 보고, 그래도 안 죽었으면 서버가 그 유저 클라에 ProcessDead 를 건다
+		-- (서버에서 부르면 그 유저 클라로 간다 — PlayerRespawnService.Choose 의 pc:ProcessRevive(userId) 와 같은 꼴). 엔진 자체 사망 전이가 먼저 끝났으면 아무것도 안 한다.
+		-- 부모(HitComponent)에 없는 이름이라 LEA-3014 와 무관 · ExecSpace 없음(OwnerUserId 와 같은 꼴). 중복 예약은 deathCheckPending 으로 막는다.
+		if userId == nil or userId == "" then return end
+		if self.deathCheckPending then return end
+		self.deathCheckPending = true
+		log("[PlayerHit] hp<=0 after hit — death check in " .. tostring(self.DeathCheckDelay) .. "s uid=" .. userId)
+		local owner = self.Entity
+		_TimerService:SetTimerOnce(function()
+			if not isvalid(owner) then return end   -- 그 사이 플레이어 엔티티가 사라졌으면(퇴장 · 방 정리) 컴포넌트도 없다
+			self.deathCheckPending = false
+			local p = _UserService:GetUserEntityByUserId(userId)
+			if not isvalid(p) or not isvalid(p.PlayerComponent) then return end
+			local pc = p.PlayerComponent
+			if pc.Hp > 0 or pc:IsDead() then return end
+			pc:ProcessDead(userId)
+			log("[PlayerHit] hp<=0 but not dead after hit -> ProcessDead uid=" .. userId .. " hp=" .. tostring(pc.Hp))
+		end, self.DeathCheckDelay)
 	end
 
 	@ExecSpace("Client")
