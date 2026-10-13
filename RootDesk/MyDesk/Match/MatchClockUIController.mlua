@@ -33,13 +33,26 @@ script MatchClockUIController extends Logic
 	-- 미니언 투입 예고(사용자 2026-10-14): 다음 투입까지 이 초 이하면 페이즈 칩 · "다음 투입" 글자를 빨강으로.
 	property number MinionWarnSeconds = 30
 
-	-- 미니언 투입 순간 경고음(사용자 2026-10-14 "웨엥 하는 사이렌 · 3초쯤" · 후보를 듣고 고른다 → 정하면 RUID 를 넣는다 · 빈칸 = 소리 없음).
-	property string MinionAlertSoundRUID = ""
+	-- 미니언 투입 경고음(사용자 2026-10-14 지정): 투입 MinionTickFrom(5)초 전부터 째깍째깍을 반복 → MinionCountdownFrom(3.1)초부터 기본 카운트다운도 반복 → 0초(투입)에 둘 다 멈춘다.
+	--   시점은 서버가 보내는 소수 남은 초(nextExact)로 클라 시계에서 잰다(1초마다 오는 정수 nextIn 으로는 3.1초를 못 맞춘다). 튜토리얼(띠가 꺼진 동안)은 울리지 않는다.
+	property string MinionTickSoundRUID = "d2aa7ffc04c64c97be26de31dcf3cb2c"
 
-	property number MinionAlertVolume = 0.7
+	property number MinionTickFrom = 5.0
+
+	property string MinionCountdownSoundRUID = "7ca9fa1a7b384c1caae2449eee77d3ba"
+
+	property number MinionCountdownFrom = 3.1
+
+	property number MinionCountdownVolume = 0.7
 
 	@HideFromInspector
-	property integer lastNextIn = -1
+	property number deployAt = -1
+
+	@HideFromInspector
+	property boolean tickOn = false
+
+	@HideFromInspector
+	property boolean countOn = false
 
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
@@ -47,10 +60,44 @@ script MatchClockUIController extends Logic
 		if isvalid(self.panel) then
 			self.panel.Enable = false
 		end
+		for _, r in ipairs({ self.MinionTickSoundRUID, self.MinionCountdownSoundRUID }) do
+			if r ~= "" then pcall(function() _SoundService:LoadSound(r) end) end
+		end
 	end
 
 	@ExecSpace("ClientOnly")
-	method void Apply(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile, integer remain)
+	method void OnUpdate(number delta)
+		-- 미니언 투입 카운트다운 소리: 남은 초 ≤ MinionTickFrom 이면 째깍째깍 반복 · ≤ MinionCountdownFrom 이면 카운트다운도 반복 · 0 이하 · 띠가 꺼짐 · 매치 끝이면 둘 다 멈춤.
+		local rem = -1
+		if self.deployAt >= 0 then rem = self.deployAt - _UtilLogic.ElapsedSeconds end
+		local live = rem > 0 and isvalid(self.panel) and self.panel.Enable
+		self:SetLoop("tick", live and rem <= self.MinionTickFrom, rem)
+		self:SetLoop("count", live and rem <= self.MinionCountdownFrom, rem)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetLoop(string which, boolean want, number rem)
+		-- 반복 소리 하나를 켜거나 끈다(바뀔 때만 PlayLoopSound · StopSound).
+		local on = (which == "tick") and self.tickOn or self.countOn
+		if want == on then return end
+		local ruid = (which == "tick") and self.MinionTickSoundRUID or self.MinionCountdownSoundRUID
+		if ruid ~= "" then
+			if want then _SoundService:PlayLoopSound(ruid, self.MinionCountdownVolume) else _SoundService:StopSound(ruid) end
+		end
+		if which == "tick" then self.tickOn = want else self.countOn = want end
+		log("[Clock] minion " .. which .. " " .. (want and "start" or "stop") .. " at " .. string.format("%.2f", rem) .. "s")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 반복 소리가 남지 않게 끈다.
+		self.deployAt = -1
+		self:SetLoop("tick", false, -1)
+		self:SetLoop("count", false, -1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Apply(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile, integer remain, number nextExact)
 		-- 페이즈 이름 · 경과 mm:ss · 다음 투입/페이즈까지 (없으면 만료까지 남은 시간).
 		-- 시계가 오면 = 매치 중 → 띠를 켠다(튜토리얼은 진행기가 숨겨 둔다).
 		if isvalid(self.panel) then
@@ -66,15 +113,14 @@ script MatchClockUIController extends Logic
 			["PHASE0-1"] = self.ruidChipGreen, ["PHASE0-2"] = self.ruidChipBlue, ["PHASE1"] = self.ruidChipBlue,
 			["PHASE2"] = self.ruidChipGold, ["PHASE3"] = self.ruidChipRed,
 		}
-		-- 미니언 투입 MinionWarnSeconds 초 전부터는 칩 · 글자를 빨강으로(2026-10-14) · 투입 순간(남은 초가 0 근처에서 다시 커짐) 경고음.
+		-- 미니언 투입 MinionWarnSeconds 초 전부터는 칩 · 글자를 빨강으로(2026-10-14).
 		local warn = phaseName ~= "EXPIRED" and nextIn >= 0 and nextIn <= self.MinionWarnSeconds
-		if self.lastNextIn >= 0 and self.lastNextIn <= 2 and (nextIn > self.lastNextIn + 5 or nextIn < 0) then
-			if self.MinionAlertSoundRUID ~= "" then
-				_SoundService:PlaySound(self.MinionAlertSoundRUID, self.MinionAlertVolume)
-			end
-			log("[Clock] minion deploy (next " .. tostring(self.lastNextIn) .. " -> " .. tostring(nextIn) .. ") alert=" .. tostring(self.MinionAlertSoundRUID ~= ""))
+		-- 카운트다운 소리 기준 시각(OnUpdate 가 잰다). 매치 끝 · 다음 투입 없음 = 끔.
+		if phaseName == "EXPIRED" or nextExact == nil or nextExact < 0 then
+			self.deployAt = -1
+		else
+			self.deployAt = _UtilLogic.ElapsedSeconds + nextExact
 		end
-		self.lastNextIn = nextIn
 		if isvalid(self.phaseText) then
 			-- 시험 프로필이어도 "(TEST)" 꼬리표는 화면에 붙이지 않는다(사용자 지시 2026-10-02 — 칩 안에서 두 줄로 꺾였다). 프로필 구분은 로그로만.
 			self.phaseText.Text = names[phaseName] or phaseName

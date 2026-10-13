@@ -55,6 +55,16 @@
   - 공격 스킬(근접 · 투사체 · 광역) 키를 0.3초 넘게 누르고 있으면 시전 락 · 쿨다운이 풀릴 때마다 다시 시전. 짧게 누르면 예전처럼 한 번.
   - 버프 · 토글 · 이동(텔레포트) · 궁 · 재시전은 대상 아님. 안 배운 스킬은 무장 안 함. 서버가 거절하면(맨손 등) 1초 쉬었다가 다시.
   - 모바일 스킬 칸도 눌린 동안 같은 규칙(`SkillHudController` · `ButtonStateChangeEvent`).
+- **매치 소리 4종**(사용자 RUID 지정): 시작 `04ca8c28…`(리스항구 도착 = `StartMatch`) · 게임 오버 `27d957fc…`(넥서스 파괴 · 미점령 탈락 순간 = `OnPlayerEliminated`) · 승리 `713eb3fa…`(주니어 발록 선취 = 결과 화면) · 패배 `e64a2dfc…`(발록을 못 잡고 끝남 = 결과 화면 · 탈락자는 게임 오버를 이미 들어 결과 화면에선 안 냄).
+  - `MatchSessionLogic.PlayCueHere`(방에 있는 사람에게만) → `StatusHUDController.PlayMatchCue`. Play: START · GAMEOVER(결과 화면 LOSE 없음) · START → 시간 종료 LOSE · START → 발록 선취 WIN.
+- **미니언 투입 경고음 = 카운트다운**(사용자 "째깍째깍 5초부터 반복 · 3.1초부터 기본 카운트다운 반복 · 0초에 둘 다 멈춤"): `MatchClockUIController` 가 `PlayLoopSound` / `StopSound` 로. 째깍 `d2aa7ffc…` · 카운트다운 `7ca9fa1a…`.
+  - 서버 시계가 소수 남은 초(`nextExact`)를 같이 보낸다(`BroadcastClock` · `Apply` 인자 하나 추가) — 1초마다 오는 정수로는 3.1초를 못 맞춘다. 앞서 넣은 투입 순간 단발 경고음(`MinionAlertSoundRUID`)은 지웠다.
+  - Play: 째깍 4.98초 · 카운트다운 3.09초 시작 · 투입(-0.02초)에 둘 다 멈춤.
+- **죽었을 때 소리**(사용자 `8727e134…`): 내 클라에서 사망이 켜지는 순간 한 번(`PlayerHit` → `StatusHUDController.PlayDeathSound`). Play 확인.
+- **마법사(투사체) 데미지 스킨**(사용자 "3271c3e7… 로 안 되는 게 있다 · 스킬일 때 특히"): 원인 = 엔진은 공격한 엔티티의 `DamageSkinSettingComponent` 스킨을 쓰는데 투사체(에너지볼트 · 달팽이 · 화살 · 표창) 모델엔 그 컴포넌트가 없어 엔진 기본 스킨(`6ba67548…`)이 나왔다.
+  - `SkillAttack.ApplyCasterDamageSkin`: 투사체를 스폰할 때 시전자 스킨 설정을 그대로 복사(없으면 붙임). Play: 클라에서 투사체 스킨 = `3271c3e7…` · 달팽이 4마리 명중 숫자 표시.
+- **포탈 재이동 잠금 2.5초 → 1.75초**(사용자 · `PortalNetwork.PortalLockSeconds` · 튜토리얼 0.5초 그대로).
+- **포탈 소리 = `95039eb5…` 를 1.0초부터**(사용자): 엔진 `PlaySound` 에 시작 위치가 없어 원본(3.53초)을 1.0초부터 잘라(2.53초 ogg) 그룹 저장소(mIYbC)에 올렸다 → `1f4e6c94…`. (mp3 는 저장소 등록이 실패해 ogg 로 올림) Play: 재생 로그 · 오류 없음.
 
 ## 확인
 
