@@ -2,7 +2,7 @@
 script PlayerRespawnService extends Logic
 	-- 플레이어 사망·리스폰 (9/14 기획 · WO-027 §9-0 3차 ④ · WO-028 T17 · a/plan-0914 B9).
 	--   · 감지 = 매치 참가자의 PlayerComponent:IsDead() 폴링(PollInterval) — 엔진 사망(= A 쪽 피해 적용점 뒤 HP≤0) 그대로. PlayerHit(B) 손대지 않음.
-	--   · 매치 중 사망 = 내 마을 리스폰 + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
+	--   · 매치 중 사망 = 어디서 죽든(사냥터 · 마을 · 보스 · 여섯갈래길…) 내 마을의 1레인 포탈 자리로 리스폰(마을을 못 정했으면 리스항구) + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
 	--     선택 창 = RespawnDuration(ChoiceSeconds) 동안. 고르면 즉시 부활(ProcessRevive) · 안 고르면 엔진 자동 부활 뒤 기본(경험치) 적용. 메소가 모자라면 경험치만.
 	--   · 발록 방 사망은 기존(BalrogRoomService) · 매치 밖 사망은 손대지 않는다. 사망 횟수는 서버 메모리(저장 안 함).
 
@@ -19,8 +19,7 @@ script PlayerRespawnService extends Logic
 
 	property number PollInterval = 0.25
 
-	-- 사냥터(<지역>_Hunt_*)에서 죽으면 그 지역 마을에서 부활한다(WO-049 ⑦). 마을 맵 이름 = <지역> + 이 접미사.
-	property string VillageMapSuffix = "_Village_MinimiMain"
+	-- (1.0.5-4-01 · 2026-10-13) 부활 위치 = 어디서 죽든 내 마을. 예전 "사냥터(<지역>_Hunt_*)에서 죽으면 그 지역 마을"(WO-049 ⑦ · VillageMapSuffix · HuntRespawn · RegionLabel · VillageRowByMap)은 걷어 냈다.
 
 	-- 부활 직후 HP 가 이 비율(최대 HP 대비) 아래면 최대치로 다시 채운다 — 엔진 부활이 HP 를 늦게 · 다르게 쓰는 경우 대비(사용자 2026-10-05 "가끔 부활했을 때 체력이 안 차 있음 · 최소 절반").
 	property number ReviveMinHpRatio = 0.5
@@ -57,6 +56,10 @@ script PlayerRespawnService extends Logic
 	@HideFromInspector
 	property any deaths = nil
 
+	-- reviveAt[uid] = 마지막 부활 처리(OnRevive) 시각(ServerElapsedSeconds) — PlayerSafetyNet 의 [Safety] 원인 조사 로그용(1.0.5-3-01 · SecondsSinceRevive).
+	@HideFromInspector
+	property any reviveAt = nil
+
 	@HideFromInspector
 	property number pollTimer = 0
 
@@ -66,6 +69,7 @@ script PlayerRespawnService extends Logic
 		self.wasDead = {}
 		self.pending = {}
 		self.deaths = {}
+		self.reviveAt = {}
 	end
 
 	@ExecSpace("ServerOnly")
@@ -75,6 +79,9 @@ script PlayerRespawnService extends Logic
 		self.wasDead = {}
 		self.pending = {}
 		self.deaths = {}
+		self.reviveAt = {}
+		-- 안전장치(PlayerSafetyNet) 한 판 발동 횟수도 이 시점에 비운다(1.0.5-3-01).
+		if _PlayerSafetyNet ~= nil then _PlayerSafetyNet:ResetForMatch() end
 		self.moveEpoch = self.moveEpoch + 1
 		self.moveSeq = {}
 		for _, uid in ipairs(userIds or {}) do
@@ -251,50 +258,6 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method any VillageRowByMap(string villageMap)
-		-- VillageConfig 에서 마을 맵 이름이 같은 행 { map, lane1 }. 없으면 nil(리스항구는 이 표에 없다).
-		local t = _DataService:GetTable("VillageConfig")
-		if t == nil then return nil end
-		for i = 1, t:GetRowCount() do
-			if tostring(t:GetCell(i, "VillageMapName") or "") == villageMap then
-				return { map = villageMap, lane1 = tostring(t:GetCell(i, "Lane1MapName") or "") }
-			end
-		end
-		return nil
-	end
-
-	@ExecSpace("ServerOnly")
-	method string RegionLabel(string region)
-		-- 부활 알림에 쓰는 지역 이름.
-		local names = { Henesys = "헤네시스", Ellinia = "엘리니아", KerningCity = "커닝시티", Perion = "페리온", Nautilus = "노틸러스", LithHarbor = "리스항구" }
-		return names[region] or region
-	end
-
-	@ExecSpace("ServerOnly")
-	method any HuntRespawn(string deathMap)
-		-- 사냥터에서 죽었으면 그 지역 마을의 부활 자리 { map, pos, label, rule }. 사냥터가 아니거나 마을 맵이 이 룸에 없으면 nil.
-		-- 자리: 마을의 "죽은 맵으로 가는 포탈" → 없으면 마을의 1레인 포탈 → 없으면 마을 맵 첫 SpawnLocation.
-		local region = string.match(deathMap or "", "^(.-)_Hunt_")
-		if region == nil or region == "" then return nil end
-		local villageMap = region .. self.VillageMapSuffix
-		local vmap = _EntityService:GetEntityByPath("/maps/" .. villageMap)
-		if not isvalid(vmap) then return nil end
-		local paths = { "/maps/" .. villageMap .. "/P_To_" .. deathMap }
-		local row = self:VillageRowByMap(villageMap)
-		if row ~= nil and row.lane1 ~= "" then table.insert(paths, "/maps/" .. villageMap .. "/P_To_" .. row.lane1) end
-		for _, path in ipairs(paths) do
-			local portal = _EntityService:GetEntityByPath(path)
-			if isvalid(portal) and isvalid(portal.TransformComponent) then
-				local pp = portal.TransformComponent.WorldPosition
-				return { map = villageMap, pos = Vector2(pp.x, pp.y), label = self:RegionLabel(region), rule = "HUNT_REGION" }
-			end
-		end
-		local sp = self:SpawnPointOf(vmap)
-		if sp ~= nil then return { map = villageMap, pos = sp, label = self:RegionLabel(region), rule = "HUNT_REGION_SPAWN" } end
-		return nil
-	end
-
-	@ExecSpace("ServerOnly")
 	method void EnsureReviveHp(string userId, integer round, integer epoch)
 		-- 부활 직후 0.4초 간격으로 3번: 살아 있는데 HP 가 최소 비율 아래면 최대치로(엔진이 나중에 HP 를 덮어쓴 경우).
 		-- 매치가 끝났거나(세대가 바뀜) 그 사이 참가자가 아니게 됐으면 아무것도 하지 않는다(로비 · 다음 매치 HP 를 건드리지 않게 · Codex 리뷰).
@@ -327,6 +290,13 @@ script PlayerRespawnService extends Logic
 			end
 		end
 		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method number SecondsSinceRevive(string userId)
+		-- 마지막 부활 처리 뒤 지난 초. 이 판에 부활한 적이 없으면 −1. PlayerSafetyNet 의 [Safety] 로그용(1.0.5-3-01).
+		if self.reviveAt == nil or self.reviveAt[userId] == nil then return -1 end
+		return _UtilLogic.ServerElapsedSeconds - self.reviveAt[userId]
 	end
 
 	@ExecSpace("ServerOnly")
@@ -422,6 +392,8 @@ script PlayerRespawnService extends Logic
 		local p = self.pending[userId]
 		if p == nil then return end
 		self.pending[userId] = nil
+		if self.reviveAt == nil then self.reviveAt = {} end
+		self.reviveAt[userId] = _UtilLogic.ServerElapsedSeconds
 		local applied = "none"
 		local amount = 0
 		if p.penalty then
@@ -450,16 +422,8 @@ script PlayerRespawnService extends Logic
 		_TimerService:SetTimerOnce(function() self:EnsureReviveHp(userId, 1, reviveEpoch) end, 0.4)
 		local label = ""
 		local rule = ""
-		-- ① 사냥터에서 죽었으면 그 지역 마을(WO-049 ⑦ · 사용자 2026-10-05 "사냥터에서 죽으면 그 사냥터에 해당하는 마을로").
-		local hunt = self:HuntRespawn(p.map)
-		if hunt ~= nil then
-			target = "/maps/" .. hunt.map
-			destMap = hunt.map
-			destPos = hunt.pos
-			label = hunt.label
-			rule = hunt.rule
-		end
-		-- ② 그 밖(마을 · 보스 · 여섯갈래길 등)은 내 마을의 1레인 쪽 포탈 자리 → 못 찾으면 리스항구.
+		-- 어디서 죽든(사냥터 · 마을 · 보스 · 여섯갈래길 등) 내 마을의 1레인 쪽 포탈 자리 → 마을이 없으면(마을 연결 전에 죽음) 리스항구 (1.0.5-4-01 · 2026-10-13).
+		--   예전 "사냥터에서 죽으면 그 지역 마을"(WO-049 ⑦ · HUNT_REGION)과 "1페이즈는 리스항구" 규칙은 걷어 냈다 — 죽은 곳 · 페이즈와 상관없다.
 		if target == "" and p.penalty then
 			local vid = ""
 			if _LaneStateService ~= nil then vid = _LaneStateService:VillageOfUser(userId) end
@@ -477,6 +441,16 @@ script PlayerRespawnService extends Logic
 					rule = "OWN_VILLAGE"
 				else
 					log_warning("[Death] village respawn portal not found " .. path .. " (" .. userId .. ")")
+					-- 포탈이 없어도 마을 맵이 이 룸에 있으면 그 맵의 첫 SpawnLocation 으로(예전 HUNT_REGION_SPAWN 과 같은 안전망) — 없으면 아래 리스항구.
+					local vmap = _EntityService:GetEntityByPath("/maps/" .. row.map)
+					local sp = self:SpawnPointOf(vmap)
+					if sp ~= nil then
+						target = "/maps/" .. row.map
+						destMap = row.map
+						destPos = sp
+						label = "내 마을"
+						rule = "OWN_VILLAGE_SPAWN"
+					end
 				end
 			end
 		end

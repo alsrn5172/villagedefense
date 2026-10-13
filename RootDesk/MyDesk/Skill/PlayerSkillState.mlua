@@ -22,6 +22,8 @@ script PlayerSkillState extends Logic
     -- 차수별 쓴 SP · 매치 시작 SP(서버 spentByTier · noviceStartSp 그대로). 스킬 창 "+" 가 차수 남은 SP 를 셀 때 쓴다(LocalTierSpLeft).
     property table mirrorSpentByTier = {}
     property integer mirrorNoviceStartSp = 0
+    -- 1차 전직 때 초보자 스킬이 고정됐나(서버 u.noviceLocked · SyncState "nlock"). 스킬 창 "+" 가 읽는다(LocalNoviceLocked · 1.0.5-5-01).
+    property boolean mirrorNoviceLocked = false
     property boolean mirrorSynced = false
     property boolean syncRequested = false
     -- 마지막 RequestLearn 실패 사유("" = 성공). SkillWindowLogic 이 "skill" 이벤트 때 읽는다.
@@ -69,6 +71,14 @@ script PlayerSkillState extends Logic
 
     -- 마법사 전직 = 텔레포트(SkillHotbar.TeleportBaseSkillId)를 SP 없이 그 스킬의 최대 레벨(1)로 준다(GrantJobSkills · A 확인 2026-10-05). false = 예전처럼 1차 SP 로 배운다.
     property boolean GrantTeleportOnJob = true
+
+    -- 1차 전직 때 초보자 스킬 고정(1.0.5-5-01 · 1.0.5 §5 확정 · 튜토리얼 전직 1-4d 도 같은 경로): 초보자 → 1차로 오르는 순간(ChangeJob · prevTier 0 → newTier ≥ 1)
+    --   · 초보자 스킬(ReqTier 0 · ReqJob NOVICE = 달팽이 세마리 · 더블 점프)을 NoviceLockLevel(3)로 맞춘다(SkillInfo MaxLevel 3 이면 MAX) — SP 를 썼든 안 썼든 같다
+    --   · 초보자 차수 SP 는 0 으로: u.spentByTier[0] 를 0 차 번 SP(TierSpEarned = 시작 1 + Lv2 ~ Lv6 레벨업 5 = 6)까지 채우고, 지갑에 남은 0 차 몫은 ForfeitOldTierSp 가 같이 덜어 낸다
+    --   · u.noviceLocked = true → 이 판에서 초보자 스킬은 더 못 배운다(RequestLearn 거절 · 스킬 창 "+" 는 MAX 받침). 판이 끝나면 ResetMatchState 가 원장째 비운다.
+    --   안내 문구는 없다(1.0.6 §18 사용자 결정). false = 예전처럼 초보자 SP 를 유지하고 어느 직업에서든 초보자 스킬을 SP 로 올린다.
+    property boolean NoviceLockOnFirstJob = true
+    property integer NoviceLockLevel = 3
 
     -- 초보자는 이 레벨까지만 SP 를 얻는다(A 결정 #40 5977728018 · 2026-10-04 "Lv2 ~ Lv6 레벨업마다 +1 · Lv7 ~ Lv9 는 0" · 이전 = A 답 5927820330 Lv7). 0 = 제한 없음.
     --   지갑(A 의 SummonManager.econ.sp)은 레벨업 때 LevelTable SP 를 그대로 받는다 — 표(A 파일 · A 허락)에서 6 ~ 8 행(→ Lv7 ~ 9) SP 를 0 으로 뒀다.
@@ -135,7 +145,7 @@ script PlayerSkillState extends Logic
         if userId == nil or userId == "" then return nil end
         local u = self.users[userId]
         if u == nil then
-            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {}, noviceSpForfeited = 0, noviceStartSp = 0 }
+            u = { skillLevels = {}, cooldownEndsAt = {}, useCounts = {}, jobId = self.NoviceJobId, tier = 0, stackCount = 0, spentByTier = {}, noviceSpForfeited = 0, noviceStartSp = 0, noviceLocked = false }
             self.users[userId] = u
             self:AutoLearnNoviceSkill(u, userId)
             self:GrantNoviceStartSp(u, userId)
@@ -362,6 +372,17 @@ script PlayerSkillState extends Logic
         local u = self:EnsureUser(userId)
         if u == nil then return end
         u.cooldownEndsAt[skillId] = _UtilLogic.ServerElapsedSeconds + seconds
+        -- 직전 스킬(PlayerSafetyNet 의 [Safety] 원인 조사 로그용 · 1.0.5-3-01): 시전 처리(SkillCaster)가 쿨다운을 시작하는 순간을 기록한다(버프 끝 쿨다운 시작도 같은 길이라 함께 남는다).
+        u.lastSkillId = skillId
+        u.lastSkillAt = _UtilLogic.ServerElapsedSeconds
+    end
+
+    @ExecSpace("ServerOnly")
+    method string LastSkillText(string userId)
+        -- 직전에 쿨다운이 시작된 스킬 "SK_W11 (2.3s ago)" · 없으면 "none". [Safety] 로그용(1.0.5-3-01).
+        local u = self.users[userId]
+        if u == nil or u.lastSkillId == nil then return "none" end
+        return tostring(u.lastSkillId) .. " (" .. string.format("%.1f", _UtilLogic.ServerElapsedSeconds - (u.lastSkillAt or 0)) .. "s ago)"
     end
 
     @ExecSpace("ServerOnly")
@@ -403,6 +424,10 @@ script PlayerSkillState extends Logic
         u.jobId = newJobId
         u.tier = newTier
         log("[Skill] JOB " .. prev .. " -> " .. newJobId .. "/" .. tostring(newTier) .. " (level " .. tostring(self:GetLevel(userId)) .. ") " .. userId)
+        -- 1차 전직(초보자 → 1차) 순간 초보자 스킬 Lv3 고정 · 초보자 SP 0 (1.0.5-5-01). 아래 ForfeitOldTierSp 가 남은 0 차 몫을 지갑에서 덜어 내도록 먼저 한다.
+        if prevTier == 0 and newTier >= 1 then
+            self:LockNoviceSkills(u, userId)
+        end
         -- 차수별 SP(b/skill-novice-snails): 차수가 오르면 지갑을 차수 몫에 맞춘다. 2026-10-06 PastTierSpKept 부터 지난 차수 몫은 남고(forfeit = 지갑 − 0 ~ 3 차 남은 SP 합) 넘침만 없앤다.
         --   DEV 전환(DevSetJobState)은 이 경로를 안 탄다.
         if self.TierSpEnabled and newTier > prevTier then
@@ -439,6 +464,37 @@ script PlayerSkillState extends Logic
         if cur >= maxLevel then return end
         u.skillLevels[skillId] = maxLevel
         log("[Skill] job grant " .. skillId .. " Lv." .. tostring(maxLevel) .. " (" .. jobId .. " · no SP) (" .. tostring(userId) .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
+    method void LockNoviceSkills(any u, string userId)
+        -- 1차 전직 순간 초보자 스킬을 NoviceLockLevel(3)로 맞추고 초보자 SP 를 0 으로 만든다(1.0.5-5-01). ChangeJob(초보자 → 1차)만 부른다 — DEV 전환(F10)은 안 탄다.
+        --   · 대상 = ReqTier 0 · ReqJob NOVICE 인 스킬을 표(SkillInfo)에서 찾는다(스킬 id 를 적지 않는다 · 지금 SK_N01 달팽이 세마리 · SK_N02 더블 점프). 이미 그 레벨 이상이면 그대로.
+        --   · spentByTier[0] 를 0 차 번 SP(TierSpEarned)까지 채운다 → 0 차 남은 SP(TierSpLeft)가 0 이 되고, 바로 이어 도는 ForfeitOldTierSp 가 그 몫을 지갑에서 덜어 낸다(keep 에서 빠진다).
+        --   · u.noviceLocked = true → RequestLearn 이 0 차 스킬을 거절한다. PushState 는 ChangeJob 끝에서 한 번 부른다(여기서 부르지 않는다).
+        if not self.NoviceLockOnFirstJob or u == nil then return end
+        _SkillDatabase:EnsureLoaded()
+        local want = math.floor(self.NoviceLockLevel)
+        local ids = {}
+        for skillId, skill in pairs(_SkillDatabase.skillsById) do
+            if math.floor(skill.requiredTier) == 0 and skill.requiredJobLine == self.NoviceJobId then
+                table.insert(ids, skillId)
+            end
+        end
+        table.sort(ids)
+        local parts = {}
+        for _, skillId in ipairs(ids) do
+            local skill = _SkillDatabase:GetSkill(skillId)
+            local lv = math.min(want, math.floor(skill.maxLevel))
+            local before = u.skillLevels[skillId] or 0
+            if before < lv then u.skillLevels[skillId] = lv end
+            table.insert(parts, skillId .. " Lv." .. tostring(before) .. "->" .. tostring(u.skillLevels[skillId] or 0))
+        end
+        local earned = self:TierSpEarned(userId, 0)
+        local spentBefore = u.spentByTier[0] or 0
+        if spentBefore < earned then u.spentByTier[0] = earned end
+        u.noviceLocked = true
+        log("[Skill] novice lock Lv" .. tostring(want) .. ": " .. table.concat(parts, " · ") .. " · novice SP earned " .. tostring(earned) .. " spent " .. tostring(spentBefore) .. " -> " .. tostring(u.spentByTier[0] or 0) .. " (left " .. tostring(self:TierSpLeft(userId, 0)) .. ") (" .. userId .. ")")
     end
 
     @ExecSpace("ServerOnly")
@@ -492,7 +548,7 @@ script PlayerSkillState extends Logic
         end
         -- spent · nstart = 스킬 창 "+" 용 차수 남은 SP 재료(LocalTierSpLeft · b/skill-window-novice-tab).
         local csv = "job=" .. u.jobId .. ";tier=" .. tostring(u.tier) .. ";levels=" .. table.concat(parts, ",")
-            .. ";spent=" .. table.concat(spent, ",") .. ";nstart=" .. tostring(u.noviceStartSp or 0)
+            .. ";spent=" .. table.concat(spent, ",") .. ";nstart=" .. tostring(u.noviceStartSp or 0) .. ";nlock=" .. (u.noviceLocked and "1" or "0")
         self:SyncState(csv, userId)
     end
 
@@ -528,6 +584,12 @@ script PlayerSkillState extends Logic
         local cur = u.skillLevels[skillId] or 0
         if cur >= skill.maxLevel then
             self:LearnResult(skillId, false, "already at max level", uid)
+            return
+        end
+        -- 1차 전직 때 고정된 초보자 스킬은 더 못 올린다(1.0.5-5-01). 지금 두 스킬은 이미 MAX 라 위 "already at max level" 이 먼저 거절하지만, 새 초보자 스킬 · MaxLevel 이 바뀔 때를 위한 문이다.
+        if u.noviceLocked and math.floor(skill.requiredTier) == 0 then
+            log("[Skill] learn " .. skillId .. " rejected: novice skills locked at first job change (" .. uid .. ")")
+            self:LearnResult(skillId, false, "novice skills locked at job change", uid)
             return
         end
         if self:NoviceSkillHasNoKey(u.jobId, skill) then
@@ -771,6 +833,8 @@ script PlayerSkillState extends Logic
                 end
             elseif key == "nstart" then
                 self.mirrorNoviceStartSp = math.floor(tonumber(val) or 0)
+            elseif key == "nlock" then
+                self.mirrorNoviceLocked = (val == "1")
             end
         end
         self.mirrorSynced = true
@@ -800,6 +864,12 @@ script PlayerSkillState extends Logic
     @ExecSpace("ClientOnly")
     method number LocalTier()
         return self.mirrorTier
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalNoviceLocked()
+        -- 1차 전직 때 초보자 스킬이 고정됐나(서버 u.noviceLocked 미러 · 1.0.5-5-01). 스킬 창 "+" 가 초보자 탭에서 MAX 받침처럼 막을 때 쓴다.
+        return self.mirrorNoviceLocked
     end
 
     @ExecSpace("ClientOnly")
