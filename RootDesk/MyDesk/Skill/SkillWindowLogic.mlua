@@ -63,6 +63,21 @@ script SkillWindowLogic extends Logic
 
     property string RowSlotLockedRUID = "dc0f5e60ee3c409daeaa09c102bb2b2b"
 
+    -- 픽파켓 줄의 "소리 ON / OFF" 토글 칩(1.0.7 · 사용자 지시 2026-10-14). 행 템플릿의 BtnSound(.ui)를 이 파일이 켜고 끄고 칠한다 — 픽파켓을 배운(레벨 1 이상 · 잠기지 않은) 줄에만 보인다.
+    -- ON = 밝은 금 칩(chip_gold · 어두운 잉크 글자 · UiChipText 규칙) / OFF = 어두운 회색 칩(chip_gray_dark · 흐린 글자). 설정은 계정에 저장된다(SkillBuffs.RequestSetPickpocketSound → AccountData).
+    -- 칩 폭 = 두 글자("ON" · "OFF") 중 더 넓은 쪽 실측 + 2 × (테두리 + 여백) — 칩 크기 규칙(UiChipText.Width · skin.cjs chipWidth)과 같은 식, 켜도 꺼도 같은 폭. 왼쪽 끝 고정.
+    property string SoundChipOnRUID = "9e25a63681584e328f0c019ebf86dc19"
+
+    property string SoundChipOffRUID = "59baa8df765f434b9ffeb0bd1c4906ef"
+
+    property string SoundOnText = "소리 ON"
+
+    property string SoundOffText = "소리 OFF"
+
+    property number SoundChipBorder = 10
+
+    property number SoundChipHeight = 25
+
     -- runtime state (client-only, not persisted)
     property integer currentTab = 0
 
@@ -554,6 +569,8 @@ script SkillWindowLogic extends Logic
                 self:ShowTab(self:TabAfterBuild())
             end
             self:RefreshFromState()
+            -- 픽파켓 소리 설정을 서버에서 받아 온다(계정 저장값 · 답 = SkillBuffs.SyncPickpocketSound → 칩 다시 칠함). 계정 로드가 창보다 늦을 수 있어 열 때마다.
+            if _SkillBuffs ~= nil then _SkillBuffs:RequestPickpocketSoundSync() end
         else
             -- 창을 닫을 때 툴팁도 같이 내린다(툴팁은 이제 창 밖 = UIGroup 루트 자식이라 따라 꺼지지 않는다).
             self.hoveredSkillId = ""
@@ -896,6 +913,19 @@ script SkillWindowLogic extends Logic
         local plusHoverHandler = plusEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
         table.insert(self.rowHandlers, { entity = plusEntity, conn = plusHoverHandler, eventType = ButtonStateChangeEvent })
 
+        -- 픽파켓 줄의 "소리 ON / OFF" 칩(1.0.7): 누르면 서버에 토글 요청 · 칩 위에서도 그 행의 툴팁을 유지한다("+" 와 같다). 보이는지는 ApplyRowState 가 정한다.
+        if self:IsPickpocketSkill(skill) then
+            local soundEntity = row:GetChildByName("BtnSound")
+            if isvalid(soundEntity) then
+                local soundHandler = soundEntity:ConnectEvent(ButtonClickEvent, function() self:OnPickpocketSoundClicked() end)
+                table.insert(self.rowHandlers, { entity = soundEntity, conn = soundHandler, eventType = ButtonClickEvent })
+                local soundHoverHandler = soundEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
+                table.insert(self.rowHandlers, { entity = soundEntity, conn = soundHoverHandler, eventType = ButtonStateChangeEvent })
+            else
+                log_warning("SkillWindowLogic: BtnSound missing in row template - pickpocket sound toggle disabled")
+            end
+        end
+
         -- 보조 경로: UITouchEnter/Exit 가 실제로 오면 더 정확하다(좌표가 이벤트에 실려 온다).
         -- 반드시 맨 마지막에 — AddComponent 가 실패해 여기서 멈춰도 위 배선은 이미 다 끝나 있다.
         self:WireTouchHover(row, capturedId)
@@ -980,6 +1010,78 @@ script SkillWindowLogic extends Logic
             plus:SetEnable(not maxed)
             self:SetChildEnable(plus, "DisImg", locked or noPoints)
         end
+
+        -- 픽파켓 줄의 "소리 ON / OFF" 칩(1.0.7): 배운 뒤(잠기지 않고 레벨 1 이상)에만 보인다. 다른 줄은 늘 꺼 둔다(복제 원본에서 따라온 것).
+        local soundChip = row:GetChildByName("BtnSound")
+        if isvalid(soundChip) then
+            local showSound = self:IsPickpocketSkill(skill) and (not locked) and level > 0
+            soundChip:SetEnable(showSound)
+            if showSound then self:PaintSoundChip(soundChip) end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean IsPickpocketSkill(table skill)
+        -- 픽파켓(SK_T12)인가 — 소리 토글 칩이 붙는 유일한 스킬. id 를 박지 않고 SkillBuffs 의 픽파켓 태그(STACK_GAIN)와 패시브 여부로 판정한다(FormatEffect 와 같은 기준).
+        if _SkillBuffs == nil or skill == nil then return false end
+        return skill.buffTag == _SkillBuffs.TagPickpocket and skill.behavior == "PASSIVE"
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean PickpocketSoundOn()
+        -- 스킬 창이 보여 주는 내 픽파켓 소리 켜짐(서버가 SyncPickpocketSound 로 밀어 준 미러 · 기본 켬).
+        if _SkillBuffs == nil then return true end
+        return _SkillBuffs.pickpocketSoundOnMirror ~= false
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PaintSoundChip(any chip)
+        -- "소리 ON / OFF" 칩 한 개를 지금 설정대로 칠한다: 그림 · 글자 · 글자 규칙 · 폭. ON = 금 칩 + 어두운 잉크 글자(UiChipText 규칙) / OFF = 회색 어두운 칩 + 흐린 글자(규칙 대상 아님 → 직접).
+        if not isvalid(chip) then return end
+        local on = self:PickpocketSoundOn()
+        local ruid = self.SoundChipOffRUID
+        if on then ruid = self.SoundChipOnRUID end
+        local sprite = chip.SpriteGUIRendererComponent
+        if sprite ~= nil then sprite.ImageRUID = DataRef(ruid) end
+        local label = chip:GetChildByName("Text")
+        if not isvalid(label) or label.TextGUIRendererComponent == nil then return end
+        local text = label.TextGUIRendererComponent
+        if on then
+            text.Text = self.SoundOnText
+            if _UiChipText ~= nil then _UiChipText:Apply(chip, ruid) end
+        else
+            text.Text = self.SoundOffText
+            text.FontColor = Color(0.486, 0.533, 0.643, 1)
+            text.OutlineWidth = 0
+            text.Underlay = false
+        end
+        -- 폭: 켜도 꺼도 같은 폭(더 넓은 글자 기준). 측정이 0 근처면(켜지기 전 등) .ui 에 구운 폭을 그대로 둔다.
+        local w = math.max(text:GetPreferredWidth(self.SoundOnText), text:GetPreferredWidth(self.SoundOffText))
+        if w > 10 and _UiChipText ~= nil then
+            local width = _UiChipText:Width(w, self.SoundChipBorder, self.SoundChipHeight, 0)
+            _UiChipText:SetWidthKeepLeft(chip, width)
+            label.UITransformComponent.RectSize = Vector2(width, self.SoundChipHeight)
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void RefreshPickpocketSoundChips()
+        -- 서버가 설정을 밀어 주면(SkillBuffs.SyncPickpocketSound) 지금 떠 있는 보이는 칩을 다시 칠한다. 행이 없거나 칩이 꺼져 있으면 아무것도 안 한다.
+        for _, row in ipairs(self.rowEntities) do
+            if isvalid(row) then
+                local chip = row:GetChildByName("BtnSound")
+                if isvalid(chip) and chip.Enable then self:PaintSoundChip(chip) end
+            end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnPickpocketSoundClicked()
+        -- 칩을 누르면 반대 값을 서버에 요청한다(계정에 저장). 화면은 서버가 되돌려 준 값(SyncPickpocketSound)으로만 바뀐다.
+        if _SkillBuffs == nil then return end
+        local want = not self:PickpocketSoundOn()
+        log("SkillWindowLogic: pickpocket sound click -> " .. (want and "on" or "off"))
+        _SkillBuffs:RequestSetPickpocketSound(want)
     end
 
     @ExecSpace("ClientOnly")
@@ -1039,6 +1141,7 @@ script SkillWindowLogic extends Logic
         self:SetChildEnable(row, "LockText", false)
         local plus = row:GetChildByName("BtnPlus")
         if isvalid(plus) then self:SetChildEnable(plus, "DisImg", false) end
+        self:SetChildEnable(row, "BtnSound", false)
     end
 
     @ExecSpace("ClientOnly")
@@ -1647,8 +1750,9 @@ script SkillWindowLogic extends Logic
             table.insert(parts, labeled)
         elseif skill.behavior == "TAUNT" then
             -- 도발(SK_W22)은 BuffTag 가 없고 BaseEffect 가 "반경" 이라 단위 기본 문구로는 숫자만 남는다.
-            -- 1.1-B01 · B02: 끌어오기 대신 방어력 −SecondaryAt(보스 절반) · 나를 추격 · 피해 1. 방어력 숫자는 아래 부효과 줄 대신 여기서 쓴다.
-            table.insert(parts, "방어력 −" .. self:Num(_SkillDatabase:SecondaryAt(skill.id, level)) .. "(보스 절반) · 나를 추격 · 반경 " .. self:Num(ratio) .. " · 피해 1")
+            -- 1.1-B01 · B02: 끌어오기 대신 방어력 −SecondaryAt · 나를 추격 · 피해 1. 방어력 숫자는 아래 부효과 줄 대신 여기서 쓴다.
+            -- 1.0.7 §3: 방어력 저하는 % (보스도 100% — "(보스 절반)" 삭제). 방어 0 인 몬스터엔 효과가 없다(추격 · 피해 1 만).
+            table.insert(parts, "방어력 −" .. self:Num(_SkillDatabase:SecondaryAt(skill.id, level)) .. "% · 나를 추격 · 반경 " .. self:Num(ratio) .. " · 피해 1")
         elseif skill.effectUnit == "ATK_PCT" then
             -- 재시전 공격(에너지 차지 → 피스트인레인지)은 데미지 줄 앞에 그 공격 이름을 붙인다.
             local attackName = ""

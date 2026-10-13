@@ -1,0 +1,207 @@
+@Logic
+script NexusCloneService extends Logic
+
+	-- 넥서스 분신 소환 (1.0.7 §10 · 2026-10-14 사용자 결정). 서버 전용. 넥서스 HP 가 50% 를 **위에서 아래로** 넘는 순간 그 마을 2차 전직관의 분신 1마리가 아군 수비대로 나온다.
+	--   수리 · 강화로 50% 위가 됐다가 다시 넘으면 또 나온다(별도 충전 플래그 없음 · 위에서 아래로 넘는 순간만 센다).
+	-- 호출: LaneStateService.ApplyDamage 가 넥서스(CORE) HP 를 깎은 직후 OnCoreDamaged(villageId, hpBefore, hpAfter, maxHp, coreLevel) 를 부른다(D1 약속 · coreLevel = 넥서스 시설 레벨 25 / 30 / 35).
+	-- 능력치(사용자 확정 · 값은 표에서 읽는다 · 코드에 숫자 없음):
+	--   레벨 = 넥서스 레벨 · 기초 HP = MinionWave `P3-ZOMBIE` 행 Hp × HpBaseMul(5) × MonsterCatalog.HpLevelMul(레벨) 한 번(예 60,000 × 5 × 15 = 4,500,000) · 공격력 = 같은 행 Attack × AtkMul(2) ·
+	--   방어력 = 레벨 · 명중 · 회피 · 공격 간격은 수비대 그대로 · ★ 난이도 배율 없음. 기준 행을 바꾸면 분신도 따라간다.
+	-- 마을 → 분신(CloneByVillage): 헤네시스 헬레나 9001002 · 엘리니아 하인즈 9001001 · 페리온 주먹펴고 일어서 9001000 · 커닝시티 다크로드 9001003 · 노틸러스 카이린 9001004 (MonsterInfo · 모델 monster<id>).
+	-- 등장 연출: 소환진(보스 소환과 같은 클립) 두 겹 + 서서히 나타남(알파) + 그 마을 주인에게 토스트("넥서스가 위험합니다! 헬레나의 분신이 나타났습니다") + 이름표 `Lv.25 헬레나의 분신`(DefenderService.SpawnOne). 소리는 넣지 않는다(B 전담).
+	-- 생성은 DefenderService.SpawnClone → SpawnOne 한 곳(재집결 · 탈락 정리 · 차출 제외도 거기서). 기술은 CloneSkillBrain.
+
+	-- 마을 id → 분신 MonsterInfo.Id. "마을:id" 쉼표 목록.
+	property string CloneByVillage = "HENESYS:9001002,ELLINIA:9001001,PERION:9001000,KERNING:9001003,NAUTILUS:9001004"
+
+	-- 소환 기준: 넥서스 최대 HP 의 이 비율을 위에서 아래로 넘을 때(HP 가 이 비율 **이하**가 되는 순간).
+	property number TriggerRatio = 0.5
+
+	-- 기초 HP · 공격력 = 기준 행 × 이 배수(사용자 확정 5 · 2).
+	property number HpBaseMul = 5
+
+	property number AtkMul = 2
+
+	-- 기준 행: MinionWave 의 WaveKey(3페이즈 좀비머쉬맘 개체 템플릿). 현재 프로필(LIVE/TEST)의 행을 먼저 찾고 없으면 첫 행.
+	property string TemplateWaveKey = "P3-ZOMBIE"
+
+	-- 기준 행을 못 읽을 때만 쓰는 안전값(표가 정본 · 경고를 남긴다).
+	property number FallbackZombieHp = 60000
+
+	property number FallbackZombieAtk = 2500
+
+	-- 마을당 동시에 서 있을 수 있는 분신 수. 0 = 제한 없음(넘을 때마다 1마리씩 · 지금 결정). 1 로 두면 서 있는 동안엔 또 안 나온다.
+	property integer MaxAlivePerVillage = 0
+
+	-- 튜토리얼 룸에선 안 나온다(튜토리얼은 정해진 순서 · 가상 상대).
+	property boolean SkipInTutorial = true
+
+	-- 소환진 그림 = 보스 소환(BossSkills.CastEffectRUID)과 같은 클립. 첫 겹은 분신 뒤 바닥에 크게, 둘째 겹은 SecondRingDelay 뒤 더 작게. 소환체가 나올 때는 SummonRingScale 한 겹.
+	property string SummonRingRuid = "7607f6c025124ae8a717e1c59dff00c3"
+
+	property number SpawnRingScale = 2.4
+
+	property number SecondRingScale = 1.5
+
+	property number SecondRingDelay = 0.35
+
+	property number SummonRingScale = 1.3
+
+	-- 서서히 나타나는 시간(초). 0 이면 바로.
+	property number FadeInSeconds = 0.9
+
+	-- 주인 토스트 문구(%s = 분신 이름 · 예 `헬레나의 분신`). 개발 절차 말투 금지 · 유저에게 보이는 글.
+	property string AlertText = "넥서스가 위험합니다! %s이 나타났습니다"
+
+	@HideFromInspector
+	property any cloneMap = nil
+
+	method void OnBeginPlay()
+		-- 서버: 마을 → 분신 표를 만든다.
+		if not self:IsServer() then return end
+		self:BuildCloneMap()
+		log("[NexusClone] NexusCloneService ready (server) villages=" .. self.CloneByVillage)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuildCloneMap()
+		-- CloneByVillage("HENESYS:9001002,…") → { HENESYS = 9001002, … }.
+		self.cloneMap = {}
+		for pair in string.gmatch(self.CloneByVillage, "[^,]+") do
+			local vid = string.match(pair, "^%s*([%w_]+)%s*:")
+			local mid = string.match(pair, ":%s*(%d+)%s*$")
+			if vid ~= nil and mid ~= nil then self.cloneMap[vid] = math.floor(tonumber(mid) or 0) end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CloneIdOf(string villageId)
+		-- 그 마을의 분신 MonsterInfo.Id(없으면 0).
+		if self.cloneMap == nil then self:BuildCloneMap() end
+		return self.cloneMap[villageId] or 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ZombieTemplate()
+		-- 기준 행(MinionWave · WaveKey = TemplateWaveKey)의 { hp, attack }. 현재 프로필 행을 먼저 · 없으면 첫 켜진 행 · 그것도 없으면 안전값.
+		local profile = "LIVE"
+		if _MatchSessionLogic ~= nil then profile = _MatchSessionLogic.Profile end
+		local first = nil
+		local t = _DataService:GetTable("MinionWave")
+		if t ~= nil then
+			for i = 1, t:GetRowCount() do
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				if enabled and tostring(t:GetCell(i, "WaveKey") or "") == self.TemplateWaveKey then
+					local row = { hp = tonumber(t:GetCell(i, "Hp")) or 0, attack = tonumber(t:GetCell(i, "Attack")) or 0 }
+					if tostring(t:GetCell(i, "Profile") or "") == profile then return row end
+					if first == nil then first = row end
+				end
+			end
+		end
+		if first ~= nil then return first end
+		log_warning("[NexusClone] MinionWave " .. self.TemplateWaveKey .. " row not found — 안전값 " .. tostring(self.FallbackZombieHp) .. "/" .. tostring(self.FallbackZombieAtk))
+		return { hp = self.FallbackZombieHp, attack = self.FallbackZombieAtk }
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean Crossed(number hpBefore, number hpAfter, number maxHp)
+		-- 위에서 아래로 넘었나: 피해 전엔 기준선 위(초과) · 피해 후엔 기준선 이하이면서 살아 있다(0 이면 파괴 · 탈락이라 안 나온다).
+		if maxHp <= 0 then return false end
+		local line = maxHp * self.TriggerRatio
+		return hpBefore > line and hpAfter <= line and hpAfter > 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnCoreDamaged(string villageId, number hpBefore, number hpAfter, number maxHp, integer coreLevel)
+		-- 넥서스가 피해를 받은 직후 LaneStateService 가 부른다. 50% 를 위에서 아래로 넘는 순간에만 분신을 소환한다.
+		if not self:IsServer() then return end
+		if not self:Crossed(hpBefore, hpAfter, maxHp) then return end
+		self:SpawnClone(villageId, coreLevel)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnClone(string villageId, integer coreLevel)
+		-- 분신 한 마리를 만든다(능력치 계산 → DefenderService.SpawnClone → 연출 · 알림 · 로그). 튜토리얼 · 분신 없는 마을 · 상한이면 건너뛴다.
+		if self.SkipInTutorial and _MatchSessionLogic ~= nil and _MatchSessionLogic:IsTutorial() then
+			log("[NexusClone] skip (tutorial) village=" .. villageId)
+			return
+		end
+		local cloneId = self:CloneIdOf(villageId)
+		if cloneId <= 0 then
+			log_warning("[NexusClone] no clone mapped for village=" .. villageId)
+			return
+		end
+		if _MonsterCatalog == nil or _DefenderService == nil or _MonsterCatalog:GetInfo(cloneId) == nil then
+			log_warning("[NexusClone] MonsterInfo " .. tostring(cloneId) .. " or services missing")
+			return
+		end
+		if self.MaxAlivePerVillage > 0 and _DefenderService:CountClones(villageId) >= self.MaxAlivePerVillage then
+			log("[NexusClone] skip (alive cap " .. tostring(self.MaxAlivePerVillage) .. ") village=" .. villageId)
+			return
+		end
+		local zt = self:ZombieTemplate()
+		local level = math.max(1, math.floor(coreLevel))
+		local hp = _MonsterCatalog:LevelHp(zt.hp * self.HpBaseMul, level)
+		local attack = math.max(1, math.floor(zt.attack * self.AtkMul + 0.5))
+		local defense = level
+		local ent = _DefenderService:SpawnClone(villageId, cloneId, level, hp, attack, defense, "CORE")
+		if not isvalid(ent) then
+			log_warning("[NexusClone] spawn failed village=" .. villageId .. " mob=" .. tostring(cloneId))
+			return
+		end
+		log(string.format("[NexusClone] village=%s level=%d hp=%d atk=%d def=%d model=%s mob=%d", villageId, level, hp, attack, defense, tostring(_MonsterCatalog:GetModelId(cloneId)), cloneId))
+		self:PlayAppear(villageId, ent)
+		self:Alert(villageId, cloneId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Alert(string villageId, integer cloneId)
+		-- 그 마을 주인에게 토스트(LaneStateService.FacilityAlert = 시설 알림과 같은 길 · 주인이 없으면 안 보낸다).
+		local name = tostring(_MonsterCatalog:GetName(cloneId))
+		if _MonsterNameTag ~= nil then name = _MonsterNameTag:DisplayName(name) end
+		if _LaneStateService ~= nil then _LaneStateService:FacilityAlert(villageId, string.format(self.AlertText, name)) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayRing(Entity map, number x, number y, number scale, string layer)
+		-- 소환진 한 겹: 분신 뒤(OrderInLayer 1 · 분신 3 · 플레이어 Default/4 뒤). 원본 이펙트라 위치가 pivot 에 박혀 있어 바닥 y 에 오프셋 없이 놓는다(BossSkillRunner.FireSummon 과 같다).
+		if self.SummonRingRuid == "" or not isvalid(map) then return end
+		local opt = {}
+		if layer == nil or layer == "" then layer = "MapLayer0" end
+		opt["SortingLayer"] = layer
+		opt["OrderInLayer"] = 1
+		_EffectService:PlayEffect(self.SummonRingRuid, map, Vector3(x, y, 0), 0, Vector3(scale, scale, 1), false, opt)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlaySummonRing(Entity ent)
+		-- 분신의 소환 기술로 나온 소환체 발밑 소환진 한 겹(CloneSkillBrain.DoSummon 이 부른다).
+		if not isvalid(ent) or not isvalid(ent.TransformComponent) then return end
+		local p = ent.TransformComponent.WorldPosition
+		local sr = ent.SpriteRendererComponent
+		self:PlayRing(ent.CurrentMap, p.x, p.y - 0.3, self.SummonRingScale, isvalid(sr) and sr.SortingLayer or "")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayAppear(string villageId, Entity ent)
+		-- 등장 연출: 소환진 두 겹(크게 → 잠시 뒤 작게) + 서서히 나타남. 분신은 이미 최전방 시설 뒤 대기 위치에 서 있다(SpawnOne 이 pathY + 0.3 에 놓고 발판에 내려앉는다 → 바닥 = pathY).
+		local map = ent.CurrentMap
+		local p = ent.TransformComponent.WorldPosition
+		local sr = ent.SpriteRendererComponent
+		local layer = isvalid(sr) and sr.SortingLayer or ""
+		local groundY = p.y - 0.3
+		self:PlayRing(map, p.x, groundY, self.SpawnRingScale, layer)
+		if self.SecondRingDelay > 0 and self.SecondRingScale > 0 then
+			_TimerService:SetTimerOnce(function()
+				if isvalid(ent) then self:PlayRing(ent.CurrentMap, p.x, groundY, self.SecondRingScale, layer) end
+			end, self.SecondRingDelay)
+		end
+		if self.FadeInSeconds > 0 and isvalid(sr) then
+			sr:SetAlpha(0)
+			_TweenLogic:PlayTween(0.0, 1.0, self.FadeInSeconds, EaseType.Linear, function(v)
+				if isvalid(ent) and isvalid(sr) then sr:SetAlpha(v) end
+			end)
+		end
+	end
+
+end

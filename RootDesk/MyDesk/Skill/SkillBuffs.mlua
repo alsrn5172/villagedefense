@@ -205,12 +205,19 @@ script SkillBuffs extends Logic
     property number PickpocketFloorLift = 0.05
 
     -- 픽파켓 드랍 소리(원작 픽 파킷 _audio/Use). 연타 때 시끄럽지 않게 PickpocketSoundInterval 로 제한.
+    -- 1.0.7(사용자 지시 2026-10-14): 소리는 **픽파켓을 쓴 그 플레이어 본인에게만** 들린다(예전 = 그 맵 모든 유저). 간격 제한도 그 유저별.
+    -- 스킬 창(K) 픽파켓 줄의 "소리 ON / OFF" 로 끌 수 있다(계정에 저장 · 기본 켬 = AccountData.IsPickpocketSoundOn).
     property string PickpocketSoundRuid = "eb009eb4ce0443068bbec5369f256b35"
 
     property number PickpocketSoundInterval = 0.3
 
+    -- [서버] userId -> 마지막으로 소리를 낸 시각(_UtilLogic.ServerElapsedSeconds). 간격 제한은 유저마다 따로 센다.
     @HideFromInspector
-    property number pickpocketSoundAt = -10
+    property table pickpocketSoundAtByUser = {}
+
+    -- [클라] 스킬 창이 보여 주는 내 픽파켓 소리 켜짐 미러(기본 켬). 서버가 SyncPickpocketSound 로 밀어 준 값으로만 바뀐다(낙관적 갱신 없음).
+    @HideFromInspector
+    property boolean pickpocketSoundOnMirror = true
 
     -- ───────────────────────── 서버: 피격 리스너 (아이언 바디 · 자가 배선 흡수) ─────────────────────────
 
@@ -1096,12 +1103,57 @@ script SkillBuffs extends Logic
         ---@type DropOwner
         local own = coin:GetComponent("script.DropOwner")
         if isvalid(own) then own.OwnerUserId = userId end
-        if now - self.pickpocketSoundAt >= self.PickpocketSoundInterval then
-            self.pickpocketSoundAt = now
-            -- 그 맵 유저에게만(b/skill-sound-per-user · SkillExecutors.PlaySkillSoundToMap · 예전 = 모든 클라). 맵 = 맞은 몬스터의 맵.
-            if _SkillExecutors ~= nil then _SkillExecutors:PlaySkillSoundToMap(self.PickpocketSoundRuid, tp, target, 1.0) end
+        -- 소리(1.0.7): 시전자 본인 클라에서만 재생한다(다른 유저에게는 안 들린다). 끈 유저는 소리도 로그도 없다. 간격 제한은 소리가 날 때만 갱신(켜자마자 들린다).
+        local lastAt = self.pickpocketSoundAtByUser[userId] or -10
+        if now - lastAt >= self.PickpocketSoundInterval and self.PickpocketSoundRuid ~= "" then
+            if _AccountData == nil or _AccountData:IsPickpocketSoundOn(userId) then
+                self.pickpocketSoundAtByUser[userId] = now
+                self:PlayPickpocketSoundLocal(self.PickpocketSoundRuid, 1.0, tp.x, tp.y, tp.z, userId)
+                log("[Pickpocket] sound play uid=" .. userId)
+            end
         end
         log("[Buff] PICKPOCKET +1 coin value=" .. tostring(value) .. " at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ") floor=" .. floorNote)
+    end
+
+    @ExecSpace("Client")
+    method void PlayPickpocketSoundLocal(string ruid, number volume, number x, number y, number z)
+        -- 받는 유저(마지막 인자 = 시전자 userId)의 클라에서만 픽파켓 소리를 튼다(1.0.7). 인자는 원시 타입만(ExecSpace 너머 · SkillExecutors.PlaySkillSoundLocal 과 같은 이유).
+        -- 듣는 사람 = 이 클라의 로컬 플레이어(몬스터 자리 기준 거리 감쇠 — 예전 맵 방송 때와 같은 소리 크기).
+        local listener = _UserService.LocalPlayer
+        if not isvalid(listener) then
+            _SoundService:PlaySound(ruid, volume)
+            return
+        end
+        _SoundService:PlaySoundAtPos(ruid, Vector3(x, y, z), listener, volume)
+    end
+
+    @ExecSpace("Server")
+    method void RequestSetPickpocketSound(boolean on)
+        -- 스킬 창(K) 픽파켓 줄의 "소리 ON / OFF" 토글(1.0.7): 계정에 저장(AccountData · 스탯창 자동 AP 와 같은 길). 화면은 서버가 되읽어 보낸 값으로만 바뀐다(낙관적 UI 없음).
+        -- 로드 전이라 저장이 막히면 바뀌지 않은 값이 되돌아가므로 화면이 거짓말하지 않는다. 픽파켓을 안 가진 유저가 보내도(조작) 계정 설정일 뿐이라 해가 없다.
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        local uid = senderUserId
+        if uid == nil or uid == "" or _AccountData == nil then return end
+        _AccountData:SetPickpocketSoundOn(uid, on)
+        local now = _AccountData:IsPickpocketSoundOn(uid)
+        log("[Pickpocket] sound=" .. (now and "on" or "off") .. " uid=" .. uid)
+        self:SyncPickpocketSound(now, uid)
+    end
+
+    @ExecSpace("Server")
+    method void RequestPickpocketSoundSync()
+        -- 스킬 창이 열릴 때 지금 설정을 한 번 받아 가는 요청(계정 로드가 창보다 늦을 수 있어 열 때마다). 답 = SyncPickpocketSound.
+        if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+        local uid = senderUserId
+        if uid == nil or uid == "" or _AccountData == nil then return end
+        self:SyncPickpocketSound(_AccountData:IsPickpocketSoundOn(uid), uid)
+    end
+
+    @ExecSpace("Client")
+    method void SyncPickpocketSound(boolean on)
+        -- 서버 → 소유 클라: 내 픽파켓 소리 켜짐 미러를 맞추고 스킬 창 토글 모양을 다시 그린다.
+        self.pickpocketSoundOnMirror = on
+        if _SkillWindowLogic ~= nil then _SkillWindowLogic:RefreshPickpocketSoundChips() end
     end
 
     @ExecSpace("ServerOnly")

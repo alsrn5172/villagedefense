@@ -1,0 +1,202 @@
+@Logic
+script ButtonHoverSound extends Logic
+
+	-- 모든 UI 버튼 마우스 올림 소리 (1.0.7 §E · 사용자 2026-10-14 "게임 안의 모든 클릭 가능한 UI 버튼에 마우스를 올리면 같은 소리"). 클라 전용 — UiClickSound(클릭음)의 짝.
+	-- 소리 = 7eda004d…(사용자 지정). 재생 = _SoundService:PlaySound(ruid, volume) (UiClickSound · WorldMapController.PlayHover 와 같은 방식).
+	-- ButtonComponent 가 있는 모든 UI 엔티티에 ButtonStateChangeEvent 를 걸어, ButtonState.Hover 로 바뀌는 순간 내 클라에서만 한 번 낸다(.ui 는 하나도 고치지 않는다).
+	--   새 버튼 잡기: ScanInterval(초)마다 /ui 를 깊이 우선으로 한 바퀴 훑되 프레임당 ScanPerFrame 개씩만 나눠 본다(한 바퀴가 끝나면 다음 간격까지 쉰다 — 프레임마다 전체를 훑지 않는다).
+	--     컨트롤러가 나중에 Clone 으로 만든 버튼(목록 칸 등)도 다음 바퀴에 잡힌다. 이미 건 엔티티는 hooked 표에 있어 다시 걸지 않는다.
+	--   소리를 안 내는 경우: 버튼이 꺼졌거나(ButtonComponent.Enable false) 엔티티가 계층에서 꺼짐 · 숨김(= 안 열린 창) · 같은 버튼에서 SameButtonGapSeconds 안의 반복 · 전체 MinGapSeconds 안의 겹침 ·
+	--     누르고 뗀 직후(Pressed · Released · Clicked 에서 Hover 로 돌아오는 것)는 올림이 아니라 AfterPressQuietSeconds 동안 안 낸다.
+	--   겹침 확인(2026-10-14): 월드맵 지역 노드는 버튼이 아니라(UITouchEnterEvent) 여기서 안 건다 → WorldMapController.PlayHover 가 따로 낸다. 인벤토리 · 스킬 창 · 스킬 HUD 의 올림 처리는 소리를 내지 않는다(툴팁만).
+
+	property string HoverSoundRUID = "7eda004ded944e459f1fbb16c7f0f3f4"
+
+	property number Volume = 0.7
+
+	-- 프레임당 훑는 엔티티 수(한 바퀴 ≈ UI 엔티티 수 ÷ 이 값 프레임)
+	property integer ScanPerFrame = 200
+
+	-- 한 바퀴가 끝나고 다음 바퀴를 시작하기까지 쉬는 시간(초) — 나중에 생긴 버튼이 잡히는 데 걸리는 최대 시간
+	property number ScanInterval = 1.5
+
+	-- 전체에서 이 시간(초) 안에 두 번 울리지 않는다
+	property number MinGapSeconds = 0.05
+
+	-- 같은 버튼에서 이 시간(초) 안에 다시 울리지 않는다
+	property number SameButtonGapSeconds = 0.25
+
+	-- 눌렀다 뗀 직후 이 시간(초) 안에 오는 Hover 는 올림이 아니다(누른 채로 이 시간보다 오래 있었으면 올림으로 본다)
+	property number AfterPressQuietSeconds = 0.8
+
+	-- hooked[entityId] = { e = Entity, h = 핸들러, state = 직전 ButtonState, at = 직전 상태 시각, soundAt = 마지막으로 울린 시각 }
+	@HideFromInspector
+	property any hooked = nil
+
+	@HideFromInspector
+	property any stack = nil
+
+	@HideFromInspector
+	property number scanWait = 0
+
+	@HideFromInspector
+	property number lastAt = -100
+
+	@HideFromInspector
+	property integer hookedCount = 0
+
+	@HideFromInspector
+	property integer loggedCount = 0
+
+	@HideFromInspector
+	property integer playedCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 상태 준비 · 첫 바퀴는 OnUpdate 가 곧바로 시작한다.
+		self.hooked = {}
+		self.stack = {}
+		self.scanWait = self.ScanInterval
+		log("[HoverSound] ready sound=" .. self.HoverSoundRUID .. " volume=" .. tostring(self.Volume))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 한 바퀴가 도는 중이면 ScanPerFrame 개만 처리 · 쉬는 중이면 시간만 센다(프레임당 비용 ≈ 0).
+		if self.stack == nil then
+			return
+		end
+		if #self.stack == 0 then
+			self.scanWait = self.scanWait + delta
+			if self.scanWait >= self.ScanInterval then
+				self.scanWait = 0
+				self:StartRound()
+			end
+			return
+		end
+		local n = 0
+		while n < self.ScanPerFrame and #self.stack > 0 do
+			local e = table.remove(self.stack)
+			n = n + 1
+			if isvalid(e) then
+				if e.ButtonComponent ~= nil and self.hooked[e.Id] == nil then
+					self:Hook(e)
+				end
+				for _, c in ipairs(e.Children) do
+					table.insert(self.stack, c)
+				end
+			end
+		end
+		if #self.stack == 0 then
+			self:EndRound()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartRound()
+		-- 사라진 버튼을 표에서 빼고 /ui 의 그룹들을 스택에 넣는다.
+		local alive = {}
+		local count = 0
+		for id, x in pairs(self.hooked) do
+			if isvalid(x.e) then
+				alive[id] = x
+				count = count + 1
+			end
+		end
+		self.hooked = alive
+		self.hookedCount = count
+		local root = _EntityService:GetEntityByPath("/ui")
+		if not isvalid(root) then
+			return
+		end
+		for _, g in ipairs(root.Children) do
+			if isvalid(g) then
+				table.insert(self.stack, g)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndRound()
+		-- 한 바퀴 끝: 연결한 버튼 수가 늘었을 때만 알린다(처음 한 번 포함).
+		if self.hookedCount > self.loggedCount then
+			self.loggedCount = self.hookedCount
+			log("[HoverSound] hooked=" .. tostring(self.hookedCount))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hook(Entity e)
+		-- 이 버튼에 상태 변화(올림)를 건다(한 번만).
+		local rec = { e = e, h = nil, state = nil, at = -100, soundAt = -100 }
+		rec.h = e:ConnectEvent(ButtonStateChangeEvent, function(event)
+			self:OnButtonState(rec, event)
+		end)
+		self.hooked[e.Id] = rec
+		self.hookedCount = self.hookedCount + 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnButtonState(any rec, ButtonStateChangeEvent event)
+		-- Hover 로 바뀌는 순간 한 번 낸다. 직전 상태를 기억해 눌렀다 뗀 직후의 Hover(= 클릭 뒤 제자리로 돌아옴)는 거른다.
+		local now = _UtilLogic.ElapsedSeconds
+		local prev = rec.state
+		local prevAt = rec.at
+		rec.state = event.state
+		rec.at = now
+		if event.state ~= ButtonState.Hover then
+			return
+		end
+		if prev == ButtonState.Pressed or prev == ButtonState.Released or prev == ButtonState.Clicked then
+			if now - prevAt < self.AfterPressQuietSeconds then
+				return
+			end
+		end
+		self:Play(rec, now)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Play(any rec, number now)
+		-- 올림음 1회. 꺼진 버튼 · 안 보이는 창 · 짧은 간격의 반복은 소리 없음.
+		local e = rec.e
+		if not isvalid(e) then
+			return
+		end
+		local btn = e.ButtonComponent
+		if btn == nil or btn.Enable ~= true then
+			return
+		end
+		if not e.EnabledInHierarchy or not e.VisibleInHierarchy then
+			return
+		end
+		if now - rec.soundAt < self.SameButtonGapSeconds then
+			return
+		end
+		if now - self.lastAt < self.MinGapSeconds then
+			return
+		end
+		rec.soundAt = now
+		self.lastAt = now
+		if self.HoverSoundRUID ~= "" then
+			_SoundService:PlaySound(self.HoverSoundRUID, self.Volume)
+		end
+		self.playedCount = self.playedCount + 1
+		if self.playedCount <= 5 then
+			log("[HoverSound] play #" .. tostring(self.playedCount) .. " " .. e.Name)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 걸어 둔 핸들러를 푼다.
+		if self.hooked ~= nil then
+			for _, x in pairs(self.hooked) do
+				if isvalid(x.e) and x.h ~= nil then
+					x.e:DisconnectEvent(ButtonStateChangeEvent, x.h)
+				end
+			end
+		end
+		self.hooked = {}
+		self.stack = {}
+	end
+end

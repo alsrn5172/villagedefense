@@ -248,10 +248,11 @@ script LaneStateService extends Logic
 	@ExecSpace("ServerOnly")
 	method void LoadTowerDef()
 		-- TowerConfig.csv(계약서 A-2-4 · Stage 3값 · 비용 = 주화). 없으면 결정 §1-1 기본값.
+		-- 1.0.7 §10(2026-10-14): 넥서스도 강화 3단계(비용 20 · 40 = 포탑과 같음) · facLv = 시설 레벨(FacilityLevel 열 · 1단계 포탑 15 · 억제기 20 · 넥서스 25 · 강화 한 단계마다 +5).
 		self.towerDef = {
-			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, attackSpeed = { 1.5, 1.3, 1.1 }, range = { 4.5, 5.0, 5.5 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.05, rebuild = 30 },
-			SUPPRESSOR = { name = "억제기", maxHp = { 1200, 1800, 2600 }, attack = { 0, 0, 0 }, attackSpeed = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 30, 60, 0 }, repairPerHp = 0.05, rebuild = 50, hpMul = 1.3, atkMul = 1.3, expMul = 1.2 },
-			CORE = { name = "넥서스", maxHp = { 2000 }, attack = { 0 }, attackSpeed = { 0 }, range = { 0 }, upgrade = { 0 }, repairPerHp = 0.1, rebuild = 0 },
+			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, attackSpeed = { 1.5, 1.3, 1.1 }, range = { 4.5, 5.0, 5.5 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.05, rebuild = 30, facLv = { 15, 20, 25 } },
+			SUPPRESSOR = { name = "억제기", maxHp = { 1200, 1800, 2600 }, attack = { 0, 0, 0 }, attackSpeed = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 30, 60, 0 }, repairPerHp = 0.05, rebuild = 50, hpMul = 1.3, atkMul = 1.3, expMul = 1.2, facLv = { 20, 25, 30 } },
+			CORE = { name = "넥서스", maxHp = { 2000, 3000, 4500 }, attack = { 0, 0, 0 }, attackSpeed = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.1, rebuild = 0, facLv = { 25, 30, 35 } },
 		}
 		local t = _DataService:GetTable("TowerConfig")
 		if t == nil then
@@ -259,14 +260,18 @@ script LaneStateService extends Logic
 			return
 		end
 		local names = { TOWER = "포탑", SUPPRESSOR = "억제기", CORE = "넥서스" }
+		-- 시설 레벨 열(FacilityLevel)이 비었거나 없을 때의 안전망 = 1단계 기본값 + 강화 한 단계마다 5 (1.0.7 §10).
+		local facBase = { TOWER = 15, SUPPRESSOR = 20, CORE = 25 }
 		local fresh = {}
 		for i = 1, t:GetRowCount() do
 			local stage = t:GetCell(i, "Stage") or ""
 			local lv = math.floor(tonumber(t:GetCell(i, "Level")) or 0)
 			local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
 			if names[stage] ~= nil and lv >= 1 and enabled then
-				if fresh[stage] == nil then fresh[stage] = { name = names[stage], maxHp = {}, attack = {}, attackSpeed = {}, range = {}, upgrade = {}, repairPerHp = 0.05, rebuild = 0 } end
+				if fresh[stage] == nil then fresh[stage] = { name = names[stage], maxHp = {}, attack = {}, attackSpeed = {}, range = {}, upgrade = {}, facLv = {}, repairPerHp = 0.05, rebuild = 0 } end
 				local d = fresh[stage]
+				local fl = tonumber(t:GetCell(i, "FacilityLevel"))
+				d.facLv[lv] = (fl ~= nil and fl >= 1) and math.floor(fl) or (facBase[stage] + 5 * (lv - 1))
 				d.maxHp[lv] = math.floor(tonumber(t:GetCell(i, "MaxHp")) or 1)
 				d.attack[lv] = tonumber(t:GetCell(i, "Attack")) or 0
 				d.attackSpeed[lv] = tonumber(t:GetCell(i, "AttackSpeed")) or 1.5
@@ -283,6 +288,11 @@ script LaneStateService extends Logic
 		end
 		for stage, d in pairs(fresh) do if #d.maxHp >= 1 then self.towerDef[stage] = d end end
 		log("[Lane] TowerConfig loaded: " .. tostring(t:GetRowCount()) .. " rows")
+		-- 1.0.7 §10: 시설 레벨표와 넥서스 단계 수 확인용(기대: TOWER 15/20/25 · SUPPRESSOR 20/25/30 · CORE 25/30/35 · 넥서스 HP 3단계).
+		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
+			local d = self.towerDef[stage]
+			log("[Lane] facLv " .. stage .. " = " .. table.concat(d.facLv, "/") .. " · grades=" .. tostring(#d.maxHp) .. " · maxHp=" .. table.concat(d.maxHp, "/") .. " · upgrade=" .. table.concat(d.upgrade, "/"))
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -541,17 +551,35 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method any FacilityState(string villageId, string stage)
-		-- 시설 하나: {lv, hp, max, alive}. LaneFacilityService 가 색을 칠할 때 쓴다.
+		-- 시설 하나: {lv, hp, max, alive, facLv}. LaneFacilityService 가 색을 칠할 때 쓴다. lv = 강화 단계(1 ~ 3) · facLv = 시설 레벨(15 ~ 35 · 1.0.7 §10).
 		local v = self:EnsureVillage(villageId)
 		if v == nil or v.towers[stage] == nil then return nil end
 		local t = v.towers[stage]
-		return { lv = t.lv, hp = t.hp, max = self:MaxHpOf(villageId, stage, t.lv), alive = t.alive }
+		return { lv = t.lv, hp = t.hp, max = self:MaxHpOf(villageId, stage, t.lv), alive = t.alive, facLv = self:FacilityLevelAt(stage, t.lv) }
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer FacilityLevelAt(string stage, integer grade)
+		-- 시설 레벨표 조회(1.0.7 §10 · TowerConfig.FacilityLevel): 그 시설(TOWER · SUPPRESSOR · CORE)이 강화 grade 단계(1 ~ 3)일 때의 시설 레벨.
+		-- 1단계 포탑 15 · 억제기 20 · 넥서스 25, 강화 한 단계마다 +5. 단계가 표 범위를 넘으면 마지막 값 · 표에 없는 시설이면 1.
+		local d = (self.towerDef ~= nil) and self.towerDef[stage] or nil
+		if d == nil or d.facLv == nil or #d.facLv < 1 then return 1 end
+		return d.facLv[math.max(1, math.min(grade, #d.facLv))] or 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer FacilityLevelOf(string villageId, string stage)
+		-- 지금 그 마을 시설의 시설 레벨(1.0.7 §10): 플레이어가 시설을 칠 때 명중 판정의 대상 레벨로 쓴다(StatService.ResolveTarget · 몬스터 레벨처럼 대상이 나보다 높으면 1레벨당 −10%p).
+		-- 마을이나 시설을 모르면 1(예전 동작 = 시설은 레벨 1).
+		local v = self:EnsureVillage(villageId)
+		if v == nil or v.towers[stage] == nil then return 1 end
+		return self:FacilityLevelAt(stage, v.towers[stage].lv)
 	end
 
 	@ExecSpace("ServerOnly")
 	method integer TestSetFacilityLevel(string villageId, string stage, integer lv)
 		-- 🧪 테스트 리모콘(LaneTestDriver · Maker Play 전용 · 사용자 2026-09-14): 비용 없이 시설 Lv 를 놓고 만피·생존으로 되돌린 뒤 Changed(색·전투·연출 갱신).
-		-- 상한 = TowerConfig 행 수(포탑·억제기 3 · 넥서스 1). 출시 월드에선 아무 일도 안 한다. 반환 = 실제 놓인 Lv(0 = 실패).
+		-- 상한 = TowerConfig 행 수(포탑·억제기·넥서스 3 · 1.0.7 §10 부터 넥서스도 3). 출시 월드에선 아무 일도 안 한다. 반환 = 실제 놓인 Lv(0 = 실패).
 		if not Environment:IsMakerPlay() then return 0 end
 		local v = self:EnsureVillage(villageId)
 		local d = self.towerDef[stage]
@@ -580,7 +608,7 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer FacilityMaxLevel(string stage)
-		-- 시설 단계의 최대 Lv = TowerConfig 행 수(포탑·억제기 3 · 넥서스 1). 표가 없으면 1.
+		-- 시설 단계의 최대 강화 단계 = TowerConfig 행 수(포탑·억제기·넥서스 3 · 1.0.7 §10 부터 넥서스도 3). 표가 없으면 1.
 		local d = (self.towerDef ~= nil) and self.towerDef[stage] or nil
 		if d == nil or d.maxHp == nil then return 1 end
 		return math.max(1, #d.maxHp)
@@ -920,7 +948,16 @@ script LaneStateService extends Logic
 			log("[Lane] " .. villageId .. " " .. stage .. " hit REJECTED (front=" .. front .. " alive) by " .. tostring(attackerName) .. " dmg=" .. tostring(damage))
 			return front
 		end
+		local hpBefore = t.hp
 		t.hp = math.max(0, t.hp - damage)
+		-- 넥서스 HP 가 줄어든 직후(1.0.7 §10 · 넥서스 분신): NexusCloneService(D2)가 50% 를 위에서 아래로 넘는 순간에만 전직관 분신을 소환한다. hpAfter 는 0 일 수 있다(파괴).
+		if stage == "CORE" then
+			local coreMax = self:MaxHpOf(villageId, stage, t.lv)
+			if hpBefore * 2 >= coreMax and t.hp * 2 < coreMax then
+				log("[Nexus] " .. villageId .. " hp crossed 50%: " .. tostring(hpBefore) .. " -> " .. tostring(t.hp) .. " / " .. tostring(coreMax) .. " (시설 레벨 " .. tostring(self:FacilityLevelAt(stage, t.lv)) .. ")")
+			end
+			if _NexusCloneService ~= nil then _NexusCloneService:OnCoreDamaged(villageId, hpBefore, t.hp, coreMax, self:FacilityLevelAt(stage, t.lv)) end
+		end
 		local destroyed = false
 		if t.hp == 0 then
 			t.alive = false
@@ -1199,11 +1236,12 @@ script LaneStateService extends Logic
 				local canReb = rebuildable and rebLeft <= 0 and block == ""
 				-- 16·17번 = 마을별 아이콘 RUID + 상하반전 (2026-09-08 추가 · payload 는 append-only).
 				-- 18 ~ 20번 = 수리 남은 초 · 재건 남은 초 · 재건 막힘 사유("minions" 또는 빈 값) (1.0.5-6-02 추가 · 클라는 남은 초를 받아 스스로 줄인다).
+				-- 21번 = 시설 레벨(1.0.7 §10 · 15 ~ 35 · 4번 lv 는 강화 단계 1 ~ 3 그대로).
 				add({ "T", stage, d.name, tostring(t.lv), tostring(t.hp), tostring(max), b2s(t.alive),
 					tostring(d.attack[math.min(t.lv, #d.attack)] or 0), tostring(d.range[math.min(t.lv, #d.range)] or 0),
 					tostring(upCost), tostring(repCost), tostring(rebCost), b2s(canUp), b2s(canRep), b2s(canReb),
 					self:FacilityIconRuid(v.id, stage), b2s(self:FacilityFlipY(v.id, stage)),
-					tostring(repLeft), tostring(rebLeft), block })
+					tostring(repLeft), tostring(rebLeft), block, tostring(self:FacilityLevelAt(stage, t.lv)) })
 			end
 			add({ "FRONT", front })
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
@@ -1503,7 +1541,9 @@ script LaneStateService extends Logic
 		if action == "upgrade" then
 			t.lv = t.lv + 1
 			t.hp = self:MaxHpOf(v.id, stage, t.lv)
-			msg = d.name .. " Lv" .. tostring(t.lv) .. " 강화"
+			-- 1.0.7 §10: 강화 단계는 "Lv" 대신 "n단계"(시설 레벨 Lv15 ~ 35 와 헷갈리지 않게).
+			msg = d.name .. " " .. tostring(t.lv) .. "단계 강화"
+			log("[Facility] " .. v.id .. " " .. stage .. " upgrade -> grade " .. tostring(t.lv) .. " facLv=" .. tostring(self:FacilityLevelAt(stage, t.lv)) .. " hp=" .. tostring(t.hp) .. "/" .. tostring(self:MaxHpOf(v.id, stage, t.lv)))
 		elseif action == "repair" then
 			t.hp = max
 			t.repairReadyAt = _UtilLogic.ElapsedSeconds + self.RepairCooldownSec   -- 1.0.5-6-01: 이 시설의 다음 수리까지

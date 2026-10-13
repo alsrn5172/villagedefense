@@ -1,0 +1,420 @@
+@Component
+script CloneSkillBrain extends Component
+
+	-- 넥서스 분신의 기술 가방 (1.0.7 §10 · 2026-10-14 사용자 결정 "분신은 원작 스킬을 전부 쓴다"). 서버 전용. DefenderService.SpawnOne 이 분신에만 붙인다(소환체 · 일반 수비대에는 없다).
+	-- 기술 목록 = 표 NexusCloneSkill(분신마다 공격 attackN · 버프 · 방해 · 소환 — 값은 전부 표 · 코드에 숫자 없음). 한 묶음(가방)에 다 넣고 **공격할 차례마다 하나씩** 꺼내 쓴다. 가방은 매 바퀴 새로 섞는다.
+	--   조건이 안 맞는 기술은 그 차례에 건너뛰고 다음 것을 꺼낸다(건너뛴 기술은 이번 바퀴에서 빠진다): 공격 = 닿는 거리 안에 표적 없음 · 버프 = 이미 켜져 있음 · 방해 = 범위 안 플레이어 없음 · 소환 = HP 조건 밖(원작 50% 이하 · 카이린 99% 이하) 또는 상한(4마리) 도달.
+	-- "공격할 차례" = FactionAI 가 ATTACK 상태에 들어가는 순간(공격 간격 · 사거리 판단은 지금 수비대 그대로 · AttackCooldown 1.2초). 이 컴포넌트가 그 순간(OnUpdate 에서 ATTACK 로 바뀐 것)을 보고 기술을 낸다.
+	-- 🔴 FactionAI 는 ATTACK 에 들어가며 FactionAttack.DoAttack 을 자동으로 부른다 — 분신은 그걸 막아야 해서(가방이 정한 기술만 판정) FactionAttack.Shape 를 nil 로 둔다(DoAttack 첫 줄이 Shape == nil 이면 아무것도 안 한다 ·
+	--   FactionAI · FactionAttack 은 안 고친다). 공격 기술을 쓸 때만 잠깐 Shape 를 만들어 DoAttack 을 직접 부르고 바로 비운다 → 표적 고르기 · 데미지 계산(CalcDamage · 회피 · 방어 · 대플레이어 계수)은 FactionAttack 것을 그대로 쓴다.
+	-- 몸 동작: 낱장 프레임 분신(CloneMonsterArt 가 있음)은 art:SetTurnMotion · 팩 분신은 ActionSheet[동작] 클립을 SpriteRUID 에. 효과 그림(CastFxRuid · HitFxRuid)은 표에 있을 때만(팩에 든 것) 재생 — 층은 분신과 같은 MapLayer · 플레이어(Default/4)보다 뒤.
+	-- 방해 · 슬로우 = CloneStatusService · 소환 = DefenderService.SpawnSummons(소환체는 분신이 죽으면 정리). 재집결(Regroup)로 이 개체가 새로 만들어져도 Ov.state(가방 순서 · 버프 만료)는 이어진다.
+
+	-- DefenderService.SpawnOne 이 붙인 직후 넣는 이 분신의 설정: { kind, villageId, monsterId, level, hp, attack, defense, ownerKey, state }. state 는 이 컴포넌트가 채운다.
+	@HideFromInspector
+	property any Ov = nil
+
+	-- 기본 공격 상자 세로(FactionAttack 의 수비대 기본과 같다).
+	property number BoxHeight = 1.4
+
+	-- 가방을 새로 섞을 때 · 건너뛴 기술을 로그로 남길지(Play 확인용).
+	property boolean LogBag = true
+
+	property boolean LogSkip = true
+
+	@HideFromInspector
+	property any skills = nil
+
+	@HideFromInspector
+	property any State = nil
+
+	@HideFromInspector
+	property boolean ready = false
+
+	@HideFromInspector
+	property boolean wasAttacking = false
+
+	@HideFromInspector
+	property boolean striking = false
+
+	@HideFromInspector
+	property boolean deadHandled = false
+
+	@HideFromInspector
+	property boolean defOn = false
+
+	-- ───────────────────────── 준비 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method any LoadSkills(integer monsterId)
+		-- 표 NexusCloneSkill 에서 이 분신의 켜진 행을 읽는다(🔴 표 행은 1-based).
+		local list = {}
+		local t = _DataService:GetTable("NexusCloneSkill")
+		if t == nil then
+			log_warning("[NexusClone] NexusCloneSkill dataset not found")
+			return list
+		end
+		for i = 1, t:GetRowCount() do
+			if math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0) == monsterId then
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				if enabled then
+					table.insert(list, {
+						key = tostring(t:GetCell(i, "SkillKey") or ""),
+						kind = string.upper(tostring(t:GetCell(i, "Kind") or "")),
+						motion = tostring(t:GetCell(i, "Motion") or ""),
+						pct = tonumber(t:GetCell(i, "Pct")) or 100,
+						reach = tonumber(t:GetCell(i, "Reach")) or 0,
+						effect = string.upper(tostring(t:GetCell(i, "Effect") or "")),
+						value = tonumber(t:GetCell(i, "Value")) or 0,
+						dur = tonumber(t:GetCell(i, "DurationSec")) or 0,
+						chance = tonumber(t:GetCell(i, "Chance")) or 1,
+						rangeX = tonumber(t:GetCell(i, "RangeX")) or 0,
+						rangeY = tonumber(t:GetCell(i, "RangeY")) or 0,
+						hpBelow = tonumber(t:GetCell(i, "HpBelow")) or 0,
+						summonId = math.floor(tonumber(t:GetCell(i, "SummonMonsterId")) or 0),
+						summonCount = math.floor(tonumber(t:GetCell(i, "SummonCount")) or 1),
+						summonMax = math.floor(tonumber(t:GetCell(i, "SummonMax")) or 4),
+						castFx = tostring(t:GetCell(i, "CastFxRuid") or ""),
+						hitFx = tostring(t:GetCell(i, "HitFxRuid") or ""),
+					})
+				end
+			end
+		end
+		return list
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean Setup()
+		-- 처음 한 번(OnUpdate 첫 틱 · 모든 부품이 붙은 뒤): 기술 읽기 · AI 사거리 · 자동 기본 공격 막기 · 방어 버프 이어받기.
+		if self.ready then return true end
+		if self.Ov == nil then return false end
+		if self.Ov.state == nil then self.Ov.state = {} end
+		self.State = self.Ov.state
+		self.skills = self:LoadSkills(self.Ov.monsterId)
+		---@type FactionAI
+		local ai = self.Entity.FactionAI
+		if isvalid(ai) then
+			-- AI 가 서서 치는 거리 = 공격 기술 중 가장 짧은 닿는 거리(근접 기술이 하나라도 있으면 붙어서 싸운다 · 원거리만 있는 분신은 그 거리에서 쏜다). 값은 표의 Reach.
+			local minReach = 0
+			for _, sk in ipairs(self.skills) do
+				if sk.kind == "ATTACK" and sk.reach > 0 and (minReach == 0 or sk.reach < minReach) then minReach = sk.reach end
+			end
+			if minReach > 0 then ai.AttackRange = minReach end
+		end
+		---@type FactionAttack
+		local atk = self.Entity.FactionAttack
+		if isvalid(atk) then atk.Shape = nil end
+		self:RefreshDefense()
+		self.ready = true
+		log(string.format("[NexusClone] brain ready village=%s mob=%d skills=%d owner=%s aiRange=%s", tostring(self.Ov.villageId), self.Ov.monsterId, #self.skills, tostring(self.Ov.ownerKey), isvalid(ai) and tostring(ai.AttackRange) or "?"))
+		return true
+	end
+
+	-- ───────────────────────── 가방 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void Refill()
+		-- 가방을 새로 채우고 섞는다(Fisher-Yates). 바퀴 번호를 센다.
+		local st = self.State
+		local bag = {}
+		for i = 1, #self.skills do table.insert(bag, i) end
+		for i = #bag, 2, -1 do
+			local j = _UtilLogic:RandomIntegerRange(1, i)
+			local tmp = bag[i]
+			bag[i] = bag[j]
+			bag[j] = tmp
+		end
+		st.bag = bag
+		st.bagPos = 1
+		st.round = (st.round or 0) + 1
+		if self.LogBag then
+			local names = {}
+			for _, idx in ipairs(bag) do table.insert(names, self.skills[idx].key) end
+			log(string.format("[NexusClone] bag round=%d village=%s mob=%d order=%s", st.round, tostring(self.Ov.villageId), self.Ov.monsterId, table.concat(names, " > ")))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method number Now()
+		-- 서버 시계(초).
+		return _UtilLogic.ServerElapsedSeconds
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AimAttack(any sk)
+		-- 공격 기술의 닿는 거리(Reach)로 FactionAttack 의 공격 상자를 맞추고 그 안의 표적 수를 돌려준다(SelectTargets = DoAttack 과 같은 상자 · 피해 없음). 앞쪽 Reach 만큼 + 뒤 0.2.
+		---@type FactionAttack
+		local atk = self.Entity.FactionAttack
+		if not isvalid(atk) then return 0 end
+		atk.AttackReach = sk.reach * 0.5
+		atk.AttackBoxSize = Vector2(sk.reach + 0.4, self.BoxHeight)
+		local targets = atk:SelectTargets()
+		if targets == nil then return 0 end
+		return #targets
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PlayersInArea(any sk)
+		-- 방해 기술의 범위(앞뒤 RangeX · 위아래 RangeY) 안 적 플레이어 목록(관전자 · 은신 · 죽은 플레이어 제외).
+		local result = {}
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) or not isvalid(map.MapComponent) then return result end
+		local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+		if users == nil then return result end
+		local pos = self.Entity.TransformComponent.WorldPosition
+		for _, user in ipairs(users) do
+			if isvalid(user) and isvalid(user.PlayerComponent) and isvalid(user.TransformComponent) and _FactionLogic:IsTargetable(user) and _FactionLogic:IsEnemy(self.Entity, user) and not user.PlayerComponent:IsDead() then
+				local p = user.TransformComponent.WorldPosition
+				if math.abs(p.x - pos.x) <= sk.rangeX and math.abs(p.y - pos.y) <= sk.rangeY then table.insert(result, user) end
+			end
+		end
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method string UnusableReason(any sk)
+		-- 이 차례에 못 쓰는 사유(빈 문자열 = 쓸 수 있다).
+		local now = self:Now()
+		local st = self.State
+		if sk.kind == "ATTACK" then
+			if self:AimAttack(sk) < 1 then return "no target in reach" end
+			return ""
+		elseif sk.kind == "BUFF" then
+			if sk.effect == "ATK" and (st.atkUntil or 0) > now then return "already active" end
+			if sk.effect == "DEF" and (st.defUntil or 0) > now then return "already active" end
+			return ""
+		elseif sk.kind == "DEBUFF" then
+			if #self:PlayersInArea(sk) == 0 then return "no player in area" end
+			return ""
+		elseif sk.kind == "SUMMON" then
+			local monster = self.Entity.Monster
+			if not isvalid(monster) or monster.MaxHp <= 0 or monster.Hp / monster.MaxHp > sk.hpBelow then return "hp above " .. tostring(sk.hpBelow) end
+			if _DefenderService == nil then return "no defender service" end
+			if _DefenderService:CountSummonsOf(self.Ov.villageId, self.Ov.ownerKey) >= sk.summonMax then return "summon cap " .. tostring(sk.summonMax) end
+			return ""
+		end
+		return "unknown kind " .. tostring(sk.kind)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any NextSkill()
+		-- 가방에서 다음 기술(없으면 nil). 쓸 수 없는 기술은 건너뛰고(이번 바퀴에서 빠진다) 다음 것을 꺼낸다 · 가방이 비면 다시 섞는다. 돌려주는 값 = { sk = 기술, order = 가방 안 순번, size = 가방 크기 }.
+		local n = #self.skills
+		if n == 0 then return nil end
+		local st = self.State
+		local guard = n * 2 + 2
+		while guard > 0 do
+			guard = guard - 1
+			if st.bag == nil or st.bagPos == nil or st.bagPos > #st.bag then self:Refill() end
+			local order = st.bagPos
+			local sk = self.skills[st.bag[order]]
+			st.bagPos = st.bagPos + 1
+			local why = self:UnusableReason(sk)
+			if why == "" then
+				return { sk = sk, order = order, size = #st.bag }
+			end
+			if self.LogSkip then
+				log(string.format("[NexusClone] skip skill=%s order=%d/%d (%s) village=%s", sk.key, order, #st.bag, why, tostring(self.Ov.villageId)))
+			end
+		end
+		return nil
+	end
+
+	-- ───────────────────────── 연출 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void PlayFx(string ruid, number x, number y, boolean flip, integer order)
+		-- 효과 그림 한 번(분신과 같은 MapLayer · order 는 플레이어(Default/4)보다 뒤). flip = 오른쪽을 볼 때(원본은 왼쪽을 본다).
+		if ruid == nil or ruid == "" then return end
+		local map = self.Entity.CurrentMap
+		if not isvalid(map) then return end
+		local sr = self.Entity.SpriteRendererComponent
+		local layer = isvalid(sr) and sr.SortingLayer or ""
+		if layer == "" then layer = "MapLayer0" end
+		local opt = {}
+		opt["SortingLayer"] = layer
+		opt["OrderInLayer"] = order
+		opt["FlipX"] = flip
+		_EffectService:PlayEffect(ruid, map, Vector3(x, y, 0), 0, Vector3(1, 1, 1), false, opt)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayMotion(string motion)
+		-- 이번 차례의 몸 동작(원작 attackN · skill1 · skill2). 낱장 프레임 분신은 클라 재생기에 알리고 · 팩 분신은 그 클립을 바로 SpriteRUID 에(AI 가 attack1 을 먼저 넣어 뒀다 · 같은 클립이면 다시 안 넣는다).
+		if motion == nil or motion == "" then return end
+		---@type CloneMonsterArt
+		local art = self.Entity:GetComponent("script.CloneMonsterArt")
+		if isvalid(art) then
+			art:SetTurnMotion(motion)
+			return
+		end
+		local anim = self.Entity.StateAnimationComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(anim) or not isvalid(sr) then return end
+		local ruid = anim.ActionSheet[motion]
+		if ruid ~= nil and ruid ~= "" and sr.SpriteRUID ~= ruid then sr.SpriteRUID = ruid end
+	end
+
+	-- ───────────────────────── 기술 실행 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void DoStrike(any sk)
+		-- 공격 기술: 공격력 × Pct% (공격력 강화 중이면 × 버프 배율) 로 FactionAttack.DoAttack 을 직접 부른다. 맞은 플레이어에게 슬로우(Effect = SLOW) · 맞은 자리에 효과 그림(HitFxRuid).
+		---@type FactionAttack
+		local atk = self.Entity.FactionAttack
+		if not isvalid(atk) then return end
+		local t = self.Entity.TransformComponent
+		local pos = t.WorldPosition
+		local flip = t.Scale.x < 0
+		local now = self:Now()
+		local dmg = self.Ov.attack * sk.pct / 100
+		if (self.State.atkUntil or 0) > now then dmg = dmg * (self.State.atkMul or 1) end
+		atk.BaseDamage = math.max(1, math.floor(dmg + 0.5))
+		atk.AttackReach = sk.reach * 0.5
+		atk.AttackBoxSize = Vector2(sk.reach + 0.4, self.BoxHeight)
+		self:PlayFx(sk.castFx, pos.x, pos.y, flip, 4)
+		self.striking = true
+		atk.Shape = BoxShape(Vector2.zero, atk.AttackBoxSize, 0)
+		atk:DoAttack()
+		-- 첫 판정이 넥서스 파괴 → 탈락 정리로 이 엔티티가 사라질 수 있다(FactionAttack.DoAttack 주석 · LEA-3023) → 살아 있을 때만 이어 간다.
+		if not isvalid(self.Entity) or not isvalid(atk) then return end
+		atk.Shape = nil
+		self.striking = false
+		local hits = atk.LastHits
+		local n = 0
+		if hits ~= nil then
+			for _, e in ipairs(hits) do
+				if isvalid(e) and isvalid(e.TransformComponent) then
+					n = n + 1
+					local p = e.TransformComponent.WorldPosition
+					self:PlayFx(sk.hitFx, p.x, p.y + 0.5, flip, 4)
+					if sk.effect == "SLOW" and isvalid(e.PlayerComponent) and _CloneStatusService ~= nil then
+						_CloneStatusService:Apply(e.PlayerComponent.UserId, "SLOW", sk.dur, sk.value)
+					end
+				end
+			end
+		end
+		log(string.format("[NexusClone] strike skill=%s dmg=%s reach=%.1f hits=%d village=%s", sk.key, tostring(atk.BaseDamage), sk.reach, n, tostring(self.Ov.villageId)))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshDefense()
+		-- 방어 버프(받는 피해 × Value)를 몬스터 방어력으로 환산해 건다: 피해 배율 = K ÷ (방어 + K) 이므로 새 방어 = (K + 기본 방어) ÷ Value − K (K = DamageFormula.DefenseK).
+		--   기본 공격 · 스킬 모두 같은 방어 감산(DamageFormula)을 타서 그대로 먹는다. 버프가 끝나면 기본 방어(= 레벨)로. 방어율 무시 장비를 낀 상대에겐 정확히 ×Value 는 아니다(근사).
+		local monster = self.Entity.Monster
+		if not isvalid(monster) or self.State == nil then return end
+		local base = self.Ov.defense or 0
+		local on = (self.State.defUntil or 0) > self:Now()
+		if on then
+			local k = 100
+			if _DamageFormula ~= nil then k = _DamageFormula.DefenseK end
+			local mul = math.max(0.05, self.State.defMul or 1)
+			monster.Defense = (k + base) / mul - k
+		else
+			monster.Defense = base
+		end
+		self.defOn = on
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoBuff(any sk)
+		-- 버프 기술: ATK = 공격력 × Value · DEF = 받는 피해 × Value(RefreshDefense). DurationSec 동안. 효과 그림 = 프로젝트의 강화 빛(CastFxRuid).
+		local st = self.State
+		local now = self:Now()
+		if sk.effect == "ATK" then
+			st.atkUntil = now + sk.dur
+			st.atkMul = sk.value
+		elseif sk.effect == "DEF" then
+			st.defUntil = now + sk.dur
+			st.defMul = sk.value
+			self:RefreshDefense()
+		end
+		local pos = self.Entity.TransformComponent.WorldPosition
+		self:PlayFx(sk.castFx, pos.x, pos.y + 0.5, false, 4)
+		log(string.format("[NexusClone] buff skill=%s effect=%s x%.2f sec=%s village=%s", sk.key, sk.effect, sk.value, tostring(sk.dur), tostring(self.Ov.villageId)))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoDebuff(any sk)
+		-- 방해 기술: 범위 안 적 플레이어마다 Chance(50%) 로 상태이상(SEAL · BLIND · WEAK) 을 건다(CloneStatusService).
+		local players = self:PlayersInArea(sk)
+		local applied = 0
+		for _, user in ipairs(players) do
+			if _UtilLogic:RandomDouble() < sk.chance and _CloneStatusService ~= nil then
+				if _CloneStatusService:Apply(user.PlayerComponent.UserId, sk.effect, sk.dur, sk.value) then applied = applied + 1 end
+			end
+		end
+		log(string.format("[NexusClone] debuff skill=%s effect=%s sec=%s inArea=%d applied=%d village=%s", sk.key, sk.effect, tostring(sk.dur), #players, applied, tostring(self.Ov.villageId)))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoSummon(any sk)
+		-- 소환 기술: 아군 수비대 SummonCount 마리(남은 자리만큼 · 최대 SummonMax). 레벨 = 분신 레벨 · 능력치 = 수비대 3티어 표(DefenderService.SpawnSummons). 소환진 그림은 NexusCloneService.
+		if _DefenderService == nil then return end
+		local alive = _DefenderService:CountSummonsOf(self.Ov.villageId, self.Ov.ownerKey)
+		local count = math.min(sk.summonCount, sk.summonMax - alive)
+		if count <= 0 then return end
+		local made = _DefenderService:SpawnSummons(self.Ov.villageId, self.Ov.ownerKey, sk.summonId, count, self.Ov.level)
+		for _, e in ipairs(made) do
+			if _NexusCloneService ~= nil then _NexusCloneService:PlaySummonRing(e) end
+		end
+		log(string.format("[NexusClone] summon skill=%s mob=%d x%d (alive %d -> %d) lv=%d village=%s", sk.key, sk.summonId, #made, alive, alive + #made, self.Ov.level, tostring(self.Ov.villageId)))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TakeTurn()
+		-- AI 가 ATTACK 에 들어간 그 프레임 한 번: 가방에서 기술을 꺼내 몸 동작을 틀고 효과를 낸다. 쓸 수 있는 기술이 없으면(표적이 그새 빠짐 등) 이번 차례는 헛손질.
+		local pick = self:NextSkill()
+		if pick == nil then
+			log(string.format("[NexusClone] skill=NONE (no usable skill) village=%s mob=%d", tostring(self.Ov.villageId), self.Ov.monsterId))
+			return
+		end
+		local sk = pick.sk
+		log(string.format("[NexusClone] skill=%s order=%d/%d kind=%s motion=%s village=%s mob=%d", sk.key, pick.order, pick.size, sk.kind, sk.motion, tostring(self.Ov.villageId), self.Ov.monsterId))
+		self:PlayMotion(sk.motion)
+		if sk.kind == "ATTACK" then
+			self:DoStrike(sk)
+		elseif sk.kind == "BUFF" then
+			self:DoBuff(sk)
+		elseif sk.kind == "DEBUFF" then
+			self:DoDebuff(sk)
+		elseif sk.kind == "SUMMON" then
+			self:DoSummon(sk)
+		end
+	end
+
+	-- ───────────────────────── 갱신 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임(서버): 죽으면 소환체 정리 · 자동 기본 공격 막기 · 방어 버프 만료 · ATTACK 상태 진입 순간에 기술 꺼내기.
+		if not self.ready then
+			if not self:Setup() then return end
+		end
+		---@type Monster
+		local monster = self.Entity.Monster
+		if isvalid(monster) and monster.IsDead then
+			if not self.deadHandled then
+				self.deadHandled = true
+				local n = 0
+				if _DefenderService ~= nil then n = _DefenderService:RemoveSummonsOf(self.Ov.villageId, self.Ov.ownerKey) end
+				log(string.format("[NexusClone] clone dead village=%s mob=%d summons removed=%d", tostring(self.Ov.villageId), self.Ov.monsterId, n))
+			end
+			return
+		end
+		---@type FactionAttack
+		local atk = self.Entity.FactionAttack
+		if isvalid(atk) and not self.striking and atk.Shape ~= nil then atk.Shape = nil end
+		if self.defOn and (self.State.defUntil or 0) <= self:Now() then
+			self:RefreshDefense()
+			log("[NexusClone] buff DEF ended village=" .. tostring(self.Ov.villageId))
+		end
+		---@type FactionAI
+		local ai = self.Entity.FactionAI
+		if not isvalid(ai) then return end
+		local attacking = (ai.CurrentAIState == "ATTACK")
+		if attacking and not self.wasAttacking then self:TakeTurn() end
+		self.wasAttacking = attacking
+	end
+
+end

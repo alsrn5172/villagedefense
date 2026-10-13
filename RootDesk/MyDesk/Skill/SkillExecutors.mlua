@@ -107,13 +107,14 @@ script SkillExecutors extends Logic
     -- 1.1-B01: 끌어오기 해제(false) — 도발은 방어력 저하 · 피해 1 · 나를 추격만.
     property boolean TauntPull = false
 
-    -- TAUNT 방어력 저하(1.1-B02): 대상 방어 −SecondaryAt(0/5/10/15/20). 보스는 이 배율(절반). 기록 = tauntDefense · 읽기 = GetTauntDefenseDelta(DamageFormula.TargetDefenseOf).
-    property number TauntBossDefenseMul = 0.5
+    -- TAUNT 방어력 저하(1.0.7 §3 · 사용자 2026-10-14): 대상 방어 −SecondaryAt % (0/5/10/15/20 %) · 보스도 일반 몬스터와 같은 100%(예전 보스 절반 폐지).
+    --   적용 방어 = 방어 × (100 − 도발%) ÷ 100 이라 방어가 음수가 되지 않고, 방어 0 인 사냥터 몬스터에겐 방어 효과가 없다(추격 · 피해 1 만). 도발이 모자 방어율 무시(§4)보다 먼저다.
+    --   기록 = tauntDefense · 읽기 = GetTauntPct(DamageFormula.TargetDefenseOf → EffectiveDefense).
 
     -- TAUNT 피해(1.1-B01 · 사용자 2026-10-12): 도발한 몬스터마다 이 고정 피해(평값 · 치명 · 방어 없음).
     property integer TauntFlatDamage = 1
 
-    -- [서버] 도발 방어 저하 기록: entity -> { delta(0 이하), untilAt(_UtilLogic.ElapsedSeconds) }. 재도발은 덮어쓴다(누적 없음).
+    -- [서버] 도발 방어 저하 기록: entity -> { pct(0 ~ 100 · 방어를 깎는 %), untilAt(_UtilLogic.ElapsedSeconds) }. 재도발은 덮어쓴다(누적 없음).
     @HideFromInspector
     property table tauntDefense = {}
 
@@ -6094,7 +6095,7 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
         -- 도발(SK_W22): 반경(BaseEffect 3→5 · RatioAt) 상자 안의 적 몬스터에게 (1.1-B01 · B02 · 2026-10-12)
-        --   ① Duration 동안 방어력 −SecondaryAt(보스 절반 · tauntDefense) ② 고정 피해 TauntFlatDamage(1) ③ 시전자를 고정 추격(StateChaseMonster.SetTarget · 만료 시 원래 IsChaseNearPlayer).
+        --   ① Duration 동안 방어력 −SecondaryAt %(보스도 100% · tauntDefense · 1.0.7 §3) ② 고정 피해 TauntFlatDamage(1) ③ 시전자를 고정 추격(StateChaseMonster.SetTarget · 만료 시 원래 IsChaseNearPlayer).
         --   끌어오기(TauntPull)는 1.1 에서 껐다 — 코드는 남겨 둔다.
         -- A 의 Monster 훅 `Taunt(target, seconds)`(구현항목-결정 §3) 가 생기면 이 두 줄을 그 호출로 바꾸면 된다. 🟡 끌어모으기(발판 다른 몹)는 런타임 미검증.
         local pos = casterEntity.TransformComponent.WorldPosition
@@ -6156,11 +6157,12 @@ script SkillExecutors extends Logic
                     taunted = taunted + 1
                 end
                 local isBoss = isvalid(mob:GetComponent("script.BossSkillRunner"))
-                -- 방어력 저하(1.1-B02): 추격 컴포넌트 유무와 무관하게 대상마다. 보스는 절반.
-                local delta = -(_SkillDatabase:SecondaryAt(skillId, level))
-                if isBoss then delta = delta * self.TauntBossDefenseMul end
-                if delta < 0 then
-                    self.tauntDefense[mob] = { delta = delta, untilAt = _UtilLogic.ElapsedSeconds + seconds }
+                -- 방어력 저하(1.1-B02 → 1.0.7 §3): 추격 컴포넌트 유무와 무관하게 대상마다 · 보스도 100% · 값은 % (Lv1 ~ 5 = 0 / 5 / 10 / 15 / 20).
+                --   실제로 깎는 양은 DamageFormula.EffectiveDefense 가 맞을 때마다 방어 × (100 − %) ÷ 100 으로 계산한다(방어 0 이면 효과 없음).
+                local pct = math.min(100, _SkillDatabase:SecondaryAt(skillId, level))
+                if pct > 0 then
+                    self.tauntDefense[mob] = { pct = pct, untilAt = _UtilLogic.ElapsedSeconds + seconds }
+                    log("[Taunt] defense -" .. tostring(pct) .. "% on " .. tostring(mob.Name) .. " boss=" .. tostring(isBoss) .. " for " .. tostring(seconds) .. "s")
                 end
                 -- 피해 1(1.1-B01 · 사용자 2026-10-12 "대상마다 피해 1"): 평값 패스(치명 · 방어 · 명중 판정 없음).
                 if self.TauntFlatDamage > 0 then skillAttack:DealFlatDamageToTarget(mob, self.TauntFlatDamage, skillId) end
@@ -6185,11 +6187,12 @@ script SkillExecutors extends Logic
             end, seconds)
         end
         log("SkillExecutors: TAUNT " .. skillId .. " radius=" .. tostring(radius) .. " candidates=" .. tostring(#found)
-            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " def-" .. tostring(_SkillDatabase:SecondaryAt(skillId, level)) .. " for " .. tostring(seconds) .. "s")
+            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " def-" .. tostring(_SkillDatabase:SecondaryAt(skillId, level)) .. "% for " .. tostring(seconds) .. "s")
     end
 
-    method number GetTauntDefenseDelta(Entity mob)
-        -- 도발 방어력 저하(1.1-B02): 걸려 있으면 delta(0 이하), 아니면 0. 만료된 기록은 지운다. 서버 원장(클라는 늘 0).
+    method number GetTauntPct(Entity mob)
+        -- 도발 방어력 저하(1.1-B02 → 1.0.7 §3): 걸려 있으면 방어를 깎는 % (0 ~ 100), 아니면 0. 만료된 기록은 지운다. 서버 원장(클라는 늘 0).
+        --   읽는 곳 = DamageFormula.TargetDefenseOf(→ EffectiveDefense: 방어 × (100 − %) ÷ 100 먼저, 그다음 모자 방어율 무시).
         if mob == nil or self.tauntDefense == nil then return 0 end
         local rec = self.tauntDefense[mob]
         if rec == nil then return 0 end
@@ -6197,7 +6200,7 @@ script SkillExecutors extends Logic
             self.tauntDefense[mob] = nil
             return 0
         end
-        return rec.delta
+        return rec.pct or 0
     end
 
     @ExecSpace("ServerOnly")

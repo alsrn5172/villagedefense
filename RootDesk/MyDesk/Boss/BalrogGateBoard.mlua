@@ -1,0 +1,232 @@
+@Component
+script BalrogGateBoard extends Component
+
+	-- 주니어 발록 입구 전광판(1.0.7 §7 · 사용자 결정 2026-10-12 · 문구 · 색 2026-10-14): 슬리피우드 마을의 발록 입구 포탈(P_To_Sleepywood_Boss_JrBalrog) 위에 선 칠판.
+	--   · 초보자가 지금 도전하면 안 되는지 한눈에 알게 한다 — 발록을 칠 때의 명중률 · 방어율 무시를 기준값과 견준다(최소 명중률 50% · 권장 75% / 최소 방어율 무시 20% · 권장 30%).
+	--   · 🔴 사람마다 자기 값이 보여야 한다 → StatusBoard(서버가 전원 공통 문자열을 @Sync)와 달리 이 컴포넌트는 클라에서만 그린다. 값은 서버가 소유 클라에만 보내는 스탯 CSV 에서 온다:
+	--     StatService.BuildUiCsv 의 balrogacc= · ignoredef= → StatUIController.SetCell 이 balrogAccText · ignoreDefText 에 글자 그대로 둔다 → 여기서 읽는다.
+	--   · 장비를 끼고 벗을 때마다 실시간: 서버가 Recalculate 때마다 PushToClient 를 보낸다(레벨업 · 버프 · 장비 전부) → PollInterval 마다 이 판이 값이 바뀐 때만 다시 그린다.
+	--   · 줄 서식(사용자 문구 그대로 · 줄 모양은 제안): 제목 "당신! 제대로 성장해 왔나요?" · "명중률 최소 필요: 50% (권장 75%) >> 당신의 명중률 'N%'" · "방어율 무시 최소 필요: 20% (권장 30%) >> 당신의 방어율 무시 'M%'".
+	--     글자색: 최소 기준 = 노랑 · 권장 기준 = 하양 · 내 값 = 최소 미만 빨강 / 이상 초록. 100% 를 넘어도 그대로(135.1%) · 음수는 0%.
+	--   · 한 줄에 색이 섞이므로 월드 TextRendererComponent 의 리치 텍스트(<color=#RRGGBB>)를 쓴다(IsRichText = true · 모델 VD_BALROG_GATE_BOARD).
+	--   · 층: 판(Plate) Default/2 · 글자 Default/3 (모델 값) — 플레이어(Default/4) 뒤 · 포탈(Default/5) 뒤. StatusBoard · WorldNameTag 와 같은 규칙.
+	--   · 판 그림 = 메이플 고등학교 교실 칠판(RUID f68089a2… · 지금 VD_RECORD_BOARD 가 쓰는 그림).
+
+	-- 기준값(사용자 2026-10-12): 최소 필요 · 권장.
+	property number MinAccuracy = 50
+
+	property number RecAccuracy = 75
+
+	property number MinIgnoreDef = 20
+
+	property number RecIgnoreDef = 30
+
+	property string TitleText = "당신! 제대로 성장해 왔나요?"
+
+	-- 글자색(리치 텍스트 16진수). 최소 기준 = 노랑 · 권장 기준 = 하양 · 통과 = 초록 · 미달 = 빨강 · 값 없음 = 옅은 회색.
+	property string ColorMin = "#FFE24A"
+
+	property string ColorRec = "#FFFFFF"
+
+	property string ColorOk = "#5FE08A"
+
+	property string ColorLow = "#FF6B5C"
+
+	property string ColorNone = "#C9D1C3"
+
+	-- 값이 바뀌었는지 확인하는 주기(초). 값이 그대로면 다시 그리지 않는다.
+	property number PollInterval = 0.25
+
+	-- 값이 한 번도 안 왔을 때 서버에 내 스탯을 요청하는 최소 간격(초).
+	property number RequestCooldown = 5
+
+	property integer MaxRequests = 3
+
+	-- 월드 글자 계산: FontSize 1 = TextEmUnits 유닛(StatusBoard · WorldNameTag 실측과 같은 값). 한 줄 최대 폭(유닛) 안에 들게 줄 글자 크기를 줄인다(두 줄은 같은 크기).
+	-- 칠판 그림(가로 1.0)의 면 폭 4.62 에서 좌우 여백을 뺀 값 = StatusBoard 와 같은 4.17.
+	property number TextEmUnits = 0.1
+
+	property number RowFontSize = 1.5
+
+	property number RowMaxWidth = 4.17
+
+	@HideFromInspector
+	property string appliedSig = ""
+
+	@HideFromInspector
+	property number pollLeft = 0
+
+	@HideFromInspector
+	property number requestLeft = 0
+
+	@HideFromInspector
+	property integer requestCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 클라: 처음 한 번 그린다(동적 생성이라 자식이 아직 없으면 OnUpdate 가 다시 시도한다).
+		self.pollLeft = 0
+		self.requestLeft = 0
+		self.requestCount = 0
+		self:Refresh(true)
+		log("[GateBoard] ready (client) " .. self.Entity.Name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- PollInterval 마다 내 값(StatUIController 가 받아 둔 글자)이 바뀌었는지 보고, 바뀐 때만 다시 그린다.
+		if self.requestLeft > 0 then self.requestLeft = self.requestLeft - delta end
+		self.pollLeft = self.pollLeft - delta
+		if self.pollLeft > 0 then return end
+		self.pollLeft = self.PollInterval
+		self:Refresh(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(boolean force)
+		-- 제목 · 명중률 줄 · 방어율 무시 줄을 다시 쓴다. 값 글자(balrogAccText · ignoreDefText)가 그대로면 건너뛴다.
+		local ctrl = _StatUIController
+		if ctrl == nil then return end
+		local accText = ctrl.balrogAccText
+		local ignText = ctrl.ignoreDefText
+		if accText == nil then accText = "" end
+		if ignText == nil then ignText = "" end
+		local sig = accText .. "#" .. ignText
+
+		-- 서버 값이 아직 안 왔으면(전광판이 스탯 CSV 보다 먼저 뜬 경우 등) 내 스탯을 RequestCooldown 마다 요청한다. 응답은 SetStatsCsv 로 와서 다음 폴링이 그린다.
+		-- 서버가 balrogacc · ignoredef 키를 아직 안 보내는 빌드면 끝없이 조르지 않게 MaxRequests 번까지만.
+		if (accText == "" or ignText == "") and self.requestLeft <= 0 and self.requestCount < self.MaxRequests then
+			self.requestLeft = self.RequestCooldown
+			self.requestCount = self.requestCount + 1
+			if _StatService ~= nil then
+				_StatService:RequestStats()
+				log("[GateBoard] no stats yet — RequestStats #" .. tostring(self.requestCount) .. " (client)")
+			end
+		end
+
+		if not force and sig == self.appliedSig then return end
+
+		-- 동적 스폰이라 클라 OnBeginPlay 때 자식이 아직 없을 수 있다 → 칸을 전부 찾았을 때만 "그렸다"고 기록해 다음 폴링이 다시 시도하게 한다.
+		local title = self.Entity:GetChildByName("Title", false)
+		local row1 = self.Entity:GetChildByName("Row1", false)
+		local row2 = self.Entity:GetChildByName("Row2", false)
+		if not isvalid(title) or not isvalid(title.TextRendererComponent) then return end
+		if not isvalid(row1) or not isvalid(row1.TextRendererComponent) then return end
+		if not isvalid(row2) or not isvalid(row2.TextRendererComponent) then return end
+
+		local acc = self:ParsePct(accText)
+		local ign = self:ParsePct(ignText)
+		local line1 = self:BuildRow("명중률", self.MinAccuracy, self.RecAccuracy, acc)
+		local line2 = self:BuildRow("방어율 무시", self.MinIgnoreDef, self.RecIgnoreDef, ign)
+
+		-- 두 줄은 같은 글자 크기: 더 긴 줄이 한 줄 최대 폭 안에 들게 줄인다.
+		local fs = self.RowFontSize
+		local em = math.max(self:EstimateEm(line1.plain), self:EstimateEm(line2.plain))
+		if em * fs * self.TextEmUnits > self.RowMaxWidth then
+			fs = self.RowMaxWidth / (em * self.TextEmUnits)
+		end
+
+		self:ApplyText(title.TextRendererComponent, "<b>" .. self.TitleText .. "</b>", nil)
+		self:ApplyText(row1.TextRendererComponent, "<b>" .. line1.rich .. "</b>", fs)
+		self:ApplyText(row2.TextRendererComponent, "<b>" .. line2.rich .. "</b>", fs)
+		self.appliedSig = sig
+		log("[GateBoard] draw (client) acc=" .. accText .. " ign=" .. ignText .. " fs=" .. string.format("%.2f", fs))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Seg(string text, string color)
+		-- 리치 텍스트 색 구간 하나.
+		return "<color=" .. color .. ">" .. text .. "</color>"
+	end
+
+	@ExecSpace("ClientOnly")
+	method any BuildRow(string label, number minV, number recV, any mine)
+		-- 한 줄을 { rich = 리치 글자, plain = 태그 뺀 글자 } 로 만든다. 태그 뺀 글자는 폭 어림용.
+		--   `명중률 최소 필요: 50% (권장 75%) >> 당신의 명중률 '92.8%'` — 최소 구간 노랑 · 권장 구간 하양 · 내 값 최소 미만 빨강 / 이상 초록.
+		local minText = "최소 필요: " .. self:FmtPct(minV)
+		local recText = "(권장 " .. self:FmtPct(recV) .. ")"
+		local head = label .. " "
+		local mid = " >> 당신의 " .. label .. " '"
+		local tail = "'"
+		local valText = "-"
+		local valColor = self.ColorNone
+		if mine ~= nil then
+			local v = mine
+			if v < 0 then v = 0 end
+			valText = self:FmtPct(v)
+			valColor = (v >= minV) and self.ColorOk or self.ColorLow
+		end
+		local rich = head .. self:Seg(minText, self.ColorMin) .. " " .. self:Seg(recText, self.ColorRec) .. mid .. self:Seg(valText, valColor) .. tail
+		local plain = head .. minText .. " " .. recText .. mid .. valText .. tail
+		return { rich = rich, plain = plain }
+	end
+
+	@ExecSpace("ClientOnly")
+	method any ParsePct(string s)
+		-- "92.8%" → 92.8 · "135.1%" → 135.1 · "0%" → 0. 글자가 비었거나 숫자가 없으면 nil(= 값 없음).
+		if s == nil or s == "" then return nil end
+		local m = string.match(s, "-?%d+%.?%d*")
+		if m == nil then return nil end
+		return tonumber(m)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FmtPct(number v)
+		-- 화면 % 글자: 소수 한 자리 반올림 · ".0" 은 뺀다 · 100% 를 넘어도 그대로(StatService.FmtPct 와 같은 규칙).
+		local r = math.floor(v * 10 + 0.5) / 10
+		if r == math.floor(r) then return tostring(math.floor(r)) .. "%" end
+		return string.format("%.1f", r) .. "%"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyText(TextRendererComponent tr, string text, any fontSize)
+		-- 한 칸을 쓴다: 리치 텍스트 켬 · 글자 크기(nil 이면 그대로) · 글자(바뀐 때만).
+		if not tr.IsRichText then tr.IsRichText = true end
+		if fontSize ~= nil and math.abs(tr.FontSize - fontSize) > 0.001 then tr.FontSize = fontSize end
+		if tr.Text ~= text then tr.Text = text end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number EstimateEm(string s)
+		-- 글자 폭을 em(FontSize 1 = 1) 로 어림한다(StatusBoard.EstimateEm 과 같은 값 · Play 실측): 한글 · 한자(3바이트) 0.95 · 2바이트 0.9 · 영문 대문자 0.7 · 소문자 0.58 · 숫자 0.6 · 공백 0.28 · 마침표 · 쉼표 0.35 · 작은따옴표 0.3 · 괄호 0.4 · 콜론 0.35 · 그 밖 0.6.
+		local w = 0
+		local i = 1
+		local n = #s
+		while i <= n do
+			local b = string.byte(s, i)
+			if b < 128 then
+				if b == 32 then
+					w = w + 0.28
+				elseif b >= 65 and b <= 90 then
+					w = w + 0.7
+				elseif b >= 97 and b <= 122 then
+					w = w + 0.58
+				elseif b >= 48 and b <= 57 then
+					w = w + 0.6
+				elseif b == 46 or b == 44 then
+					w = w + 0.35
+				elseif b == 39 then
+					w = w + 0.3
+				elseif b == 40 or b == 41 then
+					w = w + 0.4
+				elseif b == 58 then
+					w = w + 0.35
+				else
+					w = w + 0.6
+				end
+				i = i + 1
+			elseif b < 224 then
+				w = w + 0.9
+				i = i + 2
+			elseif b < 240 then
+				w = w + 0.95
+				i = i + 3
+			else
+				w = w + 0.95
+				i = i + 4
+			end
+		end
+		return w
+	end
+
+end

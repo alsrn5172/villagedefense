@@ -54,6 +54,25 @@ script BossSkillRunner extends AttackComponent
 	-- 판정 레벨 덮어쓰기(0 = 없음 · BossLevel 이 먼저 본다). 튜토리얼 머쉬맘 Lv25(TutorialService.PrepareBoss · 1.0.6 #23 을 1차에서 · 사용자 2026-10-12) 같은 개체별 예외용 — 실제 매치 보스는 0.
 	property integer LevelOverride = 0
 
+	-- 분열 소환(1.0.7 §1 · 사용자 2026-10-14): 발록 졸개 아이언호그처럼 "자기 HP 가 이 % 이하가 되면 SplitModelId 를 SplitCount 마리 한 번 소환"하는 개체별 장치(0 = 끔).
+	--   BossSkills 표와 무관하다 — SetupSummon 이 규칙표(SummonRule)에서 값을 넣고, OnUpdate 의 TickSplit 이 한 번만 쓴다. 실제 소환은 FireSummon 을 그대로 쓴다.
+	property number SplitHpPercent = 0
+
+	property string SplitModelId = ""
+
+	property integer SplitCount = 0
+
+	-- 분열 소환 좌우 폭(월드 단위 · FireSummon 의 RangeX 와 같다).
+	property number SplitSpread = 1.2
+
+	-- 분열 소환진 이펙트(FireSummon 의 CastEffectRUID · 크기). 비면 소환진 없이 나온다. 발록 S4 행의 값을 FireSummon 이 넘겨 준다.
+	property string SplitEffectRuid = ""
+
+	property number SplitEffectScale = 1
+
+	@HideFromInspector
+	property boolean splitDone = false
+
 	-- 시전 중 제자리에 서 있는 최소 시간.
 	-- 🔴 기본 0 이다. 정지는 "실제 시전 길이"만큼만 건다.
 	--    예전엔 2.0 이 최소값이라, 시전이 끝나 판정이 났는데도 남은 시간 동안
@@ -588,6 +607,10 @@ script BossSkillRunner extends AttackComponent
 
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
+		-- 분열 소환(1.0.7 §1)은 스킬 표가 없는 개체(BossId 빈칸 · 발록 졸개 아이언호그)에도 돈다 — 아래 BossId 검사보다 앞.
+		if self.SplitHpPercent > 0 and not self.splitDone then
+			self:TickSplit()
+		end
 		if self.BossId == "" or self:IsDead() then
 			return
 		end
@@ -1214,7 +1237,12 @@ script BossSkillRunner extends AttackComponent
 		-- 소환수 원본 BossInfo. 모델 id 로 역인덱스가 없어 #Note 대신 SkillName 규칙 대신
 		-- ProjectileModelId 의 "monster<id>" 에서 뽑는다.
 		-- string.gsub 은 (문자열, 치환횟수) 두 값을 준다. 하나만 받으면 경고가 난다.
-		local summonId, replaced = string.gsub(skill.projectileModelId, "monster", "")
+		-- 1.0.7 §1: 뒤에 글자가 붙은 변형 모델(발록 졸개 아이언호그 "monster4230103boss")도 같은 도감 행을 쓴다 → "monster" 바로 뒤의 숫자만 뽑는다. 숫자가 아니면 예전 방식(접두 "monster" 제거).
+		local summonId = string.match(skill.projectileModelId, "^monster(%d+)")
+		if summonId == nil then
+			local rest, replaced = string.gsub(skill.projectileModelId, "monster", "")
+			summonId = rest
+		end
 		local info = nil
 		if _BossCatalog ~= nil then
 			info = _BossCatalog:GetInfo(summonId)
@@ -1256,9 +1284,16 @@ script BossSkillRunner extends AttackComponent
 			local unit = _SpawnService:SpawnByModelId(skill.projectileModelId, name, spawnPos, map)
 			if isvalid(unit) then
 				self:SetupSummon(unit, summonId, info)
+				-- 분열 소환진(1.0.7 §1): SetupSummon 이 분열 규칙을 걸어 준 소환수(발록 졸개 아이언호그)에게 이 스킬 행의 소환진 이펙트를 넘겨 준다 — 아이언보어가 나올 때 같은 소환진이 깔린다.
+				local childRunner = unit.BossSkillRunner
+				if isvalid(childRunner) and childRunner.SplitHpPercent > 0 then
+					childRunner.SplitEffectRuid = skill.castEffectRuid
+					childRunner.SplitEffectScale = skill.castEffectScale
+				end
 				-- 몬스터 이름표(1.1-I18): 소환수도 `Lv.N 이름` — info = BossInfo 또는 MonsterInfo 행(name · level 둘 다 있음). 도감에 없으면(info nil) 달지 않는다. 죽으면 Monster.Dead 가 끈다(1.1-I10).
+				--   레벨은 SummonLevel(규칙표 > 도감): 발록 졸개는 아이언호그 Lv30 · 아이언보어 Lv35.
 				if info ~= nil and _MonsterNameTag ~= nil then
-					_MonsterNameTag:Attach(unit, tostring(info.name or ""), math.floor(tonumber(info.level) or 0))
+					_MonsterNameTag:Attach(unit, tostring(info.name or ""), self:SummonLevel(summonId, info))
 				end
 			else
 				log_error("[BossSkillRunner] summon spawn failed model=" .. tostring(skill.projectileModelId))
@@ -1272,6 +1307,66 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method any SummonRule(string summonId)
+		-- 소환수 개별 규칙표(1.0.7 §1 · 사용자 2026-10-14 · 발록 졸개). 없으면 nil = 도감 값 그대로(HP = 도감 HP × 레벨 배율).
+		--   { level = 판정 · 이름표 레벨, maxHp = 최대 HP 고정(레벨 배율 · ★ 배율을 다시 곱하지 않는다), split = { hpPercent, modelId, count, spread } }
+		--   도감(MonsterInfo)의 공용 값은 바꾸지 않는다 — 같은 종을 사냥터 · 드롭 · T3 수비대 모집이 같이 쓴다.
+		--   (코드 상수로 둔 이유) BossSkills 새 열은 헤더 변경 = 스키마 계약 공지 · 35행 수정인데, 쓰는 곳이 발록 S4 한 곳뿐이다. 값이 늘면 그때 열로 옮긴다.
+		if summonId == "4230103" then
+			-- 아이언호그: Lv30 · 최대 HP 300,000 고정 · 자기 HP 50% 이하에서 아이언보어 3마리를 한 번(호그 5마리가 각각 → 최대 15마리).
+			--   보스 판정은 보스 모델(monster4230103boss · BossSkillRunner 달림)로 소환해서 얻는다 — BossSkills S4 의 ProjectileModelId.
+			return { level = 30, maxHp = 300000, split = { hpPercent = 50, modelId = "monster4230400", count = 3, spread = 1.2 } }
+		end
+		if summonId == "4230400" then
+			-- 아이언보어: 일반 몬스터 그대로(보스 판정 아님) · 레벨만 35 → HP = 기초 9,200 × 레벨 배율 25 = 230,000 · 공격 519 · 방어는 도감대로.
+			return { level = 35 }
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer SummonLevel(string summonId, any info)
+		-- 소환수의 판정 · 이름표 레벨 = 규칙표 레벨 > 도감 레벨.
+		local rule = self:SummonRule(summonId)
+		if rule ~= nil and rule.level ~= nil then
+			return math.floor(rule.level)
+		end
+		if info == nil then
+			return 0
+		end
+		return math.floor(tonumber(info.level) or 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickSplit()
+		-- 분열 소환(1.0.7 §1): 자기 HP 가 SplitHpPercent % 이하가 되면 한 번만 SplitModelId 를 SplitCount 마리 소환한다(OnUpdate 가 매 프레임 부른다 — 몇 마리 안 되는 개체라 싸다).
+		--   이미 죽었거나 HP 0 이하(한 방에 죽음)면 소환하지 않는다. 소환 자체는 FireSummon 을 그대로 쓴다 — 아이언보어는 SetupSummon 이 레벨 35 로 세운다.
+		local monster = self.Entity.Monster
+		if not isvalid(monster) or monster.IsDead or monster.MaxHp <= 0 or monster.Hp <= 0 then
+			return
+		end
+		if monster.Hp * 100 > monster.MaxHp * self.SplitHpPercent then
+			return
+		end
+		self.splitDone = true
+		log("[BossSkillRunner] split " .. tostring(self.Entity.Name) .. " hp=" .. tostring(monster.Hp) .. "/" .. tostring(monster.MaxHp)
+			.. " <= " .. tostring(self.SplitHpPercent) .. "% -> " .. tostring(self.SplitCount) .. " x " .. self.SplitModelId)
+		-- FireSummon 이 읽는 필드만 채운 스킬 모양 표. skillId 에 개체 이름을 넣어 소환수 이름이 개체마다 다르게 한다.
+		local skill = {
+			skillId = "SPLIT" .. tostring(self.Entity.Name),
+			projectileModelId = self.SplitModelId,
+			hitCount = self.SplitCount,
+			rangeX = self.SplitSpread,
+			offsetY = 0,
+			castEffectRuid = self.SplitEffectRuid,
+			castEffectScale = self.SplitEffectScale,
+			castEffectOffsetX = 0,
+			castEffectOffsetY = 0,
+		}
+		self:FireSummon(skill)
+	end
+
+	@ExecSpace("ServerOnly")
 	method void SetupSummon(Entity unit, string summonId, any info)
 		-- 소환수를 도감 능력치로 세운다.
 		-- BossSpawner 를 안 거치므로 여기서 직접 넣어야 한다. 안 넣으면 모델 기본값(HP 100)이 된다.
@@ -1282,10 +1377,14 @@ script BossSkillRunner extends AttackComponent
 			return
 		end
 
-		-- 최대 HP = 도감 HP × 레벨 배율(1.1-E05 · 권장대로 모든 소환수 — E22 "소환수는 일반 몬스터와 같다"): 아이언호그 Lv30 1,875 → 37,500 · 좀비버섯 Lv25 1,500 → 22,500.
+		-- 최대 HP = 도감 HP × 레벨 배율(1.1-E05 · 권장대로 모든 소환수 — E22 "소환수는 일반 몬스터와 같다"): 좀비버섯 Lv25 1,500 → 22,500.
 		--   ★ 배율은 지금처럼 곱하지 않는다.
+		-- 1.0.7 §1: 발록 졸개는 규칙표(SummonRule)가 레벨 · HP 를 정한다 — 아이언호그 Lv30 · 최대 HP 300,000 고정(레벨 배율을 다시 곱하지 않는다) · 아이언보어 Lv35 (HP 는 도감 9,200 × 레벨 배율 25 = 230,000 그대로 · 공격 519).
+		local rule = self:SummonRule(summonId)
+		local level = self:SummonLevel(summonId, info)
 		local summonHp = math.max(1, math.floor(tonumber(info.maxHp) or 1))
-		if _MonsterCatalog ~= nil then summonHp = _MonsterCatalog:LevelHp(info.maxHp, info.level) end
+		if _MonsterCatalog ~= nil then summonHp = _MonsterCatalog:LevelHp(info.maxHp, level) end
+		if rule ~= nil and rule.maxHp ~= nil then summonHp = math.max(1, math.floor(rule.maxHp)) end
 		local monster = unit.Monster
 		if isvalid(monster) then
 			monster.MaxHp = summonHp
@@ -1301,14 +1400,30 @@ script BossSkillRunner extends AttackComponent
 			-- 방어(1.1-E21): MonsterInfo.Defense 또는 BossInfo.Defense. 기본 공격 · 스킬 모두 깎인다.
 			monster.Defense = tonumber(info.defense) or 0
 			-- 판정 레벨(1.1-A09 · A11): 소환수는 FarmReward 가 없어 레벨을 찾을 곳이 없다 → 도감 레벨을 직접 넣는다(없으면 Lv1 로 보여 플레이어가 전부 회피).
-			monster.Level = math.floor(tonumber(info.level) or 0)
+			monster.Level = level
 		end
 
-		-- 보스를 소환한 경우에만 스킬 실행기가 붙어 있다(일반 몹 모델엔 없다).
+		-- 보스 모델을 소환한 경우에만 스킬 실행기가 붙어 있다(일반 몹 모델엔 없다).
 		local runner = unit.BossSkillRunner
-		if isvalid(runner) and info.attackPower ~= nil then
-			runner.BossId = summonId
-			runner.AttackPower = info.attackPower
+		if isvalid(runner) then
+			if info.attackPower ~= nil then
+				-- BossInfo 행으로 소환한 보스 모델(마노 등): 이 보스 id 로 스킬 표도 돌린다.
+				runner.BossId = summonId
+				runner.AttackPower = info.attackPower
+			else
+				-- MonsterInfo 행인데 보스 모델로 소환한 개체(발록 졸개 아이언호그 · 1.0.7 §1 · 사용자 2026-10-14 "보스 판정"):
+				--   스킬 표는 없고(BossId 빈칸 = OnUpdate 가 스킬을 안 돌린다) 보스 판정(명중 회피 20% · 판정 레벨 = LevelOverride · 도발 끌어오기 제외)과 접촉 피해만 갖는다.
+				--   접촉 피해 = 이 실행기의 AttackPower(= MonsterInfo.Attack · MonsterAttack.SummonAttack 과 같은 값 · ★ 배율 없음).
+				runner.AttackPower = tonumber(info.attack) or 1
+				runner.LevelOverride = level
+			end
+			-- 분열 소환(1.0.7 §1): 규칙표에 split 이 있으면 이 개체가 자기 HP 가 그 % 이하일 때 한 번 졸개를 낳는다(TickSplit).
+			if rule ~= nil and rule.split ~= nil then
+				runner.SplitHpPercent = rule.split.hpPercent
+				runner.SplitModelId = rule.split.modelId
+				runner.SplitCount = rule.split.count
+				runner.SplitSpread = rule.split.spread
+			end
 		end
 
 		-- 일반 몹 소환수의 접촉 피해(1.1-E22 · 사용자 2026-10-12 "소환수도 일반 몬스터와 같다 · 통일"): 모든 소환수가 MonsterInfo.Attack 을 쓴다.
@@ -1318,8 +1433,9 @@ script BossSkillRunner extends AttackComponent
 		if isvalid(contact) and not isvalid(runner) and (tonumber(info.attack) or 0) > 0 then
 			contact.SummonAttack = math.floor(tonumber(info.attack))
 		end
-		log("[BossSkillRunner] summon setup " .. tostring(summonId) .. " lv=" .. tostring(tonumber(info.level) or 0) .. " hp=" .. tostring(summonHp) .. " (base " .. tostring(info.maxHp) .. ") def=" .. tostring(tonumber(info.defense) or 0)
-			.. " contact=" .. tostring(isvalid(contact) and contact.SummonAttack or -1))
+		log("[BossSkillRunner] summon setup " .. tostring(summonId) .. " lv=" .. tostring(level) .. " hp=" .. tostring(summonHp) .. " (base " .. tostring(info.maxHp) .. ") def=" .. tostring(tonumber(info.defense) or 0)
+			.. " contact=" .. tostring(isvalid(contact) and contact.SummonAttack or -1)
+			.. " boss=" .. tostring(isvalid(runner)) .. (isvalid(runner) and (" runnerAtk=" .. tostring(runner.AttackPower) .. " split=" .. tostring(runner.SplitHpPercent) .. "%") or ""))
 
 		-- 소환수도 한 번 붙으면 놓지 않는다. 안 그러면 소환해놓고 그 자리에 서 있는다.
 		local chase = unit.StateChaseMonster

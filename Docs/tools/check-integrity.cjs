@@ -105,7 +105,7 @@ const CANONICAL = {
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
-  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType,Description,EnhanceTier",
+  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType,Description,EnhanceTier,IgnoreDefense",
   WeaponMotion: "MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note",
   EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack,FixedSpeed,FixedAccuracy",
@@ -119,7 +119,7 @@ const CANONICAL = {
   VillageConfig: "VillageId,VillageMapName,Lane2MapName,Lane1MapName,RearMapName,BossMapName,ThemeId,CoreX,CoreY,Enabled,NpcMapName,#Note",
   MonsterTraining: "TrainClass,Level,DreamPieceCost,StatMul,Enabled,#Note",
   LaneConfig: "VillageId,MapName,LaneRole,PathMinX,PathMaxX,PathY,SpawnX,SpawnY,EndTriggerX,TowerSlotX,TowerSlotY,RopeX,MinionSpeedMul,DefenderSlotCount,Enabled,#Note",
-  TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note",
+  TowerConfig: "Stage,Level,MaxHp,Attack,AttackSpeed,Range,UpgradeCost,RepairCostPerHp,RebuildCost,SuppressorMinionHpMul,SuppressorMinionAtkMul,SuppressorExpMul,Enabled,#Note,FacilityLevel",
   FacilitySprite: "VillageId,Stage,WorldRuid,IconRuid,FlipY,GroundOffset,BarOffset,Enabled,FlipX,Scale,#Note",
   FacilityArt: "VillageId,Stage,State,Frames,FrameSec,Mode,IdleIndex,ReleaseIndex,ReleaseOffsetX,ReleaseOffsetY,CanAttack,Enabled,#Note",
   AuraBandArt: "Kind,Frames,FrameSec,Enabled,#Note",
@@ -134,7 +134,7 @@ const CANONICAL = {
 
   // 9/14 기획 반영 — 계약서 §1 등록서(2026-09-22 · a/plan-0914 B0). 파일은 각 묶음 구현 PR 에서 생성.
   // 기존 표 열 추가(MonsterInfo.Attack · ConsumeInfo Pct · BossReward Soulstone* · Elite*)는 §0-1 9 대로 그 구현 PR 에서 CANONICAL 을 같이 고친다.
-  MinionWave: "Profile,WaveKey,Phase,StartSeconds,Count,SpawnGapSeconds,MonsterId,Hp,Attack,Exp,Meso,ZombieCount,Enabled,Level,#Note",
+  MinionWave: "Profile,WaveKey,Phase,StartSeconds,Count,SpawnGapSeconds,MonsterId,Hp,Attack,Exp,Meso,ZombieCount,Enabled,Level,#Note,ZombieDefense",
   DifficultyRule: "Difficulty,Key,Value,Enabled,#Note",
   DropTable: "SourceKind,SourceId,ItemId,Chance,CountMin,CountMax,Enabled,#Note",
   MonsterRecruit: "MonsterId,Tier,MaterialItemId,MaterialCount,BundleSize,GuardHp,GuardAttack,Enabled,#Note",
@@ -155,10 +155,13 @@ const CANONICAL = {
     "ReqJob,ReqTier,ReqLevel,Behavior,MpCost,BaseEffect,Range,Speed,Duration,HitCount,UseLimit," +
     "EffectUnit,MaxStack,SecondaryEffect,SecondaryPerLevel,DurationPerLevel,CooldownPerLevel,BuffTag,SpawnOffsetY," +
     "TertiaryEffect,TertiaryPerLevel,RecastMpCostMul,#Note",
-  JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note",
+  JobInfo: "JobId,Name,PrimaryStat,SecondaryStat,ApRatioStr,ApRatioDex,ApRatioInt,ApRatioLuk,#Note,PowerMul",
   JobTier: "JobId,Tier,ReqLevel,DisplayName,BaseAttack,#Note",
   // 스킬 모션 세트 — B 등록서(계약서 §1 · A-2-23 · 2026-09-24 · PR #83). Skill/ 하위 폴더라 이름에 경로를 붙인다(readCsv 가 path.join).
   "Skill/SkillMotionSet": "SkillId,WeaponType,Seq,Mode,CoreAction,PartsAction,PlayRate,HitTime,LockTime,Enabled,#Note",
+  // 넥서스 분신 — 1.0.7 §10(2026-10-14 · 계약서 A-2-30 · A-2-31)
+  CloneMonsterArt: "MonsterId,Action,Frames,DelaysMs,Mode,Enabled,#Note",
+  NexusCloneSkill: "MonsterId,SkillKey,Kind,Motion,Pct,Reach,Effect,Value,DurationSec,Chance,RangeX,RangeY,HpBelow,SummonMonsterId,SummonCount,SummonMax,CastFxRuid,HitFxRuid,Enabled,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");
@@ -282,6 +285,8 @@ const PK = {
   JobInfo: ["JobId"],
   JobTier: ["JobId", "Tier"],
   "Skill/SkillMotionSet": ["SkillId", "WeaponType", "Seq"],
+  CloneMonsterArt: ["MonsterId", "Action"],
+  NexusCloneSkill: ["MonsterId", "SkillKey"],
 };
 for (const [name, cols] of Object.entries(PK)) {
   const t = readCsv(name);
