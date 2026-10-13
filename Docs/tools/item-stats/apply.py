@@ -18,18 +18,18 @@ JOBS = {
 POTIONS = {
     "MANA_ELIXIR": {
         "name": "마나 엘릭서", "icon": "thumbnail://3b778fe9d0b64a52a038b1c72cb58454",
-        "heal_hp": "0", "heal_mp": "600", "price": "300", "sell": "150",
-        "note": "MP +600 · 마을 물약 상인 300메소 · 회복량 ConsumeInfo",
+        "heal_hp": "0", "heal_mp": "600", "price": "150", "sell": "150",
+        "note": "MP +600 · 마을 물약 상인 150메소 · 회복량 ConsumeInfo",
     },
     "PURE_WATER": {
         "name": "맑은 물", "icon": "thumbnail://81217a4dc8b74af19a93c07a0fb72a5f",
-        "heal_hp": "0", "heal_mp": "1200", "price": "600", "sell": "300",
-        "note": "MP +1200 · 마을 물약 상인 600메소 · 회복량 ConsumeInfo",
+        "heal_hp": "0", "heal_mp": "1200", "price": "300", "sell": "300",
+        "note": "MP +1200 · 마을 물약 상인 300메소 · 회복량 ConsumeInfo",
     },
     "GRILLED_EEL": {
         "name": "장어구이", "icon": "thumbnail://2d35e350465c47f39eff7596f5c01f22",
-        "heal_hp": "1000", "heal_mp": "0", "price": "650", "sell": "325",
-        "note": "HP +1000 · 마을 물약 상인 650메소 · 회복량 ConsumeInfo",
+        "heal_hp": "1000", "heal_mp": "0", "price": "325", "sell": "325",
+        "note": "HP +1000 · 마을 물약 상인 325메소 · 회복량 ConsumeInfo",
     },
 }
 
@@ -84,8 +84,8 @@ def update_item_info(rows):
 
     item_notes = {
         "POTION_RED": "HP +255 · 물약 상인 30메소 · 회복량 ConsumeInfo",
-        "POTION_ORANGE": "HP +330 · 마을 물약 상인 150메소 · 물약 단계 2",
-        "POTION_WHITE": "HP +405 · 마을 물약 상인 250메소 · 물약 단계 3",
+        "POTION_ORANGE": "HP +330 · 마을 물약 상인 75메소 · 물약 단계 2",
+        "POTION_WHITE": "HP +405 · 마을 물약 상인 125메소 · 물약 단계 3",
         "POTION_BLUE": "MP +200 · 물약 상인 30메소 · MP 물약 공용 쿨",
     }
     for item_id, note in item_notes.items():

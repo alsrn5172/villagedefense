@@ -23,6 +23,10 @@ script FactionAuraController extends Component
 
 	property number AllyRegenPerSec = 2.0
 
+	-- 아군 명중률 오라(%p · 1.1-A10 · A17 · H13 · 커닝 억제기 AURA_ACC 20/30/40). 받는 대상 = 범위 안 아군 플레이어 · 아군 수비대(미니언은 안 받음).
+	-- 플레이어 → StatService.SetAuraAccuracy(최종 명중률에 더함) · 수비대 → Buff.AccAdd(그 수비대를 피할 플레이어 회피 합계에서 뺌).
+	property number AllyAccBonus = 0
+
 	-- 소스 자신에게도 AllyRegenPerSec 를 건다 (B3b · 노틸러스 억제기 "본인 포함"). 공격·이속은 자기에게 걸지 않는다. 시설은 ApplyRegen 의 원장 경로.
 	property boolean RegenSelf = false
 
@@ -47,6 +51,10 @@ script FactionAuraController extends Component
 	-- 플레이어별로 StatService 에 마지막으로 보낸 이속 배수 (userId → mul). 값이 바뀔 때만 RPC 를 보내기 위한 기록.
 	@HideFromInspector
 	property any PlayerSpeedApplied = nil
+
+	-- 플레이어별로 StatService 에 마지막으로 보낸 명중 오라 %p (userId → pct). 값이 바뀔 때만 다시 계산하게 한다(A17).
+	@HideFromInspector
+	property any PlayerAccApplied = nil
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -81,12 +89,22 @@ script FactionAuraController extends Component
 
 	@ExecSpace("ServerOnly")
 	method void ResetPlayerSpeedExcept(any keep)
-		-- 이번 틱에 안 보인 플레이어(맵을 나감 등)의 이속 배수를 1.0 으로 되돌린다. keep = 이번 틱 대상 userId 집합(nil 이면 전부 되돌림).
-		if self.PlayerSpeedApplied == nil or _StatService == nil then return end
-		for uid, mul in pairs(self.PlayerSpeedApplied) do
-			if (keep == nil or keep[uid] == nil) and mul ~= 1.0 then
-				_StatService:SetAuraSpeedMul(uid, 1.0)
-				self.PlayerSpeedApplied[uid] = nil
+		-- 이번 틱에 안 보인 플레이어(맵을 나감 등)의 이속 배수를 1.0 으로 · 명중 오라를 0 으로 되돌린다. keep = 이번 틱 대상 userId 집합(nil 이면 전부 되돌림).
+		if _StatService == nil then return end
+		if self.PlayerSpeedApplied ~= nil then
+			for uid, mul in pairs(self.PlayerSpeedApplied) do
+				if (keep == nil or keep[uid] == nil) and mul ~= 1.0 then
+					_StatService:SetAuraSpeedMul(uid, 1.0)
+					self.PlayerSpeedApplied[uid] = nil
+				end
+			end
+		end
+		if self.PlayerAccApplied ~= nil then
+			for uid, pct in pairs(self.PlayerAccApplied) do
+				if (keep == nil or keep[uid] == nil) and pct ~= 0 then
+					_StatService:SetAuraAccuracy(uid, 0)
+					self.PlayerAccApplied[uid] = nil
+				end
 			end
 		end
 	end
@@ -199,11 +217,13 @@ script FactionAuraController extends Component
 		local spd = {}
 		local dmg = {}
 		local regen = {}
+		local acc = {}
 		for i = 1, count do
 			atk[i] = 1.0
 			spd[i] = 1.0
 			dmg[i] = 1.0
 			regen[i] = 0
+			acc[i] = 0
 		end
 		
 		-- 판정 범위는 직사각형. 소스 중심에서 좌우 ±halfW, 위아래 ±halfH.
@@ -239,6 +259,10 @@ script FactionAuraController extends Component
 									spd[j] = spd[j] + self.AllySpeedBonus
 									dmg[j] = dmg[j] - self.AllyDmgTakenReduce
 									regen[j] = regen[j] + self.AllyRegenPerSec
+									-- 명중 오라는 아군 플레이어 · 수비대만(미니언 제외 · 원문 L703).
+									if self.AllyAccBonus ~= 0 and (isvalid(dst.PlayerComponent) or isvalid(dst.DefenderUnit)) then
+										acc[j] = acc[j] + self.AllyAccBonus
+									end
 								elseif relation == "ENEMY" then
 									atk[j] = atk[j] - self.EnemyAtkPenalty
 									spd[j] = spd[j] - self.EnemySpeedPenalty
@@ -266,7 +290,7 @@ script FactionAuraController extends Component
 		for i = 1, count do
 			local target = targets[i]
 			if isvalid(target) and not self:IsDeadEntity(target) then
-				self:Commit(target, atk[i], spd[i], dmg[i], regen[i])
+				self:Commit(target, atk[i], spd[i], dmg[i], regen[i], acc[i])
 				local pc = target.PlayerComponent
 				if isvalid(pc) then seenPlayers[pc.UserId] = true end
 			end
@@ -274,11 +298,11 @@ script FactionAuraController extends Component
 		-- 이 맵을 떠난 플레이어는 대상에서 빠지므로 여기서 배수를 되돌린다 (안 하면 오라 밖에서도 빨라진 채 남는다).
 		self:ResetPlayerSpeedExcept(seenPlayers)
 
-		self:LogAuraState(targets, atk, spd, dmg, regen, count, #sources)
+		self:LogAuraState(targets, atk, spd, dmg, regen, acc, count, #sources)
 	end
 
 	@ExecSpace("ServerOnly")
-	method void LogAuraState(table targets, table atk, table spd, table dmg, table regen, integer count, integer sourceCount)
+	method void LogAuraState(table targets, table atk, table spd, table dmg, table regen, table acc, integer count, integer sourceCount)
 		-- 오라가 실제로 배율을 바꾸고 있는지 확인하기 위한 검증 로그.
 		-- sourceCount 는 오라를 내는 포탑 수 — 몬스터가 소스로 섞이지 않았는지 확인하는 값이다.
 		-- Tick 이 4Hz 로 돌기 때문에 AuraLogInterval 간격으로만 남긴다.
@@ -296,7 +320,7 @@ script FactionAuraController extends Component
 		local parts = ""
 		local affected = 0
 		for i = 1, count do
-			if atk[i] ~= 1.0 or spd[i] ~= 1.0 or dmg[i] ~= 1.0 or regen[i] ~= 0 then
+			if atk[i] ~= 1.0 or spd[i] ~= 1.0 or dmg[i] ~= 1.0 or regen[i] ~= 0 or acc[i] ~= 0 then
 				affected = affected + 1
 				if affected <= 4 then
 					parts = parts .. " | " .. targets[i].Name
@@ -304,6 +328,7 @@ script FactionAuraController extends Component
 						.. " spd=" .. string.format("%.2f", spd[i])
 						.. " dmg=" .. string.format("%.2f", dmg[i])
 						.. " regen=" .. string.format("%.1f", regen[i])
+						.. " acc=" .. string.format("%.1f", acc[i])
 				end
 			end
 		end
@@ -314,10 +339,11 @@ script FactionAuraController extends Component
 	end
 
 	@ExecSpace("ServerOnly")
-	method void Commit(Entity target, number atkMul, number speedMul, number dmgMul, number regenPerSec)
+	method void Commit(Entity target, number atkMul, number speedMul, number dmgMul, number regenPerSec, number accAdd)
 		-- 계산된 값을 Buff 에 기록하고, 이동속도와 HP 에 즉시 반영한다.
 		-- 플레이어 이속은 InputSpeed 가 아니라 RigidbodyComponent.WalkSpeed 가 정한다(StatService 실측 2026-09-05) → StatService 의 오라 배수로 넘긴다.
 		-- 값이 바뀔 때만 보낸다(틱이 4Hz 라 매번 보내면 Client RPC 도배). Buff 유무와 무관하게 먼저 처리한다.
+		-- accAdd = 명중 오라 %p(플레이어 · 수비대만 0 이 아니다 · A10 · A17).
 		local pc = target.PlayerComponent
 		if isvalid(pc) and _StatService ~= nil then
 			if self.PlayerSpeedApplied == nil then self.PlayerSpeedApplied = {} end
@@ -326,6 +352,12 @@ script FactionAuraController extends Component
 			if self.PlayerSpeedApplied[uid] ~= mul then
 				self.PlayerSpeedApplied[uid] = mul
 				_StatService:SetAuraSpeedMul(uid, mul)
+			end
+			-- 명중 오라(A17): 플레이어 최종 명중률에 더한다(캐릭터 창 명중률 칸에도 포함). 바뀔 때만.
+			if self.PlayerAccApplied == nil then self.PlayerAccApplied = {} end
+			if (self.PlayerAccApplied[uid] or 0) ~= accAdd then
+				self.PlayerAccApplied[uid] = accAdd
+				_StatService:SetAuraAccuracy(uid, accAdd)
 			end
 		end
 		-- 시설(LaneFacility)은 Buff 를 붙이지 않는다 — 회복만 원장으로 보낸다 (B3b · 노틸러스 억제기 본인 회복). 아래 Buff 경로는 몬스터·플레이어용.
@@ -343,6 +375,8 @@ script FactionAuraController extends Component
 		buff.SpeedMul = math.max(speedMul, self.MinMultiplier)
 		buff.DmgTakenMul = math.max(dmgMul, self.MinMultiplier)
 		buff.RegenPerSec = regenPerSec
+		-- 몬스터 명중률 보정(A10): 수비대만. 플레이어는 위 SetAuraAccuracy 가 맡는다(Buff 에도 쓰면 두 번 셈).
+		if isvalid(target.DefenderUnit) then buff.AccAdd = accAdd else buff.AccAdd = 0 end
 		
 		-- 이동속도: 항상 원본 * 배율 로 재계산한다(누적 곱 방지).
 		local movement = target.MovementComponent

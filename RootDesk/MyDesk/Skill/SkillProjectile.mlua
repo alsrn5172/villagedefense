@@ -15,7 +15,7 @@ script SkillProjectile extends AttackComponent
     --   · DamageMul / DisplayHits: "60x2%" 같은 N발 스킬은 첫 투사체 하나가 피해 ×N · 표시 N타를 지고 나머지는 VisualOnly(피해 없음 · 연출만).
     --     당시엔 몬스터 피격 무적(MonsterHit.ImmuneCooldown 0.4s) 때문에 두 번째 투사체 피해가 무효였다. #120(2026-09-29)이 그 무적을 뺐다(IsHitTarget 항상 true)
     --     → 더블 샷은 발마다 ×1(SkillAttack.IsPerArrowVolley · Volley) · 럭키 세븐도 발마다 1타(아래 perProjectileHit).
-    --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 배율 2.0.
+    --   · CalcCritical: 닷지(GUARANTEED_CRIT) 활성이면 반드시 크리(SkillBuffs.IsGuaranteedCrit) · 아니면 LUK 확률(StatService.RollCritical · 1.1-A14) · 배율 StatService.GetCritDamageRate.
     --   · OnAttack: hit 사운드(HitSoundRUID) + 픽파켓 훅(SkillBuffs.OnSkillHitMonster).
     -- b/skill-thief-effects: SingleTargetOnly(럭키 세븐 · #40 5884390073 7번) = 판정마다 상자 안 몬스터 하나만(조준 대상 우선 · 없으면 가장 가까운 것).
     --   럭키 세븐은 발마다 1타(DamageMul 1 · 2발째도 진짜 투사체 · SkillAttack.SpawnProjectile perProjectileHit).
@@ -115,27 +115,41 @@ script SkillProjectile extends AttackComponent
     -- 스킬별 값 = SkillExecutors.effectOverrides[skill].impact.offsetY (SkillAttack.SpawnOneProjectile 이 넣는다 · 없으면 0).
     property number HitEffectOffsetY = 0
 
-    -- 크리티컬 배율 (GetCriticalDamageRate). A 의 PlayerAttack 과 같은 2.0.
+    -- 크리티컬 배율 폴백(StatService 가 없을 때만). 실제 배율 = StatService.GetCritDamageRate(200% + 넘친 원확률 · 1.1-A13) — 원거리 기본 공격도 이 메서드를 쓴다.
     property number CritDamageRate = 2.0
 
-    -- 같은 층 판정(b/skill-thief-motion · 2026-09-13 제보 "2층에서 던진 표창이 아래층 몬스터도 죽였다"): true 면 발이 FloorY − FloorTolerance 보다 낮은 몬스터는 맞지 않는다
-    -- (IsAttackTarget). SkillAttack.SpawnProjectile 이 시전자 발 높이(FloorY)와 AimFloorTolerance 를 넣는다. 판정 상자(RangeX/Y 0.8)가 발 아래로 내려가도 아래층은 안 맞는다.
+    -- 한 타격의 피해 굴림 공유(1.1-A16 · SkillAttack.rollCache 와 같은 규칙): 엔진 CalcDamage 와 궁 합계용 CalcCritical 이 같은 값을 쓴다.
+    @HideFromInspector
+    property any rollCache = nil
+
+    -- 같은 층 판정(b/skill-thief-motion · 2026-09-13 제보 "2층에서 던진 표창이 아래층 몬스터도 죽였다"): true 면 몸 띠(UseBodyBand · 아래) 밖 몬스터는 맞지 않는다
+    -- (IsAttackTarget). SkillAttack.SpawnProjectile · FireBasicProjectile 이 시전자 발 높이(FloorY)를 넣는다.
+    --   1.1-C15(2026-10-12): 예전 "발이 FloorY − FloorTolerance(0.6) 보다 낮으면 제외" 는 지웠다 — 한 층 아래는 띠 아래끝(발 −0.35)으로 빠진다.
     property boolean SameFloorOnly = false
 
     property number FloorY = 0
 
-    property number FloorTolerance = 0.6
-
-    -- 몸 띠 명중(b/skill-projectile-level-aim v2 · SkillAttack.AimBodyBand 와 같은 규칙): SameFloorOnly 투사체(스킬 · 기본 공격)는 몸 상자가 시전자의 몸 띠
-    --   (FloorY = 시전 때 발 ~ 발 + 시전자 키)와 세로로 겹치는 몬스터만 맞는다 — 머리 위 · 발 아래 몬스터는 닿아도 안 맞는다. 띠는 첫 판정 때 시전자 몸 상자로 한 번 잰다.
-    --   폭발 주변(에너지볼트 폭발 패스 · 그 후보 probe)은 예전 규칙(FloorTolerance)대로. false = 예전 규칙.
+    -- 몸 띠 명중(b/skill-projectile-level-aim v2 · SkillAttack.AimBodyBand 와 같은 규칙): SameFloorOnly 투사체(스킬 · 기본 공격)는 몸 상자가 시전자의 조준 띠
+    --   (1.1-C14: FloorY = 시전 때 발 기준 −0.35 ~ +1.4 · SkillAttack.CasterBandOf)와 세로로 겹치는 몬스터만 맞는다 — 띠 밖 몬스터는 닿아도 안 맞는다. 띠는 첫 판정 때 시전자로 한 번 잰다.
+    --   폭발 주변(에너지볼트 · 플레임 헤이즈 폭발 패스 · 그 후보 probe = bandSkip)은 세로 거름 없이 폭발 상자가 정한다(1.1-C15 · 권장대로 2026-10-12). false = 세로 제한 없음.
     property boolean UseBodyBand = true
 
     @HideFromInspector
     property number bandTop = -100000
 
     @HideFromInspector
+    property number bandBottom = -100000
+
+    @HideFromInspector
     property boolean bandSkip = false
+
+    -- 쉐도우 파트너 열화 투사체(1.1-B17 · SkillAttack.ScheduleShadowClone): 원본과 열화가 같은 표 { dmg, target } 를 든다.
+    --   원본(CloneRatio 0) = 명중해 피해가 나면 그 확정 피해(CalcDamage 반환값 · 치명 전)와 대상을 적는다.
+    --   열화(CloneRatio 50~70) = 그 대상만 맞고(IsAttackTarget) 피해 = floor(확정 피해 × CloneRatio%) · 치명타는 원본과 같은 규칙으로 따로 굴린다(사용자 2026-10-13) · 다시 복제하지 않는다.
+    @HideFromInspector
+    property any CloneShared = nil
+
+    property number CloneRatio = 0
 
     -- true = 판정 한 번에 몬스터 하나만 맞는다(b/skill-thief-effects · 럭키 세븐 1 대상). OnUpdate 가 probe 패스(ProbeTag · Candidates)로 후보를 모으고
     -- (조준 대상 TargetEntity 가 후보에 있으면 그것 · 없으면 투사체에 가장 가까운 것) 그 하나만 AllowedTargets 로 통과시켜 AttackFast 한다(에너지볼트 폭발과 같은 거름망).
@@ -488,26 +502,32 @@ script SkillProjectile extends AttackComponent
     end
 
     method boolean InCasterBand(Entity defender)
-        -- 몸 띠(UseBodyBand): defender 몸 상자가 (FloorY ~ FloorY + 시전자 키)와 세로로 겹치는가. 시전자 키는 첫 호출 때 시전자의 SkillAttack 으로 한 번 잰다(띠 위끝 − 발).
-        --   시전자가 없으면(퇴장) 키 0.7(SkillAttack.CasterBodyHeightFallback 과 같은 값) · 몬스터는 발 높이 점으로 본다.
+        -- 몸 띠(UseBodyBand): defender 몸 상자가 (FloorY − 아래 ~ FloorY + 위)와 세로로 겹치는가(1.1-C14 · 발 −0.35 ~ 발 +1.4).
+        --   아래 · 위는 첫 호출 때 시전자의 SkillAttack.CasterBandOf 로 한 번 잰다(그 순간 시전자 발 기준 거리 → 시전 때 발 FloorY 에 붙인다).
+        --   시전자가 없으면(퇴장) 아래 0.35 · 위 1.4(SkillAttack 기본 키 0.7 × 0.5 / × 2.0) · 몬스터는 발 높이 점으로 본다.
         local caster = nil
         if self.CasterUserId ~= "" then caster = _UserService:GetUserEntityByUserId(self.CasterUserId) end
         local sa = nil
         if isvalid(caster) then sa = caster:GetComponent("script.SkillAttack") end
         if self.bandTop < -99999 then
-            local h = 0.7
-            if isvalid(sa) then
+            local down = 0.35
+            local up = 1.4
+            if isvalid(sa) and isvalid(caster.TransformComponent) then
                 local band = sa:CasterBandOf(caster)
-                h = band.y - band.x
-                if h <= 0 then h = sa.CasterBodyHeightFallback end
+                local feetNow = caster.TransformComponent.WorldPosition.y
+                if band.y > band.x then
+                    down = feetNow - band.x
+                    up = band.y - feetNow
+                end
             end
-            self.bandTop = self.FloorY + h
+            self.bandBottom = self.FloorY - down
+            self.bandTop = self.FloorY + up
         end
         if not isvalid(sa) then
             local y = defender.TransformComponent.WorldPosition.y
-            return y >= self.FloorY and y < self.bandTop
+            return y >= self.bandBottom and y < self.bandTop
         end
-        return sa:OverlapsBand(defender, Vector2(self.FloorY, self.bandTop))
+        return sa:OverlapsBand(defender, Vector2(self.bandBottom, self.bandTop))
     end
 
     @ExecSpace("ServerOnly")
@@ -760,6 +780,12 @@ script SkillProjectile extends AttackComponent
         -- projectile entity, not the caster - it has no PlayerComponent to read a userId from.
         -- DamageMul: N발 스킬의 첫 투사체는 ×N (표시는 GetDisplayHitCount 가 N타로 나눈다). 발마다 1타 볼리는 1.
         -- 원거리 기본 공격: 시전자의 PlayerAttack.CalcDamage(근접과 같은 공식 · 버프 · 픽파켓) × DamageMul. 시전자가 없으면 0.
+        -- 열화 투사체(1.1-B17): 원본의 확정 피해 × CloneRatio% 만 — 굴림 · 배율 · 방어 · 방어 저하를 다시 곱하지 않는다.
+        if self.CloneRatio > 0 then
+            local s = self.CloneShared
+            if s == nil or s.target ~= defender or (s.dmg or 0) <= 0 then return 0 end
+            return math.max(1, math.floor(s.dmg * self.CloneRatio / 100))
+        end
         if self.BasicAttack then
             local caster = self:CasterEntity()
             ---@type PlayerAttack
@@ -767,7 +793,32 @@ script SkillProjectile extends AttackComponent
             if pa == nil then return 0 end
             local dmg = pa:CalcDamage(caster, defender, "ranged")
             if dmg > 0 and self.DamageMul > 0 and self.DamageMul ~= 1 then dmg = math.floor(dmg * self.DamageMul) end
+            self:NoteConfirmed(defender, dmg)
             return dmg
+        end
+        local amount = self:RolledAmount(defender, attackInfo, "dmg")
+        -- 대상(몬스터 · 보스) 방어(1.1-E21 · 사용자 2026-10-12 "스킬에도 적용"). 위 원거리 기본 공격은 StatService.CalcPlayerDamage 에서 이미 깎는다.
+        if amount > 0 and _DamageFormula ~= nil then amount = _DamageFormula:ApplyTargetDefense(defender, amount) end
+        self:NoteConfirmed(defender, amount)
+        return amount
+    end
+
+    method void NoteConfirmed(Entity defender, integer amount)
+        -- 원본 투사체의 확정 피해 · 대상을 열화 투사체와 같이 든 표에 적는다(1.1-B17 · 쉐도우 파트너가 없으면 표가 없어 아무것도 안 한다). MISS(0)는 안 적는다.
+        if self.CloneShared == nil or amount == nil or amount <= 0 or not isvalid(defender) then return end
+        self.CloneShared.dmg = amount
+        self.CloneShared.target = defender
+    end
+
+    method integer RolledAmount(Entity defender, string attackInfo, string who)
+        -- 스킬 투사체 피해(방어 전) 한 타격분. DamageAt 이 스탯공격력 범위에서 굴리므로(1.1-A16) 엔진 피해(who = "dmg")와 궁 합계(who = "crit")가
+        -- 같은 대상 · 같은 attackInfo 면 한 번만 굴린 값을 같이 쓴다(순서 무관 · 둘 다 쓰면 비움).
+        local key = (isvalid(defender) and defender.Id or "") .. "|" .. tostring(attackInfo)
+        local c = self.rollCache
+        if c ~= nil and c.key == key and not c[who] then
+            c[who] = true
+            if c.dmg and c.crit then self.rollCache = nil end
+            return c.value
         end
         local dmg = _SkillDatabase:DamageAt(self.SkillId, self.Level, self.CasterUserId)
         if self.BaseDamageMul ~= 1 then
@@ -778,7 +829,11 @@ script SkillProjectile extends AttackComponent
             log("SkillProjectile: " .. self.SkillId .. " base x" .. tostring(self.BaseDamageMul) .. " (bonus " .. tostring(bonus) .. " kept) " .. tostring(dmg) .. " -> " .. tostring(scaled))
             dmg = scaled
         end
-        return math.floor(dmg * self.DamageMul)
+        local amount = math.floor(dmg * self.DamageMul)
+        local nc = { key = key, value = amount }
+        nc[who] = true
+        self.rollCache = nc
+        return amount
     end
 
     method any CasterEntity()
@@ -798,7 +853,7 @@ script SkillProjectile extends AttackComponent
     end
 
     method boolean IsAttackTarget(Entity defender, string attackInfo)
-        -- 같은 층 판정: SameFloorOnly 면 발이 시전자 발(FloorY)보다 FloorTolerance 이상 낮은 대상은 맞지 않는다(아래층 제외). 나머지는 부모 판정 그대로.
+        -- 같은 층 판정: SameFloorOnly 면 몸 띠(InCasterBand · 발 −0.35 ~ 발 +1.4) 밖 대상은 맞지 않는다 — 폭발 주변(bandSkip)은 거름 없음(1.1-C15). 나머지는 부모 판정 그대로.
         -- ⚠ 부모(AttackComponent.IsAttackTarget)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014 · Boss/BossProjectileAttack 과 같은 형태).
         -- 폭발형(b/skill-magician-effects): attackInfo == ProbeTag 면 후보만 모으고 아무도 안 맞는다 · AllowedTargets 가 있으면 그 안의 대상만 맞는다.
         -- 진영 필터(2026-09-24 · b/skill-attack-faction-filter): SkillAttack.IsAttackTarget 과 같은 규칙. 공격자는 이 투사체가 아니라 **시전자**로 판정한다
@@ -809,12 +864,16 @@ script SkillProjectile extends AttackComponent
             if self.CasterUserId ~= "" then caster = _UserService:GetUserEntityByUserId(self.CasterUserId) end
             if not isvalid(caster) or not _FactionLogic:IsEnemy(caster, defender) then return false end
         end
+        -- 열화 투사체(1.1-B17): 원본이 실제로 피해를 준 그 대상만. 원본이 아직 못 맞혔으면 아무도 안 맞고 지나간다.
+        if self.CloneRatio > 0 then
+            local s = self.CloneShared
+            if attackInfo == self.ProbeTag then return s ~= nil and s.target == defender end
+            return s ~= nil and s.target ~= nil and s.target == defender and (s.dmg or 0) > 0
+        end
         if self.SameFloorOnly and isvalid(defender) and isvalid(defender.TransformComponent) then
             if self.UseBodyBand and not self.bandSkip then
-                -- 몸 띠(UseBodyBand): 시전자 발 ~ 머리와 몸 상자가 겹치는 몬스터만.
+                -- 몸 띠(UseBodyBand): 시전자 띠(발 −0.35 ~ 발 +1.4)와 몸 상자가 겹치는 몬스터만.
                 if not self:InCasterBand(defender) then return false end
-            elseif defender.TransformComponent.WorldPosition.y < self.FloorY - self.FloorTolerance then
-                return false
             end
         end
         -- 단일 대상(스나이핑 · b/skill-archer-effects): 유도 대상만. 대상이 있었는데 풀렸으면(사라짐) 아무도 안 맞는다(OnUpdate 가 화살을 지운다).
@@ -918,8 +977,9 @@ script SkillProjectile extends AttackComponent
     end
 
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
-        -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 예전처럼 false(스킬엔 확률 크리 없음).
+        -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 LUK 확률 치명타(아래 · 1.1-A14).
         -- ⚠ 부모(AttackComponent.CalcCritical)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐.
+        -- 열화 투사체(1.1-B17)도 아래 원본과 같은 규칙으로 치명타를 굴린다(사용자 2026-10-13 "복제타도 치명" · DPS 계산표와 맞춤).
         -- 원거리 기본 공격: 근접 기본 공격과 같은 크리 판정(닷지 확정 크리 · LUK 확률 · PlayerAttack.CalcCritical).
         if self.BasicAttack then
             local caster = self:CasterEntity()
@@ -928,13 +988,20 @@ script SkillProjectile extends AttackComponent
             if pa == nil then return false end
             return pa:CalcCritical(caster, defender, "ranged")
         end
+        -- 스킬 투사체: 닷지 확정 크리, 아니면 LUK 확률 치명타(기본 공격 · 스킬 · 궁극기 모두 · 1.1-A14 · B22 · 사용자 2026-10-12).
         local crit = false
-        if _SkillBuffs ~= nil and self.CasterUserId ~= "" then
-            crit = _SkillBuffs:IsGuaranteedCrit(self.CasterUserId)
+        if self.CasterUserId ~= "" then
+            if _SkillBuffs ~= nil and _SkillBuffs:IsGuaranteedCrit(self.CasterUserId) then
+                crit = true
+            elseif _StatService ~= nil then
+                local caster = self:CasterEntity()
+                if caster ~= nil then crit = _StatService:RollCritical(caster) end
+            end
         end
-        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)를 더한다.
+        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(같은 굴림 × 크리 배율)를 더한다.
         if _SkillExecutors ~= nil and self.CasterUserId ~= "" and _SkillExecutors:IsUltimateTallyOpen(self.CasterUserId, self.SkillId) then
-            local dmg = self:CalcDamage(attacker, defender, attackInfo)
+            local dmg = self:RolledAmount(defender, attackInfo, "crit")
+            if dmg > 0 and _DamageFormula ~= nil then dmg = _DamageFormula:ApplyTargetDefense(defender, dmg) end
             if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
             _SkillExecutors:AddUltimateTally(self.CasterUserId, self.SkillId, dmg)
         end
@@ -942,6 +1009,10 @@ script SkillProjectile extends AttackComponent
     end
 
     method float GetCriticalDamageRate()
+        -- 치명타 피해 배율(1.1-A13): 시전자 기준 200% + 넘친 원확률(닷지 확정 크리 중엔 200%). 원거리 기본 공격 투사체도 여기(PlayerAttack 이 아니라)를 쓴다.
+        if _StatService ~= nil and self.CasterUserId ~= "" then
+            return _StatService:GetCritDamageRate(self.CasterUserId)
+        end
         return self.CritDamageRate
     end
 

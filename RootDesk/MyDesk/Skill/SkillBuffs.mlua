@@ -117,8 +117,11 @@ script SkillBuffs extends Logic
     -- "깨질 때까지" 버프(에너지 쉴드 · CSV Duration 0)가 원장에 들어갈 때 쓰는 지속(초). 만료 타이머는 사실상 안 돈다.
     property number NoExpireSeconds = 100000
 
-    -- 불굴의 진(SK_W31): 피격 무적 시간 배율(PlayerHit.ImmuneCooldown × 이 값 · 0.5 = 절반) · HP 를 최대치로 되돌리는 틱 간격(초).
-    property number UnyieldingImmuneMul = 0.5
+    -- 불굴의 진(SK_W31): 피격 무적 시간 배율(PlayerHit.ImmuneCooldown × 이 값 · 1.1-B08 0.5 → 0.25 = 기본의 25%) · HP 를 최대치로 되돌리는 틱 간격(초).
+    property number UnyieldingImmuneMul = 0.25
+
+    -- 불굴의 진 효과 중 아이언 바디 반사 피해 배율(1.1-B09 · C12 · 최종 반사 피해 ×100 — 최대 HP 를 올리는 게 아니다). 버프가 끝나면 다음 반사부터 평소 값.
+    property number UnyieldingReflectMul = 100
 
     property number UnyieldingHpTick = 0.1
 
@@ -149,9 +152,9 @@ script SkillBuffs extends Logic
     -- 픽파켓이 떨어지지 않는 스킬 id(쉼표 구분 · "" = 모든 공격). 메소 익스플로전(SK_T31) 타격은 동전을 안 떨군다 — #40 5884390073 2번에 맞춰 변경(예전 "").
     property string PickpocketExcludedSkillIds = "SK_T31"
 
-    -- 쉐도우 파트너 추가 피해가 붙지 않는 스킬 id(쉼표 구분 · "" = 모든 공격). 원작 섀도어판 쉐도우 파트너는 메소 익스플로젼을 따라 하지 않는다("SK_T31").
-    -- 기획 답 2026-09-24 7번 "'공격'은 모든 공격" 을 따라 비워 둔다 — #40 질문 4 의 답이 원작대로면 "SK_T31" 한 칸.
-    property string ShadowPartnerExcludedSkillIds = ""
+    -- 쉐도우 파트너 공격속도 배율(1.1-B18 · 지속 중 +20%). 시전 락 · 후딜 · 발사 지연 · 연속 간격 ÷ · 모션 재생 × (GetAttackSpeedMul · LocalAttackSpeedMul).
+    -- 쿨타임 · 버프 지속 · 피격 경직 · 투사체 비행 속도 · 궁극기(컷신)에는 안 쓴다(원문 L186).
+    property number ShadowPartnerAttackSpeedMul = 1.2
 
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
@@ -313,6 +316,10 @@ script SkillBuffs extends Logic
 
         local maxHp = player.PlayerComponent.MaxHp
         local reflect = math.floor(maxHp * ratio / 100)
+        -- 불굴의 진 효과 중(컷신 포함 · 버프가 켜져 있는 동안)이면 최종 반사 ×100(1.1-B09 · C12).
+        local amp = 1
+        if self:IsUnyielding(userId) then amp = self.UnyieldingReflectMul end
+        reflect = reflect * amp
         if reflect <= 0 then return end
         if not self.ReflectEnabled then
             log("[Buff] IRON_BODY reflect disabled (would deal " .. tostring(reflect) .. ") (" .. userId .. ")")
@@ -326,7 +333,7 @@ script SkillBuffs extends Logic
         end
         skillAttack:DealFlatDamageToTarget(attacker, reflect, "SK_W12")
         log("[Buff] IRON_BODY reflect " .. tostring(reflect) .. " -> " .. tostring(attacker.Name) .. " (ratio=" .. tostring(ratio)
-            .. "% maxHp=" .. tostring(maxHp) .. " took=" .. tostring(took) .. ") (" .. userId .. ")")
+            .. "% maxHp=" .. tostring(maxHp) .. " x" .. tostring(amp) .. " took=" .. tostring(took) .. ") (" .. userId .. ")")
     end
 
     -- ───────────────────────── 서버: 불굴의 진 (SK_W31 · 2026-09-13 사용자 변경) ─────────────────────────
@@ -974,12 +981,26 @@ script SkillBuffs extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method number GetOutgoingDamageMul(string userId)
-        -- 쉐도우 파트너(SK_T22 · SHADOW_PARTNER): 활성 중 피해 ×(1 + 분신 몫 ratio%) · ratio = CSV BaseEffect 50 + 5/lv = Lv1 50% ~ Lv5 70%(#40 5884390073 4번). 없으면 1.
-        -- SkillDatabase.DamageAt(스킬) · PlayerAttack.CalcDamage(기본 공격)가 곱한다.
+    method number GetShadowCloneRatio(string userId)
+        -- 쉐도우 파트너(SK_T22 · 1.1-B16 · B17): 활성이면 열화 투사체 비율 %(CSV BaseEffect 50 + 5/lv = 50 ~ 70), 아니면 0.
+        -- 예전의 "모든 공격 피해 ×(1 + ratio%)" 배율은 없앴다 — 이제 분신은 투사체를 따라 던지는 열화 투사체로만 피해를 낸다(SkillAttack.SpawnCloneOf).
         local sp = self:GetBuff(userId, self.TagShadowPartner)
-        if sp == nil then return 1 end
-        return 1 + sp.ratio / 100
+        if sp == nil then return 0 end
+        return sp.ratio or 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method number GetAttackSpeedMul(string userId)
+        -- 공격속도 배율(1.1-B18): 쉐도우 파트너 지속 중 ShadowPartnerAttackSpeedMul(1.2), 아니면 1. 시전 락 · 후딜 · 발사 지연 · 모션 재생에 쓴다(서버).
+        if self:GetBuff(userId, self.TagShadowPartner) ~= nil then return self.ShadowPartnerAttackSpeedMul end
+        return 1
+    end
+
+    @ExecSpace("ClientOnly")
+    method number LocalAttackSpeedMul()
+        -- 공격속도 배율(클라 · 로컬 플레이어 미러 기준 · GetAttackSpeedMul 과 같은 값). 클라 시전 락 · 기본 공격 락이 쓴다.
+        if self:LocalIsActive(self.TagShadowPartner) then return self.ShadowPartnerAttackSpeedMul end
+        return 1
     end
 
     method string RecastTagOf(string skillId)
@@ -1007,14 +1028,14 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method integer GetOnHitBonusDamage(string userId)
-        -- 매직 가드 "공격 시 현재 MP 의 5%(SecondaryEffect) 만큼 추가 마법 피해". 타격마다 그때의 MP 로 계산.
-        -- SkillDatabase.DamageAt 이 스킬 피해에 더한다. 기본 공격(PlayerAttack · A)에 얹는 것은 A 의 CalcPlayerDamage 에서 이 메서드를 부르면 된다.
+        -- 매직 가드 "공격 시 **최대** MP 의 SecondaryEffect(25)% 만큼 추가 마법 피해"(1.1-B15 · 예전 현재 MP 2.5%). 타격마다 더한다.
+        -- 호출: SkillDatabase.DamageAt(스킬) · SkillProjectile.CalcDamage(플레임 헤이즈 배율 밖) · PlayerAttack.CalcDamage(기본 공격).
         local mg = self:GetBuff(userId, self.TagMagicGuard)
         if mg == nil or mg.secondary <= 0 then return 0 end
         local mp = 0
         if _SummonManager ~= nil then
             local e = _SummonManager:GetEcon(userId)
-            if e ~= nil then mp = e.mp or 0 end
+            if e ~= nil then mp = e.maxMp or 0 end
         end
         return math.floor(mp * mg.secondary / 100)
     end
@@ -1103,7 +1124,7 @@ script SkillBuffs extends Logic
     end
 
     method boolean IdInList(string list, string id)
-        -- 쉼표 구분 목록(공백 무시)에 id 가 있는가. 빈 목록이면 false. PickpocketExcludedSkillIds · ShadowPartnerExcludedSkillIds 용.
+        -- 쉼표 구분 목록(공백 무시)에 id 가 있는가. 빈 목록이면 false. PickpocketExcludedSkillIds 용.
         if list == nil or list == "" or id == nil or id == "" then return false end
         for item in string.gmatch(list, "[^,]+") do
             local trimmed, trimCount = string.gsub(item, "%s", "")
@@ -1112,11 +1133,6 @@ script SkillBuffs extends Logic
         return false
     end
 
-    @ExecSpace("ServerOnly")
-    method boolean IsShadowPartnerExcluded(string skillId)
-        -- 쉐도우 파트너 추가 피해를 이 스킬에 안 붙이는가(ShadowPartnerExcludedSkillIds). SkillDatabase.DamageAt 이 부른다.
-        return self:IdInList(self.ShadowPartnerExcludedSkillIds, skillId)
-    end
 
     @ExecSpace("ServerOnly")
     @EventSender("Logic", "SkillCaster")
@@ -1192,9 +1208,9 @@ script SkillBuffs extends Logic
         -- 그 스킬의 버프 변형 정의(없으면 nil). 서버 · 클라 양쪽이 같은 표를 쓴다(ExecSpace 없음 · 상수).
         --   mpCost < 0 = 원래 스킬 MP 그대로 · cooldown = 변형의 쿨타임(원래 스킬 쿨다운은 건너뛰고 새로 걸지도 않는다).
         if skillId == "SK_W11" then
-            -- afterCutscene: 버프의 컷신 부분(불굴의 진 영상)이 끝난 뒤에만 변형 · 컷신 중엔 파워 스트라이크 키를 막는다(VariantWaitsForCutscene · #40 5988186219).
-            return { key = "SK_W11_RB", baseSkillId = "SK_W11", buffTag = self.TagInvulnerable, name = "레이징 블로우",
-                icon = "644fc39bcc684c209264eb9d9a4cd6f8", mpCost = 10, cooldown = 0, afterCutscene = true }
+            -- 1.1-B06: 레이징 블로우는 하이퍼 바디(SK_W21) 지속 중에 쓴다(예전 = 불굴의 진 · 컷신 뒤). 컷신 대기(afterCutscene)는 없다.
+            return { key = "SK_W11_RB", baseSkillId = "SK_W11", buffTag = self.TagHyperBody, name = "레이징 블로우",
+                icon = "644fc39bcc684c209264eb9d9a4cd6f8", mpCost = 10, cooldown = 0 }
         end
         if skillId == "SK_M11" then
             return { key = "SK_M11_FH", baseSkillId = "SK_M11", buffTag = self.TagMagicGuard, name = "플레임 헤이즈",

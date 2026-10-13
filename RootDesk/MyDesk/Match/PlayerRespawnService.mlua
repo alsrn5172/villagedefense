@@ -118,6 +118,17 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void CancelFor(string userId)
+		-- 탈락 → 관전 진입 때 (SpectateService.Enter): 열려 있던 부활 팝업을 닫고 이 유저의 부활 대기 · 예약된 이동 확인을 버린다 (1.0.3-M4-02).
+		-- wasDead[uid] 는 건드리지 않는다 — 폴링 엣지가 OnRevive 로 가도 OnRevive 의 관전자 가드가 걸러낸다.
+		local had = (self.pending ~= nil and self.pending[userId] ~= nil)
+		if self.pending ~= nil then self.pending[userId] = nil end
+		self:BumpMove(userId)
+		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
+		if had then log("[Death] user=" .. userId .. " 탈락 — 열려 있던 부활 팝업 닫음 · 페널티 없음") end
+	end
+
+	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
 		-- 참가자 사망/부활 엣지 감지.
 		if self.participants == nil then return end
@@ -166,6 +177,11 @@ script PlayerRespawnService extends Logic
 	@ExecSpace("ServerOnly")
 	method void OnDeath(string userId, Entity player)
 		-- 사망 1건: 발록 방·매치 밖은 손대지 않는다. 매치 페이즈와 무관하게 비용을 선택하는 팝업을 연다.
+		-- 관전 중(탈락)인 사람은 부활 팝업이 없다 — Enter 와 다음 폴링 사이 0.25초 안에 늦게 도는 경우도 막는다 (1.0.3-M4-02).
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
+			log("[Death] user=" .. userId .. " 관전 중 — 부활 팝업 없음")
+			return
+		end
 		local mapName = ""
 		if isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
 		if string.find(mapName, self.BalrogMapPrefix, 1, true) == 1 then
@@ -192,6 +208,8 @@ script PlayerRespawnService extends Logic
 		-- 클라 팝업 선택 ("MESO" / "EXP"). 고르면 바로 부활시킨다 — 부활 처리(OnRevive)가 페널티·이동을 한다.
 		local userId = senderUserId
 		if userId == nil or userId == "" or self.pending == nil then return end
+		-- 관전자는 부활을 고를 수 없다 — 조용히 무시(팝업은 CancelFor 가 이미 닫았다 · Blocked 토스트가 팝업 닫힘 직후 뜨는 걸 피함 · 1.0.3-M4-02).
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then return end
 		local p = self.pending[userId]
 		if p == nil or not p.penalty then return end
 		if kind ~= "MESO" and kind ~= "EXP" then return end
@@ -394,6 +412,11 @@ script PlayerRespawnService extends Logic
 	@ExecSpace("ServerOnly")
 	method void OnRevive(string userId, Entity player)
 		-- 부활 1건: 페널티 적용 → 리스폰 위치로 이동 → 팝업 닫기.
+		-- 관전자는 페널티도 부활 이동도 없다. 엔진 부활이 숨김 · 조작 · 피격 상태를 되돌렸을 수 있어 다시 건다 (1.0.3-M4-02).
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
+			_SpectateService:Reassert(userId, "revive")
+			return
+		end
 		if self.pending == nil then return end
 		local p = self.pending[userId]
 		if p == nil then return end

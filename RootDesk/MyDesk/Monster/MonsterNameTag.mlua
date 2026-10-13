@@ -1,0 +1,130 @@
+@Logic
+script MonsterNameTag extends Logic
+	-- 몬스터 이름표 공용 모듈 (1.1-I03 · 원문 "모든 몬스터 발밑에 NPC처럼 레벨과 이름" · 예 `Lv.12 좀비버섯`).
+	--   · 모양 = 기능 NPC 와 같은 엔진 이름표(NameTagComponent · 기본 NameTagRUID = 검은 반투명 판 + 흰 글씨). 월드 이름표(WorldNameTag)가 아니다 — 판 RUID 를 넣으면 엔진 이름표는 사라진다.
+	--   · 서버가 Attach 로 붙이고 Name 을 쓰면 엔진이 클라에 동기화한다(NPC 와 같은 경로). 연결하는 곳 = 사냥터 · 자이언트 · 보스 · 미니언(파병 포함) · 수비대 · 보스 소환수(1.1-I04 ~ I09 · I18).
+	--   · 사망하면 Monster.Dead 가 끈다(1.1-I10).
+	--   · 색(1.1-I19): 나에게 적대하지 않는 몬스터는 초록, 그 밖은 흰색. 보는 사람마다 달라서 서버가 아니라 각 클라가 OnUpdate 로 칠한다.
+
+	property boolean Enabled = true
+
+	property string LevelPrefix = "Lv."
+
+	-- 스폰 로그 관례(LogSpawn)와 같게. Play 확인(2026-10-12) 끝나 false — 다시 볼 때만 켠다.
+	property boolean LogAttach = false
+
+	-- 1.1-I19: 초록 #6BE36B (1.0.6 17절 시작값). 검은 반투명 판 위에서 보고 조정한다.
+	property Color FriendlyColor = Color(0.420, 0.890, 0.420, 1)
+
+	-- 기본 흰색(NPC 이름표와 같음). 1.0.6 17절을 합칠 때 레벨 차 색 함수로 바꾼다.
+	property Color HostileColor = Color(1, 1, 1, 1)
+
+	property number RecolorSeconds = 0.5
+
+	@HideFromInspector
+	property number recolorTimer = 0
+
+	@ExecSpace("ServerOnly")
+	method string DisplayName(string raw)
+		-- MonsterInfo/BossInfo 이름은 "초록버섯 (Green Mushroom)" 꼴 → 끝의 영문 괄호를 뗀다. 떼고 나면 비면 원문.
+		local s = tostring(raw or "")
+		local t, n = string.gsub(s, "%s*%b()%s*$", "")
+		if t == "" then return s end
+		return t
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer LevelOf(Entity ent)
+		-- 이름표 레벨 = 명중 · 회피 판정이 쓰는 값 한 곳(MonsterCatalog.LevelOfEntity · 1.1-H01): 사냥터 덮어쓰기 > 미니언 웨이브 > 수비대 > Monster.Level > 도감.
+		-- 판정 순서를 여기서 복사하지 않는다. 그래도 모르면 1.
+		local lv = 0
+		if _MonsterCatalog ~= nil then lv = _MonsterCatalog:LevelOfEntity(ent) end
+		if lv > 0 then return lv end
+		return 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Attach(Entity ent, string rawName, integer level)
+		-- 몬스터 개체에 이름표를 단다. level <= 0 이면 LevelOf(ent). 이미 NameTagComponent 가 있으면 그것을 그대로 쓴다.
+		-- 이름이 비면(도감에 없는 개체) 달지 않는다 — 글자 없이 `Lv.5` 만 뜨지 않게.
+		if not self.Enabled or not isvalid(ent) then return end
+		local name = self:DisplayName(rawName)
+		if name == "" then return end
+		local lv = math.floor(tonumber(level) or 0)
+		if lv <= 0 then lv = self:LevelOf(ent) end
+		local tag = ent.NameTagComponent
+		if not isvalid(tag) then
+			-- AddComponent 는 Component 형을 돌려줘 속성을 못 쓴다 → 붙인 뒤 다시 읽는다.
+			ent:AddComponent("NameTagComponent")
+			tag = ent.NameTagComponent
+		end
+		if not isvalid(tag) then
+			log_warning("[MonsterNameTag] attach failed " .. tostring(ent.Name))
+			return
+		end
+		tag.Name = self.LevelPrefix .. tostring(lv) .. " " .. name
+		tag.Bold = true
+		-- NameTagRUID · FontColor · FontSize · OffsetY 는 기본값(= NPC 와 같다). 색은 클라가 OnUpdate 에서 칠한다(1.1-I19).
+		tag.Enable = true
+		if self.LogAttach then log("[MonsterNameTag] " .. tostring(ent.Name) .. " = " .. tag.Name) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string MyTeam()
+		-- 내 진영 번호 "1" ~ "5"(1.1-I19). 마을이 없으면 "" → 아무것도 초록으로 칠하지 않는다.
+		-- FactionLogic.GetTeam 은 클라에서 서버 전용 마을 원장을 못 읽어 모두 "1" 로 보므로, 서버가 넣어 준 OnboardingService.ownVillage 로 구한다.
+		local vid = ""
+		if _OnboardingService ~= nil then vid = _OnboardingService.ownVillage or "" end
+		if vid == "" or _LaneFacilityService == nil then return "" end
+		return tostring(_LaneFacilityService:TeamSlot(vid))
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsFriendlyToMe(Entity ent, string myTeam)
+		-- Faction 이 없는 몬스터(야생 몹 · 자이언트 · 보스 · 소환수)는 공통 몬스터 진영 = 언제나 적.
+		-- 미니언 · 수비대는 Faction.Team(@Sync)으로 판정한다 — 목표 마을 주인에게만 적이고 나머지에겐 아군(FactionLogic.BandRelation).
+		if myTeam == "" or not isvalid(ent) then return false end
+		---@type Faction
+		local f = ent.Faction
+		if not isvalid(f) or _FactionLogic == nil then return false end
+		return _FactionLogic:RelationOfTeams(myTeam, _FactionLogic:NormalizeTeam(f.Team)) ~= "ENEMY"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 색은 보는 사람마다 다르다 → 각 클라가 자기 맵의 몬스터 이름표만 RecolorSeconds 마다 칠한다(1.1-I19).
+		self.recolorTimer = self.recolorTimer - delta
+		if self.recolorTimer > 0 then return end
+		self.recolorTimer = self.RecolorSeconds
+		if not self.Enabled then return end
+		local me = _UserService.LocalPlayer
+		if not isvalid(me) or not isvalid(me.CurrentMap) then return end
+		local myTeam = self:MyTeam()
+		local tags = me.CurrentMap:GetChildComponentsByTypeName("NameTagComponent", true)
+		if tags == nil then return end
+		local changed = 0
+		local friendly = 0
+		for _, comp in ipairs(tags) do
+			local ent = comp.Entity
+			-- NPC · 플레이어 이름표는 건드리지 않는다(몬스터 컴포넌트가 있는 개체만).
+			if isvalid(ent) and isvalid(ent.Monster) then
+				local tag = ent.NameTagComponent
+				if isvalid(tag) then
+					local isFriendly = self:IsFriendlyToMe(ent, myTeam)
+					local c = self.HostileColor
+					if isFriendly then c = self.FriendlyColor end
+					-- float 로 저장돼 같은 값을 써도 읽으면 미세하게 다르다 → 허용 오차 0.01 로 비교(안 그러면 매번 다시 쓰고 로그가 끝없이 찍힌다).
+					local cur = tag.FontColor
+					if math.abs(cur.r - c.r) > 0.01 or math.abs(cur.g - c.g) > 0.01 or math.abs(cur.b - c.b) > 0.01 then
+						tag.FontColor = c
+						changed = changed + 1
+						if isFriendly then friendly = friendly + 1 end
+					end
+				end
+			end
+		end
+		-- 검증용: 색이 바뀐 이름표가 있을 때만 한 줄(서버 동기화로 되돌려지면 같은 줄이 계속 찍힌다).
+		if changed > 0 then log("[MonsterNameTag] recolor n=" .. tostring(changed) .. " friendly=" .. tostring(friendly) .. " myTeam=" .. myTeam) end
+	end
+
+end

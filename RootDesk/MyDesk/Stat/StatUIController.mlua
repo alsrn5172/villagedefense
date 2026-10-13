@@ -49,6 +49,14 @@ script StatUIController extends Logic
 	@HideFromInspector
 	property boolean autoApOn = true
 
+	-- 레벨업 자동 분배 방식 칩 2개(1.1-G09 · Left/AutoAp/ModeBalance · ModeAttack · 계정 저장). UUID 는 UIBuilder write({bind}) 가 주입한다 — 손으로 쓰지 않는다.
+	property ButtonComponent btnApBalance = "606246e1-367f-4770-9edf-76455a60861d"
+
+	property ButtonComponent btnApAttack = "b37087bb-cc3a-4f88-a23e-8012d95b0b3f"
+
+	@HideFromInspector
+	property string apMode = "BALANCE"
+
 	property ButtonComponent btnPlusStr = "ba1acb80-1fe9-4314-95fb-76a2b16f9541"
 
 	property ButtonComponent btnPlusDex = "77a61180-8f2a-4834-82e1-f234e288f823"
@@ -82,6 +90,9 @@ script StatUIController extends Logic
 	property TextGUIRendererComponent cellAccuracy = "8e58e77c-eaba-4184-a1ec-731c3616c471"
 
 	property TextGUIRendererComponent cellAvoid = "7b3acad0-ea0e-4fac-8382-44b07b580777"
+
+	-- 치명타율 칸(사용자 2026-10-12 신설 · 전투 능력치 맨 아래 Right/Row10). 값 = StatService.BuildUiCsv 의 crit=(원확률 %).
+	property TextGUIRendererComponent cellCrit = "98d3b06c-966d-4484-80f2-72e701046a4b"
 
 	property TextGUIRendererComponent mesoText = "10953374-0d68-49aa-afde-dc78ac9b59e8"
 
@@ -183,11 +194,14 @@ script StatUIController extends Logic
 		end
 		bindAp(self.btnAuto, function() self:OnAuto() end)
 		bindAp(self.btnAutoAp, function() self:OnAutoApToggle() end)
+		bindAp(self.btnApBalance, function() self:OnApMode("BALANCE") end)
+		bindAp(self.btnApAttack, function() self:OnApMode("ATTACK") end)
 		bindAp(self.btnPlusStr, function() self:OnPlus("str") end)
 		bindAp(self.btnPlusDex, function() self:OnPlus("dex") end)
 		bindAp(self.btnPlusInt, function() self:OnPlus("int") end)
 		bindAp(self.btnPlusLuk, function() self:OnPlus("luk") end)
 		self:SetApButtons(0)
+		self:SetApMode(self.apMode)
 		self:UpdateSkillButton(0)
 		self:UpdateExpFill("")
 
@@ -197,7 +211,7 @@ script StatUIController extends Logic
 		end
 		self:SetAutoPickup(self.autoPickupOn)
 
-		-- 임시 단축키 (WorldMapController 의 M 키와 같은 패턴). 정식 키는 B 와 합의 후 (계획서 §11 #8).
+		-- 단축키 C(스탯 탭) · V(장비 · 인벤토리 탭) — WorldMapController 의 M 키와 같은 패턴(1.0.3-M7).
 		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
 
 		self:SetOpen(false)
@@ -207,24 +221,32 @@ script StatUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnKeyDown(KeyDownEvent event)
-		-- C = 캐릭터 창 토글 (임시). ESC 는 Summon/UIEscStack 한 곳이 받는다(최근에 연 창부터 하나씩 · WO-046).
-		-- 튜토리얼(WO-051): 장면이 허락한 키만 받는다.
+		-- C = 스탯 탭 · V = 장비 · 인벤토리 탭 (같은 창 · ToggleTab · 1.0.3-M7-01 · M7-02). ESC 는 Summon/UIEscStack 한 곳이 받는다(최근에 연 창부터 하나씩 · WO-046).
+		-- 튜토리얼(WO-051): 장면이 허락한 키만 받는다(V 는 어느 장면에도 없어 튜토리얼 중엔 자동으로 무시된다).
 		if _TutorialDirector ~= nil and not _TutorialDirector:KeyAllowed(event.key) then return end
-		if event.key == KeyboardKey.C then
-			-- 채팅 입력 중이면 C 는 글자다(사용자 2026-10-05 "채팅 입력 중엔 c q w e r k 안 먹히게").
+		if event.key == KeyboardKey.C or event.key == KeyboardKey.V then
+			-- 채팅 입력 중이면 C · V 는 글자다(사용자 2026-10-05 "채팅 입력 중엔 c q w e r k 안 먹히게").
 			if _ChatService ~= nil and _ChatService.typing then return end
-			self:Toggle()
+			if event.key == KeyboardKey.C then self:ToggleTab(0) else self:ToggleTab(1) end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ToggleTab(integer idx)
+		-- 0=스탯 1=장비·인벤토리(1.0.3-M7-01). 그 탭이 보이는 중이면 닫고, 다른 탭이 보이는 중이면 그 탭으로 바꾸고, 닫혀 있으면 열고 그 탭으로 (Open 을 거쳐야 서버에 스탯·인벤토리를 요청한다).
+		if idx >= 2 then idx = 1 end
+		if self.isOpen then
+			if self.curTab == idx then self:Close() else self:SelectTab(idx) end
+		else
+			self:Open()
+			self:SelectTab(idx)
 		end
 	end
 
 	@ExecSpace("ClientOnly")
 	method void Toggle()
-		-- 열려 있으면 닫고, 닫혀 있으면 연다 (Open 을 거쳐야 서버에 스탯·인벤토리를 요청한다).
-		if self.isOpen then
-			self:Close()
-		else
-			self:Open()
-		end
+		-- 호환용(상태창 위 투명 버튼 BtnOpenCharacter 등): 스탯 탭 기준 토글.
+		self:ToggleTab(0)
 	end
 
 	@ExecSpace("ClientOnly")
@@ -421,8 +443,8 @@ script StatUIController extends Logic
 
 	@ExecSpace("Client")
 	method void SetStatsCsv(string csv)
-		-- "job=전사;level=10;exp=120/500;sp=3;str=12;dex=5;int=4;luk=4;attack=88~120;defense=12;speed=100;jump=100;accuracy=50;avoid=10"
-		-- 서버(StatService)가 소유 클라에만 보낸다(호출부 마지막 인자 = targetUserId). any/table 은 못 넘어서(LEA-3036) 한 줄 문자열.
+		-- "job=전사;level=10;exp=120/500;sp=3;ap=0;str=45(18+27);dex=12(9+3);int=4(4+0);luk=4(4+0);attack=88 ~ 120;defense=12;speed=100;jump=100;accuracy=20.8%;avoid=0.2%;crit=5.1%;autoap=1;apmode=BALANCE"
+		-- 능력치 4칸은 "총(기본+직접 AP + 나머지)" 글자 그대로(1.1-I01). 서버(StatService)가 소유 클라에만 보낸다(호출부 마지막 인자 = targetUserId). any/table 은 못 넘어서(LEA-3036) 한 줄 문자열.
 		for key, val in string.gmatch(csv, "([^;=]+)=([^;]*)") do
 			self:SetCell(key, val)
 		end
@@ -452,11 +474,14 @@ script StatUIController extends Logic
 		elseif key == "jump" then target = self.cellJump
 		elseif key == "accuracy" then target = self.cellAccuracy
 		elseif key == "avoid" then target = self.cellAvoid
+		elseif key == "crit" then target = self.cellCrit
 		elseif key == "ap" then
 			target = self.cellAp
 			self:SetApButtons(math.floor(tonumber(val) or 0))
 		elseif key == "autoap" then
 			self:SetAutoAp(val == "1")
+		elseif key == "apmode" then
+			self:SetApMode(val)
 		end
 		if isvalid(target) then
 			target.Text = val
@@ -532,6 +557,31 @@ script StatUIController extends Logic
 			local toggle = e:GetChildByName("Toggle")
 			if isvalid(toggle) and toggle.SpriteGUIRendererComponent ~= nil then
 				toggle.SpriteGUIRendererComponent.ImageRUID = on and self.ruidToggleOn or self.ruidToggleOff
+			end
+		end
+		-- 끔이면 방식 칩 두 개도 비활성 모양(1.1-G09).
+		self:SetApMode(self.apMode)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnApMode(string mode)
+		-- "밸런스형 / 공격형" 칩(1.1-G09): 서버에 요청(계정 저장). 화면은 서버가 보낸 SetStatsCsv 의 apmode= 로만 바뀐다(낙관적 UI 없음). 자동 분배가 꺼져 있으면 칩이 비활성이라 막는다.
+		if mode == self.apMode or not self.autoApOn then return end
+		if _StatService ~= nil then _StatService:RequestSetApMode(mode) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetApMode(string mode)
+		-- 서버 → 소유 클라: 방식 칩 모양을 맞춘다(고른 칩 = 금 버튼 + 어두운 글자 / 아닌 칩 = 파랑 버튼 + 밝은 글자 / 자동 분배 끔 = 둘 다 비활성 파랑).
+		self.apMode = (mode == "ATTACK") and "ATTACK" or "BALANCE"
+		for _, c in ipairs({ { b = self.btnApBalance, m = "BALANCE" }, { b = self.btnApAttack, m = "ATTACK" } }) do
+			if isvalid(c.b) then
+				local sel = self.autoApOn and (self.apMode == c.m)
+				c.b.Enable = self.autoApOn
+				local sp = c.b.Entity.SpriteGUIRendererComponent
+				if sp ~= nil then sp.ImageRUID = sel and self.ruidBtnGoldSm or self.ruidBtnBlueDisabled end
+				local tx = c.b.Entity.TextGUIRendererComponent
+				if tx ~= nil then tx.FontColor = sel and Color(0.11, 0.078, 0.02, 1) or Color(0.894, 0.91, 0.937, 1) end
 			end
 		end
 	end

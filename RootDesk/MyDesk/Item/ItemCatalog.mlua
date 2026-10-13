@@ -22,6 +22,9 @@ script ItemCatalog extends Logic
 	-- 마법사 옷의 단계별 고정 최대 MP 증가 비율 (WO-050 §2-11)
 	property number MagicianClothMpPerEnhance = 1 / 3
 
+	-- 전사 방패 강화 1단계당 최대 HP = 기본 HP × 이 값(1.1-F18 · 마법사 옷 MP 와 같은 규칙).
+	property number ShieldHpPerEnhance = 1 / 3
+
 	@HideFromInspector
 	property any items = nil
 
@@ -51,6 +54,15 @@ script ItemCatalog extends Logic
 
 	-- 마을 ShopKey → 지역 재화 ItemId (계약서 A-2-8c · DropTableLogic.RegionItems 와 같은 짝)
 	property string RegionCurrencies = "REGION_HENESYS=REGION_HENESYS_SPORE,REGION_KERNING=REGION_KERNING_THIEF_COIN,REGION_ELLINIA=REGION_ELLINIA_SPIRIT_DUST,REGION_NAUTILUS=REGION_NAUTILUS_PIRATE_COIN,REGION_PERION=REGION_PERION_WARRIOR_TOKEN"
+
+	-- 레벨제 일괄 구매(1.1-J01): 렙제 5종 · 구매 순서(무기 → 옷 → 모자 → 장갑 → 신발) · 대상 직업 5종. @Logic 이라 서버(CraftService.RequestCraftBulk)와 클라(제작 창)가 같은 값을 읽는다.
+	-- 옷(CLOTH)은 상의(TOP) → 하의(BOTTOM) 순이고 한벌옷은 TOP 슬롯 하나로 들어 있다. 방패(SUBWEAPON) · 앱솔랩스(ABSOLAB_*)는 일괄 구매에서 뺀다.
+	-- 제작 창 노드 이름(Tier_* · Part_*)과 같은 값이어야 한다.
+	property string BulkTiers = "10,15,20,25,30"
+
+	property string BulkPartOrder = "WEAPON,CLOTH,HAT,GLOVES,SHOES"
+
+	property string BulkJobs = "WARRIOR,MAGICIAN,ARCHER,THIEF,PIRATE"
 
 	@HideFromInspector
 	property any recipes = nil
@@ -286,6 +298,49 @@ script ItemCatalog extends Logic
 		return out
 	end
 
+	method any BulkRecipes(string shopKey, string job, integer tier, string partsCsv)
+		-- 레벨제 일괄 구매 목록(1.1-J01): 그 상인이 파는 레시피 중 직업·렙제가 맞는 장비를, 켜 둔 부위(partsCsv)만 BulkPartOrder 순서로 모은다.
+		-- 옷(CLOTH)은 상의(TOP) → 하의(BOTTOM)(한벌옷은 TOP 한 건). 방패(SUBWEAPON) · 앱솔랩스(ABSOLAB_*, ReqLevel 0 이라 렙제로도 안 걸리지만 접두로 한 번 더 뺀다)는 제외.
+		-- 서버 구매(CraftService.RequestCraftBulk)와 클라 제작 창(렙제 버튼 활성 판정)이 같이 부르는 한 곳이다. 쓸 수 있는 레시피만(Enabled=false 는 LoadTrade 가 이미 걸렀다).
+		self:EnsureLoaded()
+		local on = {}
+		for p in string.gmatch(partsCsv or "", "[^,]+") do on[p] = true end
+		local pool = self:GetRecipes(shopKey)
+		local out = {}
+		for part in string.gmatch(self.BulkPartOrder, "[^,]+") do
+			if on[part] then
+				local slots = { part }
+				if part == "CLOTH" then slots = { "TOP", "BOTTOM" } end
+				for _, slot in ipairs(slots) do
+					for _, r in ipairs(pool) do
+						local d = self.items[r.resultItemId]
+						if d ~= nil and d.type == "EQUIP" and d.slot == slot and d.reqJob == job
+							and d.reqLevel == tier and string.sub(r.resultItemId, 1, 8) ~= "ABSOLAB_" then
+							table.insert(out, r)
+						end
+					end
+				end
+			end
+		end
+		return out
+	end
+
+	method boolean IsBulkTier(integer tier)
+		-- 일괄 구매 렙제(BulkTiers)에 든 값인가. 서버가 클라 요청을 검증한다(1.1-J01).
+		for t in string.gmatch(self.BulkTiers, "[^,]+") do
+			if tonumber(t) == tier then return true end
+		end
+		return false
+	end
+
+	method boolean IsBulkJob(string job)
+		-- 일괄 구매 대상 직업(BulkJobs)에 든 값인가. 서버가 클라 요청을 검증한다(1.1-J01).
+		for j in string.gmatch(self.BulkJobs, "[^,]+") do
+			if j == job then return true end
+		end
+		return false
+	end
+
 	method boolean IsRegionShop(string shopKey)
 		-- 마을 장비 상인(REGION_*)인가. 리스항구(NOVICE) · 모르는 맵("")은 아니다.
 		return string.sub(shopKey or "", 1, 7) == "REGION_"
@@ -420,6 +475,8 @@ script ItemCatalog extends Logic
 			-- AddAttack 은 "다이아 1개당 양"이라 재사용할 수 없어 열을 따로 둔다. 보석 statKey 와
 			-- 겹치지 않는 키(fixedattack)라 아래 보석 합산 루프에는 절대 잡히지 않는다.
 			fixedattack = "FixedAttack",
+			-- 신발 이동속도 · 장갑 명중률 고정치(1.1-F10 · 강화 1단계당 +3% / +5%p · 박은 보석과 무관). 보석 statKey(speed · accuracy)와 겹치지 않는 키.
+			fixedspeed = "FixedSpeed", fixedaccuracy = "FixedAccuracy",
 		}
 		local count = 0
 		for i = 1, sb:GetRowCount() do
@@ -525,6 +582,11 @@ script ItemCatalog extends Logic
 			primaryKey = "luk"
 			secondaryKey = "dex"
 		end
+		-- 전사 방패는 방어력 · 최대 HP 전용(1.1-F17) — 강화해도 직업 주 · 부스탯 고정치를 주지 않는다.
+		if def.slot == "SUBWEAPON" then
+			primaryKey = nil
+			secondaryKey = nil
+		end
 		local jobStatMul = mul
 		if def.weaponType == "SWORD_2H" then
 			jobStatMul = jobStatMul * 2
@@ -549,8 +611,20 @@ script ItemCatalog extends Logic
 				fixed.defense = (fixed.defense or 0) + row.defense * mul
 			end
 			-- 무기 고정치는 공격력 (FixedAttack · 2026-09-08 사용자 지시). 방어구는 위 AddDefense.
+			-- 마법사 무기는 마력으로 준다(사용자 2026-10-12 "마법사는 예외 · 무조건 마력" · 1.1-A16 — 마법사 피해는 공격력 대신 마력을 센다).
 			if row ~= nil and (row.fixedattack or 0) ~= 0 then
-				fixed.attack = (fixed.attack or 0) + row.fixedattack * mul
+				if def.reqJob == "MAGICIAN" and def.slot == "WEAPON" then
+					fixed.magic = (fixed.magic or 0) + row.fixedattack * mul
+				else
+					fixed.attack = (fixed.attack or 0) + row.fixedattack * mul
+				end
+			end
+			-- 신발 이동속도 · 장갑 명중률 고정치(1.1-F10 · FixedSpeed · FixedAccuracy 열).
+			if row ~= nil and (row.fixedspeed or 0) ~= 0 then
+				fixed.speed = (fixed.speed or 0) + row.fixedspeed * mul
+			end
+			if row ~= nil and (row.fixedaccuracy or 0) ~= 0 then
+				fixed.accuracy = (fixed.accuracy or 0) + row.fixedaccuracy * mul
 			end
 			if fullPrimary > 0 and fullSecondary > 0 then
 				local primaryGain = self:JobStatAt(fullPrimary, lv) - self:JobStatAt(fullPrimary, lv - 1)
@@ -561,6 +635,10 @@ script ItemCatalog extends Logic
 			if def.reqJob == "MAGICIAN" and (def.slot == "TOP" or def.slot == "BOTTOM") and (def.stats.maxmp or 0) > 0 then
 				local mpGain = math.floor(def.stats.maxmp * self.MagicianClothMpPerEnhance + 0.5)
 				fixed.maxmp = (fixed.maxmp or 0) + mpGain
+			end
+			-- 전사 방패 최대 HP(1.1-F18): 단계마다 기본 HP 의 1/3 (10렙 280 → +93 · 30렙 1360 → +453). 한벌옷 배수(mul)는 곱하지 않는다.
+			if def.slot == "SUBWEAPON" and (def.stats.maxhp or 0) > 0 then
+				fixed.maxhp = (fixed.maxhp or 0) + math.floor(def.stats.maxhp * self.ShieldHpPerEnhance + 0.5)
 			end
 			for _n = 1, cnt do
 				local gid = nil
@@ -578,6 +656,18 @@ script ItemCatalog extends Logic
 			end
 		end
 		return { fixed = fixed, gem = gemSum }
+	end
+
+	method string FmtStat(number v, string key)
+		-- 장비 수치 글자(1.1-F16 · A07): 정수면 소수점 없이(15) · 소수면 한 자리(2.5). key 가 이동속도 · 명중률 · 회피율이면 % 를 붙인다(2026-10-12 결정 · %p 는 안 씀 · 합계와 괄호 안 내역 모두). key 가 "" 면 단위 없음.
+		local s = ""
+		if v == math.floor(v) then
+			s = tostring(math.floor(v))
+		else
+			s = string.format("%.1f", v)
+		end
+		if key == "speed" or key == "accuracy" or key == "avoid" then s = s .. "%" end
+		return s
 	end
 
 	method any GetGem(string gemId)

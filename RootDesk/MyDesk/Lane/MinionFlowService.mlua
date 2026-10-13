@@ -7,7 +7,7 @@ script MinionFlowService extends Logic
 	-- → 통로 끝(EndTriggerX) 에 닿으면 다음 맵(LANE1 → VILLAGE) 통로 시작점에 같은 HP 비율로 다시 스폰(Advance). 마을 통로 끝 = 넥서스.
 	-- 몬스터 모델의 StateChaseMonster(플레이어 추격 상태기계)·BossSkillRunner 는 끄고 FactionAI 만 움직인다. 접촉 피해(MonsterAttack)는 그대로.
 	-- 개체 스탯 = MinionWave 행 값(MonsterInfo 안 읽음 · MinionComposition 은 마을별 개체 종류만 · main PR #43) × 억제기 파괴(TowerConfig Suppressor*Mul).
-	-- 경험치는 FarmReward, 메소는 MinionUnit. 주화·재료는 미니언이 주지 않는다(사용자 2026-09-22).
+	-- 보상(1.1): 경험치 0(D16 · 좀비머쉬맘만) · 메소는 FarmReward.DropCoins 가 바닥 드롭(D17 · 막타 · 시설이 잡으면 그 마을 주인 · D18) · 주화는 MinionUnit 확률 드롭(D19) · 재료는 없다.
 
 	property number AttackRange = 1.3
 
@@ -174,7 +174,7 @@ script MinionFlowService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method integer QueueWave(string key, string phaseName, integer count, number gap, integer monsterId, integer hp, integer attack, integer exp, integer meso, integer zombies, any zombieTpl, number coinChance)
+	method integer QueueWave(string key, string phaseName, integer count, number gap, integer monsterId, integer hp, integer attack, integer exp, integer meso, integer zombies, any zombieTpl, number coinChance, integer level)
 		-- 웨이브 1회 (B3 · MinionWave 행): 주인 있는 마을마다 사냥터2 통로 시작점에 count 마리를 gap 초 간격으로 큐에 넣는다.
 		-- 개체 스탯은 행 값 그대로(MonsterInfo 안 읽음) · 억제기 파괴 배율은 SpawnMinion 이 위에 곱한다 · 재료 드롭·주화 없음.
 		-- zombies 마리는 zombieTpl(P3-ZOMBIE 행 · { monsterId, hp, attack, exp, meso }) 스탯으로 이어서 큐에 넣는다. 돌려주는 값 = 큐에 넣은 마을 수.
@@ -186,6 +186,13 @@ script MinionFlowService extends Logic
 			zombies = 0
 		end
 		self.waveSeq = self.waveSeq + 1
+		local waveHp = hp
+		local zombieHp = 0
+		if zombieTpl ~= nil then zombieHp = zombieTpl.hp end
+		if _MonsterCatalog ~= nil then
+			waveHp = _MonsterCatalog:LevelHp(hp, level)
+			if zombieTpl ~= nil then zombieHp = _MonsterCatalog:LevelHp(zombieTpl.hp, level) end
+		end
 		local villages = 0
 		for vid, rows in pairs(_LaneFacilityService.laneRows) do
 			if rows.LANE2 ~= nil and _VillageOwnership:OwnerOf(vid) ~= "" then
@@ -196,17 +203,21 @@ script MinionFlowService extends Logic
 				local mid = monsterId
 				local comp = self:PickVillageMonster(phaseName, vid, (zombieTpl ~= nil) and zombieTpl.monsterId or 0)
 				if comp ~= nil then mid = comp.monsterId end
+				-- 레벨(1.1-H01 · H02): 그 웨이브의 MinionWave.Level 을 개체 종(물버섯 포함)과 좀비에 똑같이 준다. 0 = 모름(도감 레벨).
+				-- HP = 행 HP × 레벨 배율(1.1-E06 · 사용자 2026-10-12 "원문대로" · MonsterCatalog.LevelHp) — spec 을 만들 때 한 번만(baseHp 가 다음 레인으로 넘어가도 다시 안 곱한다).
+				--   억제기 파괴 강화(hpMul)는 SpawnMinion 이 그 위에 곱한다. 튜토리얼 웨이브는 레벨 0 → ×1(1.1-E31).
 				for i = 1, count do
-					local spec = { monsterId = mid, baseHp = hp, baseAttack = attack, hpMul = 1.0, atkMul = 1.0, expBase = exp, mesoBase = meso, coinChance = coinChance, namePart = key .. "_" }
+					local spec = { monsterId = mid, baseHp = waveHp, baseAttack = attack, hpMul = 1.0, atkMul = 1.0, expBase = exp, mesoBase = meso, coinChance = coinChance, namePart = key .. "_", level = level }
 					table.insert(self.queue, { due = self.clock + (i - 1) * gap, villageId = vid, spec = spec, key = key, tag = tag })
 				end
 				for j = 1, zombies do
-					local spec = { monsterId = zombieTpl.monsterId, baseHp = zombieTpl.hp, baseAttack = zombieTpl.attack, hpMul = 1.0, atkMul = 1.0, expBase = zombieTpl.exp, mesoBase = zombieTpl.meso, coinChance = coinChance, namePart = key .. "_Z" }
+					local spec = { monsterId = zombieTpl.monsterId, baseHp = zombieHp, baseAttack = zombieTpl.attack, hpMul = 1.0, atkMul = 1.0, expBase = zombieTpl.exp, mesoBase = zombieTpl.meso, coinChance = coinChance, namePart = key .. "_Z", level = level }
 					table.insert(self.queue, { due = self.clock + (count + j - 1) * gap, villageId = vid, spec = spec, key = key, tag = tag })
 				end
 			end
 		end
-		log("[Minion] wave=" .. key .. " phase=" .. phaseName .. " villages=" .. tostring(villages) .. " count=" .. tostring(count) .. " gap=" .. tostring(gap) .. "s hp=" .. tostring(hp) .. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies))
+		log("[Minion] wave=" .. key .. " phase=" .. phaseName .. " villages=" .. tostring(villages) .. " count=" .. tostring(count) .. " gap=" .. tostring(gap) .. "s hp=" .. tostring(hp) .. " lv=" .. tostring(level) .. " -> " .. tostring(waveHp)
+			.. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies) .. " zombieHp=" .. tostring(zombieHp))
 		return villages
 	end
 
@@ -328,9 +339,13 @@ script MinionFlowService extends Logic
 			local rw = ent:AddComponent("script.FarmReward")
 			if isvalid(rw) then
 				rw.MonsterId = 0
+				-- 경험치 = MinionWave.Exp(1.1-D16 · 일반 웨이브 0 · 좀비머쉬맘만 2,910) — 0 이면 FarmReward 가 지급을 건너뛴다.
 				rw.ExpAmount = expBase
-				rw.CoinMin = 1
-				rw.CoinMax = 1
+				-- 메소 = MinionWave.Meso 그대로 바닥에 동전 1개(1.1-D17 · 예전 = MinionUnit 이 막타에게 바로 지급 · 동전 그림은 MesoCoin 이 금액별로 고른다).
+				local meso = math.floor(spec.mesoBase or 0)
+				rw.CoinMin = meso
+				rw.CoinMax = meso
+				rw.MaxCoinEntities = 1
 			end
 		end
 		---@type MinionUnit
@@ -349,10 +364,19 @@ script MinionFlowService extends Logic
 			mu.ExpBase = spec.expBase
 			mu.MesoBase = spec.mesoBase or 0
 			mu.Dispatched = (spec.noReward == true)
+			-- 파병 출발 방식(1.1-H04): "WAVE" / "NOW" · 일반 미니언 = "". Advance 가 다음 맵으로 넘길 때 접두(D/J)를 이 값으로 되살린다.
+			mu.DispatchMode = spec.dispatchMode or ""
 			mu.FixedHp = math.floor(spec.fixedHp or 0)
 			mu.FixedAttack = math.floor(spec.fixedAttack or 0)
+			-- 판정 · 이름표 레벨(1.1-H01 · H03): 웨이브 레벨 / 파병은 보낸 묶음 강화 레벨 기준. 0 = 모름(도감 레벨 · MonsterCatalog.LevelOfEntity).
+			mu.Level = math.floor(spec.level or 0)
 		end
-		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?") .. " dir=" .. tostring(dir) .. " endX=" .. tostring(row.endX))
+		-- 몬스터 이름표(1.1-I07 · I08): `Lv.N 이름` — 레벨 = 웨이브 레벨(MinionWave.Level) · 파병은 보낸 묶음 강화 레벨(spec.level). 0 이면 mu.Level → 도감 레벨 순(MonsterNameTag.LevelOf).
+		--   파병(SpawnDispatched)과 맵 경계 이어 스폰(Advance · spec.level = mu.Level)도 이 줄을 지나므로 레벨이 유지된다. 색은 보는 사람마다 클라가 칠한다(1.1-I19).
+		if _MonsterNameTag ~= nil then
+			_MonsterNameTag:Attach(ent, (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(spec.monsterId) or "", math.floor(spec.level or 0))
+		end
+		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") lv=" .. tostring(spec.level or 0) .. " at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?") .. " dir=" .. tostring(dir) .. " endX=" .. tostring(row.endX))
 		return ent
 	end
 
@@ -388,14 +412,21 @@ script MinionFlowService extends Logic
 			fixedAttack = math.max(1, math.floor(level * atkPerLevel * statMul))
 		end
 		local spawned = 0
+		-- 파병 유닛 레벨 = 수비대와 같은 식(원래 몬스터 레벨 + 강화 1단계당 2 · 1.1-H03 권장 · 보낸 묶음 강화 Lv).
+		local unitLevel = 0
+		if _DefenderService ~= nil then unitLevel = _DefenderService:DefenderLevelOf(monsterId, math.floor(order.upgradeLevel or 1)) end
+		-- 체력 × 그 레벨의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로") — 수비대(DefenderService.SpawnOne)와 같은 레벨 · 같은 배율이라 수비대 : 파병 = 2 : 1 그대로.
+		fixedHp = _MonsterCatalog:LevelHp(fixedHp, unitLevel)
 		for i = 1, qty do
 			local spec = { monsterId = monsterId, baseHp = fixedHp, baseAttack = fixedAttack, hpMul = 1.0, atkMul = 1.0,
 				expBase = 0, mesoBase = 0, coinChance = 0, hpRatio = 1.0,
-				fixedHp = fixedHp, fixedAttack = fixedAttack, noReward = true, namePart = "D" }
+				fixedHp = fixedHp, fixedAttack = fixedAttack, noReward = true, namePart = "D", level = unitLevel, dispatchMode = order.mode or "WAVE" }
+			-- 즉시 파병 유닛(1.1-H04)은 이름 접두 J — 레인 HUD 배지(DispatchService.CountAliveDispatched · 접두 "Minion_<마을>_D")에 세지 않는다(H06). 접두 "Minion_<마을>_" 는 그대로(DespawnVillage).
+			if spec.dispatchMode == "NOW" then spec.namePart = "J" end
 			if isvalid(self:SpawnMinion(targetVillageId, "LANE2", spec)) then spawned = spawned + 1 end
 		end
 		log("[Dispatch] spawn order=" .. tostring(order.id) .. " -> " .. targetVillageId .. " mon=" .. tostring(monsterId)
-			.. " n=" .. tostring(spawned) .. "/" .. tostring(qty) .. " hp=" .. tostring(fixedHp) .. " atk=" .. tostring(fixedAttack)
+			.. " n=" .. tostring(spawned) .. "/" .. tostring(qty) .. " lv=" .. tostring(unitLevel) .. " hp=" .. tostring(fixedHp) .. " atk=" .. tostring(fixedAttack)
 			.. " mul=" .. tostring(statMul) .. " (from " .. tostring(order.senderVillage) .. ")")
 		return spawned
 	end
@@ -457,11 +488,13 @@ script MinionFlowService extends Logic
 		---@type Monster
 		local monster = minion.Monster
 		if isvalid(monster) and monster.MaxHp > 0 then ratio = math.max(0.05, monster.Hp / monster.MaxHp) end
-		local spec = { monsterId = mu.MonsterId, baseHp = mu.BaseHp, baseAttack = mu.BaseAttack, hpMul = mu.HpMul, atkMul = mu.AtkMul, expBase = mu.ExpBase, mesoBase = mu.MesoBase, coinChance = mu.CoinDropChance, hpRatio = ratio }
+		local spec = { monsterId = mu.MonsterId, baseHp = mu.BaseHp, baseAttack = mu.BaseAttack, hpMul = mu.HpMul, atkMul = mu.AtkMul, expBase = mu.ExpBase, mesoBase = mu.MesoBase, coinChance = mu.CoinDropChance, hpRatio = ratio, level = mu.Level }
 		if mu.Dispatched then
 			-- 파병 유닛은 맵을 넘어가도 보상 없음·고정 스펙을 유지한다.
 			spec.noReward = true
+			spec.dispatchMode = mu.DispatchMode
 			spec.namePart = "D"
+			if mu.DispatchMode == "NOW" then spec.namePart = "J" end
 			if mu.FixedHp > 0 then spec.fixedHp = mu.FixedHp end
 			if mu.FixedAttack > 0 then spec.fixedAttack = mu.FixedAttack end
 		end

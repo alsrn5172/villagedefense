@@ -2,23 +2,62 @@
 script DefenderUnit extends Component
 
 	-- 수비 몬스터 1마리 (WO-012 ③ · 2026-09-07). DefenderService 가 스폰 직후 붙인다. 죽으면 마을 원장의 묶음 수를 1 줄인다.
+	-- 1.1-D21: 다른 마을 플레이어(투사체 포함)가 막타를 치면 그 마을 지역 재화 DefenderService.KillRewardCount(2)개를 그 사람 앞에 떨군다.
 
 	property string VillageId = ""
 
 	property integer MonsterId = 0
 
+	-- 이 수비대의 실제 레벨(1.1-H03 · 원래 몬스터 레벨 + 강화 1단계당 2 · 0 = 모름 → 도감 레벨). 명중 · 회피 판정과 이름표가 읽는다.
+	property integer Level = 0
+
 	@HideFromInspector
 	property boolean reported = false
 
+	-- 마지막 공격자(처치 보상 귀속 · 1.1-D21). 재집결 · 파병 차출 · 탈락 정리는 지우기 전에 reported 를 켜서 보상이 나가지 않는다.
+	@HideFromInspector
+	property any lastAttacker = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnUpdate(number delta)
-		-- 사망 1회 보고.
+		-- 사망 1회 보고 + 처치 보상.
 		---@type Monster
 		local monster = self.Entity.Monster
 		if isvalid(monster) and monster.IsDead and not self.reported then
 			self.reported = true
 			if _LaneStateService ~= nil then _LaneStateService:OnDefenderDied(self.VillageId, self.MonsterId) end
+			self:RewardKiller()
 		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleHitEvent(HitEvent event)
+		-- 마지막 공격자 기록(MinionUnit 과 같은 모양). 플레이어가 아닌 공격자(미니언 · 시설 · 다른 수비대)도 남는다 → 그들이 막타면 보상 없음.
+		if isvalid(event.AttackerEntity) then self.lastAttacker = event.AttackerEntity end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RewardKiller()
+		-- 상대 수비대 처치 보상(1.1-D21): 막타가 플레이어(투사체 포함 · AttackCredit.UserIdOf)이고 그 사람의 마을이 아니면 이 마을 지역의 지역 재화 KillRewardCount 개.
+		--   미니언 · 시설 · 수비대가 잡았거나 내 마을 수비대 · 튜토리얼 가상 상대(권장대로 제외)면 없음. ★5 다른 지역 ×2 는 곱하지 않는다(원문 "2개" 고정).
+		local uid = ""
+		if _AttackCredit ~= nil then uid = _AttackCredit:UserIdOf(self.lastAttacker) end
+		if uid == "" or _DropTableLogic == nil or _DefenderService == nil then return end
+		if _LaneStateService ~= nil and (_LaneStateService:VillageOfUser(uid) == self.VillageId or _LaneStateService:IsTutorialRival(self.VillageId)) then return end
+		local item = _DropTableLogic:RegionItemOfVillage(self.VillageId)
+		local count = math.floor(_DefenderService.KillRewardCount or 0)
+		if item == "" or count <= 0 then return end
+		local map = self.Entity.CurrentMap
+		local tr = self.Entity.TransformComponent
+		local dropped = false
+		if _GroundDrop ~= nil and isvalid(map) and isvalid(tr) then dropped = _GroundDrop:SpawnItem(map, tr.WorldPosition, uid, "ITEM", item, count) end
+		-- 주인이 이 맵에 없으면(SpawnItem = false) 인벤토리에 바로.
+		if not dropped and _InventoryService ~= nil then
+			_InventoryService:GiveItem(uid, item, count)
+			_InventoryService:PushInventory(uid)
+		end
+		log("[Defender] kill reward " .. item .. " x" .. tostring(count) .. " -> " .. uid .. " dropped=" .. tostring(dropped) .. " (" .. self.Entity.Name .. " · " .. self.VillageId .. ")")
 	end
 
 end

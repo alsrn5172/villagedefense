@@ -150,7 +150,12 @@ script WorkshopUIController extends Logic
 	@HideFromInspector
 	property string craftSlot = "ALL"
 
-	property string CraftSlots = "ALL,WEAPON,HAT,CLOTH,GLOVES,SHOES,SPECIAL"
+	-- BULK = 레벨제 일괄 구매 칸(1.1-J02): 이 칩을 고르면 목록 자리에 Craft/BulkPanel(렙제 버튼 5 · 부위 토글 5)이 뜬다. 마을 장비 상인에서만 보인다.
+	property string CraftSlots = "ALL,WEAPON,HAT,CLOTH,GLOVES,SHOES,SPECIAL,BULK"
+
+	-- 일괄 구매에서 뺀 부위 집합 { WEAPON=true … }(1.1-J02). 비어 있으면 전부 켜짐. 창을 열고 닫아도 유지하고 새 매치(OnMatchStart)에서만 비운다(1.1-J03).
+	@HideFromInspector
+	property any bulkOff = nil
 
 	@HideFromInspector
 	property any potionView = nil
@@ -234,8 +239,22 @@ script WorkshopUIController extends Logic
 			local slot = s
 			bindChild(self.contentCraft, "Slot_" .. slot, function() self:SetCraftSlot(slot) end)
 		end
+		-- 레벨제 일괄 구매 판(1.1-J02): Craft/BulkPanel 바로 아래의 Part_{부위} 토글 5개 · Tier_{렙제} 버튼 5개(이름 = ItemCatalog.BulkPartOrder · BulkTiers).
+		self.bulkOff = {}
+		local bulk = isvalid(self.contentCraft) and self.contentCraft:GetChildByName("BulkPanel") or nil
+		for part in string.gmatch(_ItemCatalog.BulkPartOrder, "[^,]+") do
+			local p = part
+			bindChild(bulk, "Part_" .. p, function() self:OnBulkPart(p) end)
+		end
+		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
+			local n = tonumber(t)
+			bindChild(bulk, "Tier_" .. t, function() self:OnBulkTier(n) end)
+		end
 		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
 		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
+		-- 수량 +5 · +10(1.1-J04): +1 은 기존 BtnPlus 그대로. 상한(MaxCount)은 RefreshPotion 이 자른다.
+		bindChild(self.potionDetail, "BtnPlus5", function() self:OnPotionQty(5) end)
+		bindChild(self.potionDetail, "BtnPlus10", function() self:OnPotionQty(10) end)
 		for _, r in ipairs({ "enhance", "craft", "potion", "repair" }) do
 			local route = r
 			bindChild(self.tabBar, "Tab_" .. r, function() self:GoRoute(route) end)
@@ -294,7 +313,7 @@ script WorkshopUIController extends Logic
 	@ExecSpace("ClientOnly")
 	method Color Hex(string hex, number a)
 		-- "#RRGGBB" → Color(0~1).
-		local h = string.gsub(hex, "#", "")
+		local h, replaced = string.gsub(hex, "#", "")
 		local r = (tonumber(string.sub(h, 1, 2), 16) or 255) / 255
 		local g = (tonumber(string.sub(h, 3, 4), 16) or 255) / 255
 		local b = (tonumber(string.sub(h, 5, 6), 16) or 255) / 255
@@ -849,7 +868,9 @@ script WorkshopUIController extends Logic
 		local haveGems = #self.chosenGems
 		if row ~= nil then
 			local c = (haveGems < row.gemCount) and "#FF8A7A" or "#7FD6A4"
-			self:SetText(root, "GemBar/GemNeed", "<color=" .. c .. ">이번 단계 보석 " .. tostring(haveGems) .. " / " .. tostring(row.gemCount) .. "</color>")
+			-- 한벌옷은 칸마다 보석 2개(1.1-F20) — 칸 수는 그대로라 안내만 덧붙인다.
+			local perSlotText = (def ~= nil and _ItemCatalog:PieceCount(def) > 1) and (" · 칸마다 " .. tostring(_ItemCatalog:PieceCount(def)) .. "개") or ""
+			self:SetText(root, "GemBar/GemNeed", "<color=" .. c .. ">이번 단계 보석 " .. tostring(haveGems) .. " / " .. tostring(row.gemCount) .. perSlotText .. "</color>")
 		else
 			self:SetText(root, "GemBar/GemNeed", "")
 		end
@@ -887,9 +908,9 @@ script WorkshopUIController extends Logic
 				end
 				local base = "기본 상승 없음"
 				local baseParts = {}
-				for _, k in ipairs({ "attack", "defense", "str", "dex", "int", "luk", "maxmp" }) do
+				for _, k in ipairs({ "attack", "magic", "defense", "str", "dex", "int", "luk", "maxmp", "speed", "accuracy", "maxhp" }) do
 					if (fixedSum[k] or 0) ~= 0 then
-						table.insert(baseParts, self:StatLabel(k) .. " +" .. tostring(fixedSum[k]))
+						table.insert(baseParts, self:StatLabel(k) .. " +" .. _ItemCatalog:FmtStat(fixedSum[k], k))
 					end
 				end
 				if #baseParts > 0 then base = "기본 " .. table.concat(baseParts, " · ") end
@@ -905,7 +926,8 @@ script WorkshopUIController extends Logic
 							local gem = _ItemCatalog:GetGem(g)
 							local amt = _ItemCatalog:GemAmount(def, nextLv, g) * _ItemCatalog:PieceCount(def)
 							if gem ~= nil and amt ~= 0 then
-								table.insert(parts, gem.name .. " 1개 = " .. self:StatLabel(gem.statKey) .. " +" .. tostring(amt))
+								-- 한 칸 몫: 한벌옷은 칸마다 2개가 들고 효과도 2배라 "2개 = +8" 로 적는다(1.1-F20 · 2026-10-12).
+								table.insert(parts, gem.name .. " " .. tostring(_ItemCatalog:PieceCount(def)) .. "개 = " .. self:StatLabel(gem.statKey) .. " +" .. _ItemCatalog:FmtStat(amt, gem.statKey))
 							end
 						end
 					end
@@ -914,19 +936,35 @@ script WorkshopUIController extends Logic
 					end
 				end
 				range = "+" .. tostring(it.enh or 0) .. " → +" .. tostring(nextLv)
+				-- 판에 4줄만 들어간다(높이 212). 넘치면 보석이 올리는 줄을 먼저 보인다 — 고정 상승은 위 "기본 …" 글에 다 나온다
+				-- (1.1-F30: 앱솔 신발 +오팔이면 방어력 · STR · DEX · 이동속도 뒤 회피율이 잘리던 것).
+				local gemRows = {}
+				local fixedRows = {}
 				for _, k in ipairs({ "attack", "magic", "defense", "str", "dex", "int", "luk", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
-					if (sum[k] or 0) ~= 0 and #rows < 4 then
-						-- "+4 (초록 +2 · 보라 +2)" — 기본 고정치와 보석치를 색으로 구분
+					if (sum[k] or 0) ~= 0 then
+						-- "+4 (초록 +2 · 보라 +2)" — 기본 고정치와 보석치를 색으로 구분 · 수치 글자는 FmtStat(1.1-F16)
 						local f = fixedSum[k] or 0
 						local gm = gemSum[k] or 0
 						local parts = {}
-						if f ~= 0 then table.insert(parts, "<color=#7FD6A4>+" .. tostring(f) .. "</color>") end
-						if gm ~= 0 then table.insert(parts, "<color=#C3A6FF>+" .. tostring(gm) .. "</color>") end
-						local value = "+" .. tostring(sum[k])
+						if f ~= 0 then table.insert(parts, "<color=#7FD6A4>+" .. _ItemCatalog:FmtStat(f, k) .. "</color>") end
+						if gm ~= 0 then table.insert(parts, "<color=#C3A6FF>+" .. _ItemCatalog:FmtStat(gm, k) .. "</color>") end
+						local value = "+" .. _ItemCatalog:FmtStat(sum[k], k)
 						if #parts > 0 then value = value .. " <color=#7C88A4>(</color>" .. table.concat(parts, " ") .. "<color=#7C88A4>)</color>" end
-						table.insert(rows, { label = self:StatLabel(k), value = value })
+						table.insert((gm ~= 0) and gemRows or fixedRows, { label = self:StatLabel(k), value = value, order = #gemRows + #fixedRows })
 					end
 				end
+				local picked = {}
+				if #gemRows + #fixedRows <= 4 then
+					for _, r in ipairs(gemRows) do table.insert(picked, r) end
+					for _, r in ipairs(fixedRows) do table.insert(picked, r) end
+				else
+					for _, r in ipairs(gemRows) do if #picked < 4 then table.insert(picked, r) end end
+					for _, r in ipairs(fixedRows) do if #picked < 4 then table.insert(picked, r) end end
+					log("[Workshop] preview rows " .. tostring(#gemRows + #fixedRows) .. " > 4 → gem rows first")
+				end
+				-- 보이는 줄은 원래 키 순서대로 다시 세운다.
+				table.sort(picked, function(a, b) return a.order < b.order end)
+				for _, r in ipairs(picked) do table.insert(rows, r) end
 			end
 			self:SetText(sp, "PreviewTitle", "상승 능력치")
 			self:SetText(sp, "PreviewRange", range)
@@ -981,7 +1019,11 @@ script WorkshopUIController extends Logic
 			if _EnhanceService ~= nil and isvalid(lp) and isvalid(lp.PlayerComponent) then
 				mesoCost = _EnhanceService:EnhanceMesoCost(lp.PlayerComponent.UserId, def, row)
 			end
-			costText = "메소 " .. tostring(mesoCost) .. " · 보석 " .. tostring(have) .. " / " .. tostring(row.gemCount)
+			-- 보석 칩은 실제로 드는 개수(한벌옷 = 칸마다 2개 · 1.1-F20). 준비 판정은 칸 수 그대로.
+			local perSlot = _ItemCatalog:PieceCount(def)
+			local gemNeedTotal = row.gemCount * perSlot
+			local gemHaveTotal = have * perSlot
+			costText = "메소 " .. tostring(mesoCost) .. " · 보석 " .. tostring(gemHaveTotal) .. " / " .. tostring(gemNeedTotal)
 			ready = (have == row.gemCount)
 			-- 칩 2개: 메소(보유 = 클라 캐시) · 보석(보유 = 지금 넣은 수). 모자라면 붉게. 메소는 서버가 최종 판정하므로 버튼은 막지 않는다(옛 동작 그대로).
 			local meso = self:MesoNow()
@@ -992,7 +1034,7 @@ script WorkshopUIController extends Logic
 			end
 			self:ShowFootChips({
 				{ icon = self.RuidMeso, label = "메소", num = self:Fmt(mesoCost), hold = "보유 " .. self:Fmt(meso), short = meso < mesoCost },
-				{ icon = gemIcon, label = "보석", num = tostring(row.gemCount), hold = "보유 " .. tostring(have) .. ((have < row.gemCount) and " · 부족" or ""), short = have < row.gemCount },
+				{ icon = gemIcon, label = "보석", num = tostring(gemNeedTotal), hold = "보유 " .. tostring(gemHaveTotal) .. ((have < row.gemCount) and " · 부족" or ""), short = have < row.gemCount },
 			}, costText)
 		elseif def ~= nil then
 			costText = "최대 강화 단계"
@@ -1153,11 +1195,12 @@ script WorkshopUIController extends Logic
 				local gemId = string.sub(name, 6)
 				local gem = _ItemCatalog:GetGem(gemId)
 				local have = self:CountGem(gemId)
-				-- 이미 고른 개수는 보유에서 뺀다 (같은 보석 여러 개)
-				for _, g in ipairs(self.chosenGems) do if g == gemId then have = have - 1 end end
+				-- 한벌옷은 보석 칸마다 2개씩 든다(1.1-F20 · 사용자 2026-10-12). 이미 고른 칸 수 × 칸당 개수를 보유에서 뺀다.
+				local perSlot = (def ~= nil) and _ItemCatalog:PieceCount(def) or 1
+				for _, g in ipairs(self.chosenGems) do if g == gemId then have = have - perSlot end end
 				local amt = (def ~= nil) and (_ItemCatalog:GemAmount(def, nextLv, gemId) * _ItemCatalog:PieceCount(def)) or 0
 				local locked = (amt == 0)
-				local zero = (not locked) and have <= 0
+				local zero = (not locked) and have < perSlot
 				local stat = (gem ~= nil) and self:StatLabel(gem.statKey) or ""
 				local cnt = child:GetChildByName("Count")
 				if isvalid(cnt) and cnt.TextGUIRendererComponent ~= nil then
@@ -1168,7 +1211,7 @@ script WorkshopUIController extends Logic
 				local lab = child:GetChildByName("StatLabel")
 				if isvalid(lab) and lab.TextGUIRendererComponent ~= nil and gem ~= nil then
 					lab.Enable = not locked
-					lab.TextGUIRendererComponent.Text = stat .. " +" .. tostring(amt)
+					lab.TextGUIRendererComponent.Text = stat .. " +" .. _ItemCatalog:FmtStat(amt, gem.statKey)
 					lab.TextGUIRendererComponent.FontColor = self:Hex(zero and "#7C88A4" or "#7FD6A4", 1)
 				end
 				local nm = child:GetChildByName("Name")
@@ -1195,7 +1238,7 @@ script WorkshopUIController extends Logic
 				self:SetText(child, "NoFx/Text", stat .. " 효과 없음")
 				-- 받침(행 판)은 정상 칸에서만 보인다 — 비활성 이유 그림이 대신 깔린다.
 				self:SetTint(child, "#FFFFFF", (locked or zero) and 0 or 1)
-				if child.ButtonComponent ~= nil then child.ButtonComponent.Enable = (have > 0 and amt ~= 0) end
+				if child.ButtonComponent ~= nil then child.ButtonComponent.Enable = (have >= perSlot and amt ~= 0) end
 			end
 		end
 	end
@@ -1270,11 +1313,152 @@ script WorkshopUIController extends Logic
 		log("[Workshop] craft slot=" .. slot)
 	end
 
+	-- ── 레벨제 일괄 구매 (1.1-J02 · J03) ─────────────────────────
+	-- 제작 창 "일괄" 칸(Slot_BULK)을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다: 살 부위 토글 5개(눌러서 빼기) + 10 · 15 · 20 · 25 · 30렙제 버튼 5개.
+	-- 렙제 버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 전부 산다(서버 CraftService.RequestCraftBulk).
+	-- 켜 둔 부위 전체를 살 메소 · 재료 합이 모자라면 그 렙제 버튼은 처음부터 잠긴다 — 일부만 사는 일은 없다(사용자 2026-10-13 · 디자인 사이트 N-34).
+
+	@ExecSpace("ClientOnly")
+	method string BulkShort(string key, integer tier, string parts)
+		-- 그 렙제 · 켜 둔 부위 전체의 메소 · 재료 합을 지금 가진 것과 비교(클라 캐시 · N-34). 다 있으면 "" · 모자라면 첫 부족 이름(재료 이름 또는 "메소").
+		-- 서버 RequestCraftBulk 의 BulkShortfall 과 같은 계산이다(서버가 최종 판정 · 여기는 버튼 잠금용).
+		local need = {}
+		local order = {}
+		local meso = 0
+		for _, r in ipairs(_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts)) do
+			meso = meso + r.mesoCost
+			for _, m in ipairs(_ItemCatalog:RecipeMats(r, key)) do
+				if need[m.itemId] == nil then
+					need[m.itemId] = 0
+					table.insert(order, m.itemId)
+				end
+				need[m.itemId] = need[m.itemId] + m.count
+			end
+		end
+		for _, id in ipairs(order) do
+			if self:CountItem(id) < need[id] then
+				local d = _ItemCatalog:Get(id)
+				return (d ~= nil) and d.name or id
+			end
+		end
+		if meso > 0 and self:MesoNow() < meso then return "메소" end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method string BulkPartsCsv()
+		-- 켜 둔 부위만 BulkPartOrder 순서로 쉼표 연결(bulkOff 에 든 것은 뺀다). 서버 요청과 렙제 버튼 활성 판정이 같은 값을 쓴다.
+		local out = {}
+		for part in string.gmatch(_ItemCatalog.BulkPartOrder, "[^,]+") do
+			if self.bulkOff == nil or self.bulkOff[part] ~= true then table.insert(out, part) end
+		end
+		return table.concat(out, ",")
+	end
+
+	@ExecSpace("ClientOnly")
+	method string BulkFootText()
+		-- 일괄 칸의 바닥 띠 안내(1.1-J02): 켜 둔 부위가 하나도 없으면 그 안내(렙제 버튼이 다 잠겨 눌러 볼 수 없다),
+		-- 재화가 모자라 잠긴 렙제가 하나라도 있으면 그 안내(N-34), 아니면 사용법 한 줄.
+		local parts = self:BulkPartsCsv()
+		if parts == "" then return "살 부위를 하나 이상 켜 주세요" end
+		local key = self:ShopKey()
+		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
+			local n = math.floor(tonumber(t) or 0)
+			if #_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0 and self:BulkShort(key, n, parts) ~= "" then
+				return "재화가 모자란 렙제는 잠겨요"
+			end
+		end
+		return "렙제 버튼을 누르면 바로 구매해요"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBulkPart(string part)
+		-- 부위 토글: 켜짐 ↔ 꺼짐(구매에서 뺀다). 창을 닫았다 열어도 유지되고 새 매치에서만 전부 켜진다(OnMatchStart).
+		if self.bulkOff == nil then self.bulkOff = {} end
+		if self.bulkOff[part] == true then self.bulkOff[part] = nil else self.bulkOff[part] = true end
+		self:RefreshBulkPanel()
+		log("[Workshop] bulk part " .. part .. " off=" .. tostring(self.bulkOff[part] == true) .. " parts=" .. self:BulkPartsCsv())
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBulkTier(integer tier)
+		-- 렙제 버튼 → 서버에 일괄 구매 요청(확인 팝업 없이 바로 · 응답이 올 때까지 버튼 잠금). 인자는 integer · string 만 보낸다.
+		if self.waiting then return end
+		local key = self:ShopKey()
+		if not _ItemCatalog:IsRegionShop(key) then return end
+		local parts = self:BulkPartsCsv()
+		if #_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts) == 0 then
+			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
+			return
+		end
+		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34).
+		local short = self:BulkShort(key, tier, parts)
+		if short ~= "" then
+			self:ShowFootInfo(short .. " 이(가) 모자라요")
+			self:RefreshBulkPanel()
+			return
+		end
+		self.waiting = true
+		self:SetPrimary(false, "")
+		self:RefreshBulkPanel()
+		_CraftService:RequestCraftBulk(tier, self.craftJob, parts)
+		log("[Workshop] bulk craft requested tier=" .. tostring(tier) .. " job=" .. self.craftJob .. " parts=" .. parts)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshBulkPanel()
+		-- 일괄 판 그리기(1.1-J02). 켜짐 조건 = 부위 칸이 BULK 이고 마을 장비 상인(IsRegionShop). 아니면 판을 끄고 끝.
+		--   부위 토글 5개: 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(RefreshCraftSlotTabs 의 부위 칩과 같은 모양).
+		--   렙제 버튼 5개: 살 장비가 있고 · 그 전부를 살 메소 · 재료가 있고(BulkShort · N-34) · 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩).
+		if not isvalid(self.contentCraft) then return end
+		-- 제작 화면이 아닌 라우트(물약 · 수리 · 강화)에서는 건드리지 않는다 — 바닥 띠 안내가 그 화면 것을 덮으면 안 된다(OnMatchStart 가 창이 열린 채 부를 수 있다).
+		if self.route ~= "craft" and self.route ~= "shop_equip" then return end
+		local panel = self.contentCraft:GetChildByName("BulkPanel")
+		if not isvalid(panel) then return end
+		local key = self:ShopKey()
+		local show = (self.craftSlot == "BULK") and _ItemCatalog:IsRegionShop(key)
+		panel.Enable = show
+		if not show then return end
+		if self.bulkOff == nil then self.bulkOff = {} end
+		for part in string.gmatch(_ItemCatalog.BulkPartOrder, "[^,]+") do
+			local chip = panel:GetChildByName("Part_" .. part)
+			if isvalid(chip) then
+				local on = (self.bulkOff[part] ~= true)
+				self:SetOn(chip, "On", on)
+				self:ChipLabelStyle(self:Kid(chip, "Label"), on and "ink" or "", "#F3EEE2")
+			end
+		end
+		local parts = self:BulkPartsCsv()
+		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
+			local btn = panel:GetChildByName("Tier_" .. t)
+			if isvalid(btn) then
+				local n = math.floor(tonumber(t) or 0)
+				local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0) and (self:BulkShort(key, n, parts) == "")
+				if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = can end
+				self:SetOn(btn, "On", can)
+				self:ChipLabelStyle(self:Kid(btn, "Label"), can and "ink" or "", "#F3EEE2")
+			end
+		end
+		-- 부위 토글을 누를 때는 RefreshCraft 를 거치지 않으니 바닥 띠 안내도 여기서 맞춘다(RefreshCraft 의 일괄 분기와 같은 문장).
+		self:ShowFootInfo(self:BulkFootText())
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMatchStart()
+		-- 새 매치: 일괄 구매 부위 토글을 전부 켠 상태(= 꺼 둔 부위 없음)로 되돌린다(1.1-J03). OnboardingService.PushState 가 판 번호가 바뀐 첫 호출에서 부른다.
+		-- 창 열기 · 닫기에서는 건드리지 않는다 — 같은 매치 안에서는 닫았다 열어도 토글이 유지된다. 부위 토글은 화면 설정이라 서버 원장 없이 클라에만 둔다(서버는 요청마다 오는 partsCsv 만 쓴다).
+		self.bulkOff = {}
+		if self.isOpen then self:RefreshBulkPanel() end
+		log("[Workshop] bulk toggles reset (new match)")
+	end
+
 	@ExecSpace("ClientOnly")
 	method boolean CraftSlotMatches(string itemId)
 		-- 지금 고른 부위 분류에 이 장비가 들어가나. 전체 = 모두 · 특수 = 앱솔랩스만 · 나머지는 앱솔랩스를 뺀 그 부위.
 		local slot = self.craftSlot
 		if slot == "" or slot == "ALL" then return true end
+		-- 일괄(BULK) 칸은 판이 목록을 덮으므로 목록 값은 상관없다 — 비어 있다고 오해하지 않게 true(1.1-J02).
+		if slot == "BULK" then return true end
 		local special = string.sub(itemId, 1, 8) == "ABSOLAB_"
 		if slot == "SPECIAL" then return special end
 		if special then return false end
@@ -1372,6 +1556,8 @@ script WorkshopUIController extends Logic
 		log("[Workshop] craft list shop=" .. tostring(key) .. " job=" .. tostring(self.craftJob) .. " slot=" .. tostring(self.craftSlot) .. " n=" .. tostring(#self.craftView) .. " lv=" .. table.concat(lvs, ","))
 		self:RefreshCraftJobTabs(byJob)
 		self:RefreshCraftSlotTabs(byJob)
+		-- 일괄 구매 판(1.1-J02): "일괄" 칸일 때만 목록 자리에 뜬다. 직업 칩을 바꿔도 여기서 렙제 버튼 활성이 다시 계산된다.
+		self:RefreshBulkPanel()
 		if isvalid(self.craftGrid) then
 			self.craftGrid.TotalCount = #self.craftView
 			self.craftGrid:Refresh(true, true)
@@ -1462,6 +1648,12 @@ script WorkshopUIController extends Logic
 					end
 				end
 			end
+		end
+		-- 일괄(BULK) 칸(1.1-J02): 바닥 띠는 안내 한 줄뿐이고 주 버튼은 잠근다(구매는 판의 렙제 버튼이 한다).
+		if self.craftSlot == "BULK" and byJob then
+			self:ShowFootInfo(self:BulkFootText())
+			self:SetPrimary(false, "구매")
+			return
 		end
 		-- Footer: 비용 칩(재료 · 메소 · 교환은 봉인석) + 제작/구매/교환 버튼 (재료·메소는 서버가 최종 판정 · 재료 부족은 여기서 먼저 막는다)
 		local ready = false
@@ -1607,7 +1799,7 @@ script WorkshopUIController extends Logic
 				if isvalid(e) and e.TextGUIRendererComponent ~= nil then e.TextGUIRendererComponent.Text = s end
 			end
 			for _, n in ipairs({ "Empty", "EmptyArrow", "EmptySub" }) do self:SetOn(d, n, sel == nil) end
-			for _, n in ipairs({ "Name", "Desc", "BtnMinus", "QtyPlate", "QtyText", "BtnPlus", "QtyHint", "TotalLabel", "TotalIcon", "TotalText", "TotalUnit", "HaveText", "Frame" }) do
+			for _, n in ipairs({ "Name", "Desc", "BtnMinus", "QtyPlate", "QtyText", "BtnPlus", "BtnPlus5", "BtnPlus10", "QtyHint", "TotalLabel", "TotalIcon", "TotalText", "TotalUnit", "HaveText", "Frame" }) do
 				self:SetOn(d, n, sel ~= nil)
 			end
 			local icon = d:GetChildByName("Icon")
@@ -1636,6 +1828,11 @@ script WorkshopUIController extends Logic
 				local bp = d:GetChildByName("BtnPlus")
 				if isvalid(bm) and bm.ButtonComponent ~= nil then bm.ButtonComponent.Enable = (self.potionQty > 1) end
 				if isvalid(bp) and bp.ButtonComponent ~= nil then bp.ButtonComponent.Enable = (self.potionQty < sel.maxCount) end
+				-- +5 · +10(1.1-J04)도 +1 과 같은 끝(MaxCount)에서 비활성. 95 에서 +10 을 눌러도 위쪽 자르기가 99 로 맞춘다.
+				for _, n in ipairs({ "BtnPlus5", "BtnPlus10" }) do
+					local bq = d:GetChildByName(n)
+					if isvalid(bq) and bq.ButtonComponent ~= nil then bq.ButtonComponent.Enable = (self.potionQty < sel.maxCount) end
+				end
 				-- 총액 줄: "총 [메소] 2,500 메소" — 자릿수(글자 수)로 가운데 맞춘다. 메소가 모자라면 숫자가 빨갛다.
 				local numStr = self:Fmt(total)
 				local estW = 16 * #numStr

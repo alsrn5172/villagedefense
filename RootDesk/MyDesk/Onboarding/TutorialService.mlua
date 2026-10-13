@@ -4,7 +4,7 @@ script TutorialService extends Logic
 	--   처음 온 사람이 소개 8쪽 [튜토리얼 시작하기] · 도움말 [튜토리얼] 을 누르면(RequestStart) 매치처럼 인스턴스 룸(룸 키 tutorial_<번호>)을 만들어 혼자 보낸다.
 	--   룸 안의 매치 엔진은 그대로 돈다(마을 · 시설 · NPC 창이 진짜로 동작). Active 인 동안 각 서비스가 이 값을 보고
 	--   시계 · 웨이브 표 · 미점령 탈락 · 결과 · 계정 기록(업적 · 도감 · 플레이 기록 · 순위 보상)을 끈다 — 튜토리얼 결과는 전부 휘발.
-	--   장면 진행은 클라 TutorialDirector 가 하고, 서버는 장면이 부르는 일(RequestAction)만 한다: 달팽이 스폰 · 레벨 · 연출용 재화 · 웨이브 1회 · 순간이동.
+	--   장면 진행은 클라 TutorialDirector 가 하고, 서버는 장면이 부르는 일(RequestAction)만 한다: 달팽이 스폰 · 레벨 · 연출용 재화 · 웨이브 1회 · 순간이동 · 전사 스킬 지급(skill) · 전투 구간 이탈 복귀(back).
 	--   이미 인스턴스 룸 안이면(Maker 에서 매치 맵을 바로 열고 Play = TestPlayInstance) 룸을 만들지 않고 지금 방에서 시작한다(InPlace).
 	--   🔴 로비(정적 룸)에서는 Maker 여도 룸을 만든다 — 시작 맵이 인스턴스 맵이라 정적 룸에서는 MoveToMapPosition 이 조용히 안 넘어간다
 	--   (사용자 2026-10-07 "튜토리얼 시작하기 눌러도 튜토리얼 맵으로 이동을 안 한다" · 매치 출발도 Maker 에서 룸을 만든다).
@@ -59,6 +59,10 @@ script TutorialService extends Logic
 
 	-- 5단계 마을 보스(머쉬맘) 체력 = 1 — 한 대에 쓰러진다(사용자 2026-10-07 "튜토리얼 머쉬맘은 체력 1").
 	property integer BossWeakHp = 1
+
+	-- 5단계 마을 보스(머쉬맘) 판정 레벨 · 이름표 레벨 = 25 (사용자 2026-10-12 "튜토리얼 머쉬맘 Lv25" · 1.0.6 #23 을 1차(#205)에서 먼저). 0 이하면 덮어쓰지 않는다(BossInfo.Level).
+	--   실제 매치의 머쉬맘(BossInfo Lv30)은 그대로 — PrepareBoss 가 이 튜토리얼 룸의 보스 개체 하나에만 건다.
+	property integer TutorialBossLevel = 25
 
 	-- 클라도 읽는다: 이 방이 튜토리얼인가.
 	@Sync
@@ -294,6 +298,12 @@ script TutorialService extends Logic
 			ok = self:PrepareBoss(uid)
 		elseif kind == "ensuredef" then
 			ok = _LaneStateService ~= nil and _LaneStateService:TutorialEnsureDefenders(uid, self.OrangeMonsterId) > 0
+		elseif kind == "back" then
+			-- back:<맵>:<x>:<y> — 전투 구간 이탈 복귀(TutorialDirector.TickLeash · 1.0.3-M8-03)
+			ok = self:MoveBack(uid, parts[2] or "", tonumber(parts[3]) or 0, tonumber(parts[4]) or 0)
+		elseif kind == "skill" then
+			-- skill:<SkillId>[,<SkillId>…]:<레벨> — 전사 전직 스킬을 SP 없이(2-4k · 1.0.3-M8-05)
+			ok = self:GrantSkills(uid, parts[2] or "", math.floor(tonumber(parts[3]) or 1))
 		else
 			ok = false
 			log_warning("[Tutorial] unknown action " .. action)
@@ -341,6 +351,10 @@ script TutorialService extends Logic
 				local reward = unit:AddComponent("script.FarmReward")
 				if isvalid(reward) then
 					reward.MonsterId = monsterId
+				end
+				-- 몬스터 이름표(1.1-I04): `Lv.N 이름` · 레벨 0 → 도감 레벨(FarmReward.SpawnLevel 없음 → MonsterCatalog.LevelOfEntity).
+				if _MonsterNameTag ~= nil then
+					_MonsterNameTag:Attach(unit, _MonsterCatalog:GetName(monsterId), 0)
 				end
 				if hold then
 					if isvalid(unit.MovementComponent) then
@@ -494,7 +508,7 @@ script TutorialService extends Logic
 		if _MinionFlowService == nil then
 			return false
 		end
-		local villages = _MinionFlowService:QueueWave("TUTORIAL", "PHASE1", self.WaveCount, 1, self.WaveMonsterId, self.WaveHp, self.WaveAttack, 0, 0, 0, nil, 0)
+		local villages = _MinionFlowService:QueueWave("TUTORIAL", "PHASE1", self.WaveCount, 1, self.WaveMonsterId, self.WaveHp, self.WaveAttack, 0, 0, 0, nil, 0, 0)
 		-- 접수된 파병(5-2)은 이 웨이브 미니언이 다 나간 뒤 풀린다(MatchSessionLogic.FireWave 와 같은 순서).
 		_MinionFlowService:QueueDispatch("PHASE1", self.WaveCount * 1)
 		return villages > 0
@@ -503,7 +517,7 @@ script TutorialService extends Logic
 	@ExecSpace("ServerOnly")
 	method boolean PrepareBoss(string uid)
 		-- 5단계 마을 보스: 내 마을 보스방(VillageConfig.BossMapName)의 보스를 약하게(BossWeakHp) 해 두고 그 앞으로 옮긴다.
-		--   처치 보상(단풍 봉인석 · 낙인의 영혼석)은 BossRewardService 실제 경로 그대로. 입장료(지역 재화 25)는 받지 않는다 — 말풍선이 설명한다.
+		--   처치 보상(단풍 봉인석 · 낙인의 영혼석)은 BossRewardService 실제 경로 그대로. 입장료(지역 재화 ★별 50~100 · 1.1-E27)는 받지 않는다 — 말풍선이 설명한다.
 		local mapName = ""
 		local t = _DataService:GetTable("VillageConfig")
 		if t ~= nil then
@@ -540,6 +554,21 @@ script TutorialService extends Logic
 		end
 		if boss.Monster.Hp > self.BossWeakHp then
 			boss.Monster.Hp = self.BossWeakHp
+		end
+		-- 튜토리얼 머쉬맘 Lv25(1.0.6 #23 을 1차에서): 명중 · 보스 공격 회피 · 소환수가 읽는 판정 레벨(BossSkillRunner.BossLevel = LevelOverride 먼저)을 덮어쓰고,
+		--   스폰 때 BossSpawner 가 단 이름표(BossInfo Lv30)도 같은 값으로 다시 단다 → "Lv.25 머쉬맘". 이 튜토리얼 룸의 이 개체에만 걸린다(실제 매치의 머쉬맘은 LevelOverride 0 = Lv30 그대로).
+		---@type BossSkillRunner
+		local runner = boss.BossSkillRunner
+		if self.TutorialBossLevel > 0 and isvalid(runner) then
+			runner.LevelOverride = self.TutorialBossLevel
+			local info = (_BossCatalog ~= nil) and _BossCatalog:GetInfo(runner.BossId) or nil
+			if info ~= nil and _MonsterNameTag ~= nil then
+				_MonsterNameTag:Attach(boss, tostring(info.name or ""), self.TutorialBossLevel)
+			end
+			local tagName = isvalid(boss.NameTagComponent) and boss.NameTagComponent.Name or "-"
+			log("[Tutorial] boss level override=" .. tostring(runner.LevelOverride) .. " (BossInfo Lv" .. tostring(info ~= nil and info.level or "?") .. ") tag='" .. tostring(tagName) .. "' boss=" .. tostring(runner.BossId) .. " (" .. uid .. ")")
+		else
+			log_warning("[Tutorial] boss level override skipped runner=" .. tostring(isvalid(runner)) .. " level=" .. tostring(self.TutorialBossLevel))
 		end
 		local wp = boss.TransformComponent.WorldPosition
 		self:MoveTo(uid, mapName, Vector2(wp.x - 2.6, wp.y + 0.3))
@@ -675,6 +704,33 @@ script TutorialService extends Logic
 			return
 		end
 		p.PlayerComponent:MoveToMapPosition(mapId, pos)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean MoveBack(string uid, string mapId, number x, number y)
+		-- 전투 구간 이탈 복귀(1.0.3-M8-03): 지금 그 맵에 있을 때만(맵이 바뀐 요청은 무시) 시작점 +0.3(발판보다 조금 위)으로 순간이동하고 토스트로 알린다.
+		local p = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(p) or mapId == "" or p.CurrentMapName ~= mapId then
+			return false
+		end
+		self:MoveTo(uid, mapId, Vector2(x, y + 0.3))
+		self:Toast(uid, "너무 멀리 왔어요. 처음 자리로 돌아가요")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean GrantSkills(string uid, string ids, integer level)
+		-- 전사 전직 스킬을 SP 없이 준다(2-4k · 1.0.3-M8-05). ids = 쉼표로 이은 스킬 ID. 하나라도 못 주면 false(나머지는 그대로 준다).
+		local n = 0
+		local all = true
+		for id in string.gmatch(ids, "[^,]+") do
+			n = n + 1
+			if _PlayerSkillState == nil or not _PlayerSkillState:GrantSkillLevel(uid, id, level) then
+				all = false
+				log_warning("[Tutorial] skill grant failed " .. id .. " (" .. uid .. ")")
+			end
+		end
+		return n > 0 and all
 	end
 
 	@ExecSpace("ServerOnly")

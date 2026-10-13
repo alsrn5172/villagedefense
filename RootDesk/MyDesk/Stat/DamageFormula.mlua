@@ -4,43 +4,39 @@ script DamageFormula extends Logic
 	-- 순수 계산만 모아둔 Logic (상태 없음 · 서버/클라 어디서든 같은 결과). 계획서 §1-3 메이플 원본식.
 	--   StatValue = 주스탯×4 + 부스탯
 	--   DamageMax = StatValue × 총공격력 ÷ 100
-	--   DamageMin = DamageMax × 숙련도(0.15~0.9)
+	--   DamageMin = DamageMax × 숙련도(0.15~1.0 · 1.1-A15)
 	--   Raw       = [Min, Max] 균등 랜덤   ← "범위 랜덤 공격력"
 	--   방어 감산  = Raw × (1 − Def ÷ (Def + DefenseK)),  최소 1
-	--   B4/WO-050: 명중 = HitCheck · 회피 = DodgeCheck · 치명 상한 100% · 받는 피해 방어는 ApplyPlayerDefense
+	--   B4/WO-050 · 1.1: 명중 = HitCheck · 회피 = DodgeCheck(공격자 레벨 = StatService.ResolveTarget · 보스는 TryPlayerDodge) · 치명 상한 100% · 받는 피해 방어는 ApplyPlayerDefense
 	-- ⚠ 난이도(DifficultyConfig) 배수는 여기서 곱하지 않는다 — 서버 단일 적용점(Economy/CostResolver, WP0)에서만.
 
 	-- 방어력 감산 상수. 방어 100 이면 50% 감산.
 	property number DefenseK = 100
 
-	-- 명중·회피 공식 튜닝값(WO-050 §2-12). 몹 회피와 명중은 레벨에서 파생한다.
-	property number MobAvoidBase = 4
+	-- 명중 공식(1.1-A04 · A05 · A06 · 단위 %p): 명중 확률 = 100 + 명중률 − 레벨 역보정 × (대상 레벨 − 내 레벨, 높을 때만) − 대상 회피율 · 판정만 0~100% 로 자른다.
+	-- 몬스터 회피율은 고정이다 — 일반 10% · 보스 20% (원문 L42~L45). 대상 레벨 · 분류는 StatService.ResolveTarget 한 곳에서 정한다.
+	property number MobAvoidPct = 10
 
-	property number MobAvoidPerLevel = 1.0
+	property number BossAvoidPct = 20
 
-	property number AvoidWeight = 0.2
+	property number HitPenaltyPerLevel = 10
 
-	property number HitPenaltyPerLevel = 0.05
+	-- 플레이어 회피(1.1-A09 · A10): 회피 확률 = 회피율(%p) + 나보다 낮은 몬스터 1레벨당 이만큼 − 몬스터 명중률 보정 · 0 아래만 자른다(상한 없음 · 100 이상이면 반드시 MISS).
+	property number DodgeGapPerLevelPct = 10
 
-	property number HitFloor = 0.10
-
-	property number MobAccBase = 10
-
-	property number MobAccPerLevel = 4
-
-	property number AccWeight = 3.9
-
-	property number DodgeGapPerLevel = 0.02
-
-	property number DodgeCap = 0.35
-
-	-- 크리티컬 확률 = CritBase + LUK × CritPerLuk, 상한 CritCap
+	-- 치명타(1.1-A12 · A13 · G05): 원확률 = CritBase + 유효 LUK × CritPerLuk (유효 LUK = 최종 LUK × LUK 추가효과 효율 · 주 · 부스탯 1.0 / 그 외 0.1).
+	--   실제 확률 = min(원확률, CritCap) · 치명타 피해 = CritDamageBase + (원확률 − 1, 넘칠 때만). 기본 공격 · 스킬 · 궁극기 모두 같은 판정(사용자 2026-10-12).
 	property number CritBase = 0.05
 
-	-- B4: 만렙 도적 올-LUK 보석 LUK 358 에서 95%p → (1 − 0.05) ÷ 358. 상한 100%.
-	property number CritPerLuk = 0.00265
+	-- 유효 LUK 1당 +0.3%p (원문 L591 · 1.0.2 확정). 예: 주 · 부스탯 LUK 100 → 35% · 비주력 LUK 100 → 8%.
+	property number CritPerLuk = 0.003
 
 	property number CritCap = 1.0
+
+	property number CritDamageBase = 2.0
+
+	-- 숙련도 상한(1.1-A15 · 0.9 → 1.0). 하한 0.15 는 그대로.
+	property number MasteryMax = 1.0
 
 	method number StatValue(integer primary, integer secondary)
 		-- 메이플 원본 스탯값: 주스탯×4 + 부스탯.
@@ -48,9 +44,9 @@ script DamageFormula extends Logic
 	end
 
 	method any CalcRange(number statValue, number totalAttack, number mastery)
-		-- 데미지 범위 { min, max } (정수). mastery 는 0.15~0.9 로 클램프.
+		-- 데미지 범위 { min, max } (정수). mastery 는 0.15~MasteryMax(1.0) 로 클램프.
 		if mastery < 0.15 then mastery = 0.15 end
-		if mastery > 0.9 then mastery = 0.9 end
+		if mastery > self.MasteryMax then mastery = self.MasteryMax end
 		local maxDmg = math.floor(statValue * totalAttack / 100)
 		if maxDmg < 1 then maxDmg = 1 end
 		local minDmg = math.floor(maxDmg * mastery)
@@ -66,45 +62,80 @@ script DamageFormula extends Logic
 		return minDmg + math.floor(_UtilLogic:RandomDouble() * (maxDmg - minDmg + 1))
 	end
 
-	method boolean HitCheck(number accuracy, integer attackerLevel, integer targetLevel)
-		-- 몹 회피를 반영한 명중률에 레벨 차 페널티를 적용한다.
-		local mobAvoid = self.MobAvoidBase + self.MobAvoidPerLevel * targetLevel
-		local denom = accuracy + mobAvoid * self.AvoidWeight
-		local base = 1
-		if denom > 0 then base = accuracy / denom end
+	method number HitChance(number accuracyPct, integer attackerLevel, integer targetLevel, number targetAvoidPct)
+		-- 최종 명중 확률(0~1) — 100 + 명중률 − 10×(대상이 높은 레벨 차) − 대상 회피율(1.1-A06). 최저 10% 보장은 없다. 0 이하 = 반드시 MISS · 100 이상 = 반드시 명중.
 		local gap = math.max(0, targetLevel - attackerLevel)
-		local rate = base - self.HitPenaltyPerLevel * gap
-		if rate < self.HitFloor then rate = self.HitFloor end
-		if rate > 1 then rate = 1 end
-		return _UtilLogic:RandomDouble() < rate
+		local pct = 100 + accuracyPct - self.HitPenaltyPerLevel * gap - targetAvoidPct
+		if pct < 0 then pct = 0 elseif pct > 100 then pct = 100 end
+		return pct / 100
 	end
 
-	method boolean DodgeCheck(number avoid, integer playerLevel, integer mobLevel)
-		-- 몹 명중을 기준으로 회피율을 계산하고, 레벨 차 보정을 적용한다.
-		local mobAcc = self.MobAccBase + self.MobAccPerLevel * mobLevel
-		local denom = avoid + mobAcc * self.AccWeight
-		local base = 0
-		if denom > 0 then base = avoid / denom end
-		local rate = base + self.DodgeGapPerLevel * (playerLevel - mobLevel)
-		if rate < 0 then rate = 0 end
-		if rate > self.DodgeCap then rate = self.DodgeCap end
-		return _UtilLogic:RandomDouble() < rate
+	method boolean HitCheck(number accuracyPct, integer attackerLevel, integer targetLevel, number targetAvoidPct)
+		-- 명중 판정 한 번. RandomDouble 이 [0,1) 이라 확률 0 은 늘 MISS, 1 은 늘 명중.
+		return _UtilLogic:RandomDouble() < self:HitChance(accuracyPct, attackerLevel, targetLevel, targetAvoidPct)
+	end
+
+	method number DodgeChance(number avoidPct, integer playerLevel, integer mobLevel, number mobAccAddPct)
+		-- 플레이어 회피 확률(0~, 1.1-A09): 회피율 + 10%p × (나보다 낮은 레벨 차) − 몬스터 명중률 보정(커닝 억제기 오라 받은 수비대 · A10). 높은 몬스터에게는 보정 없음.
+		--   명중률 보정은 회피 합계(스탯 회피 + 레벨 차 보정)에서 뺀다(사용자 2026-10-12). 0 아래만 자르고 상한은 없다.
+		local gap = math.max(0, playerLevel - mobLevel)
+		local pct = avoidPct + self.DodgeGapPerLevelPct * gap - (mobAccAddPct or 0)
+		if pct < 0 then pct = 0 end
+		return pct / 100
+	end
+
+	method boolean DodgeCheck(number avoidPct, integer playerLevel, integer mobLevel, number mobAccAddPct)
+		-- 회피 판정 한 번. 확률 1 이상이면 반드시 회피(MISS).
+		return _UtilLogic:RandomDouble() < self:DodgeChance(avoidPct, playerLevel, mobLevel, mobAccAddPct)
+	end
+
+	method boolean TryPlayerDodge(Entity defender, integer attackerLevel, number accAdd, string sourceName)
+		-- 보스 공격(접촉 · 스킬 · 투사체)의 플레이어 회피 판정(1.1-A11 ② · 사용자 2026-10-12 "보스 공격도 회피"). 회피면 MISS 글자를 띄우고 true.
+		-- 서버 피격 파이프라인(CalcDamage · self:IsServer() 가드)에서만 부른다 — 스탯 원장이 서버에만 있다. 일반 몹 · 미니언 · 수비대는 MonsterAttack/FactionAttack.TryDodgePlayer.
+		if not isvalid(defender) or not isvalid(defender.PlayerComponent) or _StatService == nil then return false end
+		local userId = defender.PlayerComponent.UserId
+		if userId == nil or userId == "" then return false end
+		local stats = _StatService:GetLedger(userId)
+		if stats == nil or stats.final == nil then return false end
+		local playerLevel = math.max(1, math.floor(stats.level or 1))
+		local avoid = stats.final.avoid or 0
+		local mobLevel = math.max(1, attackerLevel)
+		if not self:DodgeCheck(avoid, playerLevel, mobLevel, accAdd) then return false end
+		log("[Stat] DODGE source=" .. tostring(sourceName) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " avoid=" .. tostring(avoid) .. " (" .. userId .. ")")
+		self:ShowMiss(defender)
+		return true
+	end
+
+	method number DefenseFactor(number defense)
+		-- 방어 배율 = K / (방어 + K) (1.1-B02): 양수 방어는 예전 식(1 − 방어/(방어+K))과 같은 값 · 음수 방어(도발 저하)는 1 보다 커져 받는 피해가 는다.
+		-- 방어가 −K 이하로 가면 배율이 무한대가 되므로 −(K−1) 에서 자른다.
+		local d = math.max(defense, -(self.DefenseK - 1))
+		return self.DefenseK / (d + self.DefenseK)
 	end
 
 	method integer ApplyDefense(integer raw, number defense)
-		-- 방어력 감산. 방어 0 이면 그대로. 최소 1.
-		if defense <= 0 then
-			if raw < 1 then return 1 end
-			return raw
-		end
-		local final = math.floor(raw * (1 - defense / (defense + self.DefenseK)))
+		-- 방어력 감산(음수 방어면 증가 · DefenseFactor). 방어 0 이면 그대로. 최소 1.
+		if raw < 1 then raw = 1 end
+		if defense == 0 then return raw end
+		local final = math.floor(raw * self:DefenseFactor(defense))
 		if final < 1 then final = 1 end
 		return final
 	end
 
+	method number TargetDefenseOf(Entity defender)
+		-- 몬스터 · 보스의 지금 방어 = Monster.Defense(스폰한 곳이 도감 값을 넣음) + 도발 방어력 저하(1.1-B02 · 0 이하 · 서버 기록). Monster 가 없으면 0.
+		if not isvalid(defender) then return 0 end
+		---@type Monster
+		local mon = defender.Monster
+		if not isvalid(mon) then return 0 end
+		local def = mon.Defense or 0
+		if _SkillExecutors ~= nil then def = def + _SkillExecutors:GetTauntDefenseDelta(defender) end
+		return def
+	end
+
 	method integer ApplyPlayerDefense(Entity defender, integer raw)
 		-- 플레이어가 받는 피해 공용 헬퍼 (B4 · WO-027 §9-0): raw × 100/(100+방어) · 최소 1. 플레이어가 아니면 raw 그대로.
-		-- 방어 = StatService 최종치(장비+강화+STR×0.2). 호출: 일반몹 접촉(MonsterAttack) · 보스 스킬/투사체 · 시설/수비대(FactionAttack · ×PlayerDamageMul 뒤).
+		-- 방어 = StatService 최종치(장비+강화+STR×0.1 · 비주력 ×0.01). 호출: 일반몹 접촉(MonsterAttack) · 보스 스킬/투사체 · 시설/수비대(FactionAttack · ×PlayerDamageMul 뒤).
 		-- PlayerHit(B) 은 손대지 않는다. 클라에서 불리면 StatService 원장이 없어 방어 0 = 감산 없음(표시용).
 		if raw < 1 then raw = 1 end
 		if not isvalid(defender) or not isvalid(defender.PlayerComponent) then return raw end
@@ -113,21 +144,31 @@ script DamageFormula extends Logic
 		return self:ApplyDefense(raw, def)
 	end
 
-	method number CritRate(integer luk)
-		-- 크리티컬 확률 (스탯 기반 · 임시식).
-		local rate = self.CritBase + luk * self.CritPerLuk
+	method integer ApplyTargetDefense(Entity defender, integer raw)
+		-- 몬스터 · 보스가 받는 피해 공용 헬퍼 (1.1-E21 · 사용자 2026-10-12: 기본 공격 · 스킬 모두, 보스 포함).
+		-- 방어 = TargetDefenseOf(Monster.Defense + 도발 저하) · raw × 100/(100+방어) · 최소 1. 도발로 음수가 되면 피해가 는다(1.1-B02). Monster 가 없거나 방어 0 이면 raw 그대로.
+		-- 호출: 기본 공격(StatService.CalcPlayerDamage) · 스킬(SkillAttack · SkillProjectile CalcDamage). 고정 피해 · 반사 · 도발 피해 1 경로는 부르지 않는다.
+		if raw < 1 then raw = 1 end
+		local def = self:TargetDefenseOf(defender)
+		if def == 0 then return raw end
+		return self:ApplyDefense(raw, def)
+	end
+
+	method number CritRawRate(number effLuk)
+		-- 치명타 원확률(100% 를 넘을 수 있다 · 1.1-A12). effLuk = 최종 LUK × LUK 효율.
+		return self.CritBase + effLuk * self.CritPerLuk
+	end
+
+	method number CritRate(number effLuk)
+		-- 실제 치명타 확률 = min(원확률, CritCap). 넘친 몫은 CritDamageRate 가 피해로 바꾼다.
+		local rate = self:CritRawRate(effLuk)
 		if rate > self.CritCap then rate = self.CritCap end
 		return rate
 	end
 
-	method integer DerivedAccuracy(integer dex, integer luk)
-		-- 스탯에서 파생되는 명중률 (메이플 원본: DEX×0.8 + LUK×0.5).
-		return math.floor(dex * 0.8 + luk * 0.5)
-	end
-
-	method integer DerivedAvoid(integer dex, integer luk)
-		-- 스탯에서 파생되는 회피율 (메이플 원본: DEX×0.25 + LUK×0.5).
-		return math.floor(dex * 0.25 + luk * 0.5)
+	method number CritDamageRate(number effLuk)
+		-- 치명타 피해 배율(1.1-A13) = 200% + 100% 를 넘은 원확률만큼. 예: 원확률 125% → 실제 100% · 피해 225%.
+		return self.CritDamageBase + math.max(self:CritRawRate(effLuk) - 1.0, 0)
 	end
 
 	-- MISS 글자를 띄울 데미지 스킨 ID(몬스터가 쓰는 스킨과 같은 것 · Monster.DamageSkinRUID). 스킨에 MISS 모양이 없으면 글자가 안 보일 수 있다.

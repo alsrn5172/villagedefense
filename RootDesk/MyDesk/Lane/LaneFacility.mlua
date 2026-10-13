@@ -2,7 +2,8 @@
 script LaneFacility extends Component
 
 	-- 방어 시설 엔티티(포탑·억제기·넥서스) 공통 컴포넌트 — WO-012 ① (2026-09-07). LaneFacilityService 가 스폰 직후 AddComponent 로 붙이고 VillageId/Stage 를 채운다.
-	-- 피격: HitEvent → 서버가 LaneStateService 원장에서 HP 를 깎는다 (엔티티는 HP 를 안 들고 있다). 3페이즈 전 플레이어 공격은 저항(PlayerDamageMulBeforePhase3).
+	-- 피격: HitEvent → 서버가 LaneStateService 원장에서 HP 를 깎는다 (엔티티는 HP 를 안 들고 있다).
+	-- 시설 방어 보정(1.1-H10): 사거리 안에 적팀 미니언이 없으면 플레이어 피해 5%(NoMinionDamageMul) · 있으면 100% — 페이즈와 무관(예전 = 3페이즈 전 5%).
 	-- 넥서스 클릭(TouchEvent · 클라) → RequestClaim → VillageOwnership.Claim. 시각(색·파괴)은 LaneFacilityService.ApplyVisual 이 원장 값으로 칠한다.
 
 	@Sync
@@ -11,9 +12,32 @@ script LaneFacility extends Component
 	@Sync
 	property string Stage = ""
 
-	property number PlayerDamageMulBeforePhase3 = 0.05
+	-- 사거리 안 적팀 미니언이 없을 때 플레이어(투사체 시전자 포함)가 주는 피해 배율(1.1-H10 · 옛 PlayerDamageMulBeforePhase3). 미니언 피해는 그대로.
+	property number NoMinionDamageMul = 0.05
 
-	-- 페리온 억제기 반사의 상한: 한 번의 반사로 돌려줄 최대 피해. 0 = 무제한. F-6 확정(사용자 2026-09-13): **상한 없음 · 받은 피해 ×10 그대로.** property 는 안전망으로만 남긴다.
+	-- 미니언 조건 구역(1.1-H09): 중심 = (시설 x, 시설 y + BoxOffsetY) · 가로 반폭 RangeHalfW · 세로 = 바닥에서 위로 4.0(반높이 2.0) — 포탑 공격 상자와 같은 모양(H16).
+	--   LaneFacilityService.ApplyCombat 이 단계마다 넣는다(포탑 = 포탑 사거리 · 억제기 = 억제기 사거리 · 넥서스 = TowerConfig CORE Range 4.5).
+	@HideFromInspector
+	property number RangeHalfW = 0
+
+	@HideFromInspector
+	property number BoxOffsetY = 0
+
+	property number MinionScanInterval = 0.2
+
+	@HideFromInspector
+	property boolean minionNear = false
+
+	@HideFromInspector
+	property number minionScanAt = -999
+
+	-- 방어막 그림 층(1.1-H12) = 시설과 같은 2(LaneFacilityService.FacilityOrderInLayer) — 몬스터(3) · 플레이어(4)를 가리지 않는다.
+	property integer ShieldOrderInLayer = 2
+
+	@HideFromInspector
+	property number shieldLayerAt = 0
+
+	-- 페리온 억제기 반사의 상한: 한 번의 반사로 돌려줄 최대 피해. 0 = 무제한. 반사 배율 = 플레이어 ×1(REFLECT_PLAYER) · 미니언 ×5(REFLECT) — 1.1-H15. property 는 안전망으로만 남긴다.
 	property integer ReflectCap = 0
 
 	-- 클릭 영역(TouchReceiveComponent)의 월드 크기 — 넥서스만(서버가 LaneFacilityService.HitSize 로 정한다 · 0 = 건드리지 않음). WO-040 M2 · 2026-10-02.
@@ -34,9 +58,14 @@ script LaneFacility extends Component
 	property number ZoneHeight = 0
 
 	method void OnUpdate(number delta)
-		-- 클라: 터치 영역이 TouchW × TouchH(월드)가 아니면 맞춘다. TouchArea 는 로컬 단위 — 실제 크기 = 값 × Scale. 엔진이 영역을 다시 맞춰도(AutoFit) 다음 프레임에 되돌린다.
-		if self.TouchW <= 0 or self.TouchH <= 0 then return end
+		-- 클라: 방어막 그림 층을 맞추고(1초마다 · 1.1-H12), 터치 영역이 TouchW × TouchH(월드)가 아니면 맞춘다. TouchArea 는 로컬 단위 — 실제 크기 = 값 × Scale. 엔진이 영역을 다시 맞춰도(AutoFit) 다음 프레임에 되돌린다.
 		if not self:IsClient() then return end
+		self.shieldLayerAt = self.shieldLayerAt - delta
+		if self.shieldLayerAt <= 0 then
+			self.shieldLayerAt = 1.0
+			self:ApplyShieldLayer()
+		end
+		if self.TouchW <= 0 or self.TouchH <= 0 then return end
 		local tr = self.Entity.TouchReceiveComponent
 		if not isvalid(tr) then return end
 		local sc = self.Entity.TransformComponent.Scale
@@ -50,6 +79,18 @@ script LaneFacility extends Component
 			tr.TouchArea = want
 			tr.Offset = Vector2(0, 0)
 			log(string.format("[Facility] touch area %s:%s -> world (%.2f,%.2f) local (%.2f,%.2f)", self.VillageId, self.Stage, self.TouchW, self.TouchH, want.x, want.y))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyShieldLayer()
+		-- 방어막 그림(자식 FacilityShield · 1.1-H12)의 OrderInLayer 를 ShieldOrderInLayer 로 맞춘다 — 서버가 쓴 값은 클라로 안 온다(AuraEmitter.ApplyClientLayer 와 같은 방식).
+		local child = self.Entity:GetChildByName("FacilityShield", false)
+		if not isvalid(child) then return end
+		local sr = child.SpriteRendererComponent
+		if isvalid(sr) and sr.OrderInLayer ~= self.ShieldOrderInLayer then
+			sr.OrderInLayer = self.ShieldOrderInLayer
+			log("[Facility] client shield layer " .. self.VillageId .. ":" .. self.Stage .. " -> " .. tostring(sr.SortingLayer) .. "/" .. tostring(self.ShieldOrderInLayer))
 		end
 	end
 
@@ -85,7 +126,7 @@ script LaneFacility extends Component
 	@ExecSpace("ServerOnly")
 	@EventSender("Self")
 	handler HandleHitEvent(HitEvent event)
-		-- 피해 → 원장. 플레이어 공격은 3페이즈 전 저항. 미니언(진영 11~15)은 그대로.
+		-- 피해 → 원장. 플레이어 공격은 사거리 안 적팀 미니언이 없으면 5%(1.1-H10). 미니언(진영 11~15)은 그대로.
 		if _LaneStateService == nil or self.VillageId == "" or self.Stage == "" then return end
 		local dmg = event.TotalDamage or 0
 		if dmg <= 0 then return end
@@ -102,11 +143,9 @@ script LaneFacility extends Component
 		end
 		if isPlayer then
 			attacker = player   -- 아래 저항·안내·반사는 전부 시전자 기준
-			-- 🔴 인덱스가 아니라 **페이즈 이름**으로 판정한다 (WO-014).
-			--    MinionPhaseConfig 가 4행 → 5행이 되면서 옛 `PhaseIndex() < 3` 은 한 칸 밀렸고,
-			--    1페이즈부터 시설이 플레이어에게 풀데미지를 맞는 회귀가 났다. 앞으로 행을 더 늘려도 안 깨지게 이름 비교로 고정.
-			local phaseName = (_MatchSessionLogic ~= nil) and _MatchSessionLogic.CurrentPhaseName or ""
-			if phaseName ~= "PHASE3" then dmg = math.max(1, math.floor(dmg * self.PlayerDamageMulBeforePhase3)) end
+			-- 시설 방어 보정(1.1-H10): 사거리(구역) 안에 적팀 미니언이 1마리도 없으면 5% · 있으면 100%. 페이즈와 무관(예전 3페이즈 전 5% 규칙 삭제).
+			--   방어막 그림(LaneFacilityService 의 3페이즈 전 표시 · H12)은 표시 전용 — 피해는 이 판정만 따른다.
+			if not self:HasEnemyMinionInRange() then dmg = math.max(1, math.floor(dmg * self.NoMinionDamageMul)) end
 		end
 		local result = _LaneStateService:ApplyDamage(self.VillageId, self.Stage, dmg, isvalid(attacker) and attacker.Name or "?")
 		if result ~= "" then
@@ -116,21 +155,89 @@ script LaneFacility extends Component
 			end
 			return
 		end
-		-- 페리온 억제기 반사 (WO-021 · REFLECT 특성): 게이트를 통과해 **실제로 들어간 피해** × 배율을 공격자에게. 플레이어 상대로도 같은 배율(원문).
+		-- 페리온 억제기 반사 (WO-021 · 1.1-H15): 게이트를 통과해 **실제로 들어간 피해**(미니언이 없으면 5% 로 깎인 값) × 배율을 공격자에게 — 플레이어 = REFLECT_PLAYER(×1) · 그 밖(미니언 · 파병 유닛) = REFLECT(×5).
 		-- 무적 중엔 위에서 이미 돌아갔으므로 반사도 없다. FactionAttack.DoReflect 가 대상 하나에게만 고정 피해로 준다 — 시설끼리는 서로 안 때리므로 반사가 반사를 부르지 않는다.
 		local st = _LaneStateService:FacilityState(self.VillageId, self.Stage)
 		local lv = (st ~= nil) and st.lv or 1
-		local reflect = _LaneStateService:TraitValue(self.VillageId, self.Stage, "REFLECT", lv)
+		local key = "REFLECT"
+		if isPlayer then key = "REFLECT_PLAYER" end
+		local reflect = _LaneStateService:TraitValue(self.VillageId, self.Stage, key, lv)
 		if reflect > 0 and isvalid(attacker) then
 			local amount = math.floor(dmg * reflect)
 			if self.ReflectCap > 0 then amount = math.min(amount, self.ReflectCap) end
 			---@type FactionAttack
 			local atk = self.Entity.FactionAttack
 			if isvalid(atk) and amount > 0 then
-				log("[Facility] " .. self.VillageId .. " " .. self.Stage .. " REFLECT x" .. tostring(reflect) .. " = " .. tostring(amount) .. " -> " .. attacker.Name)
+				log("[Facility] " .. self.VillageId .. " " .. self.Stage .. " " .. key .. " x" .. tostring(reflect) .. " = " .. tostring(amount) .. " -> " .. attacker.Name)
 				atk:DoReflect(attacker, amount)
+			else
+				-- 1.1-L06(페리온 반사 진단): 반사 배율은 있는데 공격 컴포넌트가 없거나 반사량이 0 이라 건너뛴 경우. 저항 적용 뒤 dmg 가 작아 amount 가 0 이 되는 때도 여기에 찍힌다.
+				log_warning("[Facility] REFLECT skipped " .. self.VillageId .. " " .. self.Stage .. " " .. key .. " atk=" .. tostring(isvalid(atk)) .. " amount=" .. tostring(amount) .. " dmgAfterResist=" .. tostring(dmg))
+			end
+		elseif reflect > 0 then
+			-- 1.1-L06: 공격자 엔티티가 반사 직전에 사라진 경우.
+			log_warning("[Facility] REFLECT skipped " .. self.VillageId .. " " .. self.Stage .. " " .. key .. " attacker invalid dmgAfterResist=" .. tostring(dmg))
+		end
+	end
+
+	method boolean HasEnemyMinionInRange()
+		-- 미니언 조건(1.1-H09): 구역(RangeHalfW · 바닥에서 위로 4.0) 안에 살아 있는 적팀 미니언(MinionUnit · 파병 유닛 · 좀비머쉬맘 포함)이 1마리 이상인가.
+		--   플레이어는 세지 않는다. MinionScanInterval(0.2초)마다 한 번 다시 훑고 그 사이엔 앞 결과. ExecSpace 없음(FactionAttack.CalcDamage 에서 부른다 · 서버 가드).
+		if not self:IsServer() then return false end
+		local now = _UtilLogic.ElapsedSeconds
+		if now - self.minionScanAt < self.MinionScanInterval then return self.minionNear end
+		self.minionScanAt = now
+		local near = self:ScanEnemyMinion()
+		if near ~= self.minionNear then log("[Facility] minion-near " .. self.VillageId .. ":" .. self.Stage .. " -> " .. tostring(near)) end
+		self.minionNear = near
+		return near
+	end
+
+	method boolean ScanEnemyMinion()
+		-- 구역 = 중심 (시설 x, 시설 y + BoxOffsetY) · 가로 반폭 RangeHalfW · 세로 반높이 2.0. 미니언 피격 상자(FactionAttack.HitRect 와 같은 식)가 겹치면 true.
+		if self.RangeHalfW <= 0 then return false end
+		local map = self.Entity.CurrentMap
+		local t = self.Entity.TransformComponent
+		if not isvalid(map) or not isvalid(t) then return false end
+		local pos = t.WorldPosition
+		local cx = pos.x
+		local cy = pos.y + self.BoxOffsetY
+		local halfH = 2.0
+		local comps = map:GetChildComponentsByTypeName("script.MinionUnit", true)
+		if comps == nil then return false end
+		for _, mu in ipairs(comps) do
+			local e = mu.Entity
+			if isvalid(e) and isvalid(e.TransformComponent) then
+				---@type Monster
+				local mon = e.Monster
+				local alive = not (isvalid(mon) and mon.IsDead)
+				if alive and (_FactionLogic == nil or _FactionLogic:IsEnemy(self.Entity, e)) then
+					local p = e.TransformComponent.WorldPosition
+					local rcx = p.x
+					local rcy = p.y + 0.6
+					local hw = 0.4
+					local hh = 0.6
+					local hit = e.HitComponent
+					if isvalid(hit) then
+						local sc = e.TransformComponent.Scale
+						local sx = math.abs(sc.x)
+						local sy = math.abs(sc.y)
+						if sx == 0 then sx = 1 end
+						if sy == 0 then sy = 1 end
+						local bw = hit.BoxSize.x * sx
+						local bh = hit.BoxSize.y * sy
+						if bw > 0 and bh > 0 then
+							hw = bw * 0.5
+							hh = bh * 0.5
+							rcx = p.x + hit.ColliderOffset.x * sx
+							rcy = p.y + hit.ColliderOffset.y * sy
+						end
+					end
+					if math.abs(rcx - cx) <= self.RangeHalfW + hw and math.abs(rcy - cy) <= halfH + hh then return true end
+				end
 			end
 		end
+		return false
 	end
 
 	@ExecSpace("ServerOnly")

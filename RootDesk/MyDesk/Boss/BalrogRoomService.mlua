@@ -39,6 +39,11 @@ script BalrogRoomService extends Logic
 	-- 방에 들어가면 서는 곳 = 방의 복귀 포탈 앞
 	property string RoomArrivePortal = "P_To_Sleepywood_Village_MinimiMain"
 
+	-- 발록 도전 전체 알림 문장(1.1-H07 · 원문 L662). {마을} = 도전자 마을 이름 · 마을이 없는 도전자는 아래 닉네임 문장({이름}).
+	property string ChallengeAlertText = "{마을} 마을의 주인이 발록에 도전하고 있어요!"
+
+	property string ChallengeAlertNickText = "{이름} 님이 발록에 도전하고 있어요!"
+
 	property string VillageMap = "Sleepywood_Village_MinimiMain"
 
 	-- 마을로 나오면 서는 곳 = 마을의 발록 입구 포탈 앞
@@ -247,7 +252,7 @@ script BalrogRoomService extends Logic
 		-- 이번 매치 ★에 해당하는 영혼석 개수. 표가 이상하면 ★ 그대로.
 		local d = 1
 		if _MatchSessionLogic ~= nil then d = math.max(1, math.min(5, _MatchSessionLogic.Difficulty)) end
-		-- B6: DifficultyRule.BALROG_TICKET (★1/3/5 = 5/30/200). 표에 없으면 TicketCosts 속성 폴백.
+		-- B6: DifficultyRule.BALROG_TICKET (★1/3/5 = 5/30/100 · 1.1-E26 ★5 200 → 100). 표에 없으면 TicketCosts 속성 폴백.
 		if _DifficultyService ~= nil then
 			local t = math.floor(_DifficultyService:GetNumFor(d, "BALROG_TICKET"))
 			if t > 0 then return t end
@@ -262,14 +267,15 @@ script BalrogRoomService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer BossMaxHp()
-		-- 도감의 발록 최대 HP × ★ 배율(B6 · BALROG_HP_MUL). 6방 모두 같다(BossId 하나를 공유한다). 매치 중 굳힌 값이 있으면 그 값.
+		-- 도감의 발록 최대 HP × 레벨 배율 × ★ 배율(B6 · BALROG_HP_MUL · 1.1-E04 BossCatalog.FinalMaxHp = BossSpawner 와 같은 함수). 6방 모두 같다(BossId 하나를 공유한다).
+		-- 매치 중 굳힌 값이 있으면 그 값. 예: Lv40 · 136,800 × 25 → ★1 1,710,000 · ★3 3,420,000 · ★5 6,840,000.
 		if self.cachedMaxHp > 0 then return self.cachedMaxHp end
 		if _BossCatalog == nil then return 0 end
 		local info = _BossCatalog:GetInfo(self.BossId)
 		if info == nil then return 0 end
-		local hp = math.floor(info.maxHp)
-		if _DifficultyService ~= nil then hp = math.max(1, math.floor(info.maxHp * _DifficultyService:GetMul("BALROG_HP_MUL") + 0.5)) end
-		return hp
+		local starMul = 1
+		if _DifficultyService ~= nil then starMul = _DifficultyService:GetMul("BALROG_HP_MUL") end
+		return _BossCatalog:FinalMaxHp(info, starMul)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -446,6 +452,40 @@ script BalrogRoomService extends Logic
 		self:Toast(userId, "발록 방 " .. tostring(room) .. " — " .. tostring(math.floor(self.ChallengeSeconds)) .. "초")
 		log("[BalrogRoom] ARRIVE " .. userId .. " 방" .. tostring(room) .. " 영혼석 -" .. tostring(need) ..
 			" 발록HP=" .. tostring(self.lastHp[room] or -1))
+		self:AlertChallenge(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AlertChallenge(string userId)
+		-- 발록 도전 전체 알림(1.1-H07): 도착(입장권 차감 성공) 순간 도전자를 뺀 참가자 전원에게 — 탈락한 관전자 포함(ToastHere 가 방에 없는 유저만 거른다).
+		--   마을이 없는 도전자는 닉네임 문장으로.
+		if _MatchSessionLogic == nil then return end
+		local vid = (_LaneStateService ~= nil) and _LaneStateService:VillageOfUser(userId) or ""
+		local text = ""
+		local subs = 0
+		if vid ~= "" then
+			text, subs = string.gsub(self.ChallengeAlertText, "{마을}", _LaneStateService:VillageName(vid))
+		else
+			local nick = userId
+			local user = _UserService:GetUserEntityByUserId(userId)
+			if isvalid(user) and isvalid(user.PlayerComponent) and user.PlayerComponent.Nickname ~= "" then nick = user.PlayerComponent.Nickname end
+			text, subs = string.gsub(self.ChallengeAlertNickText, "{이름}", nick)
+		end
+		local n = 0
+		for _, uid in ipairs(_MatchSessionLogic.participants or {}) do
+			if uid ~= userId then
+				_MatchSessionLogic:ToastHere(uid, text)
+				n = n + 1
+			end
+		end
+		log("[BalrogRoom] challenge alert " .. userId .. " -> " .. tostring(n) .. "명 : " .. text)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsChallenging(string userId)
+		-- 발록 도전 중인가(1.1-H08 · 전광판 공급): 방에 도착했고 90초 마감 전 — IsChallengeLive 에 위임(마감 뒤 Evict 전 한 틱 오표시 방지). 이동 중(moving)은 아니다.
+		local room = self:RoomOf(userId)
+		return room ~= 0 and self:IsChallengeLive(userId, room)
 	end
 
 	-- ── 퇴장 ────────────────────────────────────────────────────────

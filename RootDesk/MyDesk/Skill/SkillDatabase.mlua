@@ -373,6 +373,18 @@ script SkillDatabase extends Logic
         return job.baseAttack
     end
 
+    method number RollStatAttack(string userId)
+        -- 스킬 피해의 기준값(1.1-A16): 서버 스탯 원장이 있으면 StatService.GetRange 의 [최저, 최대]에서 한 번 굴린다(기본 공격과 같은 범위 · 숙련도 포함).
+        -- 원장이 없으면(클라 · 미로드) 예전 GetAttackPower 폴백. 호출마다 새로 굴린다 — 같은 타격을 두 번 부르는 궁 합계는 SkillAttack/SkillProjectile.RolledAmount 가 맞춘다.
+        if _StatService ~= nil and _StatService.users ~= nil and _StatService.users[userId] ~= nil then
+            local r = _StatService:GetRange(userId)
+            if r ~= nil and (r.max or 0) > 0 then
+                return _DamageFormula:Roll(r.min, r.max)
+            end
+        end
+        return self:GetAttackPower(userId)
+    end
+
     method number RatioAt(string skillId, number level)
         -- base_effect + (level-1) * effect_per_level. base_effect is now a MULTIPLIER whose
         -- unit is effectUnit - callers must check effect_unit before interpreting the result
@@ -454,19 +466,10 @@ script SkillDatabase extends Logic
             log_warning("SkillDatabase: DamageAt called for skill_id=" .. skillId .. " whose effect_unit is '" .. skill.effectUnit .. "', not ATK_PCT")
             return 0
         end
-        local base = math.floor(self:GetAttackPower(userId) * self:RatioAt(skillId, level) / 100)
-        -- 쉐도우 파트너(SK_T22 · b/skill-archer-thief-pirate): 분신 소환 = 활성 중 스킬 피해 ×(1 + BaseEffect 50 + 5/lv %) = Lv1 ×1.5 ~ Lv5 ×1.7(#40 5884390073 4번 · 예전 화력 2배). 서버 전용 경로.
-        -- 기본 공격(A 의 PlayerAttack.CalcDamage)에 얹는 것은 A 가 같은 GetOutgoingDamageMul 을 곱하면 된다.
-        -- b/skill-thief-effects: SkillBuffs.ShadowPartnerExcludedSkillIds 에 있는 스킬은 분신 몫을 안 붙인다(기본 "" = 모든 공격 · 원작 섀도어판은 메소 익스플로젼 제외 · #40 질문 4).
-        if _SkillBuffs ~= nil and not _SkillBuffs:IsShadowPartnerExcluded(skillId) then
-            local outMul = _SkillBuffs:GetOutgoingDamageMul(userId) or 1
-            if outMul ~= 1 then
-                local before = base
-                base = math.floor(base * outMul)
-                log("SkillDatabase: DamageAt " .. skillId .. " base=" .. tostring(before) .. " x" .. tostring(outMul) .. " (shadowPartner) -> " .. tostring(base))
-            end
-        end
-        -- 매직 가드(SK_M22 · b/skill-magician): "공격 시 현재 MP 의 5% 만큼 추가 마법 피해". 버프가 켜져 있을 때만 0 이 아니다.
+        -- 1.1-A16: 스킬 % 는 스탯공격력 기준 — 기본 공격과 같은 범위(주×4+부 × 총공격력(마법사는 마력) ÷ 100 · 최종 숙련도)에서 한 번 굴린 값 × %.
+        local base = math.floor(self:RollStatAttack(userId) * self:RatioAt(skillId, level) / 100)
+        -- 쉐도우 파트너의 "모든 공격 피해 ×1.5~1.7" 배율은 1.1-B16 에서 없앴다 — 분신 피해는 열화 투사체(SkillAttack.SpawnCloneOf)로만 낸다.
+        -- 매직 가드(SK_M22): "공격 시 최대 MP 의 25% 만큼 추가 마법 피해"(1.1-B15). 버프가 켜져 있을 때만 0 이 아니다.
         -- 서버 전용 경로(CalcDamage) — 클라에서 불리면 SkillBuffs 가 nil 을 돌려주므로 0 으로 받는다.
         local bonus = 0
         if _SkillBuffs ~= nil then
@@ -480,8 +483,8 @@ script SkillDatabase extends Logic
 
     method boolean RollSkillHit(string userId, Entity defender, string skillId)
         -- 스킬 명중 판정(b/skill-hit-miss · A #40 6005930861 "스킬 명중/회피는 B 가 계산한다"): 기본 공격(StatService.CalcPlayerDamage)과 같은 식을 그대로 쓴다 —
-        --   _DamageFormula:HitCheck(명중, 내 레벨, 대상 레벨) · 빗나가면 _DamageFormula:ShowMiss(대상)로 MISS 글자를 띄우고 false.
-        --   명중 = StatService 원장 final.accuracy · 내 레벨 = StatService.GetPlayerLevel · 대상 레벨 = 스폰 행 SpawnLevel > MonsterCatalog 레벨 > 1(CalcPlayerDamage 와 같은 순서).
+        --   _DamageFormula:HitCheck(명중, 내 레벨, 대상 레벨, 대상 회피율) · 빗나가면 _DamageFormula:ShowMiss(대상)로 MISS 글자를 띄우고 false.
+        --   명중 = StatService 원장 final.accuracy(%p) · 내 레벨 = StatService.GetPlayerLevel · 대상 레벨 · 회피율 = StatService.ResolveTarget(CalcPlayerDamage 와 같은 한 곳 · 1.1-A05).
         -- 판정 없이 true: 클라(원장 없음) · 꺼짐(SkillHitCheckEnabled) · 궁(Behavior ORIGIN · 사용자 결정 2026-10-06 "궁 · 소환 · 버프로 나는 피해는 늘 명중") · 시전자 / 원장 없음.
         -- 부르는 곳 = SkillAttack / SkillProjectile.IsAttackTarget(서버 피격 파이프라인 · 대상마다 패스당 한 번). ExecSpace 없음(서버에서만 의미 · 클라면 위에서 true).
         if not self:IsServer() then return true end
@@ -493,21 +496,14 @@ script SkillDatabase extends Logic
         if u == nil or u.final == nil then return true end
         local accuracy = u.final.accuracy or 0
         local level = _StatService:GetPlayerLevel(userId)
-        local targetLevel = 1
-        local fr = defender.FarmReward
-        if isvalid(fr) then
-            if fr.SpawnLevel ~= nil and fr.SpawnLevel > 0 then
-                targetLevel = fr.SpawnLevel
-            elseif _MonsterCatalog ~= nil then
-                local lv = _MonsterCatalog:GetLevel(fr.MonsterId)
-                if lv > 0 then targetLevel = lv end
-            end
-        end
-        local hit = _DamageFormula:HitCheck(accuracy, level, targetLevel)
+        -- 대상 레벨 · 회피율은 기본 공격과 같은 한 곳(1.1-A05 StatService.ResolveTarget) · 식은 1.1-A06(100 + 명중 − 10 × 레벨 차 − 회피).
+        local t = _StatService:ResolveTarget(defender)
+        local targetLevel = t.level
+        local hit = _DamageFormula:HitCheck(accuracy, level, targetLevel, t.avoid)
         if self.LogHitRolls or not hit then
             local verdict = "HIT"
             if not hit then verdict = "MISS" end
-            log("[SkillHit] " .. tostring(skillId) .. " " .. verdict .. " vs " .. tostring(defender.Name) .. " Lv" .. tostring(targetLevel) .. " (acc " .. tostring(accuracy) .. " · Lv" .. tostring(level) .. " · " .. userId .. ")")
+            log("[SkillHit] " .. tostring(skillId) .. " " .. verdict .. " vs " .. tostring(defender.Name) .. " Lv" .. tostring(targetLevel) .. " avoid " .. tostring(t.avoid) .. " (acc " .. tostring(accuracy) .. " · Lv" .. tostring(level) .. " · " .. userId .. ")")
         end
         if not hit then _DamageFormula:ShowMiss(defender) end
         return hit

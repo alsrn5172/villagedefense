@@ -5,7 +5,7 @@ script DefenderService extends Logic
 	-- 모집 즉시 최전방 시설(포탑 → 억제기 → 넥서스) 뒤에 8마리를 스폰. 진영 2x(방어) · FactionAI 수비 모드(대기 · 시야 안 적에게만 접근 · 사거리 80% 밖 금지) ·
 	-- 접촉 피해(MonsterAttack)는 끔(주인을 때리면 안 됨). 스펙(임시 상수): HP = 도감 MaxHp × HpRatio × 훈련 배율 · 공격 = 도감 Level × AttackPerLevel × 배율.
 	-- 최전방 추종 (2026-09-08): 시설이 부서져 최전방이 바뀌면 LaneStateService.Changed → Regroup 이 살아 있는 수비대를 새 최전방 시설 뒤에 같은 HP 비율로 재스폰(맵이 달라 걸어갈 수 없다).
-	-- 사거리는 시설 종류와 무관하게 포탑 사거리(TowerConfig TOWER range Lv1 = 3)를 쓴다(사용자 확정). 대기·목줄 위치는 통로(PathMinX~PathMaxX) 안으로 클램프.
+	-- 사거리는 시설 종류와 무관하게 포탑 사거리(TowerConfig TOWER range Lv1 = 4.5 · 1.1-H19)를 쓴다(사용자 확정). 대기·목줄 위치는 통로(PathMinX~PathMaxX) 안으로 클램프.
 
 	property number HpRatio = 0.3
 
@@ -44,6 +44,12 @@ script DefenderService extends Logic
 	-- 파병 유닛 스탯 = 같은 티어 · 레벨의 수비대 표 값. 단 체력만 이 배율(사용자 2026-10-06 "강력한 수비대를 보내는 만큼 적에게도 부담 · 체력은 수비대의 절반 수준"). 공격력은 수비대와 같다.
 	property number DispatchHpMul = 0.5
 
+	-- 상대 수비대 처치 보상(1.1-D21 · D22): 플레이어(투사체 포함)가 다른 마을 수비대를 잡으면 그 마을 지역의 지역 재화를 이만큼(DefenderUnit.RewardKiller · ★ 배율 없음).
+	property integer KillRewardCount = 2
+
+	-- 수비대 · 파병 유닛 레벨(1.1-H03 · 원문 L638): 원래 몬스터 레벨 + 강화 1단계당 이만큼(강화 Lv1 = 원래 레벨). 명중 · 회피의 레벨 차에 그대로 쓰인다.
+	property integer LevelPerUpgrade = 2
+
 	@HideFromInspector
 	property integer spawnSeq = 0
 
@@ -62,9 +68,9 @@ script DefenderService extends Logic
 	method number GuardRange()
 		-- 수비 사거리 = 포탑 사거리 Lv1 (억제기·넥서스 뒤에서도 같은 값).
 		if _LaneStateService ~= nil and _LaneStateService.towerDef ~= nil and _LaneStateService.towerDef.TOWER ~= nil then
-			return _LaneStateService.towerDef.TOWER.range[1] or 3.0
+			return _LaneStateService.towerDef.TOWER.range[1] or 4.5
 		end
-		return 3.0
+		return 4.5
 	end
 
 	@ExecSpace("ServerOnly")
@@ -142,6 +148,9 @@ script DefenderService extends Logic
 			maxHp = self:GuardHpOf(rr.tier or 1, lv)
 			attack = self:GuardAtkOf(rr.tier or 1, lv)
 		end
+		-- 체력 × 수비대 레벨(DefenderLevelOf = 도감 레벨 + 강화 1단계당 2)의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로"): 리본돼지(T2 · Lv17) 강화 Lv1 5,120 → 35,840 · Lv5(Lv25) 12,156 → 182,340.
+		--   공격력은 그대로. 파병(MinionFlowService.SpawnDispatched)도 같은 레벨 · 배율이라 2 : 1 이 유지된다.
+		maxHp = _MonsterCatalog:LevelHp(maxHp, self:DefenderLevelOf(monsterId, upgradeLevel))
 		local range = self:GuardRange()
 		local minX = row.pathMinX or -100000
 		local maxX = row.pathMaxX or 100000
@@ -232,12 +241,28 @@ script DefenderService extends Logic
 		end
 		---@type DefenderUnit
 		local du = ent:AddComponent("script.DefenderUnit")
+		local unitLevel = self:DefenderLevelOf(monsterId, upgradeLevel)
 		if isvalid(du) then
 			du.VillageId = villageId
 			du.MonsterId = monsterId
+			du.Level = unitLevel
 		end
-		log("[Defender] spawn " .. name .. " mob=" .. tostring(monsterId) .. " upgradeLv=" .. tostring(upgradeLevel) .. " hp=" .. tostring(maxHp) .. " atk=" .. tostring(attack))
+		-- 몬스터 이름표(1.1-I09): `Lv.N 이름` — 레벨 = DefenderLevelOf(원래 레벨 + 강화 1단계당 2). Regroup 이 같은 SpawnOne 을 u.upgradeLevel 로 다시 불러 재집결 개체도 같은 레벨로 붙는다. 훈련해도 이미 서 있는 개체의 이름표는 안 바뀐다(새로 모집하는 묶음부터).
+		if _MonsterNameTag ~= nil then
+			_MonsterNameTag:Attach(ent, _MonsterCatalog:GetName(monsterId), unitLevel)
+		end
+		log("[Defender] spawn " .. name .. " mob=" .. tostring(monsterId) .. " upgradeLv=" .. tostring(upgradeLevel) .. " lv=" .. tostring(unitLevel) .. " hp=" .. tostring(maxHp) .. " atk=" .. tostring(attack))
 		return ent
+	end
+
+	method integer DefenderLevelOf(integer monsterId, integer upgradeLevel)
+		-- 수비대 · 파병 유닛의 판정 레벨(1.1-H03): 도감 레벨 + LevelPerUpgrade × (강화 Lv − 1) · 강화 Lv 는 1~5 로 자른다. 도감에 없으면 0(모름).
+		-- 예: 리본돼지 Lv17 · 강화 Lv5 → 25. 서버 · 클라 공용(ExecSpace 없음).
+		local base = 0
+		if _MonsterCatalog ~= nil then base = _MonsterCatalog:GetLevel(monsterId) or 0 end
+		if base <= 0 then return 0 end
+		local lv = math.max(1, math.min(5, math.floor(upgradeLevel or 1)))
+		return base + self.LevelPerUpgrade * (lv - 1)
 	end
 
 	@ExecSpace("ServerOnly")

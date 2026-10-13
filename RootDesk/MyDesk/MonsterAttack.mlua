@@ -7,6 +7,10 @@ script MonsterAttack extends AttackComponent
 	-- 수비대(WO-012 ③): 플레이어 접촉 피해를 끈다. 타이머 콜백이 self 를 잡고 있어 컴포넌트 Enable 로는 안 멈춘다.
 	property boolean Disabled = false
 
+	-- 보스 스킬 소환수의 접촉 한 방(1.1-E22 · 사용자 2026-10-12 "소환수도 일반 몬스터와 같다 · 통일"). -1 = 안 씀.
+	-- 소환수에는 FarmReward 가 없어 예전엔 접촉 피해가 늘 1 이었다 — BossSkillRunner.SetupSummon 이 MonsterInfo.Attack 을 넣는다.
+	property integer SummonAttack = -1
+
 	@HideFromInspector
 	property any Shape = nil
 
@@ -97,6 +101,9 @@ script MonsterAttack extends AttackComponent
 					local ei = _EliteCatalog:GetInfo(fr.EliteId)
 					if ei ~= nil and (ei.attackPower or 0) > 0 then raw = math.floor(ei.attackPower) end
 				end
+			elseif self.SummonAttack >= 0 then
+				-- 보스 스킬 소환수(1.1-E22): SetupSummon 이 넣은 MonsterInfo.Attack. 일반 몹과 같은 회피 · 방어 흐름을 탄다.
+				raw = math.floor(self.SummonAttack)
 			end
 		end
 		if raw < 1 then raw = 1 end
@@ -113,21 +120,19 @@ script MonsterAttack extends AttackComponent
 		local stats = _StatService:GetLedger(userId)
 		if stats == nil or stats.final == nil then return false end
 
-		local mobLevel = 1
-		local reward = attacker.FarmReward
-		if isvalid(reward) and reward.SpawnLevel ~= nil and reward.SpawnLevel > 0 then
-			mobLevel = reward.SpawnLevel
-		elseif _MonsterCatalog ~= nil then
-			local minion = attacker.MinionUnit
-			local monsterId = isvalid(minion) and minion.MonsterId or (isvalid(reward) and reward.MonsterId or 0)
-			local level = _MonsterCatalog:GetLevel(monsterId)
-			if level > 0 then mobLevel = level end
-		end
-		local avoid = _DamageFormula:DerivedAvoid(stats.final.dex or 0, stats.final.luk or 0)
+		-- 공격자 레벨 = 플레이어 명중 판정과 같은 한 곳(StatService.ResolveTarget · 보스 / 사냥터 덮어쓰기 / 웨이브 / 수비대 / 소환수 / 도감 · 모르면 1).
+		local mobLevel = _StatService:ResolveTarget(attacker).level
+		-- 회피율 %p = StatService 최종치(LUK × 0.05 × 효율 + 장비 · 오팔 · 버프 · 1.1-A08 · G05). DEX 는 회피에 안 더한다.
+		local avoid = stats.final.avoid or 0
 		local playerLevel = math.max(1, math.floor(stats.level or 1))
-		if not _DamageFormula:DodgeCheck(avoid, playerLevel, mobLevel) then return false end
+		-- 몬스터 명중률 보정(1.1-A10): 커닝 억제기 오라를 받은 수비대만 Buff.AccAdd(%p). 야생 몹 · 미니언 · 소환수는 0.
+		local accAdd = 0
+		---@type Buff
+		local ab = attacker.Buff
+		if isvalid(ab) then accAdd = ab.AccAdd or 0 end
+		if not _DamageFormula:DodgeCheck(avoid, playerLevel, mobLevel, accAdd) then return false end
 
-		log("[Stat] DODGE source=" .. tostring(attacker.Name) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " (" .. userId .. ")")
+		log("[Stat] DODGE source=" .. tostring(attacker.Name) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " avoid=" .. tostring(avoid) .. " accAdd=" .. tostring(accAdd) .. " (" .. userId .. ")")
 		_DamageFormula:ShowMiss(defender)
 		return true
 	end

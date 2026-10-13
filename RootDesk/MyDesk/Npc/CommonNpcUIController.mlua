@@ -68,6 +68,21 @@ script CommonNpcUIController extends Logic
 
 	property Entity pickEmpty = "2aa5ab99-3665-4e06-86a3-92e30af56585"
 
+	-- 출발 방식(1.1-H05): Footer/ModeRoot 의 Mode_0 "미니언과 함께"(WAVE) · Mode_1 "즉시"(NOW) — 칸마다 Sel(켜짐 판) · Label. 칸 모양 = PickRoot/B_0 복제(h05-build).
+	property Entity modeRoot = "c4c9021d-1404-47a4-9b6e-c9e545ce3e72"
+
+	-- 출발 방식 칸 그림(사용자 2026-10-13 · 디자인 사이트 N31-1): 고른 칸 = 기존 초록 칩(chip_green) + 흰 글자 · 안 고른 칸 = 짙은 회색 칩(chip_gray_dark) + ColSub 글자. 칸 복제 원본(B_0)의 Sel 판은 안 쓴다.
+	property string ModeOnRUID = "c15a5263677d48b5a5b8cd27c5d9b328"
+	property string ModeOffRUID = "59baa8df765f434b9ffeb0bd1c4906ef"
+	property Color ColWhite = Color(1, 1, 1, 1)
+
+	@HideFromInspector
+	property string dispatchMode = "WAVE"
+
+	-- 즉시 파병 출발까지 초(서버 RULE 행 5번째 칸 = DispatchService.ImmediateDelaySeconds). 없으면 10.
+	@HideFromInspector
+	property integer immediateDelay = 10
+
 	property TextGUIRendererComponent queueCount = "6669bb2a-434f-455a-841c-047faca6f6c8"
 
 	property Entity queueEmpty = "4fad555d-10ea-486d-a4bb-01b9499f9ab8"
@@ -228,6 +243,15 @@ script CommonNpcUIController extends Logic
 				end
 			end
 		end
+		if isvalid(self.modeRoot) then
+			for _, cell in ipairs(self.modeRoot.Children) do
+				local name = cell.Name
+				if string.sub(name, 1, 5) == "Mode_" then
+					local idx = tonumber(string.sub(name, 6)) or 0
+					bind(cell, function() self:OnMode(idx) end)
+				end
+			end
+		end
 		if isvalid(self.queueRoot) then
 			for _, row in ipairs(self.queueRoot.Children) do
 				local name = row.Name
@@ -285,6 +309,8 @@ script CommonNpcUIController extends Logic
 		if route ~= "dispatch" and route ~= "dimensiongate" and route ~= "taxi" then route = "dispatch" end
 		self.selVillage = ""
 		self.cart = 1
+		-- 출발 방식은 열 때마다 "미니언과 함께"로(1.1-H05 미결 권장 · 창을 닫으면 기억하지 않는다).
+		self.dispatchMode = "WAVE"
 		self.waiting = false
 		self:SetOpen(true)
 		self:GoRoute(route)
@@ -341,6 +367,7 @@ script CommonNpcUIController extends Logic
 		local titles = { dispatch = "파병 접수", dimensiongate = "차원 관문", taxi = "차원의 거울" }
 		if isvalid(self.titleText) then self.titleText.Text = titles[route] or "공용" end
 		if isvalid(self.contentDispatch) then self.contentDispatch.Enable = (route == "dispatch") end
+		if isvalid(self.modeRoot) then self.modeRoot.Enable = (route == "dispatch") end
 		-- 택시(리스항구 차원의 거울 · WO-046)는 관문의 5마을 카드를 같이 쓴다. 에너지 코어 칩만 끈다(무료).
 		if isvalid(self.contentGate) then self.contentGate.Enable = (route == "dimensiongate" or route == "taxi") end
 		-- 택시는 코어 칩 판을 "순간이동" 글자 칩으로 쓴다(WO-049 ② · 판만 켜 두면 빈 칸으로 보였다). 개수 · 아이콘은 관문만.
@@ -586,8 +613,10 @@ script CommonNpcUIController extends Logic
 				villageCap = tonumber(f[2]) or 0
 				mesoCost = tonumber(f[3]) or 0
 				ruleOn = (f[4] == "1")
+				self.immediateDelay = math.floor(tonumber(f[5]) or 10)
 			elseif f[1] == "Q" then
-				table.insert(self.queue, { id = f[2], target = f[3], name = f[4], qty = tonumber(f[5]) or 0 })
+				-- Q 6번째 칸 = 출발 방식(WAVE/NOW · 1.1-H04) · 없으면 WAVE.
+				table.insert(self.queue, { id = f[2], target = f[3], name = f[4], qty = tonumber(f[5]) or 0, mode = f[6] or "WAVE" })
 			elseif f[1] == "B" then
 				-- B|순번|몬스터id|이름|마릿수|아이콘|강화Lv
 				table.insert(pool, { idx = math.floor(tonumber(f[2]) or 0), mid = f[3], name = f[4] or "", qty = tonumber(f[5]) or 0, icon = f[6] or "", lv = tonumber(f[7]) or 1 })
@@ -633,6 +662,9 @@ script CommonNpcUIController extends Logic
 						local label = "<color=#F3EEE2>" .. q.target .. " · " .. mon .. "</color>"
 						if en ~= "" then label = label .. " <color=#7C88A4>" .. en .. "</color>" end
 						label = label .. " <color=#E8B64C>" .. tostring(q.qty) .. "마리</color>"
+						-- 즉시 파병(1.1-H05)은 표시를 붙이고 취소 버튼을 끈다(취소 불가).
+						if q.mode == "NOW" then label = label .. " <color=#FF8A7A>즉시</color>" end
+						self:Show(row, "BtnCancel", q.mode ~= "NOW")
 						if i == 3 and #self.queue > 4 then label = label .. "  <color=#7C88A4>외 " .. tostring(#self.queue - 4) .. "건</color>" end
 						self:SetText(row, "Label", label)
 						self:SetIcon(row, "Emblem", self:EmblemRuid(self.vnames[q.target] or ""), Color(1, 1, 1, 1))
@@ -651,11 +683,40 @@ script CommonNpcUIController extends Logic
 		if not ruleOn then
 			if isvalid(self.warnText) then self.warnText.Text = "지금 페이즈에는 파병을 접수하지 않습니다" end
 		elseif isvalid(self.dispatchStatus) then
-			local msg = "묶음 통째로 · 마을당 동시 " .. tostring(villageCap) .. "묶음 · 다음 투입 때 합류(그 전까지 취소 가능) · 파병 몬스터는 보상 없음"
+			local msg = "묶음 통째로 · 마을당 동시 " .. tostring(villageCap) .. "묶음 · 함께: 다음 투입 때 합류(취소 가능) · 즉시: " .. tostring(self.immediateDelay) .. "초 뒤 출발(상대에게 바로 알림 · 취소 불가) · 파병 몬스터는 보상 없음"
 			if mesoCost > 0 then msg = msg .. " · 묶음당 메소 " .. tostring(mesoCost) end
 			self.dispatchStatus.Text = msg
 		end
+		self:RenderMode()
 		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMode(integer i)
+		-- 출발 방식 칸 클릭(1.1-H05): 0 = 미니언과 함께(WAVE) · 1 = 즉시(NOW).
+		if i == 1 then self.dispatchMode = "NOW" else self.dispatchMode = "WAVE" end
+		self:RenderMode()
+		self:RenderCart()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderMode()
+		-- 고른 칸 = 초록 칩 + 흰 글자 · 나머지 = 짙은 회색 칩 + ColSub 글자(N31-1). Sel 판은 늘 끈다.
+		if not isvalid(self.modeRoot) then return end
+		-- 칸 묶음(ModeRoot)은 실행 중에 빈 RUID · 불투명 흰색 그림을 달고 나와 두 칩 뒤에 흰 사각형이 보인다(2026-10-13 캡처 Play 에서 발견 · 파일엔 그림 컴포넌트가 없다) → 끈다.
+		local rootSr = self.modeRoot.SpriteGUIRendererComponent
+		if rootSr ~= nil and rootSr.Enable then rootSr.Enable = false end
+		for i = 0, 1 do
+			local cell = self.modeRoot:GetChildByName("Mode_" .. tostring(i))
+			if isvalid(cell) then
+				local on = ((i == 1) == (self.dispatchMode == "NOW"))
+				if cell.SpriteGUIRendererComponent ~= nil then
+					cell.SpriteGUIRendererComponent.ImageRUID = on and self.ModeOnRUID or self.ModeOffRUID
+				end
+				self:Show(cell, "Sel", false)
+				self:SetColor(cell, "Label", on and self.ColWhite or self.ColSub)
+			end
+		end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -691,7 +752,11 @@ script CommonNpcUIController extends Logic
 		elseif not v.claimed then self:SetFooterHint(v.name .. " 는 주인이 없어 파병할 수 없습니다")
 		elseif self.pool == nil or #self.pool == 0 then self:SetFooterHint("보낼 수비대가 없어요 — 몬스터 모집관에서 모집하세요")
 		elseif self.cart == 0 then self:SetFooterHint("보낼 수비대 묶음을 눌러 고르세요")
-		else self:SetFooterCost("<color=#E8B64C>" .. v.name .. "</color> 로 파병 <color=#E8B64C>" .. tostring(self.cart) .. "묶음</color>", v.id) end
+		else
+			local tail = ""
+			if self.dispatchMode == "NOW" then tail = " · 즉시" end
+			self:SetFooterCost("<color=#E8B64C>" .. v.name .. "</color> 로 파병 <color=#E8B64C>" .. tostring(self.cart) .. "묶음</color>" .. tail, v.id)
+		end
 		self:SetPrimaryEnabled(v ~= nil and v.claimed and self.ruleOn and self.bundles >= self.cart and self.cart > 0 and not self.waiting)
 	end
 
@@ -914,7 +979,7 @@ script CommonNpcUIController extends Logic
 		self.waiting = true
 		self:SetPrimaryEnabled(false)
 		if _LaneStateService == nil then return end
-		if self.route == "dispatch" then _LaneStateService:RequestDispatchPick(self.selVillage, self:PickedCsv())
+		if self.route == "dispatch" then _LaneStateService:RequestDispatchPick(self.selVillage, self:PickedCsv(), self.dispatchMode)
 		elseif self.route == "taxi" then _LaneStateService:RequestTaxi(self.selVillage)
 		else _LaneStateService:RequestDimensionGate(self.selVillage) end
 	end

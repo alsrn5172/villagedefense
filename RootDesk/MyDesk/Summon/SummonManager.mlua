@@ -5,16 +5,30 @@ script SummonManager extends Logic
 
 	property integer BaseMaxHp = 1000
 
-	-- 몬스터 처치 경험치 전체 배율 (사용자 2026-10-05 "경험치 올리기가 빡세다 · 모든 몬스터 1.5배" · WO-046). FarmReward 가 난이도 배율(MATCH_EXP_MUL)과 곱한다.
-	-- GrantKillReward 자체엔 곱하지 않는다 — 리모컨 "레벨 +n"(DevStatRemote)이 정확한 필요 경험치를 넣는 경로라서.
-	-- 🧪 테스트 임시값(사용자 2026-10-05 "지금 테스트니까 경험치 2배 · 나중에 되돌리게"): 1.5 × 2 = 3.0. 정식 배포 전 1.5 로 되돌린다 — Docs/테스트-임시값.md
-	property number KillExpMul = 3.0
+	-- 전체 처치 경험치 배율(중립 1.0 · 1.1-D06 · ★ 별 차이는 DifficultyRule.MATCH_EXP_MUL ★1 2 · ★3 · ★5 1). FarmReward 가 난이도 배율 · 레벨 차 배율과 곱한다.
+	-- GrantKillReward 자체엔 곱하지 않는다 — 리모컨 "레벨 +n"(DevStatRemote)이 정확한 필요 경험치를 넣는 경로라서. 디스코드 build-db 가 이 속성을 읽으므로 지우지 않는다.
+	property number KillExpMul = 1.0
 
-	-- 일반 · 엘리트 사냥 보상 배율(WO-050 §2-1 · 사용자 2026-10-05 "일반 · 엘리트 사냥 보상 2배" · 정식 밸런스 — 테스트 임시값 아님). 메소 · 젬 · 몬스터 재료 · 엘리트 꿈의 조각/영혼석 개수에 곱한다. 보스 · 미니언 메소 · 경험치 · 빅토리아 주화(아래 VictoriaCoinMul)는 대상이 아니다.
-	property number HuntRewardMul = 2.0
+	-- 레벨 차 경험치 보정(1.1-D08 · gap = 몬스터 레벨 − 내 매치 레벨 · 구간은 사용자 2026-10-11 변경 · 1.0.6 17절 이름표 색과 같은 경계). FarmReward.GiveRewards 가 곱한다.
+	--   gap 0 = ExpGapSameMul(110%) · 낮은 몬스터 ~ +ExpGapFreeMax(4) = ExpGapFreeMul(100%) · +5 ~ +ExpGapNearMax(7) = ExpGapNearMul(80%) · +8 이상 = ExpGapFarMul(60%). 레벨 모름(0) = 1.
+	property number ExpGapFreeMul = 1.0
 
-	-- 빅토리아 주화 드롭 개수 · 드롭률 배율(WO-050 §2-13 · 사용자 확정 2026-10-05). 엘리트 고정 보상 주화 개수 · 미니언 주화 확률(min(1, CoinDropChance × 이 값)) · 개수(1 × 이 값)에 곱한다.
+	property number ExpGapSameMul = 1.1
+
+	property integer ExpGapFreeMax = 4
+
+	property integer ExpGapNearMax = 7
+
+	property number ExpGapNearMul = 0.8
+
+	property number ExpGapFarMul = 0.6
+
+	-- 빅토리아 주화 미니언 드롭 **확률** 배율(WO-050 §2-13 · min(1, CoinDropChance × 이 값)). 개수는 MinionCoinCount · 자이언트 주화는 EliteMonsterInfo.CoinDrop 그대로(곱하지 않음 · 1.1-D20).
+	--   사냥 보상 배율(옛 HuntRewardMul 2.0)은 1.1-D10 에서 ★별 DifficultyRule.HUNT_MAT_MUL · HUNT_GEM_MUL · HUNT_MESO_MUL · HUNT_ELITE_MUL 로 옮겼다.
 	property number VictoriaCoinMul = 10
+
+	-- 미니언 빅토리아 주화 한 번에 떨어지는 개수(1.1-D19 · 10 → 1).
+	property integer MinionCoinCount = 1
 
 	property integer BaseMaxMp = 100
 
@@ -131,6 +145,21 @@ script SummonManager extends Logic
 			}
 		end
 		return self.econ[userId]
+	end
+
+	@ExecSpace("ServerOnly")
+	method number ExpGapMul(integer monsterLevel, string userId)
+		-- 레벨 차 경험치 배율(1.1-D08): gap = 몬스터 레벨 − 그 유저의 매치 레벨(econ.level · 계정 레벨 아님). 몬스터 레벨을 모르면(0 이하) 1.
+		--   gap 0 → ExpGapSameMul(1.1) · gap ≤ ExpGapFreeMax(4)(낮은 몬스터 포함) → ExpGapFreeMul(1.0) · gap ≤ ExpGapNearMax(7) → ExpGapNearMul(0.8) · 그 위 → ExpGapFarMul(0.6).
+		if monsterLevel == nil or monsterLevel <= 0 then return 1.0 end
+		local e = self:EnsureUser(userId)
+		local pl = 1
+		if e ~= nil then pl = e.level or 1 end
+		local gap = monsterLevel - pl
+		if gap == 0 then return self.ExpGapSameMul end
+		if gap <= self.ExpGapFreeMax then return self.ExpGapFreeMul end
+		if gap <= self.ExpGapNearMax then return self.ExpGapNearMul end
+		return self.ExpGapFarMul
 	end
 
 	@ExecSpace("ServerOnly")
@@ -254,6 +283,15 @@ script SummonManager extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void FillMp(string userId)
+		-- MP 를 최대치로 채운다(매치 시작 · StatService.FillToMax · 사용자 2026-10-12 "시작 때만 가득"). HUD 갱신까지.
+		local e = self:EnsureUser(userId)
+		if e == nil then return end
+		e.mp = e.maxMp or 0
+		self:Push(userId)
+	end
+
+	@ExecSpace("ServerOnly")
 	method void RecomputeMaxMp(any e)
 		-- econ.maxMp = BaseMaxMp + Σ LevelTable.AddMaxMp(levelMaxMp) + 장비·버프 maxmp(bonusMaxMp) — maxMp 진상은 이 한 줄 (A 답변 ④).
 		-- 줄어들었으면 현재 mp 도 새 maxMp 로 clamp 한다.
@@ -300,6 +338,8 @@ script SummonManager extends Logic
 		local before = e.maxMp
 		e.bonusMaxMp = bonus
 		self:RecomputeMaxMp(e)
+		-- 스탯 원장을 새로 만든 첫 계산(INIT)이면 MP 를 가득(INT 1당 +20 이 생겨 MP 100/180 으로 시작하지 않게 · 사용자 2026-10-12 "시작 때만 가득").
+		if event.Source == "INIT" then e.mp = e.maxMp end
 		if e.maxMp ~= before then
 			self:Push(uid)
 			log("[Summon] maxMp " .. tostring(before) .. " -> " .. tostring(e.maxMp) .. " (bonus=" .. tostring(bonus)

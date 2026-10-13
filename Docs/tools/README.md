@@ -13,6 +13,9 @@ MSW 자산이 아니라 작업 도구다 — Maker 는 `Docs/` 를 스캔하지 
 | 파란 원 | 마을 `Village` | `#3C8CFF` | 30 |
 | 분홍 원 | 보스 `Boss` | `#FF46AA` | 30 |
 | 금색 원 | 여섯갈래길 `Hub` | `#FFCD3C` | 34 |
+| 작은 분홍 원 | 발록 지역 `Boss` (`Sleepywood_Boss_JrBalrog`) — 지도 그림에 없어 **게임이 그리는 점**(1.0.3 · 슬리피우드 마을 점과 같은 방식) | `map_dot_boss` | 24 |
+
+> ⚠ 위 표의 색 · 크기는 **옛 규약**이다. 지금 점은 새 지도 그림(f01 · WO-041)에 박혀 있고, 노드 위치 · hover 점 · 게임이 그리는 점은 `Docs/tools/design-ui/apply-worldmap.cjs` 가 기준이다(분홍 = 보스 · 파랑 = 마을 · 노랑 = 사냥터 · 여섯갈래길도 분홍).
 
 - **글자 라벨을 쓰지 않는다.** 배경 지도에 지역명이 이미 인쇄돼 있어 겹친다. 이름은 hover 툴팁이 보여준다.
   (CSV 의 `ShowLabel` 은 전 행 `false`. 라벨 엔티티는 만들어만 두고 꺼 놨으니 필요하면 켤 수 있다)
@@ -33,6 +36,9 @@ place.py ──▶ CSV ──(build)──▶ .ui ──(Maker 에서 드래그 
 - **CSV 의 X/Y·LabelDX/DY 는 재생성용 백업** — 드래그 뒤 `sync` 를 돌려야 다음 `build` 에서 안 날아간다.
 
 ## 도구
+
+> ⚠ **현재 노드는 `Docs/tools/design-ui/apply-worldmap.cjs` 기준이다**(1.0.3 정정). 아래 `build_worldmap_nodes.cjs` · `sync_worldmap_nodes.cjs` 는 `밍키타연습월드1` 경로 고정이라 이 월드(강화하고살아남기)에서 돌리지 않는다.
+> 새 노드는 **UIBuilder 로 컨테이너(투명 터치 판 + `UITouchReceive` + `Label` · `Dot` · `DotHover`)를 먼저 만들고**, `WorldMapNodes.csv` 의 `X/Y` 를 `.ui` 와 같은 값으로 두고, 게임이 그리는 점이면 `apply-worldmap.cjs` 의 `DRAWN_BY_GAME` 에 줄을 더한다(안 하면 재실행 때 `Dot` 이 지워진다).
 
 | 파일 | 언제 | 하는 일 |
 |---|---|---|

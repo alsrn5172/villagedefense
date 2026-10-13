@@ -7,6 +7,7 @@ script SpectateService extends Logic
 	-- 클라: 방향키/WASD 를 SendInterval 마다 RequestMoveCam 으로 보낸다(서버 권위 · 리그 Transform 동기화). 카메라가 내 캐릭터로 되돌아가 있으면 RequestRebind 로 자가 복구.
 	-- 탭(SpectateUIController) = 다른 플레이어 따라가기(그 플레이어 맵으로 텔레포트 후 그 플레이어 카메라로 전환) · 자유 버튼 = 리그 카메라 · 월드맵 클릭(WorldMapController) = RequestGoMap.
 	-- 맵 이동 직후 엔진이 자기 카메라로 되돌리므로 RebindDelay 뒤에 전환한다(pending). 다중 클라 검증은 Maker 다인 플레이 테스트로(사용자).
+	-- 숨은 상태는 Enter 한 번이 아니라 ApplyHidden/Reassert 와 서버 감시(ReassertInterval)가 유지한다 (1.0.3 §4 · M4-01).
 
 	property number CamSpeed = 6.0
 
@@ -15,6 +16,9 @@ script SpectateService extends Logic
 	property number RebindDelay = 0.8
 
 	property number SendInterval = 0.1
+
+	-- 숨은 상태 감시 간격(초). 관전자 캐릭터가 다시 보이거나 조작 · 피격이 켜졌는지 서버가 이만큼마다 본다 (1.0.3 §4).
+	property number ReassertInterval = 1.0
 
 	-- 서버: userId → { mode="free"|"follow", target=userId, rig=Entity, vel=Vector2, velUntil, pendingKind, pendingAt }
 	@HideFromInspector
@@ -72,6 +76,35 @@ script SpectateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method void ApplyHidden(Entity ent)
+		-- Enter 가 하던 "숨김 · 무력화" 4줄 + 말풍선 비우기. Enter · Reassert 가 부른다 (1.0.3-M4-01).
+		ent:SetVisible(false)
+		if isvalid(ent.PlayerControllerComponent) then ent.PlayerControllerComponent.Enable = false end
+		if isvalid(ent.HitComponent) then ent.HitComponent.Enable = false end
+		if isvalid(ent.RigidbodyComponent) then ent.RigidbodyComponent.Gravity = 0 end
+		if isvalid(ent.ChatBalloonComponent) then ent.ChatBalloonComponent.Message = "" end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsHiddenState(Entity ent)
+		-- Enter 가 만든 상태 그대로인가 (숨김 · 컨트롤러 꺼짐 · 피격 꺼짐). 감시(OnUpdate)가 부른다 (1.0.3-M4-01).
+		if ent.Visible then return false end
+		if isvalid(ent.PlayerControllerComponent) and ent.PlayerControllerComponent.Enable then return false end
+		if isvalid(ent.HitComponent) and ent.HitComponent.Enable then return false end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reassert(string userId, string why)
+		-- 숨은 상태를 다시 건다. 죽은 채 탈락 뒤 엔진 부활 · 맵 이동 뒤 등에 Visible 이 되돌아왔을 때 (1.0.3-M4-01).
+		if self.spectators == nil or self.spectators[userId] == nil then return end
+		local ent = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(ent) then return end
+		self:ApplyHidden(ent)
+		log("[Spectate] reassert " .. userId .. " why=" .. why .. " visible=" .. tostring(ent.Visible) .. " map=" .. tostring(ent.CurrentMapName))
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean Blocked(string userId)
 		-- 🔴 **관전자는 아무것도 못 한다** (사용자 확정 2026-09-10).
 		--    Enter 가 컨트롤러·피격·중력·진영만 껐더니, 숨은 캐릭터로 **넥서스를 클릭해 점령**하고
@@ -95,10 +128,7 @@ script SpectateService extends Logic
 			log_warning("[Spectate] enter: no user entity " .. tostring(userId))
 			return
 		end
-		ent:SetVisible(false)
-		if isvalid(ent.PlayerControllerComponent) then ent.PlayerControllerComponent.Enable = false end
-		if isvalid(ent.HitComponent) then ent.HitComponent.Enable = false end
-		if isvalid(ent.RigidbodyComponent) then ent.RigidbodyComponent.Gravity = 0 end
+		self:ApplyHidden(ent)
 		-- 🔴 진영을 Neutral 로 덮기 전에 원래 상태를 적어 둔다 (2026-09-16 · WO-026). LeaveSpectate 가 이걸로 되돌린다.
 		--    DefaultPlayer 에는 script.Faction 이 없어서 여기서 **새로 붙는다**(factionAdded) → 나갈 때 떼야
 		--    FactionLogic.GetTeam 이 2순위(PlayerTeamOf = 자기 마을 진영 번호)로 돌아간다.
@@ -115,8 +145,10 @@ script SpectateService extends Logic
 		self.spectators[userId] = { mode = "free", target = "", rig = nil, vel = Vector2(0, 0), velUntil = 0, pendingKind = "free", pendingAt = _UtilLogic.ServerElapsedSeconds, factionAdded = factionAdded, prevTeam = prevTeam }
 		self:SetSpectating(true, userId)
 		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(true, userId) end
+		-- 죽은 채 탈락한 사람: 열려 있던 부활 팝업을 닫고 부활 대기를 버린다 (1.0.3-M4-02).
+		if _PlayerRespawnService ~= nil then _PlayerRespawnService:CancelFor(userId) end
 		self:PushTargets()
-		log("[Spectate] enter " .. userId .. " map=" .. tostring(ent.CurrentMapName))
+		log("[Spectate] enter " .. userId .. " map=" .. tostring(ent.CurrentMapName) .. " visible=" .. tostring(ent.Visible) .. " dead=" .. tostring(isvalid(ent.PlayerComponent) and ent.PlayerComponent:IsDead()))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -160,7 +192,8 @@ script SpectateService extends Logic
 		self:SetSpectating(false, userId)
 		if _SpectateUIController ~= nil then _SpectateUIController:SetActive(false, userId) end
 		self:PushTargets()
-		log("[Spectate] leave " .. userId .. " faction=" .. factionNote)
+		-- 복구 결과를 같이 찍는다(1.0.3-M4-06): 숨김 해제(visible=true) · 채팅/감시/미니맵 필터는 spectators 표에서 빠지며 저절로 풀린다.
+		log("[Spectate] leave " .. userId .. " faction=" .. factionNote .. " visible=" .. (isvalid(ent) and tostring(ent.Visible) or "?") .. " dead=" .. (isvalid(ent) and isvalid(ent.PlayerComponent) and tostring(ent.PlayerComponent:IsDead()) or "?"))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -210,6 +243,8 @@ script SpectateService extends Logic
 		local spec = self.spectators[userId]
 		local ent = _UserService:GetUserEntityByUserId(userId)
 		if spec == nil or not isvalid(ent) then return end
+		-- 텔레포트(Follow · RequestGoMap) 뒤에는 항상 이 함수를 지난다 → 숨은 상태를 다시 건다 (1.0.3-M4-01).
+		self:Reassert(userId, "rebind:" .. tostring(kind))
 		if kind == "follow" and spec.target ~= "" then
 			local tEnt = _UserService:GetUserEntityByUserId(spec.target)
 			if isvalid(tEnt) and isvalid(tEnt.CameraComponent) and tEnt.CurrentMapName == ent.CurrentMapName then
@@ -268,6 +303,16 @@ script SpectateService extends Logic
 			local any = false
 			for uid, spec in pairs(self.spectators) do
 				any = true
+				-- 숨은 상태 감시(1.0.3-M4-01): ReassertInterval 마다 다시 보이거나 조작 · 피격이 켜졌는지 보고 깨졌으면 다시 건다.
+				spec.guardLeft = (spec.guardLeft or 0) - delta
+				if spec.guardLeft <= 0 then
+					spec.guardLeft = self.ReassertInterval
+					local gEnt = _UserService:GetUserEntityByUserId(uid)
+					if isvalid(gEnt) and not self:IsHiddenState(gEnt) then
+						log_warning("[Spectate] hidden state broken uid=" .. uid .. " visible=" .. tostring(gEnt.Visible) .. " map=" .. tostring(gEnt.CurrentMapName))
+						self:Reassert(uid, "watchdog")
+					end
+				end
 				if spec.pendingKind ~= "" and now >= spec.pendingAt then
 					local kind = spec.pendingKind
 					spec.pendingKind = ""
@@ -323,6 +368,8 @@ script SpectateService extends Logic
 		self.lastDy = 0
 		local lp = _UserService.LocalPlayer
 		if isvalid(lp) and isvalid(lp.PlayerControllerComponent) then lp.PlayerControllerComponent.Enable = not on end
+		-- 관전 중엔 채팅 입력을 막고 끝나면 되살린다 (1.0.3-M4-05 · 복구 = M4-06).
+		if _ChatService ~= nil then _ChatService:OnSpectateChanged(on) end
 		log("[Spectate] spectating=" .. tostring(on))
 	end
 

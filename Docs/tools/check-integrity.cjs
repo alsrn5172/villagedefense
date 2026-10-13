@@ -64,7 +64,7 @@ function mapNames() {
 // C1. CSV 헤더가 계약서 정본과 글자 단위로 같은가
 // ─────────────────────────────────────────────────────────
 const CANONICAL = {
-  MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID,Attack,DamagedSoundRUID,DieSoundRUID,DamagedSoundVolume,DieSoundVolume",
+  MonsterInfo: "Id,Name,Level,MaxHp,Exp,CoinMin,CoinMax,ModelId,MoveType,AiType,MoveSpeed,JumpForce,IconRUID,Attack,DamagedSoundRUID,DieSoundRUID,DamagedSoundVolume,DieSoundVolume,Defense",
   MapMonsters: "MapName,MonsterId,X,Y,SpawnerId,SpawnId,SpawnCount,RespawnSeconds,Enabled,LevelOverride,#Note",
   NpcInfo: "Id,Name,ModelId",
   MapNpcs: "MapName,NpcId,X,Y,#Note",
@@ -108,7 +108,7 @@ const CANONICAL = {
   ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType,Description,EnhanceTier",
   WeaponMotion: "MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note",
   EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
-  EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack",
+  EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack,FixedSpeed,FixedAccuracy",
   CraftRecipe: "RecipeId,ShopKey,ResultItemId,ResultCount,MesoCost,Mat1ItemId,Mat1Count,Mat2ItemId,Mat2Count,Enabled,#Note",
   ShopItem: "ShopItemId,ShopKey,ItemId,PriceMeso,MaxCount,Enabled,#Note",
   ConsumeInfo: "ItemId,HealHp,HealMp,Enabled,CooldownStartSeconds,CooldownEndSeconds,CooldownEndLevel,HealHpPct,HealMpPct,#Note",
@@ -134,7 +134,7 @@ const CANONICAL = {
 
   // 9/14 기획 반영 — 계약서 §1 등록서(2026-09-22 · a/plan-0914 B0). 파일은 각 묶음 구현 PR 에서 생성.
   // 기존 표 열 추가(MonsterInfo.Attack · ConsumeInfo Pct · BossReward Soulstone* · Elite*)는 §0-1 9 대로 그 구현 PR 에서 CANONICAL 을 같이 고친다.
-  MinionWave: "Profile,WaveKey,Phase,StartSeconds,Count,SpawnGapSeconds,MonsterId,Hp,Attack,Exp,Meso,ZombieCount,Enabled,#Note",
+  MinionWave: "Profile,WaveKey,Phase,StartSeconds,Count,SpawnGapSeconds,MonsterId,Hp,Attack,Exp,Meso,ZombieCount,Enabled,Level,#Note",
   DifficultyRule: "Difficulty,Key,Value,Enabled,#Note",
   DropTable: "SourceKind,SourceId,ItemId,Chance,CountMin,CountMax,Enabled,#Note",
   MonsterRecruit: "MonsterId,Tier,MaterialItemId,MaterialCount,BundleSize,GuardHp,GuardAttack,Enabled,#Note",

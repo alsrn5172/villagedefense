@@ -40,8 +40,33 @@ script LaneFacilityService extends Logic
 	-- 그림 있는 넥서스의 클릭 영역 가로(월드 단위 · WO-040 M2). 옛 영역(모델값 13.46 × 옛 Scale 0.25 = 3.4)과 같다 — 새 그림 폭 2.9~3.7 을 거의 덮는다(피격 상자 HitWidthCore 2.4 보다 넓게).
 	property number TouchWidthCore = 3.4
 
-	-- 시설 오라의 가로 = 시설 가로너비(HitWidth) × 이 배수 · 시설 중심 기준 좌우 대칭 (사용자 2026-09-13 · F-2 "포탑 가로너비의 3배 · 중앙 유지"). 세로는 컨트롤러 기본(3.0).
-	property number AuraWidthMul = 3.0
+	-- 시설 오라의 가로 = 시설 가로너비(HitWidth) × 이 배수 · 시설 중심 기준 좌우 대칭. 세로는 컨트롤러 기본(3.0).
+	--   1.1-H20~H22: 커닝 · 엘리니아 · 노틸러스 억제기 오라 가로 16.0 = HitWidth 2.0 × 8 (예전 F-2 "포탑 가로너비의 3배" = 6.0).
+	property number AuraWidthMul = 8.0
+
+	-- 3페이즈 전 시설 방어막 그림(1.1-H12 · 표시 전용 — 피해는 LaneFacility 의 미니언 판정만 따른다). 그림 = 사용자 제공 애니메이션(점검표 #30 · 10/8).
+	--   시설의 자식 "FacilityShield"(AuraCircle 모델 재사용 = Transform + SpriteRenderer)로 붙인다 — 시설과 함께 지워진다.
+	--   켜짐 = 3페이즈 전(PHASE3 · EXPIRED 이벤트 전) · 시설이 살아 있음 · 주인 있는 마을(테스트 레인은 주인 있는 것으로 친다). 내 시설 · 남의 시설 모두.
+	property string ShieldModelId = "auracircle"
+
+	property string ShieldRUID = "bb9087a155c048af9fd2833352c6604a"
+
+	-- 크기 = 피격 상자 가로(HitSize.w) × 이 배수 · 세로 = 그림 높이(GroundOffset × 2) × 이 배수.
+	property number ShieldSizeMul = 1.15
+
+	-- 그림 원본 크기(월드 단위 · 배율 1)와 피벗 y 비율 — 실측(2026-10-12 · 애니메이션 첫 프레임 3.91 × 1.76 · 피벗 0.03 = 거의 바닥).
+	--   값이 있으면 런타임 API(LoadAnimationClipAndWait)를 부르지 않는다 — 첫 시설 스폰이 리소스 로드를 몇 초 기다려 그동안 전투 부품 적용이 밀렸다. 0 이면 API 로 읽는다.
+	property number ShieldNativeW = 3.91
+
+	property number ShieldNativeH = 1.76
+
+	property number ShieldPivotY = 0.03
+
+	@HideFromInspector
+	property any shieldNative = nil
+
+	@HideFromInspector
+	property boolean shieldPhaseOn = true
 
 	@HideFromInspector
 	property any laneRows = nil
@@ -211,9 +236,9 @@ script LaneFacilityService extends Logic
 		log("[Facility] TEST LANES on " .. mapName .. " spacing=" .. string.format("%.2f", spacing) .. " topY=" .. tostring(self.TestLaneTopY))
 	end
 
-	@ExecSpace("ServerOnly")
 	method integer TeamSlot(string villageId)
 		-- 마을 → 진영 번호 자리(1~5). 미니언 = 10+슬롯 · 방어 시설 = 20+슬롯 · 플레이어 = 슬롯 그대로 (FactionLogic.PlayerTeamOf 가 이 함수를 쓴다).
+		-- 1.1-I19: 상태를 읽지 않는 고정 표라 ExecSpace 를 뺐다 — 클라 이름표 색칠(MonsterNameTag.MyTeam)이 내 마을 번호를 구하려고 부른다. 클라는 ""(빈 마을)을 넘기지 않는다(모르는 값은 헤네시스 1).
 		local slots = { HENESYS = 1, KERNING = 2, ELLINIA = 3, NAUTILUS = 4, PERION = 5 }
 		return slots[villageId] or 1
 	end
@@ -244,7 +269,7 @@ script LaneFacilityService extends Logic
 		if stage == "TOWER" then
 			attacks = true
 			baseDamage = tower.attack[towerLv] or 30
-			range = tower.range[towerLv] or 3.0
+			range = tower.range[towerLv] or 4.5
 			cooldown = (tower.attackSpeed and tower.attackSpeed[towerLv]) or 1.5
 			-- 커닝 포탑 (TOWER_SINGLE_MUL): 원거리 단일 · 기존 데미지 ×N. 단일 = 대상 1 (상자를 표적에 좁게 놓는 건 FactionAttack.DoAttack 이 한다).
 			local single = _LaneStateService:TraitValue(villageId, stage, "TOWER_SINGLE_MUL", lv)
@@ -269,15 +294,36 @@ script LaneFacilityService extends Logic
 				-- 사거리·쿨타임 = TowerConfig SUPPRESSOR 행이 정본(F-1 확정 · 사용자 2026-09-13 "포탑과 동일" → CSV 에 포탑 값 기입). 칸이 0/빈칸이면 **같은 Lv 포탑 값을 차용**하는 안전망.
 				range = (supp.range and supp.range[suppLv]) or 0
 				cooldown = (supp.attackSpeed and supp.attackSpeed[suppLv]) or 0
-				if range <= 0 then range = tower.range[towerLv] or 3.0 end
+				if range <= 0 then range = tower.range[towerLv] or 4.5 end
 				if cooldown <= 0 then cooldown = (tower.attackSpeed and tower.attackSpeed[towerLv]) or 1.5 end
 			end
+		end
+		-- 미니언 조건 구역(1.1-H09): 포탑 = 포탑 사거리 · 억제기 = 억제기 사거리(SUPPRESSOR 행 · 0 이면 같은 Lv 포탑 값 · 공격 안 하는 억제기도) · 넥서스 = CORE 행 사거리.
+		--   세로 = 공격 상자와 같게 바닥에서 위로 4.0(중심 = 바닥 + 2.0). 방어 보정(H10 · LaneFacility)과 공격 보정(H11 · FactionAttack)이 이 구역을 같이 쓴다.
+		---@type LaneFacility
+		local zoneFc = ent.LaneFacility
+		if isvalid(zoneFc) then
+			local zone = range
+			if stage == "SUPPRESSOR" and zone <= 0 then
+				local supp = _LaneStateService.towerDef.SUPPRESSOR
+				local suppLv = math.min(lv, #supp.maxHp)
+				zone = (supp.range and supp.range[suppLv]) or 0
+				if zone <= 0 then zone = tower.range[towerLv] or 4.5 end
+			elseif stage == "CORE" then
+				local core = _LaneStateService.towerDef.CORE
+				zone = (core ~= nil and core.range ~= nil and core.range[1]) or 0
+				if zone <= 0 then zone = 4.5 end
+			end
+			zoneFc.RangeHalfW = zone
+			zoneFc.BoxOffsetY = 2.0 - self:GroundOffset(villageId, stage)
 		end
 		---@type FactionAttack
 		local atk = ent.FactionAttack
 		if isvalid(atk) then
-			-- 단계 공통: 대플레이어 계수(WO-016 · 시설이 플레이어를 때릴 때 ×PlayerDamageMul · 잠정 10) · 대상 수 제한(WO-021 · 0 = 무제한).
-			atk.PlayerDamageMul = _LaneStateService.PlayerDamageMul
+			-- 단계 공통(1.1-H11): 플레이어 배수 삭제(×1 · 옛 WO-016 ×PlayerDamageMul) · 구역 안에 적팀 미니언이 없으면 기본 피해 ×NoMinionMul(LaneStateService.FacilityNoMinionAtkMul · 10).
+			--   판정은 FactionAttack.CalcDamage 가 LaneFacility.HasEnemyMinionInRange 로 한다. 대상 수 제한(WO-021 · 0 = 무제한).
+			atk.PlayerDamageMul = 1.0
+			atk.NoMinionMul = _LaneStateService.FacilityNoMinionAtkMul
 			atk.MaxTargets = math.max(0, maxTargets)
 			atk.SplashRadius = splashRadius
 			if attacks then
@@ -303,10 +349,11 @@ script LaneFacilityService extends Logic
 			ai.RangeOffsetY = -self:GroundOffset(villageId, stage)
 			ai.Enable = alive and attacks
 		end
-		-- 오라 특성 (AURA_SPEED · AURA_ATK · AURA_REGEN): Lv 값을 컨트롤러에 넣는다. 파괴되면 0 = 효과 없음(타이머는 두고 재건 시 값만 돌아온다).
+		-- 오라 특성 (AURA_SPEED · AURA_ATK · AURA_REGEN · AURA_ACC): Lv 값을 컨트롤러에 넣는다. 파괴되면 0 = 효과 없음(타이머는 두고 재건 시 값만 돌아온다).
 		---@type FactionAuraController
 		local aura = ent.FactionAuraController
 		local auraSpd = 0
+		local auraAcc = 0
 		if isvalid(aura) then
 			local auraAtk = 0
 			local auraRegen = 0
@@ -314,10 +361,13 @@ script LaneFacilityService extends Logic
 				auraSpd = _LaneStateService:TraitValue(villageId, stage, "AURA_SPEED", lv)
 				auraAtk = _LaneStateService:TraitValue(villageId, stage, "AURA_ATK", lv)
 				auraRegen = _LaneStateService:TraitValue(villageId, stage, "AURA_REGEN", lv)
+				-- 명중률 오라(%p · 1.1-A10 · H13 · 커닝 억제기 20/30/40): 아군 플레이어 명중률에 더하고 · 아군 수비대는 플레이어 회피를 그만큼 깎는다.
+				auraAcc = _LaneStateService:TraitValue(villageId, stage, "AURA_ACC", lv)
 			end
 			aura.AllySpeedBonus = auraSpd
 			aura.AllyAtkBonus = auraAtk
 			aura.AllyRegenPerSec = auraRegen
+			aura.AllyAccBonus = auraAcc
 			-- 부서지면 띠 그림도 끈다 (사용자 2026-10-07 "억제기 부서지면 오라도 off") — 값만 0 이면 띠가 그대로 남아 오라가 살아 있는 것처럼 보였다.
 			--   그림이 꺼진 시설은 FactionAuraController.CollectSources 가 소스에서도 뺀다(같은 맵 다른 오라 시설의 값으로 버프가 새지 않게). 재건되면 다시 켠다.
 			---@type AuraEmitter
@@ -338,8 +388,8 @@ script LaneFacilityService extends Logic
 			if isvalid(artFx) then artFx:ApplyToFx(fx) end
 		end
 		if attacks or isvalid(aura) then
-			log(string.format("[Facility] combat %s:%s lv=%d alive=%s attacks=%s dmg=%d range=%.1f cd=%.2f maxTargets=%d playerMul=%.1f auraSpeed=%.2f splash=%.1f fx=%s",
-				villageId, stage, lv, tostring(alive), tostring(attacks), math.floor(baseDamage), range, cooldown, math.max(0, maxTargets), _LaneStateService.PlayerDamageMul, auraSpd, splashRadius, tostring(isvalid(fx) and fx.Mode or "-")))
+			log(string.format("[Facility] combat %s:%s lv=%d alive=%s attacks=%s dmg=%d range=%.1f zone=%.1f cd=%.2f maxTargets=%d noMinionMul=%.1f auraSpeed=%.2f auraAcc=%.1f splash=%.1f fx=%s",
+				villageId, stage, lv, tostring(alive), tostring(attacks), math.floor(baseDamage), range, isvalid(zoneFc) and zoneFc.RangeHalfW or 0, cooldown, math.max(0, maxTargets), _LaneStateService.FacilityNoMinionAtkMul, auraSpd, auraAcc, splashRadius, tostring(isvalid(fx) and fx.Mode or "-")))
 		end
 	end
 
@@ -385,11 +435,12 @@ script LaneFacilityService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean HasAuraTrait(string villageId, string stage)
-		-- 마을×시설에 오라 특성(AURA_SPEED · AURA_ATK · AURA_REGEN)이 하나라도 있는가. 표가 정본.
+		-- 마을×시설에 오라 특성(AURA_SPEED · AURA_ATK · AURA_REGEN · AURA_ACC)이 하나라도 있는가. 표가 정본.
 		if _LaneStateService == nil then return false end
 		return _LaneStateService:HasTrait(villageId, stage, "AURA_SPEED")
 			or _LaneStateService:HasTrait(villageId, stage, "AURA_ATK")
 			or _LaneStateService:HasTrait(villageId, stage, "AURA_REGEN")
+			or _LaneStateService:HasTrait(villageId, stage, "AURA_ACC")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -410,6 +461,7 @@ script LaneFacilityService extends Logic
 		aura.AllySpeedBonus = 0
 		aura.AllyDmgTakenReduce = 0
 		aura.AllyRegenPerSec = 0
+		aura.AllyAccBonus = 0
 		aura.EnemyAtkPenalty = 0
 		aura.EnemySpeedPenalty = 0
 		aura.EnemyDmgTakenIncrease = 0
@@ -564,6 +616,13 @@ script LaneFacilityService extends Logic
 		self:SpawnFacility(villageId, "TOWER")
 		self:SpawnFacility(villageId, "SUPPRESSOR")
 		self:ApplyVisual(villageId, "CORE")
+		-- 방어막(1.1-H12): 포탑 · 억제기는 스폰 직후 시설 원장(FacilityState)이 아직 없어 SpawnFacility 의 ApplyVisual 에서 방어막이 안 붙는다
+		--   (2026-10-13 디자인 사이트 캡처 Play 에서 발견 — 넥서스만 붙고 포탑 · 억제기는 맨몸). 한 박자 뒤 세 시설을 다시 본다(이미 있으면 그대로).
+		_TimerService:SetTimerOnce(function()
+			for _, st in ipairs({ "CORE", "TOWER", "SUPPRESSOR" }) do
+				self:RefreshShield(villageId, st)
+			end
+		end, 0.5)
 		log("[Facility] village " .. villageId .. " facilities spawned for " .. userId)
 	end
 
@@ -790,6 +849,8 @@ script LaneFacilityService extends Logic
 		local ent = self.entities[key]
 		if not isvalid(ent) or not isvalid(ent.SpriteRendererComponent) then return end
 		local sr = ent.SpriteRendererComponent
+		-- 3페이즈 전 방어막 그림(1.1-H12): 주인 · 생존 · 페이즈에 맞춰 켜고 끈다(파괴되면 끄고 재건되면 3페이즈 전이면 다시 켠다).
+		self:RefreshShield(villageId, stage)
 		-- 🧪 테스트맵(UseTestLanes)에선 주인이 없어도 주인 있는 것처럼 — 아니면 HP 바가 전부 숨어 "바가 안 보인다"(사용자 2026-09-15).
 		local owned = self.testLanes or ((_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(villageId) ~= "") or false)
 		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
@@ -841,6 +902,106 @@ script LaneFacilityService extends Logic
 		showBar(true)
 		if bar ~= nil and isvalid(bar.comp) then bar.comp.Ratio = ratio end
 		if tierChanged then self:ApplyCombat(villageId, stage) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshShield(string villageId, string stage)
+		-- 시설 하나의 방어막(1.1-H12) 켜기/끄기 — 켜야 하는데 없으면 만든다. 그림 상태는 피해 계산에 쓰지 않는다(표시 전용).
+		local key = villageId .. ":" .. stage
+		local ent = self.entities[key]
+		if not isvalid(ent) then return end
+		local t = (_LaneStateService ~= nil) and _LaneStateService:FacilityState(villageId, stage) or nil
+		local owned = self.testLanes or ((_VillageOwnership ~= nil) and (_VillageOwnership:OwnerOf(villageId) ~= "") or false)
+		local on = self.shieldPhaseOn and owned and t ~= nil and t.alive
+		local shield = ent:GetChildByName("FacilityShield", false)
+		if not isvalid(shield) then
+			if not on then return end
+			shield = self:SpawnShield(ent, villageId, stage)
+			if not isvalid(shield) then return end
+		end
+		if shield.Enable ~= on then
+			shield.Enable = on
+			log("[Facility] shield " .. (on and "on " or "off ") .. key)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnShield(Entity ent, string villageId, string stage)
+		-- 방어막 그림을 시설의 자식으로 만든다. 크기 = 피격 상자 가로 · 그림 높이 × ShieldSizeMul(월드) — 자식이라 시설 Scale 이 곱해지므로 나눠서 넣는다.
+		--   층 = 시설과 같은 SortingLayer(@Sync) · OrderInLayer 는 동기화되지 않아 클라에서 LaneFacility.ApplyShieldLayer 가 2 로 맞춘다(시설 < 몬스터 3 < 플레이어 4 유지).
+		local shield = _SpawnService:SpawnByModelId(self.ShieldModelId, "FacilityShield", Vector3(0, 0, 0), ent)
+		if not isvalid(shield) then
+			log_warning("[Facility] shield spawn failed " .. villageId .. ":" .. stage)
+			return nil
+		end
+		local sr = shield.SpriteRendererComponent
+		local tr = shield.TransformComponent
+		if not isvalid(sr) or not isvalid(tr) then return shield end
+		sr.SpriteRUID = self.ShieldRUID
+		sr.Color = Color(1, 1, 1, 1)
+		local esr = ent.SpriteRendererComponent
+		if isvalid(esr) then sr.SortingLayer = esr.SortingLayer end
+		sr.OrderInLayer = self.FacilityOrderInLayer
+		local hs = self:HitSize(villageId, stage)
+		local w = hs.w * self.ShieldSizeMul
+		local h = self:GroundOffset(villageId, stage) * 2 * self.ShieldSizeMul
+		local psc = ent.TransformComponent.Scale
+		local px = math.abs(psc.x)
+		local py = math.abs(psc.y)
+		if px == 0 then px = 1 end
+		if py == 0 then py = 1 end
+		local native = self:ShieldNative()
+		if native.w > 0 and native.h > 0 then
+			tr.Scale = Vector3(w / native.w / px, h / native.h / py, 1)
+			-- 피벗이 가운데가 아니면 그림 중심을 시설 중심(트랜스폼 = 그림 중심)에 맞춘다.
+			tr.Position = Vector3(0, h * (native.ny - 0.5) / py, 0)
+		end
+		log(string.format("[Facility] shield spawned %s:%s world %.2fx%.2f native %.2fx%.2f parentScale %.2f layer %s/%d",
+			villageId, stage, w, h, native.w, native.h, px, tostring(sr.SortingLayer), self.FacilityOrderInLayer))
+		return shield
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ShieldNative()
+		-- 방어막 그림의 원본 크기(월드 단위 · 배율 1) {w, h, ny(피벗 y 비율)}. 한 번만 읽는다 — 애니메이션은 첫 프레임 기준(AuraEmitter.LoadSpriteMetrics 와 같은 방식).
+		--   API 가 크기를 못 주면(업로드 자산) ShieldNativeW/H 를 쓴다.
+		if self.shieldNative ~= nil then return self.shieldNative end
+		local r = { w = self.ShieldNativeW, h = self.ShieldNativeH, ny = self.ShieldPivotY }
+		if r.w > 0 and r.h > 0 then
+			self.shieldNative = r
+			return r
+		end
+		r.ny = 0.5
+		local sprite = nil
+		local rtype = _ResourceService:GetTypeAndWait(self.ShieldRUID)
+		if rtype == ResourceType.AnimationClip then
+			local clip = _ResourceService:LoadAnimationClipAndWait(self.ShieldRUID)
+			if clip ~= nil and clip.Frames ~= nil and #clip.Frames > 0 then sprite = clip.Frames[1].FrameSprite end
+		else
+			sprite = _ResourceService:LoadSpriteAndWait(self.ShieldRUID)
+		end
+		if sprite ~= nil and sprite.PixelPerUnit > 0 and sprite.Width > 0 and sprite.Height > 0 then
+			r.w = sprite.Width / sprite.PixelPerUnit
+			r.h = sprite.Height / sprite.PixelPerUnit
+			r.ny = sprite.PivotPixel:ToVector2().y / sprite.Height
+		end
+		log(string.format("[Facility] shield native %.2fx%.2f ny=%.2f type=%s api=%s", r.w, r.h, r.ny, tostring(rtype), tostring(sprite ~= nil)))
+		self.shieldNative = r
+		return r
+	end
+
+	@EventSender("Logic", "MatchSessionLogic")
+	@ExecSpace("ServerOnly")
+	handler HandleMatchPhaseChangedEvent(MatchPhaseChangedEvent event)
+		-- 방어막(1.1-H12): 3페이즈(PHASE3) · 매치 끝(EXPIRED)이면 전부 끄고, 그 밖(새 매치 PHASE0-1 등)이면 조건에 맞는 시설을 다시 켠다.
+		local on = event.Phase ~= "PHASE3" and event.Phase ~= "EXPIRED"
+		if on == self.shieldPhaseOn then return end
+		self.shieldPhaseOn = on
+		log("[Facility] shield phase " .. tostring(event.Phase) .. " -> " .. tostring(on))
+		for key, ent in pairs(self.entities or {}) do
+			local sep, sepEnd = string.find(key, ":", 1, true)
+			if sep ~= nil and isvalid(ent) then self:RefreshShield(string.sub(key, 1, sep - 1), string.sub(key, sep + 1)) end
+		end
 	end
 
 	@ExecSpace("ServerOnly")

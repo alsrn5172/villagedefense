@@ -82,17 +82,20 @@ for (const k of ['Hp', 'Mp', 'Exp']) {
   S.newText(b, 'UIMyInfo/info_bottom/' + k + 'Label', lbl, { font: 'Maple', size: 14, color: C.sub, h: 'left', pos: S.at(818, LABEL_Y[k], 44, 19.5, BOX), rect: [44, 20] });
 }
 
-// ═══ 오른쪽 위 바로가기: 캐릭터(C) · 스킬(K) · 친구(F) · 메뉴 — 시안 4칸 292 폭 ═══
+// ═══ 오른쪽 위 바로가기: 캐릭터(C) · 스킬(K) · 친구(F) · 메뉴 — 시안 4칸 292 폭 (+ 1.0.3-M7: 아이템(V) 칸) ═══
 const CONT = [1604, 20, 292, 85];
 // 🔴 오른쪽 끝 자리는 MSW 엔진 기본 버튼(친구 · 더보기 · 캔버스 x 1725~1897)이 차지한다(스크립트로 못 숨기고 못 바꾼다) → 시안 좌표(오른쪽 여백 24)를 그대로 쓰면 그 위에 겹친다.
 //    그래서 4칸 묶음 전체를 엔진 버튼 왼쪽(오른쪽 끝 1717 = 오른쪽 여백 203)으로 옮긴다. 칸 사이 간격 · 칩 · 이름 위치는 시안 그대로.
 // WO-051(2026-10-06 · fix-topright-hud.cjs): 친구 · 메뉴를 끈 뒤 남은 캐릭터 · 스킬을 오른쪽 두 칸으로 · 위 37(엔진 기본 버튼 가운데 높이).
 S.newBox(b, 'Shortcuts', { anchor: 'top-right', pivot: [1, 1], pos: [-203, -37], size: [CONT[2], CONT[3]] });
+// 1.0.3-M7-03: 왼쪽 빈 슬롯(x 1604)에 아이템(V) 버튼. 알림 배지 없음. 저장된 파일에는 add-item-shortcut.cjs 가 UIBuilder 로 더했다(이 스크립트는 다시 돌리지 않는다 — 사본).
+//   친구 · 메뉴는 저장 파일에서 캐릭터 · 스킬 자리(+38 · +114 = x 1756 · 1832)에 겹쳐 있다(런타임에 꺼짐) → 사본도 같은 자리로 옮겨 슬롯 1604 가 겹치지 않게 했다.
 const SHORT = [
   { id: 'BtnCharacter', x: 1756, icon: 'ico_user', key: 'C', label: '캐릭터', alert: true },
   { id: 'BtnSkill', x: 1832, icon: 'ico_star', key: 'K', label: '스킬', alert: true },
-  { id: 'BtnFriend', x: 1604, icon: 'ico_party', key: 'F', label: '친구' },          // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
-  { id: 'BtnMenu', x: 1680, icon: null, key: null, label: '메뉴' },                    // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
+  { id: 'BtnItem', x: 1604, icon: 'ico_bag', key: 'V', label: '아이템' },
+  { id: 'BtnFriend', x: 1756, icon: 'ico_party', key: 'F', label: '친구' },          // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
+  { id: 'BtnMenu', x: 1832, icon: null, key: null, label: '메뉴' },                    // 삭제(WO-046 · 2026-10-05) — StatusHUDController 가 OnBeginPlay 에서 끈다
 ];
 for (const s of SHORT) {
   const BTN = [s.x, 20, 64, 64];
@@ -148,6 +151,7 @@ b.write(path.join(WORLD, 'ui', 'StatusHUD.ui'), {
       apAlert: 'UIMyInfo/ApSpAlert',
       btnChar: 'Shortcuts/BtnCharacter',
       btnSkill: 'Shortcuts/BtnSkill',
+      btnItem: 'Shortcuts/BtnItem',
       alertChar: 'Shortcuts/BtnCharacter/Alert',
       alertSkill: 'Shortcuts/BtnSkill/Alert',
       btnFriend: 'Shortcuts/BtnFriend',
