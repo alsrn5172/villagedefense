@@ -71,4 +71,9 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 - 보스급 머리 위 체력바(`Monster/BossHpBar` · `BossHpBarService`: 엘리트 · 좀비머쉬맘 · 지역 보스 · 마노 · 주니어 발록).
 - 몬스터 렌더 층 고정 Default/3(밟은 발판 층을 안 따라감 · 골렘의 사원 문 끼임).
 - 장비 판매(`Item/EquipSellService` · `EquipSellUIController` · 상점 창 좌 구매 · 우 인벤토리). 공방 물약 수량 −5 · −10.
-- 페리온 마을: 미니언 나오는 자리 `SpawnX` 15.9 · 넥서스 · 수비대 `TowerSlotX` 6.0 · `EndTriggerX` 5.4.
+- 페리온 마을: 미니언 나오는 자리 `SpawnX` 15.9 · 넥서스 · 수비대 `TowerSlotX` 6.0 · `EndTriggerX` 5.4 · 레인 포탈 `P_Lane_To_Perion_Hunt_WildBoarLand` x 16.40 → 15.90.
+- 엘리니아 마을: 미니언 출발을 위층 다리 → 맨 아래층 레인 포탈 자리로(`LaneConfig` ELLINIA VILLAGE PathMinX −4.0 → −5.1 · PathY 6.8 → 0.88 · SpawnX −3.4 → −3.77 · SpawnY 6.8 → 0.88 · EndTriggerX 4.1 → 0.1). 칠판 `VillageNpcSector` BOARD `AnchorY` −0.91 → 1.47(오른쪽 발판 표면에 붙어 발판 그림에 안 가림).
+- 도움말(`GameIntroGroup`): 빅토리아 주화 '쓰는 곳' 줄 = 새 강화 비용(포탑 · 넥서스 4 ~ 9 / 억제기 6 ~ 14) · 7쪽 넥서스 분신 문단 "~해요" 체. 마을 특징 창(`TutorialGroup` Foot) 푸터 `시설 1단계 · 중간 · 10단계 값이에요.`(`apply-tutorial-info.cjs` 도).
+- 스탯창(`CharacterGroup`): 이동속도 줄을 점프력 줄 위로(Row6 · Row7 위치만 맞바꿈).
+- 계정 기록 창(`AccountRecordGroup`) 결과 칩 `ChipLastOne`(혼자 남아 승리 · 금빛 · 폭 120) · `AccountRecordUIController.FillHistCell`.
+- 공방 창(`VillageWorkshopGroup`) 장비 판매 칸 `Window/SellPane` 적용.

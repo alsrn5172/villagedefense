@@ -220,7 +220,7 @@ function tabs(base, rect, names, emblems) {
     }
     K.text(p + '/None', '마을 특성이 없어요', [x + 16, 610, 308, 52], { font: 'Noto700', size: 19, color: C.sub, enable: lines.length === 0 });
   });
-  K.text(W + '/Foot', '숫자가 셋이면 시설 Lv1 · Lv2 · Lv3 순서 값이에요.', [424, 814, 860, 26], { font: 'Noto500', size: 18, color: C.sub, h: 'left', enable: false });
+  K.text(W + '/Foot', '숫자가 셋이면 시설 1단계 · 중간 · 10단계 값이에요.', [424, 814, 860, 26], { font: 'Noto500', size: 18, color: C.sub, h: 'left', enable: false });
 }
 
 // 칩 글자 규칙(밝은 칩 = 어두운 글자 + 흰 밑줄) — 새 창 3개 안에서만
