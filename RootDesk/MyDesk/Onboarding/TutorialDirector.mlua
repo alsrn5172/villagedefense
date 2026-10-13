@@ -445,7 +445,7 @@ script TutorialDirector extends Logic
 		self:ApplyMoveLock()   -- 1.1-K06: 이동이 막힌 장면이면 걷기 속도를 바로 0 으로(첫 장면도 이 길을 탄다) · 이동이 열린 장면이면 풀어 준다
 		self.mem.anchor = nil   -- 1.0.3-M8-02: 전투 장면의 시작점은 장면마다 새로 잡고 장면이 끝나면 지운다
 		if s.leash ~= nil then
-			self:MarkAnchor()
+			self:MarkAnchor(s)
 		end
 		if s.pin ~= nil then
 			self:SetPin(s.pin)
@@ -1120,8 +1120,18 @@ script TutorialDirector extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method void MarkAnchor()
+	method void MarkAnchor(any s)
 		-- 전투 장면이 시작된 자리(맵 · x · y)를 기억한다 = 허용 범위의 중심(1.0.3-M8-02 · 장면 leash 가 있을 때 Go 가 부른다).
+		--   leash.at(d) 가 있으면 그 자리(6-3b = 발록 포탈 앞 · 이동 직후 위치가 늦게 반영돼도 틀어지지 않게).
+		if s ~= nil and s.leash ~= nil and s.leash.at ~= nil then
+			local at = s.leash.at(self)
+			if at ~= nil then
+				self.mem.anchor = at
+				self.mem.leashAt = -99
+				log("[Tutorial] anchor " .. tostring(at.map) .. " (" .. tostring(at.x) .. "," .. tostring(at.y) .. ") from scene")
+				return
+			end
+		end
 		local p = _UserService.LocalPlayer
 		if not isvalid(p) or not isvalid(p.TransformComponent) then
 			self.mem.anchor = nil
@@ -1145,20 +1155,34 @@ script TutorialDirector extends Logic
 			return
 		end
 		local p = _UserService.LocalPlayer
-		if not isvalid(p) or not isvalid(p.TransformComponent) or p.CurrentMapName ~= a.map then
+		if not isvalid(p) or not isvalid(p.TransformComponent) then
 			return
 		end
-		local wp = p.TransformComponent.WorldPosition
-		if math.abs(wp.x - a.x) <= s.leash.rx and math.abs(wp.y - a.y) <= s.leash.ry then
-			return
+		local otherMap = p.CurrentMapName ~= a.map
+		if otherMap then
+			-- 다른 맵으로 나간 경우: leash.map 이 켜진 장면만 되돌린다(6-3b 발록 포탈 · 사용자 2026-10-13 "포탈 앞에서 안 들어가고 밖으로 나가진다") · 장면 완료(발록 방 입장)는 제외.
+			if s.leash.map ~= true or (s.done ~= nil and s.done(self)) then
+				return
+			end
+		else
+			local wp = p.TransformComponent.WorldPosition
+			if math.abs(wp.x - a.x) <= s.leash.rx and math.abs(wp.y - a.y) <= s.leash.ry then
+				return
+			end
 		end
-		if self.sceneT - self.mem.leashAt < 1.0 then
+		local gap = 1.0
+		if otherMap then
+			gap = 3.0   -- 맵을 넘는 이동은 왕복이 길다
+		end
+		if self.sceneT - self.mem.leashAt < gap then
 			return   -- 요청 왕복 중 중복 방지
 		end
 		self.mem.leashAt = self.sceneT
-		log("[Tutorial] leash out (" .. tostring(wp.x) .. "," .. tostring(wp.y) .. ") -> back")
+		local wp2 = p.TransformComponent.WorldPosition
+		log("[Tutorial] leash out " .. tostring(p.CurrentMapName) .. " (" .. tostring(wp2.x) .. "," .. tostring(wp2.y) .. ") -> back")
 		if _TutorialService ~= nil then
-			_TutorialService:RequestAction("back:" .. a.map .. ":" .. tostring(a.x) .. ":" .. tostring(a.y))   -- 서버 TutorialService.MoveBack (1.0.3-M8-03)
+			-- 서버 TutorialService.MoveBack (1.0.3-M8-03) · 다른 맵이면 :map(맵을 넘어 되돌림)
+			_TutorialService:RequestAction("back:" .. a.map .. ":" .. tostring(a.x) .. ":" .. tostring(a.y) .. (otherMap and ":map" or ""))
 		end
 	end
 
@@ -1519,10 +1543,8 @@ script TutorialDirector extends Logic
 			done = function(d) local c = _CommonNpcUIController return c ~= nil and c.queue ~= nil and #c.queue > 0 end })
 		add({ id = "6-2e", kind = "coach", step = S6, title = "파병 접수!", text = "10초 뒤에 출발해요! 상대에게는 지금 바로 알림이 가요.", btn = "다음", allow = { win = { npc = true } }, keep = "npc",
 			onNext = function(d) if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("") end end })
-		-- 예전 6-2w(웨이브 쏘기)는 즉시 파병이 웨이브를 기다리지 않아 필요 없다 → 접수한 파병이 나가는 10초(DispatchService.ImmediateDelaySeconds)보다 조금 긴 11초를 기다린다(1.0.6-12-01 권장).
-		--   튜토리얼 가상 상대는 주인이 없어 접수 주문이 조용히 버려진다(DispatchService.ReleaseImmediate "no owner") — 눈에 보이는 출발은 없다. 화면이 멈춘 것처럼 보이지 않게 말풍선만 띄운다(막이 클릭을 막고 이동은 잠김).
-		add({ id = "6-2w", kind = "coach", step = S6, title = "출발을 기다려요", text = "접수한 파병이 " .. G("10초 뒤") .. "에 출발해요.\n잠깐만 기다려요!", allow = none,
-			done = function(d) return d.sceneT > 11 end })
+		-- 6-2w(접수한 파병이 나가는 10초를 11초 기다리던 장면 · 1.0.6-12-01)는 뺐다(사용자 2026-10-13 "파병 진짜로 10초 기다리는 거 너무 에바 · 안 기다리고 다음 진행").
+		--   튜토리얼 가상 상대는 주인이 없어 접수 주문이 조용히 버려져(DispatchService.ReleaseImmediate "no owner") 기다려도 눈에 보이는 출발이 없었다. 6-2e 에서 [다음] → 바로 6-3(발록).
 		-- 발록 입장(사용자 2026-10-07 "발록 잡는 건 왜 슬리피우드 가서 입장하는 것까지 안 보여줘? 영혼의 낙인석 쓰면서 입장하는 거 보여줘"):
 		--   슬리피우드 마을 발록 포탈 앞으로 옮기고 → ↑ 로 실제 입장(BalrogRoomService.RequestEnter · 도착 때 영혼석 차감) → 방 안에서 설명 → 끝.
 		--   방 안에서는 공격을 막는다(allow none) — 튜토리얼에서 발록을 잡으면 매치 승리로 끝나 버린다.
@@ -1530,7 +1552,10 @@ script TutorialDirector extends Logic
 		-- 도착 x = 포탈 x − 0.3 (2026-10-13): 예전 −0.9 는 포탈 판정 상자(PortalNetwork.TryMoveByUpArrow: |dx| ≤ 상자 폭/2 = 0.58 · 상자 중심 = 포탈 x + 0.01) 밖이라 ↑ 가 안 먹었다. 포탈 앞 near 도착은 이 장면 하나뿐.
 		add({ id = "6-3m", kind = "act", pin = balrogVillage, action = "near:" .. balrogVillage .. ":P_To_Sleepywood_Boss_JrBalrog:-0.3", fade = true, map = balrogVillage, allow = none })
 		-- noDim(1.1-L03): 강조 막 4장이 구멍 밖 터치(모바일 조이스틱 · 점프 버튼)를 전부 막던 것을 끈다 · side b = 말풍선을 포탈 위에 놓아 조이스틱 · 버튼 자리를 비운다.
+		-- leash(사용자 2026-10-13 "발록 제단 포탈 앞에서 안 들어가고 밖으로 나가진다 · 포탈 근처에서 멀어지면 되돌려라"): 포탈 앞 시작점에서 가로 3 · 세로 2.5 를 벗어나거나 다른 맵으로 나가면 되돌린다.
 		add({ id = "6-3b", kind = "coach", step = S6, title = "발록 포탈", text = "포탈 앞에서 " .. G("↑") .. "를 누르면 " .. G("낙인의 영혼석") .. "을 내고 들어가요.", finger = true, noDim = true, side = "b", allow = { keys = { K.UpArrow }, move = true },
+			leash = { rx = 3.0, ry = 2.5, map = true,
+				at = function(d) local e = d:MapChild("P_To_Sleepywood_Boss_JrBalrog") if e == nil then return nil end local wp = e.TransformComponent.WorldPosition return { map = balrogVillage, x = wp.x - 0.3, y = wp.y } end },
 			target = function(d) local e = d:MapChild("P_To_Sleepywood_Boss_JrBalrog") if e == nil then return nil end return { world = { e = e, x1 = -0.8, y1 = -0.2, x2 = 0.8, y2 = 1.8, py = 0.8 } } end,
 			done = function(d) local p = _UserService.LocalPlayer return isvalid(p) and string.sub(p.CurrentMapName or "", 1, 24) == "Sleepywood_Boss_JrBalrog" end })
 		add({ id = "6-3c", kind = "coach", step = S6, title = "주니어 발록 방!", text = G("낙인의 영혼석") .. "이 빠졌어요. 들어오면 " .. G("90초") .. " 안에 싸워요.\n못 잡아도 발록 HP 는 그대로 남아 다음 입장 때 이어서 때릴 수 있어요.", btn = "다음", allow = none,
