@@ -50,7 +50,8 @@ script LaneStateService extends Logic
 
 	-- 시설 공격 보정(1.1-H11): 시설 구역 안에 적팀 미니언이 1마리도 없으면 시설의 기본 피해 × 이 값(플레이어 · 미니언 공통). 미니언이 있으면 ×1.
 	--   LaneFacilityService.ApplyCombat 이 FactionAttack.NoMinionMul 로 넣는다.
-	property number FacilityNoMinionAtkMul = 10.0
+	--   1.0.7 §10 10단계 개편(사용자 2026-10-14): 10 → 1. 시설 공격력 자체를 단계 표(TowerConfig · 웨이브 미니언 HP 의 약 10%)에서 올렸으므로 "미니언이 없을 때 ×10" 은 없앤다(사실상 플레이어 상대 배수 · 1 = 보정 없음).
+	property number FacilityNoMinionAtkMul = 1.0
 
 	-- 억제기 파괴 폭발 (B3 · 사용자 2026-09-22 · 전 마을 공통): 파괴 순간 반경 안의 **미니언에게만** 작용. 연출 = ICBM special 클립(×0.8) + Hit 사운드.
 	-- 1.0.5-9-01: 반경 안 미니언은 체력과 상관없이 처치한다(예전엔 고정 피해 10,000 이라 T3 Lv5 파병 유닛 · 좀비머쉬맘이 살아남았다). 이 값은 이제 쓰지 않는다 — 옛 호환으로만 남긴다.
@@ -87,6 +88,11 @@ script LaneStateService extends Logic
 	-- 마을 × 시설 × 특성 (VillageFacilityTrait.csv · 계약서 A-2-17 · WO-021). traitDef[villageId][stage][traitKey] = { lv1, lv2, lv3 }
 	@HideFromInspector
 	property any traitDef = nil
+
+	-- 특성 보간 값의 반올림 자리(1.0.7 §12 · 사용자 2026-10-14 "소수 첫째 자리까지 · 둘째 자리에서 반올림"). 표시 단위로 첫째 자리 = 기본은 값 그대로 0.1 단위.
+	--   비율로 쓰는 특성(쉼표 구분 · 화면에는 ×100 퍼센트로 나온다)은 퍼센트 기준 첫째 자리 = 값 0.001 단위로 자른다 — 0.1 단위로 자르면 AURA_SPEED · AURA_ATK(0.10 ~ 0.30)가 세 단계로 뭉친다.
+	--   빈 문자열이면 모든 특성을 0.1 단위로(문자 그대로).
+	property string TraitRatioKeys = "AURA_SPEED,AURA_ATK,MAX_HP_MUL"
 
 	-- 침범자별 마지막 무적 안내 시각 (userId → ElapsedSeconds).
 	@HideFromInspector
@@ -191,12 +197,20 @@ script LaneStateService extends Logic
 		return string.sub(s, p + 1)
 	end
 
+	method integer FacilityArtGrade(integer grade)
+		-- 강화 단계(1 ~ 10) → 그림 단계(1 ~ 3) 한 곳(1.0.7 §10 10단계 개편): 1 ~ 3 → 1 · 4 ~ 7 → 2 · 8 ~ 10 → 3.
+		--   공격 연출(FacilityAttackFx 의 Level 1 ~ 3 행) · 성장 점수(그림이 바뀌는 4 · 8단계에서만)가 이 함수를 같이 쓴다. ExecSpace 없음(순수 계산).
+		if grade >= 8 then return 3 end
+		if grade >= 4 then return 2 end
+		return 1
+	end
+
 	method any AttackFx(string villageId, string stage, integer lv)
-		-- 마을×시설×Lv 의 연출 행. 없으면 nil. Lv 는 있는 것 중 가장 가까운 아래 레벨로 내려간다(Lv3 행이 없으면 Lv2).
+		-- 마을×시설×강화 단계의 연출 행. 없으면 nil. 단계(1 ~ 10)는 그림 단계(1 ~ 3)로 바꿔 찾고(FacilityArtGrade) 있는 것 중 가장 가까운 아래 단계로 내려간다(3단계 행이 없으면 2단계).
 		if self.fxDef == nil then return nil end
 		local v = self.fxDef[villageId]
 		if v == nil or v[stage] == nil then return nil end
-		for l = math.max(1, math.min(3, lv)), 1, -1 do
+		for l = self:FacilityArtGrade(lv), 1, -1 do
 			if v[stage][l] ~= nil then return v[stage][l] end
 		end
 		return nil
@@ -230,12 +244,30 @@ script LaneStateService extends Logic
 	end
 
 	method number TraitValue(string villageId, string stage, string key, integer lv)
-		-- 마을×시설×특성의 Lv 값. 행이 없으면 0 (= 특성 없음). Lv 는 1~3 으로 클램프.
+		-- 마을×시설×특성의 값. 행이 없으면 0 (= 특성 없음). lv = 강화 단계(1 ~ 10 · 1.0.7 §10 10단계 개편).
+		-- 표의 Lv1 · Lv2 · Lv3 칸은 헤더를 안 바꾸고 코드에서 10단계로 직선 보간한다: 단계 s → t = 1 + (s − 1) × 2 ÷ (최대 단계 − 1) (1 ~ 3) → 정수 칸 사이를 직선으로 잇는다.
+		--   1단계 = Lv1 값 · 10단계 = Lv3 값 · 칸 값이 같은 것(MAX_TARGETS · 배율류 · 빈 칸 = Lv1)은 그대로 나온다. 최대 단계는 TowerConfig 행 수(표가 3단계뿐이면 t = s 라 예전과 똑같다).
+		--   1.0.7 §12: 칸 사이에서 실제로 보간된 값(칸 값이 서로 다르고 정수 칸 위가 아닐 때)만 소수 첫째 자리로 반올림한다(TraitRatioKeys 의 비율 특성은 0.001 단위). 칸 값 그대로(1 · 10단계 · 같은 값 칸 · MINION_STOP_X)는 안 건드린다.
 		if self.traitDef == nil then return 0 end
 		local v = self.traitDef[villageId]
 		if v == nil or v[stage] == nil or v[stage][key] == nil then return 0 end
 		local vals = v[stage][key]
-		return vals[math.max(1, math.min(3, lv))] or 0
+		local d = (self.towerDef ~= nil) and self.towerDef[stage] or nil
+		local maxGrade = (d ~= nil and d.maxHp ~= nil and #d.maxHp >= 1) and #d.maxHp or 10
+		local s = math.max(1, math.min(lv, maxGrade))
+		local t = 1
+		if maxGrade > 1 then t = 1 + (s - 1) * 2 / (maxGrade - 1) end
+		local i = math.floor(t)
+		if i >= 3 then return vals[3] or 0 end
+		local a = vals[i] or 0
+		local b = vals[i + 1] or a
+		local r = a + (b - a) * (t - i)
+		if a ~= b and t > i then
+			local scale = 10
+			if string.find("," .. self.TraitRatioKeys .. ",", "," .. key .. ",", 1, true) ~= nil then scale = 1000 end
+			r = math.floor(r * scale + 0.5) / scale
+		end
+		return r
 	end
 
 	method boolean HasTrait(string villageId, string stage, string key)
@@ -247,12 +279,18 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void LoadTowerDef()
-		-- TowerConfig.csv(계약서 A-2-4 · Stage 3값 · 비용 = 주화). 없으면 결정 §1-1 기본값.
-		-- 1.0.7 §10(2026-10-14): 넥서스도 강화 3단계(비용 20 · 40 = 포탑과 같음) · facLv = 시설 레벨(FacilityLevel 열 · 1단계 포탑 15 · 억제기 20 · 넥서스 25 · 강화 한 단계마다 +5).
+		-- TowerConfig.csv(계약서 A-2-4 · Stage × Level 행 · 비용 = 주화). 없으면 아래 기본값(= 표와 같은 10단계 값).
+		-- 1.0.7 §10(2026-10-14): 포탑 · 억제기 · 넥서스 강화 10단계(총 비용 포탑 · 넥서스 60 · 억제기 90 · UpgradeCost = 다음 단계로 올리는 비용 · 10단계 0) · facLv = 시설 레벨(FacilityLevel 열 · 세 시설 모두 17 ~ 35 · 단계당 +2 · 사용자 2026-10-14 · 1.0.7 §12).
 		self.towerDef = {
-			TOWER = { name = "포탑", maxHp = { 800, 1200, 1800 }, attack = { 30, 45, 65 }, attackSpeed = { 1.5, 1.3, 1.1 }, range = { 4.5, 5.0, 5.5 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.05, rebuild = 30, facLv = { 15, 20, 25 } },
-			SUPPRESSOR = { name = "억제기", maxHp = { 1200, 1800, 2600 }, attack = { 0, 0, 0 }, attackSpeed = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 30, 60, 0 }, repairPerHp = 0.05, rebuild = 50, hpMul = 1.3, atkMul = 1.3, expMul = 1.2, facLv = { 20, 25, 30 } },
-			CORE = { name = "넥서스", maxHp = { 2000, 3000, 4500 }, attack = { 0, 0, 0 }, attackSpeed = { 0, 0, 0 }, range = { 0, 0, 0 }, upgrade = { 20, 40, 0 }, repairPerHp = 0.1, rebuild = 0, facLv = { 25, 30, 35 } },
+			TOWER = { name = "포탑", maxHp = { 30000, 32800, 35900, 39300, 43000, 47100, 51500, 56400, 61700, 67500 }, attack = { 200, 230, 550, 950, 2050, 3450, 5100, 8900, 11150, 12750 },
+				attackSpeed = { 1.5, 1.46, 1.41, 1.37, 1.32, 1.28, 1.23, 1.19, 1.14, 1.1 }, range = { 4.5, 4.61, 4.72, 4.83, 4.94, 5.06, 5.17, 5.28, 5.39, 5.5 },
+				upgrade = { 4, 5, 5, 6, 7, 7, 8, 9, 9, 0 }, repairPerHp = 0.00067, rebuild = 30, facLv = { 17, 19, 21, 23, 25, 27, 29, 31, 33, 35 } },
+			SUPPRESSOR = { name = "억제기", maxHp = { 90000, 98100, 106900, 116500, 126900, 138300, 150700, 164200, 178900, 195000 }, attack = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+				attackSpeed = { 1.5, 1.46, 1.41, 1.37, 1.32, 1.28, 1.23, 1.19, 1.14, 1.1 }, range = { 4.5, 4.61, 4.72, 4.83, 4.94, 5.06, 5.17, 5.28, 5.39, 5.5 },
+				upgrade = { 6, 7, 8, 9, 10, 11, 12, 13, 14, 0 }, repairPerHp = 0.00067, rebuild = 50, hpMul = 1.3, atkMul = 1.3, expMul = 1.2, facLv = { 17, 19, 21, 23, 25, 27, 29, 31, 33, 35 } },
+			CORE = { name = "넥서스", maxHp = { 150000, 164100, 179600, 196600, 215100, 235400, 257600, 281900, 308500, 337500 }, attack = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+				attackSpeed = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, range = { 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5 },
+				upgrade = { 4, 5, 5, 6, 7, 7, 8, 9, 9, 0 }, repairPerHp = 0.0013, rebuild = 0, facLv = { 17, 19, 21, 23, 25, 27, 29, 31, 33, 35 } },
 		}
 		local t = _DataService:GetTable("TowerConfig")
 		if t == nil then
@@ -260,8 +298,7 @@ script LaneStateService extends Logic
 			return
 		end
 		local names = { TOWER = "포탑", SUPPRESSOR = "억제기", CORE = "넥서스" }
-		-- 시설 레벨 열(FacilityLevel)이 비었거나 없을 때의 안전망 = 1단계 기본값 + 강화 한 단계마다 5 (1.0.7 §10).
-		local facBase = { TOWER = 15, SUPPRESSOR = 20, CORE = 25 }
+		-- 시설 레벨 열(FacilityLevel)이 비었거나 없을 때의 안전망 = FacilityDefaultLevel(17 + 2 × (단계 − 1) · 1.0.7 §12).
 		local fresh = {}
 		for i = 1, t:GetRowCount() do
 			local stage = t:GetCell(i, "Stage") or ""
@@ -271,7 +308,7 @@ script LaneStateService extends Logic
 				if fresh[stage] == nil then fresh[stage] = { name = names[stage], maxHp = {}, attack = {}, attackSpeed = {}, range = {}, upgrade = {}, facLv = {}, repairPerHp = 0.05, rebuild = 0 } end
 				local d = fresh[stage]
 				local fl = tonumber(t:GetCell(i, "FacilityLevel"))
-				d.facLv[lv] = (fl ~= nil and fl >= 1) and math.floor(fl) or (facBase[stage] + 5 * (lv - 1))
+				d.facLv[lv] = (fl ~= nil and fl >= 1) and math.floor(fl) or self:FacilityDefaultLevel(stage, lv)
 				d.maxHp[lv] = math.floor(tonumber(t:GetCell(i, "MaxHp")) or 1)
 				d.attack[lv] = tonumber(t:GetCell(i, "Attack")) or 0
 				d.attackSpeed[lv] = tonumber(t:GetCell(i, "AttackSpeed")) or 1.5
@@ -288,10 +325,18 @@ script LaneStateService extends Logic
 		end
 		for stage, d in pairs(fresh) do if #d.maxHp >= 1 then self.towerDef[stage] = d end end
 		log("[Lane] TowerConfig loaded: " .. tostring(t:GetRowCount()) .. " rows")
-		-- 1.0.7 §10: 시설 레벨표와 넥서스 단계 수 확인용(기대: TOWER 15/20/25 · SUPPRESSOR 20/25/30 · CORE 25/30/35 · 넥서스 HP 3단계).
+		-- 1.0.7 §10 10단계 개편: 시설 레벨표와 단계 수 확인용(기대: 세 시설 모두 grades=10 · facLv 17/19/21/23/25/27/29/31/33/35 · upgrade 마지막 0).
 		for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
 			local d = self.towerDef[stage]
 			log("[Lane] facLv " .. stage .. " = " .. table.concat(d.facLv, "/") .. " · grades=" .. tostring(#d.maxHp) .. " · maxHp=" .. table.concat(d.maxHp, "/") .. " · upgrade=" .. table.concat(d.upgrade, "/"))
+			-- 열마다 단계 수가 같고 (Level 이 1부터 빠짐없이 이어져) 마지막 단계의 UpgradeCost 가 0 인지 — 아니면 강화 버튼 · MAX 표시가 어긋난다.
+			local n = #d.maxHp
+			if #d.attack ~= n or #d.attackSpeed ~= n or #d.range ~= n or #d.upgrade ~= n or #d.facLv ~= n then
+				log_warning("[Lane] TowerConfig " .. stage .. " 열별 단계 수가 다릅니다 — Level 이 1 부터 빠짐없이 이어지는지 확인 (maxHp=" .. tostring(n) .. " attack=" .. tostring(#d.attack) .. " speed=" .. tostring(#d.attackSpeed) .. " range=" .. tostring(#d.range) .. " upgrade=" .. tostring(#d.upgrade) .. " facLv=" .. tostring(#d.facLv) .. ")")
+			end
+			if (d.upgrade[n] or 0) ~= 0 then
+				log_warning("[Lane] TowerConfig " .. stage .. " 마지막 단계(" .. tostring(n) .. ")의 UpgradeCost 가 0 이 아닙니다 — 최대 단계에서는 강화가 막힙니다(FacilityMaxLevel)")
+			end
 		end
 	end
 
@@ -551,7 +596,7 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method any FacilityState(string villageId, string stage)
-		-- 시설 하나: {lv, hp, max, alive, facLv}. LaneFacilityService 가 색을 칠할 때 쓴다. lv = 강화 단계(1 ~ 3) · facLv = 시설 레벨(15 ~ 35 · 1.0.7 §10).
+		-- 시설 하나: {lv, hp, max, alive, facLv}. LaneFacilityService 가 색을 칠할 때 쓴다. lv = 강화 단계(1 ~ 10 · 1.0.7 §10 10단계 개편) · facLv = 시설 레벨(17 ~ 35).
 		local v = self:EnsureVillage(villageId)
 		if v == nil or v.towers[stage] == nil then return nil end
 		local t = v.towers[stage]
@@ -559,12 +604,20 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method integer FacilityDefaultLevel(string stage, integer grade)
+		-- 시설 레벨의 기본식(1.0.7 §12 · 사용자 2026-10-14 "방어시설은 17렙부터 35렙까지 · 렙업당 2렙업"): 포탑 · 억제기 · 넥서스 모두 17 + 2 × (단계 − 1) → 1단계 17 · 10단계 35.
+		--   표(TowerConfig.FacilityLevel)가 정본이고 이 식은 칸이 비었을 때 · 표를 못 읽었을 때의 안전망이다. 모르는 시설이면 1.
+		if stage ~= "TOWER" and stage ~= "SUPPRESSOR" and stage ~= "CORE" then return 1 end
+		return 17 + 2 * (math.max(1, grade) - 1)
+	end
+
+	@ExecSpace("ServerOnly")
 	method integer FacilityLevelAt(string stage, integer grade)
-		-- 시설 레벨표 조회(1.0.7 §10 · TowerConfig.FacilityLevel): 그 시설(TOWER · SUPPRESSOR · CORE)이 강화 grade 단계(1 ~ 3)일 때의 시설 레벨.
-		-- 1단계 포탑 15 · 억제기 20 · 넥서스 25, 강화 한 단계마다 +5. 단계가 표 범위를 넘으면 마지막 값 · 표에 없는 시설이면 1.
+		-- 시설 레벨표 조회(1.0.7 §10 · TowerConfig.FacilityLevel): 그 시설(TOWER · SUPPRESSOR · CORE)이 강화 grade 단계(1 ~ 10)일 때의 시설 레벨.
+		-- 표의 FacilityLevel 열 그대로(세 시설 모두 17 ~ 35 · 단계당 +2). 단계가 표 범위를 넘으면 마지막 값 · 표나 칸이 없으면 FacilityDefaultLevel · 표에 없는 시설이면 1.
 		local d = (self.towerDef ~= nil) and self.towerDef[stage] or nil
-		if d == nil or d.facLv == nil or #d.facLv < 1 then return 1 end
-		return d.facLv[math.max(1, math.min(grade, #d.facLv))] or 1
+		if d == nil or d.facLv == nil or #d.facLv < 1 then return self:FacilityDefaultLevel(stage, grade) end
+		return d.facLv[math.max(1, math.min(grade, #d.facLv))] or self:FacilityDefaultLevel(stage, grade)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -579,7 +632,7 @@ script LaneStateService extends Logic
 	@ExecSpace("ServerOnly")
 	method integer TestSetFacilityLevel(string villageId, string stage, integer lv)
 		-- 🧪 테스트 리모콘(LaneTestDriver · Maker Play 전용 · 사용자 2026-09-14): 비용 없이 시설 Lv 를 놓고 만피·생존으로 되돌린 뒤 Changed(색·전투·연출 갱신).
-		-- 상한 = TowerConfig 행 수(포탑·억제기·넥서스 3 · 1.0.7 §10 부터 넥서스도 3). 출시 월드에선 아무 일도 안 한다. 반환 = 실제 놓인 Lv(0 = 실패).
+		-- 상한 = TowerConfig 행 수(포탑·억제기·넥서스 모두 10 · 1.0.7 §10 10단계 개편). 출시 월드에선 아무 일도 안 한다. 반환 = 실제 놓인 단계(0 = 실패).
 		if not Environment:IsMakerPlay() then return 0 end
 		local v = self:EnsureVillage(villageId)
 		local d = self.towerDef[stage]
@@ -608,7 +661,7 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method integer FacilityMaxLevel(string stage)
-		-- 시설 단계의 최대 강화 단계 = TowerConfig 행 수(포탑·억제기·넥서스 3 · 1.0.7 §10 부터 넥서스도 3). 표가 없으면 1.
+		-- 시설 단계의 최대 강화 단계 = TowerConfig 행 수(포탑·억제기·넥서스 모두 10 · 1.0.7 §10 10단계 개편). 표가 없으면 1. 강화 가능 · MAX 판정(BuildView · RequestTowerAction)이 이 값을 같이 쓴다.
 		local d = (self.towerDef ~= nil) and self.towerDef[stage] or nil
 		if d == nil or d.maxHp == nil then return 1 end
 		return math.max(1, #d.maxHp)
@@ -1219,7 +1272,8 @@ script LaneStateService extends Logic
 				local t = v.towers[stage]
 				local d = self.towerDef[stage]
 				local max = self:MaxHpOf(v.id, stage, t.lv)
-				local upCost = d.upgrade[t.lv] or 0
+				-- 강화 비용 = 다음 단계로 올리는 비용(UpgradeCost) · 최대 단계(1.0.7 §10: 10)면 표 칸과 상관없이 0 = MAX (클라 방어 창의 MAX 칩 · 강화 불가 판정이 이 0 을 본다).
+				local upCost = (t.lv < self:FacilityMaxLevel(stage)) and (d.upgrade[t.lv] or 0) or 0
 				local repCost = math.ceil((max - t.hp) * d.repairPerHp)
 				local rebCost = d.rebuild
 				-- 쿨타임 남은 초(1.0.5-6-01 · 6-02): 수리 · 재건 따로. 0 이면 없음.
@@ -1236,7 +1290,7 @@ script LaneStateService extends Logic
 				local canReb = rebuildable and rebLeft <= 0 and block == ""
 				-- 16·17번 = 마을별 아이콘 RUID + 상하반전 (2026-09-08 추가 · payload 는 append-only).
 				-- 18 ~ 20번 = 수리 남은 초 · 재건 남은 초 · 재건 막힘 사유("minions" 또는 빈 값) (1.0.5-6-02 추가 · 클라는 남은 초를 받아 스스로 줄인다).
-				-- 21번 = 시설 레벨(1.0.7 §10 · 15 ~ 35 · 4번 lv 는 강화 단계 1 ~ 3 그대로).
+				-- 21번 = 시설 레벨(1.0.7 §10 · 15 ~ 35 · 4번 lv 는 강화 단계 1 ~ 10 그대로 · 10단계 개편).
 				add({ "T", stage, d.name, tostring(t.lv), tostring(t.hp), tostring(max), b2s(t.alive),
 					tostring(d.attack[math.min(t.lv, #d.attack)] or 0), tostring(d.range[math.min(t.lv, #d.range)] or 0),
 					tostring(upCost), tostring(repCost), tostring(rebCost), b2s(canUp), b2s(canRep), b2s(canReb),
@@ -1499,7 +1553,8 @@ script LaneStateService extends Logic
 		local cost = 0
 		local msg = ""
 		if action == "upgrade" then
-			cost = d.upgrade[t.lv] or 0
+			-- 최대 단계(1.0.7 §10: 10단계)면 표 칸과 상관없이 막는다(BuildView 의 MAX 판정과 같은 기준).
+			cost = (t.lv < self:FacilityMaxLevel(stage)) and (d.upgrade[t.lv] or 0) or 0
 			if not t.alive or cost <= 0 then self:Toast(uid, "강화할 수 없습니다") return end
 		elseif action == "repair" then
 			cost = math.ceil((max - t.hp) * d.repairPerHp)
@@ -1539,11 +1594,15 @@ script LaneStateService extends Logic
 			return
 		end
 		if action == "upgrade" then
+			local hpBefore = t.hp
 			t.lv = t.lv + 1
-			t.hp = self:MaxHpOf(v.id, stage, t.lv)
+			local maxAfter = self:MaxHpOf(v.id, stage, t.lv)
+			-- 1.0.7 §10 10단계 개편(사용자 2026-10-14): 강화해도 HP 를 가득 채우지 않는다 — 강화 전 HP 비율 그대로 최대 HP 만 오른다(새 HP = floor(강화 전 HP × 새 최대 ÷ 강화 전 최대)). 가득 채우는 건 수리뿐.
+			--   (넥서스 분신 트리거 OnCoreDamaged 는 HP 가 줄 때만 부르므로 강화로는 비율이 안 바뀌어 재충전도 안 된다 — 다시 소환시키려면 수리.)
+			t.hp = math.max(1, math.min(maxAfter, math.floor(hpBefore * maxAfter / math.max(1, max))))
 			-- 1.0.7 §10: 강화 단계는 "Lv" 대신 "n단계"(시설 레벨 Lv15 ~ 35 와 헷갈리지 않게).
 			msg = d.name .. " " .. tostring(t.lv) .. "단계 강화"
-			log("[Facility] " .. v.id .. " " .. stage .. " upgrade -> grade " .. tostring(t.lv) .. " facLv=" .. tostring(self:FacilityLevelAt(stage, t.lv)) .. " hp=" .. tostring(t.hp) .. "/" .. tostring(self:MaxHpOf(v.id, stage, t.lv)))
+			log("[Facility] " .. v.id .. " " .. stage .. " upgrade -> grade " .. tostring(t.lv) .. "/" .. tostring(self:FacilityMaxLevel(stage)) .. " facLv=" .. tostring(self:FacilityLevelAt(stage, t.lv)) .. " hp " .. tostring(hpBefore) .. "→" .. tostring(t.hp) .. "/" .. tostring(maxAfter) .. " (ratio " .. string.format("%.3f", hpBefore / math.max(1, max)) .. ")")
 		elseif action == "repair" then
 			t.hp = max
 			t.repairReadyAt = _UtilLogic.ElapsedSeconds + self.RepairCooldownSec   -- 1.0.5-6-01: 이 시설의 다음 수리까지
@@ -1556,7 +1615,11 @@ script LaneStateService extends Logic
 		end
 		log("[Lane] " .. v.id .. " " .. action .. " " .. stage .. " coin-" .. tostring(cost) .. " (" .. uid .. ")")
 		-- 마을 성장도: 시설이 새 레벨에 처음 도달 (WO-031 묶음 2 · GrowthPoint FACILITY_LEVEL · 같은 단계·레벨은 매치당 1번).
-		if action == "upgrade" and _MatchTallyService ~= nil then _MatchTallyService:AddGrowth(uid, "FACILITY_LEVEL", stage, t.lv) end
+		--   1.0.7 §10 10단계 개편: 그림 단계(FacilityArtGrade 1 ~ 3)가 바뀌는 4 · 8단계로 올릴 때만 붙인다 → 예전 2 · 3단계와 같은 총점(시설당 2번)이고, 키의 단계도 예전처럼 그림 단계 2 · 3 (FACILITY_LEVEL:<시설>:2 · :3).
+		if action == "upgrade" and _MatchTallyService ~= nil then
+			local artNow = self:FacilityArtGrade(t.lv)
+			if artNow > self:FacilityArtGrade(t.lv - 1) then _MatchTallyService:AddGrowth(uid, "FACILITY_LEVEL", stage, artNow) end
+		end
 		self:Toast(uid, msg .. " (주화 -" .. tostring(cost) .. ")")
 		self:Changed(v.id, stage)
 	end

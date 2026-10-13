@@ -24,7 +24,7 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 
 - 전투력 `CalcCombatPower` = 기본 × 치명 × 명중 배율(1 + 적중률 · 1 ~ 2) × 방무 × 직업 계수(`JobInfo.PowerMul`) · 소수 버림. `BuildUiCsv` 키 `critdmg` · `ignoredef` · `power` · `balrogacc`.
 - 스탯창 마지막 3줄 좌우 두 칸(명중률 | 크리티컬 · 회피율 | 크리티컬 데미지 · 전투력 | 방어율 무시).
-- 슬리피우드 마을 발록 입구 포탈 위 전광판(`VD_BALROG_GATE_BOARD` · 클라 `Boss/BalrogGateBoard`): 내 발록 기준 명중률 · 방어율 무시를 최소 / 권장 기준과 견줘 색으로 보여 주고 장비 착탈 때 바로 바뀐다.
+- 슬리피우드 마을 발록 입구 포탈 위 전광판(`VD_BALROG_GATE_BOARD` · 클라 `Boss/BalrogGateBoard`): 내 발록 기준 명중률 · 방어율 무시를 최소 / 권장 기준과 견줘 색으로 보여 주고 장비 착탈 때 바로 바뀐다. 항목마다 두 줄: 최소 이상이면 `내 값 / 권장`(권장 이상 초록 · 최소만 하양) + 취소선 `내 값 / 최소` · 최소 미만이면 `내 값 / 최소` · `내 값 / 권장` 두 줄 다 빨강. 두 줄 칸 높이는 스크립트가 맞춘다(Row1Y · Row2Y).
 
 ## 6. 혼자 남으면 승리 (§8)
 
@@ -32,8 +32,8 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 
 ## 7. 시설 레벨 · 넥서스 강화 (§10)
 
-- `TowerConfig.FacilityLevel`(포탑 15/20/25 · 억제기 20/25/30 · 넥서스 25/30/35) · `LaneStateService.FacilityLevelAt` · `FacilityLevelOf` · 플레이어가 시설을 칠 때 명중 판정 레벨 = 시설 레벨(`StatService.ResolveTarget`).
-- 넥서스 강화 3단계: `CORE` Level 2 · 3 행(HP 150,000 → 225,000 → 337,500 · 비용 20 · 40). 방어 창 넥서스 카드 강화 버튼 · MAX · 수리 버튼 y −99.
+- `TowerConfig.FacilityLevel` · `LaneStateService.FacilityLevelAt` · `FacilityLevelOf` · 플레이어가 시설을 칠 때 명중 판정 레벨 = 시설 레벨(`StatService.ResolveTarget`). (처음 3단계 15 ~ 35 → 아래 10단계 개편에서 **세 시설 모두 17 ~ 35 · 단계당 +2** · `FacilityDefaultLevel` 안전망.)
+- 넥서스 강화: 처음 3단계 → **10단계 개편**(사용자 2026-10-14): 포탑 · 억제기 · 넥서스 모두 `TowerConfig` Level 1 ~ 10 행(총 비용 포탑 · 넥서스 60 · 억제기 90 · 10단계 UpgradeCost 0). 공격력 = 그 시기 웨이브 좀비버섯 미니언 HP 의 약 10%(커닝시티 50%). 강화해도 HP 를 채우지 않고 **비율 유지**(수리만 가득) · `FacilityNoMinionAtkMul` 10 → 1. 연출 · 성장 점수는 그림 단계(1 ~ 3단계 → 1 · 4 ~ 7 → 2 · 8 ~ 10 → 3 · `FacilityArtGrade`)로. 마을 특성 Lv1 ~ 3 칸은 10단계로 직선 보간(소수 첫째 자리 반올림 · 비율 특성 0.001). 방어 창 넥서스 카드 강화 버튼 · MAX · 수리 버튼 y −99.
 - 강화 단계 표기 "Lv n" → "n단계"(방어 창 · 방어선 노드 · 토스트 · 튜토리얼 3-6b 판정 · 3-6c 제목 · 마을 특징 창 푸터). 카드에 시설 레벨 "Lv15 · …".
 - 도움말 7쪽 넥서스 분신 문단 · 빅토리아 주화 '쓰는 곳'에 넥서스 강화.
 
@@ -54,3 +54,21 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 
 - 수비대 모집 재료(`MAT_*`) 드롭 확률 ★1 · ★3 · ★5 ×2: `DifficultyRule` 새 키 `HUNT_MAT_CHANCE_MUL`(행 추가) → `DropTableLogic.RollRows` 가 확률에 곱한다(1 상한 · 매치 밖 1). ★1 은 기존 수량 `HUNT_MAT_MUL` 2 가 위에 곱해져 기대값 4배.
 - 쉐도우 파트너(`SK_T22`) 쿨타임 120 → 90(Lv 당 −15 그대로 · Lv1 ~ 5 = 90 ~ 30초).
+
+## 11. 사용자 추가 지시 (2026-10-14 · §10 개편 · §11 · §12 · 미뤄 둔 질문 답)
+
+- 넥서스 분신 투사체(`Lane/CloneBall` · `CloneFrameFx` · `CloneSkillBrain.FireBalls/LandBall`): 헬레나 화살 · 다크로드 표창이 표적까지 날아가 도착 때 피해 · 적중 낱장 그림. `NexusCloneSkill` 열 10개 추가(스키마 A-2-31 · 정합성 CANONICAL). 방해 스킬(봉인 · 암흑 · 약화) 행 `Enabled = false`.
+- 넥서스 분신 사망 소리: 원작 분신 공통 Die 를 그룹 리소스로(`60946855…` · ×2.04) → `MonsterInfo` 9001000 ~ 9001004. 피격음은 원작 무음이라 비움.
+- 시설 방어막 그림: 페이즈 무관 · 사거리 안 적 미니언이 없을 때만(`LaneFacilityService` 주기 재판정).
+- 궁 끝 숫자: 타수대로 · 5타 묶음(`UltimateHitGroup` 5 · 묶음 안 치명 하나면 치명 숫자) · 모든 타 치명 판정. 궁 시전 중 시전자 숨김(`SkillExecutors.HideCasterFor`).
+- 도발: 지속시간 동안 머리 위 도발 표시(`PlayTauntMark`). 레이징 블로우 판정 아래 0.6. 하향 점프 강제(`SkillMovement.ForceDownDrop`).
+- 아이언 바디 반사 ×10(`SK_W12` 5 → 50) · 불굴의 진 반사 배율 ×100 → ×3(`UnyieldingReflectMul`).
+- 도적 어벤저(쉐도우 파트너 중 럭키 세븐 대체 · 앞쪽 2마리 · 럭키 세븐보다 20% 빠름 · 공격 속도 +20% 버프 제거 · 소리 `28d565bf…`).
+- 좀비머쉬맘 늘 MISS 수정(`StatService.ResolveTarget`: 꺼진 `BossSkillRunner` 는 보스로 안 봄).
+- 레벨 · 지역이 바뀐 사냥터 몬스터 메소 = 레벨 단계 값(`MonsterCatalog.LevelBaseMeso` → `FarmReward.MesoMin/MaxOverride`).
+- 주니어 발록 ★1 공격 0.25 → 0.5(`DifficultyRule BALROG_ATK_MUL` · 설명 문구 삭제). 발록 도전이 끝나면 방에 남은 졸개 정리(`BalrogRoomService.ClearRoomSummons`).
+- 발록 입구 전광판: 항목마다 두 줄(최소 이상 = `내 값 / 권장` + 취소선 `내 값 / 최소` · 최소 미만 = 두 줄 빨강) · 칸 높이를 스크립트가 맞춤.
+- 보스급 머리 위 체력바(`Monster/BossHpBar` · `BossHpBarService`: 엘리트 · 좀비머쉬맘 · 지역 보스 · 마노 · 주니어 발록).
+- 몬스터 렌더 층 고정 Default/3(밟은 발판 층을 안 따라감 · 골렘의 사원 문 끼임).
+- 장비 판매(`Item/EquipSellService` · `EquipSellUIController` · 상점 창 좌 구매 · 우 인벤토리). 공방 물약 수량 −5 · −10.
+- 페리온 마을: 미니언 나오는 자리 `SpawnX` 15.9 · 넥서스 · 수비대 `TowerSlotX` 6.0 · `EndTriggerX` 5.4.

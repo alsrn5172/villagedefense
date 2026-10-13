@@ -88,6 +88,16 @@ script SkillMovement extends Logic
 
     property number DownJumpAssistDelay = 0.06
 
+    -- 하향 점프 강제(1.0.7 · 사용자 2026-10-14 "하향 점프 잘 안 됨 · 무조건 서 있는 땅 아래로 · 0.2초 발판 무시"):
+    --   아래 + 점프 키를 누르면 엔진 아래 점프를 기다리지 않고 서 있는 발판 표면 바로 아래(DownJumpDropOffset)로 옮겨 떨어뜨린다.
+    --   그 뒤 DownJumpGuardSeconds(0.2) 안에 다른 발판에 닿으면 그것도 같은 방식으로 다시 빠진다 = 0.2초 동안 발판 무시.
+    --   아래(DownJumpProbeDistance 안)에 다른 수평 발판이 없으면(맨 아래 바닥 · 맵 발판 밖의 레인 바닥) 하지 않고 엔진 아래 점프에 맡긴다.
+    property boolean ForceDownJump = true
+
+    property number DownJumpDropOffset = 0.12
+
+    property number DownJumpProbeDistance = 40
+
     @HideFromInspector
     property number downJumpAt = -100
 
@@ -178,7 +188,21 @@ script SkillMovement extends Logic
         end
         self.actionBoundPlayer = player
         self.actionHandler = player:ConnectEvent(PlayerActionEvent, function(event)
-            if event.ActionName == "DownJump" then self:MarkDownJump("engine") end
+            if event.ActionName == "DownJump" then
+                self:MarkDownJump("engine")
+                -- 엔진 아래 점프(모바일 조이스틱 아래 + 점프 포함)가 났는데 잠시 뒤에도 같은 발판에 서 있으면 강제로 빠진다(1.0.7 ForceDownJump).
+                if self.ForceDownJump then
+                    _TimerService:SetTimerOnce(function()
+                        local p = _UserService.LocalPlayer
+                        if not isvalid(p) or not isvalid(p.RigidbodyComponent) then return end
+                        local body = p.RigidbodyComponent
+                        if not body:IsOnGround() then return end
+                        local fh = body:GetCurrentFoothold()
+                        if fh ~= nil and fh.Id ~= self.lastGroundFh and self.lastGroundFh ~= 0 then return end
+                        self:ForceDownDrop("engine-fallback")
+                    end, self.DownJumpAssistDelay)
+                end
+            end
         end)
     end
 
@@ -198,6 +222,45 @@ script SkillMovement extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method boolean ForceDownDrop(string source)
+        -- 강제 하향 점프(1.0.7 · ForceDownJump): 서 있는 발판 표면 바로 아래로 옮겨 떨어뜨린다. 옮겼으면 true(보호 시간 시작).
+        --   막는 조건은 엔진 DownJump 액션과 같게 본다(쓰러짐 · 시전 잠금 · 도움말 창 · 튜토리얼 게이트 · 채팅 입력).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.RigidbodyComponent) or not isvalid(player.MovementComponent) then return false end
+        local body = player.RigidbodyComponent
+        if not body:IsOnGround() then return false end
+        if _ChatService ~= nil and _ChatService.typing then return false end
+        if _SkillCaster ~= nil and _SkillCaster.castLockActive then return false end
+        if _GameIntroController ~= nil and _GameIntroController.isOpen then return false end
+        if _TutorialDirector ~= nil and not _TutorialDirector:ActionAllowed("DownJump") then return false end
+        local hit = player.PlayerHit
+        if isvalid(hit) and hit:IsDown() then return false end
+        local map = player.CurrentMap
+        if not isvalid(map) or not isvalid(map.FootholdComponent) then return false end
+        local cur = body:GetCurrentFoothold()
+        local p = player.TransformComponent.WorldPosition
+        local surfaceY = p.y
+        if cur ~= nil and not cur:IsVertical() then surfaceY = cur:GetYByX(p.x) end
+        -- 아래에 다른 수평 발판이 있어야 한다(맨 아래 바닥에서 맵 밖으로 빠지지 않게).
+        local hits = map.FootholdComponent:RaycastAll(Vector2(p.x, surfaceY - 0.02), Vector2(0, -1), self.DownJumpProbeDistance)
+        local below = false
+        if hits ~= nil then
+            for _, fh in ipairs(hits) do
+                if fh ~= nil and not fh:IsVertical() and (cur == nil or fh.Id ~= cur.Id) and fh:GetYByX(p.x) < surfaceY - 0.01 then
+                    below = true
+                    break
+                end
+            end
+        end
+        if not below then return false end
+        player.MovementComponent:SetWorldPosition(Vector2(p.x, surfaceY - self.DownJumpDropOffset))
+        self:MarkDownJump(source)
+        if cur ~= nil then self.downJumpFromFh = cur.Id end
+        log(string.format("SkillMovement: forced down drop (%s) from fh=%s y %.2f -> %.2f", source, tostring(self.downJumpFromFh), surfaceY, surfaceY - self.DownJumpDropOffset))
+        return true
+    end
+
+    @ExecSpace("ClientOnly")
     method void OnJumpKeyForDownJump(KeyDownEvent event)
         -- 아래 키 + 점프 키(Space · 왼쪽 Alt): 엔진 아래 점프가 DownJumpAssistDelay 안에 안 나가고 여전히 땅에 서 있으면 직접 아래 점프를 건다(입력 씹힘 보정).
         local key = event.key
@@ -207,6 +270,8 @@ script SkillMovement extends Logic
         local player = _UserService.LocalPlayer
         if not isvalid(player) or not isvalid(player.RigidbodyComponent) then return end
         if not player.RigidbodyComponent:IsOnGround() then return end
+        -- 강제 하향 점프(1.0.7): 바로 서 있는 발판 아래로 옮긴다. 아래 발판이 없거나 막혀 있으면 예전 보조(엔진 대기 → DownJump)로.
+        if self.ForceDownJump and self:ForceDownDrop("key") then return end
         local pressedAt = _UtilLogic.ElapsedSeconds
         _TimerService:SetTimerOnce(function()
             if self.downJumpAt >= pressedAt then return end   -- 엔진이 이미 아래 점프를 냈다
@@ -240,6 +305,11 @@ script SkillMovement extends Logic
         local fh = body:GetCurrentFoothold()
         if fh == nil or fh.Id == self.downJumpFromFh then return end
         local from = self.downJumpFromFh
+        -- 0.2초 발판 무시(1.0.7): 닿은 발판도 바로 아래로 옮겨 빠진다(엔진 DownJump 가 거절해도). 아래가 없으면 예전처럼 엔진에 맡긴다.
+        if self.ForceDownJump and self:ForceDownDrop("guard") then
+            log("SkillMovement: down jump guard — landed on fh " .. tostring(fh.Id) .. " within " .. tostring(self.DownJumpGuardSeconds) .. "s (from " .. tostring(from) .. ") → forced drop")
+            return
+        end
         if body:DownJump() then
             self.downJumpFromFh = fh.Id
             log("SkillMovement: down jump guard — landed on fh " .. tostring(fh.Id) .. " within " .. tostring(self.DownJumpGuardSeconds) .. "s (from " .. tostring(from) .. ") → drop again")

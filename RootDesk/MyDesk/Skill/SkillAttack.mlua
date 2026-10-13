@@ -99,6 +99,12 @@ script SkillAttack extends AttackComponent
     -- 다음 SpawnProjectile 한 번에만(2026-10-05 · 플레임 헤이즈): 연출 값을 볼 effectOverrides 키(SK_M11_FH). 폭발 그림 높이(GetImpactOffsetY) · 불꽃 붙이기(SkillProjectile.EffectKey → PlayMobFlame).
     --   빈 값 = 예전대로 스킬 id(SK_M11 = 에너지볼트 값). 호출자가 넣고 SpawnProjectile 첫 줄이 읽고 비운다.
     property string PendingProjectileEffectKey = ""
+    -- 다음 SpawnProjectile 한 번에만(1.0.7 · 어벤저 SK_T11_AV · 쉐도우 파트너 중 럭키 세븐 키): 관통형 큰 표창 하나.
+    --   Pierce = 관통할 적 수(0 = 아님 · 어벤저 2) · Spin = 제자리 회전 주기(초 · 0 = 안 돎 · 다크로드 회전 표창 0.4) · CoinHits = 맞을 때마다 픽파켓 동전 몫(럭키 세븐 2발 합 = 2).
+    --   hitCount 인자는 피해 배율(럭키 세븐 HitCount 2 = 한 번에 2발 합계 피해)이 되고 표시는 1타. 호출자(SkillExecutors.ExecuteAvenger)가 넣고 SpawnProjectile 첫 줄이 읽고 비운다.
+    property integer PendingProjectilePierce = 0
+    property number PendingProjectileSpin = 0
+    property integer PendingProjectileCoinHits = 1
 
     -- 연속 타격 표식(b/skill-pirate-effects 2026-09-27 · 피스트인레인지 10타): 2타째부터 attackInfo = 스킬 id .. 이 표식 .. 번호("SK_P21#2").
     -- 몬스터 무적 0.4s(A 의 Faction/MonsterHit.IsHitTarget)를 "같은 시전의 다음 타격" 만 건너뛰게 할 때 A 가 이 표식을 본다(#40 제안). 피해 값은 BaseSkillId 로 원래 id.
@@ -470,7 +476,8 @@ script SkillAttack extends AttackComponent
                 crit = _StatService:RollCritical(attacker)
             end
         end
-        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)를 더한다.
+        -- 궁 끝 피해 표시(1.0.7 §11 · SkillExecutors.OpenUltimateTally): 타 모음이 열려 있으면 이 타의 최종 피해(CalcDamage × 크리 배율)와 치명 여부를 대상별로 적는다.
+        --   궁의 모든 타는 위 판정(닷지 확정 → LUK 확률)을 거친 crit 를 그대로 쓴다 — 별도 굴림 없음. 묶음 패스는 표시 타수(GetDisplayHitCount)대로 줄을 나눈다.
         if _SkillExecutors ~= nil and isvalid(attacker) and isvalid(attacker.PlayerComponent) then
             local uid = attacker.PlayerComponent.UserId
             local base = self:BaseSkillId(attackInfo)
@@ -483,7 +490,7 @@ script SkillAttack extends AttackComponent
                     dmg = self:CalcDamage(attacker, defender, attackInfo)
                 end
                 if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
-                _SkillExecutors:AddUltimateTally(uid, base, dmg)
+                _SkillExecutors:AddUltimateTally(uid, base, defender, dmg, crit, math.floor(self:GetDisplayHitCount(attackInfo)), "SkillAttack")
             end
         end
         return crit
@@ -1019,6 +1026,13 @@ script SkillAttack extends AttackComponent
         self.PendingProjectileDamageMul = 1
         self.PendingProjectileExtraHitCsv = ""
         self.PendingProjectileEffectKey = ""
+        -- 어벤저(1.0.7): 관통 수 · 회전 · 동전 몫도 같은 방식으로 받아 두고 비운다.
+        local pierceMax = math.floor(self.PendingProjectilePierce or 0)
+        local spinSec = self.PendingProjectileSpin or 0
+        local coinHits = math.floor(self.PendingProjectileCoinHits or 1)
+        self.PendingProjectilePierce = 0
+        self.PendingProjectileSpin = 0
+        self.PendingProjectileCoinHits = 1
         -- 관전자 차단(A · PR #46 · 모든 상태 변경 Server RPC 의 첫 줄 규칙).
         if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
         local caster = self.Entity
@@ -1083,6 +1097,7 @@ script SkillAttack extends AttackComponent
             end
         end
         local spawnPos = Vector3(pos.x + dirX * ox, pos.y + spawnOffsetY, pos.z)
+        local nominalSpeed = speed   -- 어벤저(관통) 가 첫 명중 뒤 되찾을 원래 속도(아래 FlightFor 는 붙어 선 대상이면 속도를 낮춘다).
         local flight = self:FlightFor("projectile " .. skillId, range, speed, ox, target, ahead)
         local lifetime = flight.lifetime
         speed = flight.speed
@@ -1099,6 +1114,13 @@ script SkillAttack extends AttackComponent
         local single = self:ProjectileSpawnFlag(skillId, "singleTarget")
         local firstMul = hitCount
         if perArrow or perShot then firstMul = 1 end
+        -- 어벤저(관통 큰 표창 하나 · 1.0.7): 발마다 1타 · 1 대상 규칙을 쓰지 않는다 — 한 개가 hitCount 발 합계 피해(firstMul = hitCount)를 맞은 적마다 한 번 주고 최대 pierceMax 마리를 뚫는다.
+        if pierceMax > 0 then
+            perArrow = false
+            perShot = false
+            single = false
+            firstMul = hitCount
+        end
         local mover = self:SpawnOneProjectile(skillId, level, projectileModelId, spawnPos, map, dirX, target, speed, lifetime, hitEffectRuid, spriteRuid, hitSoundRuid, userId, firstMul, false, sc)
         self.pendingMinFlight = 0
         if mover == nil then return end
@@ -1119,6 +1141,20 @@ script SkillAttack extends AttackComponent
         end
         -- 럭키 세븐 1 대상(b/skill-thief-effects · effectOverrides spawn.singleTarget): 판정마다 상자 안 몬스터 하나만(조준 대상 우선).
         mover.SingleTargetOnly = single
+        -- 어벤저(1.0.7 · 쉐도우 파트너 중 럭키 세븐 키): 관통형 — 먼저 닿는 순으로 최대 pierceMax 마리(SkillProjectile.TryPierce) · 표시 1타 · 제자리 회전(spinSec) · 픽파켓 동전 몫.
+        --   PierceSpeed = 원래 속도: 붙어 선 대상 때문에 낮춘 속도(FlightFor)는 첫 명중 뒤 · 유도 대상이 없어지면 이 값으로 돌아간다(안 그러면 속도 0 에서 멈춰 둘째 적에 못 간다).
+        --   수명 = (Range − 스폰 앞거리) ÷ 원래 속도 + 최소 비행 시간: 유도(대상 있음) 기본 수명(Range ÷ 속도 × 1.5)은 사거리 너머 적까지 뚫으므로 줄인다. 대상 없음은 ApplyReach 가 이미 정했다.
+        --   이 설정은 ScheduleShadowClone 보다 먼저여야 한다(분신 몫이 같은 값을 복사한다).
+        if pierceMax > 0 then
+            mover.PierceMax = pierceMax
+            mover.PierceSpeed = nominalSpeed
+            mover.DisplayHits = 1
+            mover.SpinSec = spinSec
+            mover.CoinHits = math.max(1, coinHits)
+            if target ~= nil and nominalSpeed > 0 then
+                mover.MaxLifetime = math.max(0, range - ox) / nominalSpeed + self.MinFlightTime
+            end
+        end
         -- 플레임 헤이즈(b/skill-raging-blow-flame-haze): 스킬 몫만 × extraMul(에너지볼트 % × 2 · 매직 가드 추가 피해는 그대로 · 사용자 2026-10-02) · 표시 타수는 그대로 · 맞은 자리 추가 그림.
         mover.BaseDamageMul = 1
         if extraMul ~= nil and extraMul > 0 and extraMul ~= 1 then mover.BaseDamageMul = extraMul end
@@ -1156,6 +1192,7 @@ script SkillAttack extends AttackComponent
         if atkSpeed > 0 and atkSpeed ~= 1 then volleyDelay = volleyDelay / atkSpeed end
         local volleyCount = math.floor(hitCount)
         if singleArrow then volleyCount = 1 end
+        if pierceMax > 0 then volleyCount = 1 end   -- 어벤저: 표창은 큰 것 하나뿐(2발째 없음)
         for i = 2, volleyCount do
             local k = i
             _TimerService:SetTimerOnce(function()
@@ -1196,7 +1233,7 @@ script SkillAttack extends AttackComponent
         log("SkillAttack: spawned projectile " .. skillId .. " speed=" .. tostring(speed)
             .. " lifetime=" .. tostring(lifetime) .. " dir=" .. tostring(dirX) .. " target=" .. targetName .. " volley=" .. tostring(hitCount)
             .. " sprite=" .. tostring(spriteRuid ~= "") .. " scale=" .. tostring(sc) .. " preferBoss=" .. tostring(preferBoss) .. " explode=" .. explodeText
-            .. " perShot=" .. tostring(perShot) .. " single=" .. tostring(single) .. " dmgMul=" .. tostring(mover.DamageMul) .. " baseMul=" .. tostring(mover.BaseDamageMul)
+            .. " perShot=" .. tostring(perShot) .. " single=" .. tostring(single) .. " pierce=" .. tostring(pierceMax) .. " dmgMul=" .. tostring(mover.DamageMul) .. " baseMul=" .. tostring(mover.BaseDamageMul)
             .. " spawnX=" .. tostring(spawnPos.x) .. " spawnY=" .. tostring(spawnPos.y)
             .. " (casterX=" .. tostring(pos.x) .. " feetY=" .. tostring(pos.y) .. " offsetX=" .. tostring(dirX * ox) .. " offsetY=" .. tostring(spawnOffsetY) .. ")")
     end
@@ -1211,9 +1248,11 @@ script SkillAttack extends AttackComponent
         if uid == nil or uid == "" then return end
         local ratio = _SkillBuffs:GetShadowCloneRatio(uid)
         if ratio <= 0 then return end
-        local shared = { dmg = 0, target = nil }
+        -- hits = 원본이 실제로 피해를 준 대상별 확정 피해(대상 → 피해). 관통하는 어벤저는 대상이 둘이라 표로 든다(dmg · target 은 마지막 한 건 — 예전 한 대상 투사체와 같은 값).
+        local shared = { dmg = 0, target = nil, hits = {} }
         mover.CloneShared = shared
-        local snap = { skillId = mover.SkillId, level = mover.Level, speed = mover.Speed, life = mover.MaxLifetime, sameFloor = mover.SameFloorOnly, floorY = mover.FloorY }
+        local snap = { skillId = mover.SkillId, level = mover.Level, speed = mover.Speed, life = mover.MaxLifetime, sameFloor = mover.SameFloorOnly, floorY = mover.FloorY,
+            pierce = mover.PierceMax, pierceSpeed = mover.PierceSpeed, spin = mover.SpinSec, coinHits = mover.CoinHits }
         local delay = self.ShadowCloneDelay / math.max(0.01, _SkillBuffs:GetAttackSpeedMul(uid))
         local sp = Vector3(spawnPos.x - dirX * self.ShadowCloneBackOffset, spawnPos.y, spawnPos.z)
         _TimerService:SetTimerOnce(function()
@@ -1227,6 +1266,13 @@ script SkillAttack extends AttackComponent
             c.DisplayHits = 1
             c.SameFloorOnly = snap.sameFloor
             c.FloorY = snap.floorY
+            -- 어벤저 분신 몫도 같은 큰 표창: 원본이 맞힌 대상(최대 pierce 마리)을 같은 순서로 뚫는다 · 회전 · 동전 몫 같음(관통이 아닌 투사체는 0 · 1 이라 아무것도 안 바뀐다).
+            if snap.pierce ~= nil and snap.pierce > 0 then
+                c.PierceMax = snap.pierce
+                c.PierceSpeed = snap.pierceSpeed
+                c.SpinSec = snap.spin
+                c.CoinHits = snap.coinHits
+            end
             log("SkillAttack: shadow clone " .. tostring(snap.skillId) .. " ratio=" .. tostring(ratio) .. "% delay=" .. string.format("%.3f", delay) .. " target=" .. (t ~= nil and tostring(t.Name) or "none") .. " (" .. uid .. ")")
         end, delay)
     end

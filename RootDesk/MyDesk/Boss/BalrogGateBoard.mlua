@@ -6,9 +6,12 @@ script BalrogGateBoard extends Component
 	--   · 🔴 사람마다 자기 값이 보여야 한다 → StatusBoard(서버가 전원 공통 문자열을 @Sync)와 달리 이 컴포넌트는 클라에서만 그린다. 값은 서버가 소유 클라에만 보내는 스탯 CSV 에서 온다:
 	--     StatService.BuildUiCsv 의 balrogacc= · ignoredef= → StatUIController.SetCell 이 balrogAccText · ignoreDefText 에 글자 그대로 둔다 → 여기서 읽는다.
 	--   · 장비를 끼고 벗을 때마다 실시간: 서버가 Recalculate 때마다 PushToClient 를 보낸다(레벨업 · 버프 · 장비 전부) → PollInterval 마다 이 판이 값이 바뀐 때만 다시 그린다.
-	--   · 줄 서식(사용자 문구 그대로 · 줄 모양은 제안): 제목 "당신! 제대로 성장해 왔나요?" · "명중률 최소 필요: 50% (권장 75%) >> 당신의 명중률 'N%'" · "방어율 무시 최소 필요: 20% (권장 30%) >> 당신의 방어율 무시 'M%'".
-	--     글자색: 최소 기준 = 노랑 · 권장 기준 = 하양 · 내 값 = 최소 미만 빨강 / 이상 초록. 100% 를 넘어도 그대로(135.1%) · 음수는 0%.
-	--   · 한 줄에 색이 섞이므로 월드 TextRendererComponent 의 리치 텍스트(<color=#RRGGBB>)를 쓴다(IsRichText = true · 모델 VD_BALROG_GATE_BOARD).
+	--   · 줄 서식(사용자 2026-10-14 · 항목마다 두 줄): 제목 "당신! 제대로 성장해 왔나요?" 아래 명중률 · 방어율 무시가 각각 두 줄.
+	--     최소 이상: 윗줄 "명중률 92.8% / 권장 75%"(내 값: 권장 이상 초록 · 최소만 넘으면 하양) · 아랫줄 "명중률 92.8% / 최소 50%" 에 취소선(달성 · 옅은 회색).
+	--     최소 미만: 윗줄 "명중률 43% / 최소 50%" · 아랫줄 "명중률 43% / 권장 75%" — 취소선 없이 두 줄 다 빨강(누가 봐도 미달).
+	--     100% 를 넘어도 그대로(135.1%) · 음수는 0%.
+	--   · 한 줄에 색 · 취소선이 섞이므로 월드 TextRendererComponent 의 리치 텍스트(<color=#RRGGBB> · <s>)를 쓴다(IsRichText = true · 모델 VD_BALROG_GATE_BOARD).
+	--   · 줄 칸(Row1 · Row2)은 맵 · 모델에 한 줄 높이로 놓여 있다 → 그릴 때 이 스크립트가 칸의 높이(y) · 칸 크기를 두 줄용으로 맞춘다(Row1Y · Row2Y · RowRectHeight).
 	--   · 층: 판(Plate) Default/2 · 글자 Default/3 (모델 값) — 플레이어(Default/4) 뒤 · 포탈(Default/5) 뒤. StatusBoard · WorldNameTag 와 같은 규칙.
 	--   · 판 그림 = 메이플 고등학교 교실 칠판(RUID f68089a2… · 지금 VD_RECORD_BOARD 가 쓰는 그림).
 
@@ -23,10 +26,10 @@ script BalrogGateBoard extends Component
 
 	property string TitleText = "당신! 제대로 성장해 왔나요?"
 
-	-- 글자색(리치 텍스트 16진수). 최소 기준 = 노랑 · 권장 기준 = 하양 · 통과 = 초록 · 미달 = 빨강 · 값 없음 = 옅은 회색.
-	property string ColorMin = "#FFE24A"
-
+	-- 글자색(리치 텍스트 16진수). 기본 글자 = 하양 · 권장 이상 = 초록 · 최소 미만 = 빨강 · 달성해 지운 줄 = 회색 · 값 없음 = 옅은 회색.
 	property string ColorRec = "#FFFFFF"
+
+	property string ColorDone = "#9AA396"
 
 	property string ColorOk = "#5FE08A"
 
@@ -46,9 +49,16 @@ script BalrogGateBoard extends Component
 	-- 칠판 그림(가로 1.0)의 면 폭 4.62 에서 좌우 여백을 뺀 값 = StatusBoard 와 같은 4.17.
 	property number TextEmUnits = 0.1
 
-	property number RowFontSize = 1.5
+	property number RowFontSize = 1.35
 
 	property number RowMaxWidth = 4.17
+
+	-- 두 줄짜리 칸의 판 기준 높이(유닛) · 칸 높이. 제목(1.146) 아래 · 판 아랫면(옛 Row2 0.416 의 아래 끝) 위에 두 묶음이 들어가게 한다.
+	property number Row1Y = 0.87
+
+	property number Row2Y = 0.5
+
+	property number RowRectHeight = 0.34
 
 	@HideFromInspector
 	property string appliedSig = ""
@@ -119,13 +129,15 @@ script BalrogGateBoard extends Component
 		local line1 = self:BuildRow("명중률", self.MinAccuracy, self.RecAccuracy, acc)
 		local line2 = self:BuildRow("방어율 무시", self.MinIgnoreDef, self.RecIgnoreDef, ign)
 
-		-- 두 줄은 같은 글자 크기: 더 긴 줄이 한 줄 최대 폭 안에 들게 줄인다.
+		-- 네 줄은 같은 글자 크기: 가장 긴 줄이 한 줄 최대 폭 안에 들게 줄인다.
 		local fs = self.RowFontSize
 		local em = math.max(self:EstimateEm(line1.plain), self:EstimateEm(line2.plain))
 		if em * fs * self.TextEmUnits > self.RowMaxWidth then
 			fs = self.RowMaxWidth / (em * self.TextEmUnits)
 		end
 
+		self:PlaceRow(row1, self.Row1Y)
+		self:PlaceRow(row2, self.Row2Y)
 		self:ApplyText(title.TextRendererComponent, "<b>" .. self.TitleText .. "</b>", nil)
 		self:ApplyText(row1.TextRendererComponent, "<b>" .. line1.rich .. "</b>", fs)
 		self:ApplyText(row2.TextRendererComponent, "<b>" .. line2.rich .. "</b>", fs)
@@ -141,24 +153,41 @@ script BalrogGateBoard extends Component
 
 	@ExecSpace("ClientOnly")
 	method any BuildRow(string label, number minV, number recV, any mine)
-		-- 한 줄을 { rich = 리치 글자, plain = 태그 뺀 글자 } 로 만든다. 태그 뺀 글자는 폭 어림용.
-		--   `명중률 최소 필요: 50% (권장 75%) >> 당신의 명중률 '92.8%'` — 최소 구간 노랑 · 권장 구간 하양 · 내 값 최소 미만 빨강 / 이상 초록.
-		local minText = "최소 필요: " .. self:FmtPct(minV)
-		local recText = "(권장 " .. self:FmtPct(recV) .. ")"
-		local head = label .. " "
-		local mid = " >> 당신의 " .. label .. " '"
-		local tail = "'"
-		local valText = "-"
-		local valColor = self.ColorNone
-		if mine ~= nil then
-			local v = mine
-			if v < 0 then v = 0 end
-			valText = self:FmtPct(v)
-			valColor = (v >= minV) and self.ColorOk or self.ColorLow
+		-- 항목 하나를 두 줄로 만든다 → { rich = 리치 글자(줄바꿈 포함), plain = 두 줄 중 긴 줄의 태그 뺀 글자(폭 어림용) }.
+		--   최소 이상: "명중률 92.8% / 권장 75%" (내 값 권장 이상 초록 · 최소만 넘으면 하양) + 취소선 "명중률 92.8% / 최소 50%"(회색).
+		--   최소 미만: "명중률 43% / 최소 50%" + "명중률 43% / 권장 75%" — 취소선 없이 두 줄 다 빨강.
+		local recText = "권장 " .. self:FmtPct(recV)
+		local minText = "최소 " .. self:FmtPct(minV)
+		if mine == nil then
+			local n1 = label .. " - / " .. recText
+			local n2 = label .. " - / " .. minText
+			return { rich = self:Seg(n1, self.ColorNone) .. "\n" .. self:Seg(n2, self.ColorNone), plain = n1 }
 		end
-		local rich = head .. self:Seg(minText, self.ColorMin) .. " " .. self:Seg(recText, self.ColorRec) .. mid .. self:Seg(valText, valColor) .. tail
-		local plain = head .. minText .. " " .. recText .. mid .. valText .. tail
-		return { rich = rich, plain = plain }
+		local v = mine
+		if v < 0 then v = 0 end
+		local valText = self:FmtPct(v)
+		local recLine = label .. " " .. valText .. " / " .. recText
+		local minLine = label .. " " .. valText .. " / " .. minText
+		if v < minV then
+			return { rich = self:Seg(minLine, self.ColorLow) .. "\n" .. self:Seg(recLine, self.ColorLow), plain = recLine }
+		end
+		local valColor = (v >= recV) and self.ColorOk or self.ColorRec
+		local top = self:Seg(label .. " ", self.ColorRec) .. self:Seg(valText, valColor) .. self:Seg(" / " .. recText, self.ColorRec)
+		local bottom = self:Seg("<s>" .. minLine .. "</s>", self.ColorDone)
+		return { rich = top .. "\n" .. bottom, plain = recLine }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceRow(Entity row, number y)
+		-- 한 줄 높이로 놓인 칸을 두 줄용으로 옮긴다: 판 기준 높이 y · 칸 높이 RowRectHeight(바뀐 때만 쓴다).
+		local tf = row.TransformComponent
+		if isvalid(tf) and math.abs(tf.Position.y - y) > 0.001 then
+			tf.Position = Vector3(tf.Position.x, y, tf.Position.z)
+		end
+		local tr = row.TextRendererComponent
+		if isvalid(tr) and math.abs(tr.RectSize.y - self.RowRectHeight) > 0.001 then
+			tr.RectSize = Vector2(tr.RectSize.x, self.RowRectHeight)
+		end
 	end
 
 	@ExecSpace("ClientOnly")

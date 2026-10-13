@@ -161,7 +161,7 @@ const CANONICAL = {
   "Skill/SkillMotionSet": "SkillId,WeaponType,Seq,Mode,CoreAction,PartsAction,PlayRate,HitTime,LockTime,Enabled,#Note",
   // 넥서스 분신 — 1.0.7 §10(2026-10-14 · 계약서 A-2-30 · A-2-31)
   CloneMonsterArt: "MonsterId,Action,Frames,DelaysMs,Mode,Enabled,#Note",
-  NexusCloneSkill: "MonsterId,SkillKey,Kind,Motion,Pct,Reach,Effect,Value,DurationSec,Chance,RangeX,RangeY,HpBelow,SummonMonsterId,SummonCount,SummonMax,CastFxRuid,HitFxRuid,Enabled,#Note",
+  NexusCloneSkill: "MonsterId,SkillKey,Kind,Motion,Pct,Reach,Effect,Value,DurationSec,Chance,RangeX,RangeY,HpBelow,SummonMonsterId,SummonCount,SummonMax,CastFxRuid,HitFxRuid,Enabled,BallRuid,BallSpeed,BallScale,BallOffsetX,BallOffsetY,BallSpinSec,ReleaseSec,HitFrames,HitDelaysMs,HitScale,#Note",
 };
 
 console.log("\nC1. CSV 헤더 ↔ 계약서 정본");

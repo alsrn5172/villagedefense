@@ -15,7 +15,7 @@ script SkillBuffs extends Logic
     --   GetReflectRatio(userId)         아이언 바디 반사율
     --   ModifyIncomingDamage(userId, damage)  전부 한 번에: 무적 → 0 · 다크 사이트 회피 → 0 · 보호막 → 하이퍼 바디 감소 → 매직 가드 흡수. A 의 PlayerHit.OnHit 이 __base 전에 한 줄로 부른다.
     -- b/skill-magician 은 MAGIC_GUARD 를, b/skill-warrior(추가기획1 전사 표)는 아래 셋을 채운다:
-    --   REFLECT_HP_PCT 아이언 바디(SK_W12 · 패시브): 플레이어 HitEvent 를 여기서 직접 구독(AttachHitListener)해 공격자에게 최대 HP × 5~25% 를
+    --   REFLECT_HP_PCT 아이언 바디(SK_W12 · 패시브): 플레이어 HitEvent 를 여기서 직접 구독(AttachHitListener)해 공격자에게 최대 HP × 50~250%(1.0.7 · 예전 5~25%) 를
     --                  되돌려 준다(SkillAttack.DealFlatDamageToTarget). 들어오는 피해를 바꾸지 않으므로 A 연결 없이 동작한다.
     --   HYPER_BODY     하이퍼 바디(SK_W21 · 버프): 최대 HP +20~60% 는 A 의 StatService BUFF 레이어(SetLayerCsv · 계약상 B 몫)로 넣고,
     --                  피해 −20~40% 는 GetDamageMul/ReduceDamage 로 낸다(A 의 PlayerHit 연결 대기).
@@ -95,7 +95,7 @@ script SkillBuffs extends Logic
     -- 죽으면 버프가 끝나는가(b/skill-raging-blow-flame-haze · 기본 켜짐 — A #40 5977727869 "죽으면 버프가 끝난다(원작과 같음)" · 2026-10-04 사용자 결정).
     --   켜져 있으면 DeathCheckInterval 마다 버프가 있는 유저 중 죽은(HP 0 · IsDead) 유저의 B 버프를 전부
     --   보통 끝내기(EndBuffNow · 태그별 종료 처리 · 루프 이펙트 제거 · 미러 갱신)로 끝내고 궁 시전 무적 창도 지운다.
-    --   레이징 블로우 · 플레임 헤이즈 변형과 슬롯 아이콘은 버프가 있을 때만 있으므로 같이 끝난다(VariantOf · ApplyVariantIcon).
+    --   레이징 블로우 · 플레임 헤이즈 · 어벤저(1.0.7) 변형과 슬롯 아이콘은 버프가 있을 때만 있으므로 같이 끝난다(VariantOf · ApplyVariantIcon).
     --   끄면(서버 Lua: _SkillBuffs.EndBuffsOnDeath = false) 예전처럼 죽어도 버프가 남는다(ResetMatchState 만 지운다).
     property boolean EndBuffsOnDeath = true
 
@@ -121,7 +121,7 @@ script SkillBuffs extends Logic
     property number UnyieldingImmuneMul = 0.25
 
     -- 불굴의 진 효과 중 아이언 바디 반사 피해 배율(1.1-B09 · C12 · 최종 반사 피해 ×100 — 최대 HP 를 올리는 게 아니다). 버프가 끝나면 다음 반사부터 평소 값.
-    property number UnyieldingReflectMul = 100
+    property number UnyieldingReflectMul = 3   -- 1.0.7 사용자 2026-10-14: ×100 → ×10 → ×3(아이언 바디 반사율 ×10 · 50~250% 라 너무 셈)
 
     property number UnyieldingHpTick = 0.1
 
@@ -154,7 +154,10 @@ script SkillBuffs extends Logic
 
     -- 쉐도우 파트너 공격속도 배율(1.1-B18 · 지속 중 +20%). 시전 락 · 후딜 · 발사 지연 · 연속 간격 ÷ · 모션 재생 × (GetAttackSpeedMul · LocalAttackSpeedMul).
     -- 쿨타임 · 버프 지속 · 피격 경직 · 투사체 비행 속도 · 궁극기(컷신)에는 안 쓴다(원문 L186).
-    property number ShadowPartnerAttackSpeedMul = 1.2
+    -- 1.0.7 (사용자 2026-10-14): 쉐도우 파트너의 공격속도 +20% 는 없앴다 — 이 배율 property(ShadowPartnerAttackSpeedMul 1.2)도 지웠다. GetAttackSpeedMul · LocalAttackSpeedMul 은 늘 1(호출 자리만 남김).
+    -- 그 대신 쉐도우 파트너 지속 중에는 럭키 세븐 키가 어벤저가 된다(VariantSpec SK_T11_AV) — 시전 간격(공격 속도)만 럭키 세븐보다 이 배율만큼 빠르다(락 ÷ · 모션 ×).
+    --   럭키 세븐 + 공속 20%(예전) = 어벤저(지금)의 단일 대상 DPS 가 같다: 둘 다 시전 간격 0.4 ÷ 1.2 = 0.333 s · 시전마다 대상 하나에 럭키 세븐 2발 합계 피해(+ 분신 몫).
+    property number AvengerAttackSpeedMul = 1.2
 
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
@@ -323,7 +326,7 @@ script SkillBuffs extends Logic
 
         local maxHp = player.PlayerComponent.MaxHp
         local reflect = math.floor(maxHp * ratio / 100)
-        -- 불굴의 진 효과 중(컷신 포함 · 버프가 켜져 있는 동안)이면 최종 반사 ×100(1.1-B09 · C12).
+        -- 불굴의 진 효과 중(컷신 포함 · 버프가 켜져 있는 동안)이면 최종 반사 ×UnyieldingReflectMul(1.1-B09 · C12 · 1.0.7 에서 ×100 → ×3).
         local amp = 1
         if self:IsUnyielding(userId) then amp = self.UnyieldingReflectMul end
         reflect = reflect * amp
@@ -581,6 +584,9 @@ script SkillBuffs extends Logic
             self:ApplyChargeMobility(userId)
         elseif buffTag == self.TagInvulnerable then
             self:StartUnyielding(userId)
+        elseif buffTag == self.TagShadowPartner then
+            -- 1.0.7: 쉐도우 파트너가 켜지는 동안 럭키 세븐 키 = 어벤저(VariantOf 가 이 버프로 판정한다 · 원장에 있으면 곧바로 켜짐).
+            log("[Avenger] variant ON — Lucky Seven key = Avenger while SHADOW_PARTNER lasts (" .. userId .. ")")
         end
     end
 
@@ -616,6 +622,8 @@ script SkillBuffs extends Logic
             self:EndChargeState(userId)
         elseif buffTag == self.TagInvulnerable then
             self:StopUnyielding(userId)
+        elseif buffTag == self.TagShadowPartner then
+            log("[Avenger] variant OFF — back to Lucky Seven (" .. userId .. ")")
         end
         if _SkillExecutors ~= nil then
             _SkillExecutors:StopBuffLoop(userId, buffTag)
@@ -967,7 +975,7 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method number GetReflectRatio(string userId)
-        -- 아이언 바디(SK_W12 · REFLECT_HP_PCT): 배운 레벨의 반사율(% · 최대 HP 기준 · 5~25). 패시브라 버프 원장이 아니라 스킬 레벨에서 읽는다(JobPassiveLogic.PassiveRatio).
+        -- 아이언 바디(SK_W12 · REFLECT_HP_PCT): 배운 레벨의 반사율(% · 최대 HP 기준 · 50~250 · 1.0.7). 패시브라 버프 원장이 아니라 스킬 레벨에서 읽는다(JobPassiveLogic.PassiveRatio).
         -- 안 배웠으면 0. 반사 자체는 OnPlayerHitEvent 가 한다 — A 가 부를 일은 표시/검증용.
         if _JobPassiveLogic == nil then return 0 end
         return _JobPassiveLogic:PassiveRatio(userId, self.TagReflect)
@@ -999,16 +1007,25 @@ script SkillBuffs extends Logic
 
     @ExecSpace("ServerOnly")
     method number GetAttackSpeedMul(string userId)
-        -- 공격속도 배율(1.1-B18): 쉐도우 파트너 지속 중 ShadowPartnerAttackSpeedMul(1.2), 아니면 1. 시전 락 · 후딜 · 발사 지연 · 모션 재생에 쓴다(서버).
-        if self:GetBuff(userId, self.TagShadowPartner) ~= nil then return self.ShadowPartnerAttackSpeedMul end
+        -- 공격속도 배율(1.1-B18): 시전 락 · 후딜 · 발사 지연 · 모션 재생에 쓴다(서버).
+        -- 1.0.7(사용자 2026-10-14): 쉐도우 파트너의 +20% 를 없앴다 → 지금은 어떤 버프도 이 배율을 올리지 않아 늘 1. 호출 자리(SkillCaster · SkillAttack · SkillExecutors · PlayerMotion)는 그대로 둔다(÷1 · ×1).
+        -- 어벤저(쉐도우 파트너 중 럭키 세븐 키)의 빠른 시전 간격은 여기가 아니라 변형 정의의 attackSpeedMul(VariantSpec · VariantAttackSpeedMul)이 정한다.
         return 1
     end
 
     @ExecSpace("ClientOnly")
     method number LocalAttackSpeedMul()
-        -- 공격속도 배율(클라 · 로컬 플레이어 미러 기준 · GetAttackSpeedMul 과 같은 값). 클라 시전 락 · 기본 공격 락이 쓴다.
-        if self:LocalIsActive(self.TagShadowPartner) then return self.ShadowPartnerAttackSpeedMul end
+        -- 공격속도 배율(클라 · 로컬 플레이어 미러 기준 · GetAttackSpeedMul 과 같은 값 = 1.0.7 부터 늘 1). 클라 시전 락 · 기본 공격 락이 쓴다.
         return 1
+    end
+
+    method number VariantAttackSpeedMul(string skillId, boolean active)
+        -- 버프 변형이 켜져 있을 때의 시전 간격 배율(VariantSpec.attackSpeedMul · 없으면 1). active = 서버 VariantOf / 클라 LocalVariantOf 가 "" 가 아니라는 호출자의 판정.
+        -- 어벤저(SK_T11_AV) 1.2 = 락 ÷ 1.2 · 모션 × 1.2 · 발사 지연 ÷ 1.2. 변형이 아니면(active false) 1. 양쪽 인스턴스 공용(ExecSpace 없음 · 상태를 읽지 않는 순수 계산).
+        if not active then return 1 end
+        local spec = self:VariantSpec(skillId)
+        if spec == nil or spec.attackSpeedMul == nil or spec.attackSpeedMul <= 0 then return 1 end
+        return spec.attackSpeedMul
     end
 
     method string RecastTagOf(string skillId)
@@ -1255,7 +1272,9 @@ script SkillBuffs extends Logic
     -- ───────────────────────── 버프 중 다른 스킬로 바뀌는 키 (b/skill-raging-blow-flame-haze · 2026-10-02) ─────────────────────────
     -- A 인계(2026-10-02 · 사용자 결정): 불굴의 진(SK_W31 · INVULNERABLE 8초) 중 파워 스트라이크 키 = 레이징 블로우 · 매직 가드(SK_M22 · 45초) 중 에너지볼트 키 = 플레임 헤이즈.
     -- 칸의 스킬 ID 는 그대로(SK_W11 / SK_M11) — HUD 가 그 ID 로 레벨을 읽는다. 따로 배우지 않고 원래 스킬 레벨을 쓴다.
-    -- 변형 키(SK_W11_RB · SK_M11_FH)는 SkillInfo 행이 아니다: 시전 락 · 모션 · 연출 · 소리 표의 키로만 쓴다.
+    -- 변형 키(SK_W11_RB · SK_M11_FH · SK_T11_AV)는 SkillInfo 행이 아니다: 시전 락 · 모션 · 연출 · 소리 표의 키로만 쓴다.
+    -- 1.0.7(사용자 2026-10-14): 쉐도우 파트너(SK_T22 · SHADOW_PARTNER) 지속 중 럭키 세븐 키(SK_T11) = 어벤저(SK_T11_AV). 쉐도우 파트너 분신도 어벤저를 따라 던진다(열화 투사체 · SkillAttack.ScheduleShadowClone).
+    --   lockSkillId / attackSpeedMul = 이 변형만의 시전 락 기준 스킬 · 시전 간격 배율(없으면 변형 키로 락을 찾고 배율 1). 쉐도우 파트너 자체의 공격속도 +20% 는 없앴다(GetAttackSpeedMul 은 늘 1).
 
     method any VariantSpec(string skillId)
         -- 그 스킬의 버프 변형 정의(없으면 nil). 서버 · 클라 양쪽이 같은 표를 쓴다(ExecSpace 없음 · 상수).
@@ -1268,6 +1287,13 @@ script SkillBuffs extends Logic
         if skillId == "SK_M11" then
             return { key = "SK_M11_FH", baseSkillId = "SK_M11", buffTag = self.TagMagicGuard, name = "플레임 헤이즈",
                 icon = "b16f2dee3dc64b4a941d7d84defe9665", mpCost = -1, cooldown = 0 }
+        end
+        if skillId == "SK_T11" then
+            -- 1.0.7 §쉐도우 파트너(사용자 2026-10-14): 쉐도우 파트너 지속 중 럭키 세븐 키 = 어벤저(큰 표창 1개 · 앞의 적 2마리 관통 · 럭키 세븐과 같은 판정 · 피해 합 · MP · 시전 간격만 ÷ attackSpeedMul).
+            --   lockSkillId = 시전 락을 이 스킬의 값에서 가져온다(럭키 세븐 0.4 → SkillCaster 가 attackSpeedMul 로 나눠 0.333). 아이콘 = 원작 어벤져 팩 skill/800033.img/skill/80003327 의 icon(32×32).
+            return { key = "SK_T11_AV", baseSkillId = "SK_T11", buffTag = self.TagShadowPartner, name = "어벤저",
+                icon = "7e0a9664d63842d0bc932e1607a0b2fe", mpCost = -1, cooldown = 0,
+                lockSkillId = "SK_T11", attackSpeedMul = self.AvengerAttackSpeedMul }
         end
         return nil
     end
@@ -1308,6 +1334,7 @@ script SkillBuffs extends Logic
         if _SkillDatabase == nil then return end
         self:ApplyVariantIcon("SK_W11")
         self:ApplyVariantIcon("SK_M11")
+        self:ApplyVariantIcon("SK_T11")   -- 1.0.7: 쉐도우 파트너 중 럭키 세븐 칸 = 어벤저 아이콘
     end
 
     method boolean VariantWaitsForCutscene(any spec, string buffSkillId, number level, number endsAt)

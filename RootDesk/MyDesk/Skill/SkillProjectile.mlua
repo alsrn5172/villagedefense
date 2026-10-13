@@ -151,6 +151,20 @@ script SkillProjectile extends AttackComponent
 
     property number CloneRatio = 0
 
+    -- 관통(1.0.7 · 어벤저 = 쉐도우 파트너 중 럭키 세븐 키 · SkillAttack.SpawnProjectile 이 pierceMax > 0 일 때 넣는다): 한 번 던진 큰 표창이 먼저 닿는 순으로 최대 PierceMax 마리를 뚫는다.
+    --   맞은 적은 마릿수에 센다 · 빗나간(MISS) 적도 지나간 것으로 센다 · PierceMax 마리를 세면 사라진다(그 전엔 맞아도 계속 난다). 0 = 관통 아님(예전 투사체 전부 그대로).
+    --   첫 대상을 지나면 유도를 끊고 같은 방향으로 계속 난다(NotePierceTouch) · 분신 몫(CloneRatio > 0)도 같은 PierceMax 로 원본이 맞힌 대상들을 뚫는다.
+    property integer PierceMax = 0
+
+    -- 관통 투사체의 원래 속도(붙어 선 대상 때문에 낮춘 속도 SkillAttack.FlightFor 를 유도 대상이 없어지면 되찾는다). 0 = 안 씀.
+    property number PierceSpeed = 0
+
+    -- 제자리 회전 주기(초 · 0 = 안 돎). 어벤저 큰 표창 = 다크로드 회전 표창과 같은 0.4(원작 rotatePeriod 400ms). 서버가 매 프레임 ZRotation 을 쓴다(Lane/CloneBall 과 같은 방식).
+    property number SpinSec = 0
+
+    -- 맞을 때마다 픽파켓 동전 몫(OnAttack → SkillBuffs.OnSkillHitMonster 를 이만큼 부른다). 기본 1 = 예전 그대로. 어벤저는 럭키 세븐 2발 합계 한 번이라 2.
+    property integer CoinHits = 1
+
     -- true = 판정 한 번에 몬스터 하나만 맞는다(b/skill-thief-effects · 럭키 세븐 1 대상). OnUpdate 가 probe 패스(ProbeTag · Candidates)로 후보를 모으고
     -- (조준 대상 TargetEntity 가 후보에 있으면 그것 · 없으면 투사체에 가장 가까운 것) 그 하나만 AllowedTargets 로 통과시켜 AttackFast 한다(에너지볼트 폭발과 같은 거름망).
     -- false = 예전대로 상자 안 전부.
@@ -391,6 +405,7 @@ script SkillProjectile extends AttackComponent
         if self.held then return end
         self.lived = self.lived + delta
         if self.lived >= self.MaxLifetime then
+            if self.PierceMax > 0 then self:LogPierceEnd("range") end
             self.Entity:Destroy()
             return
         end
@@ -421,8 +436,18 @@ script SkillProjectile extends AttackComponent
         if self.TargetEntity ~= nil and not self.consumed then
             self:AimAtTarget()
         end
+        -- 관통(어벤저 · 1.0.7): 유도 대상이 더는 없으면(첫 명중 뒤 NotePierceTouch 가 비움 · 죽어 사라짐) 붙어 선 대상 때문에 낮춘 속도를 원래대로 되돌린다.
+        if self.PierceMax > 0 and self.TargetEntity == nil and self.PierceSpeed > 0 and self.Speed < self.PierceSpeed then
+            self.Speed = self.PierceSpeed
+        end
         -- Body-less entity -> Translate is safe and not overwritten by physics next frame.
         transform:Translate(self.DirectionX * self.Speed * delta, self.DirectionY * self.Speed * delta)
+        -- 제자리 회전(어벤저 큰 표창): 오른쪽으로 날면 시계 방향 · 왼쪽이면 반대(좌우 대칭). 판정 상자는 월드 축 그대로(Shape.Angle 0).
+        if self.SpinSec > 0 then
+            local turn = -360
+            if self.DirectionX < 0 then turn = 360 end
+            transform.ZRotation = (transform.ZRotation + turn * delta / self.SpinSec) % 360
+        end
 
         if self.consumed or self.VisualOnly then
             return
@@ -455,11 +480,112 @@ script SkillProjectile extends AttackComponent
             self.AllowedTargets = nil
             return
         end
+        if self.PierceMax > 0 then
+            self:TryPierce(pos)
+            return
+        end
         if self.ExplodeSizeX > 0 and self.ExplodeSizeY > 0 then
             self:TryExplode(pos)
             return
         end
         self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TryPierce(Vector3 pos)
+        -- 관통(어벤저 · PierceMax > 0): 지금 상자(Shape) 안에서 아직 안 지나간 적을 가까운 순으로 남은 칸(PierceMax − 지나간 수)만큼 골라 한 번에 때린다.
+        --   원본: probe 패스(피해 없음)로 후보를 모아 죽었거나 죽는 중인 것 · 이미 지나간 것을 빼고, 투사체에 가까운 순서 = 먼저 닿는 순으로 고른다(AllowedTargets → AttackFast).
+        --   분신 몫(CloneRatio > 0): 후보 고르기 없이 상자 안을 그대로 때린다 — IsAttackTarget 이 원본이 맞힌 대상만 통과시키고 이미 지나간 대상은 거른다.
+        --   맞음 · 빗나감은 OnAttack / PassHitRoll 이 NotePierceTouch 로 센다 → PierceMax 마리를 세면 사라진다.
+        if self._T.pierceTouched == nil then
+            self._T.pierceTouched = {}
+            self._T.pierceCount = 0
+        end
+        local remaining = self.PierceMax - (self._T.pierceCount or 0)
+        if remaining <= 0 then return end
+        if self.CloneRatio > 0 then
+            self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+            return
+        end
+        self.Candidates = {}
+        self:Attack(self.Shape, self.ProbeTag, CollisionGroups.Monster)
+        local list = {}
+        for _, cand in ipairs(self.Candidates) do
+            if isvalid(cand) and isvalid(cand.TransformComponent) and not self._T.pierceTouched[cand] and not self:IsDeadOrDying(cand) then
+                local dup = false
+                for _, row in ipairs(list) do
+                    if row.e == cand then dup = true end
+                end
+                if not dup then
+                    local cp = cand.TransformComponent.WorldPosition
+                    local dx = cp.x - pos.x
+                    local dy = cp.y - pos.y
+                    table.insert(list, { e = cand, d = dx * dx + dy * dy })
+                end
+            end
+        end
+        self.Candidates = {}
+        if #list == 0 then return end
+        table.sort(list, function(a, b) return a.d < b.d end)
+        local only = {}
+        for i = 1, math.min(remaining, #list) do
+            only[list[i].e] = true
+        end
+        self.AllowedTargets = only
+        self:AttackFast(self.Shape, self.SkillId, CollisionGroups.Monster)
+        self.AllowedTargets = nil
+    end
+
+    method void NotePierceTouch(Entity defender, string how)
+        -- 관통(어벤저): 이 표창이 대상 하나를 지나갔다고 센다(맞음 how="hit" · 빗나감 "MISS"). 같은 대상은 한 번만. 첫 대상을 지나면 유도를 끊어 같은 방향으로 계속 난다.
+        --   PierceMax 마리를 세면 사라진다(0.05 s 뒤 Destroy · 일반 투사체의 DestroyOnHit 와 같다). ExecSpace 없음 = OnAttack / PassHitRoll(서버 피격 파이프라인)에서만 부른다.
+        if self._T.pierceTouched == nil then
+            self._T.pierceTouched = {}
+            self._T.pierceCount = 0
+        end
+        if isvalid(defender) then
+            if self._T.pierceTouched[defender] then return end
+            self._T.pierceTouched[defender] = true
+        end
+        self._T.pierceCount = (self._T.pierceCount or 0) + 1
+        self.TargetEntity = nil
+        local name = "?"
+        if isvalid(defender) then name = tostring(defender.Name) end
+        log("[SkillProjectile] pierce " .. self.SkillId .. (self.CloneRatio > 0 and " clone" or "") .. " " .. how .. " " .. name .. " " .. tostring(self._T.pierceCount) .. "/" .. tostring(self.PierceMax))
+        if self._T.pierceCount >= self.PierceMax and not self.consumed then
+            self.consumed = true
+            self:LogPierceEnd("pierced " .. tostring(self.PierceMax))
+            self.Entity:Destroy(0.05)
+        end
+    end
+
+    method void NoteAvengerDamage(Entity defender, integer amount)
+        -- 관통 투사체가 대상에게 실제로 준 확정 피해를 적어 둔다(LogPierceEnd 의 요약용 · 원본은 CalcDamage 값 · 분신 몫은 비율 적용 값). 로그 전용.
+        if self.PierceMax <= 0 or amount == nil or amount <= 0 or not isvalid(defender) then return end
+        if self._T.pierceDmg == nil then self._T.pierceDmg = {} end
+        self._T.pierceDmg[defender] = amount
+    end
+
+    method void LogPierceEnd(string why)
+        -- 관통 투사체(어벤저) 하나가 끝났을 때 한 줄(1.0.7): 지나간 적 수(맞음 + 빗나감) · 실제로 맞은 수 · 준 피해 합과 대상별. 원본 = "cast" · 분신 몫 = "clone". 한 번만 찍는다.
+        if self.PierceMax <= 0 or self._T.pierceEndLogged then return end
+        self._T.pierceEndLogged = true
+        local parts = {}
+        local sum = 0
+        local hits = 0
+        if self._T.pierceDmg ~= nil then
+            for e, amt in pairs(self._T.pierceDmg) do
+                hits = hits + 1
+                sum = sum + amt
+                local nm = "?"
+                if isvalid(e) then nm = tostring(e.Name) end
+                table.insert(parts, nm .. "=" .. tostring(amt))
+            end
+        end
+        local who = "cast"
+        if self.CloneRatio > 0 then who = "clone" end
+        log("[Avenger] " .. who .. " uid=" .. self.CasterUserId .. " targets=" .. tostring(self._T.pierceCount or 0) .. " hit=" .. tostring(hits) .. " dmg=" .. tostring(sum)
+            .. " [" .. table.concat(parts, ",") .. "] end=" .. why)
     end
 
     @ExecSpace("ServerOnly")
@@ -716,11 +842,17 @@ script SkillProjectile extends AttackComponent
             -- 픽파켓(SK_T12): 스킬로 몬스터를 때릴 때마다 메소 동전 드랍. 배우지 않았으면 SkillBuffs 가 아무것도 안 한다.
             -- 기본 공격(BasicAttack)은 PlayerAttack.CalcDamage 가 명중(피해 > 0)일 때 이미 떨궜다 → 여기서 또 부르면 2개 + MISS 에도 1개.
             if _SkillBuffs ~= nil and self.CasterUserId ~= "" and not self.BasicAttack then
-                _SkillBuffs:OnSkillHitMonster(self.CasterUserId, defender, self.SkillId)
+                -- CoinHits(기본 1): 어벤저는 럭키 세븐 2발 합계 한 번이라 2 — 동전은 럭키 세븐 + 공속 20% 때와 같은 양(타수당 1개).
+                for coinIdx = 1, math.max(1, self.CoinHits) do
+                    _SkillBuffs:OnSkillHitMonster(self.CasterUserId, defender, self.SkillId)
+                end
             end
         end
 
-        if self.DestroyOnHit and not self.consumed then
+        if self.PierceMax > 0 then
+            -- 관통(어벤저): 맞은 대상을 세고 PierceMax 마리를 다 맞힌 뒤에만 사라진다(그 전엔 맞아도 계속 난다).
+            self:NotePierceTouch(defender, "hit")
+        elseif self.DestroyOnHit and not self.consumed then
             self.consumed = true
             if self.HideOnHit then self:HideSprite() end
             self.Entity:Destroy(0.05)
@@ -782,9 +914,12 @@ script SkillProjectile extends AttackComponent
         -- 원거리 기본 공격: 시전자의 PlayerAttack.CalcDamage(근접과 같은 공식 · 버프 · 픽파켓) × DamageMul. 시전자가 없으면 0.
         -- 열화 투사체(1.1-B17): 원본의 확정 피해 × CloneRatio% 만 — 굴림 · 배율 · 방어 · 방어 저하를 다시 곱하지 않는다.
         if self.CloneRatio > 0 then
-            local s = self.CloneShared
-            if s == nil or s.target ~= defender or (s.dmg or 0) <= 0 then return 0 end
-            return math.max(1, math.floor(s.dmg * self.CloneRatio / 100))
+            -- 1.0.7: 원본이 맞힌 대상별 확정 피해(관통하는 어벤저는 대상이 둘) → 이 대상 몫 × 비율. 한 대상 투사체는 표에 한 건이라 예전과 같다.
+            local base = self:CloneHitDamage(defender)
+            if base <= 0 then return 0 end
+            local cloneAmount = math.max(1, math.floor(base * self.CloneRatio / 100))
+            self:NoteAvengerDamage(defender, cloneAmount)
+            return cloneAmount
         end
         if self.BasicAttack then
             local caster = self:CasterEntity()
@@ -812,9 +947,20 @@ script SkillProjectile extends AttackComponent
 
     method void NoteConfirmed(Entity defender, integer amount)
         -- 원본 투사체의 확정 피해 · 대상을 열화 투사체와 같이 든 표에 적는다(1.1-B17 · 쉐도우 파트너가 없으면 표가 없어 아무것도 안 한다). MISS(0)는 안 적는다.
+        self:NoteAvengerDamage(defender, amount)   -- 1.0.7 어벤저 요약 로그용(관통 투사체만)
         if self.CloneShared == nil or amount == nil or amount <= 0 or not isvalid(defender) then return end
         self.CloneShared.dmg = amount
         self.CloneShared.target = defender
+        -- 1.0.7: 대상별 표(관통하는 어벤저는 두 마리를 맞힌다 · 분신 몫이 각각 그 몫의 비율만 준다).
+        if self.CloneShared.hits ~= nil then self.CloneShared.hits[defender] = amount end
+    end
+
+    method number CloneHitDamage(Entity defender)
+        -- 분신 몫(CloneRatio > 0)이 보는 값: 원본이 이 대상에게 실제로 준 확정 피해(없으면 0 = 원본이 아직 못 맞혔거나 빗나갔다). 양쪽 인스턴스 공용(ExecSpace 없음).
+        local s = self.CloneShared
+        if s == nil or not isvalid(defender) then return 0 end
+        if s.hits ~= nil and s.hits[defender] ~= nil then return s.hits[defender] end
+        return 0
     end
 
     method integer RolledAmount(Entity defender, string attackInfo, string who)
@@ -871,11 +1017,15 @@ script SkillProjectile extends AttackComponent
             if self.CasterUserId ~= "" then caster = _UserService:GetUserEntityByUserId(self.CasterUserId) end
             if not isvalid(caster) or not _FactionLogic:IsEnemy(caster, defender) then return false end
         end
+        -- 관통(어벤저 · 1.0.7): 이미 지나간(맞음 · 빗나감) 대상은 다시 안 맞는다 — 분신 몫 · 원본 모두.
+        if self.PierceMax > 0 and isvalid(defender) then
+            local touchedSet = self._T.pierceTouched
+            if touchedSet ~= nil and touchedSet[defender] then return false end
+        end
         -- 열화 투사체(1.1-B17): 원본이 실제로 피해를 준 그 대상만. 원본이 아직 못 맞혔으면 아무도 안 맞고 지나간다.
+        --   1.0.7: 원본이 맞힌 대상이 여럿이면(관통하는 어벤저) 그 대상들 모두(CloneHitDamage · 대상별 표).
         if self.CloneRatio > 0 then
-            local s = self.CloneShared
-            if attackInfo == self.ProbeTag then return s ~= nil and s.target == defender end
-            return s ~= nil and s.target ~= nil and s.target == defender and (s.dmg or 0) > 0
+            return self:CloneHitDamage(defender) > 0
         end
         if self.SameFloorOnly and isvalid(defender) and isvalid(defender.TransformComponent) then
             if self.UseBodyBand and not self.bandSkip then
@@ -921,6 +1071,11 @@ script SkillProjectile extends AttackComponent
         if prev ~= nil then return prev end
         local hit = _SkillDatabase:RollSkillHit(self.CasterUserId, defender, self.SkillId)
         self._T.hitRolls[defender] = hit
+        if not hit and self.PierceMax > 0 then
+            -- 관통(어벤저): 빗나가도 그 적을 지나간 것으로 센다(앞의 적 2마리까지 · 마릿수를 다 세면 사라짐). 빗나간 적은 피해 · 소리 · 동전 없음(MISS 글자만).
+            self:NotePierceTouch(defender, "MISS")
+            return hit
+        end
         if not hit and self.DestroyOnHit and not self.consumed and not self.explodePass and self:IsServer() then
             self.consumed = true
             if self.HideOnHit then self:HideSprite() end
@@ -1005,12 +1160,12 @@ script SkillProjectile extends AttackComponent
                 if caster ~= nil then crit = _StatService:RollCritical(caster) end
             end
         end
-        -- 궁 합계 데미지(#40 5988188679 · SkillExecutors.OpenUltimateTally): 합계가 열려 있으면 이 타의 최종 피해(같은 굴림 × 크리 배율)를 더한다.
+        -- 궁 끝 피해 표시(1.0.7 §11 · SkillExecutors.OpenUltimateTally): 타 모음이 열려 있으면 이 타의 최종 피해(같은 굴림 × 크리 배율)와 치명 여부(위 판정 그대로)를 대상별로 적는다.
         if _SkillExecutors ~= nil and self.CasterUserId ~= "" and _SkillExecutors:IsUltimateTallyOpen(self.CasterUserId, self.SkillId) then
             local dmg = self:RolledAmount(defender, attackInfo, "crit")
             if dmg > 0 and _DamageFormula ~= nil then dmg = _DamageFormula:ApplyTargetDefense(defender, dmg, self:CasterIgnoreDef()) end
             if crit then dmg = math.floor(dmg * self:GetCriticalDamageRate()) end
-            _SkillExecutors:AddUltimateTally(self.CasterUserId, self.SkillId, dmg)
+            _SkillExecutors:AddUltimateTally(self.CasterUserId, self.SkillId, defender, dmg, crit, math.floor(self:GetDisplayHitCount(attackInfo)), "SkillProjectile")
         end
         return crit
     end

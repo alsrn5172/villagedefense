@@ -1,0 +1,184 @@
+@Component
+script CloneBall extends Component
+
+	-- 넥서스 분신의 날아가는 투사체 (1.0.7 K · 2026-10-14 사용자 "직업군 분신들이 투사체 공격은 잘 날아가게" · 헬레나 화살 · 다크로드 표창).
+	-- CloneSkillBrain.SpawnBall 이 laneshot 모델(빈 그림 · 시설 발사체와 같은 몸)을 스폰해 그림 · 배율 · 층을 넣은 뒤 이 컴포넌트를 붙이고 Launch() 를 부른다.
+	-- 출발점(분신 손) → 표적 몸통 중심을 **일정 속도로 직선 추적(유도)**. 도착하면 CloneSkillBrain.LandBall 이 피해(FactionAttack.HitTarget · 분신 공격과 같은 함수) + 적중 그림을 낸다 — 이 컴포넌트는 피해를 주지 않는다.
+	--   · 표적이 죽거나 사라지면(비행 중) **그 자리에서 사라진다**(피해 · 적중 그림 없음). 회피(빗나감)는 HitTarget 안의 지금 판정이 MISS 글자를 띄운다(도착은 한다).
+	--   · 분신이 먼저 죽었으면 도착해도 피해 없이 사라진다(LandBall 이 거른다 · 시설 발사체의 "시설이 사라지면 대기 중인 피해도 취소"와 같다).
+	-- 속도: 원작 bulletSpeed 200(≈ 초당 2 유닛)은 이 게임 템포(공격 간격 1.2초 · 사거리 3)에 너무 느려 표(NexusCloneSkill.BallSpeed · 초당 유닛)로 뺐다(기본 7 → 사거리 3.2 에서 약 0.46초 · 시설 발사체 FlightSec 0.45 와 비슷).
+	-- 이동은 서버가 매 프레임 WorldPosition 을 쓴다(Body 없음 → 직접 대입 OK · LaneShot 과 같다). 끊겨 보이면 클라 시뮬레이션으로 옮긴다(v2).
+
+	@HideFromInspector
+	property any Target = nil
+
+	-- 쏜 분신의 CloneSkillBrain(도착 때 LandBall 을 부른다).
+	@HideFromInspector
+	property any Brain = nil
+
+	-- 쏜 기술 한 행(CloneSkillBrain.LoadSkills 의 항목) · 발사 순간 공격력 × 버프를 고정한 피해량.
+	@HideFromInspector
+	property any Spec = nil
+
+	@HideFromInspector
+	property number Damage = 0
+
+	-- 분신이 오른쪽을 보고 쐈는가(적중 그림 좌우 뒤집기용 · 원본 그림은 왼쪽을 본다).
+	@HideFromInspector
+	property boolean Flip = false
+
+	-- 초당 유닛(표 BallSpeed). 아주 가까우면 MinFlightSec 보다 빨리 닿지 않게 속도를 줄인다.
+	property number Speed = 7
+
+	property number MinFlightSec = 0.12
+
+	-- 안전 수명(초) — 표적을 못 따라잡고 떠도는 경우를 끊는다.
+	property number MaxLifeSec = 3
+
+	-- 이만큼(유닛) 안이면 도착으로 본다(한 프레임 이동량이 더 크면 그 값).
+	property number ArriveRadius = 0.1
+
+	-- 그림이 원래 향하는 각도: 180 = 왼쪽(메이플 관례 · 헬레나 화살 · 다크로드 표창 4장) · 진행 방향 회전의 기준(LaneShot.FaceDeg 와 같은 뜻).
+	property number FaceDeg = 180
+
+	-- 제자리 회전 주기(초 · 0 = 안 돌고 진행 방향을 본다). 다크로드 attack2 회전 표창 = 0.4(원작 rotatePeriod 400ms).
+	property number SpinSec = 0
+
+	@HideFromInspector
+	property Vector3 StartPos = Vector3(0, 0, 0)
+
+	@HideFromInspector
+	property number Dist = 0
+
+	@HideFromInspector
+	property number Travel = 0
+
+	@HideFromInspector
+	property number CurSpeed = 0
+
+	@HideFromInspector
+	property number age = 0
+
+	@HideFromInspector
+	property boolean launched = false
+
+	@HideFromInspector
+	property boolean arrived = false
+
+	@ExecSpace("ServerOnly")
+	method boolean TargetAlive()
+		-- 표적이 아직 유효하고 살아 있는가(몬스터 IsDead · 플레이어 IsDead 포함).
+		local tgt = self.Target
+		if not isvalid(tgt) or not isvalid(tgt.TransformComponent) then return false end
+		---@type Monster
+		local mon = tgt.Monster
+		if isvalid(mon) and mon.IsDead then return false end
+		local pc = tgt.PlayerComponent
+		if isvalid(pc) and pc:IsDead() then return false end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method Vector3 AimPoint()
+		-- 표적 피격 상자 중심(FactionAttack.HitRect 와 같은 식: 상자가 없으면 발 + 0.6). 매 프레임 다시 잡는다(유도).
+		local tgt = self.Target
+		local p = tgt.TransformComponent.WorldPosition
+		local hit = tgt.HitComponent
+		if isvalid(hit) then
+			local sc = tgt.TransformComponent.Scale
+			local sx = math.abs(sc.x)
+			local sy = math.abs(sc.y)
+			if sx == 0 then sx = 1 end
+			if sy == 0 then sy = 1 end
+			if hit.BoxSize.x * sx > 0 and hit.BoxSize.y * sy > 0 then
+				return Vector3(p.x + hit.ColliderOffset.x * sx, p.y + hit.ColliderOffset.y * sy, 0)
+			end
+		end
+		return Vector3(p.x, p.y + 0.6, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Face(number dx, number dy)
+		-- 진행 방향으로 그림을 돌린다(LaneShot.Face 와 같은 규칙): 좌/우 그림(FaceDeg 180/0)은 FlipX 로 뒤집은 뒤 각도만 줘서 위아래가 안 뒤집히게, 위/아래 그림(90/270)은 회전만. 회전 표창(SpinSec > 0)은 안 쓴다.
+		if dx == 0 and dy == 0 then return end
+		local deg = math.deg(math.atan(dy, dx))
+		local tf = self.Entity.TransformComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if self.FaceDeg == 180 or self.FaceDeg == 0 then
+			local facesRight = (self.FaceDeg == 0)
+			if dx >= 0 then
+				if isvalid(sr) then sr.FlipX = not facesRight end
+				tf.ZRotation = deg
+			else
+				if isvalid(sr) then sr.FlipX = facesRight end
+				tf.ZRotation = deg - 180
+			end
+		else
+			if isvalid(sr) then sr.FlipX = false end
+			tf.ZRotation = deg - self.FaceDeg
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean Launch()
+		-- 현재 위치를 출발점으로 잡고 비행 시작. 표적이 이미 없으면 사라진다(false). 거리 · 비행 시간(Dist · Travel)은 CloneSkillBrain 이 발사 로그에 쓴다.
+		self.StartPos = self.Entity.TransformComponent.WorldPosition
+		if not self:TargetAlive() then
+			self.Entity:Destroy()
+			return false
+		end
+		local aim = self:AimPoint()
+		local dx = aim.x - self.StartPos.x
+		local dy = aim.y - self.StartPos.y
+		self.Dist = math.sqrt(dx * dx + dy * dy)
+		local speed = math.max(0.1, self.Speed)
+		self.Travel = math.max(self.MinFlightSec, self.Dist / speed)
+		self.CurSpeed = self.Dist / self.Travel
+		if self.CurSpeed < 0.1 then self.CurSpeed = speed end
+		self.age = 0
+		self.launched = true
+		if self.SpinSec <= 0 then self:Face(dx, dy) end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 진행: 표적 중심을 향해 CurSpeed 로 직선 이동(표적이 움직이면 따라간다). 표적이 사라지면 그 자리에서 소멸 · 닿으면 LandBall(피해 · 적중 그림) 뒤 소멸.
+		if not self.launched or self.arrived then return end
+		self.age = self.age + delta
+		if self.age > self.MaxLifeSec then
+			log("[NexusClone] projectile expired (no arrival) age=" .. string.format("%.2f", self.age))
+			self.Entity:Destroy()
+			return
+		end
+		if not self:TargetAlive() then
+			log("[NexusClone] projectile lost target (vanish in place)")
+			self.Entity:Destroy()
+			return
+		end
+		local aim = self:AimPoint()
+		local tf = self.Entity.TransformComponent
+		local pos = tf.WorldPosition
+		local dx = aim.x - pos.x
+		local dy = aim.y - pos.y
+		local dist = math.sqrt(dx * dx + dy * dy)
+		local step = self.CurSpeed * delta
+		if self.SpinSec > 0 then
+			tf.ZRotation = (tf.ZRotation + 360 * delta / self.SpinSec) % 360
+		end
+		if dist <= math.max(step, self.ArriveRadius) then
+			-- 도착: 표적 중심에 놓고 한 번만 착탄(LandBall 안에서 서버가 잠깐 양보해도 다시 안 들어온다).
+			self.arrived = true
+			tf.WorldPosition = Vector3(aim.x, aim.y, 0)
+			if isvalid(self.Brain) then
+				self.Brain:LandBall(self, aim.x, aim.y)
+			end
+			if isvalid(self.Entity) then self.Entity:Destroy() end
+			return
+		end
+		local k = step / dist
+		tf.WorldPosition = Vector3(pos.x + dx * k, pos.y + dy * k, 0)
+		if self.SpinSec <= 0 then self:Face(dx, dy) end
+	end
+
+end
