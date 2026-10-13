@@ -39,6 +39,25 @@ script VillageDefenseUIController extends Logic
 	@HideFromInspector
 	property boolean waiting = false
 
+	-- 수리 · 재건 쿨타임 표시(1.0.5-6-02): 서버가 보낸 남은 초로 끝 시각을 잡고 클라가 스스로 줄인다(서버는 매 초 보내지 않는다).
+	-- cooldowns = { { stage, btn, base, endAt }, … } · 다 되면 서버 뷰를 한 번 다시 받아 버튼을 켠다. minionBlocked = 미니언 때문에 재건이 막힌 시설이 있다(MinionPollSec 마다 다시 묻는다).
+	@HideFromInspector
+	property any cooldowns = nil
+
+	@HideFromInspector
+	property boolean minionBlocked = false
+
+	@HideFromInspector
+	property boolean asking = false
+
+	@HideFromInspector
+	property number cdTick = 0
+
+	@HideFromInspector
+	property number blockPoll = 0
+
+	property number MinionPollSec = 2.0
+
 	-- 체력 게이지 채움 그림(gauge_fill_green / gauge_fill_gold / gauge_fill_red) · 글자 색 (디자이너 시안 12-defense)
 	property string fillGreenRuid = "eff713b745054e28916931de6c2b9d7f"
 
@@ -95,6 +114,56 @@ script VillageDefenseUIController extends Logic
 			if isvalid(self.titleText) and r.PendingDisplayName ~= "" then self.titleText.Text = r.PendingDisplayName end
 			r:ClearPendingRequest()
 		end
+		if self.isOpen then self:TickCooldowns(delta) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Clock(number sec)
+		-- 남은 시간 글자 "m:ss"(올림): 42 → "0:42" · 252 → "4:12".
+		local s = math.max(0, math.floor(math.ceil(sec)))
+		local m = math.floor(s / 60)
+		return tostring(m) .. ":" .. string.format("%02d", s - m * 60)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AskView()
+		-- 방어 창 뷰를 한 번 다시 받는다(응답 전에는 중복 요청 없음). 쿨타임이 끝났거나 미니언이 없어졌는지 서버 판정을 받아 버튼을 켠다.
+		if self.asking or _LaneStateService == nil then return end
+		self.asking = true
+		_LaneStateService:RequestView("defense")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TickCooldowns(number delta)
+		-- 창이 열린 동안 0.25초마다: 쿨타임 버튼 글자("수리 0:42")를 줄이고, 끝난 게 있으면 서버 뷰를 다시 받는다. 미니언 때문에 막힌 재건은 MinionPollSec 마다 다시 묻는다.
+		self.cdTick = self.cdTick + delta
+		if self.cdTick < 0.25 then return end
+		local step = self.cdTick
+		self.cdTick = 0
+		local now = _UtilLogic.ElapsedSeconds
+		local expired = false
+		if self.cooldowns ~= nil then
+			for _, c in ipairs(self.cooldowns) do
+				local left = c.endAt - now
+				if left > 0 then
+					local card = isvalid(self.cardRoot) and self.cardRoot:GetChildByName("Card_" .. c.stage) or nil
+					if isvalid(card) then self:SetText(card, c.btn .. "/Label", c.base .. " " .. self:Clock(left)) end
+				else
+					expired = true
+				end
+			end
+		end
+		if expired then
+			self.cooldowns = {}
+			self:AskView()
+		end
+		if self.minionBlocked then
+			self.blockPoll = self.blockPoll + step
+			if self.blockPoll >= self.MinionPollSec then
+				self.blockPoll = 0
+				self:AskView()
+			end
+		end
 	end
 
 	@ExecSpace("ClientOnly")
@@ -103,6 +172,11 @@ script VillageDefenseUIController extends Logic
 		if _VillageNpcUIController ~= nil then _VillageNpcUIController:CloseAll("VillageDefenseGroup") end
 		self.route = "tower"
 		self.waiting = false
+		self.asking = false
+		self.cooldowns = {}
+		self.minionBlocked = false
+		self.cdTick = 0
+		self.blockPoll = 0
 		self:SetOpen(true)
 		if isvalid(self.titleText) then self.titleText.Text = "방어 시설" end
 		-- 바닥 띠 = 요약 칩(시안) — 켠다. 옛 상태줄(StatusText)은 끈 채로 둔다.
@@ -138,6 +212,7 @@ script VillageDefenseUIController extends Logic
 	method void OnView(string kind, string csv)
 		-- 서버 뷰 수신 → 그리기.
 		self.waiting = false
+		if kind == "defense" then self.asking = false end
 		if not self.isOpen or kind ~= "defense" then return end
 		self:Render(_VillageNpcUIController:SplitRows(csv))
 	end
@@ -208,9 +283,10 @@ script VillageDefenseUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method void SetupBtn(Entity card, string childName, any cost, boolean on, boolean show, string kind, number meso)
+	method void SetupBtn(Entity card, string childName, any cost, boolean on, boolean show, string kind, number meso, string labelText)
 		-- 카드 버튼 하나: 켜짐/꺼짐 그림은 ButtonComponent 전환(서버 판정 on). 안쪽 = 이름 · 주화 · 비용 / MAX / 필요 없음.
 		-- 주화가 모자라면(클라 비교) 비용 글자만 붉게 — 버튼 켜짐은 서버가 정한다.
+		-- kind "cd" = 쿨타임 · 미니언 때문에 막힘(1.0.5-6-02): 비용 · 주화 아이콘을 숨기고 이름 글자(labelText)가 "수리 0:42" · "재건 · 미니언 남음" 으로 바뀐다. 그 밖에는 labelText 가 원래 이름("수리").
 		local b = card:GetChildByName(childName)
 		if not isvalid(b) then return end
 		b.Enable = show
@@ -219,6 +295,7 @@ script VillageDefenseUIController extends Logic
 		local costN = tonumber(cost) or 0
 		local short = on and (costN > meso)
 		local costOn = (kind == "cost")
+		self:SetText(b, "Label", labelText)
 		self:SetColor(b, "Label", ink)
 		self:SetText(b, "Cost", self:Comma(costN))
 		self:SetColor(b, "Cost", short and self.cCoral or ink)
@@ -256,11 +333,17 @@ script VillageDefenseUIController extends Logic
 		self:Show(self.footer, "Chips", not noVillage)
 		if noVillage then return end
 		local dim = Color(0.45, 0.45, 0.45, 1)
+		-- 쿨타임 표시(1.0.5-6-02): 매번 새로 모은다. 남은 초는 서버가 18 · 19번(수리 · 재건)에 · 재건 막힘 사유는 20번에 싣는다.
+		self.cooldowns = {}
+		self.minionBlocked = false
+		self.blockPoll = 0
+		local nowSec = _UtilLogic.ElapsedSeconds
 		for _, f in ipairs(rows) do
 			if f[1] == "T" then
 				local stage = f[2]
 				local lv, hp, max, alive = f[4], tonumber(f[5]) or 0, tonumber(f[6]) or 1, (f[7] == "1")
 				local attack, range, upCost, repCost, rebCost = f[8], f[9], f[10], f[11], f[12]
+				local repLeft, rebLeft, rebBlock = tonumber(f[18]) or 0, tonumber(f[19]) or 0, f[20] or ""
 				-- 시설 그림은 마을마다 다르다 — 서버가 FacilitySprite 에서 뽑아 16·17번에 실어 보낸다(시안의 공용 그림으로 바꾸지 않는다).
 				-- 빈 문자열이면 .ui 에 박힌 기본 그림을 그대로 둔다(빈 RUID 를 대입하면 아이콘이 사라진다).
 				local iconRuid = f[16] or ""
@@ -294,9 +377,28 @@ script VillageDefenseUIController extends Logic
 						icon.SpriteGUIRendererComponent.FlipY = iconFlip
 						icon.SpriteGUIRendererComponent.Color = alive and Color(1, 1, 1, 1) or dim
 					end
-					self:SetupBtn(card, "BtnUpgrade", upCost, canUp, stage ~= "CORE", isMax and "max" or "cost", meso)
-					self:SetupBtn(card, "BtnRepair", repCost, canRep, true, (alive and hp >= max) and "noneed" or "cost", meso)
-					self:SetupBtn(card, "BtnRebuild", rebCost, canReb, stage ~= "CORE", "cost", meso)
+					-- 수리 · 재건 버튼 글자(1.0.5-6-02): 쿨타임이 남았으면 "수리 0:42" · "재건 4:12"(비용 대신) · 미니언 때문에 막혔으면 "재건 · 미니언 남음". 0 이 되면 원래 비용 글자로.
+					local repKind, repLabel = (alive and hp >= max) and "noneed" or "cost", "수리"
+					if alive and hp < max and repLeft > 0 then
+						repKind = "cd"
+						repLabel = "수리 " .. self:Clock(repLeft)
+						table.insert(self.cooldowns, { stage = stage, btn = "BtnRepair", base = "수리", endAt = nowSec + repLeft })
+					end
+					local rebKind, rebLabel = "cost", "재건"
+					if not alive then
+						if rebLeft > 0 then
+							rebKind = "cd"
+							rebLabel = "재건 " .. self:Clock(rebLeft)
+							table.insert(self.cooldowns, { stage = stage, btn = "BtnRebuild", base = "재건", endAt = nowSec + rebLeft })
+						elseif rebBlock == "minions" then
+							rebKind = "cd"
+							rebLabel = "재건 · 미니언 남음"
+							self.minionBlocked = true
+						end
+					end
+					self:SetupBtn(card, "BtnUpgrade", upCost, canUp, stage ~= "CORE", isMax and "max" or "cost", meso, "강화")
+					self:SetupBtn(card, "BtnRepair", repCost, canRep, true, repKind, meso, repLabel)
+					self:SetupBtn(card, "BtnRebuild", rebCost, canReb, stage ~= "CORE", rebKind, meso, rebLabel)
 				end
 				-- 방어선 노드
 				local node = isvalid(self.laneStrip) and self.laneStrip:GetChildByName("Node_" .. stage) or nil

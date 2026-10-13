@@ -1,0 +1,292 @@
+@Logic
+script PlayerSafetyNet extends Logic
+
+    -- 화면 밖 · 공중 안전장치 (1.0.5-3-01 · 사용자 확정 2026-10-11 · 제보 강서연 10/10 "캐릭터가 화면에서 사라지고 하늘로 떠오른다"). 원인과 재현 조건은 아직 모른다 →
+    -- 나와도 곧바로 정상 위치로 돌아오게 하는 안전장치다.
+    --   · 각 클라가 자기 캐릭터 하나만 CheckInterval(0.5초)마다 본다 — 위치는 클라가 움직이므로 클라에서 바로잡는 게 가장 빠르다. 서버 인스턴스는 로그만 받는다(ReportFix).
+    --   · @Logic 하나로 둔다(명세 권장은 @Component 였으나 붙이는 방식은 구현 때 정하기로 했다): 맵을 옮겨도 계속 돌고 DefaultPlayer 모델 · 맵을 건드리지 않는다. 호출 이름 = _PlayerSafetyNet.
+    --   · 마지막 안전 위치 = 발판 위(RigidbodyComponent:IsOnGround)에 서 있던 마지막 자리. 맵이 바뀌면 지운다.
+    --   · 발동 조건(둘 중 하나)  ① 맵 경계 밖으로 BoundMargin(1.0)을 넘게 나갔다 → 바로.  ② 발판에 안 닿은 채 AirLimitSeconds(4초)를 넘었다.
+    --       경계 = 카메라 경계(CameraComponent:GetBound) 우선, 못 쓰면 맵 경계(MapComponent:GetBound). 🟡 경계가 엉뚱한 값(예: 기본 −1 ~ 1)이면 정상 플레이를 되돌리게 되므로
+    --       "발판 위 표본이 그 경계 안에 있었다" 가 확인된 경계(state 1)만 발동에 쓴다 — 발판 위에서 경계 밖이면 그 경계는 이 맵에서 못 믿는다(state −1 · 경고 한 번).
+    --   · 안 보는 때(ExemptReason): 튜토리얼 · 관전 · 죽음 · 맵 이동 로딩 중과 도착 직후 · 사다리 · 밧줄 · 시전 락(궁 컷신 포함) · Rigidbody 꺼짐 · 복구 직후 CooldownSeconds(3초).
+    --       이때는 공중 시계(airSince)를 지금으로 되돌려, 풀린 뒤 AirLimitSeconds 를 처음부터 센다.
+    --   · 복구: 마지막 안전 위치(없으면 그 맵의 첫 스폰 지점)로 RigidbodyComponent:SetWorldPosition(Transform 대입은 되돌려진다) · 힘 0 · 이동 멈춤. 토스트 ToastText.
+    --   · 서버 로그: 발동할 때마다 [Safety] 한 줄(맵 · 좌표 · 조건 · 공중 시간 · 직전 스킬 · 직전 포탈(맵 이동) · 직전 부활). 한 판에 같은 사람이 WarnCount(3)번 넘으면 log_warning.
+
+    property boolean Enabled = true
+
+    property number CheckInterval = 0.5
+
+    -- 경계 밖 허용(월드 단위). 위쪽만 따로 둔다: 윗방향 점프(SkillMovement.UpJumpLift 10.9 · 정점 +2.9)가 맨 위 발판에서 정상 점프로 경계 위쪽 1.0 밖까지 갈 수 있다 —
+    -- Play 에서 맨 위 발판 윗방향 점프가 되돌려지면 BoundMarginTop 을 4.0 으로 올린다.
+    property number BoundMargin = 1.0
+
+    property number BoundMarginTop = 1.0
+
+    property number AirLimitSeconds = 4.0
+
+    property number CooldownSeconds = 3.0
+
+    -- 맵이 바뀐 뒤 이만큼은 검사하지 않는다(카메라 경계 · 안전 위치가 새 맵 것으로 바뀌는 시간).
+    property number ArriveGraceSeconds = 1.5
+
+    property string ToastText = "위치를 바로잡았습니다"
+
+    property integer WarnCount = 3
+
+    -- [클라] 내 캐릭터 검사 상태
+    @HideFromInspector
+    property number checkLeft = 0
+
+    @HideFromInspector
+    property string mapName = ""
+
+    @HideFromInspector
+    property string prevMapName = ""
+
+    @HideFromInspector
+    property number mapSince = 0
+
+    @HideFromInspector
+    property boolean hasSafe = false
+
+    @HideFromInspector
+    property Vector2 safePos = Vector2(0, 0)
+
+    @HideFromInspector
+    property number airSince = 0
+
+    @HideFromInspector
+    property number lastFixAt = -1000
+
+    -- 경계 후보별 믿음: 0 = 아직 모름 · 1 = 발판 위 표본이 경계 안이었다(믿음) · −1 = 경계 밖이었다(못 믿음). 맵이 바뀌면 0 으로.
+    @HideFromInspector
+    property integer camState = 0
+
+    @HideFromInspector
+    property integer mapState = 0
+
+    -- [서버] userId → 이번 판 발동 횟수
+    @HideFromInspector
+    property any counts = nil
+
+    @ExecSpace("ClientOnly")
+    method void OnUpdate(number delta)
+        -- CheckInterval 마다 내 캐릭터 하나만 본다.
+        self.checkLeft = self.checkLeft - delta
+        if self.checkLeft > 0 then return end
+        self.checkLeft = self.CheckInterval
+        if not self.Enabled then return end
+        self:Check()
+    end
+
+    @ExecSpace("ClientOnly")
+    method void Check()
+        -- 한 번 검사: 맵 바뀜 처리 → 안 보는 때 → ① 경계 → 발판 위면 안전 위치 기억 → ② 공중 시간.
+        local me = _UserService.LocalPlayer
+        if not isvalid(me) then return end
+        local map = me.CurrentMap
+        local rb = me.RigidbodyComponent
+        local pc = me.PlayerComponent
+        if not isvalid(map) or not isvalid(rb) or not isvalid(pc) or not isvalid(me.TransformComponent) then return end
+        local now = _UtilLogic.ElapsedSeconds
+        -- 맵이 바뀌면 안전 위치 · 경계 믿음 · 공중 시계를 지운다(맵마다 좌표가 다르다).
+        if map.Name ~= self.mapName then
+            self.prevMapName = self.mapName
+            self.mapName = map.Name
+            self.mapSince = now
+            self.hasSafe = false
+            self.airSince = now
+            self.camState = 0
+            self.mapState = 0
+            return
+        end
+        if self:ExemptReason(pc, rb, now) ~= "" then
+            self.airSince = now
+            return
+        end
+        local pos = me.TransformComponent.WorldPosition
+        local grounded = rb:IsOnGround()
+        local bounds = self:ReadBounds(map)
+        if grounded then self:ValidateBounds(bounds, pos, map.Name) end
+        local dir = self:OutDirection(bounds, pos)
+        if dir ~= "" then
+            self:Fix(me, rb, map, "bound:" .. dir, now - self.airSince, now)
+            return
+        end
+        if grounded then
+            self.airSince = now
+            self.safePos = Vector2(pos.x, pos.y)
+            self.hasSafe = true
+            return
+        end
+        local air = now - self.airSince
+        if air > self.AirLimitSeconds then
+            self:Fix(me, rb, map, "air", air, now)
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method string ExemptReason(PlayerComponent pc, RigidbodyComponent rb, number now)
+        -- 검사하지 않는 이유(없으면 ""). 튜토리얼 · 관전 · 죽음 · 로딩 · 도착 직후 · 복구 직후 · 사다리 · 밧줄 · 시전 락(궁 컷신) · Rigidbody 꺼짐.
+        if _TutorialDirector ~= nil and _TutorialDirector.active then return "tutorial" end
+        if _SpectateService ~= nil and _SpectateService.spectating then return "spectate" end
+        if pc:IsDead() then return "dead" end
+        if _LoadingScreenController ~= nil and _LoadingScreenController.active then return "loading" end
+        if now - self.mapSince < self.ArriveGraceSeconds then return "arrive" end
+        if now - self.lastFixAt < self.CooldownSeconds then return "cooldown" end
+        if not rb.Enable then return "rigidbody-off" end
+        if _SkillCaster ~= nil then
+            if _SkillCaster:LocalIsClimbing() then return "climb" end
+            if _SkillCaster.castLockActive then return "cast" end
+        end
+        return ""
+    end
+
+    @ExecSpace("ClientOnly")
+    method any ReadBounds(Entity map)
+        -- 경계 후보 둘: cam = 카메라 경계 · map = 맵 경계. 각 { 왼쪽, 아래, 오른쪽, 위 }. 읽을 수 없거나 퇴화(너비 · 높이 0 이하)면 그 칸은 비운다.
+        local out = {}
+        local cam = _CameraService:GetCurrentCameraComponent()
+        if isvalid(cam) then
+            local lb, rt = cam:GetBound()
+            if lb ~= nil and rt ~= nil and rt.x > lb.x and rt.y > lb.y then out.cam = { lb.x, lb.y, rt.x, rt.y } end
+        end
+        if isvalid(map.MapComponent) then
+            local lb2, rt2 = map.MapComponent:GetBound()
+            if lb2 ~= nil and rt2 ~= nil and rt2.x > lb2.x and rt2.y > lb2.y then out.map = { lb2.x, lb2.y, rt2.x, rt2.y } end
+        end
+        return out
+    end
+
+    @ExecSpace("ClientOnly")
+    method string OutOf(any b, Vector3 pos)
+        -- 경계 b 밖(여유 포함)이면 방향 "left" · "right" · "down" · "up", 안이면 "".
+        if pos.x < b[1] - self.BoundMargin then return "left" end
+        if pos.x > b[3] + self.BoundMargin then return "right" end
+        if pos.y < b[2] - self.BoundMargin then return "down" end
+        if pos.y > b[4] + self.BoundMarginTop then return "up" end
+        return ""
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ValidateBounds(any bounds, Vector3 pos, string onMap)
+        -- 발판 위 표본으로 경계를 확인한다: 안이면 믿음(1), 밖이면 못 믿음(−1 · 경고 한 번). 이미 정해진 경계는 이 맵에서 바꾸지 않는다.
+        if bounds.cam ~= nil and self.camState == 0 then
+            if self:OutOf(bounds.cam, pos) == "" then
+                self.camState = 1
+            else
+                self.camState = -1
+                log_warning("[Safety] camera bound ignored on " .. onMap .. " — standing pos (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ") is outside bound ("
+                    .. string.format("%.2f", bounds.cam[1]) .. "," .. string.format("%.2f", bounds.cam[2]) .. ")~(" .. string.format("%.2f", bounds.cam[3]) .. "," .. string.format("%.2f", bounds.cam[4]) .. ")")
+            end
+        end
+        if bounds.map ~= nil and self.mapState == 0 then
+            if self:OutOf(bounds.map, pos) == "" then
+                self.mapState = 1
+            else
+                self.mapState = -1
+                log_warning("[Safety] map bound ignored on " .. onMap .. " — standing pos (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ") is outside bound ("
+                    .. string.format("%.2f", bounds.map[1]) .. "," .. string.format("%.2f", bounds.map[2]) .. ")~(" .. string.format("%.2f", bounds.map[3]) .. "," .. string.format("%.2f", bounds.map[4]) .. ")")
+            end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method string OutDirection(any bounds, Vector3 pos)
+        -- 믿는 경계(state 1)들의 합집합 밖이면 그 방향, 아니면 "". 믿는 경계가 하나도 없으면 ""(경계 조건은 쉬고 공중 시간만 본다).
+        local u = nil
+        if bounds.cam ~= nil and self.camState == 1 then
+            u = { bounds.cam[1], bounds.cam[2], bounds.cam[3], bounds.cam[4] }
+        end
+        if bounds.map ~= nil and self.mapState == 1 then
+            local m = bounds.map
+            if u == nil then
+                u = { m[1], m[2], m[3], m[4] }
+            else
+                u = { math.min(u[1], m[1]), math.min(u[2], m[2]), math.max(u[3], m[3]), math.max(u[4], m[4]) }
+            end
+        end
+        if u == nil then return "" end
+        return self:OutOf(u, pos)
+    end
+
+    @ExecSpace("ClientOnly")
+    method any SpawnPointOf(Entity map)
+        -- 그 맵의 첫 SpawnLocation 위치(Vector2). 없으면 nil (PlayerRespawnService.SpawnPointOf 와 같은 조회).
+        if not isvalid(map) then return nil end
+        local comps = map:GetChildComponentsByTypeName("SpawnLocationComponent", true)
+        if comps == nil then return nil end
+        for _, c in ipairs(comps) do
+            local e = c.Entity
+            if isvalid(e) and isvalid(e.TransformComponent) then
+                local sp = e.TransformComponent.WorldPosition
+                return Vector2(sp.x, sp.y)
+            end
+        end
+        return nil
+    end
+
+    @ExecSpace("ClientOnly")
+    method void Fix(Entity me, RigidbodyComponent rb, Entity map, string cond, number air, number now)
+        -- 복구: 마지막 안전 위치(없으면 스폰 지점)로 옮기고 힘 0 · 이동 멈춤 · 토스트. 3초 재발동 금지(lastFixAt). 서버에 [Safety] 한 줄을 알린다.
+        local pos = me.TransformComponent.WorldPosition
+        local target = nil
+        local to = "none"
+        if self.hasSafe then
+            target = Vector2(self.safePos.x, self.safePos.y)
+            to = "safe"
+        else
+            target = self:SpawnPointOf(map)
+            if target ~= nil then to = "spawn" end
+        end
+        self.lastFixAt = now
+        self.airSince = now
+        local mapAge = now - self.mapSince
+        if target ~= nil then
+            rb:SetWorldPosition(target)
+            rb:SetForce(Vector2(0, 0))
+            local mv = me.MovementComponent
+            if isvalid(mv) then mv:Stop() end
+            if _UIToast ~= nil then _UIToast:ShowMessage(self.ToastText) end
+            log("[Safety] fixed " .. cond .. " " .. map.Name .. " (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ") -> " .. to .. " (" .. string.format("%.2f", target.x) .. "," .. string.format("%.2f", target.y) .. ") air=" .. string.format("%.1f", air) .. "s")
+        else
+            log_warning("[Safety] " .. cond .. " on " .. map.Name .. " (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ") but no safe position and no spawn point — left as is")
+        end
+        self:ReportFix(map.Name, pos.x, pos.y, cond, air, mapAge, self.prevMapName, to)
+    end
+
+    -- ───────────────────────── 서버: 원인 조사 로그 ─────────────────────────
+
+    @ExecSpace("Server")
+    method void ReportFix(string reportMap, number x, number y, string cond, number air, number mapAge, string prevMap, string to)
+        -- 클라가 발동을 알린다. 서버가 아는 것(직전 스킬 · 직전 부활)을 붙여 [Safety] 한 줄. 한 판에 WarnCount 번 넘으면 경고.
+        local uid = senderUserId
+        if uid == nil or uid == "" then return end
+        if self.counts == nil then self.counts = {} end
+        local n = (self.counts[uid] or 0) + 1
+        self.counts[uid] = n
+        local skillText = "none"
+        if _PlayerSkillState ~= nil then skillText = _PlayerSkillState:LastSkillText(uid) end
+        local reviveText = "none"
+        if _PlayerRespawnService ~= nil then
+            local ago = _PlayerRespawnService:SecondsSinceRevive(uid)
+            if ago >= 0 then reviveText = string.format("%.1f", ago) .. "s ago" end
+        end
+        local line = "[Safety] user=" .. uid .. " map=" .. string.sub(tostring(reportMap), 1, 64) .. " pos=(" .. string.format("%.2f", x) .. "," .. string.format("%.2f", y) .. ") cond=" .. string.sub(tostring(cond), 1, 24)
+            .. " air=" .. string.format("%.1f", air) .. "s lastSkill=" .. skillText .. " lastPortal=" .. string.sub(tostring(prevMap), 1, 64) .. "->" .. string.sub(tostring(reportMap), 1, 64) .. " " .. string.format("%.1f", mapAge) .. "s ago"
+            .. " lastRevive=" .. reviveText .. " restored=" .. string.sub(tostring(to), 1, 8) .. " count=" .. tostring(n)
+        log(line)
+        if n > self.WarnCount then
+            log_warning("[Safety] repeated: user=" .. uid .. " count=" .. tostring(n) .. " this match (> " .. tostring(self.WarnCount) .. ") — check the log lines above for a pattern")
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ResetForMatch()
+        -- 매치 시작(PlayerRespawnService.ResetForMatch 가 부른다): 한 판 발동 횟수를 비운다.
+        self.counts = {}
+    end
+
+end

@@ -2,7 +2,7 @@
 script VillageLifeUIController extends Logic
 
 	-- 생활 창(VillageLifeGroup.ui) 클라 컨트롤러 — WO-011 ⑮ (뼈대). 라우트 storage(창고지기) / recruit(몬스터 모집관) / train(몬스터 조련사).
-	-- storage: 왼쪽 내 인벤토리(스택형만 · InventoryUIController 캐시) ↔ 오른쪽 창고 20칸. recruit: 상단 미니 방어선 프리뷰 + 몬스터 카드. train: 병과 3행.
+	-- storage: 왼쪽 내 인벤토리(스택형만 · InventoryUIController 캐시) ↔ 오른쪽 창고 20칸. recruit: 상단 미니 방어선 프리뷰 + 몬스터 카드(한 쪽 5장 · ◀ ▶ 쪽 넘김). train: 병과 3행.
 	-- 값은 전부 서버 LaneStateService 뷰(SetView) · 낙관적 UI 없음(§5-5). UUID 는 UIBuilder write({bind}) 주입.
 	-- 2026-10-01 디자이너 시안(10-life) 겉모습: 칸 · 카드 · 버튼 상태는 스프라이트를 갈지 않고 "겹쳐 깔아 둔 그림 켜고 끄기"(이름으로 찾는다).
 	--   새 노드 이름은 Docs/tools/design-ui/apply-life.cjs 와 같다 — 바꾸면 안 된다. 서버 요청 · 데이터 흐름은 그대로(새 property 는 그림 RUID 문자열뿐).
@@ -104,6 +104,22 @@ script VillageLifeUIController extends Logic
 	@HideFromInspector
 	property integer cap = 10
 
+	-- 모집 카드 쪽 넘김(2차 패치 · 2026-10-13): 서버가 해금한 종 전부(units)를 정렬해 보내고, 한 쪽에 CardsPerPage 장(Card_0~4)씩 보여 준다. recruitPage 는 1부터 · 창을 열 때마다 1로.
+	@HideFromInspector
+	property integer recruitPage = 1
+
+	property integer CardsPerPage = 5
+
+	-- 조련 창 쪽 넘김(같은 결정): trainRows 는 해금한 종 전부(서버 정렬 = 모집 창과 같다) · 한 쪽에 TrainRowsPerPage 줄(Row_0~7). trainPage 는 1부터 · 창을 열 때마다 1로.
+	@HideFromInspector
+	property integer trainPage = 1
+
+	property integer TrainRowsPerPage = 8
+
+	-- 꿈의 조각 보유(서버 HAVE) — 쪽을 넘길 때 서버 응답 없이 줄을 다시 그리려고 들고 있는다.
+	@HideFromInspector
+	property integer trainHaveNum = 0
+
 	-- 시설 HP 게이지 채움 그림 3색 (50% 초과 초록 · 50% 이하 금 · 20% 미만 빨강) · 조련 눈금 켬 / 끔 (ruid-map.json 의 gauge_fill_* · gauge_seg_*)
 	property string GaugeGreen = "eff713b745054e28916931de6c2b9d7f"
 
@@ -149,6 +165,12 @@ script VillageLifeUIController extends Logic
 		bindSlots(self.invRoot, "InvSlot_", function(i) self:OnInvSlot(i) end)
 		bindSlots(self.stoRoot, "StoSlot_", function(i) self:OnStoSlot(i) end)
 		bindSlots(self.cardRoot, "Card_", function(i) self:OnCard(i) end)
+		-- 모집 카드 쪽 넘김 버튼(Recruit/Pager/BtnPrev · BtnNext · 이름으로 찾는다).
+		bind(self:Kid(self.contentRecruit, "Pager/BtnPrev"), function() self:OnRecruitPage(-1) end)
+		bind(self:Kid(self.contentRecruit, "Pager/BtnNext"), function() self:OnRecruitPage(1) end)
+		-- 조련 줄 쪽 넘김 버튼(Train/Pager/BtnPrev · BtnNext).
+		bind(self:Kid(self.contentTrain, "Pager/BtnPrev"), function() self:OnTrainPage(-1) end)
+		bind(self:Kid(self.contentTrain, "Pager/BtnNext"), function() self:OnTrainPage(1) end)
 		-- 조련사: Row_0..7 = 해금 몬스터 목록. 버튼 → 그 행의 몬스터 강화(RequestTrain(monsterId)).
 		self.trainRows = {}
 		if isvalid(self.trainRoot) then
@@ -184,6 +206,8 @@ script VillageLifeUIController extends Logic
 		self.selInv = ""
 		self.selSto = ""
 		self.selUnit = ""
+		self.recruitPage = 1
+		self.trainPage = 1
 		self.waiting = false
 		self:SetOpen(true)
 		self:GoRoute(route)
@@ -240,6 +264,10 @@ script VillageLifeUIController extends Logic
 		if route == "recruit" then
 			self:ShowRecruitHint("모집할 몬스터를 고르세요")
 			self:SetPrimaryLook(false)
+			self:SetOn(self.contentRecruit, "Pager", false) -- 서버 목록이 오기 전엔 쪽 넘김을 숨긴다(지난번 쪽수가 잠깐 비치지 않게)
+		end
+		if route == "train" then
+			self:SetOn(self.contentTrain, "Pager", false) -- 서버 목록이 오기 전엔 쪽 넘김을 숨긴다(지난번 쪽수가 잠깐 비치지 않게)
 		end
 		if route == "storage" then self:FillPick() end
 		if _LaneStateService ~= nil then _LaneStateService:RequestView(route) end
@@ -648,6 +676,7 @@ script VillageLifeUIController extends Logic
 				self.meso = tonumber(f[2]) or 0
 			end
 		end
+		log("[Life] recruit units=" .. tostring(#self.units) .. " pages=" .. tostring(self:RecruitPageCount()) .. " page=" .. tostring(self.recruitPage))
 		self:RenderCards()
 	end
 
@@ -663,13 +692,71 @@ script VillageLifeUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method integer RecruitPageCount()
+		-- 모집 카드 쪽 수(목록이 비어도 1).
+		local n = (self.units ~= nil) and #self.units or 0
+		return math.max(1, math.ceil(n / self.CardsPerPage))
+	end
+
+	@ExecSpace("ClientOnly")
+	method any CardUnit(integer i)
+		-- 지금 쪽의 i번째 카드(0부터)에 들어갈 종. 없으면 nil.
+		if self.units == nil then return nil end
+		return self.units[(self.recruitPage - 1) * self.CardsPerPage + i + 1]
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderPager(integer pages)
+		-- 모집 창 쪽 넘김(Recruit/Pager).
+		self:ApplyPager(self.contentRecruit, self.recruitPage, pages)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyPager(Entity content, integer page, integer pages)
+		-- 모집 · 조련 창 공용 ◀ ▶ + "1 / 7"(content/Pager/{BtnPrev, BtnNext, PageText}): 쪽이 하나뿐이면 통째로 숨긴다. 첫 쪽이면 ◀ · 끝 쪽이면 ▶ 를 누를 수 없게 흐리게(화살표 그림은 창고 넣기 · 꺼내기와 같은 SetArrow).
+		local pg = self:Kid(content, "Pager")
+		if not isvalid(pg) then return end
+		pg.Enable = (pages > 1)
+		if pages <= 1 then return end
+		local canPrev = (page > 1)
+		local canNext = (page < pages)
+		local prev = self:Kid(pg, "BtnPrev")
+		if isvalid(prev) and prev.ButtonComponent ~= nil then
+			prev.ButtonComponent.Enable = canPrev
+			self:SetArrow(prev.ButtonComponent, canPrev)
+		end
+		local nxt = self:Kid(pg, "BtnNext")
+		if isvalid(nxt) and nxt.ButtonComponent ~= nil then
+			nxt.ButtonComponent.Enable = canNext
+			self:SetArrow(nxt.ButtonComponent, canNext)
+		end
+		self:SetText(pg, "PageText", "<color=#E8B64C>" .. tostring(page) .. "</color> / " .. tostring(pages))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnRecruitPage(integer delta)
+		-- ◀(-1) ▶(+1): 쪽을 옮기고 카드를 다시 그린다. 고른 종(selUnit)은 쪽을 넘겨도 그대로라 바닥 띠 요약 · 모집 버튼이 유지된다.
+		if self.route ~= "recruit" then return end
+		local pages = self:RecruitPageCount()
+		local np = math.max(1, math.min(pages, self.recruitPage + delta))
+		if np == self.recruitPage then return end
+		self.recruitPage = np
+		log("[Life] recruit page " .. tostring(np) .. "/" .. tostring(pages) .. " units=" .. tostring(#self.units))
+		self:RenderCards()
+	end
+
+	@ExecSpace("ClientOnly")
 	method void RenderCards()
-		-- 카드 5장 고정. 없는 칸은 숨김.
+		-- 카드 5장 고정(쪽마다 CardsPerPage 장 · 쪽 넘김은 Pager). 없는 칸은 숨김.
 		-- 카드 4상태: 기본(행 판) · 올림(버튼 전환) · 선택(Sel 켬 · 금테) · 재료 부족(Lock 켬 · 잠김 판 + 빨간 칩) — 선택 + 부족이 겹치면 금테 + 빨간 칩. 부족 카드도 고를 수는 있다(모집만 막는다).
 		if not isvalid(self.cardRoot) then return end
-		for i = 0, 4 do
+		-- 목록이 바뀐 뒤(모집 · 해금 · 강화)에도 쪽이 범위를 넘지 않게 맞춘다.
+		local pages = self:RecruitPageCount()
+		if self.recruitPage > pages then self.recruitPage = pages end
+		if self.recruitPage < 1 then self.recruitPage = 1 end
+		for i = 0, self.CardsPerPage - 1 do
 			local card = self.cardRoot:GetChildByName("Card_" .. tostring(i))
-			local u = self.units[i + 1]
+			local u = self:CardUnit(i)
 			if isvalid(card) then
 				card.Enable = (u ~= nil)
 				if u ~= nil then
@@ -698,6 +785,7 @@ script VillageLifeUIController extends Logic
 				end
 			end
 		end
+		self:RenderPager(pages)
 		local u = nil
 		for _, x in ipairs(self.units) do if x.key == self.selUnit then u = x end end
 		-- 해금한 몬스터가 없으면 카드 자리에 빈 상태 그림
@@ -735,8 +823,8 @@ script VillageLifeUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnCard(integer i)
-		-- 카드 선택.
-		local u = self.units[i + 1]
+		-- 카드 선택(지금 쪽 기준).
+		local u = self:CardUnit(i)
 		self.selUnit = (u ~= nil) and u.key or ""
 		self:RenderCards()
 	end
@@ -764,10 +852,43 @@ script VillageLifeUIController extends Logic
 			end
 		end
 		self.waiting = false
+		self.trainHaveNum = have
+		log("[Life] train units=" .. tostring(#self.trainRows) .. " pages=" .. tostring(self:TrainPageCount()) .. " page=" .. tostring(self.trainPage))
+		self:RenderTrainPage()
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer TrainPageCount()
+		-- 조련 줄 쪽 수(목록이 비어도 1).
+		local n = (self.trainRows ~= nil) and #self.trainRows or 0
+		return math.max(1, math.ceil(n / self.TrainRowsPerPage))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnTrainPage(integer delta)
+		-- ◀(-1) ▶(+1): 쪽을 옮기고 줄을 다시 그린다(서버 응답 없이 · 이미 받은 목록).
+		if self.route ~= "train" then return end
+		local pages = self:TrainPageCount()
+		local np = math.max(1, math.min(pages, self.trainPage + delta))
+		if np == self.trainPage then return end
+		self.trainPage = np
+		log("[Life] train page " .. tostring(np) .. "/" .. tostring(pages) .. " units=" .. tostring(#self.trainRows))
+		self:RenderTrainPage()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderTrainPage()
+		-- 지금 쪽의 줄(Row_0~7) + 꿈의 조각 보유 칩 + 쪽 넘김을 그린다. 서버 응답(RenderTrain)과 ◀ ▶(OnTrainPage) 둘 다 여기로 온다.
+		local have = self.trainHaveNum
+		-- 목록이 바뀐 뒤(강화 · 해금)에도 쪽이 범위를 넘지 않게 맞춘다.
+		local pages = self:TrainPageCount()
+		if self.trainPage > pages then self.trainPage = pages end
+		if self.trainPage < 1 then self.trainPage = 1 end
+		local base = (self.trainPage - 1) * self.TrainRowsPerPage
 		if isvalid(self.trainRoot) then
-			for i = 0, 7 do
+			for i = 0, self.TrainRowsPerPage - 1 do
 				local row = self.trainRoot:GetChildByName("Row_" .. tostring(i))
-				local r = self.trainRows[i + 1]
+				local r = self.trainRows[base + i + 1]
 				if isvalid(row) then
 					row.Enable = (r ~= nil)
 					if r ~= nil then
@@ -817,15 +938,16 @@ script VillageLifeUIController extends Logic
 		self:SetText(self.contentTrain, "HavePlate/Num", tostring(have))
 		self:SetIcon(self:Kid(self.contentTrain, "HavePlate/Icon"), self:DreamIcon())
 		if isvalid(self.trainHave) then
-			self.trainHave.Text = "Lv2 ×1.5 · Lv3 ×2.2 · Lv4 ×3.3 · Lv5 ×5.0 - 새로 모집하는 묶음부터 적용" .. ((#self.trainRows > 8) and (" · " .. tostring(#self.trainRows - 8) .. "종 더 있음") or "")
+			self.trainHave.Text = "Lv2 ×1.5 · Lv3 ×2.2 · Lv4 ×3.3 · Lv5 ×5.0 - 새로 모집하는 묶음부터 적용"
 		end
+		self:ApplyPager(self.contentTrain, self.trainPage, pages)
 	end
 
 	@ExecSpace("ClientOnly")
 	method void Train(integer idx)
 		-- 행 버튼 → 그 몬스터 강화 요청.
 		if self.waiting then return end
-		local r = self.trainRows and self.trainRows[idx + 1] or nil
+		local r = self.trainRows and self.trainRows[(self.trainPage - 1) * self.TrainRowsPerPage + idx + 1] or nil
 		if r == nil then return end
 		self.waiting = true
 		if _LaneStateService ~= nil then _LaneStateService:RequestTrain(r.id) end

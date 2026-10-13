@@ -4,7 +4,8 @@ script MonsterNameTag extends Logic
 	--   · 모양 = 기능 NPC 와 같은 엔진 이름표(NameTagComponent · 기본 NameTagRUID = 검은 반투명 판 + 흰 글씨). 월드 이름표(WorldNameTag)가 아니다 — 판 RUID 를 넣으면 엔진 이름표는 사라진다.
 	--   · 서버가 Attach 로 붙이고 Name 을 쓰면 엔진이 클라에 동기화한다(NPC 와 같은 경로). 연결하는 곳 = 사냥터 · 자이언트 · 보스 · 미니언(파병 포함) · 수비대 · 보스 소환수(1.1-I04 ~ I09 · I18).
 	--   · 사망하면 Monster.Dead 가 끈다(1.1-I10).
-	--   · 색(1.1-I19): 나에게 적대하지 않는 몬스터는 초록, 그 밖은 흰색. 보는 사람마다 달라서 서버가 아니라 각 클라가 OnUpdate 로 칠한다.
+	--   · 색(1.1-I19 · 1.0.6-17-01): 나에게 적대하지 않는 몬스터는 초록, 적대는 레벨 차(몬스터 − 내 레벨)로 회색 · 흰색 · 주황 · 빨강 4단계. 보는 사람마다 달라서 서버가 아니라 각 클라가 OnUpdate 로 칠한다.
+	--   · 표시 거리(1.0.6-17-02): 내 캐릭터에서 ShowRange 이내만 보인다(HideRange 를 넘어야 꺼진다 — 경계 깜빡임 방지). 켜고 끄는 것도 각 클라가 같은 OnUpdate 에서 한다.
 
 	property boolean Enabled = true
 
@@ -16,13 +17,40 @@ script MonsterNameTag extends Logic
 	-- 1.1-I19: 초록 #6BE36B (1.0.6 17절 시작값). 검은 반투명 판 위에서 보고 조정한다.
 	property Color FriendlyColor = Color(0.420, 0.890, 0.420, 1)
 
-	-- 기본 흰색(NPC 이름표와 같음). 1.0.6 17절을 합칠 때 레벨 차 색 함수로 바꾼다.
-	property Color HostileColor = Color(1, 1, 1, 1)
+	-- 적대 몬스터 이름표 색 4단계(1.0.6-17-01 · 사용자 2026-10-12). gap = 몬스터 레벨 − 내 레벨(이름표 글자 "Lv.N" 의 N · 화면 숫자와 색이 늘 같다).
+	--   gap ≤ WeakMaxGap 회색 · ≤ EvenMaxGap 흰색(NPC 이름표와 같음 · 예전 HostileColor) · ≤ HighMaxGap 주황 · 그 위 빨강.
+	--   경계는 레벨 차 경험치 구간과 같은 값이다(SummonManager.ExpGapFreeMax = 4 · ExpGapNearMax = 7) — 한쪽을 바꾸면 다른 쪽도.
+	--   색값은 시작값(검은 반투명 판 위에서 Play 로 보고 맞춘다).
+	property Color WeakColor = Color(0.722, 0.722, 0.722, 1)
+
+	property Color EvenColor = Color(1, 1, 1, 1)
+
+	property Color HighColor = Color(1, 0.604, 0.235, 1)
+
+	property Color VeryHighColor = Color(1, 0.290, 0.290, 1)
+
+	property integer WeakMaxGap = -3
+
+	property integer EvenMaxGap = 4
+
+	property integer HighMaxGap = 7
+
+	-- 표시 거리(1.0.6-17-02 · 월드 단위): 내 캐릭터에서 이 안이면 켜고(ShowRange), 이 밖이면 끈다(HideRange). 5.5 로 여유를 둬서 경계에서 깜빡이지 않게 한다. ShowRange ≤ 0 이면 거리 제한 없음(항상 보임).
+	property number ShowRange = 5.0
+
+	property number HideRange = 5.5
+
+	-- 거리 켜짐/꺼짐 로그(켜진 이름표 수가 바뀔 때만 한 줄). Play 확인(1.0.6-17-02) 끝나면 false.
+	property boolean LogRange = true
 
 	property number RecolorSeconds = 0.5
 
 	@HideFromInspector
 	property number recolorTimer = 0
+
+	-- 직전에 찍은 거리 로그의 "켜짐/전체"(같은 값이면 다시 안 찍는다).
+	@HideFromInspector
+	property string lastRangeLog = ""
 
 	@ExecSpace("ServerOnly")
 	method string DisplayName(string raw)
@@ -91,8 +119,41 @@ script MonsterNameTag extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method integer TagLevel(string tagName)
+		-- 이름표 글자 "Lv.12 좀비버섯" 에서 레벨 12 를 읽는다(1.0.6-17-01 · 서버가 Attach 에서 쓴 글자 그대로 — 레벨 해석을 클라에 복사하지 않는다). 못 읽으면 0.
+		-- 접두(LevelPrefix)는 글자 그대로 비교한다(패턴 문자 escape 용 gsub 은 값 2개를 돌려 빌드 경고 LWA-1111 이 났다).
+		local text = tostring(tagName or "")
+		local prefix = self.LevelPrefix or ""
+		if string.sub(text, 1, #prefix) ~= prefix then
+			return 0
+		end
+		local n = string.match(string.sub(text, #prefix + 1), "^(%d+)")
+		return math.floor(tonumber(n) or 0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer HostileBand(integer monsterLevel, integer myLevel)
+		-- 적대 몬스터 이름표 색 단계(1.0.6-17-01): gap = 몬스터 − 나 → 1 회색 · 2 흰색 · 3 주황 · 4 빨강. 레벨을 못 읽으면(0) 흰색.
+		if monsterLevel <= 0 then return 2 end
+		local gap = monsterLevel - myLevel
+		if gap <= self.WeakMaxGap then return 1 end
+		if gap <= self.EvenMaxGap then return 2 end
+		if gap <= self.HighMaxGap then return 3 end
+		return 4
+	end
+
+	@ExecSpace("ClientOnly")
+	method Color BandColor(integer band)
+		-- HostileBand 단계의 색.
+		if band == 1 then return self.WeakColor end
+		if band == 3 then return self.HighColor end
+		if band == 4 then return self.VeryHighColor end
+		return self.EvenColor
+	end
+
+	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
-		-- 색은 보는 사람마다 다르다 → 각 클라가 자기 맵의 몬스터 이름표만 RecolorSeconds 마다 칠한다(1.1-I19).
+		-- 색 · 표시 거리는 보는 사람마다 다르다 → 각 클라가 자기 맵의 몬스터 이름표만 RecolorSeconds 마다 칠하고 켜고 끈다(1.1-I19 · 1.0.6-17-01 · 17-02). 거리 검사는 매 프레임이 아니라 이 루프에서만.
 		self.recolorTimer = self.recolorTimer - delta
 		if self.recolorTimer > 0 then return end
 		self.recolorTimer = self.RecolorSeconds
@@ -100,10 +161,19 @@ script MonsterNameTag extends Logic
 		local me = _UserService.LocalPlayer
 		if not isvalid(me) or not isvalid(me.CurrentMap) then return end
 		local myTeam = self:MyTeam()
+		local myLevel = 1
+		if _PlayerSkillState ~= nil then myLevel = math.floor(_PlayerSkillState:LocalLevel()) end
+		local myPos = nil
+		if self.ShowRange > 0 and isvalid(me.TransformComponent) then myPos = me.TransformComponent.WorldPosition end
 		local tags = me.CurrentMap:GetChildComponentsByTypeName("NameTagComponent", true)
 		if tags == nil then return end
 		local changed = 0
 		local friendly = 0
+		-- 적대 몬스터 색 분포(전체 · 이번에 바뀐 것만이 아니라) — 검증용 로그. bands[1..4] = 회색 · 흰색 · 주황 · 빨강.
+		local bands = { 0, 0, 0, 0 }
+		local shown = 0
+		local total = 0
+		local toggled = 0
 		for _, comp in ipairs(tags) do
 			local ent = comp.Entity
 			-- NPC · 플레이어 이름표는 건드리지 않는다(몬스터 컴포넌트가 있는 개체만).
@@ -111,20 +181,55 @@ script MonsterNameTag extends Logic
 				local tag = ent.NameTagComponent
 				if isvalid(tag) then
 					local isFriendly = self:IsFriendlyToMe(ent, myTeam)
-					local c = self.HostileColor
-					if isFriendly then c = self.FriendlyColor end
+					local c = self.FriendlyColor
+					if isFriendly then
+						friendly = friendly + 1
+					else
+						local band = self:HostileBand(self:TagLevel(tag.Name), myLevel)
+						c = self:BandColor(band)
+						bands[band] = bands[band] + 1
+					end
 					-- float 로 저장돼 같은 값을 써도 읽으면 미세하게 다르다 → 허용 오차 0.01 로 비교(안 그러면 매번 다시 쓰고 로그가 끝없이 찍힌다).
 					local cur = tag.FontColor
 					if math.abs(cur.r - c.r) > 0.01 or math.abs(cur.g - c.g) > 0.01 or math.abs(cur.b - c.b) > 0.01 then
 						tag.FontColor = c
 						changed = changed + 1
-						if isFriendly then friendly = friendly + 1 end
+					end
+					-- 표시 거리(1.0.6-17-02): 죽은 몹은 서버가 이미 껐으니(Monster.Dead) 다시 켜지 않는다. 지금 켜져 있으면 HideRange 밖에서 끄고, 꺼져 있으면 ShowRange 안에서 켠다.
+					if myPos ~= nil and isvalid(ent.TransformComponent) and not ent.Monster.IsDead then
+						total = total + 1
+						local p = ent.TransformComponent.WorldPosition
+						local dx = p.x - myPos.x
+						local dy = p.y - myPos.y
+						local d2 = dx * dx + dy * dy
+						local want = tag.Enable
+						if tag.Enable then
+							if d2 > self.HideRange * self.HideRange then want = false end
+						else
+							if d2 <= self.ShowRange * self.ShowRange then want = true end
+						end
+						if want ~= tag.Enable then
+							tag.Enable = want
+							toggled = toggled + 1
+						end
+						if want then shown = shown + 1 end
 					end
 				end
 			end
 		end
-		-- 검증용: 색이 바뀐 이름표가 있을 때만 한 줄(서버 동기화로 되돌려지면 같은 줄이 계속 찍힌다).
-		if changed > 0 then log("[MonsterNameTag] recolor n=" .. tostring(changed) .. " friendly=" .. tostring(friendly) .. " myTeam=" .. myTeam) end
+		-- 검증용: 색이 바뀐 이름표가 있을 때만 한 줄(서버 동기화로 되돌려지면 같은 줄이 계속 찍힌다). friendly = 초록 전체 수 · grey/white/orange/red = 적대 이름표 색 분포 · myLv = 내 레벨.
+		if changed > 0 then
+			log("[MonsterNameTag] recolor n=" .. tostring(changed) .. " friendly=" .. tostring(friendly) .. " grey=" .. tostring(bands[1]) .. " white=" .. tostring(bands[2]) .. " orange=" .. tostring(bands[3]) .. " red=" .. tostring(bands[4])
+				.. " myLv=" .. tostring(myLevel) .. " myTeam=" .. myTeam)
+		end
+		-- 켜진 이름표 수가 바뀔 때만 한 줄(되돌려지면 toggled 가 계속 0 이 아니다).
+		if self.LogRange and myPos ~= nil and toggled > 0 then
+			local key = tostring(shown) .. "/" .. tostring(total)
+			if key ~= self.lastRangeLog then
+				self.lastRangeLog = key
+				log("[MonsterNameTag] range shown=" .. key .. " toggled=" .. tostring(toggled) .. " (on<=" .. tostring(self.ShowRange) .. " off>" .. tostring(self.HideRange) .. ")")
+			end
+		end
 	end
 
 end

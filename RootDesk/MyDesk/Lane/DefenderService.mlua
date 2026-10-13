@@ -57,6 +57,13 @@ script DefenderService extends Logic
 	@HideFromInspector
 	property any units = nil
 
+	-- 지역 레벨 표 캐시(1.0.4-3-03): regionLevels[마을][종 키] = 그 마을 사냥터 최저 레벨 · regionLevelsAny[종 키] = 전 마을 사냥터 최저 레벨. 서버 · 클라 각자 처음 물을 때 한 번 만든다(BuildRegionLevels).
+	@HideFromInspector
+	property any regionLevels = nil
+
+	@HideFromInspector
+	property any regionLevelsAny = nil
+
 	method void OnBeginPlay()
 		-- 서버 전용.
 		if not self:IsServer() then return end
@@ -148,9 +155,10 @@ script DefenderService extends Logic
 			maxHp = self:GuardHpOf(rr.tier or 1, lv)
 			attack = self:GuardAtkOf(rr.tier or 1, lv)
 		end
-		-- 체력 × 수비대 레벨(DefenderLevelOf = 도감 레벨 + 강화 1단계당 2)의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로"): 리본돼지(T2 · Lv17) 강화 Lv1 5,120 → 35,840 · Lv5(Lv25) 12,156 → 182,340.
-		--   공격력은 그대로. 파병(MinionFlowService.SpawnDispatched)도 같은 레벨 · 배율이라 2 : 1 이 유지된다.
-		maxHp = _MonsterCatalog:LevelHp(maxHp, self:DefenderLevelOf(monsterId, upgradeLevel))
+		-- 체력 × 수비대 레벨(DefenderLevelIn = 지역 레벨 + 강화 1단계당 2)의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로"): 리본돼지(T2 · Lv17) 강화 Lv1 5,120 → 35,840 · Lv5(Lv25) 12,156 → 182,340.
+		--   공격력은 그대로. 파병(MinionFlowService.SpawnDispatched)도 같은 레벨 · 배율이라 2 : 1 이 유지된다. 지역 레벨 = 모집한 마을 사냥터에서 그 종의 레벨(1.0.4-3-03).
+		local unitLevel = self:DefenderLevelIn(villageId, monsterId, upgradeLevel)
+		maxHp = _MonsterCatalog:LevelHp(maxHp, unitLevel)
 		local range = self:GuardRange()
 		local minX = row.pathMinX or -100000
 		local maxX = row.pathMaxX or 100000
@@ -241,13 +249,12 @@ script DefenderService extends Logic
 		end
 		---@type DefenderUnit
 		local du = ent:AddComponent("script.DefenderUnit")
-		local unitLevel = self:DefenderLevelOf(monsterId, upgradeLevel)
 		if isvalid(du) then
 			du.VillageId = villageId
 			du.MonsterId = monsterId
 			du.Level = unitLevel
 		end
-		-- 몬스터 이름표(1.1-I09): `Lv.N 이름` — 레벨 = DefenderLevelOf(원래 레벨 + 강화 1단계당 2). Regroup 이 같은 SpawnOne 을 u.upgradeLevel 로 다시 불러 재집결 개체도 같은 레벨로 붙는다. 훈련해도 이미 서 있는 개체의 이름표는 안 바뀐다(새로 모집하는 묶음부터).
+		-- 몬스터 이름표(1.1-I09): `Lv.N 이름` — 레벨 = DefenderLevelIn(지역 레벨 + 강화 1단계당 2). Regroup 이 같은 SpawnOne 을 u.upgradeLevel 로 다시 불러 재집결 개체도 같은 레벨로 붙는다. 훈련해도 이미 서 있는 개체의 이름표는 안 바뀐다(새로 모집하는 묶음부터).
 		if _MonsterNameTag ~= nil then
 			_MonsterNameTag:Attach(ent, _MonsterCatalog:GetName(monsterId), unitLevel)
 		end
@@ -256,13 +263,69 @@ script DefenderService extends Logic
 	end
 
 	method integer DefenderLevelOf(integer monsterId, integer upgradeLevel)
-		-- 수비대 · 파병 유닛의 판정 레벨(1.1-H03): 도감 레벨 + LevelPerUpgrade × (강화 Lv − 1) · 강화 Lv 는 1~5 로 자른다. 도감에 없으면 0(모름).
-		-- 예: 리본돼지 Lv17 · 강화 Lv5 → 25. 서버 · 클라 공용(ExecSpace 없음).
-		local base = 0
-		if _MonsterCatalog ~= nil then base = _MonsterCatalog:GetLevel(monsterId) or 0 end
+		-- 마을을 모르는 호출용(파병 MinionFlowService.SpawnDispatched 등): 마을 구분 없이 그 종이 나오는 사냥터 가운데 가장 낮은 지역 레벨 기준. 마을을 아는 호출은 DefenderLevelIn.
+		return self:DefenderLevelIn("", monsterId, upgradeLevel)
+	end
+
+	method integer DefenderLevelIn(string villageId, integer monsterId, integer upgradeLevel)
+		-- 수비대 · 파병 유닛의 판정 레벨(1.1-H03 · 1.0.4-3-03): 지역 레벨(모집한 마을 사냥터에서 그 종의 레벨) + LevelPerUpgrade × (강화 Lv − 1) · 강화 Lv 는 1~5 로 자른다. 모르면 0.
+		-- 예: 주니어 부기 → 페리온 사냥터1 Lv10 · 강화 Lv5 → 18 (도감 Lv24 가 아니다). 서버 · 클라 공용(ExecSpace 없음).
+		local base = self:RegionLevelOf(villageId, monsterId)
 		if base <= 0 then return 0 end
 		local lv = math.max(1, math.min(5, math.floor(upgradeLevel or 1)))
 		return base + self.LevelPerUpgrade * (lv - 1)
+	end
+
+	method integer RegionLevelOf(string villageId, integer monsterId)
+		-- 지역 레벨(1.0.4-3-03 · 사용자 확정 2026-10-12): 모집한 마을의 사냥터 1 · 2 · 3 맵에서 그 종이 쓰는 레벨(MapMonsters 의 LevelOverride, 없으면 도감 레벨).
+		-- 그 마을 사냥터에 없는 종(다른 마을 사냥터에서 해금한 종)과 마을을 모르는 호출은 전 마을 사냥터 중 가장 낮은 레벨. 어디에도 안 나오면 도감 레벨. 서버 · 클라 공용(ExecSpace 없음).
+		if _MonsterCatalog == nil then return 0 end
+		if self.regionLevels == nil then self:BuildRegionLevels() end
+		local key = _MonsterCatalog:Key(monsterId)
+		local per = self.regionLevels[villageId or ""]
+		local lv = (per ~= nil) and per[key] or nil
+		if lv == nil then lv = self.regionLevelsAny[key] end
+		if lv == nil then lv = _MonsterCatalog:GetLevel(monsterId) or 0 end
+		return math.floor(lv)
+	end
+
+	method void BuildRegionLevels()
+		-- VillageConfig 의 마을별 사냥터 맵(Lane1MapName · Lane2MapName · RearMapName = 사냥터 1 · 2 · 3) × MonsterCatalog 스폰 행(켜진 것만 · level = 덮어쓴 레벨)에서
+		-- regionLevels[마을][종] = 그 마을 사냥터 중 최저 레벨 · regionLevelsAny[종] = 전 마을 사냥터 중 최저 레벨(리스항구 포함)을 한 번 만든다. 표는 고정이라 다시 만들지 않는다.
+		self.regionLevels = {}
+		self.regionLevelsAny = {}
+		if _MonsterCatalog == nil then return end
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil then
+			log_warning("[Defender] VillageConfig dataset not found — 지역 레벨은 도감 레벨로 폴백")
+			return
+		end
+		local rows = 0
+		for i = 1, t:GetRowCount() do
+			local vid = tostring(t:GetCell(i, "VillageId") or "")
+			if vid ~= "" then
+				local per = self.regionLevels[vid]
+				if per == nil then
+					per = {}
+					self.regionLevels[vid] = per
+				end
+				for _, col in ipairs({ "Lane1MapName", "Lane2MapName", "RearMapName" }) do
+					local mapName = tostring(t:GetCell(i, col) or "")
+					if mapName ~= "" then
+						for _, sp in ipairs(_MonsterCatalog:GetMapSpawns(mapName)) do
+							local lv = math.floor(tonumber(sp.level) or 0)
+							if sp.enabled ~= false and lv > 0 then
+								local key = _MonsterCatalog:Key(sp.id)
+								if per[key] == nil or lv < per[key] then per[key] = lv end
+								if self.regionLevelsAny[key] == nil or lv < self.regionLevelsAny[key] then self.regionLevelsAny[key] = lv end
+								rows = rows + 1
+							end
+						end
+					end
+				end
+			end
+		end
+		log("[Defender] regionLevels built spawnRows=" .. tostring(rows))
 	end
 
 	@ExecSpace("ServerOnly")

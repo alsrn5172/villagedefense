@@ -21,7 +21,7 @@ script TutorialService extends Logic
 
 	property string RivalVillageId = "ELLINIA"
 
-	property string RivalName = "가상 상대"
+	property string RivalName = "엘리니아 주인"
 
 	-- 룸에 첫 유저가 이 초 안에 안 들어오면 룸이 사라진다(매치와 같은 값).
 	property number RoomFirstUserWaitSeconds = 60
@@ -57,6 +57,14 @@ script TutorialService extends Logic
 
 	property integer WaveAttack = 60
 
+	-- 3-7 웨이브 미니언이 떨어뜨리는 메소(바닥 동전 1개) = 실제 첫 웨이브 값(MinionWave.csv LIVE · P1-0 의 Meso 60). 경험치는 0 그대로(1.1-D16 · 웨이브 미니언은 경험치를 주지 않는다 · 1.0.6-7-01).
+	property integer WaveMeso = 60
+
+	-- 6-1t 전광판 임시 줄의 가상 상대(6-1 의 "가상 상대" · 엘리니아 주인): 레벨 · 전투력(내 전투력의 배수 — 강한 상대로 보이게). 줄 이름 = RivalName.
+	property integer RivalBoardLevel = 30
+
+	property number RivalPowerMul = 1.5
+
 	-- 5단계 마을 보스(머쉬맘) 체력 = 1 — 한 대에 쓰러진다(사용자 2026-10-07 "튜토리얼 머쉬맘은 체력 1").
 	property integer BossWeakHp = 1
 
@@ -83,6 +91,10 @@ script TutorialService extends Logic
 
 	@HideFromInspector
 	property any spawned = nil
+
+	-- 전광판(StatusBoard)에 가상 상대 임시 줄을 보이는 중인가(6-1t RivalAlert 가 켠다 · 끝 · 시작에 끈다). 켜지기 전 튜토리얼의 전광판은 빈 칠판이다.
+	@HideFromInspector
+	property boolean boardRival = false
 
 	-- 로비: 튜토리얼에서 막 돌아온 사람(OnboardingService 상태에 실어 도움말을 연다 · 한 번 꺼내면 지운다)
 	@HideFromInspector
@@ -228,6 +240,7 @@ script TutorialService extends Logic
 		-- 무적 · 시작 맵 스폰 자리로 옮기고 클라 디렉터를 깨운다.
 		self.begun = true
 		self.userId = uid
+		self.boardRival = false
 		self:SetInvulnerable(uid, true)
 		-- 지금 방 시작(InPlace)에서 다른 맵이면 로딩 화면 · 룸으로 온 경우는 이미 시작 맵이라 띄우지 않는다.
 		local pl = _UserService:GetUserEntityByUserId(uid)
@@ -304,6 +317,9 @@ script TutorialService extends Logic
 		elseif kind == "skill" then
 			-- skill:<SkillId>[,<SkillId>…]:<레벨> — 전사 전직 스킬을 SP 없이(2-4k · 1.0.3-M8-05)
 			ok = self:GrantSkills(uid, parts[2] or "", math.floor(tonumber(parts[3]) or 1))
+		elseif kind == "rival" then
+			-- 6-1t: 발록 도전 알림 토스트 + 전광판 가상 상대 줄 켜기(1.0.6-10-01)
+			ok = self:RivalAlert(uid)
 		else
 			ok = false
 			log_warning("[Tutorial] unknown action " .. action)
@@ -504,11 +520,14 @@ script TutorialService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean FireWave()
-		-- 3-7 웨이브 1회: 내 마을(주인 있는 마을)에만 약한 좀비버섯 몇 마리. 경험치 · 메소는 0(Lv20 은 장면이 따로 올린다).
+		-- 3-7 웨이브 1회: 내 마을(주인 있는 마을)에만 약한 좀비버섯 몇 마리. 경험치는 0(웨이브 미니언은 경험치를 주지 않는다 · 1.1-D16 · Lv20 은 장면이 따로 올린다).
+		--   메소 = 실제 첫 웨이브 값(WaveMeso) · 빅토리아 주화 확률 = 실제 웨이브와 같은 함수(MatchSessionLogic.CoinChanceOf "PHASE1") — 3-7b 카드의 "대신 메소와 빅토리아 주화를 떨어뜨려요" 와 맞춘다(1.0.6-7-01).
 		if _MinionFlowService == nil then
 			return false
 		end
-		local villages = _MinionFlowService:QueueWave("TUTORIAL", "PHASE1", self.WaveCount, 1, self.WaveMonsterId, self.WaveHp, self.WaveAttack, 0, 0, 0, nil, 0, 0)
+		local coinChance = (_MatchSessionLogic ~= nil) and _MatchSessionLogic:CoinChanceOf("PHASE1") or 0
+		local villages = _MinionFlowService:QueueWave("TUTORIAL", "PHASE1", self.WaveCount, 1, self.WaveMonsterId, self.WaveHp, self.WaveAttack, 0, self.WaveMeso, 0, nil, coinChance, 0)
+		log("[Tutorial] wave meso=" .. tostring(self.WaveMeso) .. " coinChance=" .. tostring(coinChance) .. " villages=" .. tostring(villages))
 		-- 접수된 파병(5-2)은 이 웨이브 미니언이 다 나간 뒤 풀린다(MatchSessionLogic.FireWave 와 같은 순서).
 		_MinionFlowService:QueueDispatch("PHASE1", self.WaveCount * 1)
 		return villages > 0
@@ -577,6 +596,32 @@ script TutorialService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean RivalAlert(string uid)
+		-- 6-1t(1.0.6-10-01): 실제 발록 도전 알림과 같은 문장(BalrogRoomService.ChallengeAlertText 의 {마을} = 가상 상대 마을 이름)을 이 사람에게 토스트로 띄우고,
+		--   전광판(StatusBoard)에 가상 상대 임시 줄을 켠다(boardRival). 실제 알림 경로(AlertChallenge)는 도전자를 뺀 참가자에게만 가는데 튜토리얼 참가자는 혼자라 직접 띄운다.
+		local village = (_LaneStateService ~= nil) and _LaneStateService:VillageName(self.RivalVillageId) or "엘리니아"
+		local template = (_BalrogRoomService ~= nil) and _BalrogRoomService.ChallengeAlertText or "{마을} 마을의 주인이 발록에 도전하고 있어요!"
+		local text, subs = string.gsub(template, "{마을}", village)
+		self:Toast(uid, text)
+		self.boardRival = true
+		log("[Tutorial] rival alert board on (subs=" .. tostring(subs) .. ") : " .. text .. " (" .. uid .. ")")
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method any BoardRival()
+		-- 전광판 가상 상대 임시 줄 정보 { name, level, power } · 켜지기 전이면 nil(StatusBoard.BuildLines 가 읽는다). 전투력 = 내 전투력 × RivalPowerMul(1 이상) — 강한 상대로 보이게.
+		if not self.boardRival then
+			return nil
+		end
+		local mine = 0
+		if _StatService ~= nil and self.userId ~= "" then
+			mine = _StatService:GetCombatPower(self.userId)
+		end
+		return { name = self.RivalName, level = self.RivalBoardLevel, power = math.max(1, math.floor(mine * self.RivalPowerMul + 0.5)) }
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean Heal(string uid)
 		-- HP 를 채운다(무적이지만 HUD 가 깎여 보이지 않게).
 		local p = _UserService:GetUserEntityByUserId(uid)
@@ -635,6 +680,7 @@ script TutorialService extends Logic
 			end
 		end
 		self.spawned = {}
+		self.boardRival = false
 		self:SetInvulnerable(uid, false)
 		if _MatchSessionLogic ~= nil then
 			_MatchSessionLogic:EndTutorial()

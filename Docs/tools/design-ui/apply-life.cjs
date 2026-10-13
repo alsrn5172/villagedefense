@@ -5,6 +5,7 @@
 //   슬롯 InvSlot_N · StoSlot_N (Icon · Name · Count · CountBg · Empty · Sel) · 카드 Card_N (Name · Info · Icon · Frame · StageIcon · MatChip/{Plate,MatIcon,Need,Have} · Bundle · LockChip · Sel · Lock)
 //   수비대 Slot_N (Text · Empty) · 조련 Row_N (Name · LvText · CostText · Icon · Seg_0~4 · NextIcon · NextCost · NextMul · MaxGlow · MaxChip · BtnTrain/LackFace)
 //   제목 TitleBand/{DecoNarrow,DecoWide}/… · Footer/{StorageBar,RecruitSel,InfoIcon} · Storage/PickBar/… · Recruit/Empty · Train/{Empty,HavePlate}
+//   쪽 넘김 Recruit/Pager · Train/Pager ({BtnPrev,BtnNext,PageText}) 는 이 스크립트가 아니라 add-recruit-pager.cjs · add-train-pager.cjs 가 더한다(2차 패치 · 2026-10-13) — 이 스크립트를 다시 돌려도 지워지지 않는다.
 //
 // 그림 상태(칸 · 카드 · 버튼)는 스프라이트를 갈아 끼우지 않고 "겹쳐 깔아 둔 그림을 켜고 끄는" 방식이다(공방과 같다).
 //   - 🔴 부모 엔티티에 글자가 있으면 자식 그림이 그 글자를 덮는다 → 덮는 그림(Empty · Sel · Lock · LackFace …)은 형제 중 맨 뒤로 보내 아이콘 · 글자 밑에 깐다.

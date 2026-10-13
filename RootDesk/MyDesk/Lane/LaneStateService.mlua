@@ -49,7 +49,8 @@ script LaneStateService extends Logic
 	--   LaneFacilityService.ApplyCombat 이 FactionAttack.NoMinionMul 로 넣는다.
 	property number FacilityNoMinionAtkMul = 10.0
 
-	-- 억제기 파괴 폭발 (B3 · 사용자 2026-09-22 · 전 마을 공통): 파괴 순간 반경 안의 **미니언에게만** 고정 피해. 연출 = ICBM special 클립(×0.8) + Hit 사운드.
+	-- 억제기 파괴 폭발 (B3 · 사용자 2026-09-22 · 전 마을 공통): 파괴 순간 반경 안의 **미니언에게만** 작용. 연출 = ICBM special 클립(×0.8) + Hit 사운드.
+	-- 1.0.5-9-01: 반경 안 미니언은 체력과 상관없이 처치한다(예전엔 고정 피해 10,000 이라 T3 Lv5 파병 유닛 · 좀비머쉬맘이 살아남았다). 이 값은 이제 쓰지 않는다 — 옛 호환으로만 남긴다.
 	property number SuppressorBoomDamage = 10000
 
 	property number SuppressorBoomRadius = 3.0
@@ -61,6 +62,15 @@ script LaneStateService extends Logic
 	property string SuppressorBoomSoundRuid = "5e8b2bcc46c848a7b50a48710988d700"
 
 	property number SuppressorBoomVolume = 1.0
+
+	-- 시설 재건 · 수리 쿨타임(초 · 1.0.5-6-01 · 원문 5분 / 1분): 시설마다 따로, 재건과 수리도 따로. 넥서스는 재건 자체가 없다(rebuild = 0).
+	--   재건은 쿨타임 외에 그 마을 레인 3맵에 미니언(MinionUnit)이 한 마리도 없어야 한다(AliveMinionsInLane). 거절은 주화를 빼기 전에 한다.
+	property number RebuildCooldownSec = 300
+
+	property number RepairCooldownSec = 60
+
+	-- 훈련 비용 티어 배율(1.0.4-4-01 · 사용자 2026-10-12): MonsterTraining 표(= 1티어 기준)에 모집 티어 1 / 2 / 3 별로 곱한다(올림). 쉼표로 구분.
+	property string TrainTierMul = "1.0,1.5,2.0"
 
 	-- 억제기·넥서스 피격 알림의 도배 방지 간격(초). 마을×단계별로 마지막 알림 시각을 들고 판정한다 (E-2 잠정).
 	property number HitAlertInterval = 5.0
@@ -716,6 +726,24 @@ script LaneStateService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method integer TrainCostOf(integer monsterId, integer nextLv)
+		-- 훈련(강화 Lv2~5) 꿈의 조각 개수 한 곳(1.0.4-4-01): MonsterTraining 표(1티어 기준) × 그 종의 모집 티어 배율(TrainTierMul 1.0 / 1.5 / 2.0) · 올림.
+		--   1티어 3 · 5 · 10 · 15 → 2티어 5 · 8 · 15 · 23 → 3티어 6 · 10 · 20 · 30. 조련사 창 · 도감 창의 표시와 차감(RequestTrain · RequestLevelCollection)이 이 값을 같이 쓴다.
+		--   직업 할인(CrewCost · 조련사 경로만)은 이 값 뒤에 건다. 모집 행이 없는 종은 1티어로 본다. 소급 없음(이미 낸 비용은 그대로).
+		local base = self:TrainRow("MELEE", nextLv).cost
+		local tier = 1
+		local rr = self:RecruitRow(monsterId)
+		if rr ~= nil then tier = math.max(1, math.floor(rr.tier or 1)) end
+		local mul = 1.0
+		local idx = 0
+		for part in string.gmatch(self.TrainTierMul, "[^,]+") do
+			idx = idx + 1
+			if idx == tier then mul = tonumber(part) or 1.0 end
+		end
+		return math.ceil(base * mul - 0.000000001)
+	end
+
+	@ExecSpace("ServerOnly")
 	method any MaterialOf(string villageId)
 		-- 해금·모집 재화 {itemId, name, count}. 기획 = 마을 지역재화 8개(헤네시스 포자 등) — 지금은 다이아몬드로 대체(사용자 2026-09-07). UseRegionalMaterial 을 켜면 villages[].mat 로 바뀐다.
 		if self.UseRegionalMaterial then
@@ -919,8 +947,8 @@ script LaneStateService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void SuppressorBoom(string villageId)
-		-- 억제기 파괴 폭발 (B3 · WO-027 §7 · 사용자 2026-09-22): 파괴 순간 억제기 바닥 기준 반경 SuppressorBoomRadius 안의 **미니언(MinionUnit)에게만**
-		-- SuppressorBoomDamage 고정 피해. 시설·수비대·플레이어는 안 맞는다. 폭발로 죽은 미니언은 처치 보상 없음(lastAttacker 없음).
+		-- 억제기 파괴 폭발 (B3 · WO-027 §7 · 사용자 2026-09-22): 파괴 순간 억제기 바닥 기준 반경 SuppressorBoomRadius 안의 **미니언(MinionUnit)을**
+		-- 체력과 상관없이 처치한다(1.0.5-9-01 · 예전 고정 피해 10,000 은 폐지). 시설·수비대·플레이어는 안 맞는다. 폭발로 죽은 미니언은 처치 보상 없음(lastAttacker 없음).
 		-- 연출: ICBM special 클립을 억제기 층에 · Hit 사운드는 그 맵 안 유저에게 Client RPC(PlayBoomSoundLocal · 유저별 targetUserId).
 		self:Tally(villageId .. ":BOOM")
 		if _LaneFacilityService == nil or _LaneFacilityService.entities == nil then return end
@@ -949,15 +977,14 @@ script LaneStateService extends Logic
 					local dy = q.y - cy
 					if dx * dx + dy * dy <= r2 then
 						hit = hit + 1
-						mon.Hp = mon.Hp - self.SuppressorBoomDamage
-						if mon.Hp <= 0 then
-							killed = killed + 1
-							-- 폭발 처치는 보상 없음: 마지막 공격자 기록을 지운다(안 지우면 직전에 때린 플레이어에게 경험치·메소가 간다 · Codex 리뷰 2026-09-23).
-							child.MinionUnit.lastAttacker = nil
-							if child.FarmReward ~= nil then child.FarmReward.LastAttacker = nil end
-							mon:PlaySoundToMap(mon.DieSoundRUID, mon.SoundVolume)
-							mon:Dead()
-						end
+						-- 1.0.5-9-01: 체력과 상관없이 처치(체력을 0 으로 두고 바로 죽인다). 그래서 hit 과 killed 는 늘 같은 수다.
+						mon.Hp = 0
+						killed = killed + 1
+						-- 폭발 처치는 보상 없음: 마지막 공격자 기록을 지운다(안 지우면 직전에 때린 플레이어에게 경험치·메소가 간다 · Codex 리뷰 2026-09-23).
+						child.MinionUnit.lastAttacker = nil
+						if child.FarmReward ~= nil then child.FarmReward.LastAttacker = nil end
+						mon:PlaySoundToMap(mon.DieSoundRUID, mon.SoundVolume)
+						mon:Dead()
 					end
 				end
 			end
@@ -976,7 +1003,7 @@ script LaneStateService extends Logic
 				end
 			end
 		end
-		log("[Suppressor] boom " .. villageId .. " hit=" .. tostring(hit) .. " killed=" .. tostring(killed) .. " r=" .. tostring(self.SuppressorBoomRadius) .. " dmg=" .. tostring(self.SuppressorBoomDamage) .. " at (" .. string.format("%.2f", cx) .. "," .. string.format("%.2f", cy) .. ")")
+		log("[Suppressor] boom " .. villageId .. " hit=" .. tostring(hit) .. " killed=" .. tostring(killed) .. " r=" .. tostring(self.SuppressorBoomRadius) .. " at (".. string.format("%.2f", cx) .. "," .. string.format("%.2f", cy) .. ")")
 	end
 
 	@ExecSpace("Client")
@@ -1145,6 +1172,8 @@ script LaneStateService extends Logic
 		end
 		if kind == "defense" then
 			local front = self:FrontStage(v)
+			local now = _UtilLogic.ElapsedSeconds
+			local minionsLeft = nil   -- 레인 미니언 수는 재건할 수 있는 파괴된 시설이 있을 때만, 한 번만 센다
 			for _, stage in ipairs({ "TOWER", "SUPPRESSOR", "CORE" }) do
 				local t = v.towers[stage]
 				local d = self.towerDef[stage]
@@ -1152,14 +1181,25 @@ script LaneStateService extends Logic
 				local upCost = d.upgrade[t.lv] or 0
 				local repCost = math.ceil((max - t.hp) * d.repairPerHp)
 				local rebCost = d.rebuild
+				-- 쿨타임 남은 초(1.0.5-6-01 · 6-02): 수리 · 재건 따로. 0 이면 없음.
+				local repLeft = self:CooldownLeft(t.repairReadyAt, now)
+				local rebLeft = self:CooldownLeft(t.rebuildReadyAt, now)
+				local rebuildable = (not t.alive) and rebCost > 0 and (stage ~= "TOWER" or v.towers.SUPPRESSOR.alive)
+				local block = ""
+				if rebuildable and rebLeft <= 0 then
+					if minionsLeft == nil then minionsLeft = self:AliveMinionsInLane(v.id) end
+					if minionsLeft > 0 then block = "minions" end
+				end
 				local canUp = t.alive and upCost > 0
-				local canRep = t.alive and t.hp < max
-				local canReb = (not t.alive) and rebCost > 0 and (stage ~= "TOWER" or v.towers.SUPPRESSOR.alive)
+				local canRep = t.alive and t.hp < max and repLeft <= 0
+				local canReb = rebuildable and rebLeft <= 0 and block == ""
 				-- 16·17번 = 마을별 아이콘 RUID + 상하반전 (2026-09-08 추가 · payload 는 append-only).
+				-- 18 ~ 20번 = 수리 남은 초 · 재건 남은 초 · 재건 막힘 사유("minions" 또는 빈 값) (1.0.5-6-02 추가 · 클라는 남은 초를 받아 스스로 줄인다).
 				add({ "T", stage, d.name, tostring(t.lv), tostring(t.hp), tostring(max), b2s(t.alive),
 					tostring(d.attack[math.min(t.lv, #d.attack)] or 0), tostring(d.range[math.min(t.lv, #d.range)] or 0),
 					tostring(upCost), tostring(repCost), tostring(rebCost), b2s(canUp), b2s(canRep), b2s(canReb),
-					self:FacilityIconRuid(v.id, stage), b2s(self:FacilityFlipY(v.id, stage)) })
+					self:FacilityIconRuid(v.id, stage), b2s(self:FacilityFlipY(v.id, stage)),
+					tostring(repLeft), tostring(rebLeft), block })
 			end
 			add({ "FRONT", front })
 			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
@@ -1181,21 +1221,22 @@ script LaneStateService extends Logic
 					if self:MonLevel(v, mid) >= 1 then
 						local matDef = (_ItemCatalog ~= nil) and _ItemCatalog:Get(rr.materialItemId) or nil
 						local icon = (_MonsterCatalog ~= nil) and tostring(_MonsterCatalog:GetIconRuid(mid) or "") or ""
-						table.insert(list, { id = mid, name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(mid) or tostring(mid), level = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetLevel(mid) or 1, tier = rr.tier,
+						-- level = 지역 레벨(1.0.4-3-03 · 정렬용 · 창에는 안 나온다). 없으면 도감 레벨.
+						local regionLv = (_DefenderService ~= nil) and _DefenderService:RegionLevelOf(v.id, mid) or 0
+						if regionLv <= 0 then regionLv = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetLevel(mid) or 1 end
+						table.insert(list, { id = mid, name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(mid) or tostring(mid), level = regionLv, tier = rr.tier,
 							cost = self:CrewCost(userId, "MONSTER_RECRUIT", rr.materialCount), matId = rr.materialItemId, matName = (matDef ~= nil and matDef.name) or rr.materialItemId,
 							have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, rr.materialItemId) or 0, bundle = rr.bundleSize, icon = icon })
 					end
 				end
 			end
-			table.sort(list, function(a, b) if a.tier ~= b.tier then return a.tier < b.tier end return a.id < b.id end)
-			-- 카드가 5장(Card_0~4)뿐이라 5종을 넘으면 높은 티어부터 5종만 싣는다 (Codex 리뷰 2026-09-23).
-			if #list > 5 then
-				table.sort(list, function(a, b) if a.tier ~= b.tier then return a.tier > b.tier end return a.level > b.level end)
-				local top = {}
-				for i = 1, 5 do table.insert(top, list[i]) end
-				list = top
-				table.sort(list, function(a, b) if a.tier ~= b.tier then return a.tier < b.tier end return a.id < b.id end)
-			end
+			-- 해금한 종 전부를 정렬해 싣는다: 티어 낮은 순 → 지역 레벨 낮은 순 → id. 한 번에 보이는 건 5장(Card_0~4)이라 쪽 나누기는 클라(VillageLifeUIController)가 한다
+			-- (예전엔 5종을 넘으면 높은 티어 5종만 싣고 나머지는 못 골랐다 · 2차 패치로 해금 가능 종이 34개가 돼 ◀ ▶ 쪽 넘김으로 바꿨다 · 2026-10-13).
+			table.sort(list, function(a, b)
+				if a.tier ~= b.tier then return a.tier < b.tier end
+				if a.level ~= b.level then return a.level < b.level end
+				return a.id < b.id
+			end)
 			for _, r in ipairs(list) do
 				add({ "U", tostring(r.id), r.name, tostring(r.level), tostring(r.cost), tostring(self:MonLevel(v, r.id)), string.format("%.1f", self:MonMul(v, r.id)), r.icon, r.matId, r.matName, tostring(r.have), tostring(r.bundle) })
 			end
@@ -1209,14 +1250,23 @@ script LaneStateService extends Logic
 					local id = math.floor(tonumber(mi:GetCell(i, "Id")) or 0)
 					local lv = (id > 0) and self:MonLevel(v, id) or 0
 					if lv >= 1 then
-						table.insert(list, { id = id, name = mi:GetCell(i, "Name") or tostring(id), level = tonumber(mi:GetCell(i, "Level")) or 1, lv = lv, icon = tostring(mi:GetCell(i, "IconRUID") or "") })
+						-- 정렬 키 = 모집 창과 같다: 티어(모집 행이 없는 종은 1티어 · TrainCostOf 와 같은 규칙) → 지역 레벨 → id. 쪽 넘김은 클라(VillageLifeUIController)가 8줄씩 나눈다(2026-10-13).
+						local rr = self:RecruitRow(id)
+						local tier = (rr ~= nil) and math.max(1, math.floor(rr.tier or 1)) or 1
+						local regionLv = (_DefenderService ~= nil) and _DefenderService:RegionLevelOf(v.id, id) or 0
+						if regionLv <= 0 then regionLv = tonumber(mi:GetCell(i, "Level")) or 1 end
+						table.insert(list, { id = id, name = mi:GetCell(i, "Name") or tostring(id), level = regionLv, tier = tier, lv = lv, icon = tostring(mi:GetCell(i, "IconRUID") or "") })
 					end
 				end
-				table.sort(list, function(a, b) if a.level ~= b.level then return a.level < b.level end return a.id < b.id end)
+				table.sort(list, function(a, b)
+					if a.tier ~= b.tier then return a.tier < b.tier end
+					if a.level ~= b.level then return a.level < b.level end
+					return a.id < b.id
+				end)
 				for _, r in ipairs(list) do
 					local cur = self:TrainRow("MELEE", r.lv)
 					local nxt = (r.lv < 5) and self:TrainRow("MELEE", r.lv + 1) or cur
-					add({ "TR", tostring(r.id), r.name, tostring(r.lv), string.format("%.1f", cur.mul), tostring((r.lv < 5) and self:CrewCost(userId, "MONSTER_TRAIN", nxt.cost) or 0), string.format("%.1f", nxt.mul), "5", r.icon })
+					add({ "TR", tostring(r.id), r.name, tostring(r.lv), string.format("%.1f", cur.mul), tostring((r.lv < 5) and self:CrewCost(userId, "MONSTER_TRAIN", self:TrainCostOf(r.id, r.lv + 1)) or 0), string.format("%.1f", nxt.mul), "5", r.icon })
 				end
 			end
 			local have = (_InventoryService ~= nil) and _InventoryService:CountItem(userId, "DREAM_PIECE") or 0
@@ -1304,7 +1354,10 @@ script LaneStateService extends Logic
 				for i = 1, mi:GetRowCount() do
 					local id = tostring(mi:GetCell(i, "Id") or "")
 					if id ~= "" and spawnSet[id] then
-						rowsById[id] = { id = id, name = mi:GetCell(i, "Name") or id, level = tonumber(mi:GetCell(i, "Level")) or 1, icon = tostring(mi:GetCell(i, "IconRUID") or "") }
+						-- 레벨 = 지역 레벨(1.0.4-3-03): 이 마을 사냥터에서 그 종의 레벨(마을이 없거나 이 마을에 없으면 전 마을 사냥터 최저 · 어디에도 없으면 MonsterInfo.Level). 정렬도 이 값.
+						local regionLv = (_DefenderService ~= nil) and _DefenderService:RegionLevelOf((v ~= nil) and v.id or "", math.floor(tonumber(id) or 0)) or 0
+						if regionLv <= 0 then regionLv = tonumber(mi:GetCell(i, "Level")) or 1 end
+						rowsById[id] = { id = id, name = mi:GetCell(i, "Name") or id, level = regionLv, icon = tostring(mi:GetCell(i, "IconRUID") or "") }
 					end
 				end
 				local list = {}
@@ -1317,7 +1370,7 @@ script LaneStateService extends Logic
 					local nextMul = mul
 					if monLv >= 1 and monLv < 5 then
 						local nr = self:TrainRow("MELEE", monLv + 1)
-						nextCost = nr.cost
+						nextCost = self:TrainCostOf(math.floor(tonumber(r.id) or 0), monLv + 1)   -- 티어 배율 포함(1.0.4-4-01)
 						nextMul = nr.mul
 					end
 					-- 뒤 4칸 = 이 몬스터 해금 재료(itemId · 이름 · 보유 · 필요) — 몹마다 다르다(WO-046 · 2026-10-05).
@@ -1342,6 +1395,52 @@ script LaneStateService extends Logic
 		return table.concat(rows, ";")
 	end
 
+	@ExecSpace("ServerOnly")
+	method integer CooldownLeft(any readyAt, number now)
+		-- 쿨타임 남은 초(올림 · 1.0.5-6-01). readyAt = 서버 _UtilLogic.ElapsedSeconds 기준 준비 시각(없으면 쿨타임 없음).
+		local at = tonumber(readyAt)
+		if at == nil or at <= now then return 0 end
+		return math.max(1, math.ceil(at - now))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string DurationWords(integer seconds)
+		-- 토스트용 시간 말: 75 → "1분 15초" · 300 → "5분" · 42 → "42초".
+		local s = math.max(0, math.floor(seconds))
+		local m = math.floor(s / 60)
+		local r = s - m * 60
+		if m <= 0 then return tostring(r) .. "초" end
+		if r == 0 then return tostring(m) .. "분" end
+		return tostring(m) .. "분 " .. tostring(r) .. "초"
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AliveMinionsInLane(string villageId)
+		-- 그 마을 레인 3맵(LANE2 · LANE1 · VILLAGE · 같은 맵이면 한 번)에 살아 있는 미니언 수(1.0.5-6-01). 이름 접두사가 아니라 MinionUnit 컴포넌트로 센다 —
+		--   웨이브 미니언 · 파병 유닛(D/J 접두) · 좀비머쉬맘이 전부 들어간다(MinionFlowService.DespawnVillage 가 도는 세 맵과 같다). 시설 재건 가능 여부에만 쓴다.
+		if _LaneFacilityService == nil then return 0 end
+		local n = 0
+		local done = {}
+		for _, role in ipairs({ "LANE2", "LANE1", "VILLAGE" }) do
+			local row = _LaneFacilityService:LaneRow(villageId, role)
+			local mapName = (row ~= nil) and row.mapName or ""
+			if mapName ~= "" and not done[mapName] then
+				done[mapName] = true
+				local map = _EntityService:GetEntityByPath("/maps/" .. mapName)
+				if isvalid(map) then
+					for _, child in pairs(map.Children) do
+						if isvalid(child) and child.MinionUnit ~= nil then
+							---@type Monster
+							local mon = child.Monster
+							if isvalid(mon) and not mon.IsDead then n = n + 1 end
+						end
+					end
+				end
+			end
+		end
+		return n
+	end
+
 	-- ── 행동 (전부 서버 권한 · 실패는 토스트만) ──────────────────
 
 	@ExecSpace("Server")
@@ -1363,10 +1462,33 @@ script LaneStateService extends Logic
 		elseif action == "repair" then
 			cost = math.ceil((max - t.hp) * d.repairPerHp)
 			if not t.alive or t.hp >= max then self:Toast(uid, "수리할 곳이 없습니다") return end
+			-- 수리 쿨타임(1.0.5-6-01): 거절은 주화를 빼기 전에 — 재화는 빠지지 않는다.
+			local left = self:CooldownLeft(t.repairReadyAt, _UtilLogic.ElapsedSeconds)
+			if left > 0 then
+				self:Toast(uid, "수리는 " .. self:DurationWords(left) .. " 뒤에 할 수 있어요")
+				log("[Lane] " .. v.id .. " repair " .. stage .. " denied cooldown=" .. tostring(left) .. "s (" .. uid .. ")")
+				self:Push(uid, "defense")
+				return
+			end
 		elseif action == "rebuild" then
 			cost = d.rebuild
 			if t.alive or cost <= 0 then self:Toast(uid, "재건할 수 없습니다") return end
 			if stage == "TOWER" and not v.towers.SUPPRESSOR.alive then self:Toast(uid, "억제기가 파괴된 동안은 포탑을 재건할 수 없습니다") return end
+			-- 재건 쿨타임 · 레인 미니언(1.0.5-6-01): 둘 다 주화를 빼기 전에 거절한다.
+			local left = self:CooldownLeft(t.rebuildReadyAt, _UtilLogic.ElapsedSeconds)
+			if left > 0 then
+				self:Toast(uid, "재건은 " .. self:DurationWords(left) .. " 뒤에 할 수 있어요")
+				log("[Lane] " .. v.id .. " rebuild " .. stage .. " denied cooldown=" .. tostring(left) .. "s (" .. uid .. ")")
+				self:Push(uid, "defense")
+				return
+			end
+			local alive = self:AliveMinionsInLane(v.id)
+			if alive > 0 then
+				self:Toast(uid, "레인에 미니언이 남아 있어 재건할 수 없어요")
+				log("[Lane] " .. v.id .. " rebuild " .. stage .. " denied minions=" .. tostring(alive) .. " (" .. uid .. ")")
+				self:Push(uid, "defense")
+				return
+			end
 		else
 			return
 		end
@@ -1380,10 +1502,12 @@ script LaneStateService extends Logic
 			msg = d.name .. " Lv" .. tostring(t.lv) .. " 강화"
 		elseif action == "repair" then
 			t.hp = max
+			t.repairReadyAt = _UtilLogic.ElapsedSeconds + self.RepairCooldownSec   -- 1.0.5-6-01: 이 시설의 다음 수리까지
 			msg = d.name .. " 수리 완료"
 		else
 			t.alive = true
 			t.hp = max
+			t.rebuildReadyAt = _UtilLogic.ElapsedSeconds + self.RebuildCooldownSec   -- 1.0.5-6-01: 이 시설의 다음 재건까지
 			msg = d.name .. " 재건 완료"
 		end
 		log("[Lane] " .. v.id .. " " .. action .. " " .. stage .. " coin-" .. tostring(cost) .. " (" .. uid .. ")")
@@ -1480,7 +1604,7 @@ script LaneStateService extends Logic
 		local lv = self:MonLevel(v, monsterId)
 		if monsterId <= 0 or lv < 1 then self:Toast(uid, "먼저 해금하세요") self:Push(uid, "collection") return end
 		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") self:Push(uid, "collection") return end
-		local cost = self:TrainRow("MELEE", lv + 1).cost
+		local cost = self:TrainCostOf(monsterId, lv + 1)   -- 티어 배율 포함(1.0.4-4-01) · 도감 레벨업 경로는 할인 없음 그대로
 		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < cost then
 			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(cost) .. ")")
 			self:Push(uid, "collection")
@@ -1525,7 +1649,7 @@ script LaneStateService extends Logic
 		if monsterId <= 0 or lv < 1 then self:Toast(uid, "도감 관리인에서 먼저 해금하세요") self:Push(uid, "train") return end
 		if lv >= 5 then self:Toast(uid, "이미 최대 레벨입니다") self:Push(uid, "train") return end
 		local nxt = self:TrainRow("MELEE", lv + 1)
-		local cost = self:CrewCost(uid, "MONSTER_TRAIN", nxt.cost)
+		local cost = self:CrewCost(uid, "MONSTER_TRAIN", self:TrainCostOf(monsterId, lv + 1))   -- 티어 배율 뒤에 직업 할인(1.0.4-4-01)
 		if _InventoryService == nil or _InventoryService:CountItem(uid, "DREAM_PIECE") < cost then
 			self:Toast(uid, "꿈의 조각이 부족합니다 (" .. tostring(cost) .. " 필요 · 보유 " .. tostring(_InventoryService and _InventoryService:CountItem(uid, "DREAM_PIECE") or 0) .. ")")
 			self:Push(uid, "train")

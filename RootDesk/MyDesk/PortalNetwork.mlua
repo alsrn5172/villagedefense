@@ -37,7 +37,11 @@ script PortalNetwork extends Logic
 	@HideFromInspector
 	property any bossConfirm = nil
 
-	property number PortalLockSeconds = 0.5
+	-- 포탈 도착 직후 재이동 잠금(초 · 1.0.5-10-01: 0.5 → 2.5). 클라 ↑키 · 서버 판정 입장 · 도착 포탈 복구 세 곳이 ArrivalLockSeconds() 로 이 값을 쓴다. 같은 맵 안 이동(노틸러스호 · 1.0.3-M3-03)도 같다.
+	property number PortalLockSeconds = 2.5
+
+	-- 튜토리얼 룸은 2.5초 잠금을 면제하고 예전 값을 쓴다(1.0.5-10-01 미결 ③ · 튜토리얼 6-3m → 6-3b 는 도착하자마자 ↑ 를 누른다). 0 이면 잠금 자체가 없다.
+	property number TutorialPortalLockSeconds = 0.5
 
 	@HideFromInspector
 	property number arrivedAt = 0
@@ -146,9 +150,9 @@ script PortalNetwork extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void TryMoveByUpArrow()
-		-- 도착 직후 0.5초는 되돌아가는 포탈 이동을 막는다.
+		-- 도착 직후 ArrivalLockSeconds()(2.5초 · 튜토리얼은 0.5초)는 되돌아가는 포탈 이동을 막는다.
 		local now = _UtilLogic.ElapsedSeconds
-		if self.arrivedAt > 0 and now - self.arrivedAt < self.PortalLockSeconds then
+		if self.arrivedAt > 0 and now - self.arrivedAt < self:ArrivalLockSeconds() then
 			log("[PortalNetwork] locked (arrived " .. string.format("%.1f", now - self.arrivedAt) .. "s ago)")
 			return
 		end
@@ -226,7 +230,7 @@ script PortalNetwork extends Logic
 			end
 			log("[PortalNetwork] up " .. mapName .. "/" .. closestPortal .. " -> " .. closestToMap .. "/" .. closestToPortal)
 			if closestToMap == mapName then
-				-- 같은 맵 안 이동(노틸러스호 하단 → 상단 · 패치 1.0.3-M3-03): 로딩 그림 없음. 맵이 안 바뀌어 OnLocalMapChanged 가 안 불리므로 재이동 잠금(0.5초)을 여기서 건다.
+				-- 같은 맵 안 이동(노틸러스호 하단 → 상단 · 패치 1.0.3-M3-03): 로딩 그림 없음. 맵이 안 바뀌어 OnLocalMapChanged 가 안 불리므로 재이동 잠금(ArrivalLockSeconds)을 여기서 건다.
 				self.arrivedAt = now
 			else
 				if _LoadingScreenController ~= nil then _LoadingScreenController:Show(closestToMap) end
@@ -407,7 +411,7 @@ script PortalNetwork extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean IsServerArrivalLocked(string userId, string mapName)
-		-- 서버 도착 시각으로 서버 판정 입장의 0.5초 재진입을 막는다.
+		-- 서버 도착 시각으로 서버 판정 입장의 재진입(ArrivalLockSeconds)을 막는다.
 		if self.serverArrivalMaps == nil then self.serverArrivalMaps = {} end
 		if self.serverArrivalTimes == nil then self.serverArrivalTimes = {} end
 		if mapName == nil or mapName == "" then return false end
@@ -422,7 +426,13 @@ script PortalNetwork extends Logic
 			return true
 		end
 		local arrived = self.serverArrivalTimes[userId] or -1000
-		return self.serverClock - arrived < self.PortalLockSeconds
+		return self.serverClock - arrived < self:ArrivalLockSeconds()
+	end
+
+	method number ArrivalLockSeconds()
+		-- 도착 직후 포탈 잠금 초(1.0.5-10-01): 평소 PortalLockSeconds(2.5) · 튜토리얼 룸은 TutorialPortalLockSeconds(0.5). 튜토리얼 여부는 TutorialService.Active(@Sync · 서버 · 클라 공용).
+		if _TutorialService ~= nil and _TutorialService.Active == true then return self.TutorialPortalLockSeconds end
+		return self.PortalLockSeconds
 	end
 
 	@ExecSpace("ServerOnly")
@@ -462,7 +472,7 @@ script PortalNetwork extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnLocalMapChanged(string mapName)
-		-- 로컬 플레이어 도착 시각을 기록하고 엔진 포탈을 0.5초 동안 막는다.
+		-- 로컬 플레이어 도착 시각을 기록하고 엔진 포탈을 ArrivalLockSeconds() 동안 막는다.
 		if mapName == self.arrivalMapName and self.arrivedAt > 0 then return end
 		self.arrivalMapName = mapName
 		self.arrivedAt = _UtilLogic.ElapsedSeconds
@@ -698,7 +708,7 @@ script PortalNetwork extends Logic
 	@ExecSpace("ClientOnly")
 	method void UpdateClientPortalLayer(number delta)
 		-- 맵이 바뀐 프레임에만 1회 칠한다. @Logic 은 OnMapEnter 를 못 받으므로 CurrentMap 을 폴링한다.
-		if self.arrivedAt > 0 and _UtilLogic.ElapsedSeconds - self.arrivedAt >= self.PortalLockSeconds then self:RestoreArrivalPortals() end
+		if self.arrivedAt > 0 and _UtilLogic.ElapsedSeconds - self.arrivedAt >= self:ArrivalLockSeconds() then self:RestoreArrivalPortals() end
 		self.layerPollElapsed = self.layerPollElapsed + delta
 		if self.layerPollElapsed < 0.3 then
 			return
