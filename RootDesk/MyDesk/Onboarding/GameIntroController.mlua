@@ -125,6 +125,31 @@ script GameIntroController extends Logic
 	@HideFromInspector
 	property boolean guideOffView = false
 
+	-- 소개 쪽 마을 문장 5개(Illu/Town1~5 · 지금 6쪽): 마우스를 올리면(모바일은 누르면) 그 마을의 시설 안내창(TutorialInfoUI 마을 시설 창)을 띄운다(사용자 2026-10-13).
+	--   문장 순서 = Docs/tools/design-ui/apply-intro-coach.cjs p5 TOWNS(헤네시스 · 커닝시티 · 엘리니아 · 노틸러스 · 페리온).
+	property string EmblemVillages = "HENESYS,KERNING,ELLINIA,NAUTILUS,PERION"
+
+	-- 문장 위에 이만큼(초) 머물러야 띄운다(지나가며 스치는 것은 무시).
+	property number EmblemHoverDelay = 0.25
+
+	@HideFromInspector
+	property any emblems = nil
+
+	@HideFromInspector
+	property integer emblemPage = 0
+
+	@HideFromInspector
+	property integer hoverIdx = 0
+
+	@HideFromInspector
+	property number hoverT = 0
+
+	@HideFromInspector
+	property boolean hoverFired = false
+
+	@HideFromInspector
+	property any touchHandler = nil
+
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 버튼 · 탭 · 목록 · 키 연결, 닫힌 채로 시작.
@@ -155,6 +180,8 @@ script GameIntroController extends Logic
 			end
 		end
 		self.keyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		self.touchHandler = _InputService:ConnectEvent(ScreenTouchEvent, self.OnScreenTouch)
+		self:FindEmblems()
 		if isvalid(self.root) then
 			self.root.Enable = false
 		end
@@ -205,6 +232,135 @@ script GameIntroController extends Logic
 				self:Close("dead")
 			end
 		end
+		self:UpdateEmblemHover(delta)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FindEmblems()
+		-- 마을 문장이 있는 소개 쪽(Illu/Town1 이 있는 쪽)을 찾아 문장 · 이름 칸과 마을 id 를 기억한다.
+		self.emblems = {}
+		self.emblemPage = 0
+		if not isvalid(self.pagesRoot) then
+			return
+		end
+		local ids = {}
+		for s in string.gmatch(self.EmblemVillages, "[^,]+") do
+			table.insert(ids, s)
+		end
+		for i = 1, self.pageCount do
+			local p = self.pagesRoot:GetChildByName("P" .. tostring(i))
+			local illu = nil
+			if isvalid(p) then
+				illu = p:GetChildByName("Illu")
+			end
+			if isvalid(illu) and isvalid(illu:GetChildByName("Town1")) then
+				self.emblemPage = i
+				for k = 1, #ids do
+					local e = illu:GetChildByName("Town" .. tostring(k))
+					if isvalid(e) then
+						table.insert(self.emblems, { e = e, name = illu:GetChildByName("TownName" .. tostring(k)), village = ids[k] })
+					end
+				end
+				break
+			end
+		end
+		log("[Intro] town emblems page=" .. tostring(self.emblemPage) .. " n=" .. tostring(#self.emblems))
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean InRect(Entity e, Vector2 screenPoint)
+		-- 화면 좌표가 그 UI 사각형 안인가(피벗 기준 로컬 좌표로 바꿔 크기와 비교).
+		if not isvalid(e) or e.UITransformComponent == nil then
+			return false
+		end
+		local t = e.UITransformComponent
+		local lp = _UILogic:ScreenToLocalUIPosition(screenPoint, t)
+		if lp == nil then
+			return false
+		end
+		local w = t.RectSize.x
+		local h = t.RectSize.y
+		return lp.x >= -t.Pivot.x * w and lp.x <= (1 - t.Pivot.x) * w and lp.y >= -t.Pivot.y * h and lp.y <= (1 - t.Pivot.y) * h
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer HitEmblem(Vector2 screenPoint)
+		-- 화면 좌표 아래의 마을 문장 번호(문장 그림 또는 아래 이름 칸 · 없으면 0).
+		if self.emblems == nil then
+			return 0
+		end
+		for i, m in ipairs(self.emblems) do
+			if self:InRect(m.e, screenPoint) or self:InRect(m.name, screenPoint) then
+				return i
+			end
+		end
+		return 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean EmblemPageActive()
+		-- 도움말이 마을 문장 쪽을 보여 주고 있고, 마을 시설 창은 아직 안 떠 있나.
+		if not self.isOpen or self.tab ~= "intro" or self.emblemPage == 0 or self.page ~= self.emblemPage then
+			return false
+		end
+		return not (_TutorialInfoUI ~= nil and _TutorialInfoUI.isOpen)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateEmblemHover(number delta)
+		-- 마우스가 같은 문장 위에 EmblemHoverDelay 동안 머물면 한 번 띄운다. 창을 닫은 뒤 같은 문장 위에 그대로 있으면 다시 띄우지 않는다(벗어났다 와야 한다).
+		if not self.isOpen or self.tab ~= "intro" or self.page ~= self.emblemPage or self.emblemPage == 0 then
+			self.hoverIdx = 0
+			self.hoverFired = false
+			return
+		end
+		if _TutorialInfoUI ~= nil and _TutorialInfoUI.isOpen then
+			return
+		end
+		local cur = _InputService:GetCursorPosition()
+		local idx = 0
+		if cur ~= nil then
+			idx = self:HitEmblem(cur)
+		end
+		if idx ~= self.hoverIdx then
+			self.hoverIdx = idx
+			self.hoverT = 0
+			self.hoverFired = false
+			return
+		end
+		if idx == 0 or self.hoverFired then
+			return
+		end
+		self.hoverT = self.hoverT + delta
+		if self.hoverT >= self.EmblemHoverDelay then
+			self.hoverFired = true
+			self:OpenTownInfo(idx, "hover")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnScreenTouch(ScreenTouchEvent event)
+		-- 누르기(모바일 · PC 클릭): 문장을 누르면 바로 띄운다.
+		if not self:EmblemPageActive() then
+			return
+		end
+		local idx = self:HitEmblem(event.TouchPoint)
+		if idx > 0 then
+			self.hoverIdx = idx
+			self.hoverFired = true
+			self:OpenTownInfo(idx, "touch")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenTownInfo(integer idx, string why)
+		-- 그 마을의 시설 안내창(포탑 · 억제기 · 넥서스)을 도움말 위에 띄운다.
+		local m = self.emblems[idx]
+		if m == nil or _TutorialInfoUI == nil then
+			return
+		end
+		_TutorialInfoUI:OpenTown(m.village)
+		log("[Intro] town info " .. m.village .. " (" .. why .. ")")
 	end
 
 	@ExecSpace("ClientOnly")
@@ -697,6 +853,10 @@ script GameIntroController extends Logic
 			end
 		end
 		self.handlers = {}
+		if self.touchHandler ~= nil then
+			_InputService:DisconnectEvent(ScreenTouchEvent, self.touchHandler)
+			self.touchHandler = nil
+		end
 		if self.keyHandler ~= nil then
 			_InputService:DisconnectEvent(KeyDownEvent, self.keyHandler)
 			self.keyHandler = nil

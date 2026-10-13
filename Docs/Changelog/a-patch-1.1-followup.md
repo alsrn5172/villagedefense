@@ -15,6 +15,9 @@
   - `VillageNpcUIController.OfferWorldClick` · `ResolveWorldClick`: 같은 클릭의 후보를 0.05초(`WorldClickWindow`) 모았다가 누른 자리에 클릭 영역 가운데(위치 + `TouchReceiveComponent.Offset`)가 가장 가까운 하나만 실행. 로그 `[WorldClick] N candidates -> 이름`.
 - **도움말 1쪽(튜토리얼 시작)에 [다음] 없음**: 예전 WO-051 은 큰 버튼 두 개가 다음 행동이라 [다음] 을 껐는데, 매치 · 튜토리얼 안에서 연 도움말 1쪽에서 넘어갈 길이 흐린 [이전] 뿐이었다(사용자) → 1쪽에도 [다음] 을 켠다(`GameIntroController.RefreshButtons`).
 
+- **도움말 마을 문장 → 마을 시설 창**(사용자 "6쪽 마을 문장에 마우스를 올리면 그 마을의 포탑 · 억제기 · 넥서스 설명창"): `GameIntroController` 가 소개 쪽 `Illu/Town1~5`(지금 6쪽)를 찾아, 커서가 문장(또는 아래 이름 칸) 위에 0.25초(`EmblemHoverDelay`) 머물면 · 누르면(`ScreenTouchEvent` · 모바일) `TutorialInfoUI.OpenTown(마을)` 로 튜토리얼 마을 시설 창을 그 마을 탭 · [확인] 버튼으로 도움말 위에 띄운다(그룹 형제 순서를 도움말 바로 위로). 닫은 뒤 같은 문장 위에 그대로 있으면 다시 안 뜬다(벗어났다 와야). 문장 · 이름 칸 판정 = `_UILogic:ScreenToLocalUIPosition` + 크기 · 피벗(UI 파일은 안 고침).
+  - ESC: 그 창이 떠 있으면 `UIEscStack` 이 도움말까지 같이 닫지 않는다(창이 스스로 ESC 로 닫힘).
+
 ## 확인
 
 - mLua LSP: 고친 `.mlua` 7개 오류 0.
