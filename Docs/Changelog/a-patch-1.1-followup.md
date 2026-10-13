@@ -32,7 +32,7 @@
 - **아이템 줍기 "띠링" · 포탈 "후우웅" 소리**(사용자 "아이템 습득 소리가 없다" · "포탈 탔을 때도 소리가 없다"): `StatusHUDController.PlayPickupSound` · `PlayPortalSound`(Client · 미리 불러 둠).
   - 줍기 = `ItemDrop.TryGive`(실제로 들어갔을 때) · `MesoCoin` 줍기 · 간격 `PickupSoundGap` 0.08초. 포탈 = 일반 포탈 · 리스항구 · 보스 입장 · 발록 방 입장.
   - 포탈 소리 RUID 는 후보(사용자가 듣고 고름).
-- **물약 먹는 소리**(사용자 "f399837e… 는 물약 먹을 때 나는 소리로"): `StatusHUDController.PlayPotionSound` · `InventoryService.UseInstance` 가 소모에 성공하면 그 사람에게(Play: 빨간 포션 → `[Status] potion sound`). 줍기 소리는 새 후보를 듣고 고르기 전까지 같은 소리 그대로.
+- **물약 먹는 소리**(사용자 "f399837e… 는 물약 먹을 때 나는 소리로"): `StatusHUDController.PlayPotionSound` · `InventoryService.UseInstance` 가 소모에 성공하면 그 사람에게(Play: 빨간 포션 → `[Status] potion sound`). 줍기 소리는 사용자 지정 `205510b3…`(1.12초 밝은 알림음)로 바꿨다.
 - **더블 점프**(사용자 "위로 힘 50% 더 · 윗점프는 다른 방향 속도를 줄이지 말고 순수하게 위로"): 옆 더블 점프 위 힘 3.0 → 4.5(`DoubleJumpLift`).
   - 윗점프는 가로 속도를 그대로 둔다(`UpJumpKeepMomentum` · `UpJumpKeepScale` 28 = Play 실측: `RealMoveVelocity` 가 프레임당 값이라 1.0 이면 가로가 1.81 → 0.19 로 죽었다 · 28 에서 1.79 → 1.73).
 - **아래 점프**(사용자 "아래 키 꾹 누르는데 씹힘 · 아래 점프 뒤 위 계단에 올라탐 · 0.2초 발판 무시"): `SkillMovement`.
