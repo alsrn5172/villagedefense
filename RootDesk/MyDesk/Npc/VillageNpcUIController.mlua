@@ -25,6 +25,14 @@ script VillageNpcUIController extends Logic
 	@HideFromInspector
 	property string LastDeniedReason = ""
 
+	-- 월드 클릭 한 번 = 물체 하나(사용자 2026-10-13 "차원의 거울을 누르면 전사 전직관도 같이 눌린다 · 한 번에 하나만").
+	--   겹친 NPC · 넥서스는 같은 클릭으로 TouchEvent 를 각각 받는다(TouchReceiveComponent.RelayEventToBehind 기본 true).
+	--   그 클릭으로 들어온 후보를 잠깐(WorldClickWindow) 모았다가 누른 자리에 클릭 영역 가운데가 가장 가까운 하나만 실행한다.
+	property number WorldClickWindow = 0.05
+
+	@HideFromInspector
+	property any clickOffers = nil
+
 	@ExecSpace("ClientOnly")
 	method void ReceiveNpcOpen(string instanceKey, string catalogNpcId)
 		local row = nil
@@ -93,6 +101,60 @@ script VillageNpcUIController extends Logic
 		if _VillageDefenseUIController ~= nil and _VillageDefenseUIController.isOpen then return true end
 		if _CommonNpcUIController ~= nil and _CommonNpcUIController.isOpen then return true end
 		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsWorldClickBlocked(integer touchId)
+		-- 월드 클릭(NPC · 넥서스)을 무시할 때: 누른 자리가 UI 위(RaycastTarget 켜진 UI)거나 마을 · 캐릭터 창이 열려 있을 때.
+		--   사용자 2026-10-13 "UI 클릭 시 뒤 NPC 같은 상호작용은 애초에 무시" — 튜토리얼 안내창을 눌렀는데 뒤의 차원의 거울이 눌렸다.
+		if _InputService:IsPointerOverUI(touchId) or _InputService:IsPointerOverUI() then
+			log("[WorldClick] blocked: pointer over UI (touch " .. tostring(touchId) .. ")")
+			return true
+		end
+		return self:IsAnyOpen()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OfferWorldClick(Entity target, Vector2 screenPoint, any onPick)
+		-- 같은 클릭으로 눌린 월드 물체 후보 하나를 낸다. 첫 후보가 들어오면 WorldClickWindow 뒤에 ResolveWorldClick 이 하나만 고른다.
+		if not isvalid(target) or onPick == nil then
+			return
+		end
+		local wp = _UILogic:ScreenToWorldPosition(screenPoint)
+		local pos = target.TransformComponent.WorldPosition
+		local cx = pos.x
+		local cy = pos.y
+		local tr = target.TouchReceiveComponent
+		if tr ~= nil then
+			cx = cx + tr.Offset.x
+			cy = cy + tr.Offset.y
+		end
+		local d = (cx - wp.x) * (cx - wp.x) + (cy - wp.y) * (cy - wp.y)
+		if self.clickOffers == nil then
+			self.clickOffers = {}
+			_TimerService:SetTimerOnce(function() self:ResolveWorldClick() end, self.WorldClickWindow)
+		end
+		table.insert(self.clickOffers, { d = d, fn = onPick, name = target.Name })
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResolveWorldClick()
+		-- 모인 후보 중 누른 자리에 가장 가까운 하나만 실행한다.
+		local offers = self.clickOffers
+		self.clickOffers = nil
+		if offers == nil or #offers == 0 then
+			return
+		end
+		local best = offers[1]
+		for i = 2, #offers do
+			if offers[i].d < best.d then
+				best = offers[i]
+			end
+		end
+		if #offers > 1 then
+			log("[WorldClick] " .. tostring(#offers) .. " candidates -> " .. tostring(best.name))
+		end
+		best.fn()
 	end
 
 	@ExecSpace("ClientOnly")
