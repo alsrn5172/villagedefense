@@ -28,6 +28,12 @@ script UIToast extends Logic
 	@HideFromInspector
 	property Vector2 panelSize = Vector2(720, 53)
 
+	-- ★1 길안내 바(GuideUIController · 화면 위쪽)가 떠 있으면 토스트를 바(와 펼친 체크 목록) 아래로 이만큼 띄워 내린다(사용자 2026-10-14 "알림창이 길안내를 가린다").
+	property number GuideGap = 8
+
+	@HideFromInspector
+	property number targetY = 0
+
 	@ExecSpace("Client")
 	method void ShowMessage(string message)
 		if self.inited == false then
@@ -35,7 +41,49 @@ script UIToast extends Logic
 			self.offset = -self.message.Entity.UITransformComponent.anchoredPosition.y
 		end
 		self:Layout(message)
+		self.targetY = self:PlaceBelowGuide(-self.offset)
 		self:StartTween()
+	end
+
+	@ExecSpace("ClientOnly")
+	method number PlaceBelowGuide(number baseY)
+		-- 토스트 최종 y(anchoredPosition). 길안내 바가 보이고 토스트 위 끝이 바 아래 끝보다 위면 그 아래로 내린다. 안 보이면 baseY 그대로.
+		local g = _GuideUIController
+		if g == nil or g.visible ~= true or not isvalid(g.bar) or not g.bar.Enable then
+			return baseY
+		end
+		local t = self.message.Entity.UITransformComponent
+		local parent = self.message.Entity.Parent
+		if t == nil or not isvalid(parent) or parent.UITransformComponent == nil then
+			return baseY
+		end
+		local pt = parent.UITransformComponent
+		local low = nil
+		local targets = { g.bar }
+		if g.checksOpen and isvalid(g.checkPanel) and g.checkPanel.Enable then
+			table.insert(targets, g.checkPanel)
+		end
+		for _, e in ipairs(targets) do
+			if isvalid(e) and e.UITransformComponent ~= nil then
+				for _, c in ipairs(e.UITransformComponent:GetWorldCorners()) do
+					local lp = pt:ToLocalPoint(Vector3(c.x, c.y, 0))
+					if low == nil or lp.y < low then low = lp.y end
+				end
+			end
+		end
+		if low == nil then
+			return baseY
+		end
+		-- anchoredPosition 과 부모 로컬 좌표의 차이(앵커 자리 때문 · 지금 값으로 잰다).
+		local nowLocal = pt:ToLocalPoint(t.WorldPosition)
+		local d = nowLocal.y - t.anchoredPosition.y
+		local up = (1 - t.Pivot.y) * self.panelSize.y
+		if baseY + d + up <= low - self.GuideGap then
+			return baseY
+		end
+		local y = low - self.GuideGap - up - d
+		log("[Toast] below guide bar y " .. string.format("%.0f", baseY) .. " -> " .. string.format("%.0f", y))
+		return y
 	end
 
 	method void Layout(string text)
@@ -112,7 +160,7 @@ script UIToast extends Logic
 			
 			canvasGroup.GroupAlpha = alpha
 			local tweenValue = _TweenLogic:Ease(0,1,1,EaseType.SineEaseIn,alpha)
-			transform.anchoredPosition = Vector2(0,-self.offset * tweenValue)
+			transform.anchoredPosition = Vector2(0, self.targetY * tweenValue)
 			-- anchoredPosition 을 쓰면 판 크기가 옛 값(100x80)으로 되돌아가는 일이 있어(개인 월드 실측) 크기를 매번 다시 준다.
 			transform.RectSize = self.panelSize
 		end

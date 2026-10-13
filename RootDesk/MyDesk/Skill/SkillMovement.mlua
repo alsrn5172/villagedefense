@@ -51,13 +51,57 @@ script SkillMovement extends Logic
     --   SetForce 는 TryDoubleJump 에서 분기 뒤 한 번만 부른다 = 한 번의 점프 입력에 두 동작이 겹치지 않는다. ↑ 판정은 TryDoubleJump 안에서 한 번만(SkillHotbar 입구 둘이 따로 읽지 않는다).
     --   위 힘 실측(2026-10-12 · 로비 · 정점에서 눌러 더 오르는 높이): 1.4 → +0.05 · 3.0 → +0.2 · 4.0 → +0.39 · 5.0 → +0.61 · 6.0 → +0.90 · 7.0 → +1.23 · 8.0 → +1.60 (일반 점프 정점 +0.97).
     --   사용자 결정(2026-10-13): 옆 더블 점프 = 살짝 위로(3.0 · +0.2) · 윗방향 점프 = 일반 점프의 3배 높이(+2.9 → 실측 곡선 외삽 10.9 · Play 로 확정).
+    --   사용자 2026-10-14: 옆 더블 점프 위 힘 +50%(3.0 → 4.5 · 실측 식 더 오름 = fy² ÷ 40 → +0.51) · 윗방향 점프는 옆으로 가던 속도를 지우지 않는다(UpJumpKeepMomentum).
     property number DoubleJumpForceScale = 2.0
 
-    property number DoubleJumpLift = 3.0
+    property number DoubleJumpLift = 4.5
 
     property number UpJumpLift = 10.9
 
     property number UpJumpForwardMul = 0
+
+    -- 윗방향 점프 때 가로 속도를 그대로 둔다(사용자 2026-10-14 "다른 방향 벡터를 감소시키지 않고 순수하게 위로"). 세로만 UpJumpLift 로 바꾼다(높이는 예전과 같다 · 누른 시점과 무관).
+    --   가로 = 직전 이동 속도(RealMoveVelocity.x × UpJumpKeepScale). false 면 예전처럼 가로 0(+ 좌우를 눌렀을 때만 앞 힘 × UpJumpForwardMul).
+    property boolean UpJumpKeepMomentum = true
+
+    -- 28 = Play 실측(2026-10-14): RealMoveVelocity 는 프레임당 값(×60 ≈ 초당 이동) · SetForce 가로는 그 초당 속도의 약 1/2.1 → 60 ÷ 2.1 ≈ 28.
+    --   1.0 이면 가로가 거의 0 이 돼(1.81 → 0.19) 위로만 솟았다. 28 에서 1.79 → 1.73(유지).
+    property number UpJumpKeepScale = 28
+
+    -- 텔레포트 착지(사용자 2026-10-14 "텔포 시 위아래 ±0.3 정도의 발판을 찾아 올라타게"): 목적지에서 지금 높이 ±이 값 안의 발판이 있으면 지금 높이에 가장 가까운 그 발판에 선다.
+    --   없으면 예전 순서(아래 발판 → 벽 앞 → 발판 끝 → 그대로).
+    property number TeleportSnapBand = 0.3
+
+    -- 방향 없는 텔레포트 = 제자리(사용자 2026-10-14 "방향키 없이 사용하면 제자리에 텔포"): 방향키 · 조이스틱 입력이 없으면(ResolveDirection 이 바라보는 쪽으로 폴백한 경우)
+    --   옮기지 않고 그 자리에서 시전한다(이펙트 · 소리 · 텔레포트 강화 도착 광역 피해는 제자리에서). false 면 예전처럼 바라보는 쪽으로.
+    property boolean TeleportInPlaceWithoutDir = true
+
+    @HideFromInspector
+    property integer lastGroundFh = 0
+
+    @HideFromInspector
+    property string lastDirSource = ""
+
+    -- 아래 점프 보조(사용자 2026-10-14): ① 아래 점프 뒤 DownJumpGuardSeconds 동안 다른 발판에 내려앉으면 그 발판도 다시 아래로 빠진다(위 계단에 올라타는 것 방지)
+    --   ② 아래 키를 누른 채 점프 키를 눌렀는데 엔진 아래 점프가 안 나가면(입력 씹힘) DownJumpAssistDelay 뒤 직접 아래 점프를 건다.
+    property number DownJumpGuardSeconds = 0.2
+
+    property number DownJumpAssistDelay = 0.06
+
+    @HideFromInspector
+    property number downJumpAt = -100
+
+    @HideFromInspector
+    property integer downJumpFromFh = 0
+
+    @HideFromInspector
+    property any actionBoundPlayer = nil
+
+    @HideFromInspector
+    property any actionHandler = nil
+
+    @HideFromInspector
+    property any downKeyHandler = nil
 
     -- 모바일 ↑ 판정(방향 입력 변수 MoveVelocity.y 가 이 값 이상이면 ↑ 를 누른 것으로 본다). 자리표시로 MoveInputDeadZone 과 같다 — 조이스틱이 이 값을 채우는지는 런타임 미확인.
     property number UpJumpStickThreshold = 0.3
@@ -103,6 +147,103 @@ script SkillMovement extends Logic
             SK_M13 = { ruid = "1fc628fe0f0d40c9bce10b1a3b434b89", scale = 1.15, flipWithFacing = true, offsetY = 0, soundRuid = "6046095db6a24eaab07d268f7d3040c2" },
             SK_M21 = { ruid = "5acb898b8198481ca425148da2193feb", scaleX = 1.27, scaleY = 0.977, flipWithFacing = true, offsetY = 0.38, soundRuid = "7c1c509dc17c459da9a496da153e8d4b" },
         }
+        self.downKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyForDownJump)
+        -- 텔레포트 시전음을 미리 불러 둔다(사용자 2026-10-14 "텔레포트 강화 소리가 이펙트보다 한층 늦게 들린다" — 처음 틀 때 소리 파일을 불러오느라 늦는 것을 없앤다).
+        for _, f in pairs(self.blinkLocalFx) do
+            if f.soundRuid ~= nil and f.soundRuid ~= "" then
+                pcall(function() _SoundService:LoadSound(f.soundRuid) end)
+            end
+        end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnEndPlay()
+        -- 연결 해제.
+        if self.downKeyHandler ~= nil then
+            _InputService:DisconnectEvent(KeyDownEvent, self.downKeyHandler)
+            self.downKeyHandler = nil
+        end
+        if self.actionHandler ~= nil and isvalid(self.actionBoundPlayer) then
+            self.actionBoundPlayer:DisconnectEvent(PlayerActionEvent, self.actionHandler)
+        end
+        self.actionHandler = nil
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BindPlayerActions(Entity player)
+        -- 로컬 플레이어의 PlayerActionEvent 를 한 번 잇는다(플레이어 엔티티가 바뀌면 다시) — 아래 점프 순간을 안다.
+        if self.actionBoundPlayer == player then return end
+        if self.actionHandler ~= nil and isvalid(self.actionBoundPlayer) then
+            self.actionBoundPlayer:DisconnectEvent(PlayerActionEvent, self.actionHandler)
+        end
+        self.actionBoundPlayer = player
+        self.actionHandler = player:ConnectEvent(PlayerActionEvent, function(event)
+            if event.ActionName == "DownJump" then self:MarkDownJump("engine") end
+        end)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void MarkDownJump(string source)
+        -- 아래 점프가 났다: 보호 시간 시작 + 출발 발판 기억.
+        local player = _UserService.LocalPlayer
+        self.downJumpAt = _UtilLogic.ElapsedSeconds
+        self.downJumpFromFh = 0
+        if isvalid(player) and isvalid(player.RigidbodyComponent) then
+            local fh = player.RigidbodyComponent:GetCurrentFoothold()
+            if fh ~= nil then self.downJumpFromFh = fh.Id end
+        end
+        -- 엔진 아래 점프 이벤트가 올 땐 이미 발판을 떠나 있어 0 이 나온다(2026-10-14 Play 실측) → 마지막으로 서 있던 발판으로.
+        if self.downJumpFromFh == 0 then self.downJumpFromFh = self.lastGroundFh end
+        log("SkillMovement: down jump (" .. source .. ") from fh=" .. tostring(self.downJumpFromFh))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnJumpKeyForDownJump(KeyDownEvent event)
+        -- 아래 키 + 점프 키(Space · 왼쪽 Alt): 엔진 아래 점프가 DownJumpAssistDelay 안에 안 나가고 여전히 땅에 서 있으면 직접 아래 점프를 건다(입력 씹힘 보정).
+        local key = event.key
+        if key ~= KeyboardKey.Space and key ~= KeyboardKey.LeftAlt then return end
+        if not _InputService:IsKeyPressed(KeyboardKey.DownArrow) then return end
+        if _ChatService ~= nil and _ChatService.typing then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.RigidbodyComponent) then return end
+        if not player.RigidbodyComponent:IsOnGround() then return end
+        local pressedAt = _UtilLogic.ElapsedSeconds
+        _TimerService:SetTimerOnce(function()
+            if self.downJumpAt >= pressedAt then return end   -- 엔진이 이미 아래 점프를 냈다
+            local p = _UserService.LocalPlayer
+            if not isvalid(p) or not isvalid(p.RigidbodyComponent) then return end
+            local body = p.RigidbodyComponent
+            if not body:IsOnGround() then return end           -- 다른 동작(일반 점프 등)으로 이미 떠 있다
+            if not _InputService:IsKeyPressed(KeyboardKey.DownArrow) then return end
+            if body:DownJump() then
+                self:MarkDownJump("assist")
+                log("SkillMovement: down jump assist — engine input was dropped")
+            end
+        end, self.DownJumpAssistDelay)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TickDownJumpGuard()
+        -- 아래 점프 뒤 보호 시간 안에 다른 발판(출발 발판 말고)에 내려앉으면 그 발판도 아래로 빠진다(위 계단 · 이웃 발판에 걸리는 것 방지).
+        -- 보호 시간 밖에서는 서 있는 발판을 기억만 한다(lastGroundFh · 아래 점프 출발 발판).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.RigidbodyComponent) then return end
+        local body = player.RigidbodyComponent
+        if _UtilLogic.ElapsedSeconds - self.downJumpAt > self.DownJumpGuardSeconds then
+            if body:IsOnGround() then
+                local cur = body:GetCurrentFoothold()
+                if cur ~= nil then self.lastGroundFh = cur.Id end
+            end
+            return
+        end
+        if not body:IsOnGround() then return end
+        local fh = body:GetCurrentFoothold()
+        if fh == nil or fh.Id == self.downJumpFromFh then return end
+        local from = self.downJumpFromFh
+        if body:DownJump() then
+            self.downJumpFromFh = fh.Id
+            log("SkillMovement: down jump guard — landed on fh " .. tostring(fh.Id) .. " within " .. tostring(self.DownJumpGuardSeconds) .. "s (from " .. tostring(from) .. ") → drop again")
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -110,6 +251,8 @@ script SkillMovement extends Logic
         -- 맵 전환 순간의 위치를 기록한다(닷지 "캐릭터 스폰 로케이션" 판정 기준). @Logic 엔 OnMapEnter 가 오지 않아 폴링한다.
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
+        self:BindPlayerActions(player)
+        self:TickDownJumpGuard()
         local map = player.CurrentMap
         if not isvalid(map) then return end
         if map.Name ~= self.lastMapName then
@@ -147,11 +290,22 @@ script SkillMovement extends Logic
         end
         local up = self:IsUpHeld(body)
         local dist = _SkillDatabase:RatioAt(skillId, level)
+        -- 시전 직전 속도(상승 중 / 낙하 중 구분 · 1.0.3-M6-01 실측용 · 윗방향 점프의 가로 유지). RealMoveVelocity 를 못 읽으면 0.
+        local vx = 0
+        local vy = 0
+        local rv = body.RealMoveVelocity
+        if rv ~= nil then
+            vx = rv.x
+            vy = rv.y
+        end
         local fx = 0
         local fy = 0
         local kind = "NORMAL"
         if up then
             fx = pressedX * dist * self.DoubleJumpForceScale * self.UpJumpForwardMul
+            if self.UpJumpKeepMomentum then
+                fx = vx * self.UpJumpKeepScale   -- 가로 속도는 그대로 · 세로만 위로(2026-10-14)
+            end
             fy = self.UpJumpLift
             kind = "UP"
         else
@@ -159,13 +313,9 @@ script SkillMovement extends Logic
             fy = self.DoubleJumpLift
         end
         local p = player.TransformComponent.WorldPosition
-        -- 시전 직전 세로 속도(상승 중 / 낙하 중 구분 · 1.0.3-M6-01 실측용). RealMoveVelocity 를 못 읽으면 0.
-        local vy = 0
-        local rv = body.RealMoveVelocity
-        if rv ~= nil then vy = rv.y end
         body:SetForce(Vector2(fx, fy))
         log("SkillMovement: DOUBLE JUMP " .. skillId .. " kind=" .. kind .. " upHeld=" .. tostring(up) .. " lv=" .. tostring(level) .. " dist=" .. tostring(dist) .. " force=(" .. tostring(fx) .. "," .. tostring(fy)
-            .. ") vy=" .. string.format("%.3f", vy) .. " from (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
+            .. ") vx=" .. string.format("%.3f", vx) .. " vy=" .. string.format("%.3f", vy) .. " from (" .. tostring(p.x) .. "," .. tostring(p.y) .. ")")
         return { ok = true, reason = "ok", dirX = dirX, fx = fx, fy = fy, up = up, kind = kind, fromX = p.x, fromY = p.y }
     end
 
@@ -229,7 +379,9 @@ script SkillMovement extends Logic
         local origin = transform.WorldPosition
         local foothold = map.FootholdComponent
         local dest = nil
-        if dir.x ~= 0 then
+        if self.TeleportInPlaceWithoutDir and self.lastDirSource == "facing" then
+            dest = { x = origin.x, y = origin.y, branch = "in-place" }
+        elseif dir.x ~= 0 then
             dest = self:ResolveHorizontal(foothold, body, origin, dir.x, distance)
         else
             dest = self:ResolveVertical(foothold, origin, dir.y, distance)
@@ -401,6 +553,7 @@ script SkillMovement extends Logic
         elseif up and not down then dir = Vector2(0, 1)
         elseif down and not up then dir = Vector2(0, -1) end
         if dir ~= nil then
+            self.lastDirSource = "keys"
             log("SkillMovement: dir " .. self:DirName(dir) .. " source=keys " .. mvText)
             return dir
         end
@@ -413,12 +566,14 @@ script SkillMovement extends Logic
             else
                 if mvy < 0 then dir = Vector2(0, -1) else dir = Vector2(0, 1) end
             end
+            self.lastDirSource = "moveVelocity"
             log("SkillMovement: dir " .. self:DirName(dir) .. " source=moveVelocity " .. mvText .. " deadZone=" .. tostring(dz))
             return dir
         end
         local facing = 1
         if isvalid(controller) and controller.LookDirectionX < 0 then facing = -1 end
         dir = Vector2(facing, 0)
+        self.lastDirSource = "facing"
         log("SkillMovement: dir " .. self:DirName(dir) .. " source=facing " .. mvText)
         return dir
     end
@@ -440,6 +595,12 @@ script SkillMovement extends Logic
             return { x = targetX, y = origin.y, branch = "no-foothold-component" }
         end
         local probeY = origin.y + self.ProbeHeight
+
+        -- 0. 같은 높이 ±TeleportSnapBand 안의 발판(사용자 2026-10-14): 지금 높이에 가장 가까운 것 — 살짝 높은 계단 · 살짝 낮은 발판에도 바로 올라선다.
+        local band = self:ProbeBand(foothold, targetX, origin.y, self.TeleportSnapBand)
+        if band ~= nil then
+            return { x = targetX, y = band, branch = "band" }
+        end
 
         -- 1. 목적지 아래 발판. 경로 중간의 벽은 통과한다(원작 텔레포트 느낌).
         local landing = self:ProbeFloor(foothold, targetX, probeY)
@@ -530,6 +691,27 @@ script SkillMovement extends Logic
                 local fy = fh:GetYByX(x)
                 local d = startY - fy
                 if d >= 0 and d < bestDist then
+                    best = fy
+                    bestDist = d
+                end
+            end
+        end
+        return best
+    end
+
+    @ExecSpace("ClientOnly")
+    method any ProbeBand(any foothold, number x, number y, number band)
+        -- (x, y) 위아래 band 안의 수평 발판 중 y 에 가장 가까운 표면 Y. 없으면 nil(텔레포트 착지 0단계).
+        if band == nil or band <= 0 then return nil end
+        local hits = foothold:RaycastAll(Vector2(x, y + band), Vector2(0, -1), band * 2)
+        if hits == nil then return nil end
+        local best = nil
+        local bestDist = math.huge
+        for _, fh in ipairs(hits) do
+            if fh ~= nil and not fh:IsVertical() then
+                local fy = fh:GetYByX(x)
+                local d = math.abs(fy - y)
+                if d <= band and d < bestDist then
                     best = fy
                     bestDist = d
                 end

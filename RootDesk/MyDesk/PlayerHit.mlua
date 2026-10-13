@@ -12,6 +12,20 @@ script PlayerHit extends HitComponent
 	@HideFromInspector
 	property boolean deathCheckPending = false
 
+	-- 즉시 사망(사용자 2026-10-14 "플레이어 죽자마자 아무 행동도 못 하게 하고 죽어버리게"): 내 클라가 HP 가 0 으로 떨어지는 순간(동기화가 온 프레임)을 보고
+	--   곧바로 ProcessDead 를 건다(서버 EnsureDeath 0.2초 유예 · 엔진 전이를 기다리지 않는다) · 그 순간부터 이동 · 점프 · 공격 · 스킬 · 포탈 · NPC 클릭을 막는다.
+	--   HP 가 양수에서 0 이하로 "떨어질 때만" 건다 — HP 0 인 채 살아난 경우(부활 직후 HP 동기화가 늦게 오는 프레임)는 다시 죽이지 않는다.
+	property boolean InstantDeath = true
+
+	@HideFromInspector
+	property boolean dying = false
+
+	@HideFromInspector
+	property integer lastSeenHp = -1
+
+	@HideFromInspector
+	property boolean deathGateInstalled = false
+
 	-- 1.1-L07: true 면 시설 반사(attackInfo "reflect")가 피격 무적 1초를 통과한다. Play 로그(2026-10-12)에서 "reflect refused by immunity"(평타 0.6초 간격 · 둘째 반사 left=0.40 거절)가 확인돼 사용자 결정대로 켰다.
 	property boolean ReflectBypassImmunity = true
 
@@ -36,6 +50,52 @@ script PlayerHit extends HitComponent
 	method void OnMapEnter(Entity map)
 		-- 맵 진입 때 엔진이 상태 이벤트를 다시 연결한 경우를 대비한다.
 		self:DisconnectHitTransition()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 내 플레이어만: HP 가 0 으로 떨어지는 순간 즉시 사망 + 입력 차단(InstantDeath). 사망(IsDead)이 켜지면 dying 은 내린다(그다음은 IsDead 가 막는다).
+		local lp = _UserService.LocalPlayer
+		if not isvalid(lp) or lp ~= self.Entity then return end
+		local pc = self.Entity.PlayerComponent
+		if not isvalid(pc) then return end
+		self:InstallDeathGate()
+		local hp = pc.Hp
+		if pc:IsDead() then
+			self.dying = false
+		elseif hp <= 0 then
+			if self.InstantDeath and self.lastSeenHp > 0 and not self.dying then
+				self.dying = true
+				pc:ProcessDead()
+				log("[PlayerHit] hp " .. tostring(self.lastSeenHp) .. " -> " .. tostring(hp) .. " — instant death (input locked)")
+			end
+		else
+			self.dying = false
+		end
+		self.lastSeenHp = hp
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsDown()
+		-- 쓰러졌는가(HP 0 이 된 순간 ~ 사망 중). 입력 게이트 · SkillCaster.Cast · 포탈 · NPC 클릭이 본다.
+		local pc = self.Entity.PlayerComponent
+		if not isvalid(pc) then return false end
+		if self.dying or pc:IsDead() then return true end
+		-- 이번 프레임에 HP 0 이 막 왔는데 OnUpdate 가 아직 안 돈 경우.
+		return self.InstantDeath and pc.Hp <= 0 and self.lastSeenHp > 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InstallDeathGate()
+		-- 쓰러진 동안 이동 · 점프 · 아래 점프 · 공격 액션을 막는다(한 번만 설치 · 조건이 매번 IsDown 을 읽는다).
+		if self.deathGateInstalled then return end
+		local c = self.Entity.PlayerControllerComponent
+		if not isvalid(c) then return end
+		self.deathGateInstalled = true
+		for _, a in ipairs({ "MoveLeft", "MoveRight", "MoveUp", "MoveDown", "Jump", "Jump2", "DownJump", "Attack", "Crouch", "Sit" }) do
+			c:AddCondition(a, function() return not self:IsDown() end)
+		end
+		log("[PlayerHit] death input gate installed")
 	end
 
 	method void DisconnectHitTransition()
