@@ -9,6 +9,9 @@ script MonsterSpawner extends Component
 
 	property boolean LogSpawn = true
 
+	-- 사냥터 번호(1 · 2 · 3)별 일반몹 기초 HP 배수(1.0.4-1-07 · 사용자 확정 2026-10-12): "1단계,2단계,3단계". 사냥터가 아닌 맵(번호 0)은 ×1.
+	property string HuntHpMulByTier = "1,2,3"
+
 	@HideFromInspector
 	property any slots = nil
 
@@ -84,6 +87,26 @@ script MonsterSpawner extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method number HuntHpMul(integer tier)
+		-- 사냥터 번호 → 기초 HP 배수(HuntHpMulByTier 의 tier 번째 값). 사냥터가 아니거나(0) 값이 이상하면 ×1.
+		if tier <= 0 then
+			return 1
+		end
+		local i = 0
+		for token in string.gmatch(self.HuntHpMulByTier or "", "[^,]+") do
+			i = i + 1
+			if i == tier then
+				local v = tonumber(token)
+				if v ~= nil and v > 0 then
+					return v
+				end
+				return 1
+			end
+		end
+		return 1
+	end
+
+	@ExecSpace("ServerOnly")
 	method boolean SpawnSlot(any slot)
 		local map = self.Entity.CurrentMap
 		local transform = self.Entity.TransformComponent
@@ -111,6 +134,11 @@ script MonsterSpawner extends Component
 		if maxHp <= 0 then
 			maxHp = 100
 		end
+		-- 사냥터 번호(1.0.4-1-02): 이 맵의 사냥터 1 · 2 · 3(0 = 사냥터 아님 · 리스항구 등). 단계 HP 배수 · 방어 0 의 기준이다.
+		local huntTier = 0
+		if _DropTableLogic ~= nil then huntTier = _DropTableLogic:TierOfMap(map.Name) end
+		-- 단계 HP 배수(1.0.4-1-07): 기초 HP × 단계 배수(2단계 ×2 · 3단계 ×3) → 레벨 HP 배율(1.1-E02) 순. 반올림은 LevelHp 한 번. 표(LevelBaseHp) · MonsterInfo.MaxHp 에는 곱하지 않는다.
+		maxHp = maxHp * self:HuntHpMul(huntTier)
 		-- 레벨 HP 배율(1.1-E02): 유효 레벨 = entry.level(LevelOverride 가 있으면 그 레벨 · 없으면 MonsterInfo.Level). entry.maxHp 는 불변이라 리스폰에도 한 번만 곱한다.
 		if _MonsterCatalog ~= nil then maxHp = _MonsterCatalog:LevelHp(maxHp, slot.entry.level) end
 
@@ -120,7 +148,12 @@ script MonsterSpawner extends Component
 			monster.Hp = maxHp
 			monster.RespawnOn = false
 			-- 방어(1.1-E21): MonsterInfo.Defense. 기본 공격 · 스킬 모두 깎인다(빈칸 = 0).
-			if _MonsterCatalog ~= nil then monster.Defense = _MonsterCatalog:GetDefense(slot.entry.id) end
+			--   1.0.4-1-06: 사냥터 1 · 2 · 3(번호 > 0) 스폰은 도감 값과 상관없이 방어 0 — 내구도는 방어 대신 HP 로 환산했다. 사냥터가 아닌 맵은 도감 값 그대로.
+			if huntTier > 0 then
+				monster.Defense = 0
+			elseif _MonsterCatalog ~= nil then
+				monster.Defense = _MonsterCatalog:GetDefense(slot.entry.id)
+			end
 		end
 
 		-- 🔴 WO-011 ⑨(2) 경험치 버그: 일반 몹 모델(Shroom 등)엔 script.FarmReward 가 없어서
@@ -180,7 +213,7 @@ script MonsterSpawner extends Component
 			if isvalid(unit.MovementComponent) then spd = tostring(unit.MovementComponent.InputSpeed) end
 			log("[MonsterSpawner] spawn id=" .. slot.entry.spawnId
 				.. " x=" .. tostring(x) .. " y=" .. tostring(center.y)
-				.. " hp=" .. tostring(maxHp) .. " speed=" .. spd .. " csvSpeed=" .. tostring(ms))
+				.. " hp=" .. tostring(maxHp) .. " tier=" .. tostring(huntTier) .. " speed=" .. spd .. " csvSpeed=" .. tostring(ms))
 		end
 		return true
 	end
