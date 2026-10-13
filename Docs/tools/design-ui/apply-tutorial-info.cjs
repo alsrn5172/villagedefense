@@ -1,7 +1,7 @@
 // 튜토리얼 새 안내창 3개를 ui/TutorialGroup.ui 에 더한다 (1.0.6-20-01 · 1.0.6-2-01 · 1.0.6-4-01 · 2026-10-13 · 2차 E).
 //   Root/NameTagInfo  몬스터 이름표 창(장면 1-1c)  — 몬스터 그림 1장 + 이름표 색 5단계와 한 줄 설명
 //   Root/JobInfo      직업 소개(장면 1-2j)         — 탭 5개(전사 마법사 궁수 도적 해적) · 직업마다 주/부 능력치 · 무기 · 특징 · 스킬 줄 4개(Q W E R / 마법사는 Q Shift E R)
-//   Root/TownInfo     마을별 시설 특징(장면 1-4v)  — 탭 5개(헤네시스 엘리니아 커닝시티 페리온 노틸러스) · 카드 3장(포탑 억제기 넥서스) · 특징 줄 3개
+//   Root/TownInfo     마을별 시설 특징(장면 1-4v)  — 탭 5개(헤네시스 엘리니아 커닝시티 페리온 노틸러스) · 카드 3장(포탑 억제기 넥서스) · 특징 줄 3개(전부 한 줄 · 같은 크기 · 시설 "위치" 줄 포함 · 2026-10-13 G)
 //   🔴 새 UI 는 기존 스킨 재활용(사용자 2026-10-13): 판 panel_window · 칩 chip_gold · 금 버튼 btn_gold_* · 탭 btn_blue/btn_gold(계정 창 탭 패턴) · 줄 panel_row · 슬롯 slot_frame · 전직관 그림 thumbnail://NPC.
 //   기존 엔티티(Card · Confirm · Fade · Step · BtnQuit)는 건드리지 않는다 — 새 창 3개만 지우고 다시 만든다(다시 돌려도 같은 결과 · 새 창의 UUID 는 바뀌고 .mlua 에 다시 주입된다).
 //   창 안 글은 직업 소개 · 마을 특징이 런타임에 TutorialInfoUI.mlua 가 SkillInfo.csv · JobInfo.csv · VillageFacilityTrait.csv · FacilitySprite.csv 에서 다시 쓴다.
@@ -210,8 +210,13 @@ function tabs(base, rect, names, emblems) {
       const top = 610 + 62 * j;
       const rp = `${p}/Row${j}`;
       K.img(rp, 'plate_dark', [x + 16, top, 308, 52], { enable: j < lines.length });
-      K.text(rp + '/Label', lines[j] ? lines[j][0] : '특징', [x + 30, top, 128, 52], { font: 'Maple', size: 19, color: C.gold, h: 'left', fit: 12 });
-      K.text(rp + '/Value', lines[j] ? lines[j][1] : '값', [x + 160, top, 146, 52], { font: 'Noto700', size: 18, color: C.ivory, h: 'right', fit: 11 });
+      // 🔴 특징 줄은 어느 카드 · 어느 줄이나 한 줄 · 같은 글자 크기 · 같은 줄 높이 · 같은 배치(사용자 2026-10-13 "두 줄로 접히면 절대 안 된다 — 통일성").
+      //   BestFit 을 쓰지 않는다(줄마다 다른 크기로 줄어듦) → 글자 크기 고정: 라벨 Maple 18 · 값 Noto700(굵은 기본) 17.
+      //   라벨 상자 = 값 상자 = 줄 안쪽 전체(판 308 − 양쪽 10 = 288 · 겹침): 라벨은 왼쪽 · 값은 오른쪽에 붙고, 글자가 짧은 쪽이 남는 폭을 쓴다. 한 줄에 들어가는 것은
+      //   가장 긴 줄(5개 마을 10칸 전부 · 노틸러스 억제기 "체력 회복 오라 | 초당 +25·50·100" · 포탑 "위치 | 사냥터1 · 억제기와 함께")로 계산해 확인했고
+      //   런타임에도 TutorialInfoUI.RowTextW 가 게임 글꼴로 재서 넘으면 경고한다. 라벨 + 값 + 여백 10 이 288 안에 들어가야 한다.
+      K.text(rp + '/Label', lines[j] ? lines[j][0] : '특징', [x + 26, top, 288, 52], { font: 'Maple', size: 18, color: C.gold, h: 'left' });
+      K.text(rp + '/Value', lines[j] ? lines[j][1] : '값', [x + 26, top, 288, 52], { font: 'Noto700', size: 17, color: C.ivory, h: 'right' });
     }
     K.text(p + '/None', '마을 특성이 없어요', [x + 16, 610, 308, 52], { font: 'Noto700', size: 19, color: C.sub, enable: lines.length === 0 });
   });
