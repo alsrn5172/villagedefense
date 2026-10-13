@@ -61,6 +61,52 @@ script StatusHUDController extends Logic
 	-- 레벨업 효과음 볼륨 — 연달아 오를 때 겹쳐 시끄러워서 1.0 → 0.5 (패치 1.1 · 1.1-L01). 효과음 RUID 는 SummonManager.LevelUpSoundRUID.
 	property number LevelUpSoundVolume = 0.5
 
+	-- 레벨업 연출 겹침 안전장치(사용자 2026-10-13 "안전장치 넣어라"): 이 시간(초) 안에 또 오는 레벨업은 소리 · 이펙트를 건너뛰고 알림 숫자만 바꾼다.
+	property number LevelUpDedupeSeconds = 0.5
+
+	@HideFromInspector
+	property number lastLevelUpFxAt = -100
+
+	-- 아이템 · 메소 줍기 소리(원작 '띠링' · 사용자 2026-10-14 "아이템 습득 소리가 없다"). 리소스 검색: 0.52초 "필드에 떨어진 아이템을 획득할 때 발생하는 짧고 경쾌한 효과음".
+	--   여러 개를 한꺼번에 주우면 PickupSoundGap 안에서는 한 번만.
+	--   사용자 지정(2026-10-14 "205510b3… 이게 아이템 획득음") · 1.12초 밝은 알림음. 예전 f399837e… 는 물약 소리(PotionSoundRUID)로 옮겼다.
+	property string PickupSoundRUID = "205510b33adf4509b1565ccd4c77d98b"
+
+	property number PickupSoundVolume = 0.6
+
+	property number PickupSoundGap = 0.08
+
+	@HideFromInspector
+	property number lastPickupSoundAt = -100
+
+	-- 물약 먹는 소리(사용자 2026-10-14 "f399837e… 는 물약 먹을 때 나는 소리로"). 서버 InventoryService.UseInstance 가 소모에 성공하면 그 사람에게.
+	property string PotionSoundRUID = "f399837e702843abb2c8196829101982"
+
+	property number PotionSoundVolume = 0.6
+
+	-- 죽었을 때 소리(사용자 2026-10-14 "8727e134…"). 내 클라가 사망(IsDead)이 켜지는 순간 한 번(PlayerHit.OnUpdate → PlayDeathSound).
+	property string DeathSoundRUID = "8727e134756141c58bf2f525a1598eee"
+
+	property number DeathSoundVolume = 0.8
+
+	-- 매치 소리(사용자 2026-10-14 RUID 지정): 서버 MatchSessionLogic.PlayCueHere 가 그 사람에게 PlayMatchCue(kind) 로 보낸다.
+	--   START = 매치 시작(리스항구 도착 · StartMatch) · WIN = 주니어 발록 선취(결과 화면) · LOSE = 발록을 못 잡고 끝남(결과 화면)
+	--   GAMEOVER = 넥서스 파괴 · 탈락 순간(OnPlayerEliminated · 결과 화면에선 다시 안 낸다).
+	property string MatchStartSoundRUID = "04ca8c287bad49e286bc0feb17cb8824"
+
+	property string MatchWinSoundRUID = "713eb3fa83e14498b012d6466977989a"
+
+	property string MatchLoseSoundRUID = "e64a2dfc09f6447a947652d68eaeb047"
+
+	property string MatchGameOverSoundRUID = "27d957fce5214fc5ba7f948661361887"
+
+	property number MatchCueVolume = 0.8
+
+	-- 포탈 이동 소리(사용자 2026-10-14 "포탈 탔을 때 후우웅 소리가 없다" → "95039eb5… 를 1.0초부터"). 엔진 PlaySound 에는 시작 위치가 없어 원본을 1.0초부터 잘라(2.53초) 그룹 저장소(mIYbC)에 올린 소리다.
+	property string PortalSoundRUID = "1f4e6c94ab494528b8c3d1df890f3411"
+
+	property number PortalSoundVolume = 0.6
+
 	-- 레벨업 몸 빛남(WO-050 §2-18 · 사용자 "레벨업 시 몸에서 빛나기"): 레벨업한 플레이어 몸 뒤에 금빛 원이 숨쉬듯 커졌다 작아지며 2번 반짝인다. 같은 방 모든 클라에 보인다.
 	-- 그림 = Docs/tools/levelup-glow(make.py · upload.cjs) 로 만들어 그룹 저장소에 올린 부드러운 금빛 원 256×256.
 	property string LevelUpGlowRUID = "88733245eb4544a58e5b401890b31d52"
@@ -142,6 +188,10 @@ script StatusHUDController extends Logic
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 바 원본 폭을 캐시하고 초기 표시를 그린다.
+		-- 자주 쓰는 효과음을 미리 불러 둔다(처음 틀 때 늦게 들리는 것 방지 · 2026-10-14).
+		for _, r in ipairs({ self.PickupSoundRUID, self.PortalSoundRUID, self.PotionSoundRUID, self.DeathSoundRUID, self.MatchStartSoundRUID, self.MatchWinSoundRUID, self.MatchLoseSoundRUID, self.MatchGameOverSoundRUID }) do
+			if r ~= nil and r ~= "" then pcall(function() _SoundService:LoadSound(r) end) end
+		end
 		if isvalid(self.hpBar) then self.hpFullWidth = self.hpBar.RectSize.x end
 		if isvalid(self.mpBar) then self.mpFullWidth = self.mpBar.RectSize.x end
 		if isvalid(self.expBar) then self.expFullWidth = self.expBar.RectSize.x end
@@ -295,20 +345,80 @@ script StatusHUDController extends Logic
 	end
 
 	@ExecSpace("Client")
+	method void PlayPickupSound()
+		-- 줍기 소리(서버 ItemDrop · MesoCoin 이 주인에게 보낸다). 한꺼번에 여럿을 주워도 PickupSoundGap 안에서는 한 번.
+		local now = _UtilLogic.ElapsedSeconds
+		if now - self.lastPickupSoundAt < self.PickupSoundGap then
+			return
+		end
+		self.lastPickupSoundAt = now
+		if self.PickupSoundRUID ~= "" then
+			_SoundService:PlaySound(self.PickupSoundRUID, self.PickupSoundVolume)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayDeathSound()
+		-- 죽었을 때 소리(PlayerHit 가 내 클라에서 사망이 켜지는 순간 부른다 · 서버가 부르면 그 사람에게).
+		if self.DeathSoundRUID ~= "" then
+			_SoundService:PlaySound(self.DeathSoundRUID, self.DeathSoundVolume)
+		end
+		log("[Status] death sound")
+	end
+
+	@ExecSpace("Client")
+	method void PlayMatchCue(string kind)
+		-- 매치 소리 한 번(START · WIN · LOSE · GAMEOVER). 서버 MatchSessionLogic.PlayCueHere 가 방에 있는 사람에게만 보낸다.
+		local ruid = ""
+		if kind == "START" then ruid = self.MatchStartSoundRUID
+		elseif kind == "WIN" then ruid = self.MatchWinSoundRUID
+		elseif kind == "LOSE" then ruid = self.MatchLoseSoundRUID
+		elseif kind == "GAMEOVER" then ruid = self.MatchGameOverSoundRUID end
+		if ruid ~= "" then
+			_SoundService:PlaySound(ruid, self.MatchCueVolume)
+		end
+		log("[Status] match cue " .. tostring(kind) .. (ruid == "" and " (no sound)" or ""))
+	end
+
+	@ExecSpace("Client")
+	method void PlayPotionSound()
+		-- 물약 먹는 소리(서버 InventoryService.UseInstance 가 소모에 성공했을 때 그 사람에게).
+		if self.PotionSoundRUID ~= "" then
+			_SoundService:PlaySound(self.PotionSoundRUID, self.PotionSoundVolume)
+		end
+		log("[Status] potion sound")
+	end
+
+	@ExecSpace("Client")
+	method void PlayPortalSound()
+		-- 포탈 이동 소리(일반 포탈은 클라 PortalNetwork 가 바로 · 서버가 판정하는 입장(리스항구 · 지역 보스 · 발록 방)은 승인 때 서버가 그 사람에게).
+		if self.PortalSoundRUID ~= "" then
+			_SoundService:PlaySound(self.PortalSoundRUID, self.PortalSoundVolume)
+		end
+		log("[Status] portal sound")
+	end
+
+	@ExecSpace("Client")
 	method void PlayLevelUp(integer newLevel, string effectRuid, string soundRuid)
 		-- 레벨업 연출: 소리 + 플레이어에 붙는 이펙트. RUID 가 비어 있으면 그 부분만 건너뛴다.
-		if soundRuid ~= nil and soundRuid ~= "" then
+		--   안전장치: LevelUpDedupeSeconds 안에 또 오면 소리 · 이펙트는 건너뛰고 알림 숫자만 바꾼다(겹쳐 시끄럽던 것 · 사용자 2026-10-13).
+		local now = _UtilLogic.ElapsedSeconds
+		local dup = (now - self.lastLevelUpFxAt) < self.LevelUpDedupeSeconds
+		if not dup then
+			self.lastLevelUpFxAt = now
+		end
+		if not dup and soundRuid ~= nil and soundRuid ~= "" then
 			_SoundService:PlaySound(soundRuid, self.LevelUpSoundVolume)
 		end
-		
+
 		local lp = _UserService.LocalPlayer
-		if effectRuid ~= nil and effectRuid ~= "" and isvalid(lp) then
+		if not dup and effectRuid ~= nil and effectRuid ~= "" and isvalid(lp) then
 			-- 캐릭터 발밑 기준으로 살짝 위에서 1회 재생.
 			_EffectService:PlayEffectAttached(effectRuid, lp, Vector3(0, 0.5, 0), 0, Vector3(1, 1, 1), false)
 		end
-		
+
 		self:ShowNotice(newLevel)
-		log("[Status] LEVEL UP 연출 Lv" .. tostring(newLevel) .. " vol=" .. tostring(self.LevelUpSoundVolume))
+		log("[Status] LEVEL UP 연출 Lv" .. tostring(newLevel) .. " vol=" .. tostring(self.LevelUpSoundVolume) .. (dup and " (겹침 · 소리 · 이펙트 건너뜀)" or ""))
 	end
 
 	@ExecSpace("Client")

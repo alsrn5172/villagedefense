@@ -88,6 +88,35 @@ script SkillHotbar extends Logic
     @HideFromInspector
     property string shiftBoundAction = ""
 
+    -- 꾹 누르기 연속 시전(사용자 2026-10-14 "스킬 꾹 누르면 사용된 판정 · 다다다 누르기 힘들다"): 공격 스킬 키(또는 모바일 스킬 칸)를 누른 채로 있으면
+    --   HoldRepeatDelay 초 뒤부터 시전이 될 때마다(시전 락 · 쿨다운이 풀릴 때마다) 같은 Cast 입구로 다시 시전한다. 짧게 톡 누르면 예전처럼 한 번.
+    --   대상 = 피해를 주는 스킬(근접 · 투사체 · 광역)만 — 버프 · 토글(다크 사이트) · 이동(텔레포트) · 궁 · 재시전(에너지 차지 주먹)은 누를 때 한 번 그대로.
+    --   키는 PlayerActionEvent 로 들어온 누름만 무장한다(채팅 입력 중엔 액션이 안 와서 무장되지 않는다). 손을 떼면(IsKeyPressed false · 칸 눌림 해제) 바로 멈춘다.
+    property boolean HoldRepeat = true
+
+    property number HoldRepeatDelay = 0.3
+
+    -- 시전이 거절됐을 때(MP 부족 등) 다시 시도하기까지의 간격(로그가 매 프레임 쌓이지 않게).
+    property number HoldRetryGap = 0.25
+
+    -- 서버가 거절했을 때(맨손 등 · 클라 예측은 통과) 다시 시도하기까지의 간격. 거절 → 락 즉시 해제 → 왕복마다 재시전되는 것을 막는다.
+    property number HoldServerRefuseBackoff = 1.0
+
+    @HideFromInspector
+    property string holdSkillId = ""
+
+    @HideFromInspector
+    property any holdEntry = nil
+
+    @HideFromInspector
+    property boolean holdTouch = false
+
+    @HideFromInspector
+    property number holdSince = 0
+
+    @HideFromInspector
+    property number holdNextTry = 0
+
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
         self:BuildSlotTable()
@@ -142,6 +171,7 @@ script SkillHotbar extends Logic
         if self.isWired then
             self:TrackGround()
             self:ApplyShiftBinding()
+            self:TickHold()
             return
         end
         self:TryWireKeys()
@@ -251,6 +281,91 @@ script SkillHotbar extends Logic
         local resultText = tostring(result.ok)
         if not result.ok then resultText = resultText .. " reason='" .. result.reason .. "'" end
         log("HOTBAR: slot" .. tostring(entry.slot) .. " " .. entry.keyName .. " " .. skillId .. " cast ok=" .. resultText)
+        self:BeginHold(skillId, entry, false)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void BeginHold(string skillId, any entry, boolean touch)
+        -- 꾹 누르기 무장: 키(entry · PlayerActionEvent) 또는 모바일 스킬 칸(touch · SkillHudController 눌림)에서 방금 누른 공격 스킬을 기억한다.
+        --   피해를 주는 스킬(궁 · 재시전 제외)이 아니면 무장하지 않는다(버프 · 토글 · 이동은 한 번만).
+        if not self.HoldRepeat or _SkillCaster == nil or _SkillDatabase == nil then return end
+        -- 안 배운 스킬은 무장하지 않는다(누르고 있는 동안 "skill not learned" 거절 로그가 쌓이지 않게).
+        if _PlayerSkillState:LocalSkillLevel(skillId) <= 0 then
+            self:EndHold("")
+            return
+        end
+        local skill = _SkillDatabase:GetSkill(skillId)
+        if skill == nil or skill.behavior == "ORIGIN" or not _SkillCaster:IsDamagingCast(skill, false) then
+            self:EndHold("")
+            return
+        end
+        if _SkillBuffs ~= nil and _SkillBuffs:LocalIsRecastActive(skillId) then
+            self:EndHold("")
+            return
+        end
+        local now = _UtilLogic.ElapsedSeconds
+        self.holdSkillId = skillId
+        self.holdEntry = entry
+        self.holdTouch = touch
+        self.holdSince = now
+        self.holdNextTry = now + self.HoldRepeatDelay
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EndHold(string why)
+        -- 꾹 누르기 해제(손을 뗌 · 다른 스킬 누름 · 대상 아님). why 가 있으면 로그 한 줄.
+        if self.holdSkillId ~= "" and why ~= "" then
+            log("HOTBAR: hold end " .. self.holdSkillId .. " (" .. why .. ", held " .. string.format("%.1f", _UtilLogic.ElapsedSeconds - self.holdSince) .. "s)")
+        end
+        self.holdSkillId = ""
+        self.holdEntry = nil
+        self.holdTouch = false
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnServerRefused(string skillId)
+        -- SkillCaster.CastResult(서버 거절): 꾹 누르는 중인 그 스킬이면 HoldServerRefuseBackoff 초 쉬었다가 다시.
+        if self.holdSkillId ~= skillId then return end
+        self.holdNextTry = _UtilLogic.ElapsedSeconds + self.HoldServerRefuseBackoff
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EndTouchHold()
+        -- 모바일 스킬 칸 눌림이 풀렸을 때(SkillHudController). 키로 무장된 꾹 누르기는 건드리지 않는다.
+        if self.holdTouch then self:EndHold("touch up") end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void TickHold()
+        -- 매 프레임: 무장된 스킬 키가 아직 눌려 있으면 시전이 될 때마다 다시 Cast. 시전 락 중엔 부르지 않는다(락이 풀리는 프레임에 바로 나간다).
+        if self.holdSkillId == "" then return end
+        if not self.holdTouch then
+            local entry = self.holdEntry
+            local held = false
+            if entry ~= nil then
+                held = _InputService:IsKeyPressed(entry.key)
+                if not held and entry.altKey ~= nil then held = _InputService:IsKeyPressed(entry.altKey) end
+            end
+            if not held then
+                self:EndHold("key up")
+                return
+            end
+        end
+        local now = _UtilLogic.ElapsedSeconds
+        if now < self.holdNextTry then return end
+        if _SkillCaster.castLockActive and not _SkillCaster.lockIsBasic then return end
+        local skillId = self.holdSkillId
+        local result = _SkillCaster:Cast(skillId)
+        if result ~= nil and result.ok then
+            log("HOTBAR: hold repeat " .. skillId .. " ok")
+            return
+        end
+        -- 거절: 쿨다운이면 남은 시간 뒤에, 그 밖(MP 부족 · 튜토리얼 잠금 등)은 HoldRetryGap 뒤에 다시.
+        local wait = self.HoldRetryGap
+        if _PlayerSkillState:LocalIsOnCooldown(skillId) then
+            wait = math.max(0.02, _PlayerSkillState:LocalCooldownRemaining(skillId))
+        end
+        self.holdNextTry = now + wait
     end
 
     @ExecSpace("ClientOnly")

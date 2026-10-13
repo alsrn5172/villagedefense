@@ -338,6 +338,8 @@ script MatchSessionLogic extends Logic
 		else
 			log_error("[Match] BalrogRoomService 없음 — 발록 방 배정 없이 시작한다 (승리 조건이 동작하지 않는다)")
 		end
+		-- 시작 소리(사용자 2026-10-14 "게임 시작 시 = 리스항구 도착 시"): 리스항구 인스턴스 방에 모두 도착한 뒤 여기 한 곳.
+		for _, uid in ipairs(self.participants) do self:PlayCueHere(uid, "START") end
 		log("[Match] START players=" .. tostring(#self.participants) .. " diff=" .. tostring(self.Difficulty) ..
 			" profile=" .. self.Profile .. " duration=" .. tostring(self.MatchDuration) .. "s")
 	end
@@ -561,6 +563,15 @@ script MatchSessionLogic extends Logic
 		-- 🔴 여기서 _DataStorageService 를 직접 부르지 않는다. 저장 창구는 _PlayerDBManager 하나뿐이다 (WO-018).
 		if _PlayerDBManager ~= nil then _PlayerDBManager:RequestFlush(userId) end
 		self:OnPlayerEliminated(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayCueHere(string userId, string kind)
+		-- 매치 소리(START · WIN · LOSE · GAMEOVER · 사용자 2026-10-14)를 그 사람에게. 방을 나간 사람에겐 안 보낸다(ToastHere 와 같은 판정 · LEA-3032).
+		if _StatusHUDController == nil or userId == nil or userId == "" then return end
+		if not isvalid(_UserService:GetUserEntityByUserId(userId)) then return end
+		_StatusHUDController:PlayMatchCue(kind, userId)
+		log("[Match] cue " .. kind .. " -> " .. userId)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -842,16 +853,19 @@ script MatchSessionLogic extends Logic
 		if self.clockTimer <= 0 then
 			self.clockTimer = 1.0
 			local nextIn = -1
+			-- nextExact = 다음 투입까지 남은 초(소수 · 클라 카운트다운 소리가 3.1초 같은 정확한 시점에 맞춘다 · 2026-10-14).
+			local nextExact = -1
 			if self.waves ~= nil and #self.waves > 0 then
-				if self.nextWave <= #self.waves then nextIn = math.ceil(self.waves[self.nextWave].start - self.Elapsed)
-				elseif self.waveRepeatGap > 0 then nextIn = math.ceil(self.waveRepeatTimer) end
+				if self.nextWave <= #self.waves then nextExact = self.waves[self.nextWave].start - self.Elapsed
+				elseif self.waveRepeatGap > 0 then nextExact = self.waveRepeatTimer end
+				if nextExact >= 0 then nextIn = math.ceil(nextExact) end
 			end
 			local nextPhaseIn = -1
 			local nxt = self.phases[self.CurrentPhase + 1]
 			if nxt ~= nil then nextPhaseIn = math.ceil(nxt.start - self.Elapsed) end
 			local remain = -1
 			if self.MatchDuration > 0 then remain = math.max(0, math.ceil(self.MatchDuration - self.Elapsed)) end
-			self:BroadcastClock(self.CurrentPhase, row.name, math.floor(self.Elapsed), nextIn, nextPhaseIn, self.Profile, remain)
+			self:BroadcastClock(self.CurrentPhase, row.name, math.floor(self.Elapsed), nextIn, nextPhaseIn, self.Profile, remain, nextExact)
 		end
 	end
 
@@ -888,7 +902,7 @@ script MatchSessionLogic extends Logic
 		ev.Phase = "EXPIRED"
 		ev.ElapsedSeconds = self.Elapsed
 		self:SendEvent(ev)
-		self:BroadcastClock(self.CurrentPhase, "EXPIRED", math.floor(self.Elapsed), -1, -1, self.Profile, 0)
+		self:BroadcastClock(self.CurrentPhase, "EXPIRED", math.floor(self.Elapsed), -1, -1, self.Profile, 0, -1)
 		self:BroadcastExpired()
 		-- 계정 데이터 확정 (WO-018). 만료 시점에 생존자 전원의 계정 값을 한 번 굳힌다.
 		-- 🔴 저장 창구는 _PlayerDBManager 하나뿐이다. 여기서 _DataStorageService 를 직접 부르지 않는다.
@@ -976,6 +990,8 @@ script MatchSessionLogic extends Logic
 		-- 결과 화면 사유(사람마다 · 2026-10-07 "죽는 것도 여러 이유"): 미점령은 EliminateUnclaimed 가 먼저 적는다 · 나머지 = 넥서스 파괴.
 		if self.outReason == nil then self.outReason = {} end
 		if self.outReason[userId] == nil then self.outReason[userId] = "NEXUS" end
+		-- 게임 오버 소리(사용자 2026-10-14 "넥서스 파괴됐을 때 · 졌을 때와 다름"): 탈락하는 순간 그 사람에게. 결과 화면에선 다시 안 낸다(ShowResult).
+		self:PlayCueHere(userId, "GAMEOVER")
 		-- 🔴 먼저 스냅샷. 아래에서 매치가 끝나거나, 이 사람이 승강장으로 나가면서
 		--    원장이 비워지면 레벨을 다시 읽을 수 없다.
 		self:SnapshotRow(userId, true)
@@ -1125,6 +1141,14 @@ script MatchSessionLogic extends Logic
 			if isvalid(_UserService:GetUserEntityByUserId(uid)) then
 				_MatchResultUIController:SetResultCsv(self:BuildResultCsv(rows, uid, reason), uid)
 				sent = sent + 1
+				-- 결과 소리(사용자 2026-10-14): 주니어 발록을 먼저 잡은 사람 = 승리 · 탈락자 = 없음(탈락 순간 게임 오버를 이미 냈다) · 나머지 = 패배(발록을 못 잡음).
+				local winner = (_BalrogRoomService ~= nil) and _BalrogRoomService.Winner or ""
+				local out = (self.outReason ~= nil) and self.outReason[uid] or nil
+				if winner ~= nil and winner ~= "" and winner == uid then
+					self:PlayCueHere(uid, "WIN")
+				elseif out == nil then
+					self:PlayCueHere(uid, "LOSE")
+				end
 			else
 				log("[Match] 결과 화면 건너뜀 — 방에 없음 " .. tostring(uid))
 			end
@@ -1230,10 +1254,10 @@ script MatchSessionLogic extends Logic
 	end
 
 	@ExecSpace("Multicast")
-	method void BroadcastClock(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile, integer remain)
-		-- 서버 → 전 클라: 시계 HUD 갱신. remain = 매치 만료까지 남은 초(음수면 표시 안 함).
+	method void BroadcastClock(integer phaseIdx, string phaseName, integer elapsed, integer nextIn, integer nextPhaseIn, string profile, integer remain, number nextExact)
+		-- 서버 → 전 클라: 시계 HUD 갱신. remain = 매치 만료까지 남은 초(음수면 표시 안 함). nextExact = 다음 투입까지 남은 초(소수 · 없으면 -1).
 		if _MatchClockUIController ~= nil then
-			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile, remain)
+			_MatchClockUIController:Apply(phaseIdx, phaseName, elapsed, nextIn, nextPhaseIn, profile, remain, nextExact)
 		end
 	end
 

@@ -312,8 +312,8 @@ script TutorialService extends Logic
 		elseif kind == "ensuredef" then
 			ok = _LaneStateService ~= nil and _LaneStateService:TutorialEnsureDefenders(uid, self.OrangeMonsterId) > 0
 		elseif kind == "back" then
-			-- back:<맵>:<x>:<y> — 전투 구간 이탈 복귀(TutorialDirector.TickLeash · 1.0.3-M8-03)
-			ok = self:MoveBack(uid, parts[2] or "", tonumber(parts[3]) or 0, tonumber(parts[4]) or 0)
+			-- back:<맵>:<x>:<y>[:map] — 전투 구간 이탈 복귀(TutorialDirector.TickLeash · 1.0.3-M8-03) · 끝에 :map = 다른 맵으로 나가도 되돌림
+			ok = self:MoveBack(uid, parts[2] or "", tonumber(parts[3]) or 0, tonumber(parts[4]) or 0, parts[5] == "map")
 		elseif kind == "skill" then
 			-- skill:<SkillId>[,<SkillId>…]:<레벨> — 전사 전직 스킬을 SP 없이(2-4k · 1.0.3-M8-05)
 			ok = self:GrantSkills(uid, parts[2] or "", math.floor(tonumber(parts[3]) or 1))
@@ -392,7 +392,9 @@ script TutorialService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean RaiseLevel(string uid, integer target)
-		-- 레벨을 target 까지(정식 경로 GrantKillReward 를 한 레벨씩 · 레벨업 보상 · 연출 · HUD 그대로 · DevStatRemote.RequestLevel 과 같은 방식).
+		-- 레벨을 target 까지(정식 경로 GrantKillReward · 레벨업 보상 · 연출 · HUD 그대로).
+		--   모자란 경험치를 다 더해 한 번에 넣는다 — 한 레벨씩 넣으면 레벨업 소리 · 이펙트 · 알림이 9~10번 겹쳐 나왔다(사용자 2026-10-13 "레벨업 소리 뒤지게 크다").
+		--   GrantKillReward 는 여러 레벨이 한꺼번에 올라도 레벨마다 보상을 주고 연출(OnLevelUp)은 한 번만 낸다.
 		local p = _UserService:GetUserEntityByUserId(uid)
 		if not isvalid(p) or _SummonManager == nil then
 			return false
@@ -401,13 +403,18 @@ script TutorialService extends Logic
 		if e == nil then
 			return false
 		end
+		local exp = e.exp or 0
+		local total = 0
 		local guard = 0
-		while (e.level or 1) < target and guard < 200 do
-			local pr = _SummonManager:ExpProgress(e.exp or 0)
-			local need = math.max(1, math.floor((pr.need or 1) - (pr.within or 0)))
-			_SummonManager:GrantKillReward(p, need)
+		while _SummonManager:LevelFromExp(exp + total) < target and guard < 200 do
+			local pr = _SummonManager:ExpProgress(exp + total)
+			total = total + math.max(1, math.floor((pr.need or 1) - (pr.within or 0)))
 			guard = guard + 1
 		end
+		if total > 0 then
+			_SummonManager:GrantKillReward(p, total)
+		end
+		log("[Tutorial] raise level -> Lv" .. tostring(e.level) .. " (target " .. tostring(target) .. " · +" .. tostring(total) .. " exp at once)")
 		return (e.level or 1) >= target
 	end
 
@@ -753,10 +760,11 @@ script TutorialService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean MoveBack(string uid, string mapId, number x, number y)
-		-- 전투 구간 이탈 복귀(1.0.3-M8-03): 지금 그 맵에 있을 때만(맵이 바뀐 요청은 무시) 시작점 +0.3(발판보다 조금 위)으로 순간이동하고 토스트로 알린다.
+	method boolean MoveBack(string uid, string mapId, number x, number y, boolean anyMap)
+		-- 전투 구간 이탈 복귀(1.0.3-M8-03): 시작점 +0.3(발판보다 조금 위)으로 순간이동하고 토스트로 알린다.
+		--   보통은 지금 그 맵에 있을 때만(맵이 바뀐 요청은 무시). anyMap = 다른 맵으로 나가도 되돌린다(6-3b 발록 포탈 앞 · 사용자 2026-10-13).
 		local p = _UserService:GetUserEntityByUserId(uid)
-		if not isvalid(p) or mapId == "" or p.CurrentMapName ~= mapId then
+		if not isvalid(p) or mapId == "" or (p.CurrentMapName ~= mapId and anyMap ~= true) then
 			return false
 		end
 		self:MoveTo(uid, mapId, Vector2(x, y + 0.3))
