@@ -9,6 +9,7 @@ script StatusBoard extends Component
 	--   · 전투력 = StatService.GetCombatPower(uid) — StatService 가 스탯이 바뀔 때(Recalculate)만 계산해 저장해 둔 값을 읽기만 한다. 여기서 계산하지 않는다.
 	--   · 인스턴스 룸마다 맵과 NpcSpawner 가 따로 떠 이 컴포넌트도 룸별로 그 룸의 _MatchSessionLogic 을 읽는다 — 다른 매치 사람이 섞이지 않는다.
 	--   · 층: 판(Plate) Default/2 · 글자 Default/3 (모델 값) — 플레이어(Default/4)보다 앞에 그리지 않는다(WorldNameTag 와 같은 규칙).
+	--   · 튜토리얼 룸(1.0.6-10-01 · 2026-10-13): 평소엔 빈 칠판. 6-1t(TutorialService.RivalAlert)가 켠 뒤에만 `나 + 가상 상대(발록 도전 중)` 두 줄 — 가상 상대 줄은 BuildLines 가 TutorialRivalUid 로 만들고 Refresh 가 RivalColor 로 칠한다. 실제 매치 줄과 섞이지 않는다.
 	--   · 판 그림 = 메이플 고등학교 교실 칠판(사용자 결정 2026-10-13 N44 · RUID f68089a2… 512×228 · 가로 1.0 · 세로 1.4 로 늘림 · 안에 흰 글자 · 모델 VD_RECORD_BOARD 의 Plate). 줄 자리(Row1~5)와 폭은 그 칠판 면에 맞춘 값이다 — 그림을 바꾸면 모델의 Plate/Row 자리와 아래 RowMaxWidth 를 같이 본다.
 
 	-- "uid|닉네임|레벨|상태코드|위치(상태문구)|전투력;…" 최대 MaxRows 줄. 서버만 쓴다(구분자 ; | = 는 지운다).
@@ -43,6 +44,11 @@ script StatusBoard extends Component
 	property Color MyColor = Color(0.91, 0.714, 0.298, 1)
 
 	property Color OtherColor = Color(1, 1, 1, 1)
+
+	-- 튜토리얼 가상 상대 줄(1.0.6-10-01): 줄의 uid 칸 값 · 강조색(빨강 계열 = 튜토리얼 말풍선의 빨강 #FF8A7A 와 같은 색 — 내 줄 금색과 구분)
+	property string TutorialRivalUid = "TUTORIAL_RIVAL"
+
+	property Color RivalColor = Color(1, 0.541, 0.478, 1)
 
 	-- 상태 문구(1.1-I15 기본안). 원문이 정한 것은 "발록 도전 중" 뿐이다 — 나머지는 바꾸려면 여기서.
 	property string TextOut = "탈락"
@@ -155,10 +161,15 @@ script StatusBoard extends Component
 
 	@ExecSpace("ServerOnly")
 	method string BuildLines()
-		-- 이번 매치 참가자 전원(이탈자 제외 · 나 포함)을 참가 순서대로 한 줄씩. 매치가 안 돌거나 튜토리얼 룸이면 빈 문자열(칠판이 빈다).
+		-- 이번 매치 참가자 전원(이탈자 제외 · 나 포함)을 참가 순서대로 한 줄씩. 매치가 안 돌면 빈 문자열(칠판이 빈다).
+		--   튜토리얼 룸(1.0.6-10-01): 6-1t 가 가상 상대 줄을 켜기 전(BoardRival nil)에는 예전처럼 빈 칠판 · 켠 뒤에는 `나`(참가자 1명) 줄 + 가상 상대 임시 줄.
 		local m = _MatchSessionLogic
 		if m == nil or not m.Running or m.participants == nil then return "" end
-		if _TutorialService ~= nil and _TutorialService.Active then return "" end
+		local rival = nil
+		if _TutorialService ~= nil and _TutorialService.Active then
+			rival = _TutorialService:BoardRival()
+			if rival == nil then return "" end
+		end
 		self:LoadNodes()
 		local parts = {}
 		for i = 1, #m.participants do
@@ -179,6 +190,10 @@ script StatusBoard extends Component
 				table.insert(parts, self:CleanText(uid) .. "|" .. self:CutChars(self:CleanText(name), self.NameMaxChars) .. "|" .. tostring(level) .. "|" .. st.code .. "|" .. self:CutChars(self:CleanText(st.text), self.StateMaxChars) .. "|" .. tostring(power))
 				if #parts >= self.MaxRows then break end
 			end
+		end
+		if rival ~= nil and #parts < self.MaxRows then
+			-- 가상 상대 임시 줄(1.0.6-10-01): 같은 6칸 형식 · 상태 = 발록 도전 중(BALROG). 이름 · 문구도 실제 줄과 같은 정리(구분자 제거 · 글자 수 자르기).
+			table.insert(parts, self.TutorialRivalUid .. "|" .. self:CutChars(self:CleanText(rival.name), self.NameMaxChars) .. "|" .. tostring(rival.level) .. "|BALROG|" .. self:CutChars(self:CleanText(self.TextBalrog), self.StateMaxChars) .. "|" .. tostring(rival.power))
 		end
 		return table.concat(parts, ";")
 	end
@@ -303,7 +318,11 @@ script StatusBoard extends Component
 						text = f[2] .. " Lv." .. self:FormatNumber(f[3] or 1)
 						if f[5] ~= nil and f[5] ~= "" then text = text .. self.FieldSep .. f[5] end
 						text = text .. self.FieldSep .. self.PowerLabel .. " " .. self:FormatNumber(f[6] or 0)
-						if f[1] == myUid and myUid ~= "" then color = self.MyColor end
+						if f[1] == myUid and myUid ~= "" then
+							color = self.MyColor
+						elseif f[1] == self.TutorialRivalUid then
+							color = self.RivalColor   -- 튜토리얼 가상 상대 줄(1.0.6-10-01 · 6-1c "엘리니아 줄 강조")
+						end
 					end
 				end
 				self:ApplyRow(ent.TextRendererComponent, text, color)

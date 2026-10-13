@@ -1,0 +1,681 @@
+@Logic
+script TutorialInfoUI extends Logic
+	-- 튜토리얼 새 안내창 3개 컨트롤러 (1.0.6-20-01 · 1.0.6-2-01 · 1.0.6-4-01 · 2026-10-13 · 2차 E).
+	--   창은 TutorialGroup 안(Root/NameTagInfo · Root/JobInfo · Root/TownInfo) — 카드(Root/Card)와 같은 판 · 칩 · 금 버튼을 쓴다. UUID 는 UIBuilder write({bind}) 가 주입한다
+	--   (Docs/tools/design-ui/apply-tutorial-info.cjs).
+	--   kind: "nametag" = 몬스터 이름표 색 5단계(1-1c · 글은 .ui 에 있다) · "jobs" = 직업 소개(1-2j · 탭 5개: 전사 마법사 궁수 도적 해적 · 처음 전사) · "towns" = 마을별 시설 특징(1-4v · 탭 5개).
+	--   TutorialDirector 장면이 Open(kind) 로 열고, 닫힘은 IsOpen() 폴링(권장) 또는 SetOnClose(fn) 콜백(fn(kind))으로 안다.
+	--   닫기 = [다음/확인] 버튼 또는 ESC(그만두기 확인창이 떠 있으면 ESC 는 무시). 닫으면 closeSeq 가 1 오르고 lastClosedKind 에 종류가 남는다.
+	--   직업 소개 글은 SkillInfo.csv(스킬 창과 같은 글) · JobInfo.csv(주 · 부 능력치), 시설 특징은 VillageFacilityTrait.csv · FacilitySprite.csv 에서 읽는다(수치를 문장에 박지 않는다).
+
+	property Entity root = "3de33912-8344-410b-b4b0-94448c5bc9dc"
+
+	property Entity nameWin = "62f82598-5ad3-4ea7-80d9-a3c904a4afae"
+
+	property Entity jobWin = "db102a8b-30a3-4a1e-a5f3-127d1cacc572"
+
+	property Entity townWin = "ab6f53dc-28d9-4820-a89e-3d22b1d513fa"
+
+	property ButtonComponent btnNameNext = "08a83572-f934-481c-ad19-4e06c346549f"
+
+	property ButtonComponent btnJobNext = "c40c845c-372d-43c9-aaaf-72d5ea69df73"
+
+	property ButtonComponent btnTownNext = "28a503e2-f882-4217-9a4b-b70a4432af41"
+
+	-- 직업 소개: 탭 줄(Tab0 ~ Tab4) · 왼쪽 정보 판 · 오른쪽 스킬 줄 묶음 · 전사 탭 한 줄
+	property Entity jobTabs = "67a85b83-bc63-4181-8645-b8910a979134"
+
+	property Entity jobLeft = "5b1bc27b-a13d-4203-843c-388d0c71a4c4"
+
+	property Entity jobRight = "635e314b-d397-4d3e-a564-5935afd34a9c"
+
+	property Entity jobNote = "411299c1-d46a-4b1e-abd1-fefcd8632954"
+
+	-- 마을 특징: 탭 줄(Tab0 ~ Tab4) · 카드 묶음(Card0 ~ Card2 = 포탑 · 억제기 · 넥서스) · 아래 안내 한 줄
+	property Entity townTabs = "45a2675b-e30b-4c65-aec9-185e7e71db4f"
+
+	property Entity townCards = "7c76a70c-cb02-48f0-b82c-c34b89b12cbb"
+
+	property Entity townFoot = "d33f003c-e807-463b-9a57-44f90094fe74"
+
+	-- 선택 탭 글자 색(어두운 잉크 = 금 선택 판 위) · 평소 글자 색(상아)
+	property Color cInk = Color(0.11, 0.078, 0.02, 1)
+
+	property Color cIvory = Color(0.953, 0.933, 0.886, 1)
+
+	property Color cSub = Color(0.682, 0.722, 0.812, 1)
+
+	@HideFromInspector
+	property boolean isOpen = false
+
+	@HideFromInspector
+	property string curKind = ""
+
+	-- 마지막으로 닫힌 창 종류 · 닫힌 횟수(폴링 확인용)
+	@HideFromInspector
+	property string lastClosedKind = ""
+
+	@HideFromInspector
+	property integer closeSeq = 0
+
+	-- 열 때 튜토리얼 중이었나(튜토리얼이 끝나면 따라 닫는다) · 이 컨트롤러가 켠 Root(튜토리얼이 아닐 때만 · 닫을 때 같이 끈다)
+	@HideFromInspector
+	property boolean fromTutorial = false
+
+	@HideFromInspector
+	property boolean ownedRoot = false
+
+	@HideFromInspector
+	property any cb = nil
+
+	@HideFromInspector
+	property any jobs = nil
+
+	@HideFromInspector
+	property any towns = nil
+
+	@HideFromInspector
+	property any facilityIcons = nil
+
+	@HideFromInspector
+	property any traitRows = nil
+
+	@HideFromInspector
+	property any jobStats = nil
+
+	@HideFromInspector
+	property integer curJob = 0
+
+	@HideFromInspector
+	property integer curTown = 0
+
+	@HideFromInspector
+	property any hKey = nil
+
+	@HideFromInspector
+	property number pollAcc = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 버튼 · 탭 연결 · 자료 틀 만들기 · 세 창은 꺼진 채로 시작.
+		self:BuildData()
+		self:Wire(self.btnNameNext)
+		self:Wire(self.btnJobNext)
+		self:Wire(self.btnTownNext)
+		for i = 0, 4 do
+			local jt = self:Child(self.jobTabs, "Tab" .. i)
+			if jt ~= nil and jt.ButtonComponent ~= nil then
+				local idx = i + 1
+				jt:ConnectEvent(ButtonClickEvent, function() self:SelectJob(idx) end)
+			end
+			local tt = self:Child(self.townTabs, "Tab" .. i)
+			if tt ~= nil and tt.ButtonComponent ~= nil then
+				local idx = i + 1
+				tt:ConnectEvent(ButtonClickEvent, function() self:SelectTown(idx) end)
+			end
+		end
+		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
+		self:HideAll()
+		log("[TutorialInfo] ready (client)")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 키 연결 해제.
+		if self.hKey ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.hKey)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Wire(ButtonComponent btn)
+		-- 닫기 버튼(없으면 건너뜀).
+		if not isvalid(btn) then
+			return
+		end
+		btn.Entity:ConnectEvent(ButtonClickEvent, function() self:Close() end)
+	end
+
+	-- ── 열기 · 닫기 ─────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void Open(string kind)
+		-- kind = "nametag" | "jobs" | "towns". 열려 있으면 먼저 조용히 닫고(콜백 없음) 새로 연다.
+		local win = nil
+		local btn = nil
+		local label = "다음"
+		if kind == "nametag" then
+			win = self.nameWin
+			btn = self.btnNameNext
+		elseif kind == "jobs" then
+			win = self.jobWin
+			btn = self.btnJobNext
+			label = "확인"
+		elseif kind == "towns" then
+			win = self.townWin
+			btn = self.btnTownNext
+		else
+			log_warning("[TutorialInfo] unknown kind " .. tostring(kind))
+			return
+		end
+		if not isvalid(win) then
+			log_warning("[TutorialInfo] window missing for " .. kind)
+			return
+		end
+		self:HideAll()
+		self.fromTutorial = _TutorialDirector ~= nil and _TutorialDirector.active == true
+		self.ownedRoot = false
+		if isvalid(self.root) and not self.root.Enable then
+			-- 튜토리얼 밖에서 열 때(시험 · 캡처): 그룹 뿌리가 꺼져 있으면 이 창이 안 보인다 → 켜 두고 닫을 때 끈다.
+			self.root.Enable = true
+			self.ownedRoot = true
+		end
+		win.Enable = true
+		if isvalid(btn) and btn.Entity.TextGUIRendererComponent ~= nil then
+			btn.Entity.TextGUIRendererComponent.Text = label
+		end
+		self.isOpen = true
+		self.curKind = kind
+		if kind == "jobs" then
+			self:SelectJob(1)
+		elseif kind == "towns" then
+			self:SelectTown(1)
+		end
+		log("[TutorialInfo] open " .. kind)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 닫기(버튼 · ESC). 콜백(SetOnClose)이 있으면 fn(kind) 를 부르고 지운다.
+		if not self.isOpen then
+			return
+		end
+		local kind = self.curKind
+		self:Finish(kind)
+		local c = self.cb
+		self.cb = nil
+		log("[TutorialInfo] close " .. kind .. " seq=" .. tostring(self.closeSeq))
+		if c ~= nil and c.fn ~= nil then
+			c.fn(kind)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Finish(string kind)
+		-- 창을 내리고 닫힘 기록을 남긴다(콜백은 부르지 않는다).
+		self:HideAll()
+		self.isOpen = false
+		self.curKind = ""
+		self.lastClosedKind = kind
+		self.closeSeq = self.closeSeq + 1
+		if self.ownedRoot and isvalid(self.root) then
+			self.root.Enable = false
+		end
+		self.ownedRoot = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsOpen()
+		-- 세 창 중 하나가 열려 있나(TutorialDirector 장면이 폴링).
+		return self.isOpen
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOnClose(any fn)
+		-- 다음에 닫힐 때 fn(kind) 를 한 번 부른다(Open 앞이나 뒤 어느 쪽에서 불러도 된다 · nil 이면 지움).
+		if fn == nil then
+			self.cb = nil
+		else
+			self.cb = { fn = fn }
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideAll()
+		-- 세 창을 모두 끈다.
+		if isvalid(self.nameWin) then
+			self.nameWin.Enable = false
+		end
+		if isvalid(self.jobWin) then
+			self.jobWin.Enable = false
+		end
+		if isvalid(self.townWin) then
+			self.townWin.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 튜토리얼 중에 연 창은 튜토리얼이 끝나면(그만두기 · 마지막 장면) 따라 닫는다. 0.5초마다 본다.
+		if not self.isOpen or not self.fromTutorial then
+			return
+		end
+		self.pollAcc = self.pollAcc + delta
+		if self.pollAcc < 0.5 then
+			return
+		end
+		self.pollAcc = 0
+		if _TutorialDirector ~= nil and _TutorialDirector.active ~= true then
+			local kind = self.curKind
+			self:Finish(kind)
+			self.cb = nil
+			log("[TutorialInfo] closed with tutorial end " .. kind)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- ESC = 닫기. 그만두기 확인창이 떠 있으면 그쪽이 먼저(이 키는 무시). 다른 키는 TutorialDirector.KeyAllowed 가 막는다.
+		if not self.isOpen then
+			return
+		end
+		if event.key ~= KeyboardKey.Escape then
+			return
+		end
+		if _TutorialDirector ~= nil and isvalid(_TutorialDirector.confirm) and _TutorialDirector.confirm.Enable then
+			return
+		end
+		self:Close()
+	end
+
+	-- ── 도우미 ─────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method Entity Child(Entity rootE, string path)
+		-- "A/B/C" 경로로 자식을 찾는다(없으면 nil).
+		local cur = rootE
+		for seg in string.gmatch(path, "[^/]+") do
+			if not isvalid(cur) then
+				return nil
+			end
+			cur = cur:GetChildByName(seg)
+		end
+		if not isvalid(cur) then
+			return nil
+		end
+		return cur
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity parent, string path, string text)
+		-- 자식 글자 한 줄.
+		local c = self:Child(parent, path)
+		if c ~= nil and c.TextGUIRendererComponent ~= nil then
+			c.TextGUIRendererComponent.Text = text
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetColor(Entity parent, string path, Color col)
+		-- 자식 글자 색.
+		local c = self:Child(parent, path)
+		if c ~= nil and c.TextGUIRendererComponent ~= nil then
+			c.TextGUIRendererComponent.FontColor = col
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetShow(Entity parent, string path, boolean on)
+		-- 자식 켜고 끄기.
+		local c = self:Child(parent, path)
+		if c ~= nil then
+			c.Enable = on
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetImage(Entity parent, string path, string ruid)
+		-- 자식 그림 바꾸기(빈 값이면 그대로 둔다 — 빈 RUID 는 안 보인다).
+		if ruid == nil or ruid == "" then
+			return
+		end
+		local c = self:Child(parent, path)
+		if c ~= nil and c.SpriteGUIRendererComponent ~= nil then
+			c.SpriteGUIRendererComponent.ImageRUID = ruid
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FirstSentence(string s)
+		-- 설명의 첫 문장(". " 앞까지 · 마침표 포함). 마침표가 없으면 전체.
+		if s == nil or s == "" then
+			return ""
+		end
+		local i, e = string.find(s, ". ", 1, true)
+		if i == nil then
+			return s
+		end
+		return string.sub(s, 1, i)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Num(number v)
+		-- 정수면 정수로, 아니면 소수 그대로(0.5 → "0.5").
+		if v == math.floor(v) then
+			return string.format("%d", math.floor(v))
+		end
+		return tostring(v)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Num3(number a, number b, number c)
+		-- Lv1 · Lv2 · Lv3 값 표기: 셋이 같으면 하나만, 다르면 "a · b · c".
+		if a == b and b == c then
+			return self:Num(a)
+		end
+		return self:Num(a) .. " · " .. self:Num(b) .. " · " .. self:Num(c)
+	end
+
+	@ExecSpace("ClientOnly")
+	method number Pct(number v)
+		-- 비율(0.10) → 퍼센트 정수(10).
+		return math.floor(v * 100 + 0.5)
+	end
+
+	-- ── 자료 ───────────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void BuildData()
+		-- 직업 5개(탭 순서) · 마을 5곳(탭 순서). 능력치는 JobInfo.csv, 스킬 글은 SkillInfo.csv 에서 읽으니 여기 두는 것은 무기 · 한 줄 특성 · 키 칸뿐(1.0.6-2-01 특성 초안 · 사용자 확정 필요).
+		--   키 칸: 전사 Q 파워 스트라이크 · W 하이퍼 바디 · E 도발 · R 불굴의 진 / 마법사 Q 에너지볼트 · Shift 텔레포트(마법사의 자질) · E 매직 가드 · R 대마법 / 궁수 Q 더블 샷 · W 스나이핑 · E 닷지 · R 폭풍의 화살 /
+		--   도적 Q 럭키 세븐 · W 다크 사이트 · E 쉐도우 파트너 · R 메소 익스플로전 / 해적 Q 섬머솔트 킥 · W 에너지 차지 · E 에너지 쉴드 · R 함포 사격 (Skill/SkillHotbar.BuildSlotTable 과 같다).
+		--   npc = 전직관 NPC 그림(thumbnail:// 로 쓴다 · apply-intro-coach.cjs 의 NPC 표와 같은 RUID).
+		self.jobs = {
+			{ id = "WARRIOR", name = "전사", weapon = "한손검", trait = "가까이서 강하게 싸워요", npc = "ec40238056d14dc895e93767d9bf6f90", pri = "STR", sec = "DEX",
+				note = "이번 튜토리얼에서는 전사로 전직해 볼게요.",
+				skills = { { "Q", "SK_W11" }, { "W", "SK_W21" }, { "E", "SK_W22" }, { "R", "SK_W31" } } },
+			{ id = "MAGICIAN", name = "마법사", weapon = "완드", trait = "멀리서 마법으로 싸우고 텔레포트로 움직여요", npc = "fb911e3df47b4b54997950df0726285a", pri = "INT", sec = "LUK",
+				note = "",
+				skills = { { "Q", "SK_M11" }, { "Shift", "SK_M13" }, { "E", "SK_M22" }, { "R", "SK_M31" } } },
+			{ id = "ARCHER", name = "궁수", weapon = "활", trait = "멀리서 화살을 쏘고 보스 재등장 시각을 알아요", npc = "4d71a2a1d659408fbdf5dac3152134e6", pri = "DEX", sec = "STR",
+				note = "",
+				skills = { { "Q", "SK_A11" }, { "W", "SK_A21" }, { "E", "SK_A22" }, { "R", "SK_A31" } } },
+			{ id = "THIEF", name = "도적", weapon = "아대 · 단검", trait = "표창을 빠르게 던지는 치명타형이에요", npc = "4801a0f7b2664b8da9b73d2b3ea25fd4", pri = "LUK", sec = "DEX",
+				note = "",
+				skills = { { "Q", "SK_T11" }, { "W", "SK_T21" }, { "E", "SK_T22" }, { "R", "SK_T31" } } },
+			{ id = "PIRATE", name = "해적", weapon = "너클", trait = "앞을 휘두르는 격투가이고 수비대를 싸게 키워요", npc = "f389034efb9b4e29bba08efad1147a24", pri = "STR", sec = "DEX",
+				note = "",
+				skills = { { "Q", "SK_P11" }, { "W", "SK_P21" }, { "E", "SK_P22" }, { "R", "SK_P31" } } },
+		}
+		-- 마을 탭 순서 = 헤네시스 · 엘리니아 · 커닝시티 · 페리온 · 노틸러스(1.0.6-4-01)
+		self.towns = {
+			{ id = "HENESYS", name = "헤네시스" },
+			{ id = "ELLINIA", name = "엘리니아" },
+			{ id = "KERNING", name = "커닝시티" },
+			{ id = "PERION", name = "페리온" },
+			{ id = "NAUTILUS", name = "노틸러스" },
+		}
+		self.jobStats = nil
+		self.facilityIcons = nil
+		self.traitRows = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method string StatIcon(string stat)
+		-- 능력치 아이콘 RUID(ruid-map icon_stat_str · dex · int · luk).
+		if stat == "STR" then
+			return "9cb53a68ded14f48aa0aa66bbb3b1fb3"
+		elseif stat == "DEX" then
+			return "cf2c1cc02e0f4b37bfccb883d02514ad"
+		elseif stat == "INT" then
+			return "4475726abdbc46bcb4160198d3566fea"
+		elseif stat == "LUK" then
+			return "ac1ca3aac4e24716b9419bbef520f021"
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method any JobStatsOf(string jobId)
+		-- JobInfo.csv 의 주 · 부 능력치 { pri, sec } (표가 없거나 행이 없으면 nil → 호출부가 직업 자료의 기본값을 쓴다).
+		if self.jobStats == nil then
+			self.jobStats = {}
+			local t = _DataService:GetTable("JobInfo")
+			if t == nil then
+				log_warning("[TutorialInfo] JobInfo dataset not found — 능력치는 기본값")
+			else
+				for i = 1, t:GetRowCount() do
+					local id = t:GetCell(i, "JobId") or ""
+					if id ~= "" then
+						self.jobStats[id] = { pri = t:GetCell(i, "PrimaryStat") or "", sec = t:GetCell(i, "SecondaryStat") or "" }
+					end
+				end
+			end
+		end
+		return self.jobStats[jobId]
+	end
+
+	-- ── 직업 소개 ──────────────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void SelectJob(integer idx)
+		-- 직업 탭 하나를 골라 왼쪽 정보 · 오른쪽 스킬 줄 4개 · 전사 한 줄을 다시 그린다.
+		local job = (self.jobs ~= nil) and self.jobs[idx] or nil
+		if job == nil then
+			return
+		end
+		self.curJob = idx
+		-- 탭: 고른 탭만 금 판 + 어두운 글자
+		for i = 1, #self.jobs do
+			local tab = self:Child(self.jobTabs, "Tab" .. (i - 1))
+			if tab ~= nil then
+				self:SetShow(tab, "SelBg", i == idx)
+				self:SetColor(tab, "Label", (i == idx) and self.cInk or self.cIvory)
+			end
+		end
+		-- 왼쪽: 전직관 그림 · 이름 · 주 / 부 능력치 · 무기
+		local stats = self:JobStatsOf(job.id)
+		local pri = job.pri
+		local sec = job.sec
+		if stats ~= nil and stats.pri ~= "" then
+			pri = stats.pri
+		end
+		if stats ~= nil and stats.sec ~= "" then
+			sec = stats.sec
+		end
+		local left = self.jobLeft
+		self:SetImage(left, "Portrait", "thumbnail://" .. job.npc)
+		self:SetText(left, "Name", job.name)
+		self:SetText(left, "PriRow/Value", pri)
+		self:SetImage(left, "PriRow/Icon", self:StatIcon(pri))
+		self:SetText(left, "SecRow/Value", sec)
+		self:SetImage(left, "SecRow/Icon", self:StatIcon(sec))
+		self:SetText(left, "WeaponRow/Value", job.weapon)
+		-- 오른쪽: 한 줄 특성 + 스킬 줄 4개
+		local right = self.jobRight
+		self:SetText(right, "Trait/Text", job.trait)
+		_SkillDatabase:EnsureLoaded()
+		for r = 1, 4 do
+			local row = self:Child(right, "Row" .. (r - 1))
+			local sk = job.skills[r]
+			if row ~= nil and sk ~= nil then
+				local key = sk[1]
+				local skill = _SkillDatabase:GetSkill(sk[2])
+				row.Enable = true
+				self:SetShow(row, "KeyChip", key ~= "Shift")
+				self:SetShow(row, "KeyShiftChip", key == "Shift")
+				self:SetText(row, "KeyChip/Text", key)
+				self:SetText(row, "KeyShiftChip/Text", key)
+				if skill ~= nil then
+					self:SetImage(row, "Icon", skill.icon)
+					self:SetText(row, "Name", skill.name)
+					self:SetText(row, "Desc", self:FirstSentence(skill.description))
+					local tag = tostring(math.floor(skill.requiredTier)) .. "차 전직 · Lv." .. tostring(math.floor(skill.requiredLevel))
+					if key == "R" then
+						tag = "궁극기 · " .. tag
+					end
+					self:SetText(row, "Tag", tag)
+				else
+					log_warning("[TutorialInfo] skill missing " .. tostring(sk[2]))
+					self:SetText(row, "Name", sk[2])
+					self:SetText(row, "Desc", "")
+					self:SetText(row, "Tag", "")
+				end
+			elseif row ~= nil then
+				row.Enable = false
+			end
+		end
+		-- 전사 탭에만: 튜토리얼에서 전사로 전직한다는 한 줄
+		if isvalid(self.jobNote) then
+			self.jobNote.Enable = job.note ~= ""
+			if job.note ~= "" and self.jobNote.TextGUIRendererComponent ~= nil then
+				self.jobNote.TextGUIRendererComponent.Text = job.note
+			end
+		end
+		log("[TutorialInfo] job tab " .. job.id)
+	end
+
+	-- ── 마을별 시설 특징 ───────────────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method any FacilityIconOf(string villageId, string stage)
+		-- FacilitySprite.csv 의 UI 아이콘 { ruid, flipY } (창용 · 월드 RUID 를 UI 에 쓰면 LEA-3044 라 IconRuid 열). 없으면 nil.
+		if self.facilityIcons == nil then
+			self.facilityIcons = {}
+			local t = _DataService:GetTable("FacilitySprite")
+			if t == nil then
+				log_warning("[TutorialInfo] FacilitySprite dataset not found — 시설 그림은 기본값")
+			else
+				for i = 1, t:GetRowCount() do
+					local v = t:GetCell(i, "VillageId") or ""
+					local s = t:GetCell(i, "Stage") or ""
+					local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+					local icon = t:GetCell(i, "IconRuid") or ""
+					if enabled and v ~= "" and s ~= "" and icon ~= "" then
+						self.facilityIcons[v .. "|" .. s] = { ruid = icon, flipY = string.lower(tostring(t:GetCell(i, "FlipY") or "false")) == "true" }
+					end
+				end
+			end
+		end
+		return self.facilityIcons[villageId .. "|" .. stage]
+	end
+
+	@ExecSpace("ClientOnly")
+	method any TraitsOf(string villageId, string stage)
+		-- VillageFacilityTrait.csv 에서 그 마을 · 시설의 특성 줄 목록 { key, a, b, c } (표 순서 · Enabled=false 제외 · Lv2/Lv3 빈 칸 = Lv1).
+		if self.traitRows == nil then
+			self.traitRows = {}
+			local t = _DataService:GetTable("VillageFacilityTrait")
+			if t == nil then
+				log_warning("[TutorialInfo] VillageFacilityTrait dataset not found — 특징 없음")
+			else
+				for i = 1, t:GetRowCount() do
+					local v = t:GetCell(i, "VillageId") or ""
+					local s = t:GetCell(i, "Stage") or ""
+					local k = t:GetCell(i, "TraitKey") or ""
+					local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+					if enabled and v ~= "" and s ~= "" and k ~= "" then
+						local a = tonumber(t:GetCell(i, "Lv1")) or 0
+						local b = tonumber(t:GetCell(i, "Lv2")) or a
+						local c = tonumber(t:GetCell(i, "Lv3")) or a
+						local id = v .. "|" .. s
+						if self.traitRows[id] == nil then
+							self.traitRows[id] = {}
+						end
+						table.insert(self.traitRows[id], { key = k, a = a, b = b, c = c })
+					end
+				end
+			end
+		end
+		return self.traitRows[villageId .. "|" .. stage]
+	end
+
+	@ExecSpace("ClientOnly")
+	method any LineOf(any tr)
+		-- 특성 하나를 { label, value, multi } 한 줄로(수치는 표에서 · 문장 틀만 여기). 카드에 넣지 않는 특성(MINION_STOP_X)은 nil.
+		--   multi = Lv1 · Lv2 · Lv3 값이 서로 다른 줄(아래 안내 한 줄을 켠다).
+		local k = tr.key
+		local multi = not (tr.a == tr.b and tr.b == tr.c)
+		if k == "SUPPRESSOR_ATTACK" then
+			return { label = "직접 공격", value = "포탑 피해 ×" .. self:Num3(tr.a, tr.b, tr.c), multi = multi }
+		elseif k == "MAX_TARGETS" then
+			return { label = "공격 대상", value = "가까운 " .. self:Num3(tr.a, tr.b, tr.c) .. "마리", multi = multi }
+		elseif k == "AURA_ATK" then
+			return { label = "공격력 오라", value = "+" .. self:Num3(self:Pct(tr.a), self:Pct(tr.b), self:Pct(tr.c)) .. "%", multi = multi }
+		elseif k == "AURA_SPEED" then
+			return { label = "이동속도 오라", value = "+" .. self:Num3(self:Pct(tr.a), self:Pct(tr.b), self:Pct(tr.c)) .. "%", multi = multi }
+		elseif k == "AURA_ACC" then
+			return { label = "명중률 오라", value = "+" .. self:Num3(tr.a, tr.b, tr.c) .. "%p", multi = multi }
+		elseif k == "AURA_REGEN" then
+			return { label = "체력 회복 오라", value = "초당 +" .. self:Num3(tr.a, tr.b, tr.c), multi = multi }
+		elseif k == "TOWER_SINGLE_MUL" then
+			return { label = "원거리 단일", value = "피해 ×" .. self:Num3(tr.a, tr.b, tr.c), multi = multi }
+		elseif k == "TOWER_SPLASH" then
+			return { label = "폭발 공격", value = "주변 폭발 · 반경 " .. self:Num3(tr.a, tr.b, tr.c), multi = multi }
+		elseif k == "REFLECT_PLAYER" then
+			return { label = "플레이어 반사", value = "피해 ×" .. self:Num3(tr.a, tr.b, tr.c), multi = multi }
+		elseif k == "REFLECT" then
+			return { label = "미니언 반사", value = "피해 ×" .. self:Num3(tr.a, tr.b, tr.c), multi = multi }
+		elseif k == "MAX_HP_MUL" then
+			local v = self:Num3(self:Pct(tr.a), self:Pct(tr.b), self:Pct(tr.c)) .. "%"
+			if tr.a == 0.5 and tr.b == 0.5 and tr.c == 0.5 then
+				v = "절반"
+			end
+			return { label = "억제기 체력", value = v, multi = multi }
+		elseif k == "MINION_STOP_X" then
+			return nil
+		end
+		return { label = k, value = self:Num3(tr.a, tr.b, tr.c), multi = multi }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectTown(integer idx)
+		-- 마을 탭 하나를 골라 카드 3장(포탑 · 억제기 · 넥서스)의 그림과 특징 줄(최대 3)을 다시 그린다.
+		local town = (self.towns ~= nil) and self.towns[idx] or nil
+		if town == nil then
+			return
+		end
+		self.curTown = idx
+		for i = 1, #self.towns do
+			local tab = self:Child(self.townTabs, "Tab" .. (i - 1))
+			if tab ~= nil then
+				self:SetShow(tab, "SelBg", i == idx)
+				self:SetColor(tab, "Label", (i == idx) and self.cInk or self.cIvory)
+			end
+		end
+		local stages = { "TOWER", "SUPPRESSOR", "CORE" }
+		local anyMulti = false
+		for s = 1, 3 do
+			local stage = stages[s]
+			local card = self:Child(self.townCards, "Card" .. (s - 1))
+			if card ~= nil then
+				local ic = self:FacilityIconOf(town.id, stage)
+				local icon = self:Child(card, "Icon")
+				if ic ~= nil and icon ~= nil and icon.SpriteGUIRendererComponent ~= nil then
+					icon.SpriteGUIRendererComponent.ImageRUID = ic.ruid
+					icon.SpriteGUIRendererComponent.FlipY = ic.flipY
+				end
+				local lines = {}
+				local trs = self:TraitsOf(town.id, stage)
+				if trs ~= nil then
+					for _, tr in ipairs(trs) do
+						local ln = self:LineOf(tr)
+						if ln ~= nil and #lines < 3 then
+							table.insert(lines, ln)
+							if ln.multi then
+								anyMulti = true
+							end
+						end
+					end
+				end
+				for r = 1, 3 do
+					local row = self:Child(card, "Row" .. (r - 1))
+					if row ~= nil then
+						local ln = lines[r]
+						row.Enable = ln ~= nil
+						if ln ~= nil then
+							self:SetText(row, "Label", ln.label)
+							self:SetText(row, "Value", ln.value)
+						end
+					end
+				end
+				-- 특징이 하나도 없으면 첫 줄 자리에 안내 한 줄
+				self:SetShow(card, "None", #lines == 0)
+			end
+		end
+		if isvalid(self.townFoot) then
+			self.townFoot.Enable = anyMulti
+		end
+		log("[TutorialInfo] town tab " .. town.id)
+	end
+end
