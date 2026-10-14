@@ -59,3 +59,4 @@
 ## 13. 포탑 플레이어 피해 100% (사용자 2026-10-15)
 
 - `Lane/LaneFacility`: `PlayerTowerDamageMul` 1.0 · `StructureDamageMulOf` 가 Stage TOWER 면 그 값 · 억제기 · 넥서스는 `PlayerStructureDamageMul` 12% 그대로.
+- (2026-10-15 이어서) 억제기 · 넥서스도 100%: `PlayerStructureDamageMul` 0.12 → 1.0 · 포탑 전용 `PlayerTowerDamageMul` 삭제(사용자 "빈집털이가 안 됨"). 배리어(미니언 없을 때 5%)는 그대로.
