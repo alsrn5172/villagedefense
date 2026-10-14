@@ -7,3 +7,7 @@
 ## 2. 구조물 피해 10% (사용자 2026-10-14 · 구조물 = 포탑 · 억제기 · 넥서스)
 
 - `LaneFacility.PlayerStructureDamageMul` 0.1 · `StructureDamageMulOf(player)`(직업 패시브 "구조물 피해 +p" 자리 · 지금은 기본값) · `HandleHitEvent`: 플레이어 피해 = floor(피해 × 배리어(미니언 없으면 `NoMinionDamageMul` 0.05) × 0.1) · 최소 1. 페리온 억제기 반사는 배리어까지만 적용한 값(`reflectBase`) 기준 — 예전 반사량 유지. 튜토리얼 문구는 안 바꿈(사용자).
+
+## 3. 강화 시 HP 더하기 (사용자 2026-10-14)
+
+- `LaneStateService.RequestTowerAction` upgrade: 새 HP = min(새 최대, 강화 전 HP + (새 최대 − 강화 전 최대)) — 예전(1.0.7) 강화 전 HP 비율 유지를 대체. 수리비(부족한 HP × `RepairCostPerHp` 올림)는 이미 부족한 만큼 비례라 그대로.
