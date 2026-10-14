@@ -54,3 +54,8 @@
 
 - `Lane/NexusCloneService`: P3-ZOMBIE 기준 계산(HpBaseMul · AtkMul · TemplateWaveKey · Fallback* · ZombieTemplate) 삭제 → 강화 단계 선형 `ByGrade` · HP 900,000 → 1,500,000 · 공격력 1,000 → 2,000 · 방어력 10 → 30 · 소환체 공격력 500 → 1,000(`GradeMax` 10). `OnCoreDamaged` / `SpawnClone` 에 grade 인자 · 소환체 공격력은 분신 `CloneSkillBrain.Ov.summonAttack` 에 적는다.
 - `Lane/LaneStateService`: `OnCoreDamaged(..., t.lv)` 강화 단계 넘김. `Lane/CloneSkillBrain` · `Lane/DefenderService.SpawnSummons(..., attack)`: 소환체 공격력 덮어쓰기(0 = 3티어 표).
+- (2026-10-15) 분신 HP `HpAtGrade1` 450,000 · `HpAtGradeMax` 750,000(절반). 분신 보스 판정 = `CloneSkillBrain` 보유: `StatService.ResolveTarget` 회피 `BossAvoidPct` · `Monster.ReactToHit` 보스 반응(돌아보기 없음 · 1% 미만 피해 안 밀림) · `SkillExecutors` 도발 끌기 제외 · `SkillAttack` 보스 우선 표적.
+
+## 13. 포탑 플레이어 피해 100% (사용자 2026-10-15)
+
+- `Lane/LaneFacility`: `PlayerTowerDamageMul` 1.0 · `StructureDamageMulOf` 가 Stage TOWER 면 그 값 · 억제기 · 넥서스는 `PlayerStructureDamageMul` 12% 그대로.
