@@ -75,6 +75,7 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 - 엘리니아 마을: 미니언 출발을 위층 다리 → 맨 아래층 레인 포탈 자리로(`LaneConfig` ELLINIA VILLAGE PathMinX −4.0 → −5.1 · PathY 6.8 → 0.88 · SpawnX −3.4 → −3.77 · SpawnY 6.8 → 0.88 · EndTriggerX 4.1 → 0.1). 칠판 `VillageNpcSector` BOARD `AnchorY` −0.91 → 1.47(오른쪽 발판 표면에 붙어 발판 그림에 안 가림).
 - 도움말(`GameIntroGroup`): 빅토리아 주화 '쓰는 곳' 줄 = 새 강화 비용(포탑 · 넥서스 4 ~ 9 / 억제기 6 ~ 14) · 7쪽 넥서스 분신 문단 "~해요" 체. 마을 특징 창(`TutorialGroup` Foot) 푸터 `시설 1단계 · 중간 · 10단계 값이에요.`(`apply-tutorial-info.cjs` 도).
 - 스탯창(`CharacterGroup`): 이동속도 줄을 점프력 줄 위로(Row6 · Row7 위치만 맞바꿈). 줄 이름 "명중률" → "추가 명중률"(Row8/Chip · 사용자 2026-10-14: 명중 확률 = 기본 100% + 이 값이라 0% · 20% 로 보이면 오해).
+- 스탯창 오른쪽 배치(사용자 2026-10-14): 맨 위(기본 능력치 위)에 전투력 큰 한 줄(새 `Right/Power` · 높이 58 · 금색 30) · 기본 능력치 묶음 −62 · 전투 능력치 10칸을 좌우 2칸 5줄로(공격력|방어력 · 이동속도|점프력 · 추가 명중률|크리티컬 · 회피율|크리티컬 데미지 · 추가 공격속도|방어율 무시) · 전투력이 있던 칸 = **추가 공격속도**(`StatService.BuildUiCsv` `atkspd=` = (공격속도 배율 − 1) % · 지금 0%). 값 칸 엔티티는 그대로 옮겨 바인딩 유지 · `StatUIController.cellPower` 새 UUID · `cellAtkSpeed` 추가. 스크립트 `handoff/patch107-agents/_work/U/apply-stat-layout.cjs`.
 - 계정 기록 창(`AccountRecordGroup`) 결과 칩 `ChipLastOne`(혼자 남아 승리 · 금빛 · 폭 120) · `AccountRecordUIController.FillHistCell`.
 - 공방 창(`VillageWorkshopGroup`) 장비 판매 칸 `Window/SellPane` 적용.
 
