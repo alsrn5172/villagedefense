@@ -198,11 +198,17 @@ script LaneStateService extends Logic
 	end
 
 	method integer FacilityArtGrade(integer grade)
-		-- 강화 단계(1 ~ 10) → 그림 단계(1 ~ 3) 한 곳(1.0.7 §10 10단계 개편): 1 ~ 3 → 1 · 4 ~ 7 → 2 · 8 ~ 10 → 3.
-		--   공격 연출(FacilityAttackFx 의 Level 1 ~ 3 행) · 성장 점수(그림이 바뀌는 4 · 8단계에서만)가 이 함수를 같이 쓴다. ExecSpace 없음(순수 계산).
+		-- 강화 단계(1 ~ 10) → 티어(1 ~ 3) 한 곳. 1.0.8(사용자 2026-10-14 티어제): 1 ~ 4 → 1티어 · 5 ~ 7 → 2티어 · 8 ~ 10 → 3티어(1.0.7 은 1 ~ 3 · 4 ~ 7 · 8 ~ 10).
+		--   공격 연출(FacilityAttackFx 의 Level 1 ~ 3 행 · 포탑 · 헤네시스 억제기) · 성장 점수(티어가 바뀌는 5 · 8단계에서만) · "강화 / 보강" 이름이 이 함수를 같이 쓴다. ExecSpace 없음(순수 계산).
 		if grade >= 8 then return 3 end
-		if grade >= 4 then return 2 end
+		if grade >= 5 then return 2 end
 		return 1
+	end
+
+	method string UpgradeWord(integer fromLv)
+		-- 1.0.8(사용자 2026-10-14): 티어가 바뀌는 단계 올림(4 → 5 · 7 → 8) = "강화" · 티어 안 단계 올림 = "보강". ExecSpace 없음(클라 방어 창 버튼 글자도 쓴다).
+		if self:FacilityArtGrade(fromLv + 1) > self:FacilityArtGrade(fromLv) then return "강화" end
+		return "보강"
 	end
 
 	method any AttackFx(string villageId, string stage, integer lv)
@@ -1559,7 +1565,7 @@ script LaneStateService extends Logic
 		if action == "upgrade" then
 			-- 최대 단계(1.0.7 §10: 10단계)면 표 칸과 상관없이 막는다(BuildView 의 MAX 판정과 같은 기준).
 			cost = (t.lv < self:FacilityMaxLevel(stage)) and (d.upgrade[t.lv] or 0) or 0
-			if not t.alive or cost <= 0 then self:Toast(uid, "강화할 수 없습니다") return end
+			if not t.alive or cost <= 0 then self:Toast(uid, self:UpgradeWord(t.lv) .. "할 수 없습니다") return end
 		elseif action == "repair" then
 			cost = math.ceil((max - t.hp) * d.repairPerHp)
 			if not t.alive or t.hp >= max then self:Toast(uid, "수리할 곳이 없습니다") return end
@@ -1606,7 +1612,7 @@ script LaneStateService extends Logic
 			--   1.0.8(사용자 2026-10-14 "강화하면 체력 비율이 아니라 최대치 올라간 만큼 올라가게"): 새 HP = 강화 전 HP + (새 최대 − 강화 전 최대) — 부족한 HP(수리할 양)는 그대로.
 			t.hp = math.max(1, math.min(maxAfter, hpBefore + math.max(0, maxAfter - max)))
 			-- 1.0.7 §10: 강화 단계는 "Lv" 대신 "n단계"(시설 레벨 Lv15 ~ 35 와 헷갈리지 않게).
-			msg = d.name .. " " .. tostring(t.lv) .. "단계 강화"
+			msg = d.name .. " " .. tostring(t.lv) .. "단계 " .. self:UpgradeWord(t.lv - 1)   -- 1.0.8: 티어가 바뀌면 "강화" · 티어 안이면 "보강"
 			log("[Facility] " .. v.id .. " " .. stage .. " upgrade -> grade " .. tostring(t.lv) .. "/" .. tostring(self:FacilityMaxLevel(stage)) .. " facLv=" .. tostring(self:FacilityLevelAt(stage, t.lv)) .. " hp " .. tostring(hpBefore) .. "→" .. tostring(t.hp) .. "/" .. tostring(maxAfter) .. " (ratio " .. string.format("%.3f", hpBefore / math.max(1, max)) .. ")")
 		elseif action == "repair" then
 			t.hp = max
@@ -1620,7 +1626,7 @@ script LaneStateService extends Logic
 		end
 		log("[Lane] " .. v.id .. " " .. action .. " " .. stage .. " coin-" .. tostring(cost) .. " (" .. uid .. ")")
 		-- 마을 성장도: 시설이 새 레벨에 처음 도달 (WO-031 묶음 2 · GrowthPoint FACILITY_LEVEL · 같은 단계·레벨은 매치당 1번).
-		--   1.0.7 §10 10단계 개편: 그림 단계(FacilityArtGrade 1 ~ 3)가 바뀌는 4 · 8단계로 올릴 때만 붙인다 → 예전 2 · 3단계와 같은 총점(시설당 2번)이고, 키의 단계도 예전처럼 그림 단계 2 · 3 (FACILITY_LEVEL:<시설>:2 · :3).
+		--   1.0.7 §10 10단계 개편: 그림 단계(FacilityArtGrade 1 ~ 3)가 바뀌는 단계(1.0.8 티어제부터 5 · 8단계)로 올릴 때만 붙인다 → 예전 2 · 3단계와 같은 총점(시설당 2번)이고, 키의 단계도 예전처럼 그림 단계 2 · 3 (FACILITY_LEVEL:<시설>:2 · :3).
 		if action == "upgrade" and _MatchTallyService ~= nil then
 			local artNow = self:FacilityArtGrade(t.lv)
 			if artNow > self:FacilityArtGrade(t.lv - 1) then _MatchTallyService:AddGrowth(uid, "FACILITY_LEVEL", stage, artNow) end
