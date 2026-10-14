@@ -77,3 +77,10 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 - 스탯창(`CharacterGroup`): 이동속도 줄을 점프력 줄 위로(Row6 · Row7 위치만 맞바꿈).
 - 계정 기록 창(`AccountRecordGroup`) 결과 칩 `ChipLastOne`(혼자 남아 승리 · 금빛 · 폭 120) · `AccountRecordUIController.FillHistCell`.
 - 공방 창(`VillageWorkshopGroup`) 장비 판매 칸 `Window/SellPane` 적용.
+
+## 12. Play 검증(V2) 뒤 수정 (2026-10-14)
+
+- 빌드 오류 LEA-1118 2건: `Lane/CloneSkillBrain` 의 `---@type CloneFrameFx` · `---@type CloneBall` 주석 삭제(새 스크립트 타입을 빌드가 못 찾음 · 동작 무관).
+- 궁 끝 숫자 5타 묶음: `SkillExecutors.GroupUltimateHits`(속성만 있고 안 쓰이던 `UltimateHitGroup` 5) — 대상마다 5타씩 합계 · 묶음 안 치명 하나면 치명 숫자 · `[UltHits] … (raw N · group 5)` 로그.
+- 어벤저(사용자 2026-10-14): 큰 표창 출발 높이 럭키 세븐 +0.26 · 피해 숫자 맞은 적마다 2개(`DisplayHits = hitCount` · 분신도) · 수명 = 럭키 세븐과 같음(사거리 끝 수명 줄이기 삭제) · 쉐도우 파트너 분신의 치명 = 원본이 그 대상에게 낸 치명(`SkillProjectile.NoteCrit` · `CloneShared.crits` · 따로 굴리지 않음 — 럭키 세븐 분신도).
+- 보스 체력바: 피격 상자가 엔진 기본(0.67 × 1.42)인 보스는 stand 첫 장 그림 크기 · 피벗으로 폭 · 높이를 잰다(`BossHpBar.FitFromSprite`).

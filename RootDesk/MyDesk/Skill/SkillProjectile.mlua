@@ -145,7 +145,7 @@ script SkillProjectile extends AttackComponent
 
     -- 쉐도우 파트너 열화 투사체(1.1-B17 · SkillAttack.ScheduleShadowClone): 원본과 열화가 같은 표 { dmg, target } 를 든다.
     --   원본(CloneRatio 0) = 명중해 피해가 나면 그 확정 피해(CalcDamage 반환값 · 치명 전)와 대상을 적는다.
-    --   열화(CloneRatio 50~70) = 그 대상만 맞고(IsAttackTarget) 피해 = floor(확정 피해 × CloneRatio%) · 치명타는 원본과 같은 규칙으로 따로 굴린다(사용자 2026-10-13) · 다시 복제하지 않는다.
+    --   열화(CloneRatio 50~70) = 그 대상만 맞고(IsAttackTarget) 피해 = floor(확정 피해 × CloneRatio%) · 치명타는 원본이 그 대상에게 낸 치명 여부를 따라간다(crits · 사용자 2026-10-14) · 다시 복제하지 않는다.
     @HideFromInspector
     property any CloneShared = nil
 
@@ -955,6 +955,14 @@ script SkillProjectile extends AttackComponent
         if self.CloneShared.hits ~= nil then self.CloneShared.hits[defender] = amount end
     end
 
+    method void NoteCrit(Entity defender, boolean crit)
+        -- 원본 투사체가 이 대상에게 낸 치명 여부를 분신 몫과 같이 든 표에 적는다(1.0.7 · 분신 치명 = 원본 따라감). 쉐도우 파트너가 없으면 표가 없어 아무것도 안 한다. 양쪽 인스턴스 공용(ExecSpace 없음).
+        local s = self.CloneShared
+        if s == nil or not isvalid(defender) then return end
+        if s.crits == nil then s.crits = {} end
+        s.crits[defender] = crit
+    end
+
     method number CloneHitDamage(Entity defender)
         -- 분신 몫(CloneRatio > 0)이 보는 값: 원본이 이 대상에게 실제로 준 확정 피해(없으면 0 = 원본이 아직 못 맞혔거나 빗나갔다). 양쪽 인스턴스 공용(ExecSpace 없음).
         local s = self.CloneShared
@@ -1141,14 +1149,21 @@ script SkillProjectile extends AttackComponent
     method boolean CalcCritical(Entity attacker, Entity defender, string attackInfo)
         -- 닷지(SK_A22 · GUARANTEED_CRIT) 활성이면 반드시 크리티컬. 그 외엔 LUK 확률 치명타(아래 · 1.1-A14).
         -- ⚠ 부모(AttackComponent.CalcCritical)에 ExecSpace 가 없어 여기도 안 붙인다(LEA-3014). 실제 호출은 서버 피격 파이프라인뿐.
-        -- 열화 투사체(1.1-B17)도 아래 원본과 같은 규칙으로 치명타를 굴린다(사용자 2026-10-13 "복제타도 치명" · DPS 계산표와 맞춤).
+        -- 열화 투사체(쉐도우 파트너 분신 몫 · 1.1-B17): 따로 굴리지 않고 원본이 그 대상에게 낸 치명 여부를 그대로 쓴다(사용자 2026-10-14 "분신 표창 치명타가 본체 따라감" ·
+        --   예전 10-13 "복제타도 치명" 의 따로 굴림을 바꿈). 원본이 그 대상을 안 맞혔거나 치명이 아니면 false. 원본 쪽 기록 = NoteCrit.
+        if self.CloneRatio > 0 then
+            local s = self.CloneShared
+            return s ~= nil and s.crits ~= nil and isvalid(defender) and s.crits[defender] == true
+        end
         -- 원거리 기본 공격: 근접 기본 공격과 같은 크리 판정(닷지 확정 크리 · LUK 확률 · PlayerAttack.CalcCritical).
         if self.BasicAttack then
             local caster = self:CasterEntity()
             ---@type PlayerAttack
             local pa = self:CasterPlayerAttack(caster)
             if pa == nil then return false end
-            return pa:CalcCritical(caster, defender, "ranged")
+            local basicCrit = pa:CalcCritical(caster, defender, "ranged")
+            self:NoteCrit(defender, basicCrit)
+            return basicCrit
         end
         -- 스킬 투사체: 닷지 확정 크리, 아니면 LUK 확률 치명타(기본 공격 · 스킬 · 궁극기 모두 · 1.1-A14 · B22 · 사용자 2026-10-12).
         local crit = false
@@ -1160,6 +1175,7 @@ script SkillProjectile extends AttackComponent
                 if caster ~= nil then crit = _StatService:RollCritical(caster) end
             end
         end
+        self:NoteCrit(defender, crit)
         -- 궁 끝 피해 표시(1.0.7 §11 · SkillExecutors.OpenUltimateTally): 타 모음이 열려 있으면 이 타의 최종 피해(같은 굴림 × 크리 배율)와 치명 여부(위 판정 그대로)를 대상별로 적는다.
         if _SkillExecutors ~= nil and self.CasterUserId ~= "" and _SkillExecutors:IsUltimateTallyOpen(self.CasterUserId, self.SkillId) then
             local dmg = self:RolledAmount(defender, attackInfo, "crit")
