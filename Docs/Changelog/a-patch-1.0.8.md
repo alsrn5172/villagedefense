@@ -64,6 +64,6 @@
 ## 14. 마을 택시 · 마을 귀환 주문서 · 퀵슬롯 3칸 (사용자 2026-10-15)
 
 - 마을 택시: `FunctionalNpcCatalog` VD_VILLAGE_TAXI(OWNER_ONLY · RECORD 2번 · route sixpath) · 모델 `Models/Npcs/VD_VILLAGE_TAXI`(id vd_village_taxi · 원작 npc/1012000 stand 클립 5b48980b…) · `CommonNpcUIController.OpenTaxiTalk` → `NpcTalkController.ShowTaxi`(page taxi · 초상 TaxiPortrait 128×88) → `LaneStateService.RequestSixPathTaxi`(내 마을 맵 · SpendMeso `SixPathTaxiCost` 5000 · `SixPathMapName` SpawnLocation).
-- 마을 귀환 주문서: ItemInfo · ConsumeInfo(회복 0 · 쿨 0) · ShopItem(POTION 1000) `RETURN_SCROLL`(아이콘 = 원작 오래된 마을 귀환 주문서 02b945ad…) · `InventoryService.UseReturnScroll` → `LaneStateService.ReturnHome`(넥서스 옆 = 리스항구 택시와 같은 `NexusSideSpot` 로 묶음) · 못 가면 소모 없음 · 상점 설명칸 = ItemInfo.Description(회복 없는 소모품).
+- 마을 귀환 주문서: ItemInfo · ConsumeInfo(회복 0 · 쿨 0) · ShopItem(POTION 1000) `RETURN_SCROLL`(아이콘 = 원작 마을 귀환 주문서 5699610a…) · `InventoryService.UseReturnScroll` → `LaneStateService.ReturnHome`(넥서스 옆 = 리스항구 택시와 같은 `NexusSideSpot` 로 묶음) · 못 가면 소모 없음 · 상점 설명칸 = ItemInfo.Description(회복 없는 소모품).
 - 퀵슬롯 3칸: `InventoryService.QuickSlotCount` 3 · `QuickSlotController` 칸 묶음 `Ui(slot)` · 키 Alpha3 · `ui/QuickSlotGroup` Bar 폭 200 → 292 · 칸 −92/0/+92 · Slot3 = Slot2 본뜸(빌더 스크립트 허브 `handoff/patch107-agents/_work/P/quickslot3.cjs`).
 - Play 확인(10/15 · Henesys_Hunt_GolemsTemple 레시피): 다섯 마을 택시 스폰 · 귀환 주문서 퀵 3번(사냥터 → 헤네시스 넥서스 앞 y −3.34 착지 · 6 → 5장) · 택시 [이동한다] 메소 12000 → 7000 · 여섯갈래길 도착 · 여섯갈래길에서 키 경로(Use 3)로 귀환 · 오류 0.
