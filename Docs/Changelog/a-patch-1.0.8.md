@@ -21,3 +21,8 @@
 ## 5. 억제기 강화 비용 = 포탑 (사용자 2026-10-14)
 
 - `TowerConfig.csv` SUPPRESSOR `UpgradeCost` 6 / 18 / 36 → 4 / 12 / 24(총 120 · 포탑 · 넥서스와 같음).
+
+## 6. 억제기 반사 = 실제로 받은 피해 · 미니언 주화 100% = 45:00 (사용자 2026-10-14)
+
+- `LaneFacility.HandleHitEvent`: 페리온 억제기 반사 = 실제로 받은 피해(구조물 피해 10% · 배리어 적용 뒤) × 배율(`reflectBase` 삭제 · 처음엔 10% 전 값이었다).
+- `MatchSessionLogic.CoinRampEndSec` 1800 → 2700(미니언 주화 확률 7:30 50% → 45:00 100% 직선).
