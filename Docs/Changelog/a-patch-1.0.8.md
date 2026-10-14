@@ -67,3 +67,19 @@
 - 마을 귀환 주문서: ItemInfo · ConsumeInfo(회복 0 · 쿨 0) · ShopItem(POTION 1000) `RETURN_SCROLL`(아이콘 = 원작 마을 귀환 주문서 5699610a…) · `InventoryService.UseReturnScroll` → `LaneStateService.ReturnHome`(넥서스 옆 = 리스항구 택시와 같은 `NexusSideSpot` 로 묶음) · 못 가면 소모 없음 · 상점 설명칸 = ItemInfo.Description(회복 없는 소모품).
 - 퀵슬롯 3칸: `InventoryService.QuickSlotCount` 3 · `QuickSlotController` 칸 묶음 `Ui(slot)` · 키 Alpha3 · `ui/QuickSlotGroup` Bar 폭 200 → 292 · 칸 −92/0/+92 · Slot3 = Slot2 본뜸(빌더 스크립트 허브 `handoff/patch107-agents/_work/P/quickslot3.cjs`).
 - Play 확인(10/15 · Henesys_Hunt_GolemsTemple 레시피): 다섯 마을 택시 스폰 · 귀환 주문서 퀵 3번(사냥터 → 헤네시스 넥서스 앞 y −3.34 착지 · 6 → 5장) · 택시 [이동한다] 메소 12000 → 7000 · 여섯갈래길 도착 · 여섯갈래길에서 키 경로(Use 3)로 귀환 · 오류 0.
+
+## 15~18. NPC 초상 칸 · ★1 발록 · 발록 도전 현황 · 쉐도우 파트너 (사용자 2026-10-15)
+
+- `ui/CommonNpcGroup` NpcTalk/PortraitBg · PortraitBg/Fill ImageRUID f5e5fbd6(계정 자산 · 그룹 월드에서 안 불림 → 기본 네모) → 898211cc(그룹 mIYbC 재업로드 · border 14 · 스크립트 허브 `handoff/patch107-agents/_work/P/npc-portrait-roundrect.cjs`). 🔴 f5e5fbd6 은 UI 19개에 더 쓰인다(같은 증상 가능).
+- `DifficultyRule` ★1 BALROG_HP_MUL · BALROG_ATK_MUL 0.5 → 1 · ★1 POS 문구 "지역 보스 HP와 공격 절반".
+- 발록 도전 현황 HUD: `Boss/BalrogRoomService` HudCsv · PushHud(0.25초 틱 · 바뀔 때만) · BroadcastHud(Multicast) · 매치 끝 "" · 새 `Boss/BalrogChallengeHud`(@Logic 클라 · Apply · 줄 6) · 새 `ui/BalrogChallengeGroup`(줄 264×58 · 판 d43b23d1 재활용 · 빌더 허브 `_work/P/balrog-hud.cjs`).
+- `SkillInfo` SK_T22 쉐도우 파트너 CooldownPerLevel −15 → 0(모든 레벨 90초).
+
+## 19. 피스트인레인지 1.0 이펙트 + 판정 (사용자 2026-10-15)
+
+- `Skill/SkillExecutors` effectOverrides.SK_P21: punchCast · punchCast0 의 10/12~10/14 줄이기(2a6a681 · aef23af · f35d596 · 0.472×0.451 · offset 0.94/0.17) 되돌림 → 1.0(9cda1ae) 그대로 배율 1 · offset 0. `box` = 앞 4.4 · 뒤 0.3 · 위 1.7 · 아래 0.6(에이전트 역산 4.4/2.0/2.2 → 사용자 뒤 0.3 · 위 1.7 · 아래 0.6). Play: `shape find SK_P21` 폭 4.70 · 높이 2.30 일치.
+
+## 20. 해적 하이퍼 에너지 차지 (사용자 2026-10-15)
+
+- `Skill/SkillBuffs`: `hyperCharge[userId] = { baseEndsAt, baseExpired }` · 쉴드 시작 때 차지가 켜져 있으면 `TryEnterHyperCharge`(차지 endsAt = NoExpireSeconds · 루프 이펙트 다시 걸기) · `HoldHyperCharge`(원래 시각에 쉴드 있으면 유지) · `OnShieldGoneForHyper`(쉴드 없어질 때 원래 시각이 지났으면 그 순간 종료) · 종료는 `EndChargeState` 한 길(쿨 · 스탯 · 루프 정리 그대로) · 죽음 · 매치 초기화 즉시. `SkillInfo` SK_P21 · SK_P22 설명 한 문장씩. Play: 진입 · 쉴드 먼저 깨짐 · 시간 먼저 끝남 · 쉴드만(HYPER 없음) 4경우 로그 PASS.
+- 발록 도전 현황 줄 3차: 줄 배경 = NPC 초상 칸 두 겹(898211cc 금 45% + 남색) · 게이지 = 상태창 HP 게이지(fb55ad1f 바탕 · bca9a94f 바) — 매치 시계 판 양끝 장식이 "남음" · "%" 를 가렸다(Play).

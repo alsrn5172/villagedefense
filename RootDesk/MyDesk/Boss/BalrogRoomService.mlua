@@ -582,6 +582,54 @@ script BalrogRoomService extends Logic
 		self.tickAcc = 0
 		self:CheckOccupants()
 		self:ProcessEvictions()
+		self:PushHud()
+	end
+
+	-- ── 도전 현황 HUD (1.0.8 · 사용자 2026-10-15) ────────────────────
+	-- 지금 도전 중인 사람만 전 클라 왼쪽 위에 한 줄씩(BalrogChallengeHud): 마을 문장 · 닉네임 · 남은 초 · 그 사람 방 발록 체력 %.
+	-- 0.25초 틱마다 만들어 보고, 글자가 바뀔 때(초 · % 단위)만 Multicast 한다.
+
+	@HideFromInspector
+	property string hudLast = ""
+
+	@ExecSpace("ServerOnly")
+	method string HudCsv()
+		-- "마을|닉네임|남은초|체력%;..." (방 번호 순). 도전 창이 열린 방만(IsChallengeLive).
+		local parts = {}
+		local maxHp = math.max(1, self:BossMaxHp())
+		local now = self:Now()
+		for i = 1, #self.rooms do
+			local uid = self.occupant[i] or ""
+			if uid ~= "" and self:IsChallengeLive(uid, i) then
+				local vid = (_LaneStateService ~= nil) and _LaneStateService:VillageOfUser(uid) or ""
+				local nick = uid
+				local user = _UserService:GetUserEntityByUserId(uid)
+				if isvalid(user) and isvalid(user.PlayerComponent) and user.PlayerComponent.Nickname ~= "" then nick = user.PlayerComponent.Nickname end
+				local cleaned, _ = string.gsub(nick, "[|;]", " ")
+				nick = cleaned
+				local remain = math.max(0, math.ceil((self.deadline[uid] or now) - now))
+				local hp = self.lastHp[i] or maxHp
+				local b = self.bosses[i]
+				if isvalid(b) and isvalid(b.Monster) then hp = math.max(0, b.Monster.Hp) end
+				local pct = math.max(0, math.min(100, math.ceil(hp * 100 / maxHp)))
+				table.insert(parts, vid .. "|" .. nick .. "|" .. tostring(remain) .. "|" .. tostring(pct))
+			end
+		end
+		return table.concat(parts, ";")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushHud()
+		local csv = self:HudCsv()
+		if csv == self.hudLast then return end
+		self.hudLast = csv
+		self:BroadcastHud(csv)
+	end
+
+	@ExecSpace("Multicast")
+	method void BroadcastHud(string csv)
+		-- 서버 → 전 클라: 도전 현황 HUD 다시 그리기("" = 전부 끔).
+		if _BalrogChallengeHud ~= nil then _BalrogChallengeHud:Apply(csv) end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -603,6 +651,8 @@ script BalrogRoomService extends Logic
 		self.evictAt = {}
 		self.evictUntil = {}
 		self.active = false
+		self.hudLast = ""
+		self:BroadcastHud("")
 		log("[BalrogRoom] 매치 종료 — 도전 전부 닫음 · 감시 중지")
 	end
 

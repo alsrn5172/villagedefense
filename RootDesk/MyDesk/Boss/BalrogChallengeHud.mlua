@@ -1,0 +1,85 @@
+@Logic
+script BalrogChallengeHud extends Logic
+
+	-- 발록 도전 현황 HUD(BalrogChallengeGroup.ui · 화면 왼쪽 위 · 채팅창과 매치 시계 사이 · 1.0.8 사용자 2026-10-15).
+	--   지금 도전 중인 사람만 한 줄씩(내 도전 포함): [마을 문장] 닉네임 -도전 중- N초 남음 / 발록 체력 [바] N%.
+	--   서버 BalrogRoomService.BroadcastHud(Multicast)가 글자가 바뀔 때(초 · % 단위) Apply 를 부른다. 판정 없음 — 그리기만.
+	--   줄 = root 아래 Row1 ~ RowN(Emblem · Name · Status · HpLabel · Track/Fill · Pct). UUID 는 UIBuilder write({bind})(허브 handoff/patch107-agents/_work/P/balrog-hud.cjs).
+
+	property Entity root = "6d7484d2-1b69-4473-8690-3dad20ef8ee0"
+
+	property integer RowCount = 6
+
+	-- 마을 → 문장(CommonNpcUIController.EmblemRuids 와 같은 값)
+	property string EmblemRuids = "HENESYS=621154ff2f374064a2d74245be1cce37;KERNING=a225cbb5951642d1a6738b16d3d812a9;ELLINIA=a67009c937104506b1f2d178e6477c1b;NAUTILUS=15ed9b9c0b064af096d80311cf92acbd;PERION=cf4a5dd3d9e54d2bb930bca7a19ceac8"
+
+	@HideFromInspector
+	property any fillMaxW = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		self.fillMaxW = {}
+		self:Apply("")
+		log("[BalrogHud] ready (client) root=" .. tostring(isvalid(self.root)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string EmblemOf(string villageId)
+		for pair in string.gmatch(self.EmblemRuids, "([^;]+)") do
+			local k = string.match(pair, "^(%w+)=")
+			if k == villageId then return string.match(pair, "=(%w+)$") or "" end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Apply(string csv)
+		-- "마을|닉네임|남은초|체력%;..." → 앞에서부터 줄을 채우고 나머지 줄은 끈다.
+		if not isvalid(self.root) then return end
+		local rows = {}
+		if csv ~= nil and csv ~= "" then
+			for rec in string.gmatch(csv, "[^;]+") do
+				local f = {}
+				for v in string.gmatch(rec .. "|", "([^|]*)|") do table.insert(f, v) end
+				if #f >= 4 then table.insert(rows, { vid = f[1], nick = f[2], remain = math.floor(tonumber(f[3]) or 0), pct = math.floor(tonumber(f[4]) or 0) }) end
+			end
+		end
+		for i = 1, self.RowCount do
+			local row = self.root:GetChildByName("Row" .. tostring(i))
+			if isvalid(row) then
+				local r = rows[i]
+				row.Enable = (r ~= nil)
+				if r ~= nil then self:RenderRow(row, i, r) end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderRow(Entity row, integer i, any r)
+		-- 한 줄: 문장 · 제목 · 체력 바 폭 · %.
+		local em = row:GetChildByName("Emblem")
+		if isvalid(em) and em.SpriteGUIRendererComponent ~= nil then
+			local ruid = self:EmblemOf(r.vid)
+			if ruid ~= "" then em.SpriteGUIRendererComponent.ImageRUID = DataRef(ruid) end
+			em.Enable = (ruid ~= "")
+		end
+		local name = row:GetChildByName("Name")
+		if isvalid(name) and name.TextGUIRendererComponent ~= nil then name.TextGUIRendererComponent.Text = r.nick end
+		local status = row:GetChildByName("Status")
+		if isvalid(status) and status.TextGUIRendererComponent ~= nil then
+			status.TextGUIRendererComponent.Text = "<color=#F0806F>-도전 중-</color> <color=#E8B64C>" .. tostring(r.remain) .. "초 남음</color>"
+		end
+		local track = row:GetChildByName("Track")
+		local fill = isvalid(track) and track:GetChildByName("Fill") or nil
+		if isvalid(fill) and fill.UITransformComponent ~= nil then
+			local t = fill.UITransformComponent
+			if self.fillMaxW[i] == nil then self.fillMaxW[i] = t.RectSize.x end
+			local w = self.fillMaxW[i] * math.max(0, math.min(100, r.pct)) / 100
+			fill.Enable = (w >= 1)
+			t.RectSize = Vector2(math.max(1, w), t.RectSize.y)
+		end
+		local pct = row:GetChildByName("Pct")
+		if isvalid(pct) and pct.TextGUIRendererComponent ~= nil then pct.TextGUIRendererComponent.Text = tostring(r.pct) .. "%" end
+	end
+
+end
