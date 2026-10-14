@@ -17,3 +17,7 @@
 - `TowerConfig.csv` `UpgradeCost` 3배 → 2배: 포탑 · 넥서스 4 / 12 / 24(총 120) · 억제기 6 / 18 / 36(총 180). 수리 · 재건 비용은 그대로(사용자 "재료 배수는 강화만").
 - `LaneStateService.ApplyDamage` 파괴 → `t.lv = 1`(테스트 리모콘 파괴도) — 재건하면 1단계.
 - `MatchSessionLogic.WaveCoinChance`: 웨이브 미니언 주화 확률 = 매치 경과 7:30 50% → 30:00 100% 직선(`CoinRamp*` 속성 · 결과 ÷ `SummonManager.VictoriaCoinMul` 을 넘김 · MinionUnit 식 그대로). 튜토리얼은 `CoinChanceOf("PHASE1")` 그대로. 자이언트 주화 그대로.
+
+## 5. 억제기 강화 비용 = 포탑 (사용자 2026-10-14)
+
+- `TowerConfig.csv` SUPPRESSOR `UpgradeCost` 6 / 18 / 36 → 4 / 12 / 24(총 120 · 포탑 · 넥서스와 같음).
