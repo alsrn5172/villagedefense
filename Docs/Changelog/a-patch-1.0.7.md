@@ -90,3 +90,12 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 - 어벤저(사용자 2026-10-14): 큰 표창 출발 높이 럭키 세븐 +0.26 · 피해 숫자 맞은 적마다 2개(`DisplayHits = hitCount` · 분신도) · 수명 = 럭키 세븐과 같음(사거리 끝 수명 줄이기 삭제) · 쉐도우 파트너 분신의 치명 = 원본이 그 대상에게 낸 치명(`SkillProjectile.NoteCrit` · `CloneShared.crits` · 따로 굴리지 않음 — 럭키 세븐 분신도).
 - 보스 체력바: 피격 상자가 엔진 기본(0.67 × 1.42)인 보스는 stand 첫 장 그림 크기 · 피벗으로 폭 · 높이를 잰다(`BossHpBar.FitFromSprite`).
 - 어벤저 관통(V3 재검증에서 발견): 첫 대상이 0.8 안에 붙어 있으면 유도로 가파르게 꺾인 기울기 그대로 날아 바닥 아래로 빠져 둘째를 놓쳤다(0.49 앞 24%) → 첫 대상을 지나 유도를 끊을 때 수평으로 되돌린다(`SkillProjectile.NotePierceTouch` · V4: 0.49 앞 93.5% · 0.70 앞 98% · 0.95 앞 100%). 남은 몇 %(프레임이 튀어 첫 대상을 지나치면 유도가 뒤를 향함)는 좌우를 쏜 방향(`launchSx` · `SetDirection` 이 기억)으로 고정.
+
+## 13. 마무리 — 점프 · 포탈 착지 · 미니맵 · 사용자 맵 편집 (2026-10-14)
+
+- 아래 점프 되돌림 + 발판 무시 구간(사용자 "원래대로 제자리 살짝 점프 → 아래로 · 0.05초 뒤 0.2초간 발판 무시"): 누르자마자 발판 아래로 옮기던 강제 하향 점프(엎드린 자세로 쑥 내려감)를 빼고 엔진 아래 점프 그대로. `SkillMovement.StartDownJumpIgnore` = 누른 순간(모바일은 엔진 DownJump 이벤트) + `DownJumpIgnoreDelay` 0.05 부터 `DownJumpGuardSeconds` 0.2 동안 `TickDownJumpGuard` 가 닿은 발판을 무시(출발 발판이면 엔진 DownJump 재시도 → 거절 시 `ForceDownDrop` · 다른 발판이면 `ForceDownDrop`). `DownJumpAssistDelay` · 엔진 이벤트 뒤 강제 낙하 타이머 삭제.
+- 더블 점프(사용자 "위력이 너무 셈 · 앞/위 횟수 따로"): `DoubleJumpLift` 4.5 → 3.6 · `DoubleJumpForceScale` 2.0 → 1.8 · `TryDoubleJump(skillId, level, allowNormal, allowUp)` · `SkillHotbar.airUpJumpUsed` 추가(옆 = `airTeleportUsed` · 위 = `airUpJumpUsed` · 땅에 닿으면 둘 다 초기화).
+- 포탈 높이: 모든 맵 포탈 Transform y = 바로 밑 수평 발판 y(106개 · 40개 맵 · 포탈 y 숫자만 교체 · 맵마다 파싱 비교 검증 · 스크립트 `handoff/patch107-agents/_work/P/align-portals.cjs` · `apply-portal-y.cjs`). 안 고침: 커닝 마을 `Portal_9`(꺼짐 · −2.54) · 여섯갈래길 `portal-1~12`(밑 발판 없음).
+- 포탈 도착 착지: `PortalNetwork.UpdateArrivalSnap` — ↑키 이동은 목적 포탈 높이, 엔진 포탈 · 서버 이동은 새 맵 첫 프레임 위치 기준 ±`ArrivalSnapBand` 0.2 안 가장 가까운 수평 발판으로 한 번 옮김(`_SkillMovement:ProbeBand` = 텔레포트 착지 0단계와 같은 함수 · 3초 안).
+- 미니맵: 펼친 판을 겉(내용 칸이 뚫린 그림 `49a3eca5…` · 농도 0.95)과 속(`Minimap/BgInner` · `35bc0442…` · 색 0.7 · 농도 0.75 · 클릭 안 받음)으로 나눔 · 접힌 판을 펼침 머리 칸 색에 맞춰 밝힌 그림 `528f989c…` · `MinimapController.BgOpenRuid` / `BgFoldedRuid` / `bgInner`(접으면 끔). 그림 생성 `handoff/patch107-agents/_work/U/make-minimap-split.py` · `make-minimap-closed-bright.py`.
+- 사용자 Maker 편집 합침: 맵 6개(페리온 마을 · 페리온 북쪽 능선 · 엘리니아 마을 · 노틸러스 호 내부 · 헤네시스 마을 · 오르비스 빅토리아 정거장 — 포탈 · 레인 바닥 · 발판 · 클릭 표시 등) · `VillageNpcSector.csv`(페리온 · 노틸러스 NPC 구역 · 엘리니아 전광판 자리).
