@@ -44,3 +44,8 @@
 ## 10. ★1 사냥 경험치 +20% (사용자 2026-10-14)
 
 - `DifficultyRule.csv` ★1 `MATCH_EXP_MUL` 2 → 2.4.
+
+## 11. 헤네시스 마을 미니언 레인 −1.69 → −3.34 (사용자 2026-10-14)
+
+- `map/Henesys_Village_MinimiMain`: LaneFloor_L/R/Mid_0~3 · LaneGround_1/4/6/7 · `P_Lane_To_Henesys_Hunt_HillNorth` y −1.65(스크립트 `handoff/patch107-agents/_work/P/shift-entities-y.cjs` · 숫자만 교체 · 파싱 검증) · 사용자 Maker 편집: 사다리 `Ladder_low_1` · `Ladder_low_2` TiledSize 2 → 6 · 저장으로 레인 발판(LaneGround_4) −3.34 구움.
+- `LaneConfig.csv` HENESYS VILLAGE `PathY` · `TowerSlotY` −1.69 → −3.34.
