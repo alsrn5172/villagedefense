@@ -107,13 +107,14 @@ script SkillExecutors extends Logic
     -- 1.1-B01: 끌어오기 해제(false) — 도발은 방어력 저하 · 피해 1 · 나를 추격만.
     property boolean TauntPull = false
 
-    -- TAUNT 방어력 저하(1.1-B02): 대상 방어 −SecondaryAt(0/5/10/15/20). 보스는 이 배율(절반). 기록 = tauntDefense · 읽기 = GetTauntDefenseDelta(DamageFormula.TargetDefenseOf).
-    property number TauntBossDefenseMul = 0.5
+    -- TAUNT 방어력 저하(1.0.7 §3 · 사용자 2026-10-14): 대상 방어 −SecondaryAt % (0/5/10/15/20 %) · 보스도 일반 몬스터와 같은 100%(예전 보스 절반 폐지).
+    --   적용 방어 = 방어 × (100 − 도발%) ÷ 100 이라 방어가 음수가 되지 않고, 방어 0 인 사냥터 몬스터에겐 방어 효과가 없다(추격 · 피해 1 만). 도발이 모자 방어율 무시(§4)보다 먼저다.
+    --   기록 = tauntDefense · 읽기 = GetTauntPct(DamageFormula.TargetDefenseOf → EffectiveDefense).
 
     -- TAUNT 피해(1.1-B01 · 사용자 2026-10-12): 도발한 몬스터마다 이 고정 피해(평값 · 치명 · 방어 없음).
     property integer TauntFlatDamage = 1
 
-    -- [서버] 도발 방어 저하 기록: entity -> { delta(0 이하), untilAt(_UtilLogic.ElapsedSeconds) }. 재도발은 덮어쓴다(누적 없음).
+    -- [서버] 도발 방어 저하 기록: entity -> { pct(0 ~ 100 · 방어를 깎는 %), untilAt(_UtilLogic.ElapsedSeconds) }. 재도발은 덮어쓴다(누적 없음).
     @HideFromInspector
     property table tauntDefense = {}
 
@@ -354,6 +355,17 @@ script SkillExecutors extends Logic
     -- 서버: userId → 분신이 숨겨진 동안의 끝 시각(ServerElapsedSeconds). 그동안 PlayShadowMimic · PlayBuffLoop(SHADOW_PARTNER) 는 아무것도 그리지 않는다.
     property table shadowHiddenUntil = {}
 
+    -- 서버: 궁 동안 시전자 숨김(HideCasterFor · 1.0.7 §11) — userId → 마지막 숨김 번호 · 번호 카운터.
+    @HideFromInspector
+    property table casterHideByUser = {}
+
+    @HideFromInspector
+    property integer casterHideSerial = 0
+
+    -- 서버: 도발 표시(PlayTauntMark · 1.0.7) — 몬스터 엔티티 → 반복 중인 이펙트 serial.
+    @HideFromInspector
+    property table tauntMarkSerial = {}
+
     -- 분신(루프·따라하기 클립) · 에너지 차지 불꽃이 플레이어보다 몇 칸 뒤인가(OrderInLayer 차). 원작 쉐도우 파트너 = 캐릭터 바로 뒤.
     -- 2026-09-24 (#40 5813565483 · A 답 · 사용자 확정): 플레이어는 발판과 무관하게 **Default / 4** 고정(A 의 Map/PlayerFrontLayer · 예외 = 포탈 Default/5).
     -- Default 층에서 A 가 쓰는 값은 4(플레이어) · 5(포탈)뿐이고 맵에 박힌 Default 오브젝트는 2 이하 → 분신 = Default / (4 − 1 = 3) 이면 플레이어 · 포탈 말고는 전부 분신 뒤.
@@ -418,20 +430,47 @@ script SkillExecutors extends Logic
     -- 디자이너가 컷신을 새로 넘겨주면(테두리 처리 포함) 이 값은 다시 정한다.
     property number CutsceneOverscan = 1.08
 
-    -- 궁 합계 데미지(#40 5988188679 · 사용자 결정 2026-10-05 "영상이 끝난 직후 합계 데미지를 한 번 보여 준다 · 영상 중 숫자는 그대로"):
-    --   영상이 있는 궁(CutsceneVideoSeconds > 0)을 쓰면 서버가 그 시전의 타격 피해(크리 포함)를 모아(OpenUltimateTally · SkillAttack / SkillProjectile.CalcCritical → AddUltimateTally)
-    --   영상 끝 + UltimateTotalDelay 에 시전자 머리 위에 숫자 하나로 띄운다(ShowUltimateTotal · DamageSkinService.Play · 시전자의 DamageSkinSetting 스킨).
-    --   피해가 없는 궁(불굴의 진)은 띄우지 않는다. false = 끈다.
+    -- 궁 끝 피해 표시(1.0.7 §11 · 사용자 2026-10-14 "궁 끝에 전체 피해 말고 타수가 들어가게 · 크리티컬 반영 무조건" · 전 직업 공통).
+    --   예전(#40 5988188679 · 2026-10-05)은 영상이 끝난 직후 시전자 머리 위에 합계 숫자 하나였다 → 이제 타수대로 띄운다.
+    --   영상이 있는 궁(CutsceneVideoSeconds > 0)을 쓰면 서버가 그 시전의 타를 대상마다 하나하나 모은다
+    --   (OpenUltimateTally → SkillAttack / SkillProjectile.CalcCritical → AddUltimateTally: 타 하나의 최종 피해 + 치명 여부 · 묶음 패스는 표시 타수대로 줄을 나눈다).
+    --   영상 끝 + UltimateTotalDelay 에 대상마다 맞은 타 전부를 일반 다단 히트처럼 숫자 여러 줄로 그 대상 위에 띄운다
+    --   (CloseUltimateTally → ShowUltimateHits · DamageSkinService.Play damages + criticals · 시전자의 DamageSkinSetting 스킨 · 치명타 타는 치명타 숫자).
+    --   그사이 죽었거나 사라진 대상의 타는 시전자 머리 위에(UltimateOrphan*). 영상 중 숫자는 이 스위치와 무관하게 그대로다.
+    --   피해가 없는 궁(불굴의 진)은 띄우지 않는다. false = 끈다(타 모으기도 안 한다).
     property boolean ShowUltimateTotalDamage = true
 
     property number UltimateTotalDelay = 0.1
 
-    -- 합계 숫자 크기 배율(보통 숫자 = 1) · 시전자 발 기준 높이(world unit).
-    property number UltimateTotalScale = 1.4
+    -- 숫자 크기 배율(시전자 스킨 크기 × 이 값 · 1 = 보통 히트와 같은 크기) · 시전자 머리 위(사라진 대상의 타) 시전자 발 기준 높이(world unit).
+    property number UltimateTotalScale = 1.0
 
     property number UltimateTotalOffsetY = 1.3
 
-    -- 서버: 유저 → { skillId, total, hits, serial } (열려 있는 궁 합계 · 영상이 끝나면 지운다).
+    -- 궁 끝 숫자 묶음 타수(1.0.7 §12 · 사용자 2026-10-14 "1타씩 끊어 치지 말고 5타씩 치면 되지 않나 · 궁 타수는 다 5의 배수"): 한 대상이 맞은 타를 앞에서부터 이만큼씩 더해 숫자 하나로 띄운다.
+    --   그 묶음 안에 치명타가 하나라도 있으면 치명타 숫자. 타수가 나눠떨어지지 않으면 남는 타끼리 한 묶음(마지막). 1 이하 = 묶지 않고 낱타 그대로. 합은 그대로다(서버가 묶어 보낸다).
+    --   아래 UltimateHitsPerChunk / ChunkInterval / MaxSeconds 의 "줄"은 묶은 뒤의 숫자 개수다.
+    property integer UltimateHitGroup = 5
+
+    -- 한 대상의 타가 아주 많을 때(폭풍의 화살 100타 · 함포 사격 300타) 화면이 숫자로 덮이지 않게 원작 다단 표기처럼 이어 띄운다:
+    --   한 묶음에 UltimateHitsPerChunk 줄(줄 사이는 시전자 스킨의 DelayPerAttack) → UltimateHitsChunkInterval 초 뒤 다음 묶음. 타는 하나도 빼지 않는다.
+    --   UltimateHitsMaxSeconds > 0 이면 이어 띄우는 전체 길이가 그 안에 끝나도록 묶음 줄 수를 늘린다(0 = 늘리지 않음 · 줄 수 고정). 간격 0 = 한꺼번에.
+    property integer UltimateHitsPerChunk = 10
+
+    property number UltimateHitsChunkInterval = 0.3
+
+    property number UltimateHitsMaxSeconds = 4.0
+
+    -- 사라진 대상의 타를 시전자 머리 위에 띄울 때: 대상마다 한 줄기(열)씩 좌우로 벌려(0, +s, −s, +2s … · s = UltimateOrphanSpreadX) 겹치지 않게 한다.
+    --   열이 UltimateOrphanColumns 개를 넘으면 앞 줄기가 끝난 뒤(UltimateOrphanRowPad 초 여유) 같은 열에서 이어 띄운다.
+    property number UltimateOrphanSpreadX = 1.0
+
+    property integer UltimateOrphanColumns = 5
+
+    property number UltimateOrphanRowPad = 0.5
+
+    -- 서버: 유저 → { skillId, serial, total, hits, crits, passes, via, order, byTarget } (열려 있는 궁 타 모음 · 영상이 끝나면 지운다).
+    --   order = 대상 키(엔티티 Id) 첫 피격 순서 · byTarget[키] = { e = 엔티티, name, d = 타별 피해 목록, c = 타별 "1"(치명) / "0" 목록 }.
     @HideFromInspector
     property table ultimateTally = {}
 
@@ -979,7 +1018,8 @@ script SkillExecutors extends Logic
                 hitClips = { "b79cbdf6d06b487382f03d625a1fc464", "a5fa2b779db14f93b881a873f36b7eac", "1ce3b9be19764a70a6229665e15adf42", "79132eeadd9b4ab090bf4845bfcfdbdb", "3720a775e9c241fbb547c81d76598843" },
                 -- 4타 · 타마다 파워 스트라이크 % × 0.6(1.1-B05 · 예전 0.8) · 앞 3.5 × 높이 2.5. hitAt 0.28 = 원작 첫 피해(영상 2013 실측 ≈ +0.28 s · 후보 E · 예전 0.12).
                 --   2026-10-05 b/skill-balance-x3(A 요청): maxTargets 6 → 0 = 상자 안 전부(상자 그대로). Lv1 405% × 0.6 = 243% × 4 · Lv5 810% × 0.6 = 486% × 4.
-                hits = 4, damageMul = 0.6, maxTargets = 0, boxFront = 3.5, boxHeight = 2.5, hitAt = 0.28, hitInterval = 0.08,
+                --   boxDown 0.6 = 발 아래로 0.6 까지(1.0.7 · 사용자 2026-10-14 "그림은 큰데 아랫범위가 없어서 어색함") — 상자 = 발 −0.6 ~ +2.5.
+                hits = 4, damageMul = 0.6, maxTargets = 0, boxFront = 3.5, boxHeight = 2.5, boxDown = 0.6, hitAt = 0.28, hitInterval = 0.08,
             },
             SK_M11_FH = {   -- 플레임 헤이즈 — 원작 skill/212.img/skill/2121011: 몸 동작 flameHaze(기본 액션 2프레임) · 시전 · 투사체 · 폭발 hit/0 · 불꽃 5종(연출만) · 소리 Use · Hit
                 baseSkillId = "SK_M11",
@@ -1545,6 +1585,25 @@ script SkillExecutors extends Logic
         --   스나이핑 = 발 + 0.25 — sukka 영상 64.733~64.800s(2022 데스티니): 화살 줄기 = 발 위 캐릭터 키 0.36(±0.03). 조준(유도)은 그대로 콜라이더 중심.
         self.effectOverrides.SK_A11.spawn = { offsetY = 0.28 }
         self.effectOverrides.SK_A21.spawn = { offsetY = 0.25 }
+        -- 어벤저(1.0.7 · 사용자 2026-10-14 · 변형 키 SK_T11_AV = 쉐도우 파트너 중 럭키 세븐 키 · SkillInfo 행 아님): 큰 표창 하나를 던져 앞쪽 적 2마리를 뚫는다.
+        --   시전 연출(cast 초승달) · 팔 파란 호(arc) · 명중 별 폭발(impact) · 스폰 자리·지연은 럭키 세븐(SK_T11)과 같은 표를 그대로 가져온다 — 럭키 세븐 값을 고치면 같이 따라온다.
+        --   ball = 원작 어벤져 팩 skill/800033.img/skill/80003327(다크로드의 분신 · 비밀의 방 수호인형)의 ball/0 sprite 0477b2c7…(72×72 · 피벗 가운데 · 한 장) — 다크로드 분신 attack2/info/ball(mob/9001019.img · 898a7766…)과 같은 그림이다.
+        --     한 장짜리라 서버가 제자리에서 돌린다(spinSec 0.4 = 원작 rotatePeriod 400ms · SkillProjectile.SpinSec). 크기 scale 1.0 = 72 px = 0.72 유닛(럭키 세븐 표창 bullet 20 px 의 3.6배 · 판정 상자 0.8 과 비슷).
+        --   같은 팩 effect 954896b2…(14프레임 · 20×64 가느다란 줄 → 64×64 → 72×72 공 → 120×68)는 다크로드 분신의 시전 연출이다. 눈으로 확인하지 못해 쓰지 않았다(cast 는 럭키 세븐 초승달) — 쓰려면 cast = { ruid = "954896b2b40a4d8085586ea0ec2f0e19" } 한 줄.
+        --   pierce 2 = 앞쪽 먼저 닿는 순 2마리(SkillProjectile.PierceMax). 피해 = 럭키 세븐 HitCount(2)발 합계 한 번(SkillAttack.SpawnProjectile 의 firstMul).
+        local lucky = self.effectOverrides.SK_T11
+        self.effectOverrides.SK_T11_AV = {
+            baseSkillId = "SK_T11",
+            cast = lucky.cast,
+            impact = lucky.impact,
+            arc = lucky.arc,
+            ball = { ruid = "0477b2c75e4b4fbcaf795e03bd8da11a" },
+            -- 출발 높이 = 럭키 세븐 + 0.26(사용자 2026-10-14 "조금 아래에서 나가는 것처럼 보임" · Play 실측: 중심이 럭키 세븐과 같은 발 +0.26 이라 0.72 크기 그림 아래 끝이 발 −0.10 까지 처졌다 →
+            --   아래 끝을 럭키 세븐 표창 아래 끝(발 +0.16)에 맞춘 중심 발 +0.52). 분신 큰 표창도 같은 출발 높이를 쓴다(SkillAttack.ScheduleShadowClone).
+            spawn = { offsetX = lucky.spawn.offsetX, offsetY = lucky.spawn.offsetY + 0.26, delay = lucky.spawn.delay, scale = 1.0 },
+            pierce = 2,
+            spinSec = 0.4,
+        }
     end
 
     @ExecSpace("ServerOnly")
@@ -1553,7 +1612,7 @@ script SkillExecutors extends Logic
         -- back to defaultCastSound (a generic confirmed magic-skill sound effect).
         self.castSounds = {
             SK_M11_FH = "888da6679a2448a7961f53e9f2f797fd",   -- 플레임 헤이즈 2121011 _audio/Use(b/skill-raging-blow-flame-haze · 레이징 블로우 1120017 팩엔 Use 가 없어 시전음 없음)
-            SK_N02 = "cdfecf84e0134f6a8c8efa14793942fc",   -- 더블 점프 300.img/3000008 _audio/Use(1.18s · b/skill-novice-double-jump)
+            SK_N02 = "de98060353f946dea96cf5b66692cd0a",   -- 하이퍼 점프(예전 더블 점프) 사용 소리 — 사용자 지정(2026-10-14 · 공기를 가르는 금속성 효과음 0.73s · 예전 원작 300.img/3000008 Use cdfecf84…)
             SK_N01 = "9313440ae33949489adee4e73cc70cd9",   -- 달팽이 세마리 0001000 _audio/Use(0.73s · b/skill-novice-snails · 원작 팩에 Hit 소리는 없다)
             SK_M11 = "5fd9ddc5564648d1bffc21f3407ecf51",
             SK_M13 = "6046095db6a24eaab07d268f7d3040c2",   -- 텔레포트 Use
@@ -1571,6 +1630,7 @@ script SkillExecutors extends Logic
             SK_A22 = "29101cbe391a4b08a9940ada4b3f3525",   -- 리트리트 샷 3101008 Use (2026-10-01 사용자 선택 · 예전 값 2e47b3c1… = 백스텝샷 Use)
             SK_A31 = "f06e9bb7399640e088a081032036cebf",   -- 피어싱 3221001 Use (신궁 · 2026-10-01 사용자 선택 · 예전 값 62362802… = 80001884 파이널 토스 Hit · 파이널 에임 3241500 사운드는 라이브러리에 없음)
             SK_T11 = "879c81c8fc274aea87dc673de48ab5d1",   -- 럭키 세븐 Use
+            SK_T11_AV = "28d565bf11b242f8b55b05c1fe252b69",   -- 어벤저 시전음(1.0.7 · 사용자 확인 2026-10-14 · audioclip 0.99 s). 맞을 때 소리는 럭키 세븐 것 그대로(extraSounds.SK_T11_AV.hit)
             SK_T21 = "be18b6cf4ef54178b6bd2bde33bddd27",   -- 다크 사이트 Use
             SK_T22 = "6c7c28167b9049419435cc53001cef0c",   -- 쉐도우 파트너 Use
             SK_T31 = "2205468d99934b83ac1632cab8c954ef",   -- 쉐도우 메소 4111004/Use (사용자 Play 선택 2026-10-03 · 예전 값 0fb09c17… = 일도양단 · 그전 acb0f702… = 메소 익스플로젼 Hit)
@@ -1597,6 +1657,7 @@ script SkillExecutors extends Logic
             SK_A21 = { hit = "81a8c21eaf31429aa21ccaa63afc1b35" },     -- 스나이핑 3221007 Hit (2026-09-13)
             SK_A31 = { hit = "e8eccd46590a4b1ea924da242f4532e9" },     -- 트루 스나이핑 400031010/Hit (2026-10-01 사용자 선택 · 시전 한 번에 한 번 · ExecuteLineOrigin 이 첫 대상 자리에서 튼다)
             SK_T11 = { hit = "48c2f4049db54b3b88b9144320d3d41a" },     -- 럭키 세븐 Hit
+            SK_T11_AV = { hit = "48c2f4049db54b3b88b9144320d3d41a" },  -- 어벤저 명중음 = 럭키 세븐 Hit 그대로(1.0.7)
             -- 메소 익스플로전 명중 사운드(사용자 Play 선택 2026-10-03): 동전마다가 아니라 시전 한 번에 한 번(ExecuteMesoOrigin 이 중심 폭발 시점에 직접 튼다 · 동전 수만큼 겹치지 않게).
             SK_T31 = { hit = "04edcf3c77b049bc9bfa1fa0f541b063" },     -- 메소 익스플로젼 4210014/Hit
             SK_P11 = { hit = "1b54e03352ae4430ae39be54d2ee88f4" },     -- 써머솔트 킥 5001002 Hit (2026-09-13 · 2026-10-01 태그로 출처 정정 — 예전 주석 400004134 · 예전 값 8e7b0c6f… = 스트라이커 Hit)
@@ -1625,6 +1686,10 @@ script SkillExecutors extends Logic
                 return
             elseif variant == "SK_M11_FH" then
                 self:ExecuteFlameHaze(skillId, skillData, casterEntity, level)
+                return
+            elseif variant == "SK_T11_AV" then
+                -- 1.0.7: 쉐도우 파트너 중 럭키 세븐 키 = 어벤저(관통 큰 표창 하나).
+                self:ExecuteAvenger(skillId, skillData, casterEntity, level)
                 return
             end
         end
@@ -1889,9 +1954,11 @@ script SkillExecutors extends Logic
             self:PlayAttachedSpec(entry.slashes[((seq - 1) % #entry.slashes) + 1], casterEntity)
         end
         self:PlaySoundRuid(self:GetExtraSound(key, "use"), casterEntity, pos)
+        -- 상자 세로 = 발 아래 boxDown ~ 발 위 boxHeight(1.0.7 · 아랫범위 0.6 · 없으면 0 = 예전 식).
+        local down = entry.boxDown or 0
         local box = {
-            posX = pos.x + dirX * entry.boxFront / 2, posY = pos.y + entry.boxHeight / 2,
-            sizeX = entry.boxFront, sizeY = entry.boxHeight, hitCount = entry.hits,
+            posX = pos.x + dirX * entry.boxFront / 2, posY = pos.y + (entry.boxHeight - down) / 2,
+            sizeX = entry.boxFront, sizeY = entry.boxHeight + down, hitCount = entry.hits,
         }
         local mul = entry.hits * entry.damageMul
         local hitRuid = ""
@@ -1968,6 +2035,64 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void ExecuteAvenger(string skillId, table skillData, Entity casterEntity, number level)
+        -- 어벤저(쉐도우 파트너 지속 중 럭키 세븐 키 · 사용자 2026-10-14 · effectOverrides.SK_T11_AV): 큰 표창 하나를 앞으로 던져 앞쪽 적 2마리를 뚫는다.
+        --   피해 · 명중 · 치명 = 럭키 세븐과 같은 식(SkillInfo SK_T11 행 · 레벨) — 럭키 세븐 HitCount(2)발 합계를 맞은 적마다 한 번(SkillAttack.SpawnProjectile firstMul · 표시 1타).
+        --   MP = 럭키 세븐(VariantSpec mpCost -1) · 쿨 0 · 시전 락 = 럭키 세븐 0.4 ÷ 1.2(SkillCaster) · 팔 호 · 발사 지연도 ÷ 1.2. 소리 = 시전음 28d565bf…(castSounds.SK_T11_AV) · 명중음은 럭키 세븐 것.
+        --   분신(쉐도우 파트너)도 같은 큰 표창을 던진다 — SkillAttack.SpawnProjectile 이 ScheduleShadowClone 을 불러 열화 투사체가 원본이 맞힌 적들을 같은 방식으로 뚫는다(원본 피해의 50~70%).
+        --   모션 · 분신 따라하기는 SkillCaster → PlayMotion(SK_T11_AV) → PlayVariantMotion 이 이미 틀었다(럭키 세븐 swingO3 ×1.2 ×1.2).
+        local key = "SK_T11_AV"
+        local entry = self.effectOverrides[key]
+        if entry == nil or not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then
+            log_warning("SkillExecutors: AVENGER missing spec or caster - skipped")
+            return
+        end
+        local skillAttack = casterEntity:GetComponent("script.SkillAttack")
+        if not isvalid(skillAttack) then
+            log_warning("SkillExecutors: no script.SkillAttack on caster, skipping avenger")
+            return
+        end
+        local uid = casterEntity.PlayerComponent.UserId
+        local pos = casterEntity.TransformComponent.WorldPosition
+        -- 시전 간격 배율(VariantSpec.attackSpeedMul): 팔 호 표시 시각 · 길이 · 발사 지연을 나눈다. 시전 이펙트 · 소리 시작은 시전 순간 그대로(FireProjectile 과 같은 규칙).
+        local atkSpeed = 1
+        if _SkillBuffs ~= nil then atkSpeed = math.max(0.01, _SkillBuffs:VariantAttackSpeedMul(skillId, true)) end
+        -- 시전 연출(럭키 세븐 초승달) · 시전음 · 팔 파란 호.
+        self:PlayStageEffect(key, "cast", casterEntity, pos, BasicParticleType.Charge)
+        self:PlayCastSound(key, casterEntity)
+        local arc = entry.arc
+        if arc ~= nil and arc.sprite ~= nil and arc.sprite ~= "" then
+            local sx = arc.scaleX or 1
+            if sx <= 0 then sx = 1 end
+            local ox = (arc.offsetX or 0) + (arc.frontTip or 0) * (1 - sx)
+            self:PlaySpriteFlashXY(arc.sprite, casterEntity, ox, arc.offsetY or 0, sx, arc.scaleY or 1, (arc.showAt or 0) / atkSpeed, (arc.seconds or 0.25) / atkSpeed, key .. "_arc", -1, arc.alpha or 1)
+        end
+        local spawn = entry.spawn or {}
+        local spawnX = spawn.offsetX or 0
+        local spawnY = spawn.offsetY or skillData.spawnOffsetY
+        local spawnScale = spawn.scale or 1
+        local spawnDelay = (spawn.delay or 0) / atkSpeed
+        local hitCount = skillData.hitCount
+        if hitCount == nil or hitCount < 1 then hitCount = 1 end
+        local function spawnNow()
+            if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
+            -- 한 번만 쓰는 값(SkillAttack.SpawnProjectile 첫 줄이 읽고 비운다): 관통 수 · 회전 · 동전 몫(럭키 세븐 2발 = 타수당 동전 2개).
+            skillAttack.PendingProjectilePierce = entry.pierce
+            skillAttack.PendingProjectileSpin = entry.spinSec or 0
+            skillAttack.PendingProjectileCoinHits = math.floor(hitCount)
+            skillAttack:SpawnProjectile(skillId, level, self.ProjectileModelId, skillData.range, skillData.speed, hitCount, self:GetLevelSpecRuid(key, "impact", level),
+                spawnY, self:GetLevelSpecRuid(key, "ball", level), self:GetExtraSound(key, "hit"), false, spawnX, spawnScale, self:GetProjectileExplode(key))
+        end
+        log("[Avenger] launch uid=" .. uid .. " lv=" .. tostring(level) .. " dmgx" .. tostring(hitCount) .. " pierce=" .. tostring(entry.pierce) .. " spin=" .. tostring(entry.spinSec)
+            .. "s delay=" .. string.format("%.3f", spawnDelay) .. " interval÷" .. tostring(atkSpeed) .. " range=" .. tostring(skillData.range) .. " speed=" .. tostring(skillData.speed))
+        if spawnDelay > 0 then
+            _TimerService:SetTimerOnce(spawnNow, spawnDelay)
+        else
+            spawnNow()
+        end
+    end
+
+    @ExecSpace("ServerOnly")
     method void PlayMobFlame(string key, string ruid, Entity mob)
         -- 맞은 몬스터에 불꽃 하나를 붙인다(플레임 헤이즈 · SkillProjectile.OnAttack 이 대상마다 부른다 · 연출만 · 피해 없음 · 2026-10-05).
         -- 자리 = 머리 위(HitComponent 콜라이더 위끝 · 콜라이더가 없으면 발 + 0.5) · 몬스터에 붙어 같이 움직인다(PlayMobEffect 와 같은 PlayEffectAttached).
@@ -1995,13 +2120,14 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method number MotionRateMul(string uid, string motionId)
         -- 공격속도 모션 배율(1.1-B21): motionId 의 스킬(SK_XNN · 순서 단계 접미사 무시 · _RECAST 는 재시전 공격)이 공격 시전(SkillCaster.IsAttackSpeedCast)이면 GetAttackSpeedMul, 아니면 1.
+        -- 1.0.7: 쉐도우 파트너의 +20% 는 없어졌다(GetAttackSpeedMul 은 늘 1). 지금 이 배율이 1 을 넘는 건 변형의 시전 간격 배율뿐 — 어벤저(럭키 세븐 키 + 쉐도우 파트너)면 ×1.2.
         if _SkillBuffs == nil or _SkillCaster == nil or motionId == nil then return 1 end
-        local mul = _SkillBuffs:GetAttackSpeedMul(uid)
-        if mul == 1 then return 1 end
         local id = string.match(motionId, "^(SK_%u%d%d)")
         if id == nil then return 1 end
         local isRecast = string.find(motionId, "_RECAST", 1, true) ~= nil
         if not _SkillCaster:IsAttackSpeedCast(_SkillDatabase:GetSkill(id), isRecast) then return 1 end
+        local mul = _SkillBuffs:GetAttackSpeedMul(uid)
+        if not isRecast then mul = mul * _SkillBuffs:VariantAttackSpeedMul(id, _SkillBuffs:VariantOf(uid, id) ~= "") end
         return mul
     end
 
@@ -2012,7 +2138,8 @@ script SkillExecutors extends Logic
         -- SkillCaster.RequestCast(시전 행) · PlayMotionSequence(_2/_END) 가 전부 이 한 곳을 쓴다.
         -- 모션 세트(SkillMotionSet · A-2-23 · 2026-09-24 #83)가 있으면 그게 먼저다 — 세트에서 하나 골라 재생하고 WeaponMotion 은 보지 않는다.
         -- 버프 변형 키(SK_W11_RB · SK_M11_FH)는 WeaponMotion 행이 없다 → PlayVariantMotion(원작 동작 또는 원래 스킬 모션).
-        if motionId == "SK_W11_RB" or motionId == "SK_M11_FH" then return self:PlayVariantMotion(uid, motionId) end
+        -- 1.0.7: 어벤저(SK_T11_AV)도 같은 길 — bodyFrames · motions 가 없어 PlayVariantMotion 이 원래 스킬(럭키 세븐) 모션을 틀고, 배율은 MotionRateMul 이 어벤저 시전 간격(×1.2)을 곱한다.
+        if motionId == "SK_W11_RB" or motionId == "SK_M11_FH" or motionId == "SK_T11_AV" then return self:PlayVariantMotion(uid, motionId) end
         -- 공격속도(1.1-B21 · 쉐도우 파트너 ×1.2): 공격 스킬 시전 모션만 빠르게(버프 · 궁 · 이동은 그대로 · MotionRateMul).
         local rateMul = self:MotionRateMul(uid, motionId)
         local picked = self:PickMotionFromSet(uid, motionId)
@@ -2359,6 +2486,8 @@ script SkillExecutors extends Logic
                     -- 2026-09-14 제보 "W 뒤 E 를 누르면 캐릭터가 사라진다": 예전 기준 "scale + noFlip" 에 에너지 쉴드 방울 cast(scale 0.85 · noFlip)가 걸려 변신 form 을 5.5초 숨겼다 → 명시 필드로.
                     if stage == "cast" and spec.cutsceneSeconds ~= nil and isvalid(casterEntity.PlayerComponent) then
                         self:HideShadowFor(casterEntity.PlayerComponent.UserId, self:GetCutsceneSeconds(skillId))
+                        -- 궁 동안 시전자 캐릭터도 숨긴다(1.0.7 §11 · 사용자 2026-10-14 · 전 직업 공통): 컷신 클립 · 영상 중 긴 쪽만큼 알파 0.
+                        self:HideCasterFor(casterEntity.PlayerComponent.UserId, math.max(self:GetCutsceneSeconds(skillId), self:CutsceneVideoSeconds(skillId)))
                         -- 보여 주는 길이(GetCutsceneDisplaySeconds): 클립보다 짧게 정한 스킬(cast.cutsceneDisplaySeconds · 함포 사격 1.0s)은
                         -- 모두가 보는 이 월드 이펙트를 그때 서버가 지운다(RemoveEffect). 정하지 않은 궁은 예전처럼 클립이 끝까지 돈다.
                         local display = self:GetCutsceneDisplaySeconds(skillId)
@@ -2522,8 +2651,8 @@ script SkillExecutors extends Logic
 
     @ExecSpace("ServerOnly")
     method void OpenUltimateTally(string skillId, Entity casterEntity)
-        -- 궁 합계 데미지(#40 5988188679): 영상이 있는 궁이면 이 유저의 합계를 새로 열고, 영상 끝 + UltimateTotalDelay 에 닫아 띄운다(CloseUltimateTally).
-        --   같은 유저가 다시 궁을 쓰면(쿨 0 테스트) 새 합계로 바뀌고 예전 타이머는 serial 이 달라 아무것도 안 한다.
+        -- 궁 끝 피해 표시(1.0.7 §11 · 예전 #40 5988188679 합계): 영상이 있는 궁이면 이 유저의 타 모음을 새로 열고, 영상 끝 + UltimateTotalDelay 에 닫아 띄운다(CloseUltimateTally).
+        --   같은 유저가 다시 궁을 쓰면(쿨 0 테스트) 새 모음으로 바뀌고 예전 타이머는 serial 이 달라 아무것도 안 한다.
         if not self.ShowUltimateTotalDamage then return end
         if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
         local video = self:CutsceneVideoSeconds(skillId)
@@ -2531,52 +2660,240 @@ script SkillExecutors extends Logic
         local uid = casterEntity.PlayerComponent.UserId
         self.ultimateTallySerial = self.ultimateTallySerial + 1
         local serial = self.ultimateTallySerial
-        self.ultimateTally[uid] = { skillId = skillId, total = 0, hits = 0, serial = serial }
+        self.ultimateTally[uid] = { skillId = skillId, serial = serial, total = 0, hits = 0, crits = 0, passes = 0, via = {}, order = {}, byTarget = {} }
         _TimerService:SetTimerOnce(function()
             self:CloseUltimateTally(uid, serial, casterEntity)
         end, video + self.UltimateTotalDelay)
-        log(string.format("SkillExecutors: ultimate total %s open for %.2fs (%s)", skillId, video + self.UltimateTotalDelay, uid))
+        log(string.format("SkillExecutors: ultimate hits %s open for %.2fs (%s)", skillId, video + self.UltimateTotalDelay, uid))
     end
 
     method boolean IsUltimateTallyOpen(string userId, string skillId)
-        -- 그 유저의 궁 합계가 이 스킬로 열려 있는가(SkillAttack / SkillProjectile.CalcCritical 이 부른다 · 서버에서만 채워진다 → 클라는 늘 false).
+        -- 그 유저의 궁 타 모음이 이 스킬로 열려 있는가(SkillAttack / SkillProjectile.CalcCritical 이 부른다 · 서버에서만 채워진다 → 클라는 늘 false).
         local t = self.ultimateTally[userId]
         return t ~= nil and t.skillId == skillId
     end
 
-    method void AddUltimateTally(string userId, string skillId, integer amount)
-        -- 한 대상 한 타의 최종 피해(크리 배율 포함)를 더한다. 열려 있지 않거나 다른 스킬이면 무시.
+    method void AddUltimateTally(string userId, string skillId, Entity defender, integer amount, boolean crit, integer displayHits, string via)
+        -- 치명 판정 한 번(= CalcCritical 한 번 · 한 대상 한 패스)의 결과를 적는다. amount = 그 패스의 최종 피해(방어 · 크리 배율 포함) · crit = 치명타 여부 · displayHits = 그 패스의 표시 타수 ·
+        --   via = 판정한 곳 이름(로그용 "SkillAttack" / "SkillProjectile"). 묶음 패스(함포 사격 15타 등)는 엔진이 숫자를 나누듯 표시 타수대로 줄을 나눈다(몫 + 앞쪽 줄에 나머지 1씩 · 합 = amount).
+        --   묶음 안 타는 판정을 한 번 같이 쓴다 → 줄 전부 같은 치명 여부. 열려 있지 않거나 다른 스킬이면 무시.
         local t = self.ultimateTally[userId]
-        if t == nil or t.skillId ~= skillId or amount <= 0 then return end
+        if t == nil or t.skillId ~= skillId then return end
+        t.passes = t.passes + 1
+        t.via[via] = (t.via[via] or 0) + 1
+        if amount <= 0 or not isvalid(defender) then return end
+        local n = math.floor(displayHits)
+        if n < 1 then n = 1 end
+        local key = defender.Id
+        local rec = t.byTarget[key]
+        if rec == nil then
+            rec = { e = defender, name = tostring(defender.Name), d = {}, c = {} }
+            t.byTarget[key] = rec
+            table.insert(t.order, key)
+        end
+        local base = math.floor(amount / n)
+        local rest = amount - base * n
+        local flag = "0"
+        if crit then flag = "1" end
+        for i = 1, n do
+            local v = base
+            if i <= rest then v = v + 1 end
+            table.insert(rec.d, v)
+            table.insert(rec.c, flag)
+        end
         t.total = t.total + amount
-        t.hits = t.hits + 1
+        t.hits = t.hits + n
+        if crit then t.crits = t.crits + n end
     end
 
     @ExecSpace("ServerOnly")
     method void CloseUltimateTally(string userId, integer serial, Entity casterEntity)
-        -- 영상이 끝났다: 합계를 닫고 0 보다 크면 시전자 머리 위에 숫자 하나로 띄운다(그 맵 클라 전부 · ShowUltimateTotal).
+        -- 영상이 끝났다: 타 모음을 닫고 대상마다 맞은 타 전부를 숫자 여러 줄로 띄운다(그 맵 클라 전부 · SendUltimateHits → ShowUltimateHits).
+        --   살아 있는 대상 = 그 대상 위(일반 다단 히트와 같은 자리) · 그사이 죽었거나 사라진 대상 = 시전자 머리 위(대상마다 열을 벌려 겹치지 않게 · UltimateOrphan*).
         local t = self.ultimateTally[userId]
         if t == nil or t.serial ~= serial then return end
         self.ultimateTally[userId] = nil
-        log("SkillExecutors: ultimate total " .. t.skillId .. " = " .. tostring(t.total) .. " over " .. tostring(t.hits) .. " hit(s) (" .. userId .. ")")
-        if t.total <= 0 or not isvalid(casterEntity) then return end
-        self:ShowUltimateTotal(casterEntity, math.floor(t.total))
+        -- 치명 판정 경로 확인 로그: 판정한 패스 수(CalcCritical 호출) · 판정한 곳별 횟수 · 타 수 · 치명 타 수.
+        local via = ""
+        for name, n in pairs(t.via) do via = via .. " " .. name .. "=" .. tostring(n) end
+        log("[UltCrit] skill=" .. t.skillId .. " judged=" .. tostring(t.passes) .. " pass(es) via" .. via .. " hits=" .. tostring(t.hits) .. " crits=" .. tostring(t.crits)
+            .. " targets=" .. tostring(#t.order) .. " total=" .. tostring(math.floor(t.total)) .. " (" .. userId .. ")")
+        if t.hits <= 0 or not isvalid(casterEntity) then return end
+        local live = {}
+        local gone = {}
+        local maxGone = 0
+        for _, key in ipairs(t.order) do
+            local rec = t.byTarget[key]
+            self:GroupUltimateHits(rec)
+            if self:IsUltimateTargetGone(rec.e) then
+                table.insert(gone, rec)
+                if #rec.d > maxGone then maxGone = #rec.d end
+            else
+                table.insert(live, rec)
+            end
+        end
+        for _, rec in ipairs(live) do
+            self:SendUltimateHits(t.skillId, rec, rec.e, casterEntity, 0, 0, 0, "target")
+        end
+        if #gone > 0 then
+            -- 사라진 대상: 열(좌우) = 순서 % 열 수 · 행 = 순서 ÷ 열 수. 다음 행은 앞 행의 가장 긴 줄기가 끝난 뒤 시작한다.
+            local plan = self:UltimateChunkPlan(maxGone)
+            local rowSeconds = (plan.chunks - 1) * plan.gap + self.UltimateOrphanRowPad
+            local cols = math.floor(self.UltimateOrphanColumns)
+            if cols < 1 then cols = 1 end
+            for k, rec in ipairs(gone) do
+                local idx = k - 1
+                local col = idx % cols
+                local row = math.floor(idx / cols)
+                self:SendUltimateHits(t.skillId, rec, casterEntity, casterEntity, self:UltimateFanOffset(col), self.UltimateTotalOffsetY, row * rowSeconds, "caster")
+            end
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void GroupUltimateHits(table rec)
+        -- 궁 끝 숫자 묶음(1.0.7 §12 · 사용자 2026-10-14 "5타씩 치면 되지 않나 · 궁 타수는 다 5의 배수"): 한 대상이 맞은 타를 맞은 순서대로 UltimateHitGroup 개씩 피해를 더해 숫자 하나로 만든다.
+        --   묶음 안에 치명이 하나라도 있으면 치명타 숫자. 나눠떨어지지 않으면 남는 타끼리 마지막 한 묶음. 1 이하면 낱타 그대로. rec.raw = 묶기 전 타 수(로그용).
+        rec.raw = #rec.d
+        local g = math.floor(self.UltimateHitGroup)
+        if g <= 1 or #rec.d <= 1 then return end
+        local d = {}
+        local c = {}
+        local sum = 0
+        local crit = false
+        local cnt = 0
+        for i = 1, #rec.d do
+            sum = sum + rec.d[i]
+            if rec.c[i] == "1" then crit = true end
+            cnt = cnt + 1
+            if cnt >= g or i == #rec.d then
+                table.insert(d, sum)
+                table.insert(c, crit and "1" or "0")
+                sum = 0
+                crit = false
+                cnt = 0
+            end
+        end
+        rec.d = d
+        rec.c = c
+    end
+
+    method boolean IsUltimateTargetGone(Entity e)
+        -- 궁 끝 표시 때 그 대상이 더는 없는가: 엔티티가 사라졌거나, 몬스터(script.Monster)가 죽었거나(IsDead) HP 0 이하(SkillAttack.IsDeadOrDying 과 같은 기준). 서버에서만 부른다.
+        if not isvalid(e) or not isvalid(e.TransformComponent) then return true end
+        ---@type Monster
+        local mon = e:GetComponent("script.Monster")
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return true end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return true end
+        return false
+    end
+
+    method number UltimateFanOffset(integer col)
+        -- 시전자 머리 위 열의 좌우 위치: 0 → 0, 1 → +s, 2 → −s, 3 → +2s, 4 → −2s … (s = UltimateOrphanSpreadX).
+        if col <= 0 then return 0 end
+        local step = math.floor((col + 1) / 2)
+        if col % 2 == 1 then return step * self.UltimateOrphanSpreadX end
+        return -step * self.UltimateOrphanSpreadX
+    end
+
+    method table UltimateChunkPlan(integer total)
+        -- total 줄을 이어 띄우는 계획 { per = 한 묶음 줄 수, chunks = 묶음 수, gap = 묶음 사이 초 } (서버 · 클라 양쪽이 같은 값으로 쓴다).
+        --   per = UltimateHitsPerChunk. UltimateHitsMaxSeconds > 0 이고 간격이 있으면, 전체가 그 시간 안에 끝나도록 per 를 늘린다(묶음 수 ≤ 한도 ÷ 간격 + 1).
+        local per = math.floor(self.UltimateHitsPerChunk)
+        if per < 1 then per = 1 end
+        local gap = self.UltimateHitsChunkInterval
+        if gap < 0 then gap = 0 end
+        if gap > 0 and self.UltimateHitsMaxSeconds > 0 then
+            local maxChunks = math.floor(self.UltimateHitsMaxSeconds / gap) + 1
+            local need = math.ceil(total / maxChunks)
+            if need > per then per = need end
+        end
+        local chunks = math.ceil(total / per)
+        if chunks < 1 then chunks = 1 end
+        return { per = per, chunks = chunks, gap = gap }
+    end
+
+    @ExecSpace("ServerOnly")
+    method void SendUltimateHits(string skillId, table rec, Entity anchor, Entity casterEntity, number offsetX, number offsetY, number startDelay, string place)
+        -- 한 대상의 타 목록을 클라에 넘긴다. table(any) 인자는 LEA-3036 이라 피해는 "123,456,…" · 치명 여부는 "0110…"(타마다 한 글자) 문자열로 직렬화한다.
+        local crits = 0
+        for _, c in ipairs(rec.c) do
+            if c == "1" then crits = crits + 1 end
+        end
+        log("[UltHits] skill=" .. skillId .. " target=" .. rec.name .. " hits=" .. tostring(#rec.d) .. " (raw " .. tostring(rec.raw or #rec.d) .. " · group " .. tostring(self.UltimateHitGroup) .. ") crits=" .. tostring(crits) .. " at=" .. place
+            .. " first=" .. tostring(rec.d[1]) .. " delay=" .. string.format("%.2f", startDelay))
+        self:ShowUltimateHits(anchor, casterEntity, table.concat(rec.d, ","), table.concat(rec.c), offsetX, offsetY, startDelay)
     end
 
     @ExecSpace("Multicast")
-    method void ShowUltimateTotal(Entity casterEntity, integer total)
-        -- 클라: 시전자 머리 위에 합계 숫자 하나(시전자 DamageSkinSetting 스킨 · 크기 UltimateTotalScale · 높이 UltimateTotalOffsetY). 다른 맵 클라는 엔티티가 없어 건너뛴다.
-        if not isvalid(casterEntity) then return end
-        local skin = ""
+    method void ShowUltimateHits(Entity anchor, Entity casterEntity, string damageCsv, string critFlags, number offsetX, number offsetY, number startDelay)
+        -- 클라: 궁 한 시전에서 한 대상이 맞은 타 전부를 anchor(맞은 대상 · 사라졌으면 시전자) 위에 일반 다단 히트처럼 숫자 여러 줄로 띄운다
+        --   (DamageSkinService.Play damages + criticals · 시전자 DamageSkinSetting 의 스킨 · 줄 간격 · 움직임 · 크기 · 치명타 줄은 치명타 숫자).
+        --   한 번에 UltimateHitsPerChunk 줄씩 UltimateHitsChunkInterval 간격으로 이어 띄운다(UltimateChunkPlan). startDelay = 첫 묶음 시작까지 초(사라진 대상의 둘째 행 이후).
+        --   다른 맵 클라는 엔티티가 없어 건너뛴다. 묶음이 뜨는 사이 대상이 사라지면 그 묶음부터는 시전자 머리 위로.
+        if not isvalid(anchor) or not isvalid(casterEntity) then return end
         local setting = casterEntity.DamageSkinSettingComponent
+        local skin = ""
         if isvalid(setting) and setting.DamageSkinId ~= nil then skin = setting.DamageSkinId.DataId end
         if skin == nil or skin == "" then
-            log_warning("SkillExecutors: ultimate total " .. tostring(total) .. " — caster has no damage skin, not shown")
+            log_warning("SkillExecutors: ultimate hits — caster has no damage skin, not shown")
             return
         end
-        local s = self.UltimateTotalScale
-        _DamageSkinService:Play(casterEntity, skin, 0, { total }, DamageSkinTweenType.Default, false, Vector2(0, self.UltimateTotalOffsetY), Vector2(s, s))
-        log("SkillExecutors: ultimate total shown " .. tostring(total) .. " skin " .. string.sub(skin, 1, 8))
+        local damages = {}
+        for token in string.gmatch(damageCsv or "", "[^,]+") do
+            table.insert(damages, math.floor(tonumber(token) or 0))
+        end
+        local total = #damages
+        if total == 0 then return end
+        local flags = critFlags or ""
+        local delayPer = setting.DelayPerAttack
+        local tween = setting.TweenType
+        local rate = setting.PlayRate
+        if rate == nil or rate <= 0 then rate = 1 end
+        local alpha = setting.Alpha
+        if alpha == nil then alpha = 1 end
+        local lit = setting.LitMode
+        local sx = 1
+        local sy = 1
+        if setting.DamageSkinScale ~= nil and not (setting.DamageSkinScale.x == 0 and setting.DamageSkinScale.y == 0) then
+            sx = setting.DamageSkinScale.x
+            sy = setting.DamageSkinScale.y
+        end
+        local mul = self.UltimateTotalScale
+        if mul <= 0 then mul = 1 end
+        local scale = Vector2(sx * mul, sy * mul)
+        local headY = self.UltimateTotalOffsetY
+        local plan = self:UltimateChunkPlan(total)
+        local playChunk = function(first, last)
+            local a = anchor
+            local px = offsetX
+            local py = offsetY
+            if not isvalid(a) then
+                a = casterEntity
+                px = 0
+                py = headY
+            end
+            if not isvalid(a) then return end
+            local dmg = {}
+            local crit = {}
+            for i = first, last do
+                table.insert(dmg, damages[i])
+                table.insert(crit, string.sub(flags, i, i) == "1")
+            end
+            _DamageSkinService:Play(a, skin, delayPer, dmg, tween, crit, Vector2(px, py), scale, rate, alpha, lit)
+        end
+        for c = 1, plan.chunks do
+            local first = (c - 1) * plan.per + 1
+            local last = math.min(c * plan.per, total)
+            local at = startDelay + (c - 1) * plan.gap
+            if at <= 0 then
+                playChunk(first, last)
+            else
+                _TimerService:SetTimerOnce(function() playChunk(first, last) end, at)
+            end
+        end
+        log("[UltHits] shown " .. tostring(total) .. " line(s) in " .. tostring(plan.chunks) .. " chunk(s) of " .. tostring(plan.per) .. " on " .. tostring(anchor.Name) .. " skin " .. string.sub(skin, 1, 8))
     end
 
     @ExecSpace("ClientOnly")
@@ -4035,6 +4352,27 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void HideCasterFor(string uid, number seconds)
+        -- 궁 컷신 동안 시전자 캐릭터를 숨긴다(1.0.7 §11 · 사용자 2026-10-14 "궁 쓸 때 캐릭터 모습 안 보이게 · 전 직업 공통"): 아바타 알파 0(전 클라) → seconds 뒤 되돌린다.
+        --   되돌릴 값 = 다크 사이트 중이면 DarkSightAlpha, 아니면 1. 연달아 쓰면 마지막 시전의 타이머만 되돌린다(번호로 앞 타이머 무시).
+        if _SkillBuffs == nil or uid == nil or uid == "" or seconds == nil or seconds <= 0 then return end
+        self.casterHideSerial = (self.casterHideSerial or 0) + 1
+        local serial = self.casterHideSerial
+        if self.casterHideByUser == nil then self.casterHideByUser = {} end
+        self.casterHideByUser[uid] = serial
+        _SkillBuffs:SetAvatarAlpha(uid, 0)
+        log("SkillExecutors: caster hidden for ultimate " .. string.format("%.2f", seconds) .. "s (" .. uid .. ")")
+        _TimerService:SetTimerOnce(function()
+            if self.casterHideByUser == nil or self.casterHideByUser[uid] ~= serial then return end
+            self.casterHideByUser[uid] = nil
+            local alpha = 1
+            if _SkillBuffs:GetBuff(uid, _SkillBuffs.TagDarkSight) ~= nil then alpha = _SkillBuffs.DarkSightAlpha end
+            _SkillBuffs:SetAvatarAlpha(uid, alpha)
+            log("SkillExecutors: caster shown after ultimate alpha=" .. tostring(alpha) .. " (" .. uid .. ")")
+        end, seconds)
+    end
+
+    @ExecSpace("ServerOnly")
     method void PlayAppearEffect(string skillId, Entity casterEntity)
         -- effectOverrides[skillId].appear(b/skill-thief-effects): 시전 순간 한 번 붙여 재생하는 두 번째 층. 쉐도우 파트너 2차 = 4111002 effect0(검은 먹 리본 · (0, 0) · 플레이어 뒤 층).
         -- 자리 = appear.offsetX(없으면 loop.offsetX · 바라보는 쪽 + · 음수 = 등 뒤). 1차의 4211008 special/summoned(라이브 시대 그림)는 2차에서 뺐다.
@@ -4082,6 +4420,43 @@ script SkillExecutors extends Logic
             log("SkillExecutors: mob mark " .. skillId .. " scale=" .. tostring(s) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]))
         end
         _EffectService:PlayEffectAttached(spec.ruid, mob, Vector3(0, oy, 0), 0, Vector3(s, s, 1), false, opt)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void PlayTauntMark(string skillId, Entity mob, number seconds)
+        -- 도발 표시(1.0.7 · 사용자 2026-10-14 "도발 걸린 지속시간 동안 머리 위에 도발 표시가 남아 있게"): PlayMobEffect 와 같은 클립 · 자리 · 층을
+        --   반복(loop)으로 붙이고 seconds 뒤에 지운다. 같은 몹을 다시 도발하면 예전 표시를 지우고 새로 붙인다(시간 갱신). 몹이 죽으면 붙은 이펙트도 같이 사라진다.
+        local entry = self.effectOverrides[skillId]
+        if entry == nil or entry.mob == nil or entry.mob.ruid == nil then return end
+        if not isvalid(mob) or seconds == nil or seconds <= 0 then return end
+        local spec = entry.mob
+        local s = spec.scale or 1
+        local oy = spec.offsetY or 0
+        if spec.atHead then
+            local hit = mob.HitComponent
+            if isvalid(hit) and hit.BoxSize ~= nil and hit.BoxSize.y > 0 then
+                local off = hit.ColliderOffset
+                local cy = 0
+                if off ~= nil then cy = off.y end
+                oy = cy + hit.BoxSize.y / 2 + (spec.offsetY or 0)
+            end
+        end
+        local opt = nil
+        if spec.sortOnMob and isvalid(mob.TransformComponent) then
+            opt = {}
+            self:ApplyOrderAt(opt, mob, mob.TransformComponent.WorldPosition, self.HitMarkOrderInLayer)
+        end
+        if self.tauntMarkSerial == nil then self.tauntMarkSerial = {} end
+        local old = self.tauntMarkSerial[mob]
+        if old ~= nil and old > 0 then _EffectService:RemoveEffect(old) end
+        local serial = _EffectService:PlayEffectAttached(spec.ruid, mob, Vector3(0, oy, 0), 0, Vector3(s, s, 1), true, opt)
+        self.tauntMarkSerial[mob] = serial
+        log("[Taunt] mark on " .. tostring(mob.Name) .. " for " .. tostring(seconds) .. "s (serial " .. tostring(serial) .. ")")
+        _TimerService:SetTimerOnce(function()
+            if self.tauntMarkSerial == nil or self.tauntMarkSerial[mob] ~= serial then return end
+            self.tauntMarkSerial[mob] = nil
+            if serial ~= nil and serial > 0 then _EffectService:RemoveEffect(serial) end
+        end, seconds)
     end
 
     @ExecSpace("ServerOnly")
@@ -6094,7 +6469,7 @@ script SkillExecutors extends Logic
     @ExecSpace("ServerOnly")
     method void ExecuteTaunt(string skillId, table skillData, Entity casterEntity, number level)
         -- 도발(SK_W22): 반경(BaseEffect 3→5 · RatioAt) 상자 안의 적 몬스터에게 (1.1-B01 · B02 · 2026-10-12)
-        --   ① Duration 동안 방어력 −SecondaryAt(보스 절반 · tauntDefense) ② 고정 피해 TauntFlatDamage(1) ③ 시전자를 고정 추격(StateChaseMonster.SetTarget · 만료 시 원래 IsChaseNearPlayer).
+        --   ① Duration 동안 방어력 −SecondaryAt %(보스도 100% · tauntDefense · 1.0.7 §3) ② 고정 피해 TauntFlatDamage(1) ③ 시전자를 고정 추격(StateChaseMonster.SetTarget · 만료 시 원래 IsChaseNearPlayer).
         --   끌어오기(TauntPull)는 1.1 에서 껐다 — 코드는 남겨 둔다.
         -- A 의 Monster 훅 `Taunt(target, seconds)`(구현항목-결정 §3) 가 생기면 이 두 줄을 그 호출로 바꾸면 된다. 🟡 끌어모으기(발판 다른 몹)는 런타임 미검증.
         local pos = casterEntity.TransformComponent.WorldPosition
@@ -6156,11 +6531,12 @@ script SkillExecutors extends Logic
                     taunted = taunted + 1
                 end
                 local isBoss = isvalid(mob:GetComponent("script.BossSkillRunner"))
-                -- 방어력 저하(1.1-B02): 추격 컴포넌트 유무와 무관하게 대상마다. 보스는 절반.
-                local delta = -(_SkillDatabase:SecondaryAt(skillId, level))
-                if isBoss then delta = delta * self.TauntBossDefenseMul end
-                if delta < 0 then
-                    self.tauntDefense[mob] = { delta = delta, untilAt = _UtilLogic.ElapsedSeconds + seconds }
+                -- 방어력 저하(1.1-B02 → 1.0.7 §3): 추격 컴포넌트 유무와 무관하게 대상마다 · 보스도 100% · 값은 % (Lv1 ~ 5 = 0 / 5 / 10 / 15 / 20).
+                --   실제로 깎는 양은 DamageFormula.EffectiveDefense 가 맞을 때마다 방어 × (100 − %) ÷ 100 으로 계산한다(방어 0 이면 효과 없음).
+                local pct = math.min(100, _SkillDatabase:SecondaryAt(skillId, level))
+                if pct > 0 then
+                    self.tauntDefense[mob] = { pct = pct, untilAt = _UtilLogic.ElapsedSeconds + seconds }
+                    log("[Taunt] defense -" .. tostring(pct) .. "% on " .. tostring(mob.Name) .. " boss=" .. tostring(isBoss) .. " for " .. tostring(seconds) .. "s")
                 end
                 -- 피해 1(1.1-B01 · 사용자 2026-10-12 "대상마다 피해 1"): 평값 패스(치명 · 방어 · 명중 판정 없음).
                 if self.TauntFlatDamage > 0 then skillAttack:DealFlatDamageToTarget(mob, self.TauntFlatDamage, skillId) end
@@ -6174,8 +6550,8 @@ script SkillExecutors extends Logic
                     body:SetWorldPosition(self:TauntLandingPoint(mob.CurrentMap, pos.x + offset, pos.y, pos.x))
                     pulled = pulled + 1
                 end
-                -- 원작 노블 디맨드의 "mob" 클립을 끌려온/도발된 몬스터마다 붙인다(있을 때만).
-                self:PlayMobEffect(skillId, mob)
+                -- 원작 노블 디맨드의 "mob" 클립을 도발된 몬스터마다 붙인다(있을 때만) — 도발 지속시간 동안 머리 위에 반복해서 남긴다(1.0.7 · 사용자 2026-10-14).
+                self:PlayTauntMark(skillId, mob, seconds)
             end
         end
 
@@ -6185,11 +6561,12 @@ script SkillExecutors extends Logic
             end, seconds)
         end
         log("SkillExecutors: TAUNT " .. skillId .. " radius=" .. tostring(radius) .. " candidates=" .. tostring(#found)
-            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " def-" .. tostring(_SkillDatabase:SecondaryAt(skillId, level)) .. " for " .. tostring(seconds) .. "s")
+            .. " taunted=" .. tostring(taunted) .. " pulled=" .. tostring(pulled) .. " def-" .. tostring(_SkillDatabase:SecondaryAt(skillId, level)) .. "% for " .. tostring(seconds) .. "s")
     end
 
-    method number GetTauntDefenseDelta(Entity mob)
-        -- 도발 방어력 저하(1.1-B02): 걸려 있으면 delta(0 이하), 아니면 0. 만료된 기록은 지운다. 서버 원장(클라는 늘 0).
+    method number GetTauntPct(Entity mob)
+        -- 도발 방어력 저하(1.1-B02 → 1.0.7 §3): 걸려 있으면 방어를 깎는 % (0 ~ 100), 아니면 0. 만료된 기록은 지운다. 서버 원장(클라는 늘 0).
+        --   읽는 곳 = DamageFormula.TargetDefenseOf(→ EffectiveDefense: 방어 × (100 − %) ÷ 100 먼저, 그다음 모자 방어율 무시).
         if mob == nil or self.tauntDefense == nil then return 0 end
         local rec = self.tauntDefense[mob]
         if rec == nil then return 0 end
@@ -6197,7 +6574,7 @@ script SkillExecutors extends Logic
             self.tauntDefense[mob] = nil
             return 0
         end
-        return rec.delta
+        return rec.pct or 0
     end
 
     @ExecSpace("ServerOnly")

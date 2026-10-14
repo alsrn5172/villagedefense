@@ -122,15 +122,30 @@ script DamageFormula extends Logic
 		return final
 	end
 
-	method number TargetDefenseOf(Entity defender)
-		-- 몬스터 · 보스의 지금 방어 = Monster.Defense(스폰한 곳이 도감 값을 넣음) + 도발 방어력 저하(1.1-B02 · 0 이하 · 서버 기록). Monster 가 없으면 0.
+	method number EffectiveDefense(number baseDef, number tauntPct, number ignorePct)
+		-- 적용 방어 한 곳(1.0.7 §3 · §4 · 사용자 2026-10-14): 도발(디버프)이 먼저, 그다음 모자 방어율 무시.
+		--   ① d1 = 방어 × (100 − 도발%) ÷ 100  (% 라서 방어가 음수가 되지 않는다 · 방어 0 이하면 도발도 효과 없음)
+		--   ② 무시 %p 가 d1 보다 크면 적용 방어 0 · 아니면 d1 × (100 − 무시%) ÷ 100. (경계: 무시 30% 에서 방어 29 → 0 · 방어 30 → 21)
+		-- 플레이어가 몬스터 · 보스를 칠 때만 쓴다(기본 공격 · 스킬 · 투사체 4곳). 반사 · 도발 피해 1 같은 고정 피해는 방어 자체를 안 거친다.
+		if baseDef <= 0 then return baseDef end
+		local t = math.min(100, math.max(0, tauntPct or 0))
+		local d1 = baseDef * (100 - t) / 100
+		local ig = math.min(100, math.max(0, ignorePct or 0))
+		if ig <= 0 then return d1 end
+		if ig > d1 then return 0 end
+		return d1 * (100 - ig) / 100
+	end
+
+	method number TargetDefenseOf(Entity defender, number ignorePct)
+		-- 몬스터 · 보스의 지금 적용 방어 = EffectiveDefense(Monster.Defense(스폰한 곳이 도감 값을 넣음), 도발 %(서버 기록 · GetTauntPct), 공격자의 방어율 무시 %p). Monster 가 없으면 0.
+		-- ignorePct = 공격한 플레이어의 StatService.GetIgnoreDef (0 이면 무시 없음).
 		if not isvalid(defender) then return 0 end
 		---@type Monster
 		local mon = defender.Monster
 		if not isvalid(mon) then return 0 end
-		local def = mon.Defense or 0
-		if _SkillExecutors ~= nil then def = def + _SkillExecutors:GetTauntDefenseDelta(defender) end
-		return def
+		local taunt = 0
+		if _SkillExecutors ~= nil then taunt = _SkillExecutors:GetTauntPct(defender) end
+		return self:EffectiveDefense(mon.Defense or 0, taunt, ignorePct or 0)
 	end
 
 	method integer ApplyPlayerDefense(Entity defender, integer raw)
@@ -144,12 +159,12 @@ script DamageFormula extends Logic
 		return self:ApplyDefense(raw, def)
 	end
 
-	method integer ApplyTargetDefense(Entity defender, integer raw)
+	method integer ApplyTargetDefense(Entity defender, integer raw, number ignorePct)
 		-- 몬스터 · 보스가 받는 피해 공용 헬퍼 (1.1-E21 · 사용자 2026-10-12: 기본 공격 · 스킬 모두, 보스 포함).
-		-- 방어 = TargetDefenseOf(Monster.Defense + 도발 저하) · raw × 100/(100+방어) · 최소 1. 도발로 음수가 되면 피해가 는다(1.1-B02). Monster 가 없거나 방어 0 이면 raw 그대로.
-		-- 호출: 기본 공격(StatService.CalcPlayerDamage) · 스킬(SkillAttack · SkillProjectile CalcDamage). 고정 피해 · 반사 · 도발 피해 1 경로는 부르지 않는다.
+		-- 방어 = TargetDefenseOf(Monster.Defense → 도발 % → 모자 방어율 무시 ignorePct · 1.0.7) · raw × 100/(100+방어) · 최소 1. Monster 가 없거나 적용 방어 0 이면 raw 그대로.
+		-- 호출: 스킬(SkillAttack.DefendedAmount · SkillProjectile CalcDamage · 궁 합계). 기본 공격은 StatService.CalcPlayerDamage 가 TargetDefenseOf + ApplyDefense 로 같은 식을 쓴다. 고정 피해 · 반사 · 도발 피해 1 경로는 부르지 않는다.
 		if raw < 1 then raw = 1 end
-		local def = self:TargetDefenseOf(defender)
+		local def = self:TargetDefenseOf(defender, ignorePct or 0)
 		if def == 0 then return raw end
 		return self:ApplyDefense(raw, def)
 	end

@@ -64,6 +64,13 @@ script DefenderService extends Logic
 	@HideFromInspector
 	property any regionLevelsAny = nil
 
+	-- 넥서스 분신(1.0.7 §10 · 2026-10-14): 분신 번호표(SpawnClone · 소환체와 짝을 묶는 ownerKey 에 쓴다) · 낱장 프레임 분신 id 집합(IsFrameClone · 표 CloneMonsterArt 에서 한 번).
+	@HideFromInspector
+	property integer cloneSeq = 0
+
+	@HideFromInspector
+	property any frameCloneIds = nil
+
 	method void OnBeginPlay()
 		-- 서버 전용.
 		if not self:IsServer() then return end
@@ -132,9 +139,16 @@ script DefenderService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method Entity SpawnOne(string villageId, integer monsterId, number statMul, integer upgradeLevel, string frontStage, integer slot, number hpRatio)
+	method Entity SpawnOne(string villageId, integer monsterId, number statMul, integer upgradeLevel, string frontStage, integer slot, number hpRatio, any ov)
 		-- 최전방 시설 뒤 대기 위치에 1마리. slot = 0.. (뒤로 0.35 씩 · 4열 순환) · hpRatio = 재집결 시 이어받는 HP 비율.
+		-- ov(1.0.7 §10 · 2026-10-14) = 넥서스 분신 · 소환체의 직접 지정값(nil = 모집한 수비대 · 지금 그대로): { kind = "CLONE" | "SUMMON", villageId, monsterId, level, hp, attack, defense, tier, upgradeLevel, ownerKey, state }
+		--   CLONE  = 레벨 · HP · 공격 · 방어를 그대로 쓴다(MonsterRecruit 행 없이 · 명중 · 회피 · 공격 간격은 수비대와 같다). FactionAI 의 자동 기본 공격은 CloneSkillBrain 이 막고 기술 가방이 이번 차례를 정한다.
+		--   SUMMON = 분신이 부른 수비대(타우로마시스 등): 수비대 티어 표(ov.tier) 체력 · 공격 × 레벨 HP 배율(ov.level) · 처치 보상 없음.
 		if _LaneFacilityService == nil or _MonsterCatalog == nil then return nil end
+		local isClone = (ov ~= nil and ov.kind == "CLONE")
+		local isSummon = (ov ~= nil and ov.kind == "SUMMON")
+		-- 표(CloneMonsterArt)에 행이 있는 분신 = 낱장 프레임 분신: ActionSheet 가 비고 CloneMonsterArt 컴포넌트가 그린다 → 클립 경로(ai.*RUID · 피격 상자 자동 맞춤)를 우회한다.
+		local frameClone = isClone and self:IsFrameClone(monsterId)
 		local role = _LaneFacilityService:RoleOfStage(frontStage)
 		local row = _LaneFacilityService:LaneRow(villageId, role)
 		if row == nil then return nil end
@@ -150,15 +164,31 @@ script DefenderService extends Logic
 		local attack = math.max(1, math.floor(level * self.AttackPerLevel * statMul))
 		-- 수비대 스탯은 모집 티어 + 강화 레벨별 값(GuardHpOf/GuardAtkOf · 웨이브 기준). MonsterTraining.StatMul 은 파병 등 다른 계산에 유지한다.
 		local rr = (_LaneStateService ~= nil) and _LaneStateService:RecruitRow(monsterId) or nil
-		if rr ~= nil then
+		if isSummon then
+			-- 분신 소환체(1.0.7 §10): 모집 행 없이 ov.tier(3) 표 값 · 강화 단계 ov.upgradeLevel(1).
+			local lv = math.max(1, math.min(5, math.floor(ov.upgradeLevel or 1)))
+			maxHp = self:GuardHpOf(ov.tier or 3, lv)
+			attack = self:GuardAtkOf(ov.tier or 3, lv)
+		elseif rr ~= nil and not isClone then
 			local lv = math.max(1, math.min(5, upgradeLevel or 1))
 			maxHp = self:GuardHpOf(rr.tier or 1, lv)
 			attack = self:GuardAtkOf(rr.tier or 1, lv)
 		end
 		-- 체력 × 수비대 레벨(DefenderLevelIn = 지역 레벨 + 강화 1단계당 2)의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로"): 리본돼지(T2 · Lv17) 강화 Lv1 5,120 → 35,840 · Lv5(Lv25) 12,156 → 182,340.
 		--   공격력은 그대로. 파병(MinionFlowService.SpawnDispatched)도 같은 레벨 · 배율이라 2 : 1 이 유지된다. 지역 레벨 = 모집한 마을 사냥터에서 그 종의 레벨(1.0.4-3-03).
-		local unitLevel = self:DefenderLevelIn(villageId, monsterId, upgradeLevel)
-		maxHp = _MonsterCatalog:LevelHp(maxHp, unitLevel)
+		local unitLevel = 0
+		if isClone or isSummon then
+			-- 분신 · 소환체 레벨 = 넥서스 레벨(25 / 30 / 35) 그대로. 분신 HP 는 NexusCloneService 가 레벨 HP 배율까지 곱해 넘긴 최종값이라 여기서 다시 곱하지 않는다. 소환체는 티어 표 체력 × 그 레벨의 배율(수비대와 같은 식).
+			unitLevel = math.max(1, math.floor(ov.level or 1))
+		else
+			unitLevel = self:DefenderLevelIn(villageId, monsterId, upgradeLevel)
+		end
+		if isClone then
+			maxHp = math.max(1, math.floor(ov.hp))
+			attack = math.max(1, math.floor(ov.attack))
+		else
+			maxHp = _MonsterCatalog:LevelHp(maxHp, unitLevel)
+		end
 		local range = self:GuardRange()
 		local minX = row.pathMinX or -100000
 		local maxX = row.pathMaxX or 100000
@@ -178,12 +208,17 @@ script DefenderService extends Logic
 			monster.MaxHp = maxHp
 			monster.Hp = math.max(1, math.floor(maxHp * math.min(1.0, math.max(0.05, hpRatio or 1.0))))
 			monster.RespawnOn = false
+			if isClone then monster.Defense = ov.defense or 0 end
+			-- 판정 레벨(명중 · 회피 · 이름표): 분신 · 소환체는 DefenderUnit.Level 이 먼저 읽히지만 Monster.Level 에도 같은 값을 둔다.
+			if isClone or isSummon then monster.Level = unitLevel end
 		end
-		if isvalid(ent.HitComponent) then
-			ent.HitComponent.BoxSize = Vector2(0.8, 1.0)
-			ent.HitComponent.ColliderOffset = Vector2(0, 0.5)
+		if not frameClone then
+			if isvalid(ent.HitComponent) then
+				ent.HitComponent.BoxSize = Vector2(0.8, 1.0)
+				ent.HitComponent.ColliderOffset = Vector2(0, 0.5)
+			end
+			if isvalid(monster) then monster:FitHitboxToSprite() end
 		end
-		if isvalid(monster) then monster:FitHitboxToSprite() end
 		local chase = ent.StateChaseMonster
 		if isvalid(chase) then chase.Enable = false end
 		local boss = ent.BossSkillRunner
@@ -191,9 +226,8 @@ script DefenderService extends Logic
 		local contact = ent.MonsterAttack
 		if isvalid(contact) then contact.Disabled = true end
 		if isvalid(ent.SpriteRendererComponent) then
-			local layer = _LaneFacilityService:SortingLayerBelow(map, homeX, row.pathY)
-			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
-			ent.SpriteRendererComponent.OrderInLayer = 3
+			-- 렌더 층 = 몬스터 공용 고정(Default/3 · Monster.FixRenderLayer · 사용자 2026-10-14). 예전엔 밟은 발판의 MapLayerN 으로 덮어썼다.
+			if isvalid(monster) then monster:FixRenderLayer() else ent.SpriteRendererComponent.OrderInLayer = 3 end
 		end
 		-- 이속 2배 (WO-016): MinionFlowService.SpawnMinion 과 같은 순서 — 도감 MoveSpeed 를 먼저 넣고 배수. ⚠️ InputSpeed 는 몬스터용이다(플레이어는 RigidbodyComponent.WalkSpeed).
 		-- 리쉬(LeashMinX/MaxX)는 FactionAI 가 매 프레임 방향을 0 으로 잘라 오버슛이 한 프레임 이동량뿐이다. 튀면 리쉬에 여유를 주지 이속을 도로 내리지 않는다.
@@ -253,13 +287,140 @@ script DefenderService extends Logic
 			du.VillageId = villageId
 			du.MonsterId = monsterId
 			du.Level = unitLevel
+			-- 소환체는 죽어도 마을 원장(묶음 수)에 보고하지 않고 처치 보상도 없다(보상 = 소환체를 반복해 잡는 파밍 방지 · 분신 자신은 수비대와 같게 보상 있음).
+			if isSummon then du.reported = true end
+		end
+		if isClone then
+			-- 기술 가방(1.0.7 §10): AI 가 ATTACK 상태에 들어갈 때마다 가방에서 기술 하나를 꺼내 쓴다. FactionAttack 의 자동 기본 공격은 가방이 막고(Shape = nil) 기술이 직접 판정한다.
+			---@type CloneSkillBrain
+			local brain = ent:AddComponent("script.CloneSkillBrain")
+			if isvalid(brain) then
+				brain.Ov = ov
+			else
+				log_warning("[Defender] CloneSkillBrain add failed " .. name)
+			end
+			-- 낱장 프레임 분신(헬레나 · 주먹펴고)만: 클라가 프레임을 갈아 끼우는 그림 재생기.
+			if frameClone then
+				---@type CloneMonsterArt
+				local art = ent:AddComponent("script.CloneMonsterArt")
+				if isvalid(art) then
+					art.MonsterId = monsterId
+				else
+					log_warning("[Defender] CloneMonsterArt add failed " .. name)
+				end
+			end
 		end
 		-- 몬스터 이름표(1.1-I09): `Lv.N 이름` — 레벨 = DefenderLevelIn(지역 레벨 + 강화 1단계당 2). Regroup 이 같은 SpawnOne 을 u.upgradeLevel 로 다시 불러 재집결 개체도 같은 레벨로 붙는다. 훈련해도 이미 서 있는 개체의 이름표는 안 바뀐다(새로 모집하는 묶음부터).
+		-- 분신 · 소환체는 레벨 = 넥서스 레벨(`Lv.25 헬레나의 분신`).
 		if _MonsterNameTag ~= nil then
 			_MonsterNameTag:Attach(ent, _MonsterCatalog:GetName(monsterId), unitLevel)
 		end
-		log("[Defender] spawn " .. name .. " mob=" .. tostring(monsterId) .. " upgradeLv=" .. tostring(upgradeLevel) .. " lv=" .. tostring(unitLevel) .. " hp=" .. tostring(maxHp) .. " atk=" .. tostring(attack))
+		log("[Defender] spawn " .. name .. " mob=" .. tostring(monsterId) .. " upgradeLv=" .. tostring(upgradeLevel) .. " lv=" .. tostring(unitLevel) .. " hp=" .. tostring(maxHp) .. " atk=" .. tostring(attack)
+			.. (ov ~= nil and (" kind=" .. tostring(ov.kind) .. " def=" .. tostring(isClone and (ov.defense or 0) or 0) .. (frameClone and " frames" or "")) or ""))
 		return ent
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsFrameClone(integer monsterId)
+		-- 표 CloneMonsterArt 에 켜진 행이 있는 분신이면 true(낱장 프레임 분신 · 헬레나 · 주먹펴고). 한 번만 읽는다.
+		if self.frameCloneIds == nil then
+			self.frameCloneIds = {}
+			local t = _DataService:GetTable("CloneMonsterArt")
+			if t ~= nil then
+				for i = 1, t:GetRowCount() do
+					local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+					local id = math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0)
+					if id > 0 and enabled then self.frameCloneIds[id] = true end
+				end
+			end
+		end
+		return self.frameCloneIds[monsterId] == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnClone(string villageId, integer monsterId, integer level, number maxHp, number attack, number defense, string frontStage)
+		-- 넥서스 분신 1마리(NexusCloneService.OnCoreDamaged 가 부른다 · 1.0.7 §10 · 2026-10-14). level = 넥서스 레벨 · maxHp = 레벨 HP 배율까지 곱한 최종값 · defense = 레벨.
+		-- 모집 상한 · 마을 묶음(v.defenders)에 안 센다 — 추적 목록에만 넣어 재집결(Regroup) · 탈락 정리(DespawnVillage)를 따른다. 파병 차출(TakeUnits)은 clone 표시로 건너뛴다.
+		-- ov(= 이 표)는 재집결 때 같은 표를 다시 넘긴다 → ov.state(기술 가방 순서 · 버프 만료)가 새 개체에도 이어진다. ownerKey 는 소환체와 짝을 묶는 열쇠(재집결해도 같다).
+		self.cloneSeq = self.cloneSeq + 1
+		local ov = {
+			kind = "CLONE", villageId = villageId, monsterId = monsterId, level = level, hp = maxHp, attack = attack, defense = defense,
+			ownerKey = villageId .. "_clone" .. tostring(self.cloneSeq), state = {},
+		}
+		local ent = self:SpawnOne(villageId, monsterId, 1.0, 1, frontStage, 0, 1.0, ov)
+		if not isvalid(ent) then return nil end
+		table.insert(self:UnitList(villageId), { ent = ent, monsterId = monsterId, statMul = 1.0, upgradeLevel = 1, clone = ov })
+		return ent
+	end
+
+	@ExecSpace("ServerOnly")
+	method any SpawnSummons(string villageId, string ownerKey, integer monsterId, integer count, integer level)
+		-- 분신의 소환 기술(CloneSkillBrain): 아군 수비대 count 마리를 지금 최전방 시설 뒤에. 체력 · 공격 = 수비대 3티어 표(Lv1 단계) · 레벨 = 분신 레벨(HP 는 그 레벨의 배율을 한 번 곱한다). 돌려주는 값 = 스폰된 엔티티 목록.
+		local made = {}
+		local front = "CORE"
+		local v = nil
+		if _LaneStateService ~= nil and _LaneStateService.states ~= nil then v = _LaneStateService.states[villageId] end
+		if v ~= nil then front = _LaneStateService:FrontStage(v) end
+		local have = self:CountSummonsOf(villageId, ownerKey)
+		for i = 1, count do
+			local ov = { kind = "SUMMON", villageId = villageId, monsterId = monsterId, level = level, tier = 3, upgradeLevel = 1, ownerKey = ownerKey }
+			local ent = self:SpawnOne(villageId, monsterId, 1.0, 1, front, 1 + have + i, 1.0, ov)
+			if isvalid(ent) then
+				-- UnitList 는 부를 때마다 목록을 새 표로 바꾼다(CountSummonsOf 도 부른다) → 넣기 직전에 다시 받는다(미리 받아 둔 표는 버려져 소환체가 추적 목록에서 빠졌다 · PLAY 2026-10-14).
+				table.insert(self:UnitList(villageId), { ent = ent, monsterId = monsterId, statMul = 1.0, upgradeLevel = 1, clone = ov })
+				table.insert(made, ent)
+			end
+		end
+		return made
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CountSummonsOf(string villageId, string ownerKey)
+		-- 이 분신(ownerKey)이 부른 살아 있는 소환체 수(소환 상한 판정).
+		local n = 0
+		for _, u in ipairs(self:UnitList(villageId)) do
+			if u.clone ~= nil and u.clone.kind == "SUMMON" and u.clone.ownerKey == ownerKey then
+				---@type Monster
+				local monster = u.ent.Monster
+				if isvalid(monster) and not monster.IsDead then n = n + 1 end
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CountClones(string villageId)
+		-- 이 마을의 살아 있는 분신 수(NexusCloneService.MaxAlivePerVillage 판정).
+		local n = 0
+		for _, u in ipairs(self:UnitList(villageId)) do
+			if u.clone ~= nil and u.clone.kind == "CLONE" then
+				---@type Monster
+				local monster = u.ent.Monster
+				if isvalid(monster) and not monster.IsDead then n = n + 1 end
+			end
+		end
+		return n
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer RemoveSummonsOf(string villageId, string ownerKey)
+		-- 분신이 사라지면(죽음) 그 분신이 부른 소환체도 정리한다(사망 보고 없이 · TakeUnits · DespawnVillage 와 같은 reported 규칙). 지운 수를 돌려준다.
+		local keep = {}
+		local n = 0
+		for _, u in ipairs(self:UnitList(villageId)) do
+			if u.clone ~= nil and u.clone.kind == "SUMMON" and u.clone.ownerKey == ownerKey then
+				---@type DefenderUnit
+				local du = u.ent.DefenderUnit
+				if isvalid(du) then du.reported = true end
+				u.ent:Destroy()
+				n = n + 1
+			else
+				table.insert(keep, u)
+			end
+		end
+		self.units[villageId] = keep
+		log("[Defender] remove summons " .. villageId .. " owner=" .. ownerKey .. " n=" .. tostring(n))
+		return n
 	end
 
 	method integer DefenderLevelOf(integer monsterId, integer upgradeLevel)
@@ -335,7 +496,7 @@ script DefenderService extends Logic
 		local spawned = 0
 		local first = nil
 		for i = 1, count do
-			local ent = self:SpawnOne(villageId, monsterId, statMul, upgradeLevel, frontStage, i - 1, 1.0)
+			local ent = self:SpawnOne(villageId, monsterId, statMul, upgradeLevel, frontStage, i - 1, 1.0, nil)
 			if isvalid(ent) then
 				table.insert(list, { ent = ent, monsterId = monsterId, statMul = statMul, upgradeLevel = upgradeLevel })
 				spawned = spawned + 1
@@ -366,10 +527,11 @@ script DefenderService extends Logic
 				local du = u.ent.DefenderUnit
 				if isvalid(du) then du.reported = true end
 				u.ent:Destroy()
-				local ent = self:SpawnOne(villageId, u.monsterId, u.statMul, u.upgradeLevel, frontStage, slot, ratio)
+				-- 분신 · 소환체(u.clone)는 같은 설정 표를 다시 넘겨 레벨 · HP · 방어 · 기술 가방 상태를 그대로 이어받는다(1.0.7 §10).
+				local ent = self:SpawnOne(villageId, u.monsterId, u.statMul, u.upgradeLevel, frontStage, slot, ratio, u.clone)
 				slot = slot + 1
 				if isvalid(ent) then
-					table.insert(keep, { ent = ent, monsterId = u.monsterId, statMul = u.statMul, upgradeLevel = u.upgradeLevel })
+					table.insert(keep, { ent = ent, monsterId = u.monsterId, statMul = u.statMul, upgradeLevel = u.upgradeLevel, clone = u.clone })
 					moved = moved + 1
 				end
 			end
@@ -394,7 +556,8 @@ script DefenderService extends Logic
 			---@type Monster
 			local monster = u.ent.Monster
 			local alive = isvalid(monster) and not monster.IsDead
-			if taken < qty and u.monsterId == monsterId and alive then
+			-- 넥서스 분신 · 소환체(u.clone)는 차출하지 않는다(1.0.7 §10 · 마을 묶음에 안 세는 개체).
+			if taken < qty and u.monsterId == monsterId and alive and u.clone == nil then
 				---@type DefenderUnit
 				local du = u.ent.DefenderUnit
 				if isvalid(du) then du.reported = true end

@@ -1,0 +1,408 @@
+@Component
+script BossHpBar extends Component
+
+	-- 보스급 몬스터 머리 위 체력바 (1.0.7 · 사용자 2026-10-14 "보스몹들 체력바 좀 만들자 … 몬스터 바로 위에 네모난 체력바 · 검은 바탕에 빨간 피 · 얇은 바").
+	--   · 붙는 곳 = 엘리트(EliteSpawner) · 3페이즈 좀비머쉬맘(MinionFlowService) · 지역 보스 5종 · 마노 · 주니어 발록(BossSpawner). 일반 사냥터 · 미니언 · 수비대 · 소환수 · 분신에는 안 붙는다.
+	--   · BossHpBarService.Attach 가 몬스터의 자식으로 lanehpbar 모델(틀 Track + 채움 Fill 스프라이트 자식 2개)을 스폰하고 그 루트에 이 컴포넌트를 붙인다. 새 그림 없음 —
+	--     두 자식 모두 시설 HP 바의 채움 그림(hpbar_fill · 흰 사각)에 색만 곱한다(Track = 검정 반투명 · Fill = 빨강). 옛 틀 그림(gauge_track)은 안 쓴다.
+	--   · 서버: 몬스터 피격 상자(HitComponent)에서 바 가로(BarW)와 상자 위끝 높이(BarTop · 몬스터 원점 기준 월드)를 재서 @Sync 로 보낸다.
+	--     피격 상자 값을 서버만 바꾸는 일이 있어(좀비 = SpawnMinion 이 박았다가 FitHitboxToSprite 가 실제 크기로 다시 맞춘다) 클라가 직접 읽지 않는다.
+	--   · 클라: 몬스터의 Hp / MaxHp / IsDead(@Sync · Monster)를 매 프레임 읽어 채움 폭을 바로 맞춘다(보간 없음 — "HP 가 바뀌면 바로"). 죽으면(IsDead) 바로 끈다.
+	--   · 그리기 층 = 부모 몬스터와 같은 SortingLayer / OrderInLayer(Default/3) · 같은 순번 안에서는 Z 가 작을수록 앞이라 틀 Z −0.01 · 채움 Z −0.02 로 몬스터 → 틀 → 채움 순서를 잡는다.
+	--     플레이어(Default/4) · 포탈(Default/5)은 순번이 커서 항상 바 앞에 그려진다.
+
+	@Sync
+	property string Kind = ""
+
+	-- 바 가로(월드) · 피격 상자 위끝 높이(몬스터 원점 기준 월드). 서버가 쓰고 클라가 읽는다. BarW 0 = 아직 못 쟀다(그리지 않는다).
+	@Sync
+	property number BarW = 0
+
+	@Sync
+	property number BarTop = 0
+
+	-- 모양(월드 단위). BarHeight = 검은 바탕까지 포함한 전체 세로(얇게). Pad = 바탕이 채움보다 사방으로 나오는 폭(얇은 검은 테두리).
+	property number BarHeight = 0.10
+
+	property number Pad = 0.015
+
+	-- 피격 상자 위끝 ~ 바 아래끝 사이 간격.
+	property number Gap = 0.05
+
+	-- 가로 = 피격 상자 폭 × 몬스터 배율 × WidthMul, 이 범위로 자른다.
+	property number MinWidth = 0.7
+
+	property number MaxWidth = 3.2
+
+	property number WidthMul = 1.0
+
+	-- 피격 상자를 못 읽을 때(폭 · 높이 0)의 위끝 높이.
+	property number FallbackTop = 1.0
+
+	-- 서버가 피격 상자를 다시 재는 간격(초). 좀비는 스폰 뒤 FitHitboxToSprite 가 비동기로 실제 크기를 박는다.
+	property number PollSeconds = 1.0
+
+	-- 피격 상자가 엔진 기본값(0.67 × 1.42 · 손으로 안 맞춘 보스 — 머쉬맘 · 킹슬라임 · 스텀피 · 에피네아 · 마노 · 주니어 발록)이면 상자 대신 stand 클립 첫 장 그림 크기로 잰다
+	--   (1.0.7 Play 확인 2026-10-14: 기본 상자라 킹슬라임은 몸 한가운데 · 머쉬맘은 얼굴을 가로질렀다). 그림 재기는 Monster.FitHitboxToSprite 와 같은 계산(크기 · 피벗)이고 피격 상자는 안 바꾼다.
+	property number DefaultBoxW = 0.67
+
+	property number DefaultBoxH = 1.42
+
+	-- 그림 재기 상태(0 = 안 함 · 1 = 읽는 중 · 2 = 됨 · 3 = 실패) · 잰 값(몬스터 로컬 단위).
+	@HideFromInspector
+	property integer spriteFit = 0
+
+	@HideFromInspector
+	property number spriteW = 0
+
+	@HideFromInspector
+	property number spriteTop = 0
+
+	-- 검증용 로그(Play 확인 끝나면 false): 가로 · 위끝이 바뀔 때 서버 한 줄 / 클라가 틀 · 채움을 잡았을 때 한 줄.
+	property boolean LogFit = true
+
+	property boolean LogClientInit = true
+
+	-- 두 자식이 그리는 흰 사각 그림(ruid-map.json hpbar_fill 380×24 · 업로드 자산은 100px = 1유닛). 시설 HP 바 채움과 같은 그림.
+	property string BarRUID = "752fb1ae1ccd48158c19bb90c937c048"
+
+	property number PixelsPerUnit = 100
+
+	property number SpritePxW = 380
+
+	property number SpritePxH = 24
+
+	property Color BackColor = Color(0, 0, 0, 0.82)
+
+	property Color FillColor = Color(0.90, 0.10, 0.10, 1)
+
+	-- 같은 순번 안의 앞뒤(Z · 작을수록 앞). 몬스터(0)보다 틀이, 틀보다 채움이 앞.
+	property number BackZ = -0.01
+
+	property number FillZ = -0.02
+
+	-- 비상용: 몬스터 순번에 더하는 값(틀 / 채움). 0 이면 같은 순번에서 Z 로만 앞뒤를 가른다. Play 사진에서 채움이 틀 뒤로 숨으면 FillOrderOffset 을 1 로(= 플레이어 Default/4 와 같은 순번이 되니 Z 가 −이어도 플레이어를 가릴 수 있다 — 마지막 수단).
+	property integer TrackOrderOffset = 0
+
+	property integer FillOrderOffset = 0
+
+	-- 클라가 이 초 안에 틀 · 채움 자식을 못 찾으면 경고 한 번.
+	property number InitWarnSeconds = 3
+
+	@HideFromInspector
+	property number pollLeft = 0
+
+	@HideFromInspector
+	property boolean emptyWarned = false
+
+	@HideFromInspector
+	property boolean inited = false
+
+	@HideFromInspector
+	property boolean initWarned = false
+
+	@HideFromInspector
+	property number initWait = 0
+
+	@HideFromInspector
+	property boolean dirty = true
+
+	@HideFromInspector
+	property number lastRatio = -1
+
+	@HideFromInspector
+	property number lastW = -1
+
+	@HideFromInspector
+	property number lastTop = -1
+
+	@HideFromInspector
+	property number lastKx = 0
+
+	@HideFromInspector
+	property number lastKy = 0
+
+	@HideFromInspector
+	property boolean lastTrackOn = false
+
+	@HideFromInspector
+	property boolean lastFillOn = false
+
+	@HideFromInspector
+	property string curLayer = ""
+
+	@HideFromInspector
+	property integer curOrder = -9999
+
+	@ExecSpace("ServerOnly")
+	method void Measure()
+		-- 몬스터 피격 상자에서 바 가로(BarW)와 상자 위끝 높이(BarTop)를 잰다. 값이 달라졌을 때만 @Sync 에 쓴다.
+		--   피격 상자 BoxSize · ColliderOffset 은 몬스터 로컬 단위 → 월드 길이 = 값 × 몬스터 TransformComponent.Scale(엘리트 자이언트는 ScaleMul 배).
+		local mon = self.Entity.Parent
+		if not isvalid(mon) then return end
+		local w = self.MinWidth
+		local top = self.FallbackTop
+		local sx = 1
+		local sy = 1
+		local mtr = mon.TransformComponent
+		if isvalid(mtr) then
+			sx = math.abs(mtr.Scale.x)
+			sy = math.abs(mtr.Scale.y)
+		end
+		local measured = false
+		local hit = mon.HitComponent
+		if isvalid(hit) then
+			local size = hit.BoxSize
+			local off = hit.ColliderOffset
+			local bw = size.x
+			local bh = size.y
+			if (bw <= 0.01 or bh <= 0.01) and hit.CircleRadius > 0 then
+				bw = hit.CircleRadius * 2
+				bh = bw
+			end
+			if bw > 0.01 and bh > 0.01 then
+				w = bw * sx * self.WidthMul
+				top = (off.y + bh / 2) * sy
+				measured = true
+			end
+			-- 기본 상자(손으로 안 맞춘 보스)면 그림 크기로: 다 읽었으면 그 값 · 아직이면 읽기를 걸고 이번엔 상자 값(다음 폴링에 바뀐다).
+			if math.abs(bw - self.DefaultBoxW) < 0.011 and math.abs(bh - self.DefaultBoxH) < 0.011 then
+				if self.spriteFit == 2 then
+					w = self.spriteW * sx * self.WidthMul
+					top = self.spriteTop * sy
+					measured = true
+				elseif self.spriteFit == 0 then
+					self:FitFromSprite(mon)
+				end
+			end
+		end
+		if not measured and not self.emptyWarned then
+			self.emptyWarned = true
+			log_warning("[BossHpBar] hitbox empty — fallback w=" .. string.format("%.2f", w) .. " top=" .. string.format("%.2f", top) .. " " .. tostring(mon.Name))
+		end
+		w = math.max(self.MinWidth, math.min(self.MaxWidth, w))
+		if math.abs(w - self.BarW) <= 0.005 and math.abs(top - self.BarTop) <= 0.005 then return end
+		local first = (self.BarW <= 0)
+		self.BarW = w
+		self.BarTop = top
+		if self.LogFit and not first then
+			log("[BossHpBar] fit name=" .. tostring(mon.Name) .. " kind=" .. self.Kind .. " w=" .. string.format("%.2f", w) .. " top=" .. string.format("%.2f", top))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FitFromSprite(Entity mon)
+		-- 몬스터 stand 클립 첫 장의 그림 크기 · 피벗으로 폭(spriteW)과 그림 위끝(spriteTop · 몬스터 로컬)을 잰다(한 번 · 비동기). Monster.FitHitboxToSprite 와 같은 계산.
+		local sr = mon.SpriteRendererComponent
+		local ruid = isvalid(sr) and sr.SpriteRUID or ""
+		local anim = mon.StateAnimationComponent
+		if isvalid(anim) then
+			local stand = anim.ActionSheet["stand"]
+			if stand ~= nil and stand ~= "" then ruid = stand end
+		end
+		if ruid == nil or ruid == "" or ruid == "null" then
+			self.spriteFit = 3
+			return
+		end
+		self.spriteFit = 1
+		local me = self
+		_ResourceService:PreloadAsync({ruid}, function()
+			if not isvalid(me) or not isvalid(mon) then return end
+			local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+			if clip == nil or clip.Frames == nil or clip.Frames[1] == nil then
+				me.spriteFit = 3
+				return
+			end
+			local sp = clip.Frames[1].FrameSprite
+			if sp == nil or sp.PixelPerUnit <= 0 then
+				me.spriteFit = 3
+				return
+			end
+			local ppu = sp.PixelPerUnit
+			local pivot = sp.PivotPixel:ToVector2()
+			me.spriteW = sp.Width / ppu
+			me.spriteTop = (sp.Height / 2 - pivot.y) / ppu + (sp.Height / ppu) / 2
+			me.spriteFit = 2
+			me.pollLeft = 0
+			log("[BossHpBar] sprite fit " .. tostring(mon.Name) .. " w=" .. string.format("%.2f", me.spriteW) .. " top=" .. string.format("%.2f", me.spriteTop) .. " (기본 피격 상자 대신)")
+		end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ServerTick(number delta)
+		-- 서버: PollSeconds 마다 피격 상자를 다시 잰다(죽은 뒤에는 그만 잰다).
+		self.pollLeft = self.pollLeft - delta
+		if self.pollLeft > 0 then return end
+		self.pollLeft = self.PollSeconds
+		local mon = self.Entity.Parent
+		if not isvalid(mon) then return end
+		local m = mon.Monster
+		if isvalid(m) and m.IsDead then return end
+		self:Measure()
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean InitBar()
+		-- 틀(Track) · 채움(Fill) 자식이 스폰돼 있으면 그림 · 색 · 그리기 방식을 정하고 true. 동적 스폰이라 아직 없을 수 있어 OnUpdate 에서 될 때까지 반복(LaneHpBar 와 같은 방식).
+		local track = self.Entity:GetChildByName("Track")
+		local fill = self.Entity:GetChildByName("Fill")
+		if not isvalid(track) or not isvalid(fill) then return false end
+		local trackR = track.SpriteRendererComponent
+		local fillR = fill.SpriteRendererComponent
+		if not isvalid(trackR) or not isvalid(fillR) then return false end
+		-- 🔴 lanehpbar 루트의 옛 픽셀 렌더러는 Enable=false 여도 기본 16×16 흰 버퍼를 그린다(LaneHpBar · Play 확인 2026-10-01) → 1×1 투명으로 비운다.
+		local pix = self.Entity.PixelRendererComponent
+		if isvalid(pix) then pix:ResetWithColor(1, 1, Color(0, 0, 0, 0)) end
+		trackR.DrawMode = SpriteDrawMode.Simple
+		fillR.DrawMode = SpriteDrawMode.Simple
+		trackR.SpriteRUID = self.BarRUID
+		fillR.SpriteRUID = self.BarRUID
+		trackR.Color = self.BackColor
+		fillR.Color = self.FillColor
+		trackR.Enable = false
+		fillR.Enable = false
+		self._T.track = track
+		self._T.fill = fill
+		self._T.trackR = trackR
+		self._T.fillR = fillR
+		self.lastTrackOn = false
+		self.lastFillOn = false
+		self.curLayer = ""
+		self.curOrder = -9999
+		self.dirty = true
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyLayer(Entity mon)
+		-- 틀 · 채움을 부모 몬스터와 같은 SortingLayer / OrderInLayer 에 둔다(몬스터 층 고정 Default/3 이 클라에서 늦게 잡혀도 따라간다). 달라졌을 때만 쓴다.
+		local psr = mon.SpriteRendererComponent
+		if not isvalid(psr) then return end
+		local layer = psr.SortingLayer
+		local order = psr.OrderInLayer
+		if layer == self.curLayer and order == self.curOrder then return end
+		self.curLayer = layer
+		self.curOrder = order
+		local trackR = self._T.trackR
+		local fillR = self._T.fillR
+		if isvalid(trackR) then
+			trackR.SortingLayer = layer
+			trackR.OrderInLayer = order + self.TrackOrderOffset
+		end
+		if isvalid(fillR) then
+			fillR.SortingLayer = layer
+			fillR.OrderInLayer = order + self.FillOrderOffset
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Layout(Entity mon, number ratio)
+		-- 틀 · 채움의 배율과 위치. 루트는 몬스터의 자식(원점 = 몬스터 원점)이라 루트 로컬 1 = 월드 (몬스터 배율 × 루트 배율) → 월드 길이를 그 배율로 나눠 넣는다.
+		--   x 위치는 부호 있는 배율로 나눈다(몬스터 Scale.x 가 음수여도 채움이 왼쪽 끝에 붙는다). 채움은 왼쪽 끝 고정 + ratio 만큼만.
+		local track = self._T.track
+		local fill = self._T.fill
+		if not isvalid(track) or not isvalid(fill) then return end
+		local mtr = mon.TransformComponent
+		local rtr = self.Entity.TransformComponent
+		if not isvalid(mtr) or not isvalid(rtr) then return end
+		local ms = mtr.Scale
+		local rs = rtr.Scale
+		local kx = ms.x * rs.x
+		local ex = math.abs(kx)
+		local ey = math.abs(ms.y * rs.y)
+		local ez = math.abs(ms.z * rs.z)
+		if ex < 0.0001 or ey < 0.0001 then return end
+		if ez < 0.0001 then ez = 1 end
+		self.lastKx = kx
+		self.lastKy = ey
+		local w = self.BarW
+		local h = self.BarHeight
+		local pad = math.max(0, math.min(self.Pad, h / 2 - 0.004, w / 2 - 0.004))
+		local ppu = math.max(1, self.PixelsPerUnit)
+		local natW = self.SpritePxW / ppu
+		local natH = self.SpritePxH / ppu
+		-- 바 중심 높이: 피격 상자 위끝 + 간격 + 바 반높이(몬스터 원점 기준 월드) → 루트 로컬.
+		local cy = (self.BarTop + self.Gap + h / 2) / ey
+		track.TransformComponent.Scale = Vector3(w / natW / ex, h / natH / ey, 1)
+		track.TransformComponent.Position = Vector3(0, cy, self.BackZ / ez)
+		local fullW = w - 2 * pad
+		local fillH = h - 2 * pad
+		local curW = fullW * math.max(0, math.min(1, ratio))
+		fill.TransformComponent.Scale = Vector3(math.max(0.0001, curW) / natW / ex, fillH / natH / ey, 1)
+		fill.TransformComponent.Position = Vector3((-fullW / 2 + curW / 2) / kx, cy, self.FillZ / ez)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Paint(boolean trackOn, boolean fillOn)
+		-- 틀 · 채움 켜짐/꺼짐. 바뀔 때만 쓴다.
+		local trackR = self._T.trackR
+		local fillR = self._T.fillR
+		if isvalid(trackR) and trackOn ~= self.lastTrackOn then
+			trackR.Enable = trackOn
+			self.lastTrackOn = trackOn
+		end
+		if isvalid(fillR) and fillOn ~= self.lastFillOn then
+			fillR.Enable = fillOn
+			self.lastFillOn = fillOn
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClientTick(number delta)
+		-- 클라: 지연 초기화 → 몬스터 Hp 비율 · 크기 · 층을 읽어 필요할 때만 다시 배치한다. 죽었거나 가로를 아직 못 받았으면 끈다.
+		local mon = self.Entity.Parent
+		if not isvalid(mon) then return end
+		if not self.inited then
+			if self:InitBar() then
+				self.inited = true
+				if self.LogClientInit then
+					log("[BossHpBar] client init name=" .. tostring(mon.Name) .. " kind=" .. self.Kind .. " w=" .. string.format("%.2f", self.BarW))
+				end
+			else
+				self.initWait = self.initWait + delta
+				if self.initWait > self.InitWarnSeconds and not self.initWarned then
+					self.initWarned = true
+					log_warning("[BossHpBar] Track/Fill child not found — " .. tostring(mon.Name))
+				end
+				return
+			end
+		end
+		local ratio = 0
+		local show = false
+		local m = mon.Monster
+		if isvalid(m) and m.MaxHp > 0 and self.BarW > 0.001 then
+			ratio = math.max(0, math.min(1, m.Hp / m.MaxHp))
+			show = (not m.IsDead) and ratio > 0
+		end
+		if not show then
+			self:Paint(false, false)
+			self.dirty = true
+			return
+		end
+		self:ApplyLayer(mon)
+		local mtr = mon.TransformComponent
+		local rtr = self.Entity.TransformComponent
+		local kx = 0
+		local ky = 0
+		if isvalid(mtr) and isvalid(rtr) then
+			kx = mtr.Scale.x * rtr.Scale.x
+			ky = math.abs(mtr.Scale.y * rtr.Scale.y)
+		end
+		if self.dirty or math.abs(ratio - self.lastRatio) > 0.0005 or math.abs(self.BarW - self.lastW) > 0.001 or math.abs(self.BarTop - self.lastTop) > 0.001
+			or math.abs(kx - self.lastKx) > 0.0001 or math.abs(ky - self.lastKy) > 0.0001 then
+			self.dirty = false
+			self.lastRatio = ratio
+			self.lastW = self.BarW
+			self.lastTop = self.BarTop
+			self:Layout(mon, ratio)
+		end
+		self:Paint(true, ratio > 0.0005)
+	end
+
+	method void OnUpdate(number delta)
+		-- 서버는 피격 상자를 재고, 클라는 그린다(같은 컴포넌트 · 서버 / 클라가 각자 자기 쪽 메서드만 돈다).
+		if self:IsServer() then self:ServerTick(delta) end
+		if self:IsClient() then self:ClientTick(delta) end
+	end
+
+end

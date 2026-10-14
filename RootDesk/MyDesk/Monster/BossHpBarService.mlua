@@ -1,0 +1,96 @@
+@Logic
+script BossHpBarService extends Logic
+
+	-- 보스급 몬스터 체력바 붙이는 곳 (1.0.7 · 사용자 2026-10-14 "① 엘리트 ② 좀비머쉬맘 ③ 지역 보스 ④ 마노 ⑤ 주니어 발록 · 검은 바탕에 빨간 피 · 얇은 바").
+	--   · 스포너가 몬스터를 만든 직후 한 줄로 부른다(MonsterNameTag.Attach 와 같은 자리): 엘리트 = EliteSpawner.SpawnElite · 지역 보스 / 마노 / 주니어 발록 = BossSpawner.SpawnBoss(AttachByBossId) ·
+	--     3페이즈 좀비머쉬맘 = MinionFlowService.SpawnMinion(AttachIfZombie · 맵 경계 Advance 로 다시 스폰돼도 이 줄을 지나 다시 붙는다).
+	--   · 바 = lanehpbar 모델(틀 Track + 채움 Fill 스프라이트 자식)을 몬스터의 자식으로 스폰 + 루트에 BossHpBar 컴포넌트. 그림 · 색 · 배치는 BossHpBar 가 클라에서 잡는다.
+	--   · 몬스터가 죽으면 BossHpBar 가 끄고, 몬스터가 지워지면 자식이라 같이 지워진다. 보스 리스폰 = 새 몬스터 = SpawnBoss 를 다시 지나 새로 붙는다.
+
+	property boolean Enabled = true
+
+	-- 바 모델(시설 HP 바와 같은 lanehpbar · LaneFacilityService.HpBarModelId) · 몬스터 자식 엔티티 이름(중복 방지 키).
+	property string BarModelId = "lanehpbar"
+
+	property string BarEntityName = "BossHpBar"
+
+	property string BarComponent = "script.BossHpBar"
+
+	-- 바 루트 배율. lanehpbar 루트의 옛 픽셀 렌더러(Enable=false 여도 0.16×0.16 흰 버퍼를 그린다)를 클라가 비우기 전 한두 프레임에 안 보이게 작게 둔다 — 자식 배율은 BossHpBar 가 보정한다.
+	property number RootScale = 0.01
+
+	-- BossInfo 의 BossId → 종류. 그 밖의 BossId(지역 보스 5종 · 새 행)는 "boss".
+	property string ManoBossId = "2220000"
+
+	property string BalrogBossId = "8130100"
+
+	property string ZombieBossId = "2400572"
+
+	-- 3페이즈 좀비머쉬맘의 MonsterId(MinionWave P3-ZOMBIE · MinionComposition PHASE3). 미니언 스펙의 monsterId 와 비교한다.
+	property integer ZombieMonsterId = 2400572
+
+	-- 붙일 때 한 줄 로그: [BossHpBar] attach name=… kind=… w=…
+	property boolean LogAttach = true
+
+	@ExecSpace("ServerOnly")
+	method string KindOfBossId(string bossId)
+		-- BossInfo.BossId → 체력바 종류. 마노 / 주니어 발록 / 좀비머쉬맘(BossInfo 에 행이 있어 BossSpawner 가 깔 일이 있다면) 외에는 지역 보스("boss").
+		local id = tostring(bossId or "")
+		if id == self.ManoBossId then return "mano" end
+		if id == self.BalrogBossId then return "balrog" end
+		if id == self.ZombieBossId then return "zombie" end
+		return "boss"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AttachByBossId(Entity unit, string bossId)
+		-- BossSpawner.SpawnBoss 가 부른다: 종류는 BossId 로 가른다.
+		self:Attach(unit, self:KindOfBossId(bossId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AttachIfZombie(Entity unit, integer monsterId)
+		-- MinionFlowService.SpawnMinion 이 부른다: 좀비머쉬맘 개체만 붙이고 일반 미니언 · 파병 유닛은 지나친다.
+		if math.floor(tonumber(monsterId) or 0) ~= self.ZombieMonsterId then return end
+		self:Attach(unit, "zombie")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Attach(Entity unit, string kind)
+		-- 몬스터 개체 머리 위에 체력바를 단다. 이미 달려 있으면 그대로 둔다. kind = elite | zombie | boss | mano | balrog(로그용).
+		if not self.Enabled or not isvalid(unit) then return end
+		if isvalid(unit:GetChildByName(self.BarEntityName, false)) then return end
+		-- 자식 스폰: 위치는 로컬 원점(= 몬스터 원점 · LaneFacilityService.SpawnShield 와 같은 방식)이라 아래에서 한 번 더 명시한다.
+		local bar = _SpawnService:SpawnByModelId(self.BarModelId, self.BarEntityName, Vector3(0, 0, 0), unit)
+		if not isvalid(bar) then
+			log_warning("[BossHpBar] spawn failed model=" .. self.BarModelId .. " name=" .. tostring(unit.Name))
+			return
+		end
+		local tr = bar.TransformComponent
+		if isvalid(tr) then
+			tr.Position = Vector3(0, 0, 0)
+			tr.Scale = Vector3(self.RootScale, self.RootScale, 1)
+		end
+		-- 클라가 그림 · 크기 · 위치를 잡을 때까지 틀 · 채움을 꺼 둔다(모델 기본 틀 그림이 한 프레임 보이지 않게). 클라 BossHpBar.InitBar 가 다시 끈 채로 시작해 켠다.
+		local names = { "Track", "Fill" }
+		for _, nm in ipairs(names) do
+			local child = bar:GetChildByName(nm, false)
+			if isvalid(child) and isvalid(child.SpriteRendererComponent) then
+				child.SpriteRendererComponent.Enable = false
+			end
+		end
+		bar:AddComponent(self.BarComponent)
+		---@type BossHpBar
+		local comp = bar:GetComponent(self.BarComponent)
+		if not isvalid(comp) then
+			log_warning("[BossHpBar] component attach failed name=" .. tostring(unit.Name))
+			return
+		end
+		comp.Kind = tostring(kind or "")
+		comp:Measure()
+		if self.LogAttach then
+			log("[BossHpBar] attach name=" .. tostring(unit.Name) .. " kind=" .. tostring(kind) .. " w=" .. string.format("%.2f", comp.BarW))
+		end
+	end
+
+end

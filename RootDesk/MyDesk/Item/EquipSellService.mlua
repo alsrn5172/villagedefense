@@ -1,0 +1,198 @@
+@Logic
+script EquipSellService extends Logic
+
+	-- 장비 판매 (1.0.7 §11 · 사용자 2026-10-14 "안 쓰는 장비 팔 수 있게 해 줘 … 구매비용 · 강화비용(보석 포함)의 절반 · 소수점 내림").
+	-- 공방 창(제작 장인 = 장비 상인) 오른쪽 "내 장비" 칸(Item/EquipSellUIController)이 부른다. 서버 권위: 인벤토리 · 장착 · 장비 여부를 다시 확인 → 인벤토리에서 빼고 → 메소 · 재료를 넣고 → 인벤토리 갱신 → 결과 RPC.
+	-- 판매가 = 통화마다 floor((구매 비용 + 강화 비용 + 박은 보석 값) ÷ Divisor):
+	--   구매 비용 = 그 마을 상인이 파는 레시피(CraftRecipe · REGION_LOCAL 은 이 마을 지역 재화)의 MesoCost + 재료. 레시피가 없으면(보스 · 드랍 · 시작 장비) 0.
+	--   강화 비용 = EnhanceTable 1 ~ 현재 단계 MesoCost 합 × 부위 수(한벌옷 2) — 성공 기준 표 값(연성 할인 · 실패한 시도 비용은 셀 수 없다).
+	--   보석 값 = 박힌 보석 수 × 부위 수 × GemBuyMeso (보석을 파는 상점이 없어 지금은 0).
+	-- ItemInfo.SellMeso 는 쓰지 않는다(아무 데도 안 읽는 옛 열 · 사용자 규칙이 이긴다).
+
+	-- 판매가 나누는 수(사용자 "절반" = 2). 통화마다 따로 내림.
+	property integer Divisor = 2
+
+	-- 보석 한 개의 구매가(메소). 보석은 상점 · 제작에 없고 드랍뿐이라 0 — 상점이 생기면 여기에 값을 준다.
+	property integer GemBuyMeso = 0
+
+	-- 같은 장비 판매 요청이 연달아 오면(더블 클릭 · 지연) 이 시간(초) 안의 두 번째는 조용히 무시한다.
+	property number DupWindow = 1.5
+
+	@HideFromInspector
+	property any recent = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 최근 판매 기록(유저별 중복 방지) 준비.
+		self.recent = {}
+		log("[Sell] EquipSellService ready (server)")
+	end
+
+	method string Fmt(number n)
+		-- 천 단위 쉼표 (12450 → "12,450"). 표시용 · 서버 토스트와 클라 칸이 같이 쓴다.
+		local s = tostring(math.floor(math.abs(n)))
+		local out = ""
+		local c = 0
+		for i = #s, 1, -1 do
+			out = string.sub(s, i, i) .. out
+			c = c + 1
+			if c % 3 == 0 and i > 1 then out = "," .. out end
+		end
+		if n < 0 then out = "-" .. out end
+		return out
+	end
+
+	method any RecipeAt(string itemId, string here)
+		-- 그 마을 상인(here = ShopKeyOfMap)이 파는 레시피 중 결과가 itemId 인 첫 줄. 없으면 nil (보스 · 드랍 · 시작 장비).
+		for _, r in ipairs(_ItemCatalog:GetRecipes(here)) do
+			if r.resultItemId == itemId then return r end
+		end
+		return nil
+	end
+
+	method any Quote(string itemId, integer enh, string gemsCsv, string here)
+		-- 판매가 계산(서버 검증 · 클라 표시가 같이 부른다 → ExecSpace 없음).
+		-- 반환 { meso, mats = { {itemId, count} … 절반 내림한 값만 }, buyMeso, enhMeso, gemMeso }. 장비가 아니면 전부 0.
+		local out = { meso = 0, mats = {}, buyMeso = 0, enhMeso = 0, gemMeso = 0 }
+		local def = _ItemCatalog:Get(itemId)
+		if def == nil or def.type ~= "EQUIP" then return out end
+		local pieces = _ItemCatalog:PieceCount(def)
+		local total = {}
+		local order = {}
+		-- 구매 비용: 메소 + 재료(REGION_LOCAL 은 here 마을의 지역 재화로 푼다 · 빈 ItemId 는 건너뛴다).
+		local recipe = self:RecipeAt(itemId, here)
+		if recipe ~= nil then
+			out.buyMeso = recipe.mesoCost
+			for _, m in ipairs(_ItemCatalog:RecipeMats(recipe, here)) do
+				if m.itemId ~= "" and m.count > 0 then
+					if total[m.itemId] == nil then
+						total[m.itemId] = 0
+						table.insert(order, m.itemId)
+					end
+					total[m.itemId] = total[m.itemId] + m.count
+				end
+			end
+		end
+		-- 강화 비용: 1 ~ 현재 단계(성공한 단계만 쌓인다).
+		for level = 1, (enh or 0) do
+			local row = _ItemCatalog:GetEnhanceRow(level)
+			if row ~= nil then out.enhMeso = out.enhMeso + row.mesoCost * pieces end
+		end
+		-- 박은 보석 값.
+		if gemsCsv ~= nil and gemsCsv ~= "" then
+			for _g in string.gmatch(gemsCsv, "[^+]+") do
+				out.gemMeso = out.gemMeso + self.GemBuyMeso * pieces
+			end
+		end
+		local div = math.max(1, self.Divisor)
+		out.meso = math.floor((out.buyMeso + out.enhMeso + out.gemMeso) / div)
+		for _, id in ipairs(order) do
+			local half = math.floor(total[id] / div)
+			if half > 0 then table.insert(out.mats, { itemId = id, count = half }) end
+		end
+		return out
+	end
+
+	method boolean CanSell(any q)
+		-- 판매가가 하나라도 있으면 true (0 이면 판매 불가).
+		return q ~= nil and (q.meso > 0 or #q.mats > 0)
+	end
+
+	method string RefundText(any q, boolean plus)
+		-- 받는 것 한 줄. plus = true 면 토스트용 "메소 +300 · 헤네시스 포자 +1" · false 면 로그용 "meso:300,REGION_HENESYS_SPORE:1".
+		local parts = {}
+		if plus then
+			if q.meso > 0 then table.insert(parts, "메소 +" .. self:Fmt(q.meso)) end
+			for _, m in ipairs(q.mats) do
+				table.insert(parts, _ItemCatalog:GetName(m.itemId) .. " +" .. self:Fmt(m.count))
+			end
+			return table.concat(parts, " · ")
+		end
+		if q.meso > 0 then table.insert(parts, "meso:" .. tostring(q.meso)) end
+		for _, m in ipairs(q.mats) do
+			table.insert(parts, m.itemId .. ":" .. tostring(m.count))
+		end
+		return table.concat(parts, ",")
+	end
+
+	@ExecSpace("Server")
+	method void RequestSell(string instanceId)
+		-- 클라 요청: 인벤토리의 장비 한 개를 판다(확인 창 없음 · 사용자 "판매 버튼 누르면 끝"). 검증 실패는 Deny 로 돌려보낸다(아무것도 안 바꿈).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local userId = senderUserId
+		local now = _UtilLogic.ServerElapsedSeconds
+		-- 방금 판 바로 그 장비를 또 팔자는 요청(더블 클릭 · 지연)은 조용히 무시한다 — 클라는 응답이 오면 잠금을 푼다(빈 문장 = 알림 없음).
+		local last = (self.recent ~= nil) and self.recent[userId] or nil
+		if last ~= nil and last.iid == instanceId and now - last.at < self.DupWindow then
+			log("[Sell] duplicate ignored uid=" .. userId .. " iid=" .. tostring(instanceId))
+			self:Result(userId, instanceId, false, "")
+			return
+		end
+		local it = _InventoryService:Find(userId, instanceId)
+		if it == nil then
+			self:Deny(userId, instanceId, "장비를 찾을 수 없습니다")
+			return
+		end
+		local def = _ItemCatalog:Get(it.itemId)
+		if def == nil or def.type ~= "EQUIP" then
+			self:Deny(userId, instanceId, "장비만 팔 수 있습니다")
+			return
+		end
+		if _EquipService:IsEquipped(userId, instanceId) then
+			self:Deny(userId, instanceId, "착용 중인 장비는 팔 수 없습니다")
+			return
+		end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) then
+			self:Deny(userId, instanceId, "플레이어를 찾을 수 없습니다")
+			return
+		end
+		local mapName = isvalid(player.CurrentMap) and player.CurrentMap.Name or ""
+		local here = _ItemCatalog:ShopKeyOfMap(mapName)
+		if here == "" then
+			self:Deny(userId, instanceId, "이 맵에서는 거래할 수 없습니다")
+			return
+		end
+		local gems = ""
+		if it.gems ~= nil and #it.gems > 0 then gems = table.concat(it.gems, "+") end
+		local q = self:Quote(it.itemId, it.enh or 0, gems, here)
+		if not self:CanSell(q) then
+			self:Deny(userId, instanceId, def.name .. " 은(는) 판매가가 없습니다")
+			return
+		end
+
+		-- 통과: 빼고 → 넣는다(메소 · 재료).
+		if not _InventoryService:RemoveInstance(userId, instanceId) then
+			self:Deny(userId, instanceId, "장비를 찾을 수 없습니다")
+			return
+		end
+		if self.recent ~= nil then self.recent[userId] = { iid = instanceId, at = now } end
+		if q.meso > 0 then _SummonManager:GrantMeso(player, q.meso) end
+		for _, m in ipairs(q.mats) do
+			_InventoryService:GiveItem(userId, m.itemId, m.count)
+		end
+		_InventoryService:PushInventory(userId)
+		log("[Sell] uid=" .. userId .. " item=" .. it.itemId .. " iid=" .. instanceId .. " refund=" .. self:RefundText(q, false)
+			.. " (buy=" .. tostring(q.buyMeso) .. " enh=" .. tostring(q.enhMeso) .. "+" .. tostring(it.enh or 0) .. " gem=" .. tostring(q.gemMeso) .. " at " .. here .. ")")
+		self:Result(userId, instanceId, true, def.name .. " 판매 · " .. self:RefundText(q, true))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string instanceId, string reason)
+		-- 거절: 토스트 + 판매 칸 잠금 해제. 아무것도 바꾸지 않았다.
+		log("[Sell] denied uid=" .. userId .. " iid=" .. tostring(instanceId) .. ": " .. reason)
+		self:Result(userId, instanceId, false, reason)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Result(string userId, string instanceId, boolean ok, string message)
+		-- 소유 클라에만 결과를 보낸다(토스트 재사용 + 판매 칸). 빈 문장 = 알림 없이 잠금만 푼다.
+		if message ~= "" and _UIToast ~= nil then
+			_UIToast:ShowMessage(message, userId)
+		end
+		if _EquipSellUIController ~= nil then
+			_EquipSellUIController:SetSellResult(ok, message, instanceId, userId)
+		end
+	end
+
+end

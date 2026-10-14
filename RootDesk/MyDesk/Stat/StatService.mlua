@@ -54,6 +54,9 @@ script StatService extends Logic
 	-- DEX 1당 명중률 %p (1.1-A02 · G04 · 주 · 부스탯 직업 0.15 · 그 외 ×NonCoreEffectMul). LUK 은 명중에 안 더한다.
 	property number AccuracyPerDex = 0.15
 
+	-- 발록 기준 명중률(1.0.7 §6 · §7)에 쓰는 발록 레벨 = BossInfo 주니어 발록 Level(40). 스탯창 "발록 기준" 값 · 전광판이 BuildUiCsv 의 balrogacc 로 읽는다.
+	property integer BalrogRefLevel = 40
+
 	-- 1차 전직 AP 초기화(1.1-G10): 시작 스탯도 이 값으로 내리고 차이를 AP 로 돌려준다(STR 12 → 4 = 8 · DEX 5 → 4 = 1 · INT 4 · LUK 4 는 그대로 → 합계 +9).
 	-- 원문 "STR · DEX · INT · LUK 을 모두 4로 맞추고". 직접 · 자동으로 찍은 AP 는 예전처럼 전부 돌려준다.
 	property integer JobResetStr = 4
@@ -135,6 +138,8 @@ script StatService extends Logic
 						int = tonumber(t:GetCell(i, "ApRatioInt")) or 0,
 						luk = tonumber(t:GetCell(i, "ApRatioLuk")) or 0,
 					},
+					-- 전투력 직업 계수(1.0.7 §6 · 열 맨 뒤 PowerMul · 빈칸/없음 = 1.0). CalcCombatPower 가 곱한다.
+					powerMul = tonumber(t:GetCell(i, "PowerMul")) or 1,
 				}
 			end
 		end
@@ -160,6 +165,7 @@ script StatService extends Logic
 			primary = "str",
 			secondary = "dex",
 			ratio = { str = 0.6, dex = 0.4, int = 0, luk = 0 },
+			powerMul = 1,
 		}
 	end
 
@@ -172,10 +178,19 @@ script StatService extends Logic
 		if isvalid(defender) then
 			---@type BossSkillRunner
 			local runner = defender.BossSkillRunner
-			if isvalid(runner) then
+			-- 🔴 꺼진 러너는 보스가 아니다(1.0.7 · 사용자 제보 2026-10-14 "회피 0 인데 좀비머쉬맘이 날 때리면 무조건 MISS"):
+			--   3페이즈 좀비머쉬맘은 보스 모델이라 러너가 붙어 있지만 미니언으로 쓸 땐 꺼 둔다(MinionFlowService). 예전엔 꺼진 러너도 보스로 보고
+			--   BossLevel() 을 읽었는데 그 BossInfo 행(테스트 · Enabled=false)이 카탈로그에 없어 레벨 1 → 플레이어(Lv30)와 29레벨 차라 회피 +290% = 늘 MISS 였다.
+			--   이제 꺼진 러너면 아래 일반 몬스터 경로(MonsterCatalog.LevelOfEntity = 웨이브 레벨 · 회피 10%)로 간다.
+			if isvalid(runner) and runner.Enable then
 				avoid = _DamageFormula.BossAvoidPct
 				-- 보스 판정 레벨 = BossSkillRunner.BossLevel()(개체별 LevelOverride > BossInfo.Level · 튜토리얼 머쉬맘 Lv25 = 1.0.6 #23 을 1차에서).
 				level = runner:BossLevel()
+			elseif isvalid(defender.LaneFacility) and _LaneStateService ~= nil then
+				-- 1.0.7 §10: 시설(포탑 · 억제기 · 넥서스)은 레벨 1 이 아니라 시설 레벨(17 ~ 35)로 들어간다. 회피율은 그대로 MobAvoidPct.
+				---@type LaneFacility
+				local fac = defender.LaneFacility
+				level = _LaneStateService:FacilityLevelOf(fac.VillageId, fac.Stage)
 			elseif _MonsterCatalog ~= nil then
 				local lv = _MonsterCatalog:LevelOfEntity(defender)
 				if lv > 0 then level = lv end
@@ -482,7 +497,8 @@ script StatService extends Logic
 		local u = self.users[userId]
 		if u == nil then return end
 		local f = {}
-		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "magic", "defense", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp" }) do
+		-- ignoredef = 방어율 무시 %p 합계(1.0.7 §4 · 모자 EQUIP 레이어 · 다른 출처가 생기면 같은 키로 합산). 상한은 읽는 쪽(GetIgnoreDef)이 0 ~ 100 으로 자른다.
+		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "magic", "defense", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp", "ignoredef" }) do
 			f[k] = (u.base[k] or 0) + (u.equip[k] or 0) + (u.enhance[k] or 0) + (u.buff[k] or 0) + (u.dev[k] or 0)
 		end
 		-- 스탯 추가효과 효율(1.1-G01): 주 · 부스탯 1.0 · 그 외 0.1. 아래 파생치(명중 · 회피 · HP · MP · 방어 · 치명)가 쓴다.
@@ -493,7 +509,9 @@ script StatService extends Logic
 		end
 		-- 명중률 %p(1.1-A02 · G04): 기본 20 + 장비 · 강화 · 버프(효율 없이) + DEX × 0.15 × 효율. LUK 은 명중에 안 더한다. 소수 3자리.
 		-- 커닝 억제기 명중 오라(%p · 1.1-A17 · SetAuraAccuracy)도 장비 · 버프처럼 효율 없이 더한다 → 캐릭터 창 명중률 칸에도 보인다.
-		f.accuracy = math.floor((f.accuracy + (f.dex or 0) * self.AccuracyPerDex * eff("dex") + (u.auraAccuracy or 0)) * 1000 + 0.5) / 1000
+		-- 넥서스 분신 암흑(1.0.7 §10 · CloneStatusService): 걸린 동안 명중률 −20%p(0 아래로는 안 내려간다).
+		local blind = (_CloneStatusService ~= nil) and _CloneStatusService:AccuracyDebuffOf(userId) or 0
+		f.accuracy = math.max(0, math.floor((f.accuracy + (f.dex or 0) * self.AccuracyPerDex * eff("dex") + (u.auraAccuracy or 0) - blind) * 1000 + 0.5) / 1000)
 		-- 회피율 %p(1.1-A08 · G05): 기본 0 + 장비 · 오팔 · 버프(효율 없이) + LUK × 0.05 × 효율. DEX 는 안 더한다. 소수 3자리.
 		f.avoid = math.floor((f.avoid + (f.luk or 0) * self.AvoidPerLuk * eff("luk")) * 1000 + 0.5) / 1000
 		-- STR(1.1-G02): 방어 +0.1 · 최대 HP +20 (× 효율). INT(1.1-G03 · B11): 최대 MP +20 (× 효율).
@@ -668,7 +686,12 @@ script StatService extends Logic
 	end
 
 	method integer CalcCombatPower(any u)
-		-- 전투력 = 스탯 공격력 최대치 × (1.0 + 숙련도) ÷ 2 (사용자 2026-10-13). 최대치는 캐릭터 창 공격력 범위(GetRange)의 max, 숙련도도 그 범위에 쓴 값이다(CalcRange 와 같게 0.15 ~ MasteryMax 로 자른다). 반올림한 정수.
+		-- 전투력(1.0.7 §6 · 사용자 2026-10-14) = 기본 × 치명 배율 × 명중 배율 × 방무 배율 × 직업 계수, 소수 버림. 직업끼리 비교할 수 있는 숫자다.
+		--   기본 = 스탯 공격력 최대치 × (1.0 + 숙련도) ÷ 2 (최대치는 캐릭터 창 공격력 범위 GetRange 의 max · 숙련도도 그 범위에 쓴 값: CalcRange 와 같게 0.15 ~ MasteryMax)
+		--   치명 배율 = 1 + min(치명 원확률, 1) × (치명 피해 − 1)                   (원확률 41% · 치명 피해 200% → 1.41)
+		--   명중 배율 = 1 + clamp(명중률 − 보스 회피 20, 0, 100) ÷ 100               (1.0 ~ 2.0 · 0 이 안 나오게 — 적중률을 그대로 곱하지 않는다)
+		--   방무 배율 = 300 ÷ (300 − 2 × 방어율 무시%)                               (방어 200 보스 기준 · 방무 0% 면 1.0)
+		--   직업 계수 = JobInfo.PowerMul (전사 1.00 · 해적 1.17 · 궁수 1.00 · 도적 0.56 · 마법사 0.76 · 초보자 1.00)
 		-- Recalculate 만 부른다 — 값은 u.combatPower 에 저장하고 읽는 쪽은 GetCombatPower 를 쓴다.
 		if u == nil or u.final == nil then return 0 end
 		local job = self:GetJob(u.job)
@@ -677,7 +700,33 @@ script StatService extends Logic
 		local range = _DamageFormula:CalcRange(sv, self:TotalAttackOf(u), mastery)
 		if mastery < 0.15 then mastery = 0.15 end
 		if mastery > _DamageFormula.MasteryMax then mastery = _DamageFormula.MasteryMax end
-		return math.floor(range.max * (1.0 + mastery) / 2 + 0.5)
+		local base = range.max * (1.0 + mastery) / 2
+		local effLuk = self:EffLukOf(u)
+		local critMul = 1 + math.min(_DamageFormula:CritRawRate(effLuk), 1) * (_DamageFormula:CritDamageRate(effLuk) - 1)
+		local accMul = 1 + math.min(100, math.max(0, (u.final.accuracy or 0) - _DamageFormula.BossAvoidPct)) / 100
+		local ign = math.min(100, math.max(0, u.final.ignoredef or 0))
+		local ignMul = 300 / (300 - 2 * ign)
+		local jobMul = job.powerMul or 1
+		-- 1e-6: 곱이 정확히 정수여야 하는 경우(예 1.41 × 100)에 부동소수 오차로 1 낮게 버려지는 것을 막는다.
+		return math.floor(base * critMul * accMul * ignMul * jobMul + 1e-6)
+	end
+
+	method number GetIgnoreDef(string userId)
+		-- 플레이어의 최종 방어율 무시 %p(1.0.7 §4 · 모자 합계 · 0 ~ 100 으로 자름). 몬스터 · 보스를 치는 피해 계산 4곳이 DamageFormula.EffectiveDefense 에 넘긴다. 서버 원장이 없으면(클라) 0.
+		if self.users == nil or userId == nil or userId == "" then return 0 end
+		local u = self.users[userId]
+		if u == nil or u.final == nil then return 0 end
+		return math.min(100, math.max(0, u.final.ignoredef or 0))
+	end
+
+	method number BalrogHitPct(any u, integer level)
+		-- 발록 기준 명중률 %(1.0.7 §6 · §7 전광판): Lv40 · 회피 20% 발록을 칠 때의 명중 확률 = 100 + 명중률 − 10 × (40 − 내 레벨, 높을 때만) − 20.
+		--   HitChance 와 달리 0 ~ 100 으로 자르지 않는다(100 을 넘는 여유를 보여 준다) · 음수만 0. 40 = BossInfo 주니어 발록 Level(BalrogRefLevel) · 20 = DamageFormula.BossAvoidPct.
+		if u == nil or u.final == nil then return 0 end
+		local gap = math.max(0, self.BalrogRefLevel - level)
+		local pct = 100 + (u.final.accuracy or 0) - _DamageFormula.HitPenaltyPerLevel * gap - _DamageFormula.BossAvoidPct
+		if pct < 0 then pct = 0 end
+		return pct
 	end
 
 	method integer GetPlayerLevel(string userId)
@@ -751,8 +800,9 @@ script StatService extends Logic
 		-- 대상 레벨 · 회피율(1.1-A05 · ResolveTarget 한 곳) · 방어(1.1-E21 · 스폰한 곳이 Monster.Defense 에 도감 값을 넣는다).
 		local t = self:ResolveTarget(defender)
 		local targetLevel = t.level
-		-- 방어 = Monster.Defense + 도발 방어력 저하(1.1-B02 · 음수면 받는 피해 증가) — 스킬과 같은 DamageFormula.TargetDefenseOf.
-		local targetDefense = _DamageFormula:TargetDefenseOf(defender)
+		-- 적용 방어(1.0.7 §3 · §4): Monster.Defense → 도발 % 먼저 → 내 모자 방어율 무시 — 스킬과 같은 DamageFormula.TargetDefenseOf(EffectiveDefense).
+		local ignoreDef = self:GetIgnoreDef(userId)
+		local targetDefense = _DamageFormula:TargetDefenseOf(defender, ignoreDef)
 
 		-- 명중 판정(1.1-A06): 100 + 명중률 − 10 × (대상이 높은 레벨 차) − 대상 회피율.
 		if not _DamageFormula:HitCheck(u.final.accuracy or 0, u.level or 1, targetLevel, t.avoid) then
@@ -771,7 +821,7 @@ script StatService extends Logic
 		end
 		local final = _DamageFormula:ApplyDefense(raw, targetDefense)
 		if self.LogDamage then
-			log("[Stat] dmg " .. tostring(final) .. " (range " .. tostring(range.min) .. "~" .. tostring(range.max) .. ", raw " .. tostring(raw) .. ", targetLv " .. tostring(targetLevel) .. ", def " .. tostring(targetDefense) .. ")")
+			log("[Stat] dmg " .. tostring(final) .. " (range " .. tostring(range.min) .. "~" .. tostring(range.max) .. ", raw " .. tostring(raw) .. ", targetLv " .. tostring(targetLevel) .. ", def " .. tostring(targetDefense) .. ", ignoreDef " .. tostring(ignoreDef) .. ")")
 		end
 		return final
 	end
@@ -854,6 +904,13 @@ script StatService extends Logic
 			.. ";accuracy=" .. self:FmtPct(f.accuracy or 0) .. ";avoid=" .. self:FmtPct(f.avoid or 0)
 			-- 치명타율 칸(사용자 2026-10-12 신설): 원확률 그대로(100% 를 넘으면 넘친 몫이 치명타 피해로 간다 · 1.1-A07 원수치 표시).
 			.. ";crit=" .. self:FmtPct(_DamageFormula:CritRawRate(self:EffLukOf(u)) * 100)
+			-- 1.0.7 §6 (A → B 약속): 치명타 피해 % · 방어율 무시 % 합계 · 전투력 정수 · 발록 기준 명중률 %(0 ~ 100 으로 자르지 않은 값 · 음수면 0). 칸 이름은 이 키 그대로 읽는다. 옛 클라는 모르는 키를 무시한다.
+			.. ";critdmg=" .. self:FmtPct(_DamageFormula:CritDamageRate(self:EffLukOf(u)) * 100)
+			.. ";ignoredef=" .. self:FmtPct(self:GetIgnoreDef(userId))
+			.. ";power=" .. tostring(math.floor(u.combatPower or 0))
+			-- 추가 공격속도(사용자 2026-10-14 · 스탯창 전투력 자리): 공격속도 배율(SkillBuffs.GetAttackSpeedMul · 시전 락 · 후딜 · 모션에 쓰는 값) − 1 을 %로. 1.0.7 부터 올리는 버프가 없어 0%.
+			.. ";atkspd=" .. self:FmtPct(((_SkillBuffs ~= nil) and (_SkillBuffs:GetAttackSpeedMul(userId) - 1) or 0) * 100)
+			.. ";balrogacc=" .. self:FmtPct(self:BalrogHitPct(u, level))
 			.. ";autoap=" .. (self:IsAutoApOn(userId) and "1" or "0")
 			-- 레벨업 자동 분배 방식(1.1-G07 · 계정 저장): 클라 SetStatsCsv 가 칩 모양을 맞춘다. 모르는 키는 옛 클라가 무시한다.
 			.. ";apmode=" .. ((_AccountData ~= nil and _AccountData:GetApMode(userId) == "ATTACK") and "ATTACK" or "BALANCE")

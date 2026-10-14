@@ -95,6 +95,10 @@ script MatchSessionLogic extends Logic
 	@HideFromInspector
 	property any leftUsers = nil
 
+	-- 혼자 남아 이긴 참가자 userId (1.0.7 §8 · 2026-10-14). 다른 참가자가 전원 탈락 · 이탈해 CheckAllOut 이 DeclareLastStanding 으로 끝낸 판에서만 채운다. 판마다 비운다.
+	@HideFromInspector
+	property string lastStanding = ""
+
 	-- 탈락 사유 { [userId] = "UNCLAIMED"(4:30 안에 마을 못 정함) | "NEXUS"(넥서스 파괴) } — 결과 화면 문장(BuildResultCsv out=). 판마다 비운다.
 	@HideFromInspector
 	property any outReason = nil
@@ -286,6 +290,7 @@ script MatchSessionLogic extends Logic
 		self.participants = userIds or {}
 		self.finalRows = {}
 		self.leftUsers = {}
+		self.lastStanding = ""
 		self.outReason = {}
 		-- 제한 시간은 시작 인원으로 정한다(혼자 30분 · 여럿 45분). 도중에 나가도 바뀌지 않는다.
 		self:LoadMatchConfig()
@@ -608,6 +613,8 @@ script MatchSessionLogic extends Logic
 					zombieCount = math.floor(tonumber(t:GetCell(i, "ZombieCount")) or 0),
 					-- 웨이브 미니언 레벨(1.1-H01 · MinionWave.Level · 0 = 모름 → 도감 레벨). 좀비도 이 웨이브 값을 쓴다(H02 · P3-ZOMBIE 행은 빈칸).
 					level = math.floor(tonumber(t:GetCell(i, "Level")) or 0),
+					-- 좀비머쉬맘 방어(1.0.7 §2 · 사용자 2026-10-14): 그 웨이브에 나오는 좀비의 방어. 25분 10 → 45분 100 직선(LIVE 분 기준 값이라 TEST 도 같은 행 = 같은 값). 0 = 방어 없음(소수 허용).
+					zombieDefense = tonumber(t:GetCell(i, "ZombieDefense")) or 0,
 				}
 				if row.start < 0 then
 					if row.key == "P3-ZOMBIE" then self.zombieTemplate = row end
@@ -647,11 +654,14 @@ script MatchSessionLogic extends Logic
 			zombies = math.floor(zombies * _DifficultyService:GetMul("ZOMBIE_MUL") + 0.5)
 		end
 		-- 좀비머쉬맘 웨이브 강화(1.1-E24): 템플릿 사본에 (1 + ZombieWaveGrowth)^p3Index 를 곱한다(원본 템플릿은 그대로 · 반복 웨이브 = 마지막 행 순번).
+		-- 방어(1.0.7 §2): 사본에 이 웨이브 행의 ZombieDefense 를 실어 보낸다 — 등장하는 순간의 값으로 굳는다(이미 나온 좀비는 안 변한다 · 반복 웨이브 = 마지막 행 값).
+		--   원본 템플릿(P3-ZOMBIE)에는 방어 칸이 없다. 첫 웨이브(p3Index 0)도 사본을 만들어야 방어가 실린다(배율 g = 1 이라 hp · attack 은 그대로).
 		local zombieTpl = self.zombieTemplate
-		if zombieTpl ~= nil and row.phase == "PHASE3" and (row.p3Index or 0) > 0 then
-			local g = (1 + self.ZombieWaveGrowth) ^ row.p3Index
+		if zombieTpl ~= nil and row.phase == "PHASE3" then
+			local g = 1
+			if (row.p3Index or 0) > 0 then g = (1 + self.ZombieWaveGrowth) ^ row.p3Index end
 			zombieTpl = { monsterId = zombieTpl.monsterId, exp = zombieTpl.exp, meso = zombieTpl.meso, level = zombieTpl.level,
-				hp = math.floor(zombieTpl.hp * g + 0.5), attack = math.floor(zombieTpl.attack * g + 0.5) }
+				hp = math.floor(zombieTpl.hp * g + 0.5), attack = math.floor(zombieTpl.attack * g + 0.5), defense = row.zombieDefense or 0 }
 		end
 		local villages = 0
 		if _MinionFlowService ~= nil then
@@ -669,7 +679,7 @@ script MatchSessionLogic extends Logic
 			for _, uid in ipairs(self.participants or {}) do self:ToastHere(uid, "미니언이 생성되었습니다") end
 		end
 		local zText = ""
-		if zombieTpl ~= nil and zombies > 0 then zText = " zombieBase=" .. tostring(zombieTpl.hp) .. "/" .. tostring(zombieTpl.attack) .. " (p3 #" .. tostring(row.p3Index or 0) .. ")" end
+		if zombieTpl ~= nil and zombies > 0 then zText = " zombieBase=" .. tostring(zombieTpl.hp) .. "/" .. tostring(zombieTpl.attack) .. " def=" .. tostring(zombieTpl.defense) .. " (p3 #" .. tostring(row.p3Index or 0) .. ")" end
 		log("[Match] wave #" .. tostring(self.waveIndex) .. " " .. row.key .. (isRepeat and " (repeat)" or "") .. " lv=" .. tostring(level) .. " hp=" .. tostring(hp) .. " atk=" .. tostring(attack) .. " zombies=" .. tostring(zombies) .. zText .. " at " .. string.format("%.1f", self.Elapsed) .. "s villages=" .. tostring(villages) .. " zombies=" .. tostring(row.zombieCount))
 	end
 
@@ -1043,16 +1053,46 @@ script MatchSessionLogic extends Logic
 	method void CheckAllOut()
 		-- 남은 사람이 없으면 매치를 끝낸다. 탈락 **또는** 이탈이면 나간 것으로 센다.
 		-- 🔴 안 끝내면 Running 이 true 로 남아 로비에서 다음 매치를 영영 시작할 수 없다.
+		-- 1.0.7 §8 (2026-10-14): 참가자가 2명 이상이었는데 한 명만 남았으면 그 사람의 승리로 끝낸다(DeclareLastStanding).
+		--   혼자 시작한 판(참가 1명)은 지금 그대로 — 그 한 명이 나가면 alive 0 이라 "전원 탈락"이다. 튜토리얼도 따로 빼지 않는다(1인 휘발 룸 · Expire 가 EndQuiet 로 닫는다).
 		if not self.Running or self.participants == nil then return end
 		if _VillageOwnership == nil then return end
+		local alive = 0
+		local lastAlive = ""
 		for i = 1, #self.participants do
 			local uid = self.participants[i]
 			local out = _VillageOwnership:IsEliminated(uid)
 			if not out and self.leftUsers ~= nil and self.leftUsers[uid] then out = true end
-			if not out then return end
+			if not out then
+				alive = alive + 1
+				lastAlive = uid
+			end
 		end
-		log("[Match] 전원 탈락/이탈 — 매치 종료")
-		self:Expire("전원 탈락")
+		if alive == 0 then
+			log("[Match] 전원 탈락/이탈 — 매치 종료")
+			self:Expire("전원 탈락")
+		elseif alive == 1 and #self.participants >= 2 then
+			self:DeclareLastStanding(lastAlive)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeclareLastStanding(string userId)
+		-- 혼자 남으면 승리 (1.0.7 §8 · 사용자 2026-10-14): 다른 참가자가 모두 탈락 · 이탈했을 때 CheckAllOut 이 부른다.
+		-- 남은 한 명에게 승리 결과 화면을 띄우고 매치를 끝낸다(Expire 가 1회를 보장 · 결과 화면 → 정산 → 종료 흐름은 지금 매치 종료와 같다).
+		if self.Expired or not self.Running then return end
+		-- 같은 프레임에 발록이 죽었으면 발록 선취 승리가 먼저다(Expire 가 승리 아닌 종료 직전에 하는 확인과 같다 · DeclareWinner 가 이미 끝냈으면 여기서 돌아간다).
+		if _BalrogRoomService ~= nil and _BalrogRoomService:ClaimPendingWinner() then return end
+		local name = self:SafeName(userId)
+		self.lastStanding = userId
+		log("[Match] LAST STANDING " .. userId .. " (" .. name .. ") — 혼자 남아 승리 (참가 " .. tostring(#(self.participants or {})) .. "명)")
+		if self.participants ~= nil and _UIToast ~= nil then
+			for i = 1, #self.participants do
+				self:ToastHere(self.participants[i], name .. " 님이 끝까지 살아남아 승리했습니다!")
+			end
+		end
+		-- 사유 "끝까지 생존 — 이름": 결과 화면(MatchResultUIController.ApplyReason)이 앞부분으로 가려 승리 칩 + "…님이 끝까지 살아남아 승리했습니다" 를 쓴다.
+		self:Expire("끝까지 생존 — " .. name)
 	end
 
 	@ExecSpace("ServerOnly")
@@ -1118,11 +1158,13 @@ script MatchSessionLogic extends Logic
 			local balrogDown = (_BalrogRoomService ~= nil and _BalrogRoomService.Winner ~= nil and _BalrogRoomService.Winner ~= "")
 			_AchievementService:OnMatchSettled(rows, self.Difficulty, balrogDown, self.leftUsers)
 		end
-		-- 플레이 기록 (WO-031 묶음 6 · MatchHistory · 정산 받은 판마다 1줄 · 판당 1번). 결과 = BALROG(선취) · ALL_OUT(전원 탈락) · TIMEOUT(시간 종료).
+		-- 플레이 기록 (WO-031 묶음 6 · MatchHistory · 정산 받은 판마다 1줄 · 판당 1번). 결과 = BALROG(선취) · LAST_ONE(혼자 남아 승리 · 1.0.7 §8) · ALL_OUT(전원 탈락) · TIMEOUT(시간 종료).
 		if firstSettle and _MatchHistoryService ~= nil then
 			local outcome = "TIMEOUT"
 			if _BalrogRoomService ~= nil and _BalrogRoomService.Winner ~= nil and _BalrogRoomService.Winner ~= "" then
 				outcome = "BALROG"
+			elseif self.lastStanding ~= nil and self.lastStanding ~= "" then
+				outcome = "LAST_ONE"
 			elseif reason == "전원 탈락" then
 				outcome = "ALL_OUT"
 			end
@@ -1142,7 +1184,9 @@ script MatchSessionLogic extends Logic
 				_MatchResultUIController:SetResultCsv(self:BuildResultCsv(rows, uid, reason), uid)
 				sent = sent + 1
 				-- 결과 소리(사용자 2026-10-14): 주니어 발록을 먼저 잡은 사람 = 승리 · 탈락자 = 없음(탈락 순간 게임 오버를 이미 냈다) · 나머지 = 패배(발록을 못 잡음).
+				-- 1.0.7 §8: 발록 승자가 없고 혼자 남아 이긴 사람이 있으면 그 사람도 승리 소리.
 				local winner = (_BalrogRoomService ~= nil) and _BalrogRoomService.Winner or ""
+				if (winner == nil or winner == "") and self.lastStanding ~= nil and self.lastStanding ~= "" then winner = self.lastStanding end
 				local out = (self.outReason ~= nil) and self.outReason[uid] or nil
 				if winner ~= nil and winner ~= "" and winner == uid then
 					self:PlayCueHere(uid, "WIN")

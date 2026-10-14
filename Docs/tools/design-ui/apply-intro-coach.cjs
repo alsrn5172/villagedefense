@@ -285,7 +285,7 @@ function buildIntro() {
   }
   K.textBtn('Root/Window/Foot/BtnSkip', '건너뛰기', [1080, 891 + PY, 88, 30], { font: 'Noto700', size: 16, color: C.faint, h: 'right', v: 'middle' });
   K.btn('Root/Window/Foot/BtnPrev', '이전', [1184, 875 + PY, 170, 62], { normal: 'btn_blue_default', hover: 'btn_blue_hover', pressed: 'btn_blue_pressed', disabled: 'btn_blue_disabled' }, { font: 'Maple', size: 20, color: C.ivory, shadow: true });
-  // 다음: 피벗 오른쪽 — 마지막 쪽에 폭 240 으로 늘려도 오른쪽 끝(1570)이 그대로
+  // 다음: 피벗 오른쪽 — 오른쪽 끝(1570)이 그대로. 마지막 쪽 폭은 GameIntroController.nextWLast = 200 (1.0.7: 240 이면 [이전]과 24 겹쳤다 · 글자는 BestFit 최대 20)
   b.button('Root/Window/Foot/BtnNext', '다음', { anchor: 'middle-center', pos: [1570 - 960, 0], rect_size: [200, 62], pivot: [1, 0.5], image_ruid: S.R('btn_gold_default') });
   S.button(b, 'Root/Window/Foot/BtnNext', { normal: 'btn_gold_default', pressed: 'btn_gold_pressed', disabled: 'btn_gold_disabled' });
   S.font(b, 'Root/Window/Foot/BtnNext', { text: '다음', font: 'Maple', size: 20, color: C.goldInk, h: 'center', v: 'middle', outline: false });
@@ -531,7 +531,8 @@ function p5(K, base, IN) {
     if (i < 2) { x += 28; K.img(`${base}/ArrowS${i + 1}`, 'icon_arrow_right', [x, cy - 18, 36, 36], { alpha: 0.7 }); x += 36 + 28; }
   });
   // 마을 문장 5개(WO-050 §4 · 새 앰블럼): 한 줄 · 문장 72 + 아래 마을 이름. 방어선 아래 빈 자리.
-  const TOWNS = [['emblem_henesys', '헤네시스'], ['emblem_kerning', '커닝시티'], ['emblem_ellinia', '엘리니아'], ['emblem_nautilus', '노틸러스'], ['emblem_perion', '페리온']];
+  // 1.0.7(2026-10-14): 순서 = 마을 시설 창 탭과 같게 헤네시스 · 엘리니아 · 커닝시티 · 페리온 · 노틸러스 (GameIntroController.EmblemVillages 와 같은 순서). 문장 버튼 Illu/BtnK(투명 → 올리면 금빛)는 이 생성기에 없고 .ui 에만 있다 — 다시 생성하면 build-intro 스크립트(handoff/patch107-agents/_work/E/build_intro.cjs)로 다시 얹는다.
+  const TOWNS = [['emblem_henesys', '헤네시스'], ['emblem_ellinia', '엘리니아'], ['emblem_kerning', '커닝시티'], ['emblem_perion', '페리온'], ['emblem_nautilus', '노틸러스']];
   const GAP = 64; const EW = 72; const total = TOWNS.length * EW + (TOWNS.length - 1) * GAP;
   const ex0 = IN[0] + (IN[2] - total) / 2; const ey = IN[1] + 192;
   TOWNS.forEach((t, i) => {

@@ -43,6 +43,35 @@ script PortalNetwork extends Logic
 	-- 튜토리얼 룸은 평소 잠금(PortalLockSeconds)을 면제하고 예전 값을 쓴다(1.0.5-10-01 미결 ③ · 튜토리얼 6-3m → 6-3b 는 도착하자마자 ↑ 를 누른다). 0 이면 잠금 자체가 없다.
 	property number TutorialPortalLockSeconds = 0.5
 
+	-- 포탈 도착 착지 보정(1.0.7 · 사용자 2026-10-14 "포탈 타고 나왔을 때 떨어지지 않게 · 위아래 ±0.2 안의 가장 가까운 곳 · 마법사 텔레포트와 같은 것"):
+	--   도착 기준 높이(↑키 이동 = 목적 포탈 높이 · 엔진 포탈 · 서버 이동 = 새 맵에 처음 선 자리)에서 위아래 이 값 안의 수평 발판 중
+	--   가장 가까운 표면으로 옮긴다. 탐색 = 텔레포트 착지 0단계와 같은 함수(_SkillMovement:ProbeBand). 범위 안에 발판이 없으면 그대로 둔다.
+	property number ArrivalSnapBand = 0.2
+
+	-- 도착 뒤 이 시간 안에 한 번만 보정한다(맵 로딩 · MoveToEntityByPath 가 몇 프레임 늦게 옮겨도 기다린다).
+	property number ArrivalSnapWindow = 3
+
+	@HideFromInspector
+	property string snapMap = ""
+
+	@HideFromInspector
+	property string snapPortal = ""
+
+	@HideFromInspector
+	property number snapUntil = 0
+
+	@HideFromInspector
+	property string snapFromMap = ""
+
+	@HideFromInspector
+	property number snapFromX = 0
+
+	@HideFromInspector
+	property number snapFromY = 0
+
+	@HideFromInspector
+	property string snapSeenMap = ""
+
 	@HideFromInspector
 	property number arrivedAt = 0
 
@@ -238,6 +267,7 @@ script PortalNetwork extends Logic
 			else
 				if _LoadingScreenController ~= nil then _LoadingScreenController:Show(closestToMap) end
 			end
+			self:ArmArrivalSnap(closestToMap, closestToPortal)
 			player.PlayerComponent:MoveToEntityByPath("/maps/" .. closestToMap .. "/" .. closestToPortal)
 		end
 	end
@@ -670,8 +700,69 @@ script PortalNetwork extends Logic
 			self:UpdateServerBinding(delta)
 			self:PollServerArrivals(delta)
 		else
+			self:UpdateArrivalSnap()
 			self:UpdateClientPortalLayer(delta)
 		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ArmArrivalSnap(string mapName, string portalName)
+		-- 도착 착지 보정을 건다. portalName = 목적 포탈(모르면 "" → 그 맵에 처음 선 자리 기준). 지금 자리를 적어 두고 옮겨진 뒤에만 맞춘다.
+		self.snapMap = mapName
+		self.snapPortal = portalName
+		self.snapUntil = _UtilLogic.ElapsedSeconds + self.ArrivalSnapWindow
+		self.snapFromMap = ""
+		local player = _UserService.LocalPlayer
+		if isvalid(player) and isvalid(player.CurrentMap) then
+			local p = player.TransformComponent.WorldPosition
+			self.snapFromMap = player.CurrentMap.Name
+			self.snapFromX = p.x
+			self.snapFromY = p.y
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateArrivalSnap()
+		-- 매 프레임: 맵이 바뀐 첫 프레임에 보정을 건다(엔진 포탈 · 서버 이동처럼 ↑ 스크립트를 안 거친 도착).
+		-- 걸려 있으면 도착 기준 높이 ±ArrivalSnapBand 안의 가장 가까운 수평 발판으로 한 번 옮긴다.
+		local player = _UserService.LocalPlayer
+		if not isvalid(player) or not isvalid(player.CurrentMap) then return end
+		local mapName = player.CurrentMap.Name
+		if mapName ~= self.snapSeenMap then
+			self.snapSeenMap = mapName
+			if self.snapMap ~= mapName then self:ArmArrivalSnap(mapName, "") end
+		end
+		if self.snapMap == "" then return end
+		if _UtilLogic.ElapsedSeconds > self.snapUntil then
+			log("[PortalNetwork] arrival snap timeout " .. self.snapMap .. "/" .. self.snapPortal)
+			self.snapMap = ""
+			return
+		end
+		if mapName ~= self.snapMap then return end
+		local pos = player.TransformComponent.WorldPosition
+		local refY = pos.y
+		if self.snapPortal ~= "" then
+			-- 아직 출발 자리에 있으면(같은 맵 이동은 한두 프레임 늦게 옮겨진다) 기다린다.
+			if mapName == self.snapFromMap and math.abs(pos.x - self.snapFromX) < 0.05 and math.abs(pos.y - self.snapFromY) < 0.05 then return end
+			local portal = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. self.snapPortal)
+			if isvalid(portal) then
+				local pp = portal.TransformComponent.WorldPosition
+				if math.abs(pos.x - pp.x) > 1.0 or math.abs(pos.y - pp.y) > 1.0 then return end
+				refY = pp.y
+			end
+		end
+		self.snapMap = ""
+		local map = player.CurrentMap
+		if _SkillMovement == nil or not isvalid(map.FootholdComponent) or not isvalid(player.MovementComponent) then return end
+		local fy = _SkillMovement:ProbeBand(map.FootholdComponent, pos.x, refY, self.ArrivalSnapBand)
+		if fy == nil then
+			log("[PortalNetwork] arrival snap none " .. mapName .. " x=" .. string.format("%.2f", pos.x) .. " refY=" .. string.format("%.2f", refY))
+			return
+		end
+		if math.abs(pos.y - fy) > 0.005 then
+			player.MovementComponent:SetWorldPosition(Vector2(pos.x, fy))
+		end
+		log("[PortalNetwork] arrival snap " .. mapName .. "/" .. self.snapPortal .. " y " .. string.format("%.2f", pos.y) .. " -> " .. string.format("%.2f", fy) .. " (refY " .. string.format("%.2f", refY) .. ")")
 	end
 
 	@ExecSpace("ServerOnly")

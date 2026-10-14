@@ -1,0 +1,275 @@
+@Component
+script CloneMonsterArt extends Component
+
+	-- 넥서스 분신의 낱장 프레임 몸 그림 재생기 (1.0.7 §10 · 2026-10-14 · 헬레나 · 주먹펴고 일어서 2종 · 표 CloneMonsterArt.csv).
+	-- 이 두 분신은 MSW 팩이 없어 원작 몸 프레임을 그룹 리소스에 낱장 스프라이트로 올렸다(리소스파일/전직관-분신/ruids.json) → 클립 하나를 SpriteRUID 에 넣는 일반 몬스터 방식(Pattern A)이 안 돈다.
+	-- 방식(LaneFacilityArt 와 같다 · 조사 문서 §4): 서버는 @Sync 로 Action(지금 동작) · ActionSeq(같은 동작을 처음부터 다시) · AttackSec 만 쓰고,
+	--   클라가 표를 직접 읽어(UserDataSet 은 클라에도 있다) 스프라이트의 SpriteRUID 를 프레임마다 갈아 끼운다. 같은 RUID 는 다시 대입하지 않는다.
+	-- 붙는 조건: DefenderService.SpawnOne 이 표(CloneMonsterArt)에 행이 있는 분신에만 붙인다. 팩 분신(하인즈 · 다크로드 · 카이린)과 소환체는 지금 몬스터처럼 ActionSheet 클립이라 안 붙는다.
+	-- 동작 이름 = ruids.json 과 같다: stand · move · attack1 · attack2 · skill1 · skill2 · die1 (jump · hit1 은 올려만 뒀다 · Enabled=false).
+	-- 서버가 동작을 정하는 법: 죽었으면 die1 · FactionAI 가 ATTACK 상태면 이번 차례의 몸 동작(CloneSkillBrain 이 SetTurnMotion 으로 정한다 · 없으면 attack1) · 그 밖엔 이동 입력이 있으면 move 아니면 stand.
+	-- 공격 · 기술 동작은 표의 길이가 AttackSec(= FactionAI.AttackMotionTime)보다 길면 그 안에 끝나게 줄여 재생한다(AI 가 그 시간 뒤 서기로 돌아가서).
+
+	@Sync
+	property integer MonsterId = 0
+
+	@Sync
+	property string Action = "stand"
+
+	@Sync
+	property integer ActionSeq = 0
+
+	-- 공격 · 기술 동작을 끝내야 하는 시간(초). 서버가 FactionAI.AttackMotionTime 에서 한 번 넣는다.
+	@Sync
+	property number AttackSec = 0.6
+
+	-- 죽는 동작 길이에 더하는 여유(초): Monster.DestroyDelay 를 "죽는 동작 길이 + 이 값" 이상으로 늘린다(몸이 사라지기 전에 끝까지 보이게).
+	property number DieExtraSec = 0.15
+
+	-- 이동 입력으로 보는 최소 속력(RigidbodyComponent.MoveVelocity.x · 입력이 없으면 0).
+	property number MoveInputMin = 0.01
+
+	-- 클라 시험 스위치: 처음 재생 전에 프레임을 미리 불러올지 · 서 있기 · 걷기 말고 동작이 바뀔 때 로그 · 프레임 한 장마다 로그(많음).
+	property boolean Prewarm = true
+
+	property boolean ActionLog = true
+
+	property boolean FrameLog = false
+
+	-- 서버: 기술 가방이 정한 이번 차례의 몸 동작("" = 아직 안 정함 → attack1). ATTACK 상태가 끝나면 비운다.
+	@HideFromInspector
+	property string turnMotion = ""
+
+	@HideFromInspector
+	property boolean inited = false
+
+	-- 클라: 이 분신의 동작별 정의 { 동작 = { frames = {RUID…}, sec = {초…}, total = 합, mode = "LOOP" | "ONCE" } } (켜진 행만).
+	@HideFromInspector
+	property any defs = nil
+
+	@HideFromInspector
+	property boolean loaded = false
+
+	@HideFromInspector
+	property string curAction = ""
+
+	@HideFromInspector
+	property integer curSeq = -1
+
+	@HideFromInspector
+	property number actT = 0
+
+	@HideFromInspector
+	property string curRuid = ""
+
+	@HideFromInspector
+	property integer curIdx = 0
+
+	-- ───────────────────────── 공용 ─────────────────────────
+
+	method any LoadDefs(integer monsterId)
+		-- 표에서 이 분신의 켜진 행을 읽는다(서버 · 클라 공용 · 🔴 표 행은 1-based). Frames = 파이프 구분 RUID · DelaysMs = 파이프 구분 ms(같은 개수) · Mode = LOOP | ONCE.
+		local defs = {}
+		local t = _DataService:GetTable("CloneMonsterArt")
+		if t == nil then return defs end
+		for i = 1, t:GetRowCount() do
+			if math.floor(tonumber(t:GetCell(i, "MonsterId")) or 0) == monsterId then
+				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
+				local action = tostring(t:GetCell(i, "Action") or "")
+				if enabled and action ~= "" then
+					local frames = {}
+					for ruid in string.gmatch(tostring(t:GetCell(i, "Frames") or ""), "[^|]+") do
+						local r = string.match(ruid, "^%s*(.-)%s*$") or ""
+						if r ~= "" then table.insert(frames, r) end
+					end
+					local sec = {}
+					for ms in string.gmatch(tostring(t:GetCell(i, "DelaysMs") or ""), "[^|]+") do
+						table.insert(sec, math.max(0.01, (tonumber(ms) or 100) / 1000))
+					end
+					if #frames >= 1 then
+						-- 지연 칸이 모자라면 100ms 로 채운다(한 장짜리는 지연이 의미 없다).
+						local total = 0
+						for k = 1, #frames do
+							if sec[k] == nil then sec[k] = 0.1 end
+							total = total + sec[k]
+						end
+						local mode = string.upper(tostring(t:GetCell(i, "Mode") or "LOOP"))
+						if mode ~= "ONCE" then mode = "LOOP" end
+						defs[action] = { frames = frames, sec = sec, total = total, mode = mode }
+					end
+				end
+			end
+		end
+		return defs
+	end
+
+	method void OnUpdate(number delta)
+		-- 서버: 동작을 정해 Action 에 쓴다 · 클라: 표대로 프레임을 칠한다.
+		if self:IsServer() then
+			self:ServerTick()
+		else
+			self:ClientTick(delta)
+		end
+	end
+
+	-- ───────────────────────── 서버 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void SetTurnMotion(string motion)
+		-- 기술 가방(CloneSkillBrain)이 이번 공격 차례의 몸 동작을 정한다. 클라가 처음부터 다시 재생하도록 ActionSeq 를 올린다.
+		self.turnMotion = motion
+		self.Action = motion
+		self.ActionSeq = self.ActionSeq + 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FitDieDelay()
+		-- 죽는 동작(die1)이 다 보이기 전에 몸이 사라지지 않게 Monster.DestroyDelay 를 늘린다(늘리기만 한다). 팩 몬스터는 Monster.SetupDieDestroyDelay 가 클립 길이로 하지만 이 분신은 ActionSheet 가 비어 있다.
+		local monster = self.Entity.Monster
+		if not isvalid(monster) then return end
+		local d = self:LoadDefs(self.MonsterId)["die1"]
+		if d == nil then return end
+		local wanted = d.total + self.DieExtraSec
+		if wanted > monster.DestroyDelay then
+			monster.DestroyDelay = wanted
+			log("[CloneArt] die delay mob=" .. tostring(self.MonsterId) .. " destroyDelay=" .. string.format("%.2f", wanted) .. "s (die1 " .. string.format("%.2f", d.total) .. "s)")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ServerTick()
+		-- 매 프레임: 죽음 → 공격 차례 → 이동 입력 순으로 지금 동작을 정한다. 값이 바뀔 때만 쓴다(같은 값 재대입은 동기화만 낭비).
+		local monster = self.Entity.Monster
+		local ai = self.Entity.FactionAI
+		if not self.inited then
+			self.inited = true
+			if isvalid(ai) then self.AttackSec = ai.AttackMotionTime end
+			self:FitDieDelay()
+			log("[CloneArt] server ready mob=" .. tostring(self.MonsterId) .. " attackSec=" .. string.format("%.2f", self.AttackSec))
+		end
+		local want = "stand"
+		if isvalid(monster) and monster.IsDead then
+			want = "die1"
+		elseif isvalid(ai) and ai.CurrentAIState == "ATTACK" then
+			want = self.turnMotion
+			if want == "" then want = "attack1" end
+		else
+			self.turnMotion = ""
+			local rb = self.Entity.RigidbodyComponent
+			if isvalid(rb) and math.abs(rb.MoveVelocity.x) > self.MoveInputMin then want = "move" end
+		end
+		if want ~= self.Action then self.Action = want end
+	end
+
+	-- ───────────────────────── 클라 ─────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method void Setup()
+		-- 클라: 표에서 이 분신의 행을 읽고(한 번) 쓸 프레임을 미리 불러온다.
+		if self.defs ~= nil then return end
+		self.defs = self:LoadDefs(self.MonsterId)
+		local list = {}
+		local seen = {}
+		local actions = 0
+		for _, d in pairs(self.defs) do
+			actions = actions + 1
+			for _, r in ipairs(d.frames) do
+				if not seen[r] then
+					seen[r] = true
+					table.insert(list, r)
+				end
+			end
+		end
+		-- 1.0.7 K: 이 분신이 쏘는 화살(BallRuid) · 적중 낱장 프레임(HitFrames · CloneFrameFx 가 서버에서 한 장씩 바꾼다)도 같이 미리 불러 첫 발이 한 박자 늦게 보이지 않게 한다(표 NexusCloneSkill · 클라도 읽는다).
+		local skillTable = _DataService:GetTable("NexusCloneSkill")
+		if skillTable ~= nil then
+			for i = 1, skillTable:GetRowCount() do
+				if math.floor(tonumber(skillTable:GetCell(i, "MonsterId")) or 0) == self.MonsterId then
+					local extra = { tostring(skillTable:GetCell(i, "BallRuid") or "") }
+					for r in string.gmatch(tostring(skillTable:GetCell(i, "HitFrames") or ""), "[^|]+") do
+						table.insert(extra, string.match(r, "^%s*(.-)%s*$") or "")
+					end
+					for _, r in ipairs(extra) do
+						if r ~= "" and not seen[r] then
+							seen[r] = true
+							table.insert(list, r)
+						end
+					end
+				end
+			end
+		end
+		if not self.Prewarm or #list == 0 then
+			self.loaded = true
+			log(string.format("[CloneArt] setup mob=%d actions=%d frames=%d (no prewarm)", self.MonsterId, actions, #list))
+			return
+		end
+		local t0 = _UtilLogic.ElapsedSeconds
+		_ResourceService:PreloadAsync(list, function(result)
+			self.loaded = true
+			log(string.format("[CloneArt] preload done mob=%d actions=%d %d sprites in %.3fs", self.MonsterId, actions, #list, _UtilLogic.ElapsedSeconds - t0))
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Paint(string ruid)
+		-- 같은 그림이면 다시 대입하지 않는다(같은 RUID 재대입 = 불필요한 동기화 · 깜빡임 위험).
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(sr) or ruid == nil or ruid == "" then return end
+		if ruid == self.curRuid then return end
+		self.curRuid = ruid
+		sr.SpriteRUID = ruid
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClientTick(number delta)
+		-- 클라: Action / ActionSeq 가 바뀌면 그 동작을 처음부터 · 아니면 시간만 더해 지금 프레임을 칠한다. LOOP = 계속 반복 · ONCE = 한 번 재생하고 마지막 장에 머문다(서버가 다음 동작으로 바꿀 때까지).
+		if self.MonsterId <= 0 or not isvalid(self.Entity.SpriteRendererComponent) then return end
+		if self.defs == nil then
+			self:Setup()
+			return
+		end
+		if not self.loaded then return end
+		if self.Action ~= self.curAction or self.ActionSeq ~= self.curSeq then
+			self.curAction = self.Action
+			self.curSeq = self.ActionSeq
+			self.actT = 0
+			self.curIdx = 0
+			if self.ActionLog and self.Action ~= "stand" and self.Action ~= "move" then
+				log(string.format("[CloneArt] action=%s seq=%d mob=%d", self.Action, self.ActionSeq, self.MonsterId))
+			end
+		else
+			self.actT = self.actT + delta
+		end
+		local d = self.defs[self.curAction]
+		if d == nil then d = self.defs["stand"] end
+		if d == nil then return end
+		local n = #d.frames
+		-- 공격 · 기술 동작은 AttackSec 안에 끝나게 줄인다(원본 길이가 더 길 때만). 죽는 동작 · 걷기 · 서기는 원본 속도.
+		local rate = 1
+		local isTurn = string.sub(self.curAction, 1, 6) == "attack" or string.sub(self.curAction, 1, 5) == "skill"
+		if isTurn and self.AttackSec > 0 and d.total > self.AttackSec then rate = d.total / self.AttackSec end
+		local t = self.actT * rate
+		local idx = n
+		if d.mode == "LOOP" then
+			if d.total > 0 then t = t % d.total end
+		elseif t >= d.total then
+			t = d.total
+		end
+		if d.mode == "LOOP" or t < d.total then
+			local acc = 0
+			for k = 1, n do
+				acc = acc + d.sec[k]
+				if t < acc then
+					idx = k
+					break
+				end
+			end
+		end
+		if idx ~= self.curIdx then
+			self.curIdx = idx
+			self:Paint(d.frames[idx])
+			if self.FrameLog then log(string.format("[CloneArt] %s f%d/%d t=%.3f", self.curAction, idx, n, t)) end
+		end
+	end
+
+end

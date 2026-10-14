@@ -52,11 +52,15 @@ script SkillMovement extends Logic
     --   위 힘 실측(2026-10-12 · 로비 · 정점에서 눌러 더 오르는 높이): 1.4 → +0.05 · 3.0 → +0.2 · 4.0 → +0.39 · 5.0 → +0.61 · 6.0 → +0.90 · 7.0 → +1.23 · 8.0 → +1.60 (일반 점프 정점 +0.97).
     --   사용자 결정(2026-10-13): 옆 더블 점프 = 살짝 위로(3.0 · +0.2) · 윗방향 점프 = 일반 점프의 3배 높이(+2.9 → 실측 곡선 외삽 10.9 · Play 로 확정).
     --   사용자 2026-10-14: 옆 더블 점프 위 힘 +50%(3.0 → 4.5 · 실측 식 더 오름 = fy² ÷ 40 → +0.51) · 윗방향 점프는 옆으로 가던 속도를 지우지 않는다(UpJumpKeepMomentum).
-    property number DoubleJumpForceScale = 2.0
+    --   사용자 2026-10-14(1.0.7) "더블 점프 위력이 너무 셈" → 같은 날 "앞 이동 힘 · 윗 이동 힘 60% 선 · 이름 하이퍼 점프 · 앞/위 합쳐 두 번":
+    --     앞 점프 앞 힘 2.0 → 1.2 · 앞 점프 위 힘 4.5 → 2.7 · 윗방향 점프 위 힘 10.9 → 6.5(= 오늘 줄이기 전 값의 60% · 실측 표로 윗방향 점프 더 오름 ≈ +1.06 = 일반 점프 높이쯤).
+    --     공중 횟수 = 앞 · 위 아무 조합으로 합쳐 2번(SkillHotbar.AirJumpMax · airJumpCount).
+    --     이어서 "위로 올라가는 힘 60% → 70%": 앞 점프 위 힘 2.7 → 3.15 · 윗방향 점프 6.5 → 7.6(실측 표로 더 오름 ≈ +1.45 = 일반 점프의 약 1.5배). 앞 힘은 1.2(60%) 그대로.
+    property number DoubleJumpForceScale = 1.2
 
-    property number DoubleJumpLift = 4.5
+    property number DoubleJumpLift = 3.15
 
-    property number UpJumpLift = 10.9
+    property number UpJumpLift = 7.6
 
     property number UpJumpForwardMul = 0
 
@@ -82,11 +86,29 @@ script SkillMovement extends Logic
     @HideFromInspector
     property string lastDirSource = ""
 
-    -- 아래 점프 보조(사용자 2026-10-14): ① 아래 점프 뒤 DownJumpGuardSeconds 동안 다른 발판에 내려앉으면 그 발판도 다시 아래로 빠진다(위 계단에 올라타는 것 방지)
-    --   ② 아래 키를 누른 채 점프 키를 눌렀는데 엔진 아래 점프가 안 나가면(입력 씹힘) DownJumpAssistDelay 뒤 직접 아래 점프를 건다.
+    -- 아래 점프(1.0.7 · 사용자 2026-10-14 "원래대로 제자리 살짝 점프 → 아래로 · 아래 + 점프 누르면 0.05초 뒤 0.2초간 발판 무시"):
+    --   시작은 엔진 아래 점프(제자리에서 살짝 뛰고 내려온다) 그대로. 누른 순간(모바일은 엔진 DownJump 이벤트 순간)부터
+    --   DownJumpIgnoreDelay(0.05) 뒤 DownJumpGuardSeconds(0.2) 동안 = 발판 무시 구간:
+    --     · 출발 발판에 아직 서 있으면(엔진 아래 점프가 안 나감 · 입력 씹힘) 엔진 아래 점프를 다시 건다 · 그래도 거절되면 표면 바로 아래로 옮겨 빠진다
+    --     · 다른 발판에 내려앉으면 그 발판 표면 바로 아래(DownJumpDropOffset)로 옮겨 계속 떨어진다
+    --   예전(같은 날) "누르자마자 발판 아래로 옮기기"는 아래 키를 누른 채라 엎드린 자세로 쑥 내려가 보여 뺐다.
+    --   아래(DownJumpProbeDistance 안)에 다른 수평 발판이 없으면(맨 아래 바닥 · 맵 발판 밖의 레인 바닥) 옮기지 않는다.
+    property number DownJumpIgnoreDelay = 0.05
+
     property number DownJumpGuardSeconds = 0.2
 
-    property number DownJumpAssistDelay = 0.06
+    -- 발판 무시 구간에 닿은 발판을 아래로 빠뜨릴지(끄면 엔진 아래 점프만).
+    property boolean ForceDownJump = true
+
+    @HideFromInspector
+    property number ignoreFrom = -100
+
+    @HideFromInspector
+    property number ignoreUntil = -100
+
+    property number DownJumpDropOffset = 0.12
+
+    property number DownJumpProbeDistance = 40
 
     @HideFromInspector
     property number downJumpAt = -100
@@ -178,7 +200,10 @@ script SkillMovement extends Logic
         end
         self.actionBoundPlayer = player
         self.actionHandler = player:ConnectEvent(PlayerActionEvent, function(event)
-            if event.ActionName == "DownJump" then self:MarkDownJump("engine") end
+            if event.ActionName == "DownJump" then
+                -- 엔진 아래 점프(모바일 조이스틱 아래 + 점프 포함) = 발판 무시 구간 시작(키로 이미 시작했으면 그대로 둔다).
+                self:StartDownJumpIgnore("engine")
+            end
         end)
     end
 
@@ -198,8 +223,57 @@ script SkillMovement extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method boolean ForceDownDrop(string source)
+        -- 강제 하향 점프(1.0.7 · ForceDownJump): 서 있는 발판 표면 바로 아래로 옮겨 떨어뜨린다. 옮겼으면 true(보호 시간 시작).
+        --   막는 조건은 엔진 DownJump 액션과 같게 본다(쓰러짐 · 시전 잠금 · 도움말 창 · 튜토리얼 게이트 · 채팅 입력).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) or not isvalid(player.RigidbodyComponent) or not isvalid(player.MovementComponent) then return false end
+        local body = player.RigidbodyComponent
+        if not body:IsOnGround() then return false end
+        if _ChatService ~= nil and _ChatService.typing then return false end
+        if _SkillCaster ~= nil and _SkillCaster.castLockActive then return false end
+        if _GameIntroController ~= nil and _GameIntroController.isOpen then return false end
+        if _TutorialDirector ~= nil and not _TutorialDirector:ActionAllowed("DownJump") then return false end
+        local hit = player.PlayerHit
+        if isvalid(hit) and hit:IsDown() then return false end
+        local map = player.CurrentMap
+        if not isvalid(map) or not isvalid(map.FootholdComponent) then return false end
+        local cur = body:GetCurrentFoothold()
+        local p = player.TransformComponent.WorldPosition
+        local surfaceY = p.y
+        if cur ~= nil and not cur:IsVertical() then surfaceY = cur:GetYByX(p.x) end
+        -- 아래에 다른 수평 발판이 있어야 한다(맨 아래 바닥에서 맵 밖으로 빠지지 않게).
+        local hits = map.FootholdComponent:RaycastAll(Vector2(p.x, surfaceY - 0.02), Vector2(0, -1), self.DownJumpProbeDistance)
+        local below = false
+        if hits ~= nil then
+            for _, fh in ipairs(hits) do
+                if fh ~= nil and not fh:IsVertical() and (cur == nil or fh.Id ~= cur.Id) and fh:GetYByX(p.x) < surfaceY - 0.01 then
+                    below = true
+                    break
+                end
+            end
+        end
+        if not below then return false end
+        player.MovementComponent:SetWorldPosition(Vector2(p.x, surfaceY - self.DownJumpDropOffset))
+        self:MarkDownJump(source)
+        if cur ~= nil then self.downJumpFromFh = cur.Id end
+        log(string.format("SkillMovement: forced down drop (%s) from fh=%s y %.2f -> %.2f", source, tostring(self.downJumpFromFh), surfaceY, surfaceY - self.DownJumpDropOffset))
+        return true
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StartDownJumpIgnore(string source)
+        -- 아래 점프 발판 무시 구간을 연다: 지금 + DownJumpIgnoreDelay 부터 DownJumpGuardSeconds 동안. 이미 열린(또는 열릴) 구간이 있으면 늘리지 않는다.
+        local now = _UtilLogic.ElapsedSeconds
+        if now <= self.ignoreUntil then return end
+        self.ignoreFrom = now + self.DownJumpIgnoreDelay
+        self.ignoreUntil = self.ignoreFrom + self.DownJumpGuardSeconds
+        self:MarkDownJump(source)
+    end
+
+    @ExecSpace("ClientOnly")
     method void OnJumpKeyForDownJump(KeyDownEvent event)
-        -- 아래 키 + 점프 키(Space · 왼쪽 Alt): 엔진 아래 점프가 DownJumpAssistDelay 안에 안 나가고 여전히 땅에 서 있으면 직접 아래 점프를 건다(입력 씹힘 보정).
+        -- 아래 키 + 점프 키(Space · 왼쪽 Alt) = 아래 점프. 움직임은 엔진 아래 점프에 맡기고(제자리 살짝 점프) 발판 무시 구간만 연다.
         local key = event.key
         if key ~= KeyboardKey.Space and key ~= KeyboardKey.LeftAlt then return end
         if not _InputService:IsKeyPressed(KeyboardKey.DownArrow) then return end
@@ -207,42 +281,36 @@ script SkillMovement extends Logic
         local player = _UserService.LocalPlayer
         if not isvalid(player) or not isvalid(player.RigidbodyComponent) then return end
         if not player.RigidbodyComponent:IsOnGround() then return end
-        local pressedAt = _UtilLogic.ElapsedSeconds
-        _TimerService:SetTimerOnce(function()
-            if self.downJumpAt >= pressedAt then return end   -- 엔진이 이미 아래 점프를 냈다
-            local p = _UserService.LocalPlayer
-            if not isvalid(p) or not isvalid(p.RigidbodyComponent) then return end
-            local body = p.RigidbodyComponent
-            if not body:IsOnGround() then return end           -- 다른 동작(일반 점프 등)으로 이미 떠 있다
-            if not _InputService:IsKeyPressed(KeyboardKey.DownArrow) then return end
-            if body:DownJump() then
-                self:MarkDownJump("assist")
-                log("SkillMovement: down jump assist — engine input was dropped")
-            end
-        end, self.DownJumpAssistDelay)
+        self:StartDownJumpIgnore("key")
     end
 
     @ExecSpace("ClientOnly")
     method void TickDownJumpGuard()
-        -- 아래 점프 뒤 보호 시간 안에 다른 발판(출발 발판 말고)에 내려앉으면 그 발판도 아래로 빠진다(위 계단 · 이웃 발판에 걸리는 것 방지).
-        -- 보호 시간 밖에서는 서 있는 발판을 기억만 한다(lastGroundFh · 아래 점프 출발 발판).
+        -- 발판 무시 구간(아래 점프 0.05초 뒤 0.2초) 안에 땅에 서 있으면 그 발판을 무시한다:
+        --   출발 발판 = 엔진 아래 점프가 안 나간 것 → 엔진 아래 점프를 다시 건다(거절되면 아래로 옮김) · 다른 발판 = 표면 바로 아래로 옮겨 계속 떨어진다.
+        -- 구간 밖에서는 서 있는 발판을 기억만 한다(lastGroundFh = 다음 아래 점프의 출발 발판).
         local player = _UserService.LocalPlayer
         if not isvalid(player) or not isvalid(player.RigidbodyComponent) then return end
         local body = player.RigidbodyComponent
-        if _UtilLogic.ElapsedSeconds - self.downJumpAt > self.DownJumpGuardSeconds then
-            if body:IsOnGround() then
+        local now = _UtilLogic.ElapsedSeconds
+        if now < self.ignoreFrom or now > self.ignoreUntil then
+            if now > self.ignoreUntil and body:IsOnGround() then
                 local cur = body:GetCurrentFoothold()
                 if cur ~= nil then self.lastGroundFh = cur.Id end
             end
             return
         end
-        if not body:IsOnGround() then return end
+        if not self.ForceDownJump or not body:IsOnGround() then return end
         local fh = body:GetCurrentFoothold()
-        if fh == nil or fh.Id == self.downJumpFromFh then return end
-        local from = self.downJumpFromFh
-        if body:DownJump() then
-            self.downJumpFromFh = fh.Id
-            log("SkillMovement: down jump guard — landed on fh " .. tostring(fh.Id) .. " within " .. tostring(self.DownJumpGuardSeconds) .. "s (from " .. tostring(from) .. ") → drop again")
+        if fh == nil then return end
+        if fh.Id == self.downJumpFromFh then
+            if body:DownJump() then
+                log("SkillMovement: down jump ignore — still on start fh " .. tostring(fh.Id) .. " → engine down jump again")
+                return
+            end
+        end
+        if self:ForceDownDrop("ignore") then
+            log("SkillMovement: down jump ignore — fh " .. tostring(fh.Id) .. " ignored (start " .. tostring(self.downJumpFromFh) .. ")")
         end
     end
 
@@ -269,8 +337,9 @@ script SkillMovement extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method table TryDoubleJump(string skillId, number level)
+    method table TryDoubleJump(string skillId, number level, boolean allowNormal, boolean allowUp)
         -- 로컬 플레이어를 공중에서 한 번 더 민다. 반환 { ok, reason, dirX, fx, fy, up, kind, fromX, fromY }. ok=false 면 아무것도 안 바꿨다.
+        -- allowNormal / allowUp = 이번 공중에서 아직 안 쓴 쪽(옆 · 위 횟수가 따로 · 1.0.7). 이미 쓴 쪽이면 ok=false("normal used" / "up used").
         -- 방향 = 누른 좌우 방향키 → 없으면 바라보는 쪽(ResolveDirection 의 좌우 · 위/아래만 눌렸으면 바라보는 쪽).
         -- 윗방향 점프(1.0.3-M6-03): ↑ 를 누른 채(IsUpHeld · 여기서 단 한 번 읽는다)면 위 힘 UpJumpLift · 앞 힘 = (좌우를 같이 누른 경우만) 앞 힘 × UpJumpForwardMul. 아니면 예전 일반 더블 점프 그대로.
         -- SetForce 는 분기 뒤 한 번만 부른다 — 한 번의 점프 입력에 두 동작이 겹치지 않는다. up · kind 는 호출부(SkillHotbar)가 서버 알림 · 로그에 쓴다.
@@ -289,6 +358,8 @@ script SkillMovement extends Logic
             if isvalid(controller) and controller.LookDirectionX < 0 then dirX = -1 end
         end
         local up = self:IsUpHeld(body)
+        if up and not allowUp then return { ok = false, reason = "up used" } end
+        if not up and not allowNormal then return { ok = false, reason = "normal used" } end
         local dist = _SkillDatabase:RatioAt(skillId, level)
         -- 시전 직전 속도(상승 중 / 낙하 중 구분 · 1.0.3-M6-01 실측용 · 윗방향 점프의 가로 유지). RealMoveVelocity 를 못 읽으면 0.
         local vx = 0

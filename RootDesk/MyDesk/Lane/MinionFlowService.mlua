@@ -211,7 +211,7 @@ script MinionFlowService extends Logic
 					table.insert(self.queue, { due = self.clock + (i - 1) * gap, villageId = vid, spec = spec, key = key, tag = tag })
 				end
 				for j = 1, zombies do
-					local spec = { monsterId = zombieTpl.monsterId, baseHp = zombieHp, baseAttack = zombieTpl.attack, hpMul = 1.0, atkMul = 1.0, expBase = zombieTpl.exp, mesoBase = zombieTpl.meso, coinChance = coinChance, namePart = key .. "_Z", level = level }
+					local spec = { monsterId = zombieTpl.monsterId, baseHp = zombieHp, baseAttack = zombieTpl.attack, hpMul = 1.0, atkMul = 1.0, expBase = zombieTpl.exp, mesoBase = zombieTpl.meso, coinChance = coinChance, namePart = key .. "_Z", level = level, defense = zombieTpl.defense or 0 }
 					table.insert(self.queue, { due = self.clock + (count + j - 1) * gap, villageId = vid, spec = spec, key = key, tag = tag })
 				end
 			end
@@ -274,6 +274,11 @@ script MinionFlowService extends Logic
 			monster.MaxHp = maxHp
 			monster.Hp = math.max(1, math.floor(maxHp * (spec.hpRatio or 1.0)))
 			monster.RespawnOn = false
+			-- 방어(1.0.7 §2): 좀비머쉬맘 웨이브만 spec.defense 가 있다(MinionWave.ZombieDefense · 등장하는 순간의 값으로 굳는다). 다른 미니언 · 파병은 spec 에 없어 지금처럼 0.
+			if spec.defense ~= nil and spec.defense > 0 then
+				monster.Defense = spec.defense
+				log("[MinionFlow] zombie defense=" .. tostring(spec.defense) .. " " .. name)
+			end
 		end
 		-- 히트박스: 모델 BoxSize 가 (0,0) 이라(실측) 포탑 공격 상자가 못 맞췄다 → 발 위 0.8×1.0 을 먼저 깔고, 클립이 로드되면 실제 크기로 맞춘다.
 		if isvalid(ent.HitComponent) then
@@ -293,9 +298,8 @@ script MinionFlowService extends Logic
 			mv.InputSpeed = mv.InputSpeed * (row.speedMul or 1.0)
 		end
 		if isvalid(ent.SpriteRendererComponent) then
-			local layer = _LaneFacilityService:SortingLayerBelow(map, x, row.pathY)
-			if layer ~= "" then ent.SpriteRendererComponent.SortingLayer = layer end
-			ent.SpriteRendererComponent.OrderInLayer = 3
+			-- 렌더 층 = 몬스터 공용 고정(Default/3 · Monster.FixRenderLayer · 사용자 2026-10-14). 예전엔 밟은 발판의 MapLayerN 으로 덮어썼다.
+			if isvalid(monster) then monster:FixRenderLayer() else ent.SpriteRendererComponent.OrderInLayer = 3 end
 		end
 
 		---@type Faction
@@ -370,12 +374,15 @@ script MinionFlowService extends Logic
 			mu.FixedAttack = math.floor(spec.fixedAttack or 0)
 			-- 판정 · 이름표 레벨(1.1-H01 · H03): 웨이브 레벨 / 파병은 보낸 묶음 강화 레벨 기준. 0 = 모름(도감 레벨 · MonsterCatalog.LevelOfEntity).
 			mu.Level = math.floor(spec.level or 0)
+			mu.Defense = spec.defense or 0
 		end
 		-- 몬스터 이름표(1.1-I07 · I08): `Lv.N 이름` — 레벨 = 웨이브 레벨(MinionWave.Level) · 파병은 보낸 묶음 강화 레벨(spec.level). 0 이면 mu.Level → 도감 레벨 순(MonsterNameTag.LevelOf).
 		--   파병(SpawnDispatched)과 맵 경계 이어 스폰(Advance · spec.level = mu.Level)도 이 줄을 지나므로 레벨이 유지된다. 색은 보는 사람마다 클라가 칠한다(1.1-I19).
 		if _MonsterNameTag ~= nil then
 			_MonsterNameTag:Attach(ent, (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(spec.monsterId) or "", math.floor(spec.level or 0))
 		end
+		-- 머리 위 체력바(1.0.7 · 사용자 2026-10-14 · BossHpBarService): 3페이즈 좀비머쉬맘(MonsterId 로 가른다 — Advance 의 새 스펙에는 namePart 가 없어 "_Z" 로는 두 번째 맵부터 놓친다)만. 일반 미니언 · 파병은 지나친다.
+		if _BossHpBarService ~= nil then _BossHpBarService:AttachIfZombie(ent, spec.monsterId) end
 		log("[MinionFlow] spawned " .. name .. " (" .. tostring(spec.monsterId) .. ") lv=" .. tostring(spec.level or 0) .. " at " .. row.mapName .. " (" .. tostring(x) .. "," .. tostring(row.pathY) .. ") hp=" .. tostring(monster and monster.Hp or -1) .. "/" .. tostring(maxHp) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " team=" .. tostring(faction and faction.Team or "?") .. " dir=" .. tostring(dir) .. " endX=" .. tostring(row.endX))
 		return ent
 	end
@@ -495,7 +502,7 @@ script MinionFlowService extends Logic
 		---@type Monster
 		local monster = minion.Monster
 		if isvalid(monster) and monster.MaxHp > 0 then ratio = math.max(0.05, monster.Hp / monster.MaxHp) end
-		local spec = { monsterId = mu.MonsterId, baseHp = mu.BaseHp, baseAttack = mu.BaseAttack, hpMul = mu.HpMul, atkMul = mu.AtkMul, expBase = mu.ExpBase, mesoBase = mu.MesoBase, coinChance = mu.CoinDropChance, hpRatio = ratio, level = mu.Level }
+		local spec = { monsterId = mu.MonsterId, baseHp = mu.BaseHp, baseAttack = mu.BaseAttack, hpMul = mu.HpMul, atkMul = mu.AtkMul, expBase = mu.ExpBase, mesoBase = mu.MesoBase, coinChance = mu.CoinDropChance, hpRatio = ratio, level = mu.Level, defense = mu.Defense }
 		if mu.Dispatched then
 			-- 파병 유닛은 맵을 넘어가도 보상 없음·고정 스펙을 유지한다.
 			spec.noReward = true
