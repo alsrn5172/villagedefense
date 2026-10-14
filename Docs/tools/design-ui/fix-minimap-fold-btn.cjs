@@ -7,7 +7,7 @@ const WORLD = path.resolve(__dirname, '..', '..', '..');
 const b = S.open(WORLD, 'MinimapGroup');
 b.button('Minimap/BtnFold', '접기', {
   anchor: 'top-right', pivot: [1, 1], pos: [-46, -7], rect_size: [40, 18],
-  image_ruid: 'f5e5fbd6dd224f2d8a5af320436b95f0', sprite_type: 0, bg_color: '#8EC5FF',
+  image_ruid: '898211cc4f10428ca7d97c1e57e5d755', sprite_type: 0, bg_color: '#8EC5FF',
   font_size: 11, color: '#10203F',
 });
 b.write(path.join(WORLD, 'ui', 'MinimapGroup.ui'), {

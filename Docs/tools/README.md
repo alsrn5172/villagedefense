@@ -46,7 +46,7 @@ place.py ──▶ CSV ──(build)──▶ .ui ──(Maker 에서 드래그 
 | `build_worldmap_nodes.cjs` | CSV 를 고친 뒤 | CSV → `.ui` 노드 생성/갱신 + Board 배경·크기 + 컨트롤러 property UUID 주입 |
 | `sync_worldmap_nodes.cjs` | Maker 에서 드래그한 뒤 | `.ui` 의 실제 좌표를 CSV 의 `X/Y`·`LabelDX/LabelDY` 로 **되받아 적는다**. `--dry` 로 미리보기 |
 | `victoria.png` | — | 배경 원본(640×472). `place.py` 의 입력 |
-| `node_marker.png` | — | 업로드한 마커 원본. RUID `a4498657d6fa4179894b9ddf76b905d9` |
+| `node_marker.png` | — | 업로드한 마커 원본. RUID `e950bf2ae16e4b04926daac8fa2f4b2d`(그룹 mIYbC · 2026-10-15 재업로드 · 옛 계정 자산 a4498657 은 그룹 월드에서 안 불렸다) |
 
 ## 평소 작업 순서
 
@@ -76,7 +76,7 @@ place.py ──▶ CSV ──(build)──▶ .ui ──(Maker 에서 드래그 
 
 ## 마커 스프라이트
 
-`WorldMapNodeDot` — RUID **`a4498657d6fa4179894b9ddf76b905d9`** (계정 리소스, 64×64).
+`WorldMapNodeDot` — RUID **`e950bf2ae16e4b04926daac8fa2f4b2d`** (그룹 리소스 mIYbC, 64×64 · 2026-10-15 계정 자산 a4498657 에서 교체).
 흰 채움 + 어두운 테두리. **흰색이라는 게 핵심이다** — `Color` 는 곱셈이라 원본이 빨간 핀이면
 파랑·노랑을 못 낸다(실측: `ca124a50` = `maplestory/effect/basiceff/nored2` 로 시도했다가 전부 빨강이 됐다).
 

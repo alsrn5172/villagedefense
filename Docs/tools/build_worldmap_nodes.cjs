@@ -30,7 +30,7 @@ const BOARD_SIZE = [1274, 950]; // 637x475 의 정확히 2배.
 // 🔴 마커는 **흰색**이어야 한다. Color 는 곱셈이라 원본이 빨간 핀이면 파랑·노랑을 못 낸다
 //    (실측: ca124a50 = maplestory/effect/basiceff/nored2 는 빨간 원이라 어떤 색을 곱해도 빨강).
 //    그래서 흰 채움 + 어두운 테두리 마커를 직접 그려 계정 리소스로 올렸다 (Docs/tools/node_marker.png).
-const NODE_RUID = 'a4498657d6fa4179894b9ddf76b905d9';  // WorldMapNodeDot (흰색, 틴트용)
+const NODE_RUID = 'e950bf2ae16e4b04926daac8fa2f4b2d';  // WorldMapNodeDot (흰색, 틴트용)
 const PLATE_RUID = '7f7a6b14e4e6e704a8e7d8ad0278fe66'; // 라벨 뒤 검은 플레이트
 
 // Type 별 노드 색·크기·글자 크기. 지도 위에서 마을/보스/사냥터가 한눈에 구분되게.

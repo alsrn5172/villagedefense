@@ -10,7 +10,7 @@ const C = S.COLOR;
 const WORLD = path.resolve(__dirname, '..', '..', '..');
 const b = S.open(WORLD, 'CommonNpcGroup');
 
-const ROUND = 'f5e5fbd6dd224f2d8a5af320436b95f0';   // 흰 둥근사각 9-slice(64×64 · 반경 12 · 테두리 14) — 틴트용 공용
+const ROUND = '898211cc4f10428ca7d97c1e57e5d755';   // 흰 둥근사각 9-slice(64×64 · 반경 12 · 테두리 14) — 틴트용 공용
 const JOBS = ['WARRIOR', 'MAGICIAN', 'ARCHER', 'THIEF', 'PIRATE'];
 
 // 시안 좌표(창 왼쪽 위 기준 x,y,w,h)

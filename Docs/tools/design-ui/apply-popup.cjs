@@ -16,7 +16,7 @@ function newFlat(b, p, o) {
   b.sprite(p, { anchor: 'middle-center', pos: o.pos, rect_size: o.size, pivot: [0.5, 0.5], image_ruid: S.R('panel_inner'), sprite_type: 1, color: o.color, alpha: o.alpha == null ? 1 : o.alpha, raycast: false });
   b.patchComponent(p, S.SPR, { ImageRUID: { DataId: o.ruid || '' }, Type: 1 });
 }
-const ROUNDRECT = 'f5e5fbd6dd224f2d8a5af320436b95f0';   // 게임에 이미 있는 흰 둥근사각 9-slice(테두리 14) — 버튼 영역 모서리를 창 곡선에 맞추려고 쓴다
+const ROUNDRECT = '898211cc4f10428ca7d97c1e57e5d755';   // 게임에 이미 있는 흰 둥근사각 9-slice(테두리 14) — 버튼 영역 모서리를 창 곡선에 맞추려고 쓴다
 
 // ═════════ 확인 창 (PopupGroup) ═════════
 {

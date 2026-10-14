@@ -16,7 +16,7 @@ const WORLD = path.resolve(__dirname, '..', '..', '..');
 const b = S.open(WORLD, 'WorldMapGroup');
 const before = b.listEntities().length;
 const C = S.COLOR;
-const ROUND = 'f5e5fbd6dd224f2d8a5af320436b95f0'; // 흰 둥근사각 9-slice(틴트용 · 지금 게임이 쓰는 기본 칸)
+const ROUND = '898211cc4f10428ca7d97c1e57e5d755'; // 흰 둥근사각 9-slice(틴트용 · 지금 게임이 쓰는 기본 칸)
 
 const BD = 'MapPanel/Board';
 const TIP = BD + '/Tooltip';

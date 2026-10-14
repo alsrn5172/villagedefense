@@ -70,6 +70,11 @@ script NpcTalkController extends Logic
 
 	property string JobPortrait = "WARRIOR=84,88,0.3214,0;MAGICIAN=80,152,0.475,0;ARCHER=80,80,0.5125,0;THIEF=88,96,0.5,0.0312;PIRATE=68,84,0.4412,0.0238"
 
+	-- 마을 택시(사용자 2026-10-15 · mode "taxi"): 초상 프레임(원작 빅토리아 중형택시 npc/1012000 stand · 가로,세로,피벗 nx,ny) · 역할 칩 글자
+	property string TaxiPortrait = "128,88,0.4766,0"
+
+	property string TaxiRole = "택시"
+
 	-- 길 보기: 사냥터 = 리스항구 근처 사냥터(PortalNav 길안내)
 	property string HuntMap = "LithHarbor_Hunt_RightAroundLithHarbor"
 
@@ -246,6 +251,40 @@ script NpcTalkController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void ShowTaxi(string name, string catalog)
+		-- 마을 택시(VD_VILLAGE_TAXI)에게 말을 걸었다 → 요금 안내 한 화면([그만둔다] · [이동한다]).
+		self.mode = "taxi"
+		self.jobId = ""
+		self.tier = 1
+		self.npcName = name
+		self.catalogId = catalog
+		self.waitKind = ""
+		self:OpenWindow()
+		self:SetPage("taxi")
+		log("[NpcTalk] taxi talk npc=" .. catalog)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestSixPath()
+		-- [이동한다]: 서버가 메소 · 맵을 다시 보고 옮긴다(실패 사유는 서버 토스트). 창은 바로 닫는다.
+		if _LaneStateService ~= nil then _LaneStateService:RequestSixPathTaxi() end
+		log("[NpcTalk] sixpath taxi request")
+		self:CloseWindow()
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Comma(integer n)
+		-- 5000 → "5,000".
+		local out = tostring(math.floor(n))
+		while true do
+			local k
+			out, k = string.gsub(out, "^(-?%d+)(%d%d%d)", "%1,%2")
+			if k == 0 then break end
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
 	method number RequiredLevel(string job, integer t)
 		-- 그 직업 t 차 전직 레벨(JobTier.ReqLevel). 없으면 10 · 20 · 30.
 		local req = 10 * t
@@ -295,8 +334,10 @@ script NpcTalkController extends Logic
 			local w = self.talkName:GetPreferredWidth(name)
 			self:ShowIcon(self.nameIcons, self.jobId, -w / 2 - self.IconGap - 11)
 		end
-		if isvalid(self.roleLabel) then self.roleLabel.Text = jobKo .. " 전직관" end
-		self:FitRoleChip(jobKo .. " 전직관")
+		local role = jobKo .. " 전직관"
+		if self.mode == "taxi" then role = self.TaxiRole end
+		if isvalid(self.roleLabel) then self.roleLabel.Text = role end
+		self:FitRoleChip(role)
 	end
 
 	@ExecSpace("ClientOnly")
@@ -307,6 +348,7 @@ script NpcTalkController extends Logic
 		if not isvalid(self.talkPortrait) then return end
 		local t = self.talkPortrait.Entity.UITransformComponent
 		local spec = self:PairOf(self.JobPortrait, self.jobId)
+		if self.mode == "taxi" then spec = self.TaxiPortrait end
 		local vals = {}
 		for v in string.gmatch(spec, "[%d%.]+") do table.insert(vals, tonumber(v)) end
 		local w = vals[1]
@@ -431,6 +473,13 @@ script NpcTalkController extends Logic
 			local what = (n >= 2) and "새 기술 두 가지를" or "새 기술을"
 			text = "벌써 " .. self:Gold(tostring(math.floor(self.reqLevel)) .. "레벨") .. "이군. " .. tostring(self.tier) .. "차 전직으로 " .. what .. " 알려 주지."
 			btns = { { b = self.btnEnd, t = "대화 그만하기", kind = "blue" }, { b = self.btnYes, t = tostring(self.tier) .. "차 전직", kind = "gold" } }
+		elseif p == "taxi" then
+			-- 마을 택시(2026-10-15): 요금은 서버 값(LaneStateService.SixPathTaxiCost)을 그대로 보여 준다.
+			local cost = 5000
+			if _LaneStateService ~= nil then cost = _LaneStateService.SixPathTaxiCost end
+			text = self:Gold("여섯갈래길") .. "까지 모셔다 드릴까요? 요금은 " .. self:Gold(self:Comma(cost) .. "메소") .. "입니다.\n" .. self:Sub("여섯갈래길에서는 다섯 마을의 사냥터로 갈 수 있어요.")
+			lines = 2
+			btns = { { b = self.btnEnd, t = "그만둔다", kind = "blue" }, { b = self.btnYes, t = "이동한다", kind = "gold" } }
 		elseif p == "wait" then
 			text = "…"
 			btns = {}
@@ -625,6 +674,8 @@ script NpcTalkController extends Logic
 			self:GoHunt()
 		elseif p == "done" then
 			self:GoVillage()
+		elseif p == "taxi" then
+			self:RequestSixPath()
 		end
 	end
 

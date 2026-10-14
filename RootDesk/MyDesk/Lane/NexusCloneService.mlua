@@ -3,10 +3,12 @@ script NexusCloneService extends Logic
 
 	-- 넥서스 분신 소환 (1.0.7 §10 · 2026-10-14 사용자 결정). 서버 전용. 넥서스 HP 가 50% 를 **위에서 아래로** 넘는 순간 그 마을 2차 전직관의 분신 1마리가 아군 수비대로 나온다.
 	--   수리 · 강화로 50% 위가 됐다가 다시 넘으면 또 나온다(별도 충전 플래그 없음 · 위에서 아래로 넘는 순간만 센다).
-	-- 호출: LaneStateService.ApplyDamage 가 넥서스(CORE) HP 를 깎은 직후 OnCoreDamaged(villageId, hpBefore, hpAfter, maxHp, coreLevel) 를 부른다(D1 약속 · coreLevel = 넥서스 시설 레벨 25 / 30 / 35).
-	-- 능력치(사용자 확정 · 값은 표에서 읽는다 · 코드에 숫자 없음):
-	--   레벨 = 넥서스 레벨 · 기초 HP = MinionWave `P3-ZOMBIE` 행 Hp × HpBaseMul(5) × MonsterCatalog.HpLevelMul(레벨) 한 번(예 60,000 × 5 × 15 = 4,500,000) · 공격력 = 같은 행 Attack × AtkMul(2) ·
-	--   방어력 = 레벨 · 명중 · 회피 · 공격 간격은 수비대 그대로 · ★ 난이도 배율 없음. 기준 행을 바꾸면 분신도 따라간다.
+	-- 호출: LaneStateService.ApplyDamage 가 넥서스(CORE) HP 를 깎은 직후 OnCoreDamaged(villageId, hpBefore, hpAfter, maxHp, coreLevel, grade) 를 부른다(coreLevel = 넥서스 시설 레벨 17 ~ 35 · grade = 넥서스 강화 단계 1 ~ 10).
+	-- 능력치(1.0.8 · 사용자 2026-10-14 "발록 체력만큼 강하다" → 줄임): 레벨 = 넥서스 시설 레벨(명중 판정용) · HP · 공격력 · 방어력 = 강화 단계 1 → GradeMax 선형
+	--   HP 450,000 → 750,000(처음 90만 → 150만 → 사용자 "절반으로") · 공격력 1,000 → 2,000 · 방어력 10 → 30 · 소환체(타우로마시스) 공격력 500 → 1,000(체력은 수비대 3티어 표 그대로).
+	--   분신 = 보스 판정(1.0.8 · 사용자 "보스로 만들어"): 회피 BossAvoidPct(StatService.ResolveTarget) · 최대 HP 1% 미만 피해엔 안 밀리고 돌아보지 않음(Monster.ReactToHit) ·
+	--   도발에 안 끌려옴(SkillExecutors) · 보스 우선 표적(SkillAttack). 표시 = CloneSkillBrain 컴포넌트(서버 · 분신만 붙는다).
+	--   명중 · 회피 · 공격 간격은 수비대 그대로 · ★ 난이도 배율 없음. (1.0.7 땐 P3-ZOMBIE 행 Hp × 5 × 레벨 HP 배율 · 공격력 ×2 = 넥서스 1단계 210만 ~ 10단계 750만이었다.)
 	-- 마을 → 분신(CloneByVillage): 헤네시스 헬레나 9001002 · 엘리니아 하인즈 9001001 · 페리온 주먹펴고 일어서 9001000 · 커닝시티 다크로드 9001003 · 노틸러스 카이린 9001004 (MonsterInfo · 모델 monster<id>).
 	-- 등장 연출: 소환진(보스 소환과 같은 클립) 두 겹 + 서서히 나타남(알파) + 그 마을 주인에게 토스트("넥서스가 위험합니다! 헬레나의 분신이 나타났습니다") + 이름표 `Lv.25 헬레나의 분신`(DefenderService.SpawnOne). 소리는 넣지 않는다(B 전담).
 	-- 생성은 DefenderService.SpawnClone → SpawnOne 한 곳(재집결 · 탈락 정리 · 차출 제외도 거기서). 기술은 CloneSkillBrain.
@@ -17,18 +19,26 @@ script NexusCloneService extends Logic
 	-- 소환 기준: 넥서스 최대 HP 의 이 비율을 위에서 아래로 넘을 때(HP 가 이 비율 **이하**가 되는 순간).
 	property number TriggerRatio = 0.5
 
-	-- 기초 HP · 공격력 = 기준 행 × 이 배수(사용자 확정 5 · 2).
-	property number HpBaseMul = 5
+	-- 능력치 = 넥서스 강화 단계 1 일 때(…AtGrade1) → GradeMax 일 때(…AtGradeMax) 선형 · 반올림(1.0.8 · 사용자 2026-10-14).
+	property number HpAtGrade1 = 450000
 
-	property number AtkMul = 2
+	property number HpAtGradeMax = 750000
 
-	-- 기준 행: MinionWave 의 WaveKey(3페이즈 좀비머쉬맘 개체 템플릿). 현재 프로필(LIVE/TEST)의 행을 먼저 찾고 없으면 첫 행.
-	property string TemplateWaveKey = "P3-ZOMBIE"
+	property number AtkAtGrade1 = 1000
 
-	-- 기준 행을 못 읽을 때만 쓰는 안전값(표가 정본 · 경고를 남긴다).
-	property number FallbackZombieHp = 60000
+	property number AtkAtGradeMax = 2000
 
-	property number FallbackZombieAtk = 2500
+	property number DefAtGrade1 = 10
+
+	property number DefAtGradeMax = 30
+
+	-- 분신이 부르는 소환체(타우로마시스) 공격력. 체력은 수비대 3티어 표 × 분신 레벨 HP 배율 그대로(DefenderService.SpawnSummons).
+	property number SummonAtkAtGrade1 = 500
+
+	property number SummonAtkAtGradeMax = 1000
+
+	-- 넥서스 강화 단계 끝(TowerConfig CORE Level 1 ~ 10).
+	property integer GradeMax = 10
 
 	-- 마을당 동시에 서 있을 수 있는 분신 수. 0 = 제한 없음(넘을 때마다 1마리씩 · 지금 결정). 1 로 두면 서 있는 동안엔 또 안 나온다.
 	property integer MaxAlivePerVillage = 0
@@ -82,25 +92,11 @@ script NexusCloneService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method any ZombieTemplate()
-		-- 기준 행(MinionWave · WaveKey = TemplateWaveKey)의 { hp, attack }. 현재 프로필 행을 먼저 · 없으면 첫 켜진 행 · 그것도 없으면 안전값.
-		local profile = "LIVE"
-		if _MatchSessionLogic ~= nil then profile = _MatchSessionLogic.Profile end
-		local first = nil
-		local t = _DataService:GetTable("MinionWave")
-		if t ~= nil then
-			for i = 1, t:GetRowCount() do
-				local enabled = string.lower(tostring(t:GetCell(i, "Enabled") or "true")) ~= "false"
-				if enabled and tostring(t:GetCell(i, "WaveKey") or "") == self.TemplateWaveKey then
-					local row = { hp = tonumber(t:GetCell(i, "Hp")) or 0, attack = tonumber(t:GetCell(i, "Attack")) or 0 }
-					if tostring(t:GetCell(i, "Profile") or "") == profile then return row end
-					if first == nil then first = row end
-				end
-			end
-		end
-		if first ~= nil then return first end
-		log_warning("[NexusClone] MinionWave " .. self.TemplateWaveKey .. " row not found — 안전값 " .. tostring(self.FallbackZombieHp) .. "/" .. tostring(self.FallbackZombieAtk))
-		return { hp = self.FallbackZombieHp, attack = self.FallbackZombieAtk }
+	method integer ByGrade(number atGrade1, number atGradeMax, integer grade)
+		-- 강화 단계 1 → GradeMax 선형 보간 · 반올림(단계는 범위 안으로 자른다 · GradeMax ≤ 1 이면 1단계 값).
+		local span = math.max(1, self.GradeMax - 1)
+		local g = math.max(1, math.min(self.GradeMax, math.floor(tonumber(grade) or 1)))
+		return math.max(1, math.floor(atGrade1 + (atGradeMax - atGrade1) * (g - 1) / span + 0.5))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -112,15 +108,15 @@ script NexusCloneService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void OnCoreDamaged(string villageId, number hpBefore, number hpAfter, number maxHp, integer coreLevel)
+	method void OnCoreDamaged(string villageId, number hpBefore, number hpAfter, number maxHp, integer coreLevel, integer grade)
 		-- 넥서스가 피해를 받은 직후 LaneStateService 가 부른다. 50% 를 위에서 아래로 넘는 순간에만 분신을 소환한다.
 		if not self:IsServer() then return end
 		if not self:Crossed(hpBefore, hpAfter, maxHp) then return end
-		self:SpawnClone(villageId, coreLevel)
+		self:SpawnClone(villageId, coreLevel, grade)
 	end
 
 	@ExecSpace("ServerOnly")
-	method void SpawnClone(string villageId, integer coreLevel)
+	method void SpawnClone(string villageId, integer coreLevel, integer grade)
 		-- 분신 한 마리를 만든다(능력치 계산 → DefenderService.SpawnClone → 연출 · 알림 · 로그). 튜토리얼 · 분신 없는 마을 · 상한이면 건너뛴다.
 		if self.SkipInTutorial and _MatchSessionLogic ~= nil and _MatchSessionLogic:IsTutorial() then
 			log("[NexusClone] skip (tutorial) village=" .. villageId)
@@ -139,17 +135,20 @@ script NexusCloneService extends Logic
 			log("[NexusClone] skip (alive cap " .. tostring(self.MaxAlivePerVillage) .. ") village=" .. villageId)
 			return
 		end
-		local zt = self:ZombieTemplate()
 		local level = math.max(1, math.floor(coreLevel))
-		local hp = _MonsterCatalog:LevelHp(zt.hp * self.HpBaseMul, level)
-		local attack = math.max(1, math.floor(zt.attack * self.AtkMul + 0.5))
-		local defense = level
+		local hp = self:ByGrade(self.HpAtGrade1, self.HpAtGradeMax, grade)
+		local attack = self:ByGrade(self.AtkAtGrade1, self.AtkAtGradeMax, grade)
+		local defense = self:ByGrade(self.DefAtGrade1, self.DefAtGradeMax, grade)
+		local summonAtk = self:ByGrade(self.SummonAtkAtGrade1, self.SummonAtkAtGradeMax, grade)
 		local ent = _DefenderService:SpawnClone(villageId, cloneId, level, hp, attack, defense, "CORE")
 		if not isvalid(ent) then
 			log_warning("[NexusClone] spawn failed village=" .. villageId .. " mob=" .. tostring(cloneId))
 			return
 		end
-		log(string.format("[NexusClone] village=%s level=%d hp=%d atk=%d def=%d model=%s mob=%d", villageId, level, hp, attack, defense, tostring(_MonsterCatalog:GetModelId(cloneId)), cloneId))
+		-- 소환체 공격력: 기술 두뇌의 Ov(= DefenderService 추적 목록의 같은 표)에 적는다 → DoSummon 이 SpawnSummons 로 넘긴다.
+		local brain = ent.CloneSkillBrain
+		if isvalid(brain) and brain.Ov ~= nil then brain.Ov.summonAttack = summonAtk end
+		log(string.format("[NexusClone] village=%s grade=%d level=%d hp=%d atk=%d def=%d summonAtk=%d model=%s mob=%d", villageId, math.floor(tonumber(grade) or 0), level, hp, attack, defense, summonAtk, tostring(_MonsterCatalog:GetModelId(cloneId)), cloneId))
 		self:PlayAppear(villageId, ent)
 		self:Alert(villageId, cloneId)
 	end
