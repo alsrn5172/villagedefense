@@ -77,6 +77,7 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 - 스탯창(`CharacterGroup`): 이동속도 줄을 점프력 줄 위로(Row6 · Row7 위치만 맞바꿈). 줄 이름 "명중률" → "추가 명중률"(Row8/Chip · 사용자 2026-10-14: 명중 확률 = 기본 100% + 이 값이라 0% · 20% 로 보이면 오해).
 - 스탯창 오른쪽 배치(사용자 2026-10-14): 맨 위(기본 능력치 위)에 전투력 큰 한 줄(새 `Right/Power` · 높이 58 · 금색 30) · 기본 능력치 묶음 −62 · 전투 능력치 10칸을 좌우 2칸 5줄로(공격력|방어력 · 이동속도|점프력 · 추가 명중률|크리티컬 · 회피율|크리티컬 데미지 · 추가 공격속도|방어율 무시) · 전투력이 있던 칸 = **추가 공격속도**(`StatService.BuildUiCsv` `atkspd=` = (공격속도 배율 − 1) % · 지금 0%). 값 칸 엔티티는 그대로 옮겨 바인딩 유지 · `StatUIController.cellPower` 새 UUID · `cellAtkSpeed` 추가. 스크립트 `handoff/patch107-agents/_work/U/apply-stat-layout.cjs`.
 - 스탯창 전투력 줄 아이콘(`Right/Power/Icon`) = 단풍 엠블럼 RUID `97009709507d447e99b65a51b0281e9f`(그룹 mIYbC · 128×128 · 공격력 쌍칼과 구분) · Row4/Chip "공격력" → "스탯 공격력"(사용자 2026-10-14). 스크립트 `handoff/patch107-agents/_work/U/apply-power-emblem.cjs`.
+- 스탯창 전투 능력치 오른쪽 칸 아이콘(사용자 2026-10-14): 두 칸 모두 [아이콘 24][8][이름 114][4][값 78] · 왼쪽 −229 ~ −1 · 오른쪽 7 ~ 235. Row5 · Row7 아이콘(방어력 · 점프력) 오른쪽으로 옮겨 다시 켬 · Row8/9/10 에 `Icon2` 새로(크리티컬 · 크리티컬 데미지 · 방어율 무시 · 그림 받기 전까지 꺼 둠) · 이름 칸 BestFit 10 ~ 16. 스크립트 `handoff/patch107-agents/_work/U/apply-stat-icons.cjs`(ICONS 에 RUID 넣고 다시 돌리면 켜짐).
 - 계정 기록 창(`AccountRecordGroup`) 결과 칩 `ChipLastOne`(혼자 남아 승리 · 금빛 · 폭 120) · `AccountRecordUIController.FillHistCell`.
 - 공방 창(`VillageWorkshopGroup`) 장비 판매 칸 `Window/SellPane` 적용.
 
