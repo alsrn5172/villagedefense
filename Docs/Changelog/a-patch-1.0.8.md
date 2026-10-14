@@ -83,3 +83,10 @@
 
 - `Skill/SkillBuffs`: `hyperCharge[userId] = { baseEndsAt, baseExpired }` · 쉴드 시작 때 차지가 켜져 있으면 `TryEnterHyperCharge`(차지 endsAt = NoExpireSeconds · 루프 이펙트 다시 걸기) · `HoldHyperCharge`(원래 시각에 쉴드 있으면 유지) · `OnShieldGoneForHyper`(쉴드 없어질 때 원래 시각이 지났으면 그 순간 종료) · 종료는 `EndChargeState` 한 길(쿨 · 스탯 · 루프 정리 그대로) · 죽음 · 매치 초기화 즉시. `SkillInfo` SK_P21 · SK_P22 설명 한 문장씩. Play: 진입 · 쉴드 먼저 깨짐 · 시간 먼저 끝남 · 쉴드만(HYPER 없음) 4경우 로그 PASS.
 - 발록 도전 현황 줄 3차: 줄 배경 = NPC 초상 칸 두 겹(898211cc 금 45% + 남색) · 게이지 = 상태창 HP 게이지(fb55ad1f 바탕 · bca9a94f 바) — 매치 시계 판 양끝 장식이 "남음" · "%" 를 가렸다(Play).
+
+## 21. 🔴 계정 저장소 그림 → 그룹 저장소 (사용자 2026-10-15 "꽤 큰 오류")
+
+- 원인: `f5e5fbd6`(흰 둥근 사각 · 9/6 계정 업로드) · `a4498657`(월드맵 점 node_marker.png)이 계정 자산 → 그룹 월드에서 안 불려 SpriteGUIRenderer 가 Color 만 칠한 기본 네모(오류 · 경고 없음). NPC 대화창 초상 칸에서 처음 발견.
+- 고침: 그룹 mIYbC 재업로드 `898211cc`(border 14 · pivot 0.5) · `e950bf2a`(Bilinear · Clamp · pivot 0.5) · UI 19개 739곳 교체(디스크 = UIBuilder upsert · 커밋 = HEAD 에서 RUID 만 · 허브 `handoff/patch107-agents/_work/P/ruid-account-to-group.cjs`) · `Docs/tools/design-ui/*.cjs` 10개 · `build_worldmap_nodes.cjs` · `Docs/tools/README.md` · `Docs/협업-규칙.md`(틴트 RUID + "새 그림은 그룹 저장소에만" 규칙).
+- 전수 확인: 계정 저장소 sprite 20 · animationclip 0 · audioclip 0 중 게임에서 쓰이던 건 위 2개뿐(로비 시안 16장 · 월드맵 판 b93bf4b1 · FactionAuraRing 은 안 쓰임).
+- Play: 아바타 선택 창 그림 칸 · On/Off 토글 · NPC 초상 칸 둥근 모서리 확인 · 월드맵 점은 눈 확인 못 함.

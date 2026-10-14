@@ -10,7 +10,7 @@ const b = S.open(WORLD, 'CharacterGroup');
 const before = b.listEntities().length;
 const C = S.COLOR;
 const DEFAULT_RUID = '2860136c06ab075439721c027de365af';
-const ROUND = 'f5e5fbd6dd224f2d8a5af320436b95f0'; // 흰 둥근사각 9-slice(틴트용 · 지금 게임이 쓰는 기본 칸)
+const ROUND = '898211cc4f10428ca7d97c1e57e5d755'; // 흰 둥근사각 9-slice(틴트용 · 지금 게임이 쓰는 기본 칸)
 
 // 아바타 원본 컴포넌트 · 스프라이트 컴포넌트 원본을 바꾸기 전에 복사해 둔다.
 const clone = (o) => JSON.parse(JSON.stringify(o));

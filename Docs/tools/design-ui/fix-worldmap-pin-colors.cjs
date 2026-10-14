@@ -6,7 +6,7 @@ const S = require('./skin.cjs');
 const WORLD = path.resolve(__dirname, '..', '..', '..');
 const b = S.open(WORLD, 'WorldMapGroup');
 const BD = 'MapPanel/Board';
-const ROUND = 'f5e5fbd6dd224f2d8a5af320436b95f0';
+const ROUND = '898211cc4f10428ca7d97c1e57e5d755';
 function recolor(name, pinKey, pinTint, tagColor) {
   const P = `${BD}/${name}`;
   S.image(b, P + '/Flag', pinKey, { color: pinTint });

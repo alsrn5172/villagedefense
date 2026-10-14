@@ -34,7 +34,7 @@ const TIP_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Onboarding/TipController.mlua
 const TUT_MLUA = path.join(WORLD, 'RootDesk/MyDesk/Onboarding/TutorialDirector.mlua');
 
 // 틴트용 흰 9-slice(협업-규칙 6-4 · 64x64 반경 12 · border 14) — 막대 · 키 · 점처럼 모서리만 둥근 칸
-const WHITE = 'f5e5fbd6dd224f2d8a5af320436b95f0';
+const WHITE = '898211cc4f10428ca7d97c1e57e5d755';
 // 전직관 NPC 그림 = RootDesk/MyDesk/Models/Npcs/VD_JOB_*.model 의 SpriteRUID (ModelBuilder.read · 2026-10-05) — 시안의 temp/npc_card_* 대신 실제 게임 그림
 const NPC = {
   WARRIOR: 'ec40238056d14dc895e93767d9bf6f90', MAGICIAN: 'fb911e3df47b4b54997950df0726285a', ARCHER: '4d71a2a1d659408fbdf5dac3152134e6',

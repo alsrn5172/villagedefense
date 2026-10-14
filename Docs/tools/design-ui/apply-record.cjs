@@ -14,7 +14,7 @@ const b = S.open(WORLD, 'VillageRecordGroup');
 const before = b.listEntities().length;
 const C = S.COLOR;
 const GRID = 'MOD.Core.GridViewComponent';
-const ROUND = 'f5e5fbd6dd224f2d8a5af320436b95f0'; // 흰 둥근사각 9-slice(틴트용 · 테두리 14)
+const ROUND = '898211cc4f10428ca7d97c1e57e5d755'; // 흰 둥근사각 9-slice(틴트용 · 테두리 14)
 const GLOW_COLOR = '#FFD84A';                      // 해금 가능 칸 불빛 노랑(컨트롤러 GlowYellow 와 같은 값)
 
 // ── 시안 캔버스 좌표(왼쪽 위 기준 x,y,w,h · 1200x900 캔버스) ──
