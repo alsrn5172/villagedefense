@@ -79,6 +79,7 @@ main(d075cbf) 위 브랜치(Draft #208). 기획 = 허브 `패치내용/1.0.7.md`
 - 스탯창 전투력 줄 아이콘(`Right/Power/Icon`) = 단풍 엠블럼 RUID `97009709507d447e99b65a51b0281e9f`(그룹 mIYbC · 128×128 · 공격력 쌍칼과 구분) · Row4/Chip "공격력" → "스탯 공격력"(사용자 2026-10-14). 스크립트 `handoff/patch107-agents/_work/U/apply-power-emblem.cjs`.
 - 스탯창 전투 능력치 오른쪽 칸 아이콘(사용자 2026-10-14): 두 칸 모두 [아이콘 24][8][이름 114][4][값 78] · 왼쪽 −229 ~ −1 · 오른쪽 7 ~ 235. Row5 · Row7 아이콘(방어력 · 점프력) 오른쪽으로 옮겨 다시 켬 · Row8/9/10 에 `Icon2` 새로(크리티컬 · 크리티컬 데미지 · 방어율 무시 · 그림 받기 전까지 꺼 둠) · 이름 칸 BestFit 10 ~ 16. 스크립트 `handoff/patch107-agents/_work/U/apply-stat-icons.cjs`(ICONS 에 RUID 넣고 다시 돌리면 켜짐).
 - 스탯창 전투 능력치 아이콘 4개(사용자 그림 2×2 → 칸마다 테두리 기준 128 · 그룹 mIYbC): 크리티컬 `8baca115…` · 크리티컬 데미지 `fdeafaa2…` · 방어율 무시 `6bbd73d1…` · 추가 공격속도 `d63ad6f6…`(쌍칼 대신). 이름 · 값 박스(사용자 2026-10-14): [아이콘 24][4][이름 108][4][값 84] · 높이 26 · 이름 바탕 연파랑(0.42,0.62,0.94,0.42) 글자 14 · 값 바탕 진파랑(0.02,0.06,0.2,0.82) 글자 18 · 가운데 정렬 · Row 줄무늬 끔.
+- 이름 · 값 박스 그림 교체(사용자 2026-10-14): 공용 f5e5fbd6(9-slice)는 26 높이에서 모서리가 각져 보여 새 그림 2개(그룹 mIYbC · 반경 4 · Type Simple 로 칸 비율 그대로) — 이름 `8755ec63…`(흰 윤곽 1.5 · 속 알파 14/255 · 틴트 0.5,0.7,1,0.9) · 값 `9b8faf9c…`(흰 채움 · 틴트 진파랑). 그림 생성 `handoff/patch107-agents/_work/U/make-stat-boxes.py`.
 - 계정 기록 창(`AccountRecordGroup`) 결과 칩 `ChipLastOne`(혼자 남아 승리 · 금빛 · 폭 120) · `AccountRecordUIController.FillHistCell`.
 - 공방 창(`VillageWorkshopGroup`) 장비 판매 칸 `Window/SellPane` 적용.
 
