@@ -40,3 +40,7 @@
 - `TowerConfig.csv` `MaxHp` · `Attack`(포탑만 공격): 포탑 HP 30,000 → 77,800 · 공격 200 → 12,750(1티어 200 · 300 · 400 · 520 / 2티어 2,665 · 2,800 · 2,950 / 3티어 11,570 · 12,150 · 12,750) · 억제기 · 넥서스 HP 는 포탑과 같은 비율(스크립트 `handoff/patch107-agents/_work/P/set-facility-stats.cjs`).
 - `LaneFacility.PlayerStructureDamageMul` 0.1 → 0.12.
 - `PlayerSafetyNet` `BoundMargin` · `BoundMarginTop` 1.0 → 2.0 · `AirLimitSeconds` 4 → 8.
+
+## 10. ★1 사냥 경험치 +20% (사용자 2026-10-14)
+
+- `DifficultyRule.csv` ★1 `MATCH_EXP_MUL` 2 → 2.4.
