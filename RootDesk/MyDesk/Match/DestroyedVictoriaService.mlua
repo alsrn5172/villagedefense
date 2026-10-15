@@ -253,16 +253,25 @@ script DestroyedVictoriaService extends Logic
 		return out
 	end
 
-	method string BackdropSetOf(string mapName)
-		-- 이 맵에 원작 배치 배경을 직접 그릴 세트("TOWN" = 파괴된 헤네시스 · "PERION" = 황혼의 페리온). 파괴 전이거나 템플릿 RUID 를 쓰면 "".
-		local tier = self:TierOf(mapName)
-		if tier <= 0 then return "" end
-		if tier == 3 then
-			if self.PerionTemplateRUID ~= "" then return "" end
-			return "PERION"
-		end
-		if self.TownTemplateRUID ~= "" then return "" end
+	method string BackgroundSetFor(string villageId, integer tier)
+		-- 파괴된 맵 배경 세트(1.0.9 · 사용자 2026-10-15 "헤네시스 · 페리온은 파괴된 헤네시스 · 파괴된 페리온 배경으로 고정 · 엘리니아 사냥터2 · 커닝시티 사냥터2 는 배경 안 바뀌게"):
+		--   헤네시스 = "TOWN"(파괴된 헤네시스) · 페리온 = "PERION"(파괴된 페리온) · 엘리니아 사냥터2 · 커닝시티 사냥터2 = ""(원래 배경 그대로 · 몹만 바뀐다) · 그 밖 = 예전 규칙(사냥터3 PERION · 나머지 TOWN).
+		if villageId == "HENESYS" then return "TOWN" end
+		if villageId == "PERION" then return "PERION" end
+		if tier == 2 and (villageId == "ELLINIA" or villageId == "KERNING") then return "" end
+		if tier == 3 then return "PERION" end
 		return "TOWN"
+	end
+
+	method string BackdropSetOf(string mapName)
+		-- 이 맵에 원작 배치 배경을 직접 그릴 세트("TOWN" = 파괴된 헤네시스 · "PERION" = 파괴된 페리온 · BackgroundSetFor). 파괴 전 · 배경 유지 맵 · 템플릿 RUID 를 쓰면 "".
+		self:EnsureParsed()
+		local p = self.parsed[mapName or ""]
+		if p == nil or p.tier <= 0 then return "" end
+		local set = self:BackgroundSetFor(p.village or "", p.tier)
+		if set == "PERION" and self.PerionTemplateRUID ~= "" then return "" end
+		if set == "TOWN" and self.TownTemplateRUID ~= "" then return "" end
+		return set
 	end
 
 	method any VariantPlan(string mapName, integer tier)
@@ -528,7 +537,7 @@ script DestroyedVictoriaService extends Logic
 			self.Destroyed = self.Destroyed .. ";" .. entry
 		end
 		self.Pending = ""
-		self:ApplyBackground(mapName, tier)
+		self:ApplyBackground(mapName, self:BackgroundSetFor(village, tier))
 		self:ClientApplied(village, mapName, tier)
 		local at = 0
 		if _MatchSessionLogic ~= nil then at = _MatchSessionLogic.Elapsed or 0 end
@@ -536,7 +545,7 @@ script DestroyedVictoriaService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void ApplyBackground(string mapName, integer tier)
+	method void ApplyBackground(string mapName, string set)
 		-- 맵 배경: 템플릿 RUID 가 있으면 그 템플릿으로, 없으면 하늘 그라데이션만 깔고 원작 층은 클라(DestroyedBackdrop)가 그 위에 그린다. 배경 속성은 @Sync 라 모든 클라에 간다.
 		local mapEnt = _EntityService:GetEntityByPath("/maps/" .. mapName)
 		if not isvalid(mapEnt) then
@@ -546,6 +555,11 @@ script DestroyedVictoriaService extends Logic
 		local bgEnt = mapEnt:GetChildByName("Background")
 		if not isvalid(bgEnt) or not isvalid(bgEnt.BackgroundComponent) then
 			log_warning("[DestroyedVictoria] background missing: " .. mapName)
+			return
+		end
+		-- 배경 유지 맵(엘리니아 · 커닝시티 사냥터2 · BackgroundSetFor "")은 손대지 않는다.
+		if set == "" then
+			log("[DestroyedVictoria] background kept (original) -> " .. mapName)
 			return
 		end
 		local bg = bgEnt.BackgroundComponent
@@ -559,18 +573,18 @@ script DestroyedVictoriaService extends Logic
 			end
 		end
 		local tpl = self.TownTemplateRUID
-		if tier == 3 then tpl = self.PerionTemplateRUID end
+		if set == "PERION" then tpl = self.PerionTemplateRUID end
 		if tpl ~= "" then
 			bg:ChangeBackgroundByTemplateRUID(tpl)
 			log("[DestroyedVictoria] background template " .. tpl .. " -> " .. mapName)
 			return
 		end
-		if tier == 3 then
+		if set == "PERION" then
 			bg:ChangeBackgroundByGradient(self.PerionSkyTop, self.PerionSkyMidTop, self.PerionSkyMidBottom, self.PerionSkyBottom, 0.55, 0.45)
 		else
 			bg:ChangeBackgroundByGradient(self.TownSkyTop, self.TownSkyMidTop, self.TownSkyMidBottom, self.TownSkyBottom, 0.55, 0.45)
 		end
-		log("[DestroyedVictoria] background gradient (" .. ((tier == 3) and "PERION" or "TOWN") .. ") -> " .. mapName)
+		log("[DestroyedVictoria] background gradient (" .. set .. ") -> " .. mapName)
 	end
 
 	@ExecSpace("ServerOnly")
