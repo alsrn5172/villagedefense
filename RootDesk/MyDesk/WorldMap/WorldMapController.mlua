@@ -215,6 +215,29 @@ script WorldMapController extends Logic
 	property string LvChipRUID = "f4e4cd09e9d74a05831990911013fd3d"
 	property string BossLvChipRUID = "c2532f007ef44a5eb052d44199ebc321"
 
+	-- 파괴된 빅토리아(WO-054): 파괴된 사냥터 노드 위 불꽃 표시. HereMarker 를 런타임에 복제해(.ui 수정 없음) 깃발 자리에 원작 불꽃 클립 · 꼬리표 "파괴됨"(빨강)을 넣고 크기를 맥동시킨다.
+	property string FireMarkRUID = "8107e7f998964341bddb6e6c7d44fe11"
+
+	property string FireMarkText = "파괴됨"
+
+	property Color FireMarkLabelColor = Color(0.78, 0.13, 0.08, 1)
+
+	property number FirePulseAmp = 0.12
+
+	property number FirePulseSpeed = 6
+
+	@HideFromInspector
+	property any destroyedMarks = nil
+
+	@HideFromInspector
+	property integer destroyedShown = 0
+
+	@HideFromInspector
+	property any firePulseTimer = nil
+
+	@HideFromInspector
+	property number firePulseTime = 0
+
 	@HideFromInspector
 	property integer selectedIndex = 0
 
@@ -414,7 +437,8 @@ script WorldMapController extends Logic
 		self:SetRemoteCollapsed(true)
 		self:ShowHereMarker()
 		self:ApplyGoalMarkers()
-		
+		self:RefreshDestroyedMarks()
+
 		log("[WorldMap] open")
 	end
 
@@ -425,10 +449,11 @@ script WorldMapController extends Logic
 		self.isOpen = false
 		self:HideTooltip()
 		self:HideHereMarker()
+		self:StopFirePulse()
 		self:SetPanelsVisible(false)
 		if isvalid(self.mapPanel) then self.mapPanel.Enable = false end
 		self:SetRemoteCollapsed(false)
-		
+
 		log("[WorldMap] close")
 	end
 
@@ -746,6 +771,128 @@ script WorldMapController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void RefreshDestroyedMarks()
+		-- 파괴된 빅토리아(WO-054): 파괴된 사냥터 노드마다 불꽃 표시(HereMarker 복제 · 처음 한 번 만들고 다시 쓴다). 맵이 닫혀 있으면 다음에 열 때(OpenMap) 그린다.
+		--   서버가 적용하면 DestroyedVictoriaService.ClientApplied 가 이걸 부른다(열려 있는 동안 생겨도 바로 보인다).
+		if not self.isOpen or self.regions == nil or _DestroyedVictoriaService == nil then
+			return
+		end
+		if self.destroyedMarks == nil then
+			self.destroyedMarks = {}
+		end
+		local used = 0
+		for _, mapName in ipairs(_DestroyedVictoriaService:DestroyedMaps()) do
+			for _, r in ipairs(self.regions) do
+				if r.mapName == mapName and isvalid(r.ent) then
+					used = used + 1
+					local mk = self.destroyedMarks[used]
+					if not isvalid(mk) and isvalid(self.hereMarker) then
+						mk = self.hereMarker:Clone("DestroyedMark_" .. tostring(used))
+						self.destroyedMarks[used] = mk
+					end
+					if isvalid(mk) then
+						local tp = r.ent.UITransformComponent.anchoredPosition
+						-- 내 위치 깃발과 같은 노드면 불꽃을 오른쪽으로 비켜 세운다.
+						local dx = 0
+						if self.hereMapName == mapName then dx = 40 end
+						mk.UITransformComponent.anchoredPosition = Vector2(tp.x + dx, tp.y + self.hereMarkerOffsetY)
+						self:PlaceMarkerPin(mk, 0, -13, 0, 23, 54)
+						local flag = mk:GetChildByName("Flag")
+						if isvalid(flag) and flag.SpriteGUIRendererComponent ~= nil then
+							flag.SpriteGUIRendererComponent.ImageRUID = self.FireMarkRUID
+						end
+						local label = mk:GetChildByName("Label")
+						if isvalid(label) then
+							if label.TextGUIRendererComponent ~= nil then label.TextGUIRendererComponent.Text = self.FireMarkText end
+							if label.SpriteGUIRendererComponent ~= nil then label.SpriteGUIRendererComponent.Color = self.FireMarkLabelColor end
+						end
+						mk:SetEnable(true)
+					end
+					break
+				end
+			end
+		end
+		for i = used + 1, #self.destroyedMarks do
+			local mk = self.destroyedMarks[i]
+			if isvalid(mk) then mk:SetEnable(false) end
+		end
+		self.destroyedShown = used
+		if used > 0 then
+			self:StartFirePulse()
+		else
+			self:StopFirePulse()
+		end
+		log("[WorldMap] destroyed marks=" .. tostring(used))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartFirePulse()
+		-- 불꽃 표시 크기 맥동(맵이 열려 있는 동안만 · 중복 시작 방지).
+		if self.firePulseTimer ~= nil then
+			return
+		end
+		self.firePulseTime = 0
+		self.firePulseTimer = _TimerService:SetTimerRepeat(function() self:TickFirePulse() end, 1 / 30)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TickFirePulse()
+		-- 1/30 초마다 불꽃 표시 깃발 크기를 사인파로 키웠다 줄인다.
+		if self.destroyedMarks == nil then
+			return
+		end
+		self.firePulseTime = self.firePulseTime + (1 / 30)
+		local s = 1 + math.sin(self.firePulseTime * self.FirePulseSpeed) * self.FirePulseAmp
+		for i = 1, self.destroyedShown do
+			local mk = self.destroyedMarks[i]
+			if isvalid(mk) then
+				local flag = mk:GetChildByName("Flag")
+				if isvalid(flag) and flag.UITransformComponent ~= nil then
+					flag.UITransformComponent.UIScale = Vector3(s, s, 1)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StopFirePulse()
+		-- 맥동 타이머 정리(맵 닫기 · 표시 없음).
+		if self.firePulseTimer ~= nil then
+			_TimerService:ClearTimer(self.firePulseTimer)
+			self.firePulseTimer = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer FillDestroyedRows(string mapName)
+		-- 파괴된 사냥터 툴팁(WO-054): 변형 몹 줄(이름 · 얼굴 = stand 클립 · 실제 스폰 레벨 +2) + 흐린 안내 한 줄. 돌려주는 값 = 차지한 1줄 자리 수.
+		local slots = self:RowSlots()
+		local rows = _DestroyedVictoriaService:VariantRows(mapName)
+		local units = 0
+		local used = 0
+		for i, v in ipairs(rows) do
+			local s = slots[i]
+			if s ~= nil then
+				self:FillRowEntry(s, v.name, v.ruid, v.level, false)
+				self:PlaceRow(s, units, false)
+				units = units + 1
+				used = i
+			end
+		end
+		local note = slots[used + 1]
+		if note ~= nil then
+			self:FillRowNote(note, "모든 지역 재화 · 꿈의 조각 · 빅토리아 주화")
+			self:PlaceRow(note, units, false)
+			units = units + 1
+			used = used + 1
+		end
+		for i = used + 1, #slots do
+			if isvalid(slots[i].row) then slots[i].row.Enable = false end
+		end
+		return units
+	end
+
+	@ExecSpace("ClientOnly")
 	method string OutsideMapLabel(string myMap)
 		-- 월드맵에 없는 맵의 표시 이름. 로비(승강장 · 배)는 "로비", 그 밖(인스턴스 · 테스트 맵)은 "지도 밖".
 		if string.find(myMap, "Lobby", 1, true) ~= nil then
@@ -869,9 +1016,12 @@ script WorldMapController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method string Caption(any r)
-		-- "커닝시티 · 사냥터" 같은 한 줄 요약. 지역이 비면 종류만 쓴다.
+		-- "커닝시티 · 사냥터" 같은 한 줄 요약. 지역이 비면 종류만 쓴다. 파괴된 사냥터(WO-054)는 "파괴된 사냥터".
 		local reg = self:RegionLabel(r.region)
 		local kind = self:KindLabel(r.kind)
+		if _DestroyedVictoriaService ~= nil and _DestroyedVictoriaService:IsDestroyed(r.mapName) then
+			kind = "파괴된 사냥터"
+		end
 		if reg == "" then
 			return kind
 		end
@@ -1048,6 +1198,10 @@ script WorldMapController extends Logic
 		-- 이 맵의 지역 보스(BossInfo · BossCatalog)와 도감(MapMonsters)의 고유번호 목록을 받아 행을 채운다 — 보스가 먼저(2줄 크기), 줄 칸은 최대 5.
 		--   돌려주는 값 = 차지한 1줄 자리 수(보스 줄 = 2) — 안내창 높이 = 머리줄 + 이 값 × 44.
 		-- (fallback 은 예전 호출 모양을 지키려고 남겨 둔 인자 — 지역·종류는 이제 머리줄이 보여 주므로 쓰지 않는다)
+		-- 파괴된 빅토리아(WO-054): 파괴된 사냥터면 변형 몹 목록으로 바꿔 보여 준다.
+		if _DestroyedVictoriaService ~= nil and _DestroyedVictoriaService:IsDestroyed(mapName) then
+			return self:FillDestroyedRows(mapName)
+		end
 		local ids = {}
 		if _MonsterCatalog ~= nil then
 			ids = _MonsterCatalog:GetMapMonsterIds(mapName)
@@ -1609,7 +1763,8 @@ script WorldMapController extends Logic
 	method void OnEndPlay()
 		-- 둥둥 타이머부터 정리한 뒤 모든 이벤트 핸들러를 해제한다.
 		self:HideHereMarker()
-		
+		self:StopFirePulse()
+
 		if isvalid(self.openBtn) and self.hOpen ~= nil then
 			self.openBtn.Entity:DisconnectEvent(ButtonClickEvent, self.hOpen)
 		end

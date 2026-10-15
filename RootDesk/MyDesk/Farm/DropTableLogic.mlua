@@ -23,6 +23,13 @@ script DropTableLogic extends Logic
 	@HideFromInspector
 	property string GemItems = "GEM_DIAMOND,GEM_SAPPHIRE,GEM_AMETHYST,GEM_AQUAMARINE,GEM_GARNET,GEM_OPAL,GEM_TOPAZ,GEM_EMERALD,GEM_STR_CRYSTAL,GEM_DEX_CRYSTAL,GEM_LUK_CRYSTAL,GEM_INT_CRYSTAL"
 
+	-- 파괴된 빅토리아 변형 몹 드랍(WO-054 · 사용자 2026-10-15): 지역 재화는 이 마을들 것을 각각 굴린다 · 꿈의 조각 · 빅토리아 주화 확률(개수 1).
+	property string VariantRegionVillages = "HENESYS,ELLINIA,KERNING,PERION,NAUTILUS"
+
+	property number VariantDreamChance = 0.33
+
+	property number VariantCoinChance = 0.1
+
 	@HideFromInspector
 	property boolean loaded = false
 
@@ -253,6 +260,71 @@ script DropTableLogic extends Logic
 		local ground = nil
 		if isvalid(map) and pos ~= nil then ground = { map = map, pos = pos, dropped = {} } end
 		self:RollKillDrops(userId, mapName, monsterId, ground)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DropVariantItems(string userId, Entity map, any pos)
+		-- 파괴된 빅토리아 변형 몹 처치 드롭(WO-054 · 사용자 2026-10-15): 그 사냥터 GROUND 행 중 보석은 그대로, REGION_LOCAL 행은 지역 재화 5종 각각으로 펼쳐
+		--   같은 확률 · 개수로 굴린다(사냥터 1 35%×1 · 2 75%×1 · 3 100%×3~4) + 꿈의 조각 VariantDreamChance ×1 + 빅토리아 주화 VariantCoinChance ×1. 몹별 재료(MAT_)는 없다.
+		--   바닥 드랍(주인 = 막타) 규칙은 일반 몹과 같다 — 주인이 맵에 없거나 못 떨구면 인벤토리 · 지갑에 직접.
+		self:EnsureLoaded()
+		if userId == nil or userId == "" then return end
+		local mapName = ""
+		if isvalid(map) then mapName = map.Name end
+		local ground = nil
+		if isvalid(map) and pos ~= nil then ground = { map = map, pos = pos, dropped = {} } end
+		local granted = {}
+		local hits = 0
+		local tier = self:TierOfMap(mapName)
+		local list = {}
+		local src = nil
+		if tier > 0 and self.rows["GROUND"] ~= nil then src = self.rows["GROUND"][tostring(tier)] end
+		if src ~= nil then
+			for _, r in ipairs(src) do
+				if r.itemId == "REGION_LOCAL" then
+					for vid in string.gmatch(self.VariantRegionVillages or "", "[^,]+") do
+						local item = self:RegionItemOfVillage(vid)
+						if item ~= "" then
+							table.insert(list, { itemId = item, chance = r.chance, min = r.min, max = r.max })
+						end
+					end
+				else
+					table.insert(list, r)
+				end
+			end
+		end
+		hits = hits + self:RollRows(list, userId, mapName, granted, ground)
+
+		-- 꿈의 조각 · 빅토리아 주화(개수 1 · ★ 배율 없음).
+		local dream = _UtilLogic:RandomDouble() < self.VariantDreamChance
+		if dream then
+			local onGround = ground ~= nil and _GroundDrop ~= nil and _GroundDrop:SpawnItem(ground.map, ground.pos, userId, "ITEM", "DREAM_PIECE", 1) or false
+			if onGround then
+				ground.dropped["DREAM_PIECE"] = (ground.dropped["DREAM_PIECE"] or 0) + 1
+				hits = hits + 1
+			elseif _InventoryService ~= nil and _InventoryService:GiveItem(userId, "DREAM_PIECE", 1) > 0 then
+				granted["DREAM_PIECE"] = (granted["DREAM_PIECE"] or 0) + 1
+				hits = hits + 1
+			end
+		end
+		local coin = _UtilLogic:RandomDouble() < self.VariantCoinChance
+		if coin then
+			local onGround = ground ~= nil and _GroundDrop ~= nil and _GroundDrop:SpawnItem(ground.map, ground.pos, userId, "COIN", "VICTORIA_COIN", 1) or false
+			if onGround then
+				hits = hits + 1
+			elseif _SummonManager ~= nil then
+				_SummonManager:GrantCoin(userId, 1)
+				if _UIToast ~= nil then _UIToast:ShowMessage("빅토리아 주화 +1", userId) end
+				hits = hits + 1
+			end
+		end
+
+		local msg = self:ItemList(granted)
+		local onGroundText = ""
+		if ground ~= nil then onGroundText = self:ItemList(ground.dropped) end
+		log("[Drop] variant " .. mapName .. " tier=" .. tostring(tier) .. " dream=" .. tostring(dream) .. " coin=" .. tostring(coin)
+			.. " -> inventory[" .. msg .. "] ground[" .. onGroundText .. "] hits=" .. tostring(hits) .. " (" .. userId .. ")")
+		if msg ~= "" and _UIToast ~= nil then _UIToast:ShowMessage("획득: " .. msg, userId) end
 	end
 
 	@ExecSpace("ServerOnly")

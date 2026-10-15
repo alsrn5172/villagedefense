@@ -59,3 +59,27 @@
 
 - `EquipSellService.Quote`: 박힌 보석을 종류마다 (칸 수 × 부위 수) ÷ 2 내림만큼 보석 아이템(`GEM_<id>`)으로 돌려준다(`q.gems` · `q.gemUsed` · `q.gemBack` · `CanSell` · `RefundText` · `RequestSell` 지급). 1.0.7 의 `GemBuyMeso`(보석 메소 값 · 0) 삭제.
 - `EquipSellUIController.RefreshDetail`: 판매가 칸은 2줄(메소 · 구매 재료) 그대로 · 아래 줄에 "강화 +N · 보석 X개 → Y개 돌려받음" · 판매 뒤 토스트에 보석 이름별 개수. 안 쓰게 된 `GemCount` 삭제.
+
+## 12. 파괴된 빅토리아 아일랜드 (WO-054 · 사용자 2026-10-15)
+
+**무엇** — 매치 **9:00 · 18:00 · 27:00** 에 다섯 마을(헤네시스 · 엘리니아 · 커닝시티 · 페리온 · 노틸러스 — 리스항구 제외) 중 무작위 한 곳의 **사냥터 1 · 2 · 3**(9분 = 1 · 18분 = 2 · 27분 = 3 고정)이 그 판 끝까지 "파괴된 빅토리아 아일랜드"로 바뀐다. 같은 판에서 같은 마을은 다시 안 뽑는다. 지형(발판 · 포탈)은 그대로, 배경 · 몬스터 · 드랍이 바뀐다. 30초 전 예고 · 생기면 토스트 · 월드맵 불꽃 표시 · 튜토리얼 장면.
+
+**정한 값**(지시서 결정 기록 = `Docs/작업지시/WO-054-파괴된-빅토리아.md` 맨 아래)
+- 변형 몹(원작 팩 · 리소스 검색 API 로 이름 정확 일치): 사냥터 1 = 변형된 달팽이 8600000 · 변형된 슬라임 8600002 / 2 = 변형된 주황버섯 8600001 · 변형된 리본돼지 8600003 / 3 = 변형된 스텀프 8620000 · 변형된 와일드보어 8620003. 그 맵의 기존 몹 2종 중 **낮은 레벨 → 앞 몹 · 높은 레벨 → 뒤 몹**으로 1:1 대체(맵 스폰표 순서 · 자리 · 수 그대로).
+- 능력치: 대체되는 몹(맵 행 실제 값 = LevelOverride 반영) 기준 **레벨 +2 · HP 그대로 · 공격력 ×1.5 · 경험치 ×1.5**(대체 몹의 원래 레벨 경험치 기준) · 메소 그대로. 판정 레벨(`Monster.Level` · `FarmReward.SpawnLevel`)도 +2 라 이름표 · 명중 · 레벨 차 경험치 보정에 반영.
+- 드랍(변형 몹만 · 공용 드랍 표는 그대로): 그 사냥터 `GROUND` 행 중 보석은 그대로 · `REGION_LOCAL` 행은 **지역 재화 5종 각각** 같은 확률 · 개수(사냥터 1 35%×1 · 2 75%×1 · 3 100%×3~4 · ★5 타 지역 ×2 규칙 그대로) · **꿈의 조각 33% ×1** · **빅토리아 주화 10% ×1** · 몹별 모집 재료(MAT_) 없음. 귀속(막타) · 바닥 드랍 · 자이언트 카운트는 기존 규칙 그대로.
+- 배경: 사냥터 1 · 2 = 파괴된 헤네시스(원작 **271020100 "파괴된 버섯노래숲 · 음산한 콧노래 오솔길"** · 배경 세트 `destructionTown` 27층 — 사용자 스크린샷의 맵) · 사냥터 3 = 황혼의 페리온(원작 **273020000 "황량한 언덕"** · `destructionPerion` 17층). 방식 = **원작 배치 데이터로 직접 그리기**(사용자 선택) + Maker 템플릿 RUID 자리(`TownTemplateRUID` · `PerionTemplateRUID` — 넣으면 그 템플릿을 쓰고 직접 그리기는 끈다).
+- 예고: 적용 30초 전(매치 길이 비율 · 최소 5초 — TEST 프로필 338초면 약 68 · 135 · 203초에 생김) 오른쪽 위(단축 버튼 줄 아래) 한 줄 "파괴 예고 0:27 커닝시티 사냥터2 · 지하철 1호선" → 생기면 "파괴 출현!" 8초.
+- 스틸: 다른 마을 사냥터 · 지역 보스 입장을 막는 규칙이 없음을 확인(`PortalNetwork` · `RequestEnterBoss` 는 지역 재화만 본다) → 규칙 변경 없음. 변형 몹이 모든 지역 재화를 주므로 27분에는 그 재화로 다른 지역 보스 도전까지 이어진다.
+- 튜토리얼: 커닝시티 **사냥터 2(지하철 1호선)** 를 즉시 파괴(그 시점 캐릭터 Lv20 · 변형 몹 Lv19 · 23 · 레인 시설 없는 맵).
+
+**구현**
+- 새 `Match/DestroyedVictoriaService.mlua`(@Logic): 서버 일정(`MatchSessionLogic.Elapsed` · `MatchSerial` 로 판마다 초기화 · 튜토리얼 룸은 일정 없음) · 상태 `@Sync Destroyed`("마을:맵:번호;…") · `@Sync Pending` · 마을 → 맵 = `VillageConfig` 3맵 중 `DropTableLogic.TierOfMap == 번호` · 적용 = 상태 → 맵 `Background` 하늘 그라데이션(템플릿 RUID 가 있으면 템플릿) → Multicast 토스트 · 예고 줄 · 월드맵 갱신. 변형 표(클립 RUID 6종 × stand · move · hit · die · attack) · `VariantOf` · `VariantRows` · `ApplyVariant` · `ForceDestroy`(튜토리얼) · `DevTriggerNext`(서버 Lua) · `RequestDevTriggerNext`(DevStatRemote 게이트). 예고 줄 = `MatchClockGroup/Panel` 런타임 복제(오른쪽 위 · .ui 수정 없음 · `StatusHUD.ui` 는 B 경계라 안 건드림). 로그 `[DestroyedVictoria] notice/apply village= map= tier=`.
+- 새 `Map/DestroyedBackdrop.mlua`(@Logic · 클라 전용): 원작 back 노드(maplestory.io KMS 389 Map.wz) 그대로의 층 표 + 그림 RUID 39개(리소스 검색 API · 크기 · 그림 비교로 찾음 · 피벗 = 원작 origin 확인) → 클라 전용 엔티티(`auracircle` · `MapLayer0` · OrderInLayer −1000+층) · 원작 공식(층 위치 = x + 카메라 × (100+rx)/100 · type 1 · 4 가로 반복 · type 4 자동 흐름) · 원작 VR ↔ 우리 맵 경계(`MapComponent:GetBound`) 평행 이동. 같은 공식의 파이썬 합성이 사용자 스크린샷과 일치(평균 픽셀 차 0.07 로 구현식 확인). 로그 `[DestroyedBackdrop] build/clear`.
+- `Spawn/MonsterSpawner.mlua`: `SpawnSlot` 에서 변형 키면 `ApplyVariant` + 이름표 "변형된 ○○" · 맵이 막 파괴되면 살아 있는 몹 · 리스폰 대기 칸을 즉시 변형 몹으로 다시 세움(`RespawnAllNow` · 보상 없이 지움).
+- `MonsterAttack.mlua`: `RemeasureBox` — 그림이 바뀐 몹의 접촉 공격 상자를 다시 잰다. 피격 상자는 `Monster.FitHitboxToSprite` · 사망 지연은 `SetupDieDestroyDelay` 를 다시 부른다.
+- `Farm/FarmReward.mlua`: `VariantKey` · 변형이면 `DropTableLogic.DropVariantItems`. `Farm/DropTableLogic.mlua`: `DropVariantItems` · `VariantRegionVillages` · `VariantDreamChance` 0.33 · `VariantCoinChance` 0.1.
+- `WorldMap/WorldMapController.mlua`: 파괴된 노드 불꽃 표시(`HereMarker` 런타임 복제 · 원작 불꽃 클립 · 꼬리표 "파괴됨" 빨강 · 맥동) · 툴팁 = 변형 몹 2줄(얼굴 · 이름 · 실제 레벨 +2) + "모든 지역 재화 · 꿈의 조각 · 빅토리아 주화" 줄 · 머리줄 "○○ · 파괴된 사냥터".
+- `Onboarding/TutorialService.mlua`: 액션 `dv:<마을>:<번호>`. `Onboarding/TutorialDirector.mlua`: 5-0a(머쉬맘) 앞 장면 `5-dv1`(9 · 18 · 27분 카드) · `5-dv2`(dv) · `5-dv3`(월드맵 열기 · M 또는 우측 아래) · `5-dv4`(커닝 노드 강조) · `5-dvm`(지하철 1호선으로 순간이동) · `5-dv5`(변형 몬스터 · 잡아 봐도 됨) · `5-dv6`(보상 · 사수 · 다른 지역 보스 초석 카드).
+
+**확인** — 클라우드 세션이라 Maker 없음 → Play · 로그 · 캡처 미확인. `check-integrity` 통과(경고 3건은 기존) · mLua → Lua 변환 구문 검사 9파일 통과. Maker 확인 목록은 지시서 결정 기록 아래 "Maker 에서 확인할 것".

@@ -1,0 +1,357 @@
+@Logic
+script DestroyedBackdrop extends Logic
+
+	-- 파괴된 빅토리아 아일랜드 배경(WO-054 · 사용자 2026-10-15 "보내 준 화면의 맵 뒤 배경"): 원작 배경을 원작 배치 데이터 그대로 그린다(클라 전용).
+	--   TOWN   = 원작 271020100 "파괴된 버섯노래숲 · 음산한 콧노래 오솔길"(배경 세트 destructionTown · 27층) — 사냥터 1 · 2
+	--   PERION = 원작 273020000 "황혼의 페리온 · 황량한 언덕"(배경 세트 destructionPerion · 17층) — 사냥터 3
+	--   층 값(x · y · rx · ry · cx · cy · type · a · f · front)은 maplestory.io KMS 389 Map.wz 의 back 노드 그대로, 그림 RUID 는 리소스 검색 API 에서
+	--   크기 · 그림 비교로 찾은 MSW 리소스(39개 · 피벗 = 원작 origin 과 같은 점 확인 · 2026-10-15). 같은 공식의 파이썬 합성이 사용자 스크린샷과 일치했다.
+	--   그리는 법(원작 HeavenClient Background::draw 와 같은 식): 카메라 중심 cam(원작 좌표 · px · y 아래로 +)에 대해
+	--     층 위치 = x + cam × (100 + rx) / 100 (y 도 같음) · type 4(HMOVEA)는 가로로 rx × 125/16 px/초 흐르고 cam 을 안 따른다 · type 1 · 4 는 가로 반복(간격 cx, 0 이면 그림 폭).
+	--   우리 맵 좌표 ↔ 원작 좌표는 평행 이동 T 하나(가로 = 맵 가운데 맞춤 · 세로 = 맵 아래 끝 맞춤 · 맵 경계 MapComponent:GetBound).
+	--   엔티티: 클라에서 SpawnByModelId("auracircle") — 이 클라에만 생긴다(StatusHUDController 레벨업 빛과 같은 방식 · Play 확인된 길).
+	--   층: MapLayer0 · OrderInLayer BaseOrder + 층번호(배경 앞 · 모든 타일 · 맵 오브젝트(MapLayer0 의 -5 이상) 뒤). 원작 front 층도 맵 뒤에 그린다(플레이어 항상 앞 규칙).
+	--   템플릿 RUID(DestroyedVictoriaService.TownTemplateRUID · PerionTemplateRUID)를 쓰면 이 스크립트는 그리지 않는다(BackdropSetOf = "").
+
+	property boolean On = true
+
+	property string SpriteModelId = "auracircle"
+
+	property string SortingLayerName = "MapLayer0"
+
+	property integer BaseOrder = -1000
+
+	-- front 층(원작에서 맵 앞)을 그 밖 층보다 이만큼 앞에(여전히 맵 뒤).
+	property integer FrontOrderBonus = 100
+
+	-- 가로 반복 칸 수를 정할 때 화면 폭에 더하는 여유(px). 화면이 이보다 더 넓어지면(줌 아웃) 다시 만든다.
+	property number ViewMarginPx = 400
+
+	property number CheckInterval = 0.25
+
+	property boolean LogOn = true
+
+	@HideFromInspector
+	property any sets = nil
+
+	@HideFromInspector
+	property any layers = nil
+
+	@HideFromInspector
+	property any builtMap = nil
+
+	@HideFromInspector
+	property string builtMapName = ""
+
+	@HideFromInspector
+	property string builtSet = ""
+
+	@HideFromInspector
+	property number builtViewW = 0
+
+	@HideFromInspector
+	property number builtViewH = 0
+
+	@HideFromInspector
+	property number shiftX = 0
+
+	@HideFromInspector
+	property number shiftY = 0
+
+	@HideFromInspector
+	property number checkAcc = 0
+
+	@HideFromInspector
+	property number elapsed = 0
+
+	@ExecSpace("ClientOnly")
+	method any Sets()
+		-- 원작 배경 세트 2개(층 표 + 원작 맵 VR 경계 px). 층 하나 = { r 그림 RUID(애니 층은 애니메이션 클립) · w · h 원작 그림 크기 · x · y · rx · ry · cx · cy · t type · a 투명도(0~255) · f 반전 · fr front }.
+		if self.sets ~= nil then
+			return self.sets
+		end
+		self.sets = {
+			TOWN = {
+				vrLeft = -3410, vrRight = -1900, vrTop = -985, vrBottom = 345,
+				layers = {
+				{ r = "866a6670c4754a27b1106eb47b3b99e1", w = 800, h = 801, x = -3, y = -102, rx = 0, ry = 0, cx = 0, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/0
+				{ r = "125326f1151747ceb3f6500129d62869", w = 800, h = 374, x = -173, y = -340, rx = -2, ry = -2, cx = 0, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/1
+				{ r = "0a4824654c7a478b88019b83ee81c64b", w = 800, h = 185, x = -209, y = -339, rx = -1, ry = -3, cx = 0, cy = 0, t = 4, a = 255, f = 0, fr = 0 },  -- back/2
+				{ r = "1b5f03de7e634a9f81424c3acd5e695a", w = 636, h = 194, x = -187, y = -98, rx = -2, ry = -3, cx = 0, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/3
+				{ r = "cc7d37f75f434955ac052dbd3dccfef0", w = 636, h = 293, x = -150, y = -17, rx = -6, ry = -3, cx = 0, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/4
+				{ r = "f07b4003467549ba9bac1f5c10990bf3", w = 636, h = 487, x = -236, y = 42, rx = -9, ry = -4, cx = 0, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/5
+				{ r = "b4c8adce6acd42b58b1af953e45a3b0a", w = 802, h = 121, x = -642, y = 15, rx = -8, ry = -4, cx = 2000, cy = 0, t = 4, a = 255, f = 0, fr = 0 },  -- back/6
+				{ r = "04f6f164ac334f438e2340dc39c561d0", w = 814, h = 210, x = -109, y = -35, rx = -5, ry = -4, cx = 3000, cy = 0, t = 4, a = 255, f = 0, fr = 0 },  -- back/7
+				{ r = "59e777c4a44d4e2c8304b8cc3cfda3c9", w = 538, h = 91, x = 388, y = 2, rx = -5, ry = -4, cx = 3000, cy = 0, t = 4, a = 255, f = 0, fr = 0 },  -- back/8
+				{ r = "a5abba1b71b2490a824b2e9fd7c3db43", w = 137, h = 169, x = -147, y = -24, rx = -8, ry = -20, cx = 1000, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- ani/0
+				{ r = "b229f092300240ef94a6912a2abd3d70", w = 296, h = 230, x = -513, y = 51, rx = -6, ry = -20, cx = 1000, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- ani/3
+				{ r = "6dd5f29a748e45949f4faecc5e01ee8b", w = 1024, h = 561, x = -1021, y = -19, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/9
+				{ r = "e84a43d05c664cb1a4863347148b50ea", w = 1024, h = 552, x = 3, y = 9, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/10
+				{ r = "f2f32408818c4b21b4ebfb2f346c14d8", w = 1016, h = 357, x = 1023, y = 78, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/11
+				{ r = "8dda7acf1cd948d6a39a4324675cc99c", w = 119, h = 144, x = -1072, y = -129, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- ani/2
+				{ r = "8c71a39f855d41a3920f1667bda49e8f", w = 166, h = 128, x = 209, y = -82, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- ani/4
+				{ r = "8107e7f998964341bddb6e6c7d44fe11", w = 77, h = 89, x = 327, y = -110, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- ani/5
+				{ r = "de0266a987854fb2976dbd86a097c6fa", w = 222, h = 196, x = -291, y = 62, rx = -11, ry = -20, cx = 1000, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- ani/7
+				{ r = "1cb789ac9f644121924702c64f9d87eb", w = 166, h = 128, x = 472, y = 121, rx = -11, ry = -20, cx = 1500, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- ani/8
+				{ r = "57b9030025074fbeae36507dbf6e7f74", w = 33, h = 27, x = 182, y = -97, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 160, f = 0, fr = 0 },  -- ani/9
+				{ r = "57b9030025074fbeae36507dbf6e7f74", w = 33, h = 27, x = 453, y = 106, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 160, f = 0, fr = 0 },  -- ani/9
+				{ r = "57b9030025074fbeae36507dbf6e7f74", w = 33, h = 27, x = -251, y = 59, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 128, f = 0, fr = 0 },  -- ani/9
+				{ r = "57b9030025074fbeae36507dbf6e7f74", w = 33, h = 27, x = 341, y = -121, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 160, f = 0, fr = 0 },  -- ani/9
+				{ r = "57b9030025074fbeae36507dbf6e7f74", w = 33, h = 27, x = -319, y = 33, rx = -11, ry = -20, cx = 0, cy = 0, t = 0, a = 160, f = 0, fr = 0 },  -- ani/9
+				{ r = "204f83bb60fd4105a7b074837ffe5449", w = 1621, h = 323, x = -256, y = 2, rx = -20, ry = -80, cx = 1600, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/12
+				{ r = "e825e8fe9187406f9146d6152eb352de", w = 139, h = 193, x = 184, y = 143, rx = -20, ry = -80, cx = 1000, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- ani/13
+				{ r = "57b9030025074fbeae36507dbf6e7f74", w = 33, h = 27, x = 210, y = 107, rx = -20, ry = -80, cx = 1000, cy = 0, t = 1, a = 192, f = 0, fr = 0 },  -- ani/9
+				},
+			},
+			PERION = {
+				vrLeft = -1474, vrRight = 936, vrTop = -674, vrBottom = 565,
+				layers = {
+				{ r = "a85bcb2e6ffa4c658a72e2db738c1ea1", w = 1024, h = 780, x = 85, y = -161, rx = 0, ry = 0, cx = 0, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/0
+				{ r = "96cf4571a07342d08b70aa615e220616", w = 900, h = 224, x = 124, y = 540, rx = 1, ry = -100, cx = 0, cy = 100, t = 4, a = 255, f = 0, fr = 1 },  -- back/1
+				{ r = "4df473a8f3e341738e717f88eb601bd4", w = 900, h = 234, x = 225, y = 634, rx = 2, ry = -100, cx = 0, cy = 100, t = 4, a = 255, f = 0, fr = 1 },  -- back/2
+				{ r = "5e3f790506bd41b5ba4c16c45f047b10", w = 900, h = 210, x = -4, y = 234, rx = 3, ry = 0, cx = 0, cy = 0, t = 4, a = 255, f = 0, fr = 0 },  -- back/3
+				{ r = "0ba5233d18e2497297b68b37c8be23ed", w = 900, h = 189, x = 135, y = 314, rx = 4, ry = -100, cx = 0, cy = 100, t = 4, a = 255, f = 0, fr = 0 },  -- back/4
+				{ r = "28348b6ad0354069af331601aef69735", w = 900, h = 195, x = 63, y = 331, rx = 5, ry = -100, cx = 0, cy = 0, t = 4, a = 255, f = 0, fr = 0 },  -- back/5
+				{ r = "1f5c138b1ec245e78cd986f6f98f49d4", w = 225, h = 201, x = 147, y = -35, rx = -2, ry = -2, cx = 600, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/6
+				{ r = "6cb236f75e40465ea62c8a2046aedb93", w = 129, h = 228, x = -232, y = -18, rx = -3, ry = -3, cx = 650, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/7
+				{ r = "3b9209a2909f42c3ab045ed607b3f6c2", w = 165, h = 332, x = -32, y = -7, rx = -4, ry = -3, cx = 600, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/8
+				{ r = "c0dc237879344d1cbf796f5e0bd39a79", w = 309, h = 471, x = -347, y = -165, rx = -10, ry = -3, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/9
+				{ r = "785595402d6f4908964f2705e641da31", w = 333, h = 459, x = -107, y = -252, rx = -12, ry = -4, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/10
+				{ r = "66888bf833fc440c90e42404c6b8b18f", w = 403, h = 584, x = -571, y = -53, rx = -15, ry = -4, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/11
+				{ r = "d26ba07904a14320863b551ba512c267", w = 599, h = 510, x = 217, y = -126, rx = -18, ry = -4, cx = 1200, cy = 0, t = 1, a = 255, f = 0, fr = 0 },  -- back/12
+				{ r = "dd1512f813054b728933d326df24db6a", w = 879, h = 586, x = -83, y = 65, rx = -15, ry = -4, cx = 0, cy = 0, t = 0, a = 255, f = 0, fr = 0 },  -- back/13
+				{ r = "497186a7f5164c1db62b6675ee6bdf13", w = 500, h = 170, x = -427, y = 305, rx = 3, ry = -100, cx = 0, cy = 0, t = 4, a = 255, f = 0, fr = 1 },  -- back/14
+				{ r = "91aabb72de81410e9cd1b954d43abf51", w = 500, h = 273, x = 61, y = 150, rx = 3, ry = -100, cx = 0, cy = 0, t = 4, a = 255, f = 0, fr = 1 },  -- back/15
+				{ r = "46dfde327e95487c813db3d56810d756", w = 500, h = 332, x = 249, y = -82, rx = 3, ry = -100, cx = 0, cy = 0, t = 4, a = 255, f = 0, fr = 1 },  -- back/16
+				},
+			},
+		}
+		return self.sets
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 0.25초마다 내 맵 · 파괴 상태를 보고 만들기/지우기, 매 프레임 층 위치를 카메라에 맞춘다.
+		if not self.On then
+			return
+		end
+		self.elapsed = self.elapsed + delta
+		self.checkAcc = self.checkAcc + delta
+		if self.checkAcc >= self.CheckInterval then
+			self.checkAcc = 0
+			self:CheckMap()
+		end
+		if self.layers ~= nil then
+			self:Layout()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckMap()
+		-- 지금 맵의 배경 세트가 바뀌었거나(파괴됨 · 맵 이동) 화면이 만든 때보다 넓어졌으면 다시 만든다.
+		local want = ""
+		local mapName = ""
+		---@type Entity
+		local map = nil
+		local lp = _UserService.LocalPlayer
+		if isvalid(lp) and isvalid(lp.CurrentMap) then
+			map = lp.CurrentMap
+			mapName = map.Name
+			if _DestroyedVictoriaService ~= nil then
+				want = _DestroyedVictoriaService:BackdropSetOf(mapName)
+			end
+		end
+		local same = (want == self.builtSet and mapName == self.builtMapName and (want == "" or isvalid(self.builtMap)))
+		if same and self.layers ~= nil then
+			local v = self:ViewRect()
+			if v.z <= self.builtViewW + 1 and v.w <= self.builtViewH + 1 then
+				return
+			end
+			if self.LogOn then log("[DestroyedBackdrop] view grew " .. string.format("%.0fx%.0f", v.z, v.w) .. " — rebuild") end
+		elseif same then
+			return
+		end
+		self:Clear()
+		self.builtSet = want
+		self.builtMapName = mapName
+		if want ~= "" and isvalid(map) then
+			self:Build(map, want)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector4 ViewRect()
+		-- 지금 화면: (가운데 x, 가운데 y = 월드 units, 폭, 높이 = px · 줌 반영). 화면 두 모서리의 중점(SkillExecutors 와 같은 방식 · 카메라 감쇠 · 오프셋까지 반영된 실제 화면).
+		local sw = _UILogic.ScreenWidth
+		local sh = _UILogic.ScreenHeight
+		local a = _UILogic:ScreenToWorldPosition(Vector2(0, 0))
+		local b = _UILogic:ScreenToWorldPosition(Vector2(sw, sh))
+		return Vector4((a.x + b.x) / 2, (a.y + b.y) / 2, math.abs(b.x - a.x) * 100, math.abs(b.y - a.y) * 100)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Build(Entity map, string setName)
+		-- 세트의 층마다 필요한 개수(가로 반복이면 화면 폭 + 여유만큼)의 그림 엔티티를 만든다.
+		local set = self:Sets()[setName]
+		if set == nil then
+			return
+		end
+		-- 원작 좌표 = 우리 좌표(px · y 아래로 +) + shift. 가로는 맵 가운데, 세로는 맵 아래 끝을 원작 VR 과 맞춘다.
+		local left, bottom, right, top = nil, nil, nil, nil
+		if isvalid(map.MapComponent) then
+			local lb, rt = map.MapComponent:GetBound()
+			if lb ~= nil and rt ~= nil and rt.x > lb.x and rt.y > lb.y then
+				left = lb.x
+				bottom = lb.y
+				right = rt.x
+				top = rt.y
+			end
+		end
+		if left == nil then
+			local cam = _CameraService:GetCurrentCameraComponent()
+			if isvalid(cam) then
+				local lb2, rt2 = cam:GetBound()
+				if lb2 ~= nil and rt2 ~= nil and rt2.x > lb2.x and rt2.y > lb2.y then
+					left = lb2.x
+					bottom = lb2.y
+					right = rt2.x
+					top = rt2.y
+				end
+			end
+		end
+		if left ~= nil then
+			self.shiftX = (set.vrLeft + set.vrRight) / 2 - (left + right) / 2 * 100
+			self.shiftY = set.vrBottom - (-bottom * 100)
+		end
+		local view = self:ViewRect()
+		if left == nil then
+			-- 경계를 못 읽으면 지금 화면 가운데를 원작 VR 가운데로 본다.
+			self.shiftX = (set.vrLeft + set.vrRight) / 2 - view.x * 100
+			self.shiftY = (set.vrTop + set.vrBottom) / 2 - (-view.y * 100)
+		end
+
+		local vw = view.z
+		local vh = view.w
+		self.builtViewW = vw + self.ViewMarginPx
+		self.builtViewH = vh + self.ViewMarginPx
+		self.builtMap = map
+		self.layers = {}
+		local count = 0
+		for i, L in ipairs(set.layers) do
+			local cxs = L.cx
+			if cxs <= 0 then cxs = L.w end
+			local cys = L.cy
+			if cys <= 0 then cys = L.h end
+			local ht = (L.t == 1 or L.t == 3 or L.t == 4 or L.t == 6 or L.t == 7)
+			local vt = (L.t == 2 or L.t == 3 or L.t == 5 or L.t == 6 or L.t == 7)
+			local nx = 1
+			local ny = 1
+			if ht then nx = math.ceil(self.builtViewW / math.max(1, cxs)) + 3 end
+			if vt then ny = math.ceil(self.builtViewH / math.max(1, cys)) + 3 end
+			local order = self.BaseOrder + i
+			if L.fr == 1 then order = order + self.FrontOrderBonus end
+			local ents = {}
+			for j = 1, nx * ny do
+				local e = _SpawnService:SpawnByModelId(self.SpriteModelId, "DVBack_" .. tostring(i) .. "_" .. tostring(j), Vector3(0, 0, 0), map)
+				if isvalid(e) then
+					local sr = e.SpriteRendererComponent
+					if isvalid(sr) then
+						sr.SpriteRUID = L.r
+						sr.SortingLayer = self.SortingLayerName
+						sr.OrderInLayer = order
+						sr.FlipX = (L.f == 1)
+						sr.Color = Color(1, 1, 1, L.a / 255)
+					end
+					table.insert(ents, e)
+					count = count + 1
+				end
+			end
+			table.insert(self.layers, { def = L, ents = ents, nx = nx, ny = ny, cxs = cxs, cys = cys, ht = ht, vt = vt })
+		end
+		self:Layout()
+		if self.LogOn then
+			log("[DestroyedBackdrop] build set=" .. setName .. " map=" .. map.Name .. " layers=" .. tostring(#self.layers) .. " entities=" .. tostring(count)
+				.. string.format(" view=%.0fx%.0f shift=(%.0f,%.0f)", vw, vh, self.shiftX, self.shiftY))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Layout()
+		-- 층마다 원작 위치를 계산해 엔티티를 옮긴다(위 Sets 설명의 식). 원작 좌표(px · y 아래로 +) → 우리 월드(units · y 위로 +).
+		local view = self:ViewRect()
+		local vw = view.z
+		local vh = view.w
+		local camX = view.x * 100 + self.shiftX
+		local camY = -view.y * 100 + self.shiftY
+		local t = self.elapsed
+		for _, layer in ipairs(self.layers) do
+			local L = layer.def
+			local hmob = (L.t == 4 or L.t == 6)
+			local vmob = (L.t == 5 or L.t == 7)
+			local x = L.x
+			if hmob then
+				x = x + L.rx * 125 / 16 * t
+			else
+				x = x + camX * (100 + L.rx) / 100
+			end
+			local y = L.y
+			if vmob then
+				y = y + L.ry * 125 / 16 * t
+			else
+				y = y + camY * (100 + L.ry) / 100
+			end
+			local x0 = x
+			if layer.ht then
+				local k0 = math.floor((camX - vw / 2 - x) / layer.cxs) - 1
+				x0 = x + k0 * layer.cxs
+			end
+			local y0 = y
+			if layer.vt then
+				local k1 = math.floor((camY - vh / 2 - y) / layer.cys) - 1
+				y0 = y + k1 * layer.cys
+			end
+			local idx = 0
+			for iy = 0, layer.ny - 1 do
+				for ix = 0, layer.nx - 1 do
+					idx = idx + 1
+					local e = layer.ents[idx]
+					if isvalid(e) then
+						local px = x0 + ix * layer.cxs
+						local py = y0 + iy * layer.cys
+						e.TransformComponent.WorldPosition = Vector3((px - self.shiftX) / 100, -(py - self.shiftY) / 100, 0)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Clear()
+		-- 만든 그림 엔티티를 전부 지운다(맵 이동 · 세트 변경 · 다시 만들기).
+		local n = 0
+		if self.layers ~= nil then
+			for _, layer in ipairs(self.layers) do
+				for _, e in ipairs(layer.ents) do
+					if isvalid(e) then
+						e:Destroy()
+						n = n + 1
+					end
+				end
+			end
+		end
+		self.layers = nil
+		self.builtMap = nil
+		self.builtSet = ""
+		self.builtMapName = ""
+		self.builtViewW = 0
+		self.builtViewH = 0
+		if n > 0 and self.LogOn then log("[DestroyedBackdrop] clear entities=" .. tostring(n)) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 월드 종료: 남은 그림 정리.
+		self:Clear()
+	end
+
+end

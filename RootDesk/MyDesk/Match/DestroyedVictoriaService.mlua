@@ -1,0 +1,790 @@
+@Logic
+script DestroyedVictoriaService extends Logic
+
+	-- 파괴된 빅토리아 아일랜드(WO-054 · 사용자 2026-10-15).
+	--   매치 9:00 · 18:00 · 27:00 에 다섯 마을(헤네시스 · 엘리니아 · 커닝시티 · 페리온 · 노틸러스) 중 무작위 한 곳의 사냥터 1 · 2 · 3 이
+	--   그 판 동안 파괴된 지형으로 바뀐다(되돌리지 않음 · 같은 판에서 같은 마을은 다시 안 뽑는다 · 사냥터 번호 = 9분 1 · 18분 2 · 27분 3 고정).
+	--   바뀌는 것: 배경(사냥터 1 · 2 = 파괴된 헤네시스 · 3 = 황혼의 페리온 · Map/DestroyedBackdrop 이 원작 배치로 그린다) · 몬스터(변형 몹 · 레벨 +2 · HP 그대로 · 공격 · 경험치 ×1.5)
+	--   · 드랍(Farm/DropTableLogic.DropVariantItems — 지역 재화 5종 · 꿈의 조각 33% · 빅토리아 주화 10%). 지형(발판 · 포탈)은 그대로.
+	--   30초 전 오른쪽 위 예고 줄(모든 플레이어) · 생기면 토스트 + 월드맵 노드 불꽃 · 툴팁 몹 목록 교체(WorldMap/WorldMapController).
+	--   상태는 서버가 정하고 @Sync 문자열 두 개로 모든 클라이언트에 나눈다(table 을 ExecSpace 너머로 넘기지 않는다).
+	--   매치 = 인스턴스 룸 하나라 판이 바뀌면 이 Logic 도 새로 뜬다. 같은 룸에서 StartMatch 가 다시 불려도 MatchSerial 로 초기화한다.
+
+	-- 적용된 파괴 지형 "마을:맵:사냥터번호;…"(적용 순서 · 모든 클라 동기화).
+	@Sync
+	property string Destroyed = ""
+
+	-- 예고 중인 지형 "마을:맵:사냥터번호:적용까지초"(비면 예고 없음 · 적용되면 비운다). 늦게 들어온 클라도 예고 줄을 그린다.
+	@Sync
+	property string Pending = ""
+
+	-- 일정(초 · 매치 길이 BaseMatchSeconds 기준). 1번째 = 사냥터 1 · 2번째 = 사냥터 2 · 3번째 = 사냥터 3.
+	property string EventSeconds = "540,1080,1620"
+
+	-- 예고는 적용 이만큼 전(초 · 매치 길이 비율로 줄어들어도 NoticeMinSeconds 아래로는 안 내려간다).
+	property number NoticeLeadSeconds = 30
+
+	property number NoticeMinSeconds = 5
+
+	-- 일정의 기준 매치 길이(LIVE 2700초). TEST 프로필(338초)은 같은 비율로 당긴다(9분 → 약 68초).
+	property number BaseMatchSeconds = 2700
+
+	-- 뽑을 마을(리스항구 제외).
+	property string Villages = "HENESYS,ELLINIA,KERNING,PERION,NAUTILUS"
+
+	-- 변형 몹 능력치: 대체되는 몹(맵 행 실제 값) 기준 레벨 + LevelBonus · 공격력 · 경험치 × StatMul · HP 그대로.
+	property integer LevelBonus = 2
+
+	property number StatMul = 1.5
+
+	-- Maker 배경 목록에서 찾은 템플릿 RUID(선택). 넣으면 원작 배치로 직접 그리기(DestroyedBackdrop) 대신 맵 배경을 이 템플릿으로 바꾼다.
+	property string TownTemplateRUID = ""
+
+	property string PerionTemplateRUID = ""
+
+	-- 직접 그리기 때 원작 층이 덮지 않는 화면 위 · 아래를 채울 하늘 그라데이션(원작 하늘 그림 위 · 45% · 55% · 아래에서 뽑은 색).
+	property Color TownSkyTop = Color(0.013, 0.030, 0.253, 1)
+
+	property Color TownSkyMidTop = Color(0.907, 0.617, 0.578, 1)
+
+	property Color TownSkyMidBottom = Color(1.000, 0.957, 0.885, 1)
+
+	property Color TownSkyBottom = Color(0.38, 0.42, 0.20, 1)
+
+	property Color PerionSkyTop = Color(0.743, 0.553, 0.520, 1)
+
+	property Color PerionSkyMidTop = Color(0.924, 0.857, 0.758, 1)
+
+	property Color PerionSkyMidBottom = Color(0.584, 0.501, 0.607, 1)
+
+	property Color PerionSkyBottom = Color(0.80, 0.78, 0.86, 1)
+
+	-- 오른쪽 위 예고 줄: 매치 시계 판(MatchClockGroup/Panel)을 런타임에 한 번 복제해 단축 버튼 줄 아래에 둔다(.ui 파일 수정 없음).
+	property string NoticeSourcePath = "/ui/MatchClockGroup/Panel"
+
+	property number NoticeX = -203
+
+	property number NoticeY = -130
+
+	property number NoticeW = 620
+
+	property number NoticeH = 64
+
+	-- 생긴 뒤 "출현!" 줄을 남겨 두는 시간(초).
+	property number AppearShowSeconds = 8
+
+	property string ChipRedRUID = "c2532f007ef44a5eb052d44199ebc321"
+
+	property boolean LogOn = true
+
+	@HideFromInspector
+	property integer matchSerial = -1
+
+	-- 다음에 처리할 일정 번호(1 · 2 · 3 · 4 = 끝).
+	@HideFromInspector
+	property integer nextIndex = 1
+
+	@HideFromInspector
+	property boolean noticed = false
+
+	@HideFromInspector
+	property string pendingVillage = ""
+
+	@HideFromInspector
+	property string pendingMap = ""
+
+	@HideFromInspector
+	property any variantDefs = nil
+
+	@HideFromInspector
+	property any parsed = nil
+
+	@HideFromInspector
+	property string parsedSrc = "#"
+
+	-- 맵 → { [원래 몹 Id] = 변형 키 } 와 줄 목록 캐시(맵의 스폰표는 판 동안 안 바뀐다).
+	@HideFromInspector
+	property any planCache = nil
+
+	@HideFromInspector
+	property any labelByMap = nil
+
+	-- 클라: 예고 줄.
+	@HideFromInspector
+	property any noticeUi = nil
+
+	@HideFromInspector
+	property number noticeLeft = 0
+
+	@HideFromInspector
+	property string noticeMode = ""
+
+	@HideFromInspector
+	property string noticeLabel = ""
+
+	@HideFromInspector
+	property string noticeSrc = "#"
+
+	method void OnBeginPlay()
+		-- 서버 · 클라 각자 준비(변형 표는 처음 부를 때 만든다).
+		if self:IsServer() then
+			log("[DestroyedVictoria] ready (server) events=" .. self.EventSeconds .. " villages=" .. self.Villages)
+		else
+			log("[DestroyedVictoria] ready (client)")
+		end
+	end
+
+	method void OnUpdate(number delta)
+		-- 서버: 매치 시계를 보고 예고 · 적용. 클라: 예고 줄 카운트다운.
+		if self:IsServer() then
+			self:ServerTick()
+		else
+			self:ClientTick(delta)
+		end
+	end
+
+	-- ───────────────────────── 공용 표(서버 · 클라) ─────────────────────────
+
+	method any VariantDefs()
+		-- 변형 몹 6종(원작 팩 · 2026-10-15 리소스 검색 API 로 이름 정확 일치 확인). 클립 = stand · move · hit1 · die1 · attack1.
+		if self.variantDefs ~= nil then
+			return self.variantDefs
+		end
+		self.variantDefs = {
+			SNAIL = { name = "변형된 달팽이", pack = 8600000, stand = "be8403cdd1534522ac060ec8497371cd", move = "1e24c789979b4ababce55b34861ace25", hit = "7200391494bb4dea8109202bb3e2cf47", die = "c5d61976c96c4130903ab227c7bf72ce", attack = "11eb051bbc134831851e8764befc155e" },
+			SLIME = { name = "변형된 슬라임", pack = 8600002, stand = "469029a5272a4b6d8cc26e1394824d13", move = "efd954aee2d2487a8a312cbbce7fbfaa", hit = "8b48d4a1a8a345b1a59f6836f072254a", die = "f90b53fda8d244e79a29b97b25632afd", attack = "913415f34ec24e0c9f3d95e77b2808d3" },
+			ORANGE = { name = "변형된 주황버섯", pack = 8600001, stand = "72094cb8339f4a7f9b43dce582ca5ed7", move = "3f531938fadf455eaa295e0ad9bfaaba", hit = "215b36febb6a4ccda7db918ab1472d5a", die = "12fdc9abfc48426489660bf3bf394338", attack = "c88510248d6e4f7186a7ef7558b626d7" },
+			RIBBON = { name = "변형된 리본돼지", pack = 8600003, stand = "b2b98be5ac1f45909155ad99dce3a71f", move = "507424b0fd70487ab84818a34be6a461", hit = "cc55a977a1094e97a9dbb4686a26c78c", die = "ce6d54fb1f35451e91a10377d25e4b33", attack = "be4aced769b347f1ac2a1f362a9c148a" },
+			STUMP = { name = "변형된 스텀프", pack = 8620000, stand = "29686075f03c4d48a464a0fbd753a931", move = "697a0a76fab145ec8deae96eab01bf4c", hit = "013971aa00b244c2ad4e8bed9564b5ad", die = "d7dc5e1fb27a4a91a678a53611d18d20", attack = "7967edfa58ea483c8e48ebbe06724f63" },
+			BOAR = { name = "변형된 와일드보어", pack = 8620003, stand = "e666bd36148a4fcd865607c7ef3cd902", move = "6b64d5dbd723420f85cffa595884b816", hit = "6c0dcf14d4f84023ac507ea883edf1f2", die = "5d9bd7d48acf40b9a1ab7c57edf37c7f", attack = "58637cdbf1f441fe954d474fd5b164a6" },
+		}
+		return self.variantDefs
+	end
+
+	method any TierPair(integer tier)
+		-- 사냥터 번호 → 변형 몹 두 종(그 맵의 기존 몹 중 낮은 레벨 → 앞 · 높은 레벨 → 뒤). 사용자 원문 "순서대로 2개씩 사냥터 1 · 2 · 3".
+		if tier == 1 then return { "SNAIL", "SLIME" } end
+		if tier == 2 then return { "ORANGE", "RIBBON" } end
+		if tier == 3 then return { "STUMP", "BOAR" } end
+		return {}
+	end
+
+	method string VariantName(string key)
+		-- 변형 키 → 표시 이름. 모르면 "".
+		local v = self:VariantDefs()[key]
+		if v == nil then return "" end
+		return v.name
+	end
+
+	method void EnsureParsed()
+		-- Destroyed 문자열이 바뀌었으면 맵별 표로 다시 푼다(서버 · 클라 각자).
+		if self.parsed ~= nil and self.parsedSrc == self.Destroyed then
+			return
+		end
+		self.parsedSrc = self.Destroyed
+		self.parsed = {}
+		local order = 0
+		for item in string.gmatch(self.Destroyed or "", "[^;]+") do
+			local village, mapName, tierText = string.match(item, "^([^:]*):([^:]*):([^:]*)$")
+			if mapName ~= nil and mapName ~= "" then
+				order = order + 1
+				self.parsed[mapName] = { village = village, tier = math.floor(tonumber(tierText) or 0), order = order }
+			end
+		end
+	end
+
+	method boolean IsDestroyed(string mapName)
+		-- 이 맵이 이번 판에 파괴된 지형인가.
+		self:EnsureParsed()
+		return mapName ~= nil and self.parsed[mapName] ~= nil
+	end
+
+	method integer TierOf(string mapName)
+		-- 파괴된 맵의 사냥터 번호(1 · 2 · 3). 파괴되지 않았으면 0.
+		self:EnsureParsed()
+		local p = self.parsed[mapName or ""]
+		if p == nil then return 0 end
+		return p.tier
+	end
+
+	method any DestroyedMaps()
+		-- 파괴된 맵 이름 목록(적용 순서).
+		self:EnsureParsed()
+		local list = {}
+		for mapName, p in pairs(self.parsed) do
+			list[p.order] = mapName
+		end
+		local out = {}
+		for i = 1, #list do
+			if list[i] ~= nil then table.insert(out, list[i]) end
+		end
+		return out
+	end
+
+	method string BackdropSetOf(string mapName)
+		-- 이 맵에 원작 배치 배경을 직접 그릴 세트("TOWN" = 파괴된 헤네시스 · "PERION" = 황혼의 페리온). 파괴 전이거나 템플릿 RUID 를 쓰면 "".
+		local tier = self:TierOf(mapName)
+		if tier <= 0 then return "" end
+		if tier == 3 then
+			if self.PerionTemplateRUID ~= "" then return "" end
+			return "PERION"
+		end
+		if self.TownTemplateRUID ~= "" then return "" end
+		return "TOWN"
+	end
+
+	method any VariantPlan(string mapName, integer tier)
+		-- 이 맵 스폰표의 몹 종(Id)을 레벨 낮은 순(같으면 Id 순)으로 세워 변형 키를 짝짓는다. 반환 { map = { [Id] = 키 }, rows = { {id, key, level} … } }.
+		if self.planCache == nil then self.planCache = {} end
+		local cacheKey = (mapName or "") .. "#" .. tostring(tier)
+		local cached = self.planCache[cacheKey]
+		if cached ~= nil then return cached end
+		local plan = { map = {}, rows = {} }
+		local pair = self:TierPair(tier)
+		if _MonsterCatalog == nil or #pair == 0 then
+			return plan
+		end
+		local levelOf = {}
+		local ids = {}
+		for _, sp in ipairs(_MonsterCatalog:GetMapSpawns(mapName)) do
+			local lv = math.floor(tonumber(sp.level) or 0)
+			if levelOf[sp.id] == nil then
+				levelOf[sp.id] = lv
+				table.insert(ids, sp.id)
+			elseif lv > levelOf[sp.id] then
+				levelOf[sp.id] = lv
+			end
+		end
+		table.sort(ids, function(a, b)
+			if levelOf[a] ~= levelOf[b] then return levelOf[a] < levelOf[b] end
+			return (tonumber(a) or 0) < (tonumber(b) or 0)
+		end)
+		for i, id in ipairs(ids) do
+			local key = pair[((i - 1) % #pair) + 1]
+			plan.map[id] = key
+			table.insert(plan.rows, { id = id, key = key, level = levelOf[id] })
+		end
+		self.planCache[cacheKey] = plan
+		return plan
+	end
+
+	method string VariantOf(string mapName, any monsterId)
+		-- 이 맵이 파괴됐으면 그 몹(Id)이 바뀔 변형 키. 아니면 "".
+		local tier = self:TierOf(mapName)
+		if tier <= 0 then return "" end
+		local key = self:VariantPlan(mapName, tier).map[tostring(monsterId)]
+		if key == nil then return "" end
+		return key
+	end
+
+	method any VariantRows(string mapName)
+		-- 월드맵 툴팁용: { {name, ruid(stand 클립 = 기존 IconRUID 규칙), level(실제 스폰 레벨 + LevelBonus)} … }. 파괴 전이면 빈 목록.
+		local out = {}
+		local tier = self:TierOf(mapName)
+		if tier <= 0 then return out end
+		local defs = self:VariantDefs()
+		for _, r in ipairs(self:VariantPlan(mapName, tier).rows) do
+			local v = defs[r.key]
+			if v ~= nil then
+				table.insert(out, { name = v.name, ruid = v.stand, level = r.level + self.LevelBonus })
+			end
+		end
+		return out
+	end
+
+	method string VillageLabel(string villageId)
+		-- 마을 ID → 화면 이름.
+		if villageId == "HENESYS" then return "헤네시스" end
+		if villageId == "ELLINIA" then return "엘리니아" end
+		if villageId == "KERNING" then return "커닝시티" end
+		if villageId == "PERION" then return "페리온" end
+		if villageId == "NAUTILUS" then return "노틸러스" end
+		return villageId or ""
+	end
+
+	method string MapLabel(string mapName)
+		-- 맵 이름 → 월드맵 노드 이름(WorldMapNodes.Label · 예: 지하철 1호선). 없으면 맵 이름 그대로.
+		if self.labelByMap == nil then
+			self.labelByMap = {}
+			local t = _DataService:GetTable("WorldMapNodes")
+			if t ~= nil then
+				for i = 1, t:GetRowCount() do
+					local m = t:GetCell(i, "MapName") or ""
+					local l = t:GetCell(i, "Label") or ""
+					if m ~= "" and l ~= "" then self.labelByMap[m] = l end
+				end
+			end
+		end
+		return self.labelByMap[mapName or ""] or (mapName or "")
+	end
+
+	method string PlaceLabel(string villageId, string mapName, integer tier)
+		-- "커닝시티 사냥터2(지하철 1호선)" 모양의 한 줄(토스트).
+		return self:VillageLabel(villageId) .. " 사냥터" .. tostring(tier) .. "(" .. self:MapLabel(mapName) .. ")"
+	end
+
+	method string ShortPlaceLabel(string villageId, string mapName, integer tier)
+		-- 예고 줄 오른쪽 칸용 "커닝시티 사냥터2 · 지하철 1호선"(칸 폭 330 · 16pt 에 들어가는 길이).
+		return self:VillageLabel(villageId) .. " 사냥터" .. tostring(tier) .. " · " .. self:MapLabel(mapName)
+	end
+
+	-- ───────────────────────── 서버 ─────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void ServerTick()
+		-- 매치 경과(MatchSessionLogic.Elapsed)를 보고 예고(적용 NoticeLeadSeconds 전) → 적용. 튜토리얼 룸은 일정을 돌리지 않는다(ForceDestroy 로만).
+		local ms = _MatchSessionLogic
+		if ms == nil then return end
+		if ms.MatchSerial ~= self.matchSerial then
+			self:ResetForMatch(ms.MatchSerial)
+		end
+		if not ms.Running or ms:IsTutorial() then return end
+		local times = self:Schedule(ms.MatchDuration)
+		local idx = self.nextIndex
+		local at = times[idx]
+		if at == nil then return end
+		local t = ms.Elapsed or 0
+		if not self.noticed and t >= at - self:LeadSeconds(ms.MatchDuration) then
+			self:Notice(idx, math.max(0, at - t))
+		end
+		if t >= at then
+			self:ApplyScheduled(idx)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Schedule(number matchDuration)
+		-- 일정(초)을 매치 길이 비율로 맞춘다. LIVE(2700) = 540 · 1080 · 1620.
+		local scale = 1
+		if matchDuration ~= nil and matchDuration > 0 and self.BaseMatchSeconds > 0 then
+			scale = matchDuration / self.BaseMatchSeconds
+		end
+		local list = {}
+		for tok in string.gmatch(self.EventSeconds or "", "[^,]+") do
+			local v = tonumber(tok)
+			if v ~= nil then table.insert(list, v * scale) end
+		end
+		return list
+	end
+
+	@ExecSpace("ServerOnly")
+	method number LeadSeconds(number matchDuration)
+		-- 예고 앞당김(초). 매치 길이 비율을 따르되 NoticeMinSeconds 보다 짧게는 안 한다.
+		local scale = 1
+		if matchDuration ~= nil and matchDuration > 0 and self.BaseMatchSeconds > 0 then
+			scale = matchDuration / self.BaseMatchSeconds
+		end
+		return math.max(self.NoticeMinSeconds, self.NoticeLeadSeconds * scale)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetForMatch(integer serial)
+		-- 새 판: 상태 · 일정 처음부터.
+		self.matchSerial = serial
+		self.nextIndex = 1
+		self.noticed = false
+		self.pendingVillage = ""
+		self.pendingMap = ""
+		self.Pending = ""
+		self.Destroyed = ""
+		self.planCache = nil
+		if self.LogOn then log("[DestroyedVictoria] reset match serial=" .. tostring(serial)) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean UsedVillage(string villageId)
+		-- 이번 판에 이미 파괴된(또는 예고 중인) 마을인가.
+		if villageId == self.pendingVillage then return true end
+		self:EnsureParsed()
+		for _, p in pairs(self.parsed) do
+			if p.village == villageId then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PickVillage()
+		-- 아직 안 뽑힌 마을 중 무작위 하나(사용자 결정 2026-10-15 "같은 판 중복 금지"). 다 뽑혔으면 "".
+		local cands = {}
+		for v in string.gmatch(self.Villages or "", "[^,]+") do
+			if not self:UsedVillage(v) then table.insert(cands, v) end
+		end
+		if #cands == 0 then return "" end
+		return cands[_UtilLogic:RandomIntegerRange(1, #cands)]
+	end
+
+	@ExecSpace("ServerOnly")
+	method string MapOf(string villageId, integer tier)
+		-- 마을의 사냥터 N 맵(VillageConfig 의 3맵 중 DropTableLogic.TierOfMap == N · 레벨대로 정한 사냥터 번호와 같은 기준). 없으면 "".
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil or _DropTableLogic == nil then return "" end
+		for i = 1, t:GetRowCount() do
+			if (t:GetCell(i, "VillageId") or "") == villageId then
+				for _, col in ipairs({ "Lane1MapName", "Lane2MapName", "RearMapName" }) do
+					local m = t:GetCell(i, col) or ""
+					if m ~= "" and _DropTableLogic:TierOfMap(m) == tier then
+						return m
+					end
+				end
+			end
+		end
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Notice(integer idx, number leadLeft)
+		-- 예고: 마을을 뽑아 Pending 에 적고 모든 클라에 알린다(오른쪽 위 예고 줄 + 토스트).
+		self.noticed = true
+		local village = self:PickVillage()
+		local mapName = ""
+		if village ~= "" then mapName = self:MapOf(village, idx) end
+		if village == "" or mapName == "" then
+			log_warning("[DestroyedVictoria] notice skip — no village/map (index=" .. tostring(idx) .. " village=" .. village .. ")")
+			return
+		end
+		self.pendingVillage = village
+		self.pendingMap = mapName
+		local lead = math.max(1, math.floor(leadLeft + 0.5))
+		self.Pending = village .. ":" .. mapName .. ":" .. tostring(idx) .. ":" .. tostring(lead)
+		self:ClientNotice(village, mapName, idx, lead)
+		log("[DestroyedVictoria] notice village=" .. village .. " map=" .. mapName .. " tier=" .. tostring(idx) .. " in=" .. tostring(lead) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyScheduled(integer idx)
+		-- 일정 시각: 예고한 곳(없으면 지금 뽑아서)을 파괴 지형으로 바꾸고 다음 일정으로.
+		local village = self.pendingVillage
+		local mapName = self.pendingMap
+		if village == "" or mapName == "" then
+			village = self:PickVillage()
+			if village ~= "" then mapName = self:MapOf(village, idx) end
+		end
+		self.nextIndex = idx + 1
+		self.noticed = false
+		self.pendingVillage = ""
+		self.pendingMap = ""
+		if village == "" or mapName == "" then
+			self.Pending = ""
+			log_warning("[DestroyedVictoria] apply skip — no village/map (index=" .. tostring(idx) .. ")")
+			return
+		end
+		self:DestroyNow(village, mapName, idx, "schedule")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DestroyNow(string village, string mapName, integer tier, string reason)
+		-- 적용: 상태(@Sync) → 맵 배경 → 모든 클라 알림. 몬스터는 각 MonsterSpawner 가 상태를 보고 0.2초 안에 변형 몹으로 다시 세운다.
+		if self:IsDestroyed(mapName) then
+			return
+		end
+		local entry = village .. ":" .. mapName .. ":" .. tostring(tier)
+		if self.Destroyed == "" then
+			self.Destroyed = entry
+		else
+			self.Destroyed = self.Destroyed .. ";" .. entry
+		end
+		self.Pending = ""
+		self:ApplyBackground(mapName, tier)
+		self:ClientApplied(village, mapName, tier)
+		local at = 0
+		if _MatchSessionLogic ~= nil then at = _MatchSessionLogic.Elapsed or 0 end
+		log("[DestroyedVictoria] apply village=" .. village .. " map=" .. mapName .. " tier=" .. tostring(tier) .. " at=" .. string.format("%.1f", at) .. "s reason=" .. reason .. " state=" .. self.Destroyed)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyBackground(string mapName, integer tier)
+		-- 맵 배경: 템플릿 RUID 가 있으면 그 템플릿으로, 없으면 하늘 그라데이션만 깔고 원작 층은 클라(DestroyedBackdrop)가 그 위에 그린다. 배경 속성은 @Sync 라 모든 클라에 간다.
+		local mapEnt = _EntityService:GetEntityByPath("/maps/" .. mapName)
+		if not isvalid(mapEnt) then
+			log_warning("[DestroyedVictoria] map entity missing: " .. mapName)
+			return
+		end
+		local bgEnt = mapEnt:GetChildByName("Background")
+		if not isvalid(bgEnt) or not isvalid(bgEnt.BackgroundComponent) then
+			log_warning("[DestroyedVictoria] background missing: " .. mapName)
+			return
+		end
+		local bg = bgEnt.BackgroundComponent
+		local tpl = self.TownTemplateRUID
+		if tier == 3 then tpl = self.PerionTemplateRUID end
+		if tpl ~= "" then
+			bg:ChangeBackgroundByTemplateRUID(tpl)
+			log("[DestroyedVictoria] background template " .. tpl .. " -> " .. mapName)
+			return
+		end
+		if tier == 3 then
+			bg:ChangeBackgroundByGradient(self.PerionSkyTop, self.PerionSkyMidTop, self.PerionSkyMidBottom, self.PerionSkyBottom, 0.55, 0.45)
+		else
+			bg:ChangeBackgroundByGradient(self.TownSkyTop, self.TownSkyMidTop, self.TownSkyMidBottom, self.TownSkyBottom, 0.55, 0.45)
+		end
+		log("[DestroyedVictoria] background gradient (" .. ((tier == 3) and "PERION" or "TOWN") .. ") -> " .. mapName)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ForceDestroy(string villageId, integer tier)
+		-- 튜토리얼(WO-054 §5): 시각을 기다리지 않고 그 마을 사냥터 N 을 바로 파괴 지형으로(예고 없음). 그 맵이 파괴 상태면 true.
+		local mapName = self:MapOf(villageId, tier)
+		if mapName == "" then
+			log_warning("[DestroyedVictoria] force skip — no map (" .. villageId .. " tier=" .. tostring(tier) .. ")")
+			return false
+		end
+		self:DestroyNow(villageId, mapName, tier, "force")
+		return self:IsDestroyed(mapName)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DevTriggerNext()
+		-- 🧪 개발(Maker 서버 Lua): 다음 일정을 지금 바로 — 예고(아직이면) 후 곧바로 적용.
+		local idx = self.nextIndex
+		if self:Schedule(self:MatchDurationNow())[idx] == nil then
+			log("[DestroyedVictoria] dev trigger — no more events")
+			return
+		end
+		if not self.noticed then
+			self:Notice(idx, 0)
+		end
+		self:ApplyScheduled(idx)
+	end
+
+	@ExecSpace("ServerOnly")
+	method number MatchDurationNow()
+		-- 지금 매치 길이(없으면 기준 길이).
+		if _MatchSessionLogic ~= nil and (_MatchSessionLogic.MatchDuration or 0) > 0 then
+			return _MatchSessionLogic.MatchDuration
+		end
+		return self.BaseMatchSeconds
+	end
+
+	@ExecSpace("Server")
+	method void RequestDevTriggerNext()
+		-- 🧪 리모컨 · 클라 요청(Maker Play 전용 — DevStatRemote.Enabled 게이트).
+		if _DevStatRemote == nil or not _DevStatRemote.Enabled then return end
+		self:DevTriggerNext()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyVariant(Entity unit, string key, any entry)
+		-- 스폰 직후(MonsterSpawner.SpawnSlot) 일반 몹을 변형 몹으로: 클립(ActionSheet · SpriteRUID) · 판정 레벨 +2 · 공격 · 경험치 ×1.5 · 드랍 표시 · 피격/접촉 상자 다시 재기. HP 는 스포너가 정한 값 그대로.
+		local v = self:VariantDefs()[key]
+		if v == nil or not isvalid(unit) or entry == nil then
+			return
+		end
+		local level = math.floor(tonumber(entry.level) or 0) + self.LevelBonus
+		local anim = unit.StateAnimationComponent
+		if isvalid(anim) then
+			local hadAttack = (anim.ActionSheet["attack"] or "") ~= ""
+			anim:SetActionSheet("stand", v.stand)
+			for _, k in ipairs({ "move", "chase", "wander", "jump" }) do
+				anim:SetActionSheet(k, v.move)
+			end
+			anim:SetActionSheet("hit", v.hit)
+			anim:SetActionSheet("die", v.die)
+			if hadAttack and v.attack ~= "" then
+				anim:SetActionSheet("attack", v.attack)
+			end
+		end
+		local sr = unit.SpriteRendererComponent
+		if isvalid(sr) then
+			sr.SpriteRUID = v.stand
+		end
+		local monster = unit.Monster
+		if isvalid(monster) then
+			monster.Level = level
+			-- 지금 상태 클립으로 다시 맞춘다(curClip 을 비워 같은 클립 건너뛰기를 피한다) · 사망 지연은 새 die 클립 길이로 다시 잰다(늘리기만).
+			monster.curClip = ""
+			local sc = unit.StateComponent
+			if isvalid(sc) then
+				monster:ApplyStateClip(sc.CurrentStateName)
+			end
+			monster:FitHitboxToSprite()
+			monster:SetupDieDestroyDelay()
+		end
+		local atk = unit.MonsterAttack
+		if isvalid(atk) then
+			atk:RemeasureBox()
+		end
+		local reward = unit.FarmReward
+		if isvalid(reward) then
+			reward.VariantKey = key
+			reward.SpawnLevel = level
+			local exp = tonumber(entry.exp)
+			if exp ~= nil and exp >= 0 then reward.ExpOverride = math.floor(exp * self.StatMul + 0.5) end
+			local attack = tonumber(entry.attack)
+			if attack ~= nil and attack >= 0 then reward.AttackOverride = math.floor(attack * self.StatMul + 0.5) end
+		end
+	end
+
+	-- ───────────────────────── 클라 ─────────────────────────
+
+	@ExecSpace("Multicast")
+	method void ClientNotice(string village, string mapName, integer tier, integer lead)
+		-- 모든 클라: 예고 토스트 + 오른쪽 위 예고 줄 카운트다운 시작.
+		local place = self:PlaceLabel(village, mapName, tier)
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(tostring(lead) .. "초 뒤 " .. place .. "에 파괴된 빅토리아 아일랜드가 생깁니다!")
+		end
+		self:StartNotice("NOTICE", self:ShortPlaceLabel(village, mapName, tier), lead)
+		log("[DestroyedVictoria] client notice " .. place .. " in " .. tostring(lead) .. "s")
+	end
+
+	@ExecSpace("Multicast")
+	method void ClientApplied(string village, string mapName, integer tier)
+		-- 모든 클라: 출현 토스트 + 예고 줄 "출현!" 잠시 + 월드맵 표시 갱신.
+		local place = self:PlaceLabel(village, mapName, tier)
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(place .. "에 파괴된 빅토리아 아일랜드가 생겼습니다! 변형 몬스터가 모든 지역 재화 · 꿈의 조각 · 빅토리아 주화를 떨어뜨립니다")
+		end
+		self:StartNotice("APPEAR", self:ShortPlaceLabel(village, mapName, tier), self.AppearShowSeconds)
+		if _WorldMapController ~= nil then
+			_WorldMapController:RefreshDestroyedMarks()
+		end
+		log("[DestroyedVictoria] client applied " .. place)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClientTick(number delta)
+		-- 예고 줄: 늦게 들어온 클라는 @Sync Pending 으로 시작하고, 1초 단위 글자만 갈아 끼운다.
+		if self.Pending ~= self.noticeSrc then
+			self.noticeSrc = self.Pending
+			-- 예고가 지워졌는데(적용 · 건너뜀) 아직 예고 줄이면 닫는다 — 적용이면 곧 ClientApplied 가 "출현!" 으로 다시 켠다(어느 쪽이 먼저 와도 된다).
+			if self.Pending == "" and self.noticeMode == "NOTICE" then
+				self:HideNotice()
+			end
+			if self.Pending ~= "" and self.noticeMode ~= "NOTICE" then
+				local village, mapName, tierText, leadText = string.match(self.Pending, "^([^:]*):([^:]*):([^:]*):([^:]*)$")
+				if mapName ~= nil then
+					self:StartNotice("NOTICE", self:ShortPlaceLabel(village, mapName, math.floor(tonumber(tierText) or 0)), tonumber(leadText) or 0)
+				end
+			end
+		end
+		if self.noticeMode == "" then return end
+		local before = math.ceil(self.noticeLeft)
+		self.noticeLeft = self.noticeLeft - delta
+		if self.noticeLeft <= 0 then
+			if self.noticeMode == "NOTICE" then
+				-- 적용 알림(ClientApplied)이 곧 온다 — 그 사이 0초로 둔다.
+				self.noticeLeft = 0
+				self:RenderNotice()
+				return
+			end
+			self:HideNotice()
+			return
+		end
+		if math.ceil(self.noticeLeft) ~= before then
+			self:RenderNotice()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartNotice(string mode, string place, number seconds)
+		-- 예고 줄을 켜고 글자를 채운다. 튜토리얼 중에는 띄우지 않는다(장면이 화면을 쓴다).
+		if _TutorialDirector ~= nil and _TutorialDirector.active then
+			return
+		end
+		self.noticeMode = mode
+		self.noticeLabel = place
+		self.noticeLeft = seconds
+		self:RenderNotice()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderNotice()
+		-- 매치 시계 판 모양 그대로: 왼쪽 칩(파괴 예고 / 파괴 출현) · 가운데 남은 초 · 오른쪽 장소.
+		local e = self:EnsureNoticeUi()
+		if not isvalid(e) then return end
+		e:SetEnable(true)
+		local phase = e:GetChildByName("PhaseText")
+		local timeE = e:GetChildByName("TimeText")
+		local nextE = e:GetChildByName("NextText")
+		if isvalid(phase) and phase.TextGUIRendererComponent ~= nil then
+			phase.TextGUIRendererComponent.Text = (self.noticeMode == "NOTICE") and "파괴 예고" or "파괴 출현!"
+			if phase.SpriteGUIRendererComponent ~= nil then
+				phase.SpriteGUIRendererComponent.ImageRUID = self.ChipRedRUID
+			end
+		end
+		if isvalid(timeE) and timeE.TextGUIRendererComponent ~= nil then
+			if self.noticeMode == "NOTICE" then
+				local s = math.max(0, math.ceil(self.noticeLeft))
+				timeE.TextGUIRendererComponent.Text = string.format("%d:%02d", math.floor(s / 60), s % 60)
+			else
+				timeE.TextGUIRendererComponent.Text = "!"
+			end
+		end
+		if isvalid(nextE) and nextE.TextGUIRendererComponent ~= nil then
+			local t = nextE.TextGUIRendererComponent
+			t.BestFit = true
+			t.MaxSize = 16
+			t.MinSize = 10
+			t.Text = self.noticeLabel
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideNotice()
+		-- 예고 줄 끄기.
+		self.noticeMode = ""
+		self.noticeLeft = 0
+		if isvalid(self.noticeUi) then
+			self.noticeUi:SetEnable(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method any EnsureNoticeUi()
+		-- 매치 시계 판을 한 번 복제해 오른쪽 위(단축 버튼 줄 아래)로 옮긴다. 파병 배지는 끈다. 복제본은 새 UUID 라 MatchClockUIController 와 얽히지 않는다.
+		if isvalid(self.noticeUi) then
+			return self.noticeUi
+		end
+		local src = _EntityService:GetEntityByPath(self.NoticeSourcePath)
+		if not isvalid(src) then
+			log_warning("[DestroyedVictoria] notice source missing: " .. self.NoticeSourcePath)
+			return nil
+		end
+		local e = src:Clone("DestroyedNotice")
+		if not isvalid(e) then
+			log_warning("[DestroyedVictoria] notice clone failed")
+			return nil
+		end
+		local t = e.UITransformComponent
+		if t ~= nil then
+			t.AnchorsMin = Vector2(1, 1)
+			t.AnchorsMax = Vector2(1, 1)
+			t.Pivot = Vector2(1, 1)
+			t.anchoredPosition = Vector2(self.NoticeX, self.NoticeY)
+			t.RectSize = Vector2(self.NoticeW, self.NoticeH)
+		end
+		local badge = e:GetChildByName("DispatchBadge")
+		if isvalid(badge) then badge:SetEnable(false) end
+		-- 세 칸 자리(판 620 기준 · 왼쪽 → 오른쪽): 칩 24~154 · 남은 초 164~254 · 장소 266~596(오른쪽 맞춤). 위치 → 크기 순서로 준다(WorldMapController.SetAnchored 와 같은 이유).
+		self:PlaceChild(e, "PhaseText", Vector2(0, 0.5), Vector2(24, 0), Vector2(130, 34))
+		self:PlaceChild(e, "TimeText", Vector2(0, 0.5), Vector2(164, 0), Vector2(90, 44))
+		self:PlaceChild(e, "NextText", Vector2(1, 0.5), Vector2(-24, 0), Vector2(330, 40))
+		self.noticeUi = e
+		log("[DestroyedVictoria] notice ui ready at (" .. tostring(self.NoticeX) .. "," .. tostring(self.NoticeY) .. ")")
+		return e
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceChild(Entity parent, string childName, Vector2 anchor, Vector2 pos, Vector2 size)
+		-- 예고 줄 자식 하나를 같은 앵커 · 피벗(anchor)으로 옮기고 크기를 준다.
+		local c = parent:GetChildByName(childName)
+		if not isvalid(c) or c.UITransformComponent == nil then
+			return
+		end
+		local t = c.UITransformComponent
+		t.AnchorsMin = anchor
+		t.AnchorsMax = anchor
+		t.Pivot = anchor
+		t.anchoredPosition = pos
+		t.RectSize = size
+	end
+
+	method void OnEndPlay()
+		-- 정리: 예고 줄 복제본을 지운다(클라).
+		if self:IsClient() and isvalid(self.noticeUi) then
+			self.noticeUi:Destroy()
+			self.noticeUi = nil
+		end
+	end
+
+end
