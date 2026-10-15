@@ -14,7 +14,7 @@ script DestroyedVictoriaService extends Logic
 	@Sync
 	property string Destroyed = ""
 
-	-- 예고 중인 지형 "마을:맵:사냥터번호:적용까지초"(비면 예고 없음 · 적용되면 비운다). 늦게 들어온 클라도 예고 줄을 그린다.
+	-- 예고 중인 지형 "마을:맵:사냥터번호:적용시각"(적용시각 = 서버 월드 경과 초 · 비면 예고 없음 · 적용되면 비운다). 늦게 들어온 클라도 예고 줄을 그린다.
 	@Sync
 	property string Pending = ""
 
@@ -108,6 +108,21 @@ script DestroyedVictoriaService extends Logic
 
 	@HideFromInspector
 	property any labelByMap = nil
+
+	-- 서버: 클립 첫 프레임 상자(크기 · 피벗 오프셋 · units) RUID 별 캐시와 재는 중 대기 목록(개체마다 동기 로드하지 않는다 · MonsterCatalog 클립 길이 캐시와 같은 이유).
+	@HideFromInspector
+	property any clipBoxes = nil
+
+	@HideFromInspector
+	property any clipWaiters = nil
+
+	-- 서버: 바꾸기 전 맵 배경(같은 룸에서 새 판이 시작되면 되돌린다) — 맵 → { kind, tpl, color }.
+	@HideFromInspector
+	property any bgSaved = nil
+
+	-- 클라: 월드맵 표시를 마지막으로 맞춘 Destroyed 값.
+	@HideFromInspector
+	property string marksSrc = "#"
 
 	-- 클라: 예고 줄.
 	@HideFromInspector
@@ -355,7 +370,17 @@ script DestroyedVictoriaService extends Logic
 		if ms.MatchSerial ~= self.matchSerial then
 			self:ResetForMatch(ms.MatchSerial)
 		end
-		if not ms.Running or ms:IsTutorial() then return end
+		if not ms.Running or ms:IsTutorial() then
+			-- 예고 중에 판이 끝났으면(발록 처치 · 전원 탈락 · 시간 종료) 예고를 거둔다 — 안 그러면 클라 예고 줄이 0:00 에 멈춰 남는다.
+			if self.Pending ~= "" or self.noticed then
+				self.Pending = ""
+				self.pendingVillage = ""
+				self.pendingMap = ""
+				self.noticed = false
+				if self.LogOn then log("[DestroyedVictoria] notice cancelled — match not running") end
+			end
+			return
+		end
 		local times = self:Schedule(ms.MatchDuration)
 		local idx = self.nextIndex
 		local at = times[idx]
@@ -396,7 +421,7 @@ script DestroyedVictoriaService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void ResetForMatch(integer serial)
-		-- 새 판: 상태 · 일정 처음부터.
+		-- 새 판: 상태 · 일정 처음부터. 같은 룸에서 다시 시작하면(Maker 튜토리얼 StartInPlace 등) 바꿔 둔 맵 배경도 되돌린다 — 몬스터는 각 MonsterSpawner 가 상태를 보고 평소 몹으로 다시 세운다.
 		self.matchSerial = serial
 		self.nextIndex = 1
 		self.noticed = false
@@ -405,6 +430,7 @@ script DestroyedVictoriaService extends Logic
 		self.Pending = ""
 		self.Destroyed = ""
 		self.planCache = nil
+		self:RestoreBackgrounds()
 		if self.LogOn then log("[DestroyedVictoria] reset match serial=" .. tostring(serial)) end
 	end
 
@@ -462,7 +488,8 @@ script DestroyedVictoriaService extends Logic
 		self.pendingVillage = village
 		self.pendingMap = mapName
 		local lead = math.max(1, math.floor(leadLeft + 0.5))
-		self.Pending = village .. ":" .. mapName .. ":" .. tostring(idx) .. ":" .. tostring(lead)
+		-- 끝 칸 = 적용 시각(서버 월드 경과 초 · _UtilLogic.ServerElapsedSeconds 기준) — 늦게 들어온 클라도 남은 초를 맞게 센다.
+		self.Pending = village .. ":" .. mapName .. ":" .. tostring(idx) .. ":" .. string.format("%.1f", _UtilLogic.ServerElapsedSeconds + lead)
 		self:ClientNotice(village, mapName, idx, lead)
 		log("[DestroyedVictoria] notice village=" .. village .. " map=" .. mapName .. " tier=" .. tostring(idx) .. " in=" .. tostring(lead) .. "s")
 	end
@@ -522,6 +549,15 @@ script DestroyedVictoriaService extends Logic
 			return
 		end
 		local bg = bgEnt.BackgroundComponent
+		-- 바꾸기 전 배경을 한 번만 적어 둔다(새 판에서 되돌리기 · RestoreBackgrounds). 사냥터 맵은 전부 템플릿 배경이다.
+		if self.bgSaved == nil then self.bgSaved = {} end
+		if self.bgSaved[mapName] == nil then
+			if bg.Type == BackgroundType.Template then
+				self.bgSaved[mapName] = { kind = "TEMPLATE", tpl = bg.TemplateRUID }
+			else
+				self.bgSaved[mapName] = { kind = "SOLID", color = bg.SolidColor }
+			end
+		end
 		local tpl = self.TownTemplateRUID
 		if tier == 3 then tpl = self.PerionTemplateRUID end
 		if tpl ~= "" then
@@ -535,6 +571,25 @@ script DestroyedVictoriaService extends Logic
 			bg:ChangeBackgroundByGradient(self.TownSkyTop, self.TownSkyMidTop, self.TownSkyMidBottom, self.TownSkyBottom, 0.55, 0.45)
 		end
 		log("[DestroyedVictoria] background gradient (" .. ((tier == 3) and "PERION" or "TOWN") .. ") -> " .. mapName)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RestoreBackgrounds()
+		-- 바꿔 둔 맵 배경을 원래대로(같은 룸에서 새 판 · ResetForMatch). 바꾼 적이 없으면 아무것도 안 한다.
+		if self.bgSaved == nil then return end
+		for mapName, saved in pairs(self.bgSaved) do
+			local mapEnt = _EntityService:GetEntityByPath("/maps/" .. mapName)
+			local bgEnt = isvalid(mapEnt) and mapEnt:GetChildByName("Background") or nil
+			if isvalid(bgEnt) and isvalid(bgEnt.BackgroundComponent) then
+				if saved.kind == "TEMPLATE" and saved.tpl ~= nil and saved.tpl ~= "" then
+					bgEnt.BackgroundComponent:ChangeBackgroundByTemplateRUID(saved.tpl)
+				elseif saved.color ~= nil then
+					bgEnt.BackgroundComponent:ChangeBackgroundBySolidColor(saved.color)
+				end
+				log("[DestroyedVictoria] background restored -> " .. mapName)
+			end
+		end
+		self.bgSaved = nil
 	end
 
 	@ExecSpace("ServerOnly")
@@ -600,6 +655,7 @@ script DestroyedVictoriaService extends Logic
 				anim:SetActionSheet("attack", v.attack)
 			end
 		end
+		-- 🔴 방금 쓴 @Sync 값(SpriteRUID · ActionSheet)은 서버에서 바로 다시 읽히지 않는다(BossSkillRunner.HoldCastSprite 주석) → 아래는 전부 v 의 RUID 를 직접 쓴다.
 		local sr = unit.SpriteRendererComponent
 		if isvalid(sr) then
 			sr.SpriteRUID = v.stand
@@ -607,19 +663,39 @@ script DestroyedVictoriaService extends Logic
 		local monster = unit.Monster
 		if isvalid(monster) then
 			monster.Level = level
-			-- 지금 상태 클립으로 다시 맞춘다(curClip 을 비워 같은 클립 건너뛰기를 피한다) · 사망 지연은 새 die 클립 길이로 다시 잰다(늘리기만).
-			monster.curClip = ""
-			local sc = unit.StateComponent
-			if isvalid(sc) then
-				monster:ApplyStateClip(sc.CurrentStateName)
+			-- 스폰 직후는 IDLE(stand) — 다음 상태 전이부터는 ApplyStateClip 이 바뀐 ActionSheet 를 읽는다.
+			monster.curClip = v.stand
+			-- 사망 지연: 원래 몹 die 길이로 늘어나 있을 수 있어 기본값으로 되돌린 뒤 변형 die 클립 길이로(RUID 당 한 번 재기 · MonsterCatalog 캐시).
+			monster.DestroyDelay = 0.6
+			if _MonsterCatalog ~= nil then
+				local secs = _MonsterCatalog:GetClipSeconds(v.die)
+				if secs > 0 then
+					monster:ApplyDieDestroyDelay(secs)
+				else
+					local dieRuid = v.die
+					_ResourceService:PreloadAsync({ dieRuid }, function()
+						local s = _MonsterCatalog:MeasureClipSeconds(dieRuid)
+						if isvalid(monster) then monster:ApplyDieDestroyDelay(s) end
+					end)
+				end
 			end
-			monster:FitHitboxToSprite()
-			monster:SetupDieDestroyDelay()
 		end
+		-- 피격 상자(HitComponent) · 접촉 공격 상자(MonsterAttack)를 변형 stand 첫 프레임 크기로(Monster.FitHitboxToSprite 와 같은 식 · RUID 당 한 번 재고 캐시).
 		local atk = unit.MonsterAttack
 		if isvalid(atk) then
-			atk:RemeasureBox()
+			atk.BoxClipRUID = v.stand
 		end
+		local hit = unit.HitComponent
+		self:WithClipBox(v.stand, function(b)
+			if isvalid(hit) then
+				hit.BoxSize = b.size
+				hit.ColliderOffset = b.offset
+			end
+			if isvalid(atk) then
+				atk.SpriteSize = b.size
+				atk.PositionOffset = b.offset
+			end
+		end)
 		local reward = unit.FarmReward
 		if isvalid(reward) then
 			reward.VariantKey = key
@@ -631,14 +707,59 @@ script DestroyedVictoriaService extends Logic
 		end
 	end
 
+	@ExecSpace("ServerOnly")
+	method void WithClipBox(string ruid, any fn)
+		-- 클립 첫 프레임 상자 { size, offset }(units)를 RUID 마다 한 번만 잰다(PreloadAsync → LoadAnimationClipAndWait). 재는 중에 들어온 요청은 기다렸다가 같이 받는다.
+		if ruid == nil or ruid == "" then return end
+		if self.clipBoxes == nil then self.clipBoxes = {} end
+		if self.clipWaiters == nil then self.clipWaiters = {} end
+		local box = self.clipBoxes[ruid]
+		if box ~= nil then
+			fn(box)
+			return
+		end
+		local waiting = self.clipWaiters[ruid]
+		if waiting ~= nil then
+			table.insert(waiting, fn)
+			return
+		end
+		self.clipWaiters[ruid] = { fn }
+		_ResourceService:PreloadAsync({ ruid }, function()
+			local measured = nil
+			local clip = _ResourceService:LoadAnimationClipAndWait(ruid)
+			if clip ~= nil and clip.Frames ~= nil and clip.Frames[1] ~= nil then
+				local sp = clip.Frames[1].FrameSprite
+				if sp ~= nil and sp.PixelPerUnit > 0 then
+					local px = Vector2(sp.Width, sp.Height)
+					local ppu = sp.PixelPerUnit
+					measured = { size = px / ppu, offset = (px / 2 - sp.PivotPixel:ToVector2()) / ppu }
+				end
+			end
+			local list = self.clipWaiters[ruid] or {}
+			self.clipWaiters[ruid] = nil
+			if measured == nil then
+				log_warning("[DestroyedVictoria] clip box measure failed " .. ruid)
+				return
+			end
+			self.clipBoxes[ruid] = measured
+			if self.LogOn then
+				log(string.format("[DestroyedVictoria] clip box %s size=(%.2f,%.2f) offset=(%.2f,%.2f) waiters=%d", ruid, measured.size.x, measured.size.y, measured.offset.x, measured.offset.y, #list))
+			end
+			for _, f in ipairs(list) do
+				f(measured)
+			end
+		end)
+	end
+
 	-- ───────────────────────── 클라 ─────────────────────────
 
 	@ExecSpace("Multicast")
 	method void ClientNotice(string village, string mapName, integer tier, integer lead)
-		-- 모든 클라: 예고 토스트 + 오른쪽 위 예고 줄 카운트다운 시작.
+		-- 모든 클라: 예고 토스트 + 오른쪽 위 예고 줄 카운트다운 시작. Multicast 는 서버 인스턴스에서도 돌아서 거른다(SkillExecutors.BackflipClient 와 같은 규칙).
+		if not self:IsClient() then return end
 		local place = self:PlaceLabel(village, mapName, tier)
 		if _UIToast ~= nil then
-			_UIToast:ShowMessage(tostring(lead) .. "초 뒤 " .. place .. "에 파괴된 빅토리아 아일랜드가 생깁니다!")
+			_UIToast:ShowMessage("파괴된 빅토리아 아일랜드 예고 — " .. tostring(lead) .. "초 뒤 " .. place .. "에 생깁니다")
 		end
 		self:StartNotice("NOTICE", self:ShortPlaceLabel(village, mapName, tier), lead)
 		log("[DestroyedVictoria] client notice " .. place .. " in " .. tostring(lead) .. "s")
@@ -646,10 +767,11 @@ script DestroyedVictoriaService extends Logic
 
 	@ExecSpace("Multicast")
 	method void ClientApplied(string village, string mapName, integer tier)
-		-- 모든 클라: 출현 토스트 + 예고 줄 "출현!" 잠시 + 월드맵 표시 갱신.
+		-- 모든 클라: 출현 토스트 + 예고 줄 "출현!" 잠시 + 월드맵 표시 갱신(Destroyed 동기화가 이 알림보다 늦으면 ClientTick 이 다시 갱신한다). 서버 인스턴스는 거른다.
+		if not self:IsClient() then return end
 		local place = self:PlaceLabel(village, mapName, tier)
 		if _UIToast ~= nil then
-			_UIToast:ShowMessage(place .. "에 파괴된 빅토리아 아일랜드가 생겼습니다! 변형 몬스터가 모든 지역 재화 · 꿈의 조각 · 빅토리아 주화를 떨어뜨립니다")
+			_UIToast:ShowMessage("파괴된 빅토리아 아일랜드 출현! — " .. place .. " · 변형 몬스터가 모든 지역 재화 · 꿈의 조각 · 빅토리아 주화를 줍니다")
 		end
 		self:StartNotice("APPEAR", self:ShortPlaceLabel(village, mapName, tier), self.AppearShowSeconds)
 		if _WorldMapController ~= nil then
@@ -660,7 +782,13 @@ script DestroyedVictoriaService extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void ClientTick(number delta)
-		-- 예고 줄: 늦게 들어온 클라는 @Sync Pending 으로 시작하고, 1초 단위 글자만 갈아 끼운다.
+		-- 예고 줄: 늦게 들어온 클라는 @Sync Pending 으로 시작하고, 1초 단위 글자만 갈아 끼운다. 월드맵 불꽃 표시는 Destroyed 가 바뀔 때마다 맞춘다.
+		if self.Destroyed ~= self.marksSrc then
+			self.marksSrc = self.Destroyed
+			if _WorldMapController ~= nil then
+				_WorldMapController:RefreshDestroyedMarks()
+			end
+		end
 		if self.Pending ~= self.noticeSrc then
 			self.noticeSrc = self.Pending
 			-- 예고가 지워졌는데(적용 · 건너뜀) 아직 예고 줄이면 닫는다 — 적용이면 곧 ClientApplied 가 "출현!" 으로 다시 켠다(어느 쪽이 먼저 와도 된다).
@@ -672,24 +800,30 @@ script DestroyedVictoriaService extends Logic
 				local village = nil
 				local mapName = nil
 				local tierText = nil
-				local leadText = nil
+				local atText = nil
 				if #f == 4 then
 					village = f[1]
 					mapName = f[2]
 					tierText = f[3]
-					leadText = f[4]
+					atText = f[4]
 				end
 				if mapName ~= nil then
-					self:StartNotice("NOTICE", self:ShortPlaceLabel(village, mapName, math.floor(tonumber(tierText) or 0)), tonumber(leadText) or 0)
+					-- 남은 초 = 적용 시각 − 지금 서버 경과 초(늦게 들어와도 맞다 · 0 ~ 예고 길이로 자른다).
+					local left = (tonumber(atText) or 0) - _UtilLogic.ServerElapsedSeconds
+					left = math.max(0, math.min(self.NoticeLeadSeconds, left))
+					self:StartNotice("NOTICE", self:ShortPlaceLabel(village, mapName, math.floor(tonumber(tierText) or 0)), left)
 				end
 			end
 		end
 		if self.noticeMode == "" then return end
+		if self.noticeMode == "NOTICE" and self.noticeLeft <= 0 then
+			-- 0:00 에 닿았다 — 적용 알림(ClientApplied) · Pending 지움이 곧 온다. 그 사이 다시 그리지 않는다.
+			return
+		end
 		local before = math.ceil(self.noticeLeft)
 		self.noticeLeft = self.noticeLeft - delta
 		if self.noticeLeft <= 0 then
 			if self.noticeMode == "NOTICE" then
-				-- 적용 알림(ClientApplied)이 곧 온다 — 그 사이 0초로 둔다.
 				self.noticeLeft = 0
 				self:RenderNotice()
 				return

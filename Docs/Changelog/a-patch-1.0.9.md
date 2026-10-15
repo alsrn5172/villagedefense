@@ -83,10 +83,18 @@
 **구현**
 - 새 `Match/DestroyedVictoriaService.mlua`(@Logic): 서버 일정(`MatchSessionLogic.Elapsed` · `MatchSerial` 로 판마다 초기화 · 튜토리얼 룸은 일정 없음) · 상태 `@Sync Destroyed`("마을:맵:번호;…") · `@Sync Pending` · 마을 → 맵 = `VillageConfig` 3맵 중 `DropTableLogic.TierOfMap == 번호` · 적용 = 상태 → 맵 `Background` 하늘 그라데이션(템플릿 RUID 가 있으면 템플릿) → Multicast 토스트 · 예고 줄 · 월드맵 갱신. 변형 표(클립 RUID 6종 × stand · move · hit · die · attack) · `VariantOf` · `VariantRows` · `ApplyVariant` · `ForceDestroy`(튜토리얼) · `DevTriggerNext`(서버 Lua) · `RequestDevTriggerNext`(DevStatRemote 게이트). 예고 줄 = `MatchClockGroup/Panel` 런타임 복제(오른쪽 위 · .ui 수정 없음 · `StatusHUD.ui` 는 B 경계라 안 건드림). 로그 `[DestroyedVictoria] notice/apply village= map= tier=`.
 - 새 `Map/DestroyedBackdrop.mlua`(@Logic · 클라 전용): 원작 back 노드(maplestory.io KMS 389 Map.wz) 그대로의 층 표 + 그림 RUID 39개(리소스 검색 API · 크기 · 그림 비교로 찾음 · 피벗 = 원작 origin 확인) → 클라 전용 엔티티(`auracircle` · `MapLayer0` · OrderInLayer −1000+층) · 원작 공식(층 위치 = x + 카메라 × (100+rx)/100 · type 1 · 4 가로 반복 · type 4 자동 흐름) · 원작 VR ↔ 우리 맵 경계(`MapComponent:GetBound`) 평행 이동. 같은 공식의 파이썬 합성이 사용자 스크린샷과 일치(평균 픽셀 차 0.07 로 구현식 확인). 로그 `[DestroyedBackdrop] build/clear`.
-- `Spawn/MonsterSpawner.mlua`: `SpawnSlot` 에서 변형 키면 `ApplyVariant` + 이름표 "변형된 ○○" · 맵이 막 파괴되면 살아 있는 몹 · 리스폰 대기 칸을 즉시 변형 몹으로 다시 세움(`RespawnAllNow` · 보상 없이 지움).
-- `MonsterAttack.mlua`: `RemeasureBox` — 그림이 바뀐 몹의 접촉 공격 상자를 다시 잰다. 피격 상자는 `Monster.FitHitboxToSprite` · 사망 지연은 `SetupDieDestroyDelay` 를 다시 부른다.
+- `Spawn/MonsterSpawner.mlua`: `SpawnSlot` 에서 변형 키면 `ApplyVariant` + 이름표 "변형된 ○○" · 맵의 파괴 상태가 바뀌면(막 파괴 · 같은 룸 새 판에서 풀림) 칸을 즉시 다시 세움(`RespawnAllNow` · 살아 있는 몹은 접촉 공격을 끄고 보상 없이 지움 · 죽는 중인 몹은 막타 보상이 나가도록 두고 스스로 지워지게 함).
+- `MonsterAttack.mlua`: `BoxClipRUID` — 그림을 바꾼 몹은 바꾼 쪽(`ApplyVariant`)이 접촉 공격 상자를 넣고 OnBeginPlay 는 재지 않는다. 접촉 공격 반복 타이머를 `OnEndPlay` 에서 끊는다(예전엔 지워진 몹의 타이머가 계속 돌았다 · 불러오는 사이 지워진 몹은 타이머를 안 건다). 피격 · 접촉 상자는 변형 stand 첫 프레임으로 RUID 당 한 번 재서 캐시(`WithClipBox`) · 사망 지연은 변형 die 클립 길이.
 - `Farm/FarmReward.mlua`: `VariantKey` · 변형이면 `DropTableLogic.DropVariantItems`. `Farm/DropTableLogic.mlua`: `DropVariantItems` · `VariantRegionVillages` · `VariantDreamChance` 0.33 · `VariantCoinChance` 0.1.
 - `WorldMap/WorldMapController.mlua`: 파괴된 노드 불꽃 표시(`HereMarker` 런타임 복제 · 원작 불꽃 클립 · 꼬리표 "파괴됨" 빨강 · 맥동) · 툴팁 = 변형 몹 2줄(얼굴 · 이름 · 실제 레벨 +2) + "모든 지역 재화 · 꿈의 조각 · 빅토리아 주화" 줄 · 머리줄 "○○ · 파괴된 사냥터".
 - `Onboarding/TutorialService.mlua`: 액션 `dv:<마을>:<번호>`. `Onboarding/TutorialDirector.mlua`: 5-0a(머쉬맘) 앞 장면 `5-dv1`(9 · 18 · 27분 카드) · `5-dv2`(dv) · `5-dv3`(월드맵 열기 · M 또는 우측 아래) · `5-dv4`(커닝 노드 강조) · `5-dvm`(지하철 1호선으로 순간이동) · `5-dv5`(변형 몬스터 · 잡아 봐도 됨) · `5-dv6`(보상 · 사수 · 다른 지역 보스 초석 카드).
 
-**확인** — 클라우드 세션이라 Maker 없음 → Play · 로그 · 캡처 미확인. `check-integrity` 통과(경고 3건은 기존) · mLua → Lua 변환 구문 검사 9파일 통과. Maker 확인 목록은 지시서 결정 기록 아래 "Maker 에서 확인할 것".
+**리뷰 반영**(독립 리뷰 2026-10-15 · 첫 커밋 뒤)
+- 같은 룸에서 새 판이 시작되면 바꿔 둔 맵 배경을 되돌리고(`RestoreBackgrounds`) 스포너가 평소 몹으로 다시 세운다(예전엔 변형 몹 · 배경이 남았다).
+- 방금 쓴 `@Sync` 값(SpriteRUID · ActionSheet)을 서버가 바로 다시 읽지 않도록 `ApplyVariant` 가 변형 RUID 를 직접 쓴다(예전엔 원래 몹 그림으로 상자를 잴 수 있었다).
+- 예고 중에 판이 끝나면 예고를 거둔다(클라 예고 줄이 0:00 에 멈춰 남던 틈) · 늦게 들어온 클라는 남은 초를 서버 경과 시각으로 센다(`Pending` 끝 칸 = 적용 시각) · 0:00 에서는 다시 그리지 않는다.
+- Multicast 알림은 서버 인스턴스에서 거른다(`IsClient`) · 토스트는 두 줄(" — ") · 월드맵 불꽃은 `Destroyed` 동기화를 보고 다시 맞춘다(알림보다 동기화가 늦어도 맞다).
+- 월드맵: 불꽃 표시의 형제 순서를 내 위치 깃발 바로 뒤로 고정 · 내 위치와 같은 노드면 내 위치 = 왼쪽 · 불꽃 = 오른쪽 · 꼬리표 바깥쪽(목표 핀 겹침과 같은 배치 · 예전엔 꼬리표가 겹쳤다).
+- 변형 몹 드랍: 지갑에 바로 들어간 빅토리아 주화도 "획득:" 한 줄에 붙인다(토스트 두 개 → 한 개).
+
+**확인** — 클라우드 세션이라 Maker 없음 → Play · 로그 · 캡처 미확인. `check-integrity` 통과(경고 3건은 기존) · mLua → Lua 변환 구문 검사 통과(첫 커밋 9파일 · 리뷰 반영 5파일). Maker 확인 목록은 지시서 결정 기록 아래 "Maker 에서 확인할 것".
