@@ -379,6 +379,33 @@ script PlayerSkillState extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method number ReduceCooldown(string userId, string skillId, number seconds, string reason)
+        -- 1.0.9 · 사용자 2026-10-15: 돌고 있는 쿨다운의 **남은 시간**을 seconds 만큼 줄인다(공용 · 매직 가드 텔레포트 강화 · 쉐도우 파트너 등이 부른다).
+        --   · 서버 원장(cooldownEndsAt)의 종료 시각을 앞당긴다 — 0 아래로는 안 내려간다(지금 시각에서 멈춤 = 쿨다운 끝).
+        --   · 돌고 있는 쿨다운이 없으면(한 번도 안 썼거나 이미 끝남) 아무것도 안 한다(쿨다운을 새로 만들지 않는다 · 미리 쌓아 두지도 않는다).
+        --   · 줄인 뒤 남은 초를 그 유저 클라 미러(mirrorCooldownEndsAt)에도 보낸다(SyncCooldown) — 핫바/스킬 HUD 가 서버 값을 따라간다.
+        --   · reason = 로그용 꼬리표("MagicGuard/Teleport" 등 · 비워도 됨).
+        -- 반환 = 줄인 뒤 남은 초(0 = 쿨다운이 끝났거나 줄일 게 없었다).
+        local tag = reason or ""
+        if userId == nil or userId == "" or skillId == nil or skillId == "" or seconds == nil or seconds <= 0 then return 0 end
+        local u = self:EnsureUser(userId)
+        if u == nil then return 0 end
+        local now = _UtilLogic.ServerElapsedSeconds
+        local endTime = u.cooldownEndsAt[skillId]
+        if endTime == nil or endTime <= now then
+            log("[Cooldown] reduce " .. skillId .. " -" .. string.format("%.2f", seconds) .. "s skipped: no running cooldown [" .. tag .. "] (" .. userId .. ")")
+            return 0
+        end
+        local newEnd = endTime - seconds
+        if newEnd < now then newEnd = now end
+        u.cooldownEndsAt[skillId] = newEnd
+        local left = newEnd - now
+        self:SyncCooldown(skillId, left, userId)
+        log("[Cooldown] reduce " .. skillId .. " -" .. string.format("%.2f", seconds) .. "s -> left " .. string.format("%.2f", left) .. "s [" .. tag .. "] (" .. userId .. ")")
+        return left
+    end
+
+    @ExecSpace("ServerOnly")
     method string LastSkillText(string userId)
         -- 직전에 쿨다운이 시작된 스킬 "SK_W11 (2.3s ago)" · 없으면 "none". [Safety] 로그용(1.0.5-3-01).
         local u = self.users[userId]
@@ -773,6 +800,59 @@ script PlayerSkillState extends Logic
             .. ") skills cleared=" .. tostring(cleared) .. " · no JobChangedEvent (" .. uid .. ")")
     end
 
+    @ExecSpace("ServerOnly")
+    method void DevForceJob(string uid, string jobId)
+        -- ⚠ DEV 리모컨 전직(1.0.9 · DevStatRemote.RequestJob · 사용자 2026-10-15 "리모콘에 전직 버튼"): 레벨 조건 없이 jobId 로.
+        --   초보자 → 1차 전직과 같은 정식 경로(ChangeJob · JobChangedEvent → 스탯 · 외형 · 직업 기본 스킬). 차수 = 지금 레벨이 허용하는 만큼(최소 1).
+        --   다른 직업에서 갈아타면: 1차 이상 스킬을 지우고 쓴 SP 를 돌려준다(SummonManager.GrantSp) · 버프 비움(F10 DevSwitchJob 과 같은 이유).
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _JobDatabase:EnsureLoaded()
+        if _JobDatabase:GetJob(jobId, 1) == nil then
+            log_warning("[Skill] [DEV remote] unknown job " .. tostring(jobId) .. " (" .. uid .. ")")
+            return
+        end
+        if u.jobId == jobId then
+            log("[Skill] [DEV remote] already " .. jobId .. "/" .. tostring(u.tier) .. " (" .. uid .. ")")
+            return
+        end
+        if u.jobId ~= self.NoviceJobId then
+            local refund = 0
+            for t, n in pairs(u.spentByTier) do
+                if t >= 1 and n ~= nil and n > 0 then
+                    refund = refund + n
+                    u.spentByTier[t] = 0
+                end
+            end
+            local keep = {}
+            for sid, lv in pairs(u.skillLevels) do
+                local sk = _SkillDatabase:GetSkill(sid)
+                if sk ~= nil and math.floor(sk.requiredTier or 0) <= 0 then keep[sid] = lv end
+            end
+            u.skillLevels = keep
+            u.cooldownEndsAt = {}
+            if _SkillBuffs ~= nil then _SkillBuffs:ResetMatchState(uid) end
+            if refund > 0 and _SummonManager ~= nil then _SummonManager:GrantSp(uid, refund) end
+            log("[Skill] [DEV remote] switch " .. u.jobId .. " -> " .. jobId .. " · skills cleared · SP refund " .. tostring(refund) .. " (" .. uid .. ")")
+        end
+        local tier = math.max(1, self:TierForLevel(jobId, self:GetLevel(uid)))
+        self:ChangeJob(uid, jobId, tier)
+        self:PushState(uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevForceTierUp(string uid)
+        -- ⚠ DEV 리모컨 차수 +1(1.0.9 · DevStatRemote.RequestTierUp): 레벨 조건 없이 다음 차수(ChangeJob). 초보자 · 최대 차수면 무시.
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        if u.jobId == self.NoviceJobId or u.tier >= self.MaxTier then
+            log("[Skill] [DEV remote] tier up skipped " .. u.jobId .. "/" .. tostring(u.tier) .. " (" .. uid .. ")")
+            return
+        end
+        self:ChangeJob(uid, u.jobId, u.tier + 1)
+        self:PushState(uid)
+    end
+
     method number TierForLevel(string jobId, number level)
         -- 그 직업에서 레벨이 허용하는 최고 차수(JobTier.ReqLevel · 10/20/30). TryAdvanceTier 의 반복과 같은 판정.
         local tier = 0
@@ -853,6 +933,17 @@ script PlayerSkillState extends Logic
             self:NotifyStateChanged("skill")
         end
         log("[Skill] learn result " .. skillId .. " ok=" .. tostring(ok) .. (ok and "" or (" reason='" .. reason .. "'")))
+    end
+
+    @ExecSpace("Client")
+    method void SyncCooldown(string skillId, number remaining)
+        -- 1.0.9 · 사용자 2026-10-15: 서버가 쿨다운을 줄였을 때(ReduceCooldown) 미러를 서버 값에 맞춘다. 인자 = 줄인 뒤 남은 초(CastResult 의 cooldown 과 같은 뜻).
+        -- SkillHudController/SkillHotbar 가 미러(mirrorCooldownEndsAt)를 매 프레임 읽으니 따로 이벤트를 안 쏴도 다음 프레임에 반영된다.
+        if remaining <= 0 then
+            self.mirrorCooldownEndsAt[skillId] = nil
+        else
+            self.mirrorCooldownEndsAt[skillId] = _UtilLogic.ServerElapsedSeconds + remaining
+        end
     end
 
     -- ───────────────────────── 클라: 미러 접근자 ─────────────────────────

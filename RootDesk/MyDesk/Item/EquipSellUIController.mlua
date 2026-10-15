@@ -57,12 +57,66 @@ script EquipSellUIController extends Logic
 	@HideFromInspector
 	property any sellHandler = nil
 
+	-- ── 1.0.9 판매 편의(사용자 2026-10-15 "하나씩 눌러 판매하기 힘든데 더블클릭하면 팔리게 · 우클릭해도 팔리고 · 좌클릭 후 판매 버튼도"
+	--    + "대신 '판매하시겠습니까?' 뜨고 Enter 누르면 확인 · 취소도 · '이번 게임에서 다시 묻지 않기' v 표시 누르고 Enter 하면 이번 게임에선 안 물어보고 바로 팔림 · v 안 누르면 팔 때마다 물어봄") ──
+	--   확인 창 = 공방 창 루트의 SellConfirmDim · SellConfirm(handoff/patch107-agents/_work/P/apply-sell-confirm.cjs · 이름으로 찾는다).
+	--   "이번 게임" = 이 클라 로직이 사는 동안(매치마다 인스턴스 룸이라 판이 바뀌면 새로 시작한다).
+	-- 같은 칸을 이 초 안에 두 번 누르면 더블클릭(판매 요청).
+	property number DoubleClickSeconds = 0.35
+
+	@HideFromInspector
+	property boolean skipConfirm = false
+
+	@HideFromInspector
+	property boolean skipChecked = false
+
+	@HideFromInspector
+	property boolean confirmOpen = false
+
+	@HideFromInspector
+	property string confirmIid = ""
+
+	@HideFromInspector
+	property number confirmClosedAt = -100
+
+	@HideFromInspector
+	property number escClosedAt = -100
+
+	@HideFromInspector
+	property string pickIid = ""
+
+	@HideFromInspector
+	property number pickAt = -100
+
+	-- 마우스가 올라가 있는 칸(우클릭 판매 대상 · ButtonStateChangeEvent 로 기록).
+	@HideFromInspector
+	property string hoverIid = ""
+
+	@HideFromInspector
+	property any confirmDim = nil
+
+	@HideFromInspector
+	property any confirmBox = nil
+
+	@HideFromInspector
+	property any confirmHandlers = nil
+
+	@HideFromInspector
+	property any stateHandlers = nil
+
+	@HideFromInspector
+	property any keyHandler = nil
+
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
 		-- 준비 상태만 만든다. 칸 엔티티는 공방 창이 처음 열릴 때 찾는다(UI 가 다 깔린 뒤).
 		self.view = {}
 		self.noItems = {}
 		self.cellHandlers = {}
+		self.stateHandlers = {}
+		self.confirmHandlers = {}
+		-- 1.0.9: 확인 창 Enter / Esc · 우클릭(Mouse1) 판매.
+		self.keyHandler = _InputService:ConnectEvent(KeyDownEvent, function(event) self:OnKeyDown(event) end)
 		log("[Sell] EquipSellUIController ready (client)")
 	end
 
@@ -80,6 +134,7 @@ script EquipSellUIController extends Logic
 		end
 		if want ~= self.shown then
 			self.shown = want
+			if not want and self.confirmOpen then self:CloseConfirm("pane closed") end
 			if isvalid(self.pane) then self.pane.Enable = want end
 			self:ShiftWindow(wc, want)
 			if want then
@@ -124,9 +179,28 @@ script EquipSellUIController extends Logic
 			self.btnSell = btn.ButtonComponent
 			self.sellHandler = btn:ConnectEvent(ButtonClickEvent, function() self:OnSell() end)
 		end
+		-- 1.0.9 확인 창(공방 창 루트 · SellConfirmDim · SellConfirm). 없으면(.ui 스크립트 미실행) 확인 없이 바로 판다.
+		local root = wc.window.Parent
+		if isvalid(root) then
+			self.confirmDim = root:GetChildByName("SellConfirmDim")
+			self.confirmBox = root:GetChildByName("SellConfirm")
+		end
+		if isvalid(self.confirmBox) then
+			local function bind(path, fn)
+				local e = self:Kid(self.confirmBox, path)
+				if isvalid(e) and e.ButtonComponent ~= nil then table.insert(self.confirmHandlers, { e = e, h = e:ConnectEvent(ButtonClickEvent, fn) }) end
+			end
+			bind("BtnOk", function() self:ConfirmSell("button") end)
+			bind("BtnCancel", function() self:CloseConfirm("cancel") end)
+			bind("Skip", function() self:ToggleSkip() end)
+			self.confirmBox.Enable = false
+			if isvalid(self.confirmDim) then self.confirmDim.Enable = false end
+		else
+			log_warning("[Sell] SellConfirm not found (apply-sell-confirm 미실행?) — 확인 없이 판다")
+		end
 		self.ready = true
 		pane.Enable = false
-		log("[Sell] pane bound grid=" .. tostring(isvalid(g)) .. " tpl=" .. tostring(isvalid(tpl)) .. " btn=" .. tostring(isvalid(btn)))
+		log("[Sell] pane bound grid=" .. tostring(isvalid(g)) .. " tpl=" .. tostring(isvalid(tpl)) .. " btn=" .. tostring(isvalid(btn)) .. " confirm=" .. tostring(isvalid(self.confirmBox)))
 		return true
 	end
 
@@ -242,16 +316,6 @@ script EquipSellUIController extends Logic
 		return nil
 	end
 
-	@ExecSpace("ClientOnly")
-	method integer GemCount(string gems)
-		-- "DIAMOND+SAPPHIRE" → 2 (박힌 보석 수).
-		local n = 0
-		if gems ~= nil and gems ~= "" then
-			for _g in string.gmatch(gems, "[^+]+") do n = n + 1 end
-		end
-		return n
-	end
-
 	-- ── 목록 · 상세 ───────────────────────────────────────────
 
 	@ExecSpace("ClientOnly")
@@ -290,6 +354,15 @@ script EquipSellUIController extends Logic
 		if self.cellHandlers[key] ~= nil then cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key]) end
 		local iid = it.iid
 		self.cellHandlers[key] = cell:ConnectEvent(ButtonClickEvent, function() self:OnPickCell(iid) end)
+		-- 1.0.9 우클릭 판매: 마우스가 올라간 칸을 기억한다(Hover · Pressed · Released · Clicked = 그 칸 위 · Normal = 떠남).
+		if self.stateHandlers[key] ~= nil then cell:DisconnectEvent(ButtonStateChangeEvent, self.stateHandlers[key]) end
+		self.stateHandlers[key] = cell:ConnectEvent(ButtonStateChangeEvent, function(event)
+			if event.state == ButtonState.Normal then
+				if self.hoverIid == iid then self.hoverIid = "" end
+			else
+				self.hoverIid = iid
+			end
+		end)
 	end
 
 	@ExecSpace("ClientOnly")
@@ -301,15 +374,127 @@ script EquipSellUIController extends Logic
 			cell:DisconnectEvent(ButtonClickEvent, self.cellHandlers[key])
 			self.cellHandlers[key] = nil
 		end
+		if self.stateHandlers[key] ~= nil then
+			cell:DisconnectEvent(ButtonStateChangeEvent, self.stateHandlers[key])
+			self.stateHandlers[key] = nil
+		end
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnPickCell(string iid)
 		-- 칸 클릭: 선택(같은 칸을 또 눌러도 그대로) → 금테 · 상세 갱신. 스크롤 위치는 지키고 다시 그린다.
+		--   1.0.9: 같은 칸을 DoubleClickSeconds 안에 또 누르면 더블클릭 = 판매 요청(RequestSellFor · 확인 창 규칙 그대로).
+		local now = _UtilLogic.ElapsedSeconds
+		local double = (self.pickIid == iid and now - self.pickAt <= self.DoubleClickSeconds)
+		self.pickIid = iid
+		self.pickAt = now
 		self.sel = iid
 		if self.grid ~= nil then self.grid:Refresh(false, true) end
 		self:RefreshDetail()
-		log("[Sell] pick iid=" .. iid)
+		log("[Sell] pick iid=" .. iid .. (double and " (double click)" or ""))
+		if double then
+			self.pickAt = -100   -- 세 번째 클릭이 또 더블클릭이 되지 않게
+			self:RequestSellFor(iid, "double click")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestSellFor(string iid, string via)
+		-- 판매 요청의 한 입구(1.0.9 · 더블클릭 · 우클릭 · [판매] 버튼): 그 칸을 고르고 → "이번 게임에서 다시 묻지 않기"를 켰으면 바로 판다 · 아니면 확인 창.
+		if self.waiting or self.confirmOpen or iid == nil or iid == "" then return end
+		local it = self:FindView(iid)
+		if it == nil then return end
+		local q = _EquipSellService:Quote(it.itemId, it.enh or 0, it.gems or "", self:Here())
+		if not _EquipSellService:CanSell(q) then return end
+		if self.sel ~= iid then
+			self.sel = iid
+			if self.grid ~= nil then self.grid:Refresh(false, true) end
+			self:RefreshDetail()
+		end
+		if self.skipConfirm or not isvalid(self.confirmBox) then
+			log("[Sell] sell via " .. via .. " (no confirm)")
+			self:DoSell(iid)
+			return
+		end
+		self:OpenConfirm(iid, it, q, via)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenConfirm(string iid, any it, any q, string via)
+		-- "판매하시겠습니까?" 창: 장비 아이콘 · 이름(+강화) · 받는 것 한 줄 · v(다시 묻지 않기)는 열 때마다 꺼진 채로.
+		local def = _ItemCatalog:Get(it.itemId)
+		self:SetIcon(self:Kid(self.confirmBox, "ItemIcon"), (def ~= nil) and def.icon or "")
+		self:SetText(self.confirmBox, "Name", self:NameTag((def ~= nil) and def.name or it.itemId, it.enh or 0))
+		self:SetText(self.confirmBox, "Refund", "받는 것: " .. _EquipSellService:RefundText(q, true))
+		self.skipChecked = false
+		self:SetOn(self.confirmBox, "Skip/Check", false)
+		self.confirmIid = iid
+		self.confirmOpen = true
+		if isvalid(self.confirmDim) then self.confirmDim.Enable = true end
+		self.confirmBox.Enable = true
+		log("[Sell] confirm open iid=" .. iid .. " via " .. via)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ToggleSkip()
+		-- "이번 게임에서 다시 묻지 않기" v 켜고 끔(확인을 눌러야 적용된다).
+		if not self.confirmOpen then return end
+		self.skipChecked = not self.skipChecked
+		self:SetOn(self.confirmBox, "Skip/Check", self.skipChecked)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ConfirmSell(string via)
+		-- [판매] · Enter: v 가 켜져 있으면 이번 게임 동안 다시 묻지 않는다 → 창을 닫고 판다.
+		if not self.confirmOpen then return end
+		local iid = self.confirmIid
+		if self.skipChecked then
+			self.skipConfirm = true
+			log("[Sell] skip confirm for this game")
+		end
+		self:CloseConfirm("confirm " .. via)
+		self:DoSell(iid)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseConfirm(string why)
+		-- 확인 창 닫기(취소 · Esc · 판매 · 판매 칸이 닫힘).
+		if not self.confirmOpen then return end
+		self.confirmOpen = false
+		self.confirmIid = ""
+		self.skipChecked = false
+		self.confirmClosedAt = _UtilLogic.ElapsedSeconds
+		if isvalid(self.confirmBox) then self.confirmBox.Enable = false end
+		if isvalid(self.confirmDim) then self.confirmDim.Enable = false end
+		log("[Sell] confirm closed (" .. why .. ")")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- 1.0.9: 확인 창이 떠 있으면 Enter = 판매 · Esc = 취소. 판매 칸이 떠 있고 확인 창이 없으면 우클릭(Mouse1) = 마우스가 올라간 칸 판매.
+		local key = event.key
+		if self.confirmOpen then
+			if key == KeyboardKey.Return or key == KeyboardKey.KeypadEnter then
+				self:ConfirmSell("enter")
+			elseif key == KeyboardKey.Escape then
+				self.escClosedAt = _UtilLogic.ElapsedSeconds
+				self:CloseConfirm("esc")
+			end
+			return
+		end
+		if key == KeyboardKey.Mouse1 and self.shown and self.hoverIid ~= "" then
+			self:RequestSellFor(self.hoverIid, "right click")
+		end
+	end
+
+	method boolean ConsumesEnter()
+		-- 채팅(ChatService)이 Enter 로 입력을 열기 전에 묻는다: 확인 창이 떠 있거나 방금(0.3초 안) Enter 로 닫았으면 이 Enter 는 판매 몫.
+		return self.confirmOpen or (_UtilLogic.ElapsedSeconds - self.confirmClosedAt) < 0.3
+	end
+
+	method boolean ConsumesEsc()
+		-- ESC 스택(UIEscStack)이 공방 창을 닫기 전에 묻는다: 확인 창이 떠 있거나 방금(0.1초 안) Esc 로 닫았으면 이 Esc 는 확인 창 몫.
+		return self.confirmOpen or (_UtilLogic.ElapsedSeconds - self.escClosedAt) < 0.1
 	end
 
 	@ExecSpace("ClientOnly")
@@ -357,8 +542,11 @@ script EquipSellUIController extends Logic
 			elseif not can then
 				sub = "판매가가 없는 장비예요"
 			else
-				local gems = self:GemCount(it.gems)
-				sub = (enh > 0) and ("강화 +" .. tostring(enh) .. ((gems > 0) and (" · 보석 " .. tostring(gems) .. "개") or "")) or "강화하지 않은 장비"
+				-- 1.0.9: 강화에 쓴 보석의 절반을 보석으로 돌려준다(EquipSellService.Quote q.gems). 판매가 칸은 2줄(메소 · 구매 재료)이라 보석은 이 줄에 수로 적고,
+				--   종류별 개수는 판매 뒤 토스트(RefundText)에 나온다. 쓴 수 = 칸 수 × 부위 수(한벌옷 2).
+				local gemPart = ""
+				if q.gemUsed > 0 then gemPart = " · 보석 " .. tostring(q.gemUsed) .. "개 → " .. tostring(q.gemBack) .. "개 돌려받음" end
+				sub = (enh > 0) and ("강화 +" .. tostring(enh) .. gemPart) or "강화하지 않은 장비"
 			end
 			self:SetText(d, "Sub", sub)
 			self:SetTextColor(d, "Sub", can and "#AEB8CF" or "#FF8A7A")
@@ -381,9 +569,15 @@ script EquipSellUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnSell()
-		-- [판매]: 확인 창 없이 바로 서버에 요청한다(사용자 "판매 버튼 누르면 끝"). 응답 올 때까지 잠금(연타 방지).
+		-- [판매] 버튼(좌클릭으로 고른 뒤): 1.0.9 부터 확인 창 규칙을 거친다(RequestSellFor).
+		self:RequestSellFor(self.sel, "button")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DoSell(string iid)
+		-- 실제 판매 요청: 서버에 보내고 응답 올 때까지 잠금(연타 방지).
 		if self.waiting then return end
-		local it = (self.sel ~= "") and self:FindView(self.sel) or nil
+		local it = (iid ~= "") and self:FindView(iid) or nil
 		if it == nil then return end
 		local q = _EquipSellService:Quote(it.itemId, it.enh or 0, it.gems or "", self:Here())
 		if not _EquipSellService:CanSell(q) then return end
@@ -420,6 +614,16 @@ script EquipSellUIController extends Logic
 		if isvalid(self.btnSell) and self.sellHandler ~= nil then
 			self.btnSell.Entity:DisconnectEvent(ButtonClickEvent, self.sellHandler)
 			self.sellHandler = nil
+		end
+		if self.keyHandler ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.keyHandler)
+			self.keyHandler = nil
+		end
+		if self.confirmHandlers ~= nil then
+			for _, h in ipairs(self.confirmHandlers) do
+				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
+			end
+			self.confirmHandlers = {}
 		end
 		if self.shown and _WorkshopUIController ~= nil then self:ShiftWindow(_WorkshopUIController, false) end
 	end

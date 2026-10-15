@@ -8,6 +8,8 @@ script SkillHudController extends Logic
 	--   Shift 매핑이 없는 직업(전사·도적·해적·초보자)은 Shift 칸을 숨긴다.
 	-- 쿨 = PlayerSkillState 미러(LocalCooldownRemaining) ÷ SkillDatabase.CooldownAt → 퀵슬롯(QuickSlotController)과 같은 7단계 오버레이.
 	-- 칸 클릭(PC)·탭(모바일) = SkillCaster:Cast — 키 입력(SkillHotbar)과 같은 시전 입구. 판정은 전부 B 쪽이 한다.
+-- 1.0.9 · 사용자 2026-10-15 스택 숫자: 칸마다 아이콘 안쪽 오른쪽 아래에 자식 Stack 글자(PC = Bar/Slot_<키>/Stack · 모바일 = Mobile/M_<키>/Stack)가 있다 — 스킬이 스택을 가질 때 그 숫자를 보인다(지금은 하이퍼 바디 SK_W21 의 검의 기운
+--   1 ~ 60 = SwordEnergy.LocalCount · 하이퍼 바디 켜짐 + 1 이상일 때만). 다른 스킬이 스택을 쓰려면 StackOf 한 곳에 항목을 더한다. 검의 기운이 60 이면 아이콘이 깜빡이고(콤보 데스폴트 가능) 쿨 표시는 가린다.
 	-- 🔴 SkillStateChangedEvent 는 B 내부 이벤트(계약서)라 구독하지 않고 PollSeconds 마다 다시 읽는다.
 	-- 칸 엔티티는 이름으로 찾는다(PC = Bar/Slot_<키> · 모바일 = Mobile/M_<키> · 자식 Icon/Cool/CoolText). UUID 는 UIBuilder write({bind}) 가 주입한다.
 
@@ -30,6 +32,11 @@ script SkillHudController extends Logic
 
 	-- 칸 연타 시전 요청 간격 (판정 아님 — 쿨·MP 는 SkillCaster)
 	property number RepeatGuardSec = 0.2
+
+	-- 스택이 꽉 찬(= 쓸 수 있는) 스킬 아이콘 깜빡임(1.0.9 콤보 데스폴트 · 하이퍼 바디 검의 기운 22(MaxEnergy)): 알파가 BlinkMinAlpha ~ 1 을 BlinkSeconds 주기로 오간다.
+	property number BlinkSeconds = 0.7
+
+	property number BlinkMinAlpha = 0.3
 
 	@HideFromInspector
 	property any cells = nil
@@ -75,11 +82,13 @@ script SkillHudController extends Logic
 		local icon = e:GetChildByName("Icon")
 		local cool = e:GetChildByName("Cool")
 		local coolText = e:GetChildByName("CoolText")
+		local stack = e:GetChildByName("Stack")   -- 1.0.9 스택 숫자(아이콘 안쪽 오른쪽 아래) — 옛 .ui 에 없으면 nil = 숫자만 안 보인다
 		return {
 			root = e,
 			icon = isvalid(icon) and icon.SpriteGUIRendererComponent or nil,
 			cool = isvalid(cool) and cool.SpriteGUIRendererComponent or nil,
 			coolText = isvalid(coolText) and coolText.TextGUIRendererComponent or nil,
+			stack = isvalid(stack) and stack.TextGUIRendererComponent or nil,
 		}
 	end
 
@@ -114,6 +123,7 @@ script SkillHudController extends Logic
 		local now = _UtilLogic.ElapsedSeconds
 		for _, cell in ipairs(self.cells) do
 			self:UpdateCool(cell, now)
+			self:UpdateStack(cell, now)
 		end
 	end
 
@@ -208,6 +218,8 @@ script SkillHudController extends Logic
 		local remain = 0
 		if cell.skillId ~= "" then
 			remain = _PlayerSkillState:LocalCooldownRemaining(cell.skillId)
+			-- 스택이 꽉 차 지금 쓸 수 있는 스킬(콤보 데스폴트: 하이퍼 바디 검의 기운 22(MaxEnergy))은 쿨 표시를 가린다 — 하이퍼 바디 쿨(60초)이 돌고 있어도 키가 먹는다(SkillCaster 재시전 게이트).
+			if remain > 0 and self:StackOf(cell.skillId).ready then remain = 0 end
 		end
 		local cooling = remain > 0
 		if cooling and not cell.wasCooling then
@@ -265,6 +277,56 @@ script SkillHudController extends Logic
 		if ratio <= 0.70 then return 0.70 end
 		if ratio <= 0.85 then return 0.85 end
 		return 1.0
+	end
+
+	-- ── 스택 숫자 · 깜빡임 (1.0.9) ──────────────────────────────
+
+	@ExecSpace("ClientOnly")
+	method table StackOf(string skillId)
+		-- 그 스킬 칸에 보일 스택: { count = 숫자(0 이면 숨김), ready = 꽉 차 지금 쓸 수 있나(깜빡임) }. 스택을 쓰는 스킬은 여기 한 곳에 더한다.
+		--   하이퍼 바디(SK_W21): 검의 기운(SwordEnergy.LocalCount = 하이퍼 바디 켜짐일 때만 개수) · 60 이면 콤보 데스폴트 가능.
+		if _SwordEnergy ~= nil and skillId == _SwordEnergy.HyperBodySkillId then
+			return { count = _SwordEnergy:LocalCount(), ready = _SwordEnergy:LocalIsDeathfaultReady() }
+		end
+		return { count = 0, ready = false }
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateStack(any cell, number now)
+		-- 매 프레임: 스택 숫자(1 이상일 때만) + 꽉 찼으면 아이콘 알파 깜빡임. 바뀐 값만 쓴다(글자 · 알파).
+		local st = { count = 0, ready = false }
+		if cell.skillId ~= "" then st = self:StackOf(cell.skillId) end
+		local text = ""
+		if st.count >= 1 then text = tostring(st.count) end
+		local alpha = 1
+		if st.ready then
+			local period = self.BlinkSeconds
+			if period <= 0 then period = 0.7 end
+			local wave = 0.5 + 0.5 * math.sin(now * 2 * math.pi / period)   -- 0 ~ 1
+			alpha = self.BlinkMinAlpha + (1 - self.BlinkMinAlpha) * wave
+		end
+		-- 알파는 0.02 단위로 어림해 같은 값이면 쓰지 않는다(아이콘이 비어 있는 칸 포함).
+		alpha = math.floor(alpha * 50 + 0.5) / 50
+		self:PaintStack(cell.pc, text, alpha)
+		self:PaintStack(cell.mob, text, alpha)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PaintStack(any view, string text, number alpha)
+		if view == nil then return end
+		local stack = view.stack
+		if isvalid(stack) then
+			if stack.Text ~= text then stack.Text = text end
+			local on = (text ~= "")
+			if stack.Entity.Enable ~= on then stack.Entity.Enable = on end
+		end
+		local icon = view.icon
+		if view.shownAlpha == nil then view.shownAlpha = 1 end   -- 처음엔 .ui 의 아이콘 색 그대로(알파 1 로 본다 · 깜빡일 때만 쓴다)
+		if isvalid(icon) and view.shownAlpha ~= alpha then
+			view.shownAlpha = alpha
+			local c = icon.Color
+			icon.Color = Color(c.r, c.g, c.b, alpha)
+		end
 	end
 
 	-- ── 시전 ───────────────────────────────────────────────────

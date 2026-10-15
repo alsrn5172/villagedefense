@@ -20,6 +20,14 @@ script MonsterAttack extends AttackComponent
 	@HideFromInspector
 	property Vector2 PositionOffset = Vector2(0,0)
 
+	-- 그림을 바꾼 몹(파괴된 빅토리아 변형 몹 · WO-054): 공격 상자 기준 클립. 비어 있지 않으면 OnBeginPlay 는 상자를 재지 않는다 — 바꾼 쪽(DestroyedVictoriaService.ApplyVariant)이 SpriteSize · PositionOffset 을 넣는다.
+	@HideFromInspector
+	property string BoxClipRUID = ""
+
+	-- 접촉 공격 반복 타이머(지워질 때 OnEndPlay 에서 끊는다 — 예전엔 지워진 몹의 타이머가 계속 돌았다).
+	@HideFromInspector
+	property any attackTimer = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- Sprite size drives the attack box; load async, then start the repeat.
@@ -36,28 +44,44 @@ script MonsterAttack extends AttackComponent
 		self.Shape = BoxShape(Vector2.zero, Vector2.one, 0)
 		
 		_ResourceService:PreloadAsync({renderer.SpriteRUID}, function()
-			local clip = _ResourceService:LoadAnimationClipAndWait(renderer.SpriteRUID)
-			if clip == nil or clip.Frames == nil or clip.Frames[1] == nil then
-				log_warning("[MonsterAttack] animation clip missing: " .. self.Entity.Name)
+			-- 불러오는 사이 지워졌으면(파괴된 빅토리아 즉시 다시 세우기 등) 타이머를 걸지 않는다 — OnEndPlay 가 이미 지나가 끊을 곳이 없다.
+			if not isvalid(self.Entity) then
 				return
 			end
-			local firstFrameSprite = clip.Frames[1].FrameSprite
-			if firstFrameSprite == nil or firstFrameSprite.PixelPerUnit <= 0 then
-				log_warning("[MonsterAttack] invalid first frame: " .. self.Entity.Name)
-				return
+			-- 그림을 바꾼 몹(BoxClipRUID)은 바꾼 쪽이 상자를 넣으므로 재지 않고 타이머만 건다.
+			if self.BoxClipRUID == "" then
+				local clip = _ResourceService:LoadAnimationClipAndWait(renderer.SpriteRUID)
+				if clip == nil or clip.Frames == nil or clip.Frames[1] == nil then
+					log_warning("[MonsterAttack] animation clip missing: " .. self.Entity.Name)
+					return
+				end
+				local firstFrameSprite = clip.Frames[1].FrameSprite
+				if firstFrameSprite == nil or firstFrameSprite.PixelPerUnit <= 0 then
+					log_warning("[MonsterAttack] invalid first frame: " .. self.Entity.Name)
+					return
+				end
+				local firstSpriteSizeInPixel = Vector2(firstFrameSprite.Width, firstFrameSprite.Height)
+				local ppu = firstFrameSprite.PixelPerUnit
+
+				self.SpriteSize = firstSpriteSizeInPixel / ppu
+				self.PositionOffset = (firstSpriteSizeInPixel / 2 - firstFrameSprite.PivotPixel:ToVector2()) / ppu
 			end
-			local firstSpriteSizeInPixel = Vector2(firstFrameSprite.Width, firstFrameSprite.Height)
-			local ppu = firstFrameSprite.PixelPerUnit
-		
-			self.SpriteSize = firstSpriteSizeInPixel / ppu
-			self.PositionOffset = (firstSpriteSizeInPixel / 2 - firstFrameSprite.PivotPixel:ToVector2()) / ppu
-		
-			_TimerService:SetTimerRepeat(function()
+
+			self.attackTimer = _TimerService:SetTimerRepeat(function()
 				if monster.IsDead == false and not self.Disabled then
 					self:AttackNear()
 				end
 			end, self.AttackInterval)
 		end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 몹이 지워지면 접촉 공격 반복 타이머를 끊는다(파괴된 빅토리아 즉시 다시 세우기 · 리스폰 · 맵 정리 모두).
+		if self.attackTimer ~= nil then
+			_TimerService:ClearTimer(self.attackTimer)
+			self.attackTimer = nil
+		end
 	end
 
 	method void AttackNear()
