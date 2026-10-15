@@ -170,50 +170,42 @@ script UIToast extends Logic
 		
 	end
 
-	-- 1.0.11: 획득·사용 팝업은 일반 안내 토스트와 별도 하단 영역을 쓴다.
+	-- 1.0.11: 획득 1건 = 배경이 있는 1행. 최신 행은 아래, 이전 행은 위로 이동하며 흐려진다.
 	property Entity lootGroup = "da51351b-e338-47bf-9299-895b5c753f6e"
-	property Entity lootPanel = "12808bbc-6e55-4888-ba85-1a24e1928c2d"
-	property TextGUIRendererComponent lootText = "be98c853-ac3c-46ea-a0d8-8f4207c3512f"
 	property any lootRows = nil
-	property number lootRemaining = 0
+	property any lootViews = nil
 
 	@ExecSpace("Client")
 	method void ShowLoot(string text)
-		if self.lootRows == nil or self.lootRemaining <= 0 then self.lootRows = {} end
-		table.insert(self.lootRows, { text = text, meso = 0 })
-		while #self.lootRows > 3 do table.remove(self.lootRows, 1) end
-		self.lootRemaining = 3
-		self:RenderLoot()
+		if self.lootRows == nil then self.lootRows = {} end
+		table.insert(self.lootRows, { text = text, remaining = 3, y = 0 })
+		while #self.lootRows > 4 do table.remove(self.lootRows, 1) end
+		self:RenderLoot(0)
 	end
 
 	@ExecSpace("Client")
 	method void ShowMeso(integer amount)
 		if amount <= 0 then return end
-		if self.lootRows == nil or self.lootRemaining <= 0 then self.lootRows = {} end
-		local row = self.lootRows[#self.lootRows]
-		if row ~= nil and row.meso > 0 then row.meso = row.meso + amount
-		else table.insert(self.lootRows, { text = "", meso = amount }) end
-		while #self.lootRows > 3 do table.remove(self.lootRows, 1) end
-		self.lootRemaining = 3
-		self:RenderLoot()
+		self:ShowLoot("메소 +" .. tostring(amount))
 	end
 
 	@ExecSpace("ClientOnly")
-	method void RenderLoot()
-		if not isvalid(self.lootGroup) or not isvalid(self.lootText) then return end
-		local lines = {}
-		for _, r in ipairs(self.lootRows or {}) do
-			table.insert(lines, r.meso > 0 and ("메소 +" .. tostring(r.meso)) or r.text)
+	method void RenderLoot(number delta)
+		if not isvalid(self.lootGroup) then return end
+		if self.lootViews == nil then
+			self.lootViews = {}
+			for i = 1, 4 do self.lootViews[i] = self.lootGroup:GetChildByName("Row" .. tostring(i)) end
 		end
-		self.lootText.Text = table.concat(lines, "\n")
-		self.lootGroup.Enable = true
+		local count = #(self.lootRows or {})
+		self.lootGroup.Enable = count > 0
 		self.lootGroup.CanvasGroupComponent.GroupAlpha = 1
-		-- 실제 하단 HUD 사이의 빈 폭을 재므로 화면 비율이 달라도 겹치지 않는다.
+		-- 하단 월드맵과 상태창 사이. 26px 행 4개 + 간격 2px = 110px로 퀵슬롯 아래에 둔다.
 		local parent = self.lootGroup.UITransformComponent
+		local right, left = parent.RectSize.x - 250, parent.RectSize.x - 664
 		local map = _EntityService:GetEntityByPath("/ui/WorldMapGroup/Toolbar")
 		local status = _EntityService:GetEntityByPath("/ui/StatusHUD/UIMyInfo")
 		if isvalid(map) and isvalid(status) then
-			local right, left = nil, nil
+			right, left = nil, nil
 			for _, c in ipairs(map.UITransformComponent:GetWorldCorners()) do
 				local p = parent:ToLocalPoint(Vector3(c.x, c.y, 0))
 				if right == nil or p.x < right then right = p.x end
@@ -222,24 +214,38 @@ script UIToast extends Logic
 				local p = parent:ToLocalPoint(Vector3(c.x, c.y, 0))
 				if left == nil or p.x > left then left = p.x end
 			end
-			if right ~= nil and left ~= nil then
-				local w = math.max(80, math.min(390, right - left - 24))
-				local t = self.lootPanel.UITransformComponent
-				t.anchoredPosition = Vector2(right - 12 - parent.RectSize.x / 2, 18)
-				t.RectSize = Vector2(w, 114)
-				self.lootText.Entity.UITransformComponent.RectSize = Vector2(w - 24, 98)
+		end
+		local w = math.max(80, math.min(390, right - left - 24))
+		local x = right - 12 - parent.RectSize.x / 2
+		for slot = 1, 4 do
+			local view = self.lootViews[slot]
+			if isvalid(view) then
+				local row = self.lootRows[count - slot + 1]
+				view.Enable = row ~= nil
+				if row ~= nil then
+					local target = (slot - 1) * 28
+					row.y = row.y + (target - row.y) * math.min(1, delta * 20)
+					view.UITransformComponent.anchoredPosition = Vector2(x, 10 + row.y)
+					view.UITransformComponent.RectSize = Vector2(w, 26)
+					view.CanvasGroupComponent.GroupAlpha = (1 - (slot - 1) * 0.2) * math.min(1, row.remaining / 0.3)
+					local label = view:GetChildByName("Message")
+					if isvalid(label) then
+						label.UITransformComponent.RectSize = Vector2(w - 16, 26)
+						label.TextGUIRendererComponent.Text = row.text
+					end
+				end
 			end
 		end
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
-		if self.lootRemaining <= 0 then return end
-		self.lootRemaining = math.max(0, self.lootRemaining - delta)
-		if isvalid(self.lootGroup) then
-			self.lootGroup.CanvasGroupComponent.GroupAlpha = math.min(1, self.lootRemaining / 0.2)
-			if self.lootRemaining <= 0 then self.lootGroup.Enable = false end
+		if self.lootRows == nil or #self.lootRows == 0 then return end
+		for i = #self.lootRows, 1, -1 do
+			self.lootRows[i].remaining = self.lootRows[i].remaining - delta
+			if self.lootRows[i].remaining <= 0 then table.remove(self.lootRows, i) end
 		end
+		self:RenderLoot(delta)
 	end
 
 end
