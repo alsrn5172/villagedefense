@@ -127,7 +127,7 @@ script GuideService extends Logic
 		self.st = {}
 		for _, uid in ipairs(userIds or {}) do
 			table.insert(self.participants, uid)
-			self.st[uid] = { goal = "", goalText = "", marker = "", toasted = {}, checks = {}, waveToasted = {}, shown = false, shownChip = false }
+			self.st[uid] = { goal = "", goalText = "", marker = "", toasted = {}, checks = {}, waveToasted = {}, shown = false, shownChip = false, tips = {}, lowKills = 0 }
 		end
 		self.pollTimer = 0
 	end
@@ -209,6 +209,7 @@ script GuideService extends Logic
 		self.pollTimer = self.pollTimer - delta
 		if self.pollTimer > 0 then return end
 		self.pollTimer = self.PollInterval
+		for _, uid in ipairs(self.participants) do self:EvaluateTips(uid) end
 		if not self:IsGuideMatch() then
 			for _, uid in ipairs(self.participants) do self:HideFor(uid, false) end
 			return
@@ -706,4 +707,58 @@ script GuideService extends Logic
 		if self.st == nil or self.st[userId] == nil then return end
 		self:Check(userId, "C7")
 	end
+	@ExecSpace("ServerOnly")
+	method void QueueTip(string userId, string key)
+		local s = (self.st ~= nil) and self.st[userId] or nil
+		if s == nil or _TipController == nil then return end
+		if s.tips == nil then s.tips = {} end
+		if s.tips[key] then return end
+		s.tips[key] = true
+		_TipController:NotifyTip(key, userId)
+		log("[TipRule] " .. key .. " -> " .. userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EvaluateTips(string userId)
+		local m = _MatchSessionLogic
+		if m == nil or not m.Running or not m:IsParticipant(userId) or m:IsTutorial() then return end
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		if e == nil then return end
+		-- 착용 중인 장비만, 플레이어보다 요구 레벨이 10 이상 낮은 경우.
+		if _EquipService ~= nil and _ItemCatalog ~= nil then
+			local eq = _EquipService:EnsureUser(userId)
+			for _, slot in ipairs(_EquipService.slots or {}) do
+				local id = _EquipService:EquippedItemId(userId, eq, slot)
+				local d = id ~= "" and _ItemCatalog:Get(id) or nil
+				if d ~= nil and (e.level or 1) - (d.reqLevel or 0) >= 10 then self:QueueTip(userId, "gearlevel") break end
+			end
+		end
+		if self:MaxCountOf(userId, self.itemIds.mats) >= 40 then self:QueueTip(userId, "recruit40") end
+		local lane = _LaneStateService
+		local v = lane ~= nil and lane:StateOfUser(userId) or nil
+		local tw = v ~= nil and v.towers ~= nil and v.towers.TOWER or nil
+		local d = lane ~= nil and lane.towerDef ~= nil and lane.towerDef.TOWER or nil
+		if tw ~= nil and d ~= nil and tw.alive ~= false and tw.lv + 3 <= lane:FacilityMaxLevel("TOWER") then
+			local need = 0
+			local valid = true
+			for lv = tw.lv, tw.lv + 2 do
+				local cost = d.upgrade[lv] or 0
+				if cost <= 0 then valid = false end
+				need = need + cost
+			end
+			if valid and (e.coin or 0) >= need then self:QueueTip(userId, "upgrade3") end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLowMonsterKilled(string userId, integer monsterLevel)
+		local m = _MatchSessionLogic
+		local s = self.st ~= nil and self.st[userId] or nil
+		if s == nil or m == nil or not m.Running or not m:IsParticipant(userId) or m:IsTutorial() then return end
+		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
+		if e == nil or monsterLevel <= 0 or (e.level or 1) - monsterLevel < 5 then return end
+		s.lowKills = (s.lowKills or 0) + 1
+		if s.lowKills >= 20 then self:QueueTip(userId, "huntlevel") end
+	end
+
 end
