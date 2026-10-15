@@ -1,0 +1,299 @@
+@Logic
+script SwordEnergy extends Logic
+
+    -- 전사 하이퍼 바디(SK_W21)의 검의 기운 + 콤보 데스폴트 상태 원장 (1.0.9 · 사용자 2026-10-15 · 패치내용/1.0.9.md §2).
+    --   검의 기운 = 유저별 서버 카운터(0 ~ MaxEnergy 60). **하이퍼 바디가 켜져 있는 동안만** 쌓이고, 하이퍼 바디가 어떤 이유로든 끝나면(만료 · 죽음 · 매치 초기화 · 콤보 데스폴트) 0 으로 돌아간다.
+    --     +1 규칙 두 가지:
+    --       ① 내가 **처치**한 대상 하나마다 +1 — 사냥터 몬스터 · 엘리트 · 적 레인 미니언 · 파병 유닛 · 수비대 · 구조물(포탑 · 억제기 · 넥서스) 파괴.
+    --          플레이어끼리는 공격할 수 없어(PvP 없음) 플레이어 처치 훅은 없다. 귀속 규칙은 Farm/AttackCredit.UserIdOf(플레이어 본인 · 플레이어의 투사체 = 시전자) 한 곳.
+    --          몬스터 계열은 Monster.HandleHitEvent 한 곳(OnMonsterHit), 구조물은 LaneFacility.HandleHitEvent 한 곳(OnStructureDamaged)이 부른다.
+    --       ② 보스 판정 대상(활성 BossSkillRunner 또는 CloneSkillBrain = 넥서스 분신)은 처치 대신 **타수 10회마다 +1** (BossHitsPerEnergy). 타수에는 다단히트가 들어가고
+    --          (스킬 패스의 표시 타수 = SkillAttack.PendingDisplayHits · 기본 공격 1) 이 하이퍼 바디 동안 모든 보스 대상을 합쳐 누적한다(남은 타수는 bossHits).
+    --     동기화: 서버 → 소유 클라 SyncEnergy(count) 한 줄. 클라 미러 localCount 는 스킬 HUD(SkillHudController)가 읽는다. 표시 = 하이퍼 바디 켜짐(SkillBuffs 미러) AND 1 이상.
+    --   콤보 데스폴트 = 하이퍼 바디가 켜져 있고 검의 기운이 MaxEnergy 일 때 같은 키를 다시 누르면 나가는 재시전 공격.
+    --     입구는 에너지 차지(SK_P21) 재시전과 같은 길 — SkillBuffs.IsRecastActive / LocalIsRecastActive 가 IsDeathfaultReady / LocalIsDeathfaultReady 를 부르면
+    --     SkillCaster 가 쿨다운 게이트를 건너뛰고 모션 · 락 키를 `SK_W21_RECAST` 로 쓴다. 실행 = SkillExecutors.ExecuteDeathfault (4단계 연출 타임라인 · 판정 · 무적 — 표 = effectOverrides.SK_W21_CDF), 끝 처리 = FinishDeathfault(여기).
+    --     타임라인(사용자 연출 명세 2026-10-15): ① 올려 베기 → ② 화면 정지(적 멈춤 + 겹침) → ③ 대각선 화면 가르기(14타) → ④ 끝(하이퍼 바디 종료 · 쿨다운 0 · 검의 기운 0).
+    --     끝 처리: ① 하이퍼 바디 쿨다운 0 으로(PlayerSkillState.ReduceCooldown) ② 하이퍼 바디 종료(SkillBuffs.EndBuffNow → OnBuffEnded → OnHyperBodyEnded 가 검의 기운 0). 순서가 이래야 HUD 에 쿨 표시가 잠깐 비치지 않는다.
+
+    -- 검의 기운 상한 = 콤보 데스폴트가 열리는 개수.
+    property integer MaxEnergy = 60
+
+    -- 보스 판정 대상에게 이만큼 타격하면 검의 기운 1개.
+    property integer BossHitsPerEnergy = 10
+
+    -- 이 스킬 키가 콤보 데스폴트로도 쓰인다(SkillInfo 의 하이퍼 바디 행).
+    property string HyperBodySkillId = "SK_W21"
+
+    -- [서버] userId -> 검의 기운 개수
+    @HideFromInspector
+    property table counts = {}
+
+    -- [서버] userId -> 보스 타수 누적의 나머지(0 ~ BossHitsPerEnergy-1)
+    @HideFromInspector
+    property table bossHits = {}
+
+    -- [서버] userId -> { stamp, untilAt } 진행 중인 콤보 데스폴트 시전. 시전 중에는 검의 기운이 더 쌓이지 않고 재시전도 안 된다.
+    @HideFromInspector
+    property table casts = {}
+
+    @HideFromInspector
+    property integer castStamp = 0
+
+    -- [클라] 로컬 유저의 검의 기운 미러(서버 SyncEnergy). 하이퍼 바디가 꺼져 있으면 LocalCount 가 0 으로 가린다.
+    @HideFromInspector
+    property integer localCount = 0
+
+    -- ───────────────────────── 서버: 조회 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method boolean IsHyperBodyActive(string userId)
+        -- 하이퍼 바디(HYPER_BODY)가 켜져 있는가. 만료 시각 재검사 포함(SkillBuffs.GetBuff).
+        if _SkillBuffs == nil or userId == nil or userId == "" then return false end
+        return _SkillBuffs:IsActive(userId, _SkillBuffs.TagHyperBody)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer CountOf(string userId)
+        return self.counts[userId] or 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsCasting(string userId)
+        -- 콤보 데스폴트 시전 중인가(시전 시각 안).
+        local st = self.casts[userId]
+        if st == nil then return false end
+        return _UtilLogic.ServerElapsedSeconds < st.untilAt
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsDeathfaultReady(string userId)
+        -- 지금 하이퍼 바디 키를 누르면 콤보 데스폴트가 나가는가: 하이퍼 바디 켜짐 AND 검의 기운 상한 AND 시전 중이 아님.
+        if not self:IsHyperBodyActive(userId) then return false end
+        if self:IsCasting(userId) then return false end
+        return (self.counts[userId] or 0) >= self.MaxEnergy
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsBossJudged(Entity victim)
+        -- 보스 판정 대상: **활성** BossSkillRunner(꺼진 러너 = 미니언으로 쓰는 좀비머쉬맘은 보스가 아니다 · StatService.ResolveTarget 과 같은 규칙) 또는 CloneSkillBrain(넥서스 분신 · 1.0.8).
+        if not isvalid(victim) then return false end
+        local runner = victim.BossSkillRunner
+        if isvalid(runner) and runner.Enable then return true end
+        if isvalid(victim:GetComponent("script.CloneSkillBrain")) then return true end
+        return false
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer HitsOf(Entity attacker)
+        -- 이번 피격 이벤트가 몇 타인가(보스 타수 누적용). 0 = 공격 타격이 아님(세지 않는다).
+        --   · 플레이어 본인: 스킬 패스 중이면(SkillAttack.PendingSkillId ~= "") 그 패스의 표시 타수(다단히트 포함 · SkillAttack.PendingDisplayHits) ·
+        --     아이언 바디 반사(평값 패스 · PendingFlatDamage > 0)는 공격 타격이 아니라 0 · 그 밖(기본 공격)은 1.
+        --   · 플레이어의 투사체: SkillProjectile.DisplayHits.
+        if not isvalid(attacker) then return 1 end
+        if isvalid(attacker.PlayerComponent) then
+            ---@type SkillAttack
+            local sa = attacker:GetComponent("script.SkillAttack")
+            if isvalid(sa) then
+                if sa.PendingFlatDamage > 0 then return 0 end
+                if sa.PendingSkillId ~= "" then return math.max(1, math.floor(sa.PendingDisplayHits)) end
+            end
+            return 1
+        end
+        local proj = attacker.SkillProjectile
+        if isvalid(proj) then return math.max(1, math.floor(proj.DisplayHits)) end
+        return 1
+    end
+
+    -- ───────────────────────── 서버: 쌓기 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method boolean CanGain(string userId)
+        -- 지금 검의 기운을 얻을 수 있는 상태인가: 하이퍼 바디 켜짐 · 콤보 데스폴트 시전 중이 아님.
+        if userId == nil or userId == "" then return false end
+        if not self:IsHyperBodyActive(userId) then return false end
+        if self:IsCasting(userId) then return false end
+        return true
+    end
+
+    @ExecSpace("ServerOnly")
+    method void AddEnergy(string userId, string why, string detail)
+        -- 검의 기운 +1 (상한 MaxEnergy). why = "kill" | "boss10" (로그 꼬리표). 상한이면 아무것도 안 한다.
+        if not self:CanGain(userId) then return end
+        local n = self.counts[userId] or 0
+        if n >= self.MaxEnergy then return end
+        n = n + 1
+        self.counts[userId] = n
+        local ready = ""
+        if n >= self.MaxEnergy then ready = " READY" end
+        log("[SwordEnergy] +1 " .. why .. " (" .. tostring(n) .. "/" .. tostring(self.MaxEnergy) .. ")" .. ready .. " " .. tostring(detail) .. " (" .. userId .. ")")
+        self:PushEnergy(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void AddBossHits(string userId, integer hits, string detail)
+        -- 보스 판정 대상 타격 hits 타를 누적한다. BossHitsPerEnergy(10)타마다 +1, 나머지는 bossHits 에 남는다(보스가 달라도 이어서 센다).
+        if hits == nil or hits <= 0 then return end
+        if not self:CanGain(userId) then return end
+        local n = self.counts[userId] or 0
+        if n >= self.MaxEnergy then return end
+        local acc = (self.bossHits[userId] or 0) + hits
+        local per = self.BossHitsPerEnergy
+        if per < 1 then per = 1 end
+        local gained = 0
+        while acc >= per and n < self.MaxEnergy do
+            acc = acc - per
+            n = n + 1
+            gained = gained + 1
+        end
+        if n >= self.MaxEnergy then acc = 0 end
+        self.bossHits[userId] = acc
+        if gained > 0 then
+            self.counts[userId] = n
+            local ready = ""
+            if n >= self.MaxEnergy then ready = " READY" end
+            log("[SwordEnergy] +" .. tostring(gained) .. " boss10 (" .. tostring(n) .. "/" .. tostring(self.MaxEnergy) .. ")" .. ready .. " " .. tostring(detail) .. " hits+" .. tostring(hits) .. " rest=" .. tostring(acc) .. " (" .. userId .. ")")
+            self:PushEnergy(userId)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnMonsterHit(Entity victim, Entity attacker, boolean killed)
+        -- Monster.HandleHitEvent 가 피해가 들어간 모든 몬스터 타격(원래 HP > 0 · 피해 > 0)에서 부른다 — 사냥터 몬스터 · 엘리트 · 레인 미니언 · 파병 유닛 · 수비대 · 보스 · 넥서스 분신이 전부 Monster 컴포넌트다.
+        --   killed = 이 타격으로 HP 가 0 이하가 됐다. 귀속은 AttackCredit.UserIdOf(공격자 → 책임 유저 · 투사체는 시전자). 책임 유저가 없으면(수비대 · 미니언 · 포탑이 잡음) 아무도 못 얻는다.
+        if not isvalid(victim) or _AttackCredit == nil then return end
+        local uid = _AttackCredit:UserIdOf(attacker)
+        if uid == "" then return end
+        if not self:CanGain(uid) then return end
+        if self:IsBossJudged(victim) then
+            -- 보스 판정 대상: 처치 대신 타수. 처치 타격 자신도 타수에 든다.
+            self:AddBossHits(uid, self:HitsOf(attacker), tostring(victim.Name))
+        elseif killed then
+            self:AddEnergy(uid, "kill", tostring(victim.Name))
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnStructureDamaged(string userId, string villageId, string stage)
+        -- LaneFacility.HandleHitEvent 가 피해가 실제로 들어간 직후(ApplyDamage 결과 "")에 부른다. 그 시설이 이 타격으로 파괴됐으면(alive false) +1 —
+        --   파괴 뒤 타격은 ApplyDamage 가 "INVALID" 로 돌려 이 함수에 오지 않으므로 파괴 한 번에 한 번만 센다.
+        if userId == nil or userId == "" or _LaneStateService == nil then return end
+        local st = _LaneStateService:FacilityState(villageId, stage)
+        if st == nil or st.alive then return end
+        self:AddEnergy(userId, "kill", "structure " .. tostring(villageId) .. ":" .. tostring(stage))
+    end
+
+    -- ───────────────────────── 서버: 끝내기 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void OnHyperBodyStarted(string userId)
+        -- 하이퍼 바디가 (다시) 걸렸다(SkillBuffs.ApplyBuff). 재시전으로 갱신된 것이면 검의 기운은 그대로 — 미러만 맞춘다.
+        self:PushEnergy(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnHyperBodyEnded(string userId)
+        -- 하이퍼 바디가 어떤 이유로든 끝났다(SkillBuffs.OnBuffEnded: 만료 · 죽음 · 매치 초기화 · 콤보 데스폴트). 검의 기운과 보스 타수 누적을 0 으로.
+        local had = (self.counts[userId] or 0) > 0 or (self.bossHits[userId] or 0) > 0
+        self.counts[userId] = nil
+        self.bossHits[userId] = nil
+        if had then log("[SwordEnergy] reset to 0 (Hyper Body ended) (" .. userId .. ")") end
+        self:PushEnergy(userId)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void OnMatchReset(string userId)
+        -- 매치 시작 / 떠남(SkillBuffs.ResetMatchState): 하이퍼 바디 종료 처리가 놓친 것까지 전부 비운다. 진행 중이던 콤보 데스폴트도 멈춘다(타격 타이머는 stamp 가 달라져 그만둔다).
+        self.counts[userId] = nil
+        self.bossHits[userId] = nil
+        self.casts[userId] = nil
+        self:PushEnergy(userId)
+    end
+
+    -- ───────────────────────── 서버: 콤보 데스폴트 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method integer BeginDeathfault(string userId, number totalSeconds)
+        -- 시전 시작(SkillExecutors.ExecuteDeathfault). 돌려주는 stamp 가 타격 타이머 · FinishDeathfault 의 "이 시전이 아직 유효한가" 열쇠다.
+        self.castStamp = self.castStamp + 1
+        self.casts[userId] = { stamp = self.castStamp, untilAt = _UtilLogic.ServerElapsedSeconds + totalSeconds }
+        return self.castStamp
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsDeathfaultCurrent(string userId, integer stamp)
+        -- 그 stamp 의 콤보 데스폴트가 아직 진행 중인가(매치 초기화로 지워졌거나 다음 시전이 시작됐으면 false).
+        local st = self.casts[userId]
+        return st ~= nil and st.stamp == stamp
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FinishDeathfault(string userId, integer stamp)
+        -- 시전 시간(totalSeconds)이 끝났다. ① 하이퍼 바디 쿨다운 0 ② 하이퍼 바디 종료(검의 기운 0). 시전자가 쓰러졌거나 사라졌으면 쿨다운은 그대로 둔다(하이퍼 바디는 죽음이 이미 끝냈다).
+        --   하이퍼 바디가 시전 도중 만료됐어도(검의 기운은 이미 0) 시전은 끝까지 나간 것이니 쿨다운은 초기화한다.
+        local st = self.casts[userId]
+        if st == nil or st.stamp ~= stamp then return end
+        self.casts[userId] = nil
+        local player = _UserService:GetUserEntityByUserId(userId)
+        local alive = isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent.Hp > 0 and not player.PlayerComponent:IsDead()
+        if not alive then
+            log("[Deathfault] caster down before the end — Hyper Body cooldown kept (" .. userId .. ")")
+            return
+        end
+        local left = 0
+        if _PlayerSkillState ~= nil then
+            left = _PlayerSkillState:GetCooldownRemaining(userId, self.HyperBodySkillId)
+            if left > 0 then _PlayerSkillState:ReduceCooldown(userId, self.HyperBodySkillId, left, "ComboDeathfault") end
+        end
+        if _SkillBuffs ~= nil then _SkillBuffs:EndBuffNow(userId, _SkillBuffs.TagHyperBody, "deathfault") end
+        log("[Deathfault] HB ended by deathfault · cooldown reset (was " .. string.format("%.1f", left) .. "s) (" .. userId .. ")")
+    end
+
+    -- ───────────────────────── 서버 → 클라 ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void PushEnergy(string userId)
+        -- 소유 클라 미러를 맞춘다(Client RPC · 마지막 인자 = 받는 userId · SkillBuffs.PushBuffs 와 같은 방식).
+        if userId == nil or userId == "" then return end
+        if not isvalid(_UserService:GetUserEntityByUserId(userId)) then return end   -- 룸에 없는 유저에겐 Client RPC 를 보내지 않는다(LEA-3032)
+        self:SyncEnergy(self.counts[userId] or 0, userId)
+    end
+
+    @ExecSpace("Client")
+    method void SyncEnergy(integer count)
+        self.localCount = count
+    end
+
+    -- ───────────────────────── 클라: 접근자 ─────────────────────────
+
+    @ExecSpace("ClientOnly")
+    method integer LocalCount()
+        -- 스킬 HUD 에 보일 개수: 하이퍼 바디가 켜져 있을 때만(미러 endsAt 으로 판정 — 서버 신호보다 먼저 사라진다) 개수, 아니면 0.
+        if _SkillBuffs == nil or not _SkillBuffs:LocalIsActive(_SkillBuffs.TagHyperBody) then return 0 end
+        return self.localCount
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean LocalIsDeathfaultReady()
+        -- 하이퍼 바디 켜짐 AND 검의 기운 상한 — 스킬 HUD 깜빡임 · SkillCaster 클라 예측 게이트(쿨다운 건너뛰기)가 본다. 최종 판정은 서버 IsDeathfaultReady.
+        return self:LocalCount() >= self.MaxEnergy
+    end
+
+    -- ───────────────────────── 개발 도구 (서버 Lua 로만) ─────────────────────────
+
+    @ExecSpace("ServerOnly")
+    method void DevSetEnergy(string userId, integer count)
+        -- Play 확인용: 검의 기운을 강제로 count(0 ~ MaxEnergy)로. 하이퍼 바디가 꺼져 있으면 의미가 없다(로그 경고). 클라 RPC 로 열어 두지 않는다(치트 경로 방지) —
+        --   maker_execute_script 서버 Lua 에서 `_SwordEnergy:DevSetEnergy("<userId>", 60)`.
+        if userId == nil or userId == "" then return end
+        local n = math.floor(count or 0)
+        if n < 0 then n = 0 end
+        if n > self.MaxEnergy then n = self.MaxEnergy end
+        self.counts[userId] = n
+        self.bossHits[userId] = 0
+        if not self:IsHyperBodyActive(userId) then log_warning("[SwordEnergy] DevSetEnergy " .. tostring(n) .. " but Hyper Body is off — the number stays hidden until it is cast (" .. userId .. ")") end
+        log("[SwordEnergy] DevSetEnergy -> " .. tostring(n) .. "/" .. tostring(self.MaxEnergy) .. " (" .. userId .. ")")
+        self:PushEnergy(userId)
+    end
+
+end

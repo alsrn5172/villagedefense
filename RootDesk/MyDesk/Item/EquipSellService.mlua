@@ -6,14 +6,13 @@ script EquipSellService extends Logic
 	-- 판매가 = 통화마다 floor((구매 비용 + 강화 비용 + 박은 보석 값) ÷ Divisor):
 	--   구매 비용 = 그 마을 상인이 파는 레시피(CraftRecipe · REGION_LOCAL 은 이 마을 지역 재화)의 MesoCost + 재료. 레시피가 없으면(보스 · 드랍 · 시작 장비) 0.
 	--   강화 비용 = EnhanceTable 1 ~ 현재 단계 MesoCost 합 × 부위 수(한벌옷 2) — 성공 기준 표 값(연성 할인 · 실패한 시도 비용은 셀 수 없다).
-	--   보석 값 = 박힌 보석 수 × 부위 수 × GemBuyMeso (보석을 파는 상점이 없어 지금은 0).
+	--   보석 = 강화에 쓴 보석을 **보석으로** 절반 돌려준다(1.0.9 · 사용자 2026-10-15 "장비 강화했을 때도 판매할 때 강화하는 데에 쓴 보석 절반 돌려줘 · 소수점은 내림").
+	--     쓴 수 = 박힌 칸 수 × 부위 수(한벌옷은 칸마다 2개 · EnhanceService.RequestEnhance perSlot). 보석 종류마다 따로 내림. 강화는 지금 전부 성공(EnhanceTable SuccessRate 1.0)이라 박힌 보석 = 쓴 보석.
+	--     (1.0.7 의 "보석 값 = GemBuyMeso 메소 · 0" 은 없앴다 — 메소로 또 쳐 주면 두 번 돌려준다.)
 	-- ItemInfo.SellMeso 는 쓰지 않는다(아무 데도 안 읽는 옛 열 · 사용자 규칙이 이긴다).
 
 	-- 판매가 나누는 수(사용자 "절반" = 2). 통화마다 따로 내림.
 	property integer Divisor = 2
-
-	-- 보석 한 개의 구매가(메소). 보석은 상점 · 제작에 없고 드랍뿐이라 0 — 상점이 생기면 여기에 값을 준다.
-	property integer GemBuyMeso = 0
 
 	-- 같은 장비 판매 요청이 연달아 오면(더블 클릭 · 지연) 이 시간(초) 안의 두 번째는 조용히 무시한다.
 	property number DupWindow = 1.5
@@ -52,8 +51,8 @@ script EquipSellService extends Logic
 
 	method any Quote(string itemId, integer enh, string gemsCsv, string here)
 		-- 판매가 계산(서버 검증 · 클라 표시가 같이 부른다 → ExecSpace 없음).
-		-- 반환 { meso, mats = { {itemId, count} … 절반 내림한 값만 }, buyMeso, enhMeso, gemMeso }. 장비가 아니면 전부 0.
-		local out = { meso = 0, mats = {}, buyMeso = 0, enhMeso = 0, gemMeso = 0 }
+		-- 반환 { meso, mats = { {itemId, count} … 구매 재료 절반 내림한 값만 }, gems = { {itemId = "GEM_…", count} … 보석 절반 내림한 값만 }, buyMeso, enhMeso, gemUsed, gemBack }. 장비가 아니면 전부 0.
+		local out = { meso = 0, mats = {}, gems = {}, buyMeso = 0, enhMeso = 0, gemUsed = 0, gemBack = 0 }
 		local def = _ItemCatalog:Get(itemId)
 		if def == nil or def.type ~= "EQUIP" then return out end
 		local pieces = _ItemCatalog:PieceCount(def)
@@ -78,24 +77,41 @@ script EquipSellService extends Logic
 			local row = _ItemCatalog:GetEnhanceRow(level)
 			if row ~= nil then out.enhMeso = out.enhMeso + row.mesoCost * pieces end
 		end
-		-- 박은 보석 값.
+		-- 강화에 쓴 보석(1.0.9): 칸 하나 = 부위 수만큼. 넣은 순서대로 종류를 모은다(알 수 없는 보석 id 는 건너뛴다).
+		local gemUsed = {}
+		local gemOrder = {}
 		if gemsCsv ~= nil and gemsCsv ~= "" then
-			for _g in string.gmatch(gemsCsv, "[^+]+") do
-				out.gemMeso = out.gemMeso + self.GemBuyMeso * pieces
+			for g in string.gmatch(gemsCsv, "[^+]+") do
+				if _ItemCatalog:GetGem(g) ~= nil then
+					local id = "GEM_" .. g
+					if gemUsed[id] == nil then
+						gemUsed[id] = 0
+						table.insert(gemOrder, id)
+					end
+					gemUsed[id] = gemUsed[id] + pieces
+					out.gemUsed = out.gemUsed + pieces
+				end
 			end
 		end
 		local div = math.max(1, self.Divisor)
-		out.meso = math.floor((out.buyMeso + out.enhMeso + out.gemMeso) / div)
+		out.meso = math.floor((out.buyMeso + out.enhMeso) / div)
 		for _, id in ipairs(order) do
 			local half = math.floor(total[id] / div)
 			if half > 0 then table.insert(out.mats, { itemId = id, count = half }) end
+		end
+		for _, id in ipairs(gemOrder) do
+			local half = math.floor(gemUsed[id] / div)
+			if half > 0 then
+				table.insert(out.gems, { itemId = id, count = half })
+				out.gemBack = out.gemBack + half
+			end
 		end
 		return out
 	end
 
 	method boolean CanSell(any q)
 		-- 판매가가 하나라도 있으면 true (0 이면 판매 불가).
-		return q ~= nil and (q.meso > 0 or #q.mats > 0)
+		return q ~= nil and (q.meso > 0 or #q.mats > 0 or #q.gems > 0)
 	end
 
 	method string RefundText(any q, boolean plus)
@@ -106,10 +122,16 @@ script EquipSellService extends Logic
 			for _, m in ipairs(q.mats) do
 				table.insert(parts, _ItemCatalog:GetName(m.itemId) .. " +" .. self:Fmt(m.count))
 			end
+			for _, m in ipairs(q.gems) do
+				table.insert(parts, _ItemCatalog:GetName(m.itemId) .. " +" .. self:Fmt(m.count))
+			end
 			return table.concat(parts, " · ")
 		end
 		if q.meso > 0 then table.insert(parts, "meso:" .. tostring(q.meso)) end
 		for _, m in ipairs(q.mats) do
+			table.insert(parts, m.itemId .. ":" .. tostring(m.count))
+		end
+		for _, m in ipairs(q.gems) do
 			table.insert(parts, m.itemId .. ":" .. tostring(m.count))
 		end
 		return table.concat(parts, ",")
@@ -171,9 +193,12 @@ script EquipSellService extends Logic
 		for _, m in ipairs(q.mats) do
 			_InventoryService:GiveItem(userId, m.itemId, m.count)
 		end
+		for _, m in ipairs(q.gems) do
+			_InventoryService:GiveItem(userId, m.itemId, m.count)
+		end
 		_InventoryService:PushInventory(userId)
 		log("[Sell] uid=" .. userId .. " item=" .. it.itemId .. " iid=" .. instanceId .. " refund=" .. self:RefundText(q, false)
-			.. " (buy=" .. tostring(q.buyMeso) .. " enh=" .. tostring(q.enhMeso) .. "+" .. tostring(it.enh or 0) .. " gem=" .. tostring(q.gemMeso) .. " at " .. here .. ")")
+			.. " (buy=" .. tostring(q.buyMeso) .. " enh=" .. tostring(q.enhMeso) .. "+" .. tostring(it.enh or 0) .. " gems=" .. gems .. " used=" .. tostring(q.gemUsed) .. " back=" .. tostring(q.gemBack) .. " at " .. here .. ")")
 		self:Result(userId, instanceId, true, def.name .. " 판매 · " .. self:RefundText(q, true))
 	end
 

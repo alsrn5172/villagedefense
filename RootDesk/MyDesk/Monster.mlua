@@ -68,6 +68,9 @@ script Monster extends Component
 	@HideFromInspector
 	property number DieSoundVolume = 1.0
 
+	-- 사망 소리 전체 배율(1.0.9 · 사용자 2026-10-15 "몬스터 죽는 비명소리가 너무 큼 · 전부 반으로"). 위 원작 배율 위에 한 번 더 곱한다(일반 몹 · 보스 · 미니언 · 폭발 처치 모두).
+	property number DieSoundMasterMul = 0.5
+
 	@HideFromInspector
 	property boolean infoSoundsResolved = false
 
@@ -139,6 +142,19 @@ script Monster extends Component
 	-- 마지막으로 넉백 · 경직을 건 시각(KnockbackInterval 게이트 · WO-034).
 	@HideFromInspector
 	property number lastKnockAt = -1000
+
+	-- 보스 피격 모습(1.0.9 · 사용자 2026-10-15 "보스들 피격 시 피격 모습 나오고 0.6초 만에 원래 모습으로"): 보스 판정 개체(BossSkillRunner · 넥서스 분신)가 패턴 중이 아닐 때 맞으면
+	--   ActionSheet 의 hit 클립을 바로 보이고, 마지막 타격에서 이 초 뒤 지금 상태의 클립(stand · move …)으로 되돌린다. 연타면 계속 hit · 패턴이 시작되면 그쪽이 이긴다. hit 클립이 없는 보스는 그대로.
+	property number BossHitPoseSeconds = 0.6
+
+	@HideFromInspector
+	property boolean bossHitPosing = false
+
+	@HideFromInspector
+	property number bossHitUntil = 0
+
+	@HideFromInspector
+	property string bossHitClip = ""
 
 	-- 위 "방금 맞았다" 창(초). HIT 0.5s(StateSet NCHasTimePassed) + IDLE → CHASE 전이 한두 틱을 덮는다.
 	property number HitResumeWindowSeconds = 1.2
@@ -468,6 +484,18 @@ script Monster extends Component
 	handler HandleStateChangeEvent(StateChangeEvent event)
 		-- 상태 전이(IDLE/WANDER/CHASE/HIT/DEAD …)마다 맞는 클립으로.
 		self:ApplyStateClip(event.CurrentStateName)
+		-- 보스 피격 모습 중(1.0.9)이면: 죽으면 끝 · 그 밖의 전이(HIT → IDLE → CHASE)는 엔진 StateAnimationComponent 가 클립을 갈아도 다음 틱에 hit 를 다시 건다(0.6초를 지킨다).
+		if self.bossHitPosing then
+			if event.CurrentStateName == "DEAD" or self.IsDead then
+				self.bossHitPosing = false
+			else
+				_TimerService:SetTimerOnce(function()
+					if not isvalid(self.Entity) or not self.bossHitPosing or self.IsDead or self:BossCasting() then return end
+					local sr = self.Entity.SpriteRendererComponent
+					if isvalid(sr) and self.bossHitClip ~= "" then sr.SpriteRUID = self.bossHitClip end
+				end, 0.02)
+			end
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -653,6 +681,8 @@ script Monster extends Component
 		local originalHp = self.Hp
 		self.Hp = self.Hp - TotalDamage
 		self:ResolveInfoSounds()
+		-- 1.0.9 · 사용자 2026-10-15 하이퍼 바디 검의 기운: 살아 있던 몬스터가 맞았다(처치 여부 포함). 처치(일반) +1 · 보스 판정 대상은 타수 10회마다 +1 — 규칙 · 귀속은 SwordEnergy.OnMonsterHit 한 곳.
+		if originalHp > 0 and _SwordEnergy ~= nil then _SwordEnergy:OnMonsterHit(self.Entity, event.AttackerEntity, self.Hp <= 0) end
 
 		if self.Hp > 0 or originalHp <= 0 then
 			if self.Hp > 0 and originalHp > 0 then
@@ -664,7 +694,7 @@ script Monster extends Component
 			return
 		end
 
-		self:PlaySoundToMap(self.DieSoundRUID, self.SoundVolume)
+		self:PlaySoundToMap(self.DieSoundRUID, self.SoundVolume * self.DieSoundMasterMul)
 		-- 죽이는 타격도 공격자 쪽으로 돌아본다(A 점검 #83 comment 5831420893 2번 · 사용자 강민구 결정 2026-09-25). 살아 있는 피격(ReactToHit)과 같은 규칙 —
 		-- 보스(BossSkillRunner) 제외 · 레인 미니언 · 수비대는 FaceAttacker 안에서 빠진다. Dead() 보다 먼저 돌려 die 클립이 돌아본 쪽으로 재생된다.
 		if not isvalid(self.Entity.BossSkillRunner) then
@@ -772,6 +802,61 @@ script Monster extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean BossCasting()
+		-- 보스 패턴(시전 대기 · 시전 중) 중인가 — 그동안은 BossSkillRunner 가 시전 스프라이트를 쥐고 있어 피격 모습을 넣거나 되돌리지 않는다.
+		local runner = self.Entity.BossSkillRunner
+		return isvalid(runner) and (runner.pendingSkill ~= nil or runner.activeSkill ~= nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginBossHitPose()
+		-- 보스 피격 모습(1.0.9): hit 클립을 보이고 BossHitPoseSeconds 뒤 되돌리기를 건다(이미 보이는 중이면 끝 시각만 미룬다). 클립 교체는 SpriteRUID(@Sync)라 서버에서.
+		--   🔴 SpriteRUID 를 읽어 비교하지 않는다(@Sync 라 방금 쓴 값이 바로 안 읽힌다 · BossSkillRunner.HoldCastSprite 와 같은 이유) → bossHitPosing 으로만 판단.
+		if self.IsDead or self.BossHitPoseSeconds <= 0 then return end
+		local anim = self.Entity.StateAnimationComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(anim) or not isvalid(sr) then return end
+		local hit = anim.ActionSheet["hit"]
+		if hit == nil or hit == "" then return end
+		self.bossHitUntil = _UtilLogic.ElapsedSeconds + self.BossHitPoseSeconds
+		if self.bossHitPosing then return end
+		self.bossHitPosing = true
+		self.bossHitClip = hit
+		sr.SpriteRUID = hit
+		_TimerService:SetTimerOnce(function() self:CheckBossHitPose() end, self.BossHitPoseSeconds)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckBossHitPose()
+		-- 마지막 타격에서 BossHitPoseSeconds 가 지났으면 원래 모습으로 · 아직이면(연타로 미뤄졌으면) 남은 만큼 다시 건다.
+		if not isvalid(self.Entity) or not self.bossHitPosing then return end
+		local left = self.bossHitUntil - _UtilLogic.ElapsedSeconds
+		if left > 0.01 then
+			_TimerService:SetTimerOnce(function() self:CheckBossHitPose() end, left)
+			return
+		end
+		self:EndBossHitPose()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndBossHitPose()
+		-- 피격 모습 끝: 지금 상태의 클립(IDLE → stand · CHASE → move …)으로 되돌린다. 죽었거나 패턴 중이면 손대지 않는다(die · 시전 스프라이트가 이긴다).
+		self.bossHitPosing = false
+		if self.IsDead or self:BossCasting() then return end
+		local anim = self.Entity.StateAnimationComponent
+		local sr = self.Entity.SpriteRendererComponent
+		if not isvalid(anim) or not isvalid(sr) then return end
+		local ruid = ""
+		local sc = self.Entity.StateComponent
+		if isvalid(sc) then
+			local key = anim:StateStringToAnimationKey(sc.CurrentStateName)
+			if key ~= nil and key ~= "" and key ~= "hit" then ruid = anim.ActionSheet[key] or "" end
+		end
+		if ruid == nil or ruid == "" then ruid = anim.ActionSheet["stand"] or "" end
+		if ruid ~= "" then sr.SpriteRUID = ruid end
+	end
+
+	@ExecSpace("ServerOnly")
 	method void ReactToHit(Entity attacker, number damage)
 		-- 살아 있는 피격에만 부른다 (HandleHitEvent). 넉백 + 경직 + 플래시.
 		-- 2026-09-25 (#40 5813661726 · B 가 넣고 A 가 리뷰 승인 · #83): ② 공격자 쪽으로 돌아보기(보스 제외) · ③ 맞은 시각 기록(StateTypeChase 서 있기 생략).
@@ -787,6 +872,8 @@ script Monster extends Component
 			if isvalid(runner) and runner.pendingSkill ~= nil then
 				return
 			end
+			-- 피격 모습 0.6초(1.0.9): 아래 1% 문턱(밀림 · 플래시)과 상관없이 맞을 때마다 hit 클립 · 마지막 타격 0.6초 뒤 원래 모습.
+			self:BeginBossHitPose()
 			-- 최대 HP 의 1% 미만 피해는 안 밀림 (플래시도 생략 — 잔타에 흔들리지 않게)
 			if self.MaxHp > 0 and damage < self.MaxHp * self.BossKnockbackHpRatio then
 				return

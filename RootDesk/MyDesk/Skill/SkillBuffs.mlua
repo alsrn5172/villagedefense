@@ -20,6 +20,8 @@ script SkillBuffs extends Logic
     --   HYPER_BODY     하이퍼 바디(SK_W21 · 버프): 최대 HP +20~60% 는 A 의 StatService BUFF 레이어(SetLayerCsv · 계약상 B 몫)로 넣고,
     --                  피해 −20~40% 는 GetDamageMul/ReduceDamage 로 낸다(A 의 PlayerHit 연결 대기).
     --                  2026-09-24 b/skill-prehit-hook 부터 PlayerHit.OnHit 사전 훅(ModifyIncomingDamage)으로 HP 감산 전에 준다(자가 배선 HyperBodySelfWire 는 끔).
+    --                  1.0.9 · 사용자 2026-10-15: 지속 중 검의 기운 1~60(Skill/SwordEnergy) · 60 에서 같은 키 재입력 = 콤보 데스폴트(IsRecastActive / LocalIsRecastActive 가 SwordEnergy 의 준비 여부를 본다).
+    --                  하이퍼 바디가 끝나는 모든 길(만료 · 죽음 · 매치 초기화 · 콤보 데스폴트)은 OnBuffEnded 를 지나므로 거기서 SwordEnergy.OnHyperBodyEnded 가 검의 기운을 0 으로 한다.
     --   INVULNERABLE   불굴의 진(SK_W31 · 궁 · 2026-09-13 사용자 변경): 8초간 ① HP = 최대 HP 고정(StartUnyielding 0.1s 틱 + 피격 시 즉시)
     --                  ② 피격 경직·넉백 없음(PlayerHit.OnHit 이 IsUnyielding 이면 기본 피격 처리를 건너뛰고 OnUnyieldingHit 만 · 아이언 바디 반사는 그대로)
     --                  ③ 피격 무적 시간 절반(PlayerHit.IsHitTarget 이 GetHitImmuneMul 을 곱한다). 태그 이름은 계약(INVULNERABLE) 그대로.
@@ -165,7 +167,32 @@ script SkillBuffs extends Logic
     -- 1.0.7 (사용자 2026-10-14): 쉐도우 파트너의 공격속도 +20% 는 없앴다 — 이 배율 property(ShadowPartnerAttackSpeedMul 1.2)도 지웠다. GetAttackSpeedMul · LocalAttackSpeedMul 은 늘 1(호출 자리만 남김).
     -- 그 대신 쉐도우 파트너 지속 중에는 럭키 세븐 키가 어벤저가 된다(VariantSpec SK_T11_AV) — 시전 간격(공격 속도)만 럭키 세븐보다 이 배율만큼 빠르다(락 ÷ · 모션 ×).
     --   럭키 세븐 + 공속 20%(예전) = 어벤저(지금)의 단일 대상 DPS 가 같다: 둘 다 시전 간격 0.4 ÷ 1.2 = 0.333 s · 시전마다 대상 하나에 럭키 세븐 2발 합계 피해(+ 분신 몫).
-    property number AvengerAttackSpeedMul = 1.2
+    -- 1.0.9 (사용자 2026-10-15): 어벤저 공격 속도 **절반**(예전 1.2 → 0.6) · 피해 % ×2(SkillExecutors.effectOverrides.SK_T11_AV.damageMul 2).
+    --   배율 0.6 이면 시전 락 0.4 ÷ 0.6 = 0.667 s(예전 0.333 s) · 모션 재생 × 0.6 · 팔 호 · 발사 지연 ÷ 0.6 — 시전 락 · 모션 · 발사 지연이 전부 이 한 값을 따라간다(VariantSpec.attackSpeedMul).
+    --   한 번 던질 때 대상 하나에 주는 피해는 2배 · 던지는 간격도 2배라 단일 대상 초당 피해는 예전과 같고(앞의 적 2마리를 뚫는 건 그대로) 럭키 세븐 대비 속도만 1.2배 → 0.6배.
+    property number AvengerAttackSpeedMul = 0.6
+
+    -- 쉐도우 파트너 쿨타임 감소(1.0.9 · 사용자 2026-10-15): 쉐도우 파트너(SK_T22 · SHADOW_PARTNER) 지속 중 **상대를 때리는 타수 1회마다** 쉐도우 파트너의 남은 쿨타임을 이만큼(초) 줄인다.
+    --   타수 = SkillBuffs.OnSkillHitMonster 가 불리는 횟수(기본 공격 · 스킬 타격 · 투사체 명중 · 분신(열화 투사체) 명중 모두 · 어벤저는 맞은 적마다 2타 = 픽파켓 동전 수와 같다).
+    --   0 아래로는 안 내려간다(PlayerSkillState.ReduceCooldown). 쿨타임은 시전 순간 시작(90 s)이라 지속 60 s 동안 돌고 있다 — 안 돌고 있으면 건너뛴다(쌓아 두지 않는다).
+    property number ShadowPartnerHitCooldownCut = 0.1
+
+    -- 줄이는 값을 모아서 서버 원장 · 클라 HUD 에 반영하는 최소 간격(초). 10타 스킬이 RPC 10번을 쏘지 않게 이 간격마다 한 번(+ 마지막 타 뒤 한 번 더).
+    property number ShadowPartnerCooldownPushInterval = 0.25
+
+    property string ShadowPartnerSkillId = "SK_T22"
+
+    -- 에너지 쉴드가 막은 양을 파란 숫자로(1.0.9 · 사용자 2026-10-15 "막을 때 흡수 한국말 말고 파란색으로 숫자 뜨게"): 보호막이 다 받아 낸 타격은 HP · 경직 · 피해 숫자가
+    --   전부 없어서(PlayerHit 가 기본 피격을 건너뜀) "안 맞은 것" 처럼 보였다. 막은 양을 맞은 플레이어 머리 위에 그 맵 클라 전부에게 띄운다(AbsorbByShield → ShowShieldAbsorb).
+    --   스킨 = 공식 예제의 MP 회복 숫자 스킨. "" = 안 띄움.
+    property string ShieldAbsorbSkinId = "0910d8fa5eac47dbbff4f30e9fb07a50"
+
+    -- 보호막이 깨지는 타격(남은 피해가 HP 로 들어가 보라 피해 숫자도 같이 뜬다)일 때 파란 숫자를 이만큼 위로 올려 겹치지 않게(월드 단위).
+    property number ShieldAbsorbBrokenOffsetY = 0.45
+
+    -- [서버] userId -> { sec = 아직 반영 안 한 줄일 초, hits = 그 타수, lastAt = 마지막 반영 시각, timer = 후행 반영 타이머가 걸려 있나 }.
+    @HideFromInspector
+    property table shadowCdPending = {}
 
     -- [서버] userId -> 하이퍼 바디로 StatService BUFF 레이어에 넣은 maxhp 보너스(평값). 재시전·만료 때 차이만 다시 계산한다.
     property table hyperBodyBonus = {}
@@ -180,6 +207,11 @@ script SkillBuffs extends Logic
 
     -- [서버] userId -> 에너지 쉴드 남은 보호막(정수). 버프가 없으면 무시된다(GetShield 가 0).
     property table shields = {}
+
+    -- [클라] 내 에너지 쉴드 남은 보호막 미러(1.0.9 · 사용자 2026-10-15 "에너지 쉴드 얼마 남았는지 안 보이니까 HP 바에 푸른색 쉴드 바"). 서버가 바뀔 때마다 SyncShield 로 민다.
+    --   StatusHUDController 가 HP 바 위에 오른쪽부터 최대 HP 대비 비율만큼 그린다. 0 = 없음.
+    @HideFromInspector
+    property integer localShield = 0
 
     -- [서버] userId -> 플레이어 엔티티 HitEvent 핸들러 (AttachHitListener). OnEndPlay 에서 전부 끊는다.
     property table hitHandlers = {}
@@ -516,6 +548,8 @@ script SkillBuffs extends Logic
         -- 하이퍼 바디(SK_W21): 최대 HP 보너스는 버프 원장이 아니라 A 의 StatService 가 들고 있어야 한다(장비·레벨 보너스와 같은 합산 경로).
         if buffTag == self.TagHyperBody then
             self:ApplyHyperBodyHp(userId, ratio)
+            -- 1.0.9 · 사용자 2026-10-15 검의 기운: 하이퍼 바디가 (다시) 걸렸다 — 클라 미러를 맞춘다(재시전 갱신이면 개수는 그대로).
+            if _SwordEnergy ~= nil then _SwordEnergy:OnHyperBodyStarted(userId) end
         end
         self:OnBuffStarted(userId, buffTag, ratio)
         self:PushBuffs(userId)
@@ -653,6 +687,7 @@ script SkillBuffs extends Logic
             local amount = math.floor(maxHp * ratio / 100)
             if amount < 0 then amount = 0 end
             self.shields[userId] = amount
+            self:SyncShield(amount, userId)
             log("[Buff] ENERGY_SHIELD shield=" .. tostring(amount) .. " (" .. tostring(ratio) .. "% of maxHp " .. tostring(maxHp) .. ") (" .. userId .. ")")
             -- 1.0.8 하이퍼 에너지 차지: 에너지 차지 지속 중에 쉴드를 걸었으면 차지가 하이퍼 상태가 된다(재시전이면 하이퍼 유지).
             self:TryEnterHyperCharge(userId)
@@ -694,14 +729,21 @@ script SkillBuffs extends Logic
         -- 태그별 종료 처리: 보호막 제거 · 알파/틴트 복구 · 루프 이펙트 제거(SkillExecutors.StopBuffLoop).
         if buffTag == self.TagEnergyShield then
             self.shields[userId] = nil
+            self:SyncShield(0, userId)
         elseif buffTag == self.TagDarkSight then
             self:FadeAvatarAlpha(userId, self.DarkSightAlpha, 1, self.DarkSightFadeOutSeconds)
         elseif buffTag == self.TagEnergyCharge then
             self:EndChargeState(userId)
         elseif buffTag == self.TagInvulnerable then
             self:StopUnyielding(userId)
+        elseif buffTag == self.TagHyperBody then
+            -- 1.0.9 · 사용자 2026-10-15 검의 기운: 하이퍼 바디가 어떤 이유로든 끝나면(만료 · 죽음 · 매치 초기화 · 콤보 데스폴트) 검의 기운 0. 끝나는 길이 전부 이 함수를 지난다.
+            if _SwordEnergy ~= nil then _SwordEnergy:OnHyperBodyEnded(userId) end
         elseif buffTag == self.TagShadowPartner then
             log("[Avenger] variant OFF — back to Lucky Seven (" .. userId .. ")")
+            -- 1.0.9: 버프가 끝나는 순간 아직 반영 못 한 쿨타임 감소 몫(≤ ShadowPartnerCooldownPushInterval)이 있으면 지금 반영하고 기록을 비운다(버프 중에 때린 타수 몫이다).
+            self:FlushShadowPartnerCooldown(userId)
+            self.shadowCdPending[userId] = nil
         end
         if _SkillExecutors ~= nil then
             _SkillExecutors:StopBuffLoop(userId, buffTag)
@@ -932,6 +974,8 @@ script SkillBuffs extends Logic
         self.buffs[userId] = {}
         self.hyperCharge[userId] = nil   -- 1.0.8 하이퍼 에너지 차지 기억도 확실히(차지 레코드가 있었다면 위 루프의 EndChargeState 가 이미 지웠다)
         self.castInvulnUntil[userId] = nil
+        self.shadowCdPending[userId] = nil   -- 1.0.9: 쉐도우 파트너 쿨타임 감소 모아 둔 몫도 새 매치로 넘기지 않는다
+        if _SwordEnergy ~= nil then _SwordEnergy:OnMatchReset(userId) end   -- 1.0.9: 검의 기운 · 진행 중인 콤보 데스폴트도 새 매치로 넘기지 않는다
         self:ClearHyperBodyHp(userId)
         -- 태그별 종료 처리가 놓친 스탯 기여분까지 확실히 비운다(BUFF 레이어 = 전부 0). ClearHyperBodyHp 뒤에 둔다 — 그쪽이 MaxHp 되돌리기를 먼저 해야 한다.
         if self.statContrib[userId] ~= nil then
@@ -1059,10 +1103,30 @@ script SkillBuffs extends Logic
         local remain = shield - absorbed
         self.shields[userId] = remain
         log("[Buff] ENERGY_SHIELD absorb " .. tostring(absorbed) .. "/" .. tostring(damage) .. " -> shield " .. tostring(remain) .. " (" .. userId .. ")")
+        self:ShowShieldAbsorb(userId, absorbed, absorbed < damage)
+        if remain > 0 then self:SyncShield(remain, userId) end   -- 0 이면 아래 EndBuffNow → OnBuffEnded 가 0 을 민다
         if remain <= 0 then
             self:EndBuffNow(userId, self.TagEnergyShield, "shield broken")
         end
         return absorbed
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ShowShieldAbsorb(string userId, integer absorbed, boolean broke)
+        -- 막은 양을 파란 숫자로(1.0.9 · ShieldAbsorbSkinId). broke = 이번 타격에 보호막이 깨져 남은 피해가 HP 로 간다 → 보라 피해 숫자와 안 겹치게 위로.
+        if self.ShieldAbsorbSkinId == "" or absorbed == nil or absorbed <= 0 then return end
+        local ent = _UserService:GetUserEntityByUserId(userId)
+        if not isvalid(ent) then return end
+        local oy = 0
+        if broke then oy = self.ShieldAbsorbBrokenOffsetY end
+        self:PlayShieldAbsorbNumber(ent, absorbed, oy)
+    end
+
+    @ExecSpace("Multicast")
+    method void PlayShieldAbsorbNumber(Entity target, integer amount, number offsetY)
+        -- 클라: 그 맵에 target 이 있으면 머리 위에 파란 숫자 하나(다른 맵 클라는 엔티티가 없어 건너뛴다 · DamageFormula.ShowMiss 와 같은 꼴).
+        if not isvalid(target) or _DamageSkinService == nil then return end
+        _DamageSkinService:Play(target, self.ShieldAbsorbSkinId, 0, { amount }, DamageSkinTweenType.Default, false, Vector2(0, offsetY))
     end
 
     @ExecSpace("ServerOnly")
@@ -1113,7 +1177,7 @@ script SkillBuffs extends Logic
 
     method number VariantAttackSpeedMul(string skillId, boolean active)
         -- 버프 변형이 켜져 있을 때의 시전 간격 배율(VariantSpec.attackSpeedMul · 없으면 1). active = 서버 VariantOf / 클라 LocalVariantOf 가 "" 가 아니라는 호출자의 판정.
-        -- 어벤저(SK_T11_AV) 1.2 = 락 ÷ 1.2 · 모션 × 1.2 · 발사 지연 ÷ 1.2. 변형이 아니면(active false) 1. 양쪽 인스턴스 공용(ExecSpace 없음 · 상태를 읽지 않는 순수 계산).
+        -- 어벤저(SK_T11_AV) AvengerAttackSpeedMul(1.0.9 부터 0.6 = 예전 1.2 의 절반) = 락 ÷ 0.6 · 모션 × 0.6 · 발사 지연 ÷ 0.6. 변형이 아니면(active false) 1. 양쪽 인스턴스 공용(ExecSpace 없음 · 상태를 읽지 않는 순수 계산).
         if not active then return 1 end
         local spec = self:VariantSpec(skillId)
         if spec == nil or spec.attackSpeedMul == nil or spec.attackSpeedMul <= 0 then return 1 end
@@ -1129,6 +1193,8 @@ script SkillBuffs extends Logic
     @ExecSpace("ServerOnly")
     method boolean IsRecastActive(string userId, string skillId)
         -- 이 스킬이 "활성 중 재시전" 상태인가(에너지 차지가 도는 중 = 주먹). SkillCaster.RequestCast 가 쿨다운 게이트를 건너뛸 때 본다.
+        -- 1.0.9 · 사용자 2026-10-15: 하이퍼 바디(SK_W21)는 켜져 있고 검의 기운이 60 일 때만 재시전(= 콤보 데스폴트)이다. 태그만 켜진 것으로는 안 된다(쿨다운 게이트가 그대로 막는다).
+        if _SwordEnergy ~= nil and skillId == _SwordEnergy.HyperBodySkillId then return _SwordEnergy:IsDeathfaultReady(userId) end
         local tag = self:RecastTagOf(skillId)
         if tag == "" then return false end
         return self:GetBuff(userId, tag) ~= nil
@@ -1158,10 +1224,59 @@ script SkillBuffs extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void NoteShadowPartnerHit(string userId)
+        -- 쉐도우 파트너 쿨타임 감소(1.0.9 · 사용자 2026-10-15): 타수 1회 = ShadowPartnerHitCooldownCut(0.1)초를 모아 둔다. OnSkillHitMonster 가 타수마다 부른다(분신 타격도 센다).
+        -- 쉐도우 파트너가 켜져 있을 때만(GetBuff = 만료 시각 검사 포함) · 쿨다운이 돌고 있을 때만. 반영은 ShadowPartnerCooldownPushInterval 마다 한 번(FlushShadowPartnerCooldown).
+        local cut = self.ShadowPartnerHitCooldownCut
+        if cut <= 0 or userId == nil or userId == "" or _PlayerSkillState == nil then return end
+        if self:GetBuff(userId, self.TagShadowPartner) == nil then return end
+        local rec = self.shadowCdPending[userId]
+        if rec == nil then
+            -- 돌고 있는 쿨다운이 없으면(리셋 직후 · 이미 0) 쌓지 않는다 — 모아 둔 게 없을 때만 확인하니 평소 타격마다 원장을 뒤지지 않는다.
+            if _PlayerSkillState:GetCooldownRemaining(userId, self.ShadowPartnerSkillId) <= 0 then return end
+            rec = { sec = 0, hits = 0, lastAt = -10, timer = false }
+            self.shadowCdPending[userId] = rec
+        end
+        rec.sec = rec.sec + cut
+        rec.hits = rec.hits + 1
+        local wait = self.ShadowPartnerCooldownPushInterval - (_UtilLogic.ServerElapsedSeconds - rec.lastAt)
+        if wait <= 0 then
+            self:FlushShadowPartnerCooldown(userId)
+        elseif not rec.timer then
+            -- 마지막 타가 간격 안에 있었으면 간격이 찰 때 한 번 더 반영한다(모아 둔 몫이 영영 안 남게).
+            rec.timer = true
+            _TimerService:SetTimerOnce(function()
+                self:FlushShadowPartnerCooldown(userId)
+            end, wait)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void FlushShadowPartnerCooldown(string userId)
+        -- 모아 둔 몫(shadowCdPending)을 쉐도우 파트너 쿨다운에 한 번에 반영한다(PlayerSkillState.ReduceCooldown · 0 밑으로 안 내려가고 클라 HUD 미러에도 보낸다). 비어 있으면 아무것도 안 한다.
+        local rec = self.shadowCdPending[userId]
+        if rec == nil then return end
+        rec.timer = false
+        if rec.sec <= 0 or _PlayerSkillState == nil then return end
+        local sec = rec.sec
+        local hits = rec.hits
+        rec.sec = 0
+        rec.hits = 0
+        rec.lastAt = _UtilLogic.ServerElapsedSeconds
+        local before = _PlayerSkillState:GetCooldownRemaining(userId, self.ShadowPartnerSkillId)
+        if before <= 0 then return end
+        local left = _PlayerSkillState:ReduceCooldown(userId, self.ShadowPartnerSkillId, sec, "ShadowPartner/Hit")
+        log("[ShadowPartner] hit -> cooldown -" .. string.format("%.1f", sec) .. "s (" .. tostring(hits) .. " hit(s)) (left " .. string.format("%.2f", left) .. ", was " .. string.format("%.2f", before) .. ") (" .. userId .. ")")
+    end
+
+    @ExecSpace("ServerOnly")
     method void OnSkillHitMonster(string userId, Entity target, string skillId)
         -- 픽파켓(SK_T12 · STACK_GAIN): 몬스터를 한 번 때릴 때마다(타수당) 메소 동전 1개를 그 자리 발밑 발판에 드랍한다(#40 5884390073 1번 · 기존 드랍 영향 X).
         -- 동전 값 = 스킬 레벨의 1~2(PickpocketValue · 표의 "1~2" 는 개수가 아니라 값). SkillAttack/SkillProjectile.OnAttack · PlayerAttack.CalcDamage(명중만)가 타격마다 부른다.
         -- 동전은 A 의 mesocoin 모델 + DropOwner(주인 = 시전자) — FarmReward.DropCoins 와 같은 스폰 경로. 자동획득이 켜져 있으면 곧 빨려 온다.
+        -- 1.0.9 · 사용자 2026-10-15: 이 훅은 "몬스터를 한 타 맞혔다" 의 단일 입구라 쉐도우 파트너 쿨타임 감소 타수도 여기서 센다(픽파켓을 안 배웠어도 센다 · 아래 PickpocketExcludedSkillIds 와 무관).
+        --   기본 공격 = PlayerAttack.CalcDamage("BASIC" · 명중만) · 스킬 직접 타격 = SkillAttack.OnAttack · 투사체(분신 포함) = SkillProjectile.OnAttack(CoinHits 번 = 어벤저 2).
+        if isvalid(target) and not isvalid(target.PlayerComponent) then self:NoteShadowPartnerHit(userId) end
         if _JobPassiveLogic == nil or not isvalid(target) or isvalid(target.PlayerComponent) then return end
         local perHit = _JobPassiveLogic:PassiveRatio(userId, self.TagPickpocket)
         if perHit <= 0 then return end
@@ -1256,6 +1371,18 @@ script SkillBuffs extends Logic
         local uid = senderUserId
         if uid == nil or uid == "" or _AccountData == nil then return end
         self:SyncPickpocketSound(_AccountData:IsPickpocketSoundOn(uid), uid)
+    end
+
+    @ExecSpace("Client")
+    method void SyncShield(integer amount)
+        -- 서버 → 소유 클라(마지막 인자 = userId): 내 에너지 쉴드 남은 보호막 미러(1.0.9 · HP 바 위 파란 쉴드 바 · StatusHUDController).
+        if amount == nil or amount < 0 then amount = 0 end
+        self.localShield = amount
+    end
+
+    method integer LocalShield()
+        -- 클라 HUD 용: 내 남은 보호막(없으면 0).
+        return self.localShield
     end
 
     @ExecSpace("Client")
@@ -1388,7 +1515,7 @@ script SkillBuffs extends Logic
         end
         if skillId == "SK_T11" then
             -- 1.0.7 §쉐도우 파트너(사용자 2026-10-14): 쉐도우 파트너 지속 중 럭키 세븐 키 = 어벤저(큰 표창 1개 · 앞의 적 2마리 관통 · 럭키 세븐과 같은 판정 · 피해 합 · MP · 시전 간격만 ÷ attackSpeedMul).
-            --   lockSkillId = 시전 락을 이 스킬의 값에서 가져온다(럭키 세븐 0.4 → SkillCaster 가 attackSpeedMul 로 나눠 0.333). 아이콘 = 원작 어벤져 팩 skill/800033.img/skill/80003327 의 icon(32×32).
+            --   lockSkillId = 시전 락을 이 스킬의 값에서 가져온다(럭키 세븐 0.4 → SkillCaster 가 attackSpeedMul 로 나눠 1.0.7 은 0.333 · 1.0.9 부터 0.6 으로 나눠 0.667). 아이콘 = 원작 어벤져 팩 skill/800033.img/skill/80003327 의 icon(32×32).
             return { key = "SK_T11_AV", baseSkillId = "SK_T11", buffTag = self.TagShadowPartner, name = "어벤저",
                 icon = "7e0a9664d63842d0bc932e1607a0b2fe", mpCost = -1, cooldown = 0,
                 lockSkillId = "SK_T11", attackSpeedMul = self.AvengerAttackSpeedMul }
@@ -1529,6 +1656,8 @@ script SkillBuffs extends Logic
     @ExecSpace("ClientOnly")
     method boolean LocalIsRecastActive(string skillId)
         -- 클라 예측: 이 스킬이 활성 중 재시전 상태인가(에너지 차지 변신 중). SkillCaster.Cast 가 쿨다운 예측 게이트를 건너뛸 때 본다.
+        -- 1.0.9: 하이퍼 바디(SK_W21)는 켜짐 + 검의 기운 60 미러일 때만(서버 IsRecastActive 와 같은 규칙 · 콤보 데스폴트).
+        if _SwordEnergy ~= nil and skillId == _SwordEnergy.HyperBodySkillId then return _SwordEnergy:LocalIsDeathfaultReady() end
         local tag = self:RecastTagOf(skillId)
         if tag == "" then return false end
         return self:LocalIsActive(tag)
