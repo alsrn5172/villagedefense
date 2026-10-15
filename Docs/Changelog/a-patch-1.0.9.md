@@ -34,6 +34,9 @@
 - 보호막이 다 받아 낸 타격은 HP · 경직 · 넉백 · 피해 숫자가 없어(정상 · `PlayerHit` 가 기본 피격을 건너뜀) "안 맞은 것" 처럼 보였다 → `SkillBuffs.AbsorbByShield` 가 막은 양을 `ShowShieldAbsorb` → `PlayShieldAbsorbNumber`(Multicast)로 맞은 플레이어 머리 위에 파란 숫자(`ShieldAbsorbSkinId` = 공식 예제 MP 회복 숫자 스킨 0910d8fa…). 깨지는 타격은 `ShieldAbsorbBrokenOffsetY`(0.45) 위로.
 - 쉴드 바: `SkillBuffs.SyncShield`(Client · 시작 · 흡수 · 종료 때 소유 클라로) → `localShield` / `LocalShield()`. `StatusHUD` `Hp/img_shield`(img_bar 와 같은 칸 · 오른쪽 끝 pivot 1 · MP 바 그림 af6be26d · img_bar 와 HP 숫자 사이 순서 · 처음 꺼짐 · 고정 id 5d1e6a0b…) · `StatusHUDController.SetShieldBar`: 폭 = HP 바 전체 폭 × 남은 보호막 ÷ 최대 HP(오른쪽에서 왼쪽으로) · 0 이면 끔. 빌더 스크립트 `handoff/patch107-agents/_work/P/hp-shield-bar.cjs`.
 
+- 조정(사용자 2026-10-15 "필요 콤보 수 60 에서 44 로 · 14타를 한 번에"): `SwordEnergy.MaxEnergy` 44 → 같은 날 22("44 스택 말고 22 스택으로") · 보스 타수 `BossHitsPerEnergy` 10 → 8("보스에게는 타수 8마다 1 스택") · HUD 깜빡임 · 시전 조건 같이 · `SkillInfo.csv` SK_W21 설명(22개 · 보스 8번). 14타 = 첫 타 시각(2.04)에 `DealSkillDamage` 한 번(대상마다 판정 1번 × 14 · 880% × 14 · 숫자 14개 · 상한 15명) · 명중 그림 14번 · 명중음 4타 간격(연출).
+- 화면 찢기(사용자 2026-10-15 "화면이 갈라지기 직전에 화면 캡처 → 그 화면으로 모든 화면을 덮고 → 데스폴트 이펙트가 찢으면서 나오는 연출" · 계단식 사선 · 시전자 화면만): 가르는 순간보다 `DeathfaultTearCaptureLead`(0.1) 먼저 `ScreenshotService.CaptureFullScreenAsPixelDataAsync`(UI 포함) → `ui/SkillCutsceneGroup/CdfTear`(GroupOrder 30 · 가로 36줄 × 왼 · 오른 조각 마스크 + `RawImageGUIRenderer`) 로 화면 전체를 덮고 → 가르는 순간 선(기울기 0.40 · 바라보는 쪽 뒤집기) 양쪽 조각이 수직으로 340px 벌어지며(0.5초 · 끝 무렵 흐려짐) 맨 위에 원작 대각 베기(effect 15 ~ 23 프레임 · ×1.7). MSW UI 마스크가 회전을 못 해 정확한 사선 대신 계단(30px)이다. 빌더 `handoff/patch107-agents/_work/P/apply-cdf-tear.cjs`(고정 id) · 코드 `BeginDeathfaultTear` · `ShowDeathfaultTear`.
+
 ## 8. 보스 피해 · 발록 졸개 (사용자 2026-10-15)
 
 - `BossInfo.AttackPower`(몸통) · `BossSkills.Damage`(소환 줄 제외): 주니어 발록 ×2 · 마을 보스 6종(마노 포함) ×5 · 킹슬라임 · 머쉬맘 · 스텀피 몸통은 ×25(따로 ×5 더). 스크립트 `handoff/patch107-agents/_work/P/boss-damage-109.cjs`(그 칸 글자만 · BOM · CRLF 그대로).
@@ -54,6 +57,10 @@
 - `EquipSellUIController`: 더블클릭(같은 칸 0.35초 안) · 우클릭(`KeyboardKey.Mouse1` + 마우스가 올라간 칸 · `ButtonStateChangeEvent`) · 좌클릭 뒤 [판매] → 한 입구 `RequestSellFor` → 확인 창 "판매하시겠습니까?"(장비 · 받는 것) · Enter = 판매 · Esc = 취소 · "이번 게임에서 다시 묻지 않기" v 켜고 판매하면 이번 게임 동안 바로 판다(`skipConfirm` · 매치마다 인스턴스 룸이라 판이 바뀌면 다시 묻는다).
 - 확인 창 `VillageWorkshopGroup` 루트 `SellConfirmDim` · `SellConfirm`(기존 스킨 · 이용권 상점 구매 확인과 같은 조각 · 고정 id · `handoff/patch107-agents/_work/P/apply-sell-confirm.cjs`).
 - `ChatService.OnKeyDown`: 확인 창 Enter 는 채팅 입력을 열지 않는다(`ConsumesEnter`) · `UIEscStack`: 확인 창 Esc 는 공방 창까지 닫지 않는다(`ConsumesEsc`).
+
+## 13. 개발 리모컨 전직 버튼 (사용자 2026-10-15)
+
+- `DevStatRemoteGroup` Panel/JobRow(전사 · 마법사 · 궁수 · 도적 · 해적 · 차수 +1 · 기존 리모컨 버튼 모양 · `handoff/patch107-agents/_work/P/apply-remote-job.cjs` · 고정 id). `DevStatRemote.RequestJob` · `RequestTierUp` → `PlayerSkillState.DevForceJob`(레벨 조건 없이 · 정식 `ChangeJob` → JobChangedEvent · 차수 = 레벨이 허용하는 만큼 최소 1 · 다른 직업에서 갈아타면 1차 이상 스킬 지우고 SP 환불 · 버프 비움) · `DevForceTierUp`(다음 차수).
 
 ## 7. 장비 판매 — 강화 보석 절반 환급 (사용자 2026-10-15)
 

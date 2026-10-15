@@ -800,6 +800,59 @@ script PlayerSkillState extends Logic
             .. ") skills cleared=" .. tostring(cleared) .. " · no JobChangedEvent (" .. uid .. ")")
     end
 
+    @ExecSpace("ServerOnly")
+    method void DevForceJob(string uid, string jobId)
+        -- ⚠ DEV 리모컨 전직(1.0.9 · DevStatRemote.RequestJob · 사용자 2026-10-15 "리모콘에 전직 버튼"): 레벨 조건 없이 jobId 로.
+        --   초보자 → 1차 전직과 같은 정식 경로(ChangeJob · JobChangedEvent → 스탯 · 외형 · 직업 기본 스킬). 차수 = 지금 레벨이 허용하는 만큼(최소 1).
+        --   다른 직업에서 갈아타면: 1차 이상 스킬을 지우고 쓴 SP 를 돌려준다(SummonManager.GrantSp) · 버프 비움(F10 DevSwitchJob 과 같은 이유).
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        _JobDatabase:EnsureLoaded()
+        if _JobDatabase:GetJob(jobId, 1) == nil then
+            log_warning("[Skill] [DEV remote] unknown job " .. tostring(jobId) .. " (" .. uid .. ")")
+            return
+        end
+        if u.jobId == jobId then
+            log("[Skill] [DEV remote] already " .. jobId .. "/" .. tostring(u.tier) .. " (" .. uid .. ")")
+            return
+        end
+        if u.jobId ~= self.NoviceJobId then
+            local refund = 0
+            for t, n in pairs(u.spentByTier) do
+                if t >= 1 and n ~= nil and n > 0 then
+                    refund = refund + n
+                    u.spentByTier[t] = 0
+                end
+            end
+            local keep = {}
+            for sid, lv in pairs(u.skillLevels) do
+                local sk = _SkillDatabase:GetSkill(sid)
+                if sk ~= nil and math.floor(sk.requiredTier or 0) <= 0 then keep[sid] = lv end
+            end
+            u.skillLevels = keep
+            u.cooldownEndsAt = {}
+            if _SkillBuffs ~= nil then _SkillBuffs:ResetMatchState(uid) end
+            if refund > 0 and _SummonManager ~= nil then _SummonManager:GrantSp(uid, refund) end
+            log("[Skill] [DEV remote] switch " .. u.jobId .. " -> " .. jobId .. " · skills cleared · SP refund " .. tostring(refund) .. " (" .. uid .. ")")
+        end
+        local tier = math.max(1, self:TierForLevel(jobId, self:GetLevel(uid)))
+        self:ChangeJob(uid, jobId, tier)
+        self:PushState(uid)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void DevForceTierUp(string uid)
+        -- ⚠ DEV 리모컨 차수 +1(1.0.9 · DevStatRemote.RequestTierUp): 레벨 조건 없이 다음 차수(ChangeJob). 초보자 · 최대 차수면 무시.
+        local u = self:EnsureUser(uid)
+        if u == nil then return end
+        if u.jobId == self.NoviceJobId or u.tier >= self.MaxTier then
+            log("[Skill] [DEV remote] tier up skipped " .. u.jobId .. "/" .. tostring(u.tier) .. " (" .. uid .. ")")
+            return
+        end
+        self:ChangeJob(uid, u.jobId, u.tier + 1)
+        self:PushState(uid)
+    end
+
     method number TierForLevel(string jobId, number level)
         -- 그 직업에서 레벨이 허용하는 최고 차수(JobTier.ReqLevel · 10/20/30). TryAdvanceTier 의 반복과 같은 판정.
         local tier = 0
