@@ -62,6 +62,7 @@ script SkillBuffs extends Logic
 
     -- [클라] 로컬 유저 미러: buffTag -> { level, endsAt, skillId }
     property table mirrorBuffs = {}
+    property number mirrorEquipmentAttackSpeed = 0
 
     -- [클라] 버프 변형 아이콘(ApplyVariantIcon): 0.1초 간격 · 바꾸기 전 원래 아이콘(원래 스킬 ID → IconRUID).
     property number variantIconTick = 0
@@ -701,6 +702,9 @@ script SkillBuffs extends Logic
             -- 1.0.7: 쉐도우 파트너가 켜지는 동안 럭키 세븐 키 = 어벤저(VariantOf 가 이 버프로 판정한다 · 원장에 있으면 곧바로 켜짐).
             log("[Avenger] variant ON — Lucky Seven key = Avenger while SHADOW_PARTNER lasts (" .. userId .. ")")
         end
+        if _StatService ~= nil and (buffTag == self.TagShadowPartner or buffTag == self.TagGuaranteedCrit) then
+            _StatService:Recalculate(userId, "CRIT_BUFF")
+        end
     end
 
     @ExecSpace("ServerOnly")
@@ -747,6 +751,9 @@ script SkillBuffs extends Logic
         end
         if _SkillExecutors ~= nil then
             _SkillExecutors:StopBuffLoop(userId, buffTag)
+        end
+        if _StatService ~= nil and (buffTag == self.TagShadowPartner or buffTag == self.TagGuaranteedCrit) then
+            _StatService:Recalculate(userId, "CRIT_BUFF")
         end
     end
 
@@ -985,9 +992,13 @@ script SkillBuffs extends Logic
         -- 피스트인레인지 숫자 간격(시전자 DelayPerAttack 을 잠깐 0.12 로)도 매치를 떠날 때·새 매치 때 곧바로 되돌린다(2026-09-27 · 없으면 아무 일 없음).
         if _SkillExecutors ~= nil then _SkillExecutors:RestorePunchDamageSkinDelay(userId, "match reset") end
         self:PushBuffs(userId)
+        self:SyncEquipmentAttackSpeed(0, userId)
+        if _StatService ~= nil then _StatService:Recalculate(userId, "BUFF_MATCH_RESET") end
     end
 
     -- ───────────────────────── 서버: 피격 파이프라인 조회 (A 의 PlayerHit 가 부른다) ─────────────────────────
+
+
 
     @ExecSpace("ServerOnly")
     method number GetDamageMul(string userId)
@@ -1162,18 +1173,30 @@ script SkillBuffs extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method number GetAttackSpeedMul(string userId)
-        -- 공격속도 배율(1.1-B18): 시전 락 · 후딜 · 발사 지연 · 모션 재생에 쓴다(서버).
-        -- 1.0.7(사용자 2026-10-14): 쉐도우 파트너의 +20% 를 없앴다 → 지금은 어떤 버프도 이 배율을 올리지 않아 늘 1. 호출 자리(SkillCaster · SkillAttack · SkillExecutors · PlayerMotion)는 그대로 둔다(÷1 · ×1).
-        -- 어벤저(쉐도우 파트너 중 럭키 세븐 키)의 빠른 시전 간격은 여기가 아니라 변형 정의의 attackSpeedMul(VariantSpec · VariantAttackSpeedMul)이 정한다.
-        return 1
+    method number ShadowCritDamagePct(string userId)
+        local b = self:GetBuff(userId, self.TagShadowPartner)
+        if b == nil then return 0 end
+        return b.secondary or 0
     end
+
+    @ExecSpace("ServerOnly")
+    method number GetAttackSpeedMul(string userId)
+        local u = (_StatService ~= nil) and _StatService:GetLedger(userId) or nil
+        local pct = (u ~= nil and u.final ~= nil) and (u.final.attackspeed or 0) or 0
+        return math.max(0.01, 1 + pct / 100)
+    end
+
+    @ExecSpace("Client")
+    method void SyncEquipmentAttackSpeed(number pct)
+        self.mirrorEquipmentAttackSpeed = pct
+    end
+
 
     @ExecSpace("ClientOnly")
     method number LocalAttackSpeedMul()
-        -- 공격속도 배율(클라 · 로컬 플레이어 미러 기준 · GetAttackSpeedMul 과 같은 값 = 1.0.7 부터 늘 1). 클라 시전 락 · 기본 공격 락이 쓴다.
-        return 1
+        return math.max(0.01, 1 + self.mirrorEquipmentAttackSpeed / 100)
     end
+
 
     method number VariantAttackSpeedMul(string skillId, boolean active)
         -- 버프 변형이 켜져 있을 때의 시전 간격 배율(VariantSpec.attackSpeedMul · 없으면 1). active = 서버 VariantOf / 클라 LocalVariantOf 가 "" 가 아니라는 호출자의 판정.
