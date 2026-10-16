@@ -17,7 +17,13 @@ script ItemCatalog extends Logic
 	property number GemEffectMul = 2.0
 
 	-- 직업 장비 +3 주/부스탯 기준표 (WO-050 §2-20)
-	property string JobStatFull = "10=3/1;15=6/2;20=13/4;25=28/9;30=60/20"
+	property string JobStatPrimaryCurve = "10=3/4/5/6;15=7/9/11/13;20=14/19/23/28;25=22/30/37/44;30=30/40/50/60"
+
+	property string JobStatSecondaryCurve = "10=1/1/2/2;15=2/3/3/4;20=5/6/8/9;25=8/10/13/15;30=10/13/17/20"
+
+	property string JobStatDouble25Primary = "44/59/73/88"
+
+	property string JobStatDouble25Secondary = "15/19/25/29"
 
 	-- 마법사 옷의 단계별 고정 최대 MP 증가 비율 (WO-050 §2-11)
 	property number MagicianClothMpPerEnhance = 1 / 3
@@ -133,7 +139,7 @@ script ItemCatalog extends Logic
 						speed = num("BaseSpeed"), jump = num("BaseJump"), accuracy = num("BaseAccuracy"), avoid = num("BaseAvoid"),
 						maxhp = num("BaseMaxHp"), maxmp = num("BaseMaxMp"),
 						-- 방어율 무시 %p(1.0.7 §4 · 2026-10-14 · 모자만 · 열 맨 뒤 IgnoreDefense · 빈칸 = 0). EQUIP 레이어로 합산돼 StatService.final.ignoredef 가 된다.
-						ignoredef = num("IgnoreDefense"),
+						ignoredef = num("IgnoreDefense"), attackspeed = num("BaseAttackSpeed"),
 					},
 					mastery = num("Mastery"),
 					maxDurability = math.floor(num("MaxDurability")),
@@ -546,15 +552,28 @@ script ItemCatalog extends Logic
 		return (row[gem.statKey] or 0) * self.GemEffectMul
 	end
 
-	method integer JobStatAt(integer fullValue, integer level)
-		-- 직업 장비 스탯의 강화 단계별 값. +0 은 풀강의 절반이며 +3 에서 표의 풀강 값에 도달한다.
-		local base = math.floor(fullValue / 2 + 0.5)
-		-- 10제 표는 +0~+2 가 2/1 로 같으므로 일반 반올림의 +2 경계만 표에 맞춘다.
-		if fullValue == 3 and level < 3 then
-			return base
+	method number JobStatTotal(integer tier, integer level, integer pieces, boolean secondary)
+		local curve = self.JobStatPrimaryCurve
+		if secondary then curve = self.JobStatSecondaryCurve end
+		local values = ""
+		for key, body in string.gmatch(curve, "(%d+)=([^;]+)") do
+			if tonumber(key) == tier then values = body break end
 		end
-		return base + math.floor((fullValue - base) * level / 3 + 0.5)
+		local mul = pieces
+		if tier == 25 and pieces == 2 then
+			values = self.JobStatDouble25Primary
+			if secondary then values = self.JobStatDouble25Secondary end
+			mul = 1
+		end
+		local idx = 0
+		local want = math.max(0, math.min(3, level))
+		for value in string.gmatch(values, "[^/]+") do
+			if idx == want then return (tonumber(value) or 0) * mul end
+			idx = idx + 1
+		end
+		return 0
 	end
+
 
 	method any ComputeEnhance(any def, integer enh, any gems)
 		-- ⑫ B안(사용자 확정 2026-09-05): 단계 lv=1..enh 마다
@@ -593,18 +612,7 @@ script ItemCatalog extends Logic
 		if def.weaponType == "SWORD_2H" then
 			jobStatMul = jobStatMul * 2
 		end
-		local fullPrimary = 0
-		local fullSecondary = 0
-		if primaryKey ~= nil and secondaryKey ~= nil then
-			local tier = tonumber(def.enhanceTier) or tonumber(def.reqLevel) or 0
-			for levelText, primaryText, secondaryText in string.gmatch(self.JobStatFull, "(%d+)=([%d]+)/([%d]+)") do
-				if tonumber(levelText) == tier then
-					fullPrimary = tonumber(primaryText) or 0
-					fullSecondary = tonumber(secondaryText) or 0
-					break
-				end
-			end
-		end
+		local tier = tonumber(def.enhanceTier) or tonumber(def.reqLevel) or 0
 		for lv = 1, (enh or 0) do
 			local row = self:GetSlotBonus(def.slot, def.enhanceTier, lv)
 			local er = self:GetEnhanceRow(lv)
@@ -628,11 +636,11 @@ script ItemCatalog extends Logic
 			if row ~= nil and (row.fixedaccuracy or 0) ~= 0 then
 				fixed.accuracy = (fixed.accuracy or 0) + row.fixedaccuracy * mul
 			end
-			if fullPrimary > 0 and fullSecondary > 0 then
-				local primaryGain = self:JobStatAt(fullPrimary, lv) - self:JobStatAt(fullPrimary, lv - 1)
-				local secondaryGain = self:JobStatAt(fullSecondary, lv) - self:JobStatAt(fullSecondary, lv - 1)
-				fixed[primaryKey] = (fixed[primaryKey] or 0) + primaryGain * jobStatMul
-				fixed[secondaryKey] = (fixed[secondaryKey] or 0) + secondaryGain * jobStatMul
+			if primaryKey ~= nil and secondaryKey ~= nil then
+				local primaryGain = self:JobStatTotal(tier, lv, jobStatMul, false) - self:JobStatTotal(tier, lv - 1, jobStatMul, false)
+				local secondaryGain = self:JobStatTotal(tier, lv, jobStatMul, true) - self:JobStatTotal(tier, lv - 1, jobStatMul, true)
+				fixed[primaryKey] = (fixed[primaryKey] or 0) + primaryGain
+				fixed[secondaryKey] = (fixed[secondaryKey] or 0) + secondaryGain
 			end
 			if def.reqJob == "MAGICIAN" and (def.slot == "TOP" or def.slot == "BOTTOM") and (def.stats.maxmp or 0) > 0 then
 				local mpGain = math.floor(def.stats.maxmp * self.MagicianClothMpPerEnhance + 0.5)
@@ -660,6 +668,8 @@ script ItemCatalog extends Logic
 		return { fixed = fixed, gem = gemSum }
 	end
 
+
+
 	method string FmtStat(number v, string key)
 		-- 장비 수치 글자(1.1-F16 · A07): 정수면 소수점 없이(15) · 소수면 한 자리(2.5). key 가 이동속도 · 명중률 · 회피율이면 % 를 붙인다(2026-10-12 결정 · %p 는 안 씀 · 합계와 괄호 안 내역 모두). key 가 "" 면 단위 없음.
 		-- 방어율 무시(ignoredef · 1.0.7 §4)도 % 를 붙인다.
@@ -669,7 +679,7 @@ script ItemCatalog extends Logic
 		else
 			s = string.format("%.1f", v)
 		end
-		if key == "speed" or key == "accuracy" or key == "avoid" or key == "ignoredef" then s = s .. "%" end
+		if key == "speed" or key == "accuracy" or key == "avoid" or key == "ignoredef" or key == "attackspeed" then s = s .. "%" end
 		return s
 	end
 

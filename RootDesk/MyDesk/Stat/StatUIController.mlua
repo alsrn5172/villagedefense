@@ -166,6 +166,15 @@ script StatUIController extends Logic
 	property string ruidToggleOff = "61f1e34c6b7448e98023f9a0c43a25b0"
 
 	@HideFromInspector
+	property Entity statHelpPanel = "c9649514-5c51-404a-bc99-97988fb4ba56"
+	property TextGUIRendererComponent statHelpTitle = "d788a90b-02f9-4c33-9381-e9c106ae03ce"
+	property TextGUIRendererComponent statHelpBody = "577c6901-f298-4192-ba7e-14f761383850"
+	property table statHelp = {}
+	property table hoverStats = {}
+	property string hoveredStat = ""
+	property number statHelpPoll = 0
+	property string statHelpMap = ""
+	property number StatHelpWidth = 420
 	property boolean isOpen = false
 
 	@HideFromInspector
@@ -234,6 +243,7 @@ script StatUIController extends Logic
 		-- 단축키 C(스탯 탭) · V(장비 · 인벤토리 탭) — WorldMapController 의 M 키와 같은 패턴(1.0.3-M7).
 		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
 
+		self:SetupStatHelp()
 		self:SetOpen(false)
 		self:SelectTab(0)
 		log("[CharUI] StatUIController ready (client)")
@@ -254,6 +264,7 @@ script StatUIController extends Logic
 	@ExecSpace("ClientOnly")
 	method void ToggleTab(integer idx)
 		-- 0=스탯 1=장비·인벤토리(1.0.3-M7-01). 그 탭이 보이는 중이면 닫고, 다른 탭이 보이는 중이면 그 탭으로 바꾸고, 닫혀 있으면 열고 그 탭으로 (Open 을 거쳐야 서버에 스탯·인벤토리를 요청한다).
+		self:HideStatHelp()
 		if idx >= 2 then idx = 1 end
 		if self.isOpen then
 			if self.curTab == idx then self:Close() else self:SelectTab(idx) end
@@ -367,6 +378,7 @@ script StatUIController extends Logic
 	@ExecSpace("ClientOnly")
 	method void SetOpen(boolean open)
 		-- Dimmer 와 Window 의 Enable 을 함께 토글한다 (루트 UIGroup 은 항상 켜져 있다).
+		self:HideStatHelp()
 		self.isOpen = open
 		if isvalid(self.dimmer) then self.dimmer.Enable = open end
 		if isvalid(self.window) then self.window.Enable = open end
@@ -656,7 +668,133 @@ script StatUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
+	method void SetupStatHelp()
+		self.hoverStats = {
+			{ key = "str", cell = self.cellStr }, { key = "dex", cell = self.cellDex },
+			{ key = "int", cell = self.cellInt }, { key = "luk", cell = self.cellLuk },
+			{ key = "attack", cell = self.cellAttack }, { key = "defense", cell = self.cellDefense },
+			{ key = "accuracy", cell = self.cellAccuracy }, { key = "avoid", cell = self.cellAvoid },
+			{ key = "crit", cell = self.cellCrit }, { key = "critdmg", cell = self.cellCritDmg },
+			{ key = "ignoredef", cell = self.cellIgnoreDef }, { key = "speed", cell = self.cellSpeed },
+			{ key = "jump", cell = self.cellJump }, { key = "atkspd", cell = self.cellAtkSpeed },
+			{ key = "power", cell = self.cellPower },
+		}
+		self:HideStatHelp()
+	end
+
+	@ExecSpace("Client")
+	method void SetStatHelpCsv(string csv)
+		self.statHelp = {}
+		for key, value in string.gmatch(csv, "([^;=]+)=([^;]*)") do self.statHelp[key] = value end
+		if self.hoveredStat ~= "" then self:ShowStatHelp(self.hoveredStat) end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean StatHelpContains(Entity entity, Vector2 cursor)
+		if not isvalid(entity) or not entity.Enable then return false end
+		local tr = entity.UITransformComponent
+		if not isvalid(tr) then return false end
+		local point = _UILogic:ScreenToLocalUIPosition(cursor, tr)
+		if point == nil then return false end
+		local w = tr.RectSize.x
+		local h = tr.RectSize.y
+		return point.x >= -w * tr.Pivot.x and point.x <= w * (1 - tr.Pivot.x)
+			and point.y >= -h * tr.Pivot.y and point.y <= h * (1 - tr.Pivot.y)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		self.statHelpPoll = self.statHelpPoll - delta
+		if self.statHelpPoll > 0 then return end
+		self.statHelpPoll = 0.05
+		if not self.isOpen or self.curTab ~= 0 or not isvalid(self.window) or not self.window.Enable or not isvalid(self.contentStat) or not self.contentStat.Enable then self:HideStatHelp() return end
+		local player = _UserService.LocalPlayer
+		local mapId = ""
+		if isvalid(player) and isvalid(player.CurrentMap) then mapId = player.CurrentMap.Id end
+		if self.statHelpMap ~= mapId then self.statHelpMap = mapId self:HideStatHelp() return end
+		local cursor = _InputService:GetCursorPosition()
+		if cursor == nil then self:HideStatHelp() return end
+		for _, row in ipairs(self.hoverStats) do
+			if isvalid(row.cell) then
+				local ent = row.cell.Entity
+				local chipName = "Chip"
+				if ent.Name == "Cell2" then chipName = "Chip2" end
+				local chip = isvalid(ent.Parent) and ent.Parent:GetChildByName(chipName, false) or nil
+				if self:StatHelpContains(ent, cursor) or self:StatHelpContains(chip, cursor) then
+					if self.hoveredStat ~= row.key then self:ShowStatHelp(row.key) end
+					self:PlaceStatHelp()
+					return
+				end
+			end
+		end
+		self:HideStatHelp()
+	end
+
+	@ExecSpace("ClientOnly")
+	method string WrapStatHelp(string text, number width)
+		local out = {}
+		for line in string.gmatch(text .. "\n", "([^\n]*)\n") do
+			local cur = ""
+			for word in string.gmatch(line, "%S+") do
+				local candidate = cur == "" and word or cur .. " " .. word
+				if cur ~= "" and self.statHelpBody:GetPreferredWidth(candidate) > width then table.insert(out, cur) cur = word
+				else cur = candidate end
+			end
+			table.insert(out, cur)
+		end
+		return table.concat(out, "\n")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowStatHelp(string key)
+		if not self.isOpen or self.curTab ~= 0 or not isvalid(self.statHelpPanel) or not isvalid(self.statHelpTitle) or not isvalid(self.statHelpBody) then self:HideStatHelp() return end
+		local text = self.statHelp[key]
+		if text == nil then self:HideStatHelp() return end
+		local cut = string.find(text, "\n", 1, true)
+		if cut == nil then self:HideStatHelp() return end
+		self.hoveredStat = key
+		self.statHelpTitle.Text = string.sub(text, 1, cut - 1)
+		local body = self:WrapStatHelp(string.sub(text, cut + 1), self.StatHelpWidth - 36)
+		self.statHelpBody.Text = body
+		local h = math.max(40, self.statHelpBody:GetPreferredHeight(body, self.StatHelpWidth - 36))
+		h = math.min(440, h + 8)
+		self.statHelpBody.Entity.UITransformComponent.RectSize = Vector2(self.StatHelpWidth - 36, h)
+		self.statHelpPanel.UITransformComponent.RectSize = Vector2(self.StatHelpWidth, h + 72)
+		self.statHelpPanel.Enable = true
+		self:PlaceStatHelp()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceStatHelp()
+		if not isvalid(self.statHelpPanel) or not self.statHelpPanel.Enable or not isvalid(self.window) then return end
+		local tr = self.statHelpPanel.UITransformComponent
+		local root = self.statHelpPanel.Parent.UITransformComponent
+		local cursor = _InputService:GetCursorPosition()
+		if not isvalid(root) or cursor == nil then return end
+		local point = _UILogic:ScreenToLocalUIPosition(cursor, root)
+		if point == nil then return end
+		local wt = self.window.UITransformComponent
+		local center = root:ToLocalPoint(wt.WorldPosition)
+		local left = -root.RectSize.x / 2 + 8
+		local right = root.RectSize.x / 2 - 8
+		local top = root.RectSize.y / 2 - 8
+		local bottom = -root.RectSize.y / 2 + 8
+		local x = center.x + wt.RectSize.x / 2 + 10
+		if x + tr.RectSize.x > right then x = center.x - wt.RectSize.x / 2 - tr.RectSize.x - 10 end
+		x = math.max(left, math.min(right - tr.RectSize.x, x))
+		local y = math.max(bottom + tr.RectSize.y, math.min(top, point.y + 20))
+		tr.anchoredPosition = Vector2(x, y)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideStatHelp()
+		self.hoveredStat = ""
+		if isvalid(self.statHelpPanel) then self.statHelpPanel.Enable = false end
+	end
+
+	@ExecSpace("ClientOnly")
 	method void OnEndPlay()
+		self:HideStatHelp()
 		-- 연결한 이벤트 핸들러를 전부 해제한다.
 		if self.hAp ~= nil then
 			for _, h in ipairs(self.hAp) do
