@@ -9,6 +9,10 @@ script ButtonHoverSound extends Logic
 	--   소리를 안 내는 경우: 버튼이 꺼졌거나(ButtonComponent.Enable false) 엔티티가 계층에서 꺼짐 · 숨김(= 안 열린 창) · 같은 버튼에서 SameButtonGapSeconds 안의 반복 · 전체 MinGapSeconds 안의 겹침 ·
 	--     누르고 뗀 직후(Pressed · Released · Clicked 에서 Hover 로 돌아오는 것)는 올림이 아니라 AfterPressQuietSeconds 동안 안 낸다.
 	--   겹침 확인(2026-10-14): 월드맵 지역 노드는 버튼이 아니라(UITouchEnterEvent) 여기서 안 건다 → WorldMapController.PlayHover 가 따로 낸다. 인벤토리 · 스킬 창 · 스킬 HUD 의 올림 처리는 소리를 내지 않는다(툴팁만).
+	-- 🔴 1.0.15(사용자 2026-10-18 "클릭 가능할 때만 · 인벤토리 창은 소리 없이"): 누르면 실제로 무언가 일어나는 버튼에서만 낸다.
+	--   엔진은 버튼에 클릭 처리가 걸렸는지 알려 주지 않는다 → 클릭을 거는 쪽이 _ButtonHoverSound:Clickable(엔티티):ConnectEvent(ButtonClickEvent, …) 로 등록한다(clickable 표).
+	--   눌러도 아무 일이 없는 상태(재료가 모자란 도감 칸 · 가진 게 아닌 칭호 등)는 그 창이 SetClickable(엔티티, false) 로 끈다. 인벤토리 창(InventoryUIController)은 등록하지 않는다 = 늘 무음.
+	--   툴팁만 띄우는 버튼(클릭 처리 없음)은 등록되지 않아 소리가 안 난다.
 
 	property string HoverSoundRUID = "7eda004ded944e459f1fbb16c7f0f3f4"
 
@@ -50,6 +54,32 @@ script ButtonHoverSound extends Logic
 
 	@HideFromInspector
 	property integer playedCount = 0
+
+	-- clickable[entityId] = true(누르면 무언가 일어남) / false(지금은 아무 일 없음) · 없음 = 클릭 처리가 없는 버튼(소리 없음). 1.0.15.
+	@HideFromInspector
+	property any clickable = nil
+
+	method Entity Clickable(Entity e)
+		-- 클릭 처리를 거는 자리에서 감싸 부른다: _ButtonHoverSound:Clickable(btn.Entity):ConnectEvent(ButtonClickEvent, fn). 등록만 하고 그 엔티티를 그대로 돌려준다.
+		--   ExecSpace 없음 — 어느 쪽에서 불려도 같은 엔티티를 돌려준다(올림음 자체는 클라에서만 난다).
+		if self.clickable == nil then
+			self.clickable = {}
+		end
+		if isvalid(e) then
+			self.clickable[e.Id] = true
+		end
+		return e
+	end
+
+	method void SetClickable(Entity e, boolean on)
+		-- 상태에 따라 누를 수 있는지 바꾼다(예: 재료가 모자란 도감 칸 = false). 클릭 처리가 걸린 뒤에 부른다.
+		if self.clickable == nil then
+			self.clickable = {}
+		end
+		if isvalid(e) then
+			self.clickable[e.Id] = on
+		end
+	end
 
 	@ExecSpace("ClientOnly")
 	method void OnBeginPlay()
@@ -166,6 +196,14 @@ script ButtonHoverSound extends Logic
 		if btn == nil or btn.Enable ~= true then
 			return
 		end
+		-- 1.0.15: 누르면 무언가 일어나는 버튼만(Clickable 로 등록 · SetClickable false 면 지금은 아님).
+		if self.clickable == nil or self.clickable[e.Id] ~= true then
+			return
+		end
+		-- 1.0.15: 인벤토리 창(캐릭터 창의 장비 · 인벤토리 탭)이 열려 있으면 그 창 안의 버튼(탭 · 닫기 포함)은 소리 없음.
+		if self:IsInInventoryWindow(e) then
+			return
+		end
 		if not e.EnabledInHierarchy or not e.VisibleInHierarchy then
 			return
 		end
@@ -184,6 +222,26 @@ script ButtonHoverSound extends Logic
 		if self.playedCount <= 5 then
 			log("[HoverSound] play #" .. tostring(self.playedCount) .. " " .. e.Name)
 		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsInInventoryWindow(Entity e)
+		-- 캐릭터 창(StatUIController.window)이 장비 · 인벤토리 탭(curTab 1)을 보이는 중이고 e 가 그 창 안에 있나(위로 12단계까지 부모를 따라간다).
+		local ui = _StatUIController
+		if ui == nil or ui.curTab ~= 1 or not isvalid(ui.window) then
+			return false
+		end
+		local win = ui.window
+		local cur = e
+		local depth = 0
+		while isvalid(cur) and depth < 12 do
+			if cur == win then
+				return true
+			end
+			cur = cur.Parent
+			depth = depth + 1
+		end
+		return false
 	end
 
 	@ExecSpace("ClientOnly")
