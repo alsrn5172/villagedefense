@@ -163,6 +163,51 @@ script DamageFormula extends Logic
 		return self:ApplyDefense(raw, def)
 	end
 
+	-- WO-056(1.0.15): 보스 최대 HP 비례 피해 계산 로그(검증용 · 기본 끔 — 서버 Lua 로 _DamageFormula.LogHpPctDamage = true).
+	property boolean LogHpPctDamage = false
+
+	method integer CeilHpPct(number maxHp, number pct, number cutPct)
+		-- ceil(최대 HP × 비율/100 × (100 − 감소)/100) — 곱을 전부 한 뒤 마지막에 한 번만 올린다(중간 정수화 없음 · WO-056 §2-1).
+		--   표의 비율 · 감소가 정수라 분자가 정수 → 1만으로 나눈 몫을 정수로 올림(부동소수 오차 없음). 예: 1,001 × 34% = 341 · 다크 사이트 171 · 101 × 1% × 0.7 = 1.
+		local num = maxHp * pct * (100 - cutPct)
+		if num <= 0 then return 0 end
+		local q = math.floor(num / 10000)
+		if q * 10000 < num then q = q + 1 end
+		return math.floor(q)
+	end
+
+	method integer MaxHpPctDamage(Entity defender, number pct, string source)
+		-- 보스 최대 HP 비례 피해(WO-056 · 사용자 2026-10-17): 맞은 플레이어의 그 순간 최대 HP × pct% × (1 − HP 비례 피해 감소%) 를 한 번 올림.
+		--   방어력 · ★ 공격 배율 · 최소 1 보정을 거치지 않는다. 101% 도 자르지 않고 현재 HP 를 상한으로 삼지 않는다.
+		--   감소% = SkillBuffs.GetHpPctDamageReduction(지금은 다크 사이트 50 뿐 · 일반 피해 감소와 별개). 회피(MISS)는 부르는 쪽이 먼저 본다.
+		--   무적 · 보호막은 이 값을 받은 뒤 PlayerHit.OnHit → SkillBuffs.ModifyIncomingDamageFrom 이 처리한다(매직 가드 · 하이퍼 바디 감소 없음).
+		if pct == nil or pct <= 0 then return 0 end
+		if not isvalid(defender) or not isvalid(defender.PlayerComponent) then return 0 end
+		local pc = defender.PlayerComponent
+		local maxHp = math.max(0, math.floor(pc.MaxHp))
+		local cut = 0
+		if self:IsServer() and _SkillBuffs ~= nil then cut = _SkillBuffs:GetHpPctDamageReduction(pc.UserId) end
+		if cut < 0 then cut = 0 elseif cut > 100 then cut = 100 end
+		local d = self:CeilHpPct(maxHp, pct, cut)
+		if self.LogHpPctDamage then
+			log("[Stat] HP_PCT source=" .. tostring(source) .. " maxHp=" .. tostring(maxHp) .. " pct=" .. tostring(pct) .. " cut=" .. tostring(cut) .. " -> " .. tostring(d) .. " (" .. tostring(pc.UserId) .. ")")
+		end
+		return d
+	end
+
+	method boolean IsMaxHpPctHit(Entity attacker, string attackInfo)
+		-- PlayerHit.OnHit 이 이 타격을 최대 HP 비례 피해로 볼지(WO-056). 공격 엔티티가 그 판단을 한다 — 보스(BossSkillRunner) · 보스 투사체(BossProjectileAttack).
+		--   보스 · 스킬 이름 문자열을 해석하지 않는다. 그 밖의 공격자(일반 몹 · 미니언 · 수비대 · 시설 · 반사)는 false = 기존 고정 피해 경로.
+		if not isvalid(attacker) then return false end
+		---@type BossProjectileAttack
+		local proj = attacker.BossProjectileAttack
+		if isvalid(proj) then return proj:IsMaxHpPctAttack(attackInfo) end
+		---@type BossSkillRunner
+		local runner = attacker.BossSkillRunner
+		if isvalid(runner) then return runner:IsMaxHpPctAttack(attackInfo) end
+		return false
+	end
+
 	method integer ApplyTargetDefense(Entity defender, integer raw, number ignorePct)
 		-- 몬스터 · 보스가 받는 피해 공용 헬퍼 (1.1-E21 · 사용자 2026-10-12: 기본 공격 · 스킬 모두, 보스 포함).
 		-- 방어 = TargetDefenseOf(Monster.Defense → 도발 % → 모자 방어율 무시 ignorePct · 1.0.7) · raw × 100/(100+방어) · 최소 1. Monster 가 없거나 적용 방어 0 이면 raw 그대로.

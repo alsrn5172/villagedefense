@@ -17,6 +17,7 @@
  *   C4 userdataset 짝  csv 만 있으면 런타임이 표를 못 읽는다
  *   C5 이중 스폰       맵에 박힌 몹 + CSV 스포너가 같이 돌아 2배로 떴다
  *   C6 모델 누락       도감이 없는 ModelId 를 가리켜 스폰이 nil 을 반환했다
+ *   C7 보스 피해 모드  최대 HP 비례 행에 ★ 비율이 비면 그 ★ 만 조용히 고정 피해로 돈다 (WO-056)
  */
 
 const fs = require("fs");
@@ -78,7 +79,7 @@ const CANONICAL = {
     "MapName,SpawnX,SpawnY,RespawnSeconds,Enabled," +
     "DamagedSoundRUID,DieSoundRUID," +
     "ContactScaleX,ContactScaleY,ContactOffsetX,MovePlayRate,DetectionRange," +
-    "JumpForce,#Note",
+    "JumpForce,ContactDamageMode,ContactHpPct1,ContactHpPct3,ContactHpPct5,#Note",
   BossSkills:
     "BossId,SkillId,SkillName,Priority,ShapeType," +
     "RangeX,RangeY,OffsetX,OffsetY," +
@@ -90,7 +91,7 @@ const CANONICAL = {
     "CastRUID2,CastDelay2,CastHitFrame,CastEffectAtStart,CastEffectPlayRate," +
     "CastEffectStartFrame,CastEffectEndFrame," +
     "ShotCount,ShotInterval,AimAtTarget,BuffMoveRate,BuffDuration," +
-    "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,#Note," +
+    "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,DamageMode,HpPct1,HpPct3,HpPct5,#Note," +
     "CrouchBand,FireEffectRUID,FireEffectScale,FireEffectFloors,FireEffectTiles",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
@@ -478,6 +479,45 @@ console.log("\nC6. 도감 ModelId ↔ 실제 모델");
     for (const id of missing) fail("C6", `FunctionalNpcCatalog: ${id} -> "${id.toLowerCase()}" 모델이 없다`);
     if (!missing.length) ok("C6", "기능 NPC 전 행에 역할별 모델이 있다");
   }
+}
+
+// ─────────────────────────────────────────────────────────
+// C7. 보스 피해 모드 (WO-056 · 1.0.15) — MAX_HP_PERCENT 행은 ★1/★3/★5 비율이 다 있어야 하고 공격 판정 행이어야 한다
+// ─────────────────────────────────────────────────────────
+console.log("\nC7. 보스 피해 모드 (BossInfo 접촉 · BossSkills)");
+{
+  const MODES = new Set(["", "FIXED", "MAX_HP_PERCENT"]);
+  const ATTACK_SHAPES = new Set(["target", "box", "ground", "crouchable", "projectile"]);
+  const pos = (v) => { const n = Number(String(v || "").trim()); return String(v || "").trim() !== "" && Number.isFinite(n) && n > 0; };
+  const check = (name, idCols, modeCol, pctCols, rowCheck) => {
+    const t = readCsv(name);
+    if (!t) return;
+    const iMode = t.header.indexOf(modeCol);
+    if (iMode < 0) { fail("C7", `${name}: ${modeCol} 열이 없다`); return; }
+    const iP = pctCols.map((c) => t.header.indexOf(c));
+    const iIds = idCols.map((c) => t.header.indexOf(c));
+    let pct = 0, bad = 0;
+    for (const r of t.rows) {
+      const id = iIds.map((i) => r[i]).join(":");
+      const mode = String(r[iMode] || "").trim().toUpperCase();
+      if (!MODES.has(mode)) { fail("C7", `${name} ${id}: 모르는 ${modeCol} "${r[iMode]}"`); bad++; continue; }
+      if (mode === "MAX_HP_PERCENT") {
+        pct++;
+        const missing = pctCols.filter((c, k) => !pos(r[iP[k]]));
+        if (missing.length) { fail("C7", `${name} ${id}: MAX_HP_PERCENT 인데 ${missing.join(", ")} 가 비었다 — 그 ★ 는 고정 피해로 돈다`); bad++; }
+        if (rowCheck) { const m = rowCheck(t, r); if (m) { fail("C7", `${name} ${id}: ${m}`); bad++; } }
+      } else if (iP.some((i) => pos(r[i]))) {
+        warn("C7", `${name} ${id}: ${mode || "빈칸(FIXED)"} 인데 비율 열에 값이 있다 — 쓰이지 않는다`);
+      }
+    }
+    if (!bad) ok("C7", `${name}: 최대 HP 비례 ${pct}행 · 비율 ${pct * 3}개 · 모드 정상`);
+  };
+  check("BossInfo", ["BossId"], "ContactDamageMode", ["ContactHpPct1", "ContactHpPct3", "ContactHpPct5"], null);
+  check("BossSkills", ["BossId", "SkillId"], "DamageMode", ["HpPct1", "HpPct3", "HpPct5"], (t, r) => {
+    const shape = String(r[t.header.indexOf("ShapeType")] || "").trim().toLowerCase();
+    if (!ATTACK_SHAPES.has(shape)) return `ShapeType "${shape}" 는 직접 피해가 없다 — summon · buff · teleport · fake 는 FIXED`;
+    return null;
+  });
 }
 
 // ─────────────────────────────────────────────────────────

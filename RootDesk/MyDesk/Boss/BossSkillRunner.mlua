@@ -51,6 +51,12 @@ script BossSkillRunner extends AttackComponent
 	-- 스킬 피해 ★ 공격 배율(1.1-E12 · BossSpawner.ApplyDifficulty 가 BALROG_|BOSS_ATK_MUL 을 넣는다 · 매치 밖 · 소환수 = 1). 접촉은 AttackPower 에 이미 들어 있다.
 	property number AttackMul = 1
 
+	-- WO-056(1.0.15): 피해 비율을 고를 ★(BossSpawner.ApplyDifficulty 가 넣는다 · 0 = 매치 밖 · 소환수 · 튜토리얼 → 기존 고정 피해).
+	property integer DamageStar = 0
+
+	-- WO-056: 접촉 피해 = 피격 플레이어 최대 HP × 이 % (BossInfo.ContactHpPct★ · 0 = AttackPower 고정 피해). BossSpawner.ApplyDifficulty 가 넣는다.
+	property number ContactHpPct = 0
+
 	-- 판정 레벨 덮어쓰기(0 = 없음 · BossLevel 이 먼저 본다). 튜토리얼 머쉬맘 Lv25(TutorialService.PrepareBoss · 1.0.6 #23 을 1차에서 · 사용자 2026-10-12) 같은 개체별 예외용 — 실제 매치 보스는 0.
 	property integer LevelOverride = 0
 
@@ -1652,6 +1658,8 @@ script BossSkillRunner extends AttackComponent
 		if isvalid(atk) then
 			-- ★ 공격 배율(1.1-E12): 투사체 스킬도 접촉 · 즉발 스킬과 같은 배율.
 			atk.Damage = math.floor(skill.damage * self.AttackMul + 0.5)
+			-- WO-056: 최대 HP 비례 행이면 발당 비율(%)만 넘기고 피해는 맞은 플레이어마다 그 순간 최대 HP 로 계산한다(BossProjectileAttack.CalcDamage).
+			atk.HpPct = self:SkillHpPct(skill)
 			atk.HitCount = skill.hitCount
 			atk.RangeX = skill.rangeX
 			atk.RangeY = skill.rangeY
@@ -2001,6 +2009,12 @@ script BossSkillRunner extends AttackComponent
 		-- ⚠️ 부모에 @ExecSpace 가 없다. 붙이면 LEA-3014.
 		-- 플레이어 회피(1.1-A11 ② · 사용자 2026-10-12): 보스 레벨로 일반 몹과 같은 회피 판정. 피하면 0(MISS).
 		if self:IsServer() and _DamageFormula ~= nil and _DamageFormula:TryPlayerDodge(defender, self:BossLevel(), 0, tostring(self.Entity.Name)) then return 0 end
+		-- WO-056(1.0.15): 최대 HP 비례 공격 = ceil(맞은 플레이어 최대 HP × 비율 × (1 − HP 비례 피해 감소)) · 방어 · ★ 공격 배율 없음 · 최소 1 보정 없음.
+		--   무적 · 보호막은 PlayerHit.OnHit → SkillBuffs.ModifyIncomingDamageFrom 에서(매직 가드 · 하이퍼 바디는 건너뛴다).
+		local pct = self:AttackHpPct(attackInfo)
+		if pct > 0 and _DamageFormula ~= nil then
+			return _DamageFormula:MaxHpPctDamage(defender, pct, tostring(self.BossId) .. ":" .. tostring(attackInfo))
+		end
 		local d = 1
 		if attackInfo == "contact" then
 			d = math.floor(self.AttackPower)
@@ -2013,6 +2027,24 @@ script BossSkillRunner extends AttackComponent
 			return 1
 		end
 		return d
+	end
+
+	method number SkillHpPct(any skill)
+		-- WO-056: 이 스킬 행의 지금 ★ 최대 HP 비율(%) · 0 = 고정 피해. 소환수 · 매치 밖은 DamageStar 0 이라 늘 0.
+		if skill == nil or _BossCatalog == nil then return 0 end
+		return _BossCatalog:SkillHpPct(skill, self.DamageStar)
+	end
+
+	method number AttackHpPct(string attackInfo)
+		-- WO-056: 지금 나가는 타격(접촉 · 진행 중인 스킬)의 최대 HP 비율(%) · 0 = 고정 피해. 탐색 패스("probe")는 피해가 없다.
+		if attackInfo == "contact" then return self.ContactHpPct end
+		if attackInfo == "probe" then return 0 end
+		return self:SkillHpPct(self.activeSkill)
+	end
+
+	method boolean IsMaxHpPctAttack(string attackInfo)
+		-- WO-056: PlayerHit 이 이 공격을 최대 HP 비례 피해로 처리할지 묻는다(DamageFormula.IsMaxHpPctHit). CalcDamage 와 같은 판단.
+		return self:AttackHpPct(attackInfo) > 0
 	end
 
 	method integer BossLevel()
