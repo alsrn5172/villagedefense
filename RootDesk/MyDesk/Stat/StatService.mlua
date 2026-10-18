@@ -503,10 +503,32 @@ script StatService extends Logic
 		-- 3층 합산 → 파생치 → 엔티티 반영 → 이벤트 → 클라 UI.
 		local u = self.users[userId]
 		if u == nil then return end
+		local f = self:BuildFinal(userId, u, nil)
+		u.final = f
+		-- 전투력(1.1 전광판 · 사용자 2026-10-13): 스탯이 바뀌는 이 자리에서만 한 번 계산해 사용자별로 저장한다. 전광판은 GetCombatPower 로 읽기만 한다(1초마다 다시 계산하지 않는다).
+		u.combatPower = self:CalcCombatPower(u)
+
+		self:ApplyToEntity(userId, u)
+
+		local ev = StatRecalculatedEvent()
+		ev.UserId = userId
+		ev.FinalStatsCsv = self:TableToCsv(f)
+		ev.Source = source
+		self:SendEvent(ev)
+		log("[Stat] recalculated (" .. userId .. ") source=" .. source .. " " .. ev.FinalStatsCsv .. " combatPower=" .. tostring(u.combatPower))
+
+		if _SkillBuffs ~= nil then _SkillBuffs:SyncEquipmentAttackSpeed(f.attackspeed or 0, userId) end
+		self:PushToClient(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any BuildFinal(string userId, any u, any delta)
+		-- 레이어 합(+ delta · 미리보기용 · nil 이면 없음) → 최종 스탯 표(명중 · 회피 · 방어 · HP · MP 파생 + 치명). u 는 읽기만 한다 — Recalculate(실제)와 PreviewCombatPower(미리보기)가 같은 식을 쓰도록 한 곳에 둔다.
 		local f = {}
 		-- ignoredef = 방어율 무시 %p 합계(1.0.7 §4 · 모자 EQUIP 레이어 · 다른 출처가 생기면 같은 키로 합산). 상한은 읽는 쪽(GetIgnoreDef)이 0 ~ 100 으로 자른다.
 		for _, k in ipairs({ "str", "dex", "int", "luk", "attack", "magic", "defense", "speed", "jump", "accuracy", "avoid", "maxhp", "maxmp", "ignoredef", "attackspeed" }) do
 			f[k] = (u.base[k] or 0) + (u.equip[k] or 0) + (u.enhance[k] or 0) + (u.buff[k] or 0) + (u.dev[k] or 0)
+			if delta ~= nil then f[k] = f[k] + (delta[k] or 0) end
 		end
 		-- 스탯 추가효과 효율(1.1-G01): 주 · 부스탯 1.0 · 그 외 0.1. 아래 파생치(명중 · 회피 · HP · MP · 방어 · 치명)가 쓴다.
 		local job = self:GetJob(u.job)
@@ -525,28 +547,32 @@ script StatService extends Logic
 		f.defense = f.defense + math.floor((f.str or 0) * self.DefensePerStr * eff("str") + 1e-6)
 		f.maxhp = f.maxhp + math.floor((f.str or 0) * self.HpPerStr * eff("str") + 1e-6)
 		f.maxmp = f.maxmp + math.floor((f.int or 0) * self.MpPerInt * eff("int") + 1e-6)
-		u.final = f
-		local crit = self:CritStatsOf(userId, u)
+		-- 치명은 최종 LUK 을 읽는다(CritStatsOf 는 job · final 만 본다) → 원장을 건드리지 않게 임시 묶음으로 넘긴다.
+		local crit = self:CritStatsOf(userId, { job = u.job, final = f })
 		f.critraw = crit.raw
 		f.critrate = crit.rate
 		f.critdamage = crit.damage
 		f.critluk = crit.lukBonus
 		f.critskill = crit.skillBonus
 		f.critshadow = crit.shadowBonus
-		-- 전투력(1.1 전광판 · 사용자 2026-10-13): 스탯이 바뀌는 이 자리에서만 한 번 계산해 사용자별로 저장한다. 전광판은 GetCombatPower 로 읽기만 한다(1초마다 다시 계산하지 않는다).
-		u.combatPower = self:CalcCombatPower(u)
+		return f
+	end
 
-		self:ApplyToEntity(userId, u)
-
-		local ev = StatRecalculatedEvent()
-		ev.UserId = userId
-		ev.FinalStatsCsv = self:TableToCsv(f)
-		ev.Source = source
-		self:SendEvent(ev)
-		log("[Stat] recalculated (" .. userId .. ") source=" .. source .. " " .. ev.FinalStatsCsv .. " combatPower=" .. tostring(u.combatPower))
-
-		if _SkillBuffs ~= nil then _SkillBuffs:SyncEquipmentAttackSpeed(f.attackspeed or 0, userId) end
-		self:PushToClient(userId)
+	@ExecSpace("ServerOnly")
+	method integer PreviewCombatPower(string userId, table delta)
+		-- 지금 스탯 + delta({ 스탯 키 = 양 } · 음수 가능 · 키 = ItemCatalog 스탯 키 = 이 원장 키 · 소문자로 맞춤)일 때의 전투력. 원장은 안 바꾼다(순수 계산 · 공방 창 전→후 미리보기). delta 가 비면 지금 전투력과 같다.
+		local u = self:EnsureUser(userId)
+		if u == nil then return 0 end
+		local d = {}
+		if delta ~= nil then
+			for k, v in pairs(delta) do
+				local key = string.lower(tostring(k))
+				d[key] = (d[key] or 0) + (tonumber(v) or 0)
+			end
+		end
+		-- CalcCombatPower · MasteryOf · TotalAttackOf 가 읽는 필드만(job · mastery · base · final) 담은 임시 원장.
+		local t = { job = u.job, mastery = u.mastery, base = u.base, level = u.level, final = self:BuildFinal(userId, u, d) }
+		return self:CalcCombatPower(t)
 	end
 
 	@ExecSpace("ServerOnly")

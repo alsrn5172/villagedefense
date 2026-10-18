@@ -18,6 +18,7 @@
  *   C5 이중 스폰       맵에 박힌 몹 + CSV 스포너가 같이 돌아 2배로 떴다
  *   C6 모델 누락       도감이 없는 ModelId 를 가리켜 스폰이 nil 을 반환했다
  *   C7 보스 피해 모드  최대 HP 비례 행에 ★ 비율이 비면 그 ★ 만 조용히 고정 피해로 돈다 (WO-056)
+ *   C8 스타포스        ItemInfo.StarTier 가 ItemId 티어와 어긋나거나 StarForceTable 별이 끊기면 그 장비만 조용히 강화가 막힌다 (WO-057)
  */
 
 const fs = require("fs");
@@ -106,7 +107,8 @@ const CANONICAL = {
   EliteMaterialInfo: "MaterialId,Name,Description,IconRUID,Enabled,#Note",
 
   // 플레이어 장비·강화·기능 NPC — PR #13 (a/contract-stat-item-npc-docs)
-  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType,Description,EnhanceTier,IgnoreDefense,BaseAttackSpeed",
+  ItemInfo: "ItemId,Name,ItemType,EquipSlot,ReqLevel,ReqJob,IconRUID,BaseStr,BaseDex,BaseInt,BaseLuk,BaseAttack,BaseMagic,BaseDefense,BaseSpeed,BaseJump,BaseAccuracy,BaseAvoid,BaseMaxHp,BaseMaxMp,Mastery,MaxDurability,MaxEnhanceLevel,Stackable,MaxStack,SellMeso,Enabled,#Note,AvatarSlot,WeaponType,Description,EnhanceTier,IgnoreDefense,BaseAttackSpeed,StarTier",
+  StarForceTable: "StarTier,Star,MesoCost,SuccessRate,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,AllAttack,AllMagic,Enabled,#Note",
   WeaponMotion: "MotionId,SkillId,WeaponType,CoreAction,PartsAction,PlayRate,PlayType,Enabled,#Note",
   EnhanceTable: "EnhanceLevel,MesoCost,GemCount,SuccessRate,DestroyRate,DowngradeOnFail,AddDefense,Enabled,#Note",
   EnhanceSlotBonus: "EquipSlot,ReqLevel,EnhanceLevel,AddStr,AddDex,AddInt,AddLuk,AddAttack,AddMagic,AddDefense,AddSpeed,AddJump,AddAccuracy,AddAvoid,AddMaxHp,AddMaxMp,Enabled,#Note,FixedAttack,FixedSpeed,FixedAccuracy",
@@ -246,6 +248,7 @@ const PK = {
   WeaponMotion: ["MotionId"],
   EnhanceTable: ["EnhanceLevel"],
   EnhanceSlotBonus: ["EquipSlot", "ReqLevel", "EnhanceLevel"],
+  StarForceTable: ["StarTier", "Star"],
   CraftRecipe: ["RecipeId"],
   ShopItem: ["ShopItemId"],
   ConsumeInfo: ["ItemId"],
@@ -534,6 +537,64 @@ console.log("\nC7. 보스 피해 모드 (BossInfo 접촉 · BossSkills)");
       }
       if (!badR) ok("C7", `BossSkills: 연속 사용 ${n}행 · 값 정상`);
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// C8. 스타포스 (WO-057 · 1.0.18) — ItemInfo.StarTier ↔ ItemId 티어 · MaxEnhanceLevel 티어별 상한 · StarForceTable 별 1~N 연속
+// ─────────────────────────────────────────────────────────
+console.log("\nC8. 스타포스 (ItemInfo.StarTier · MaxEnhanceLevel · StarForceTable)");
+{
+  const TIERS = { T15: 1, T20: 2, T25: 3, T30: 3, ABSOLAB: 3 };   // 티어 → 보석 강화 상한(MaxEnhanceLevel)
+  const STARS = { T15: 1, T20: 3, T25: 5, T30: 8, ABSOLAB: 10 };  // 티어 → 최대 별(= 표 행 수)
+  const ii = readCsv("ItemInfo");
+  if (ii) {
+    const iId = ii.header.indexOf("ItemId"), iType = ii.header.indexOf("ItemType"), iMax = ii.header.indexOf("MaxEnhanceLevel");
+    const lastCol = ii.header[ii.header.length - 1];
+    if (lastCol !== "StarTier" || iMax < 0) fail("C8", "ItemInfo: 맨 뒤 열이 StarTier 가 아니거나 MaxEnhanceLevel 열이 없다");
+    else {
+      let bad = 0, n = 0;
+      for (const r of ii.rows) {
+        // StarTier 는 맨 뒤 열 — #Note 안의 따옴표 쉼표로 칸이 밀려도 마지막 칸은 그대로다.
+        const id = r[iId] || "", type = r[iType] || "", tier = String(r[r.length - 1] || "").trim().toUpperCase();
+        const maxEnh = Number(String(r[iMax] || "0").trim()) || 0;
+        let want = "";
+        if (type === "EQUIP") {
+          if (id.startsWith("ABSOLAB_")) want = "ABSOLAB";
+          else { const m = id.match(/_T(15|20|25|30)$/); if (m) want = "T" + m[1]; }
+        }
+        if (tier !== want) { fail("C8", `ItemInfo ${id}: StarTier "${tier}" — ItemId 로는 "${want || "빈칸"}" 이어야 한다`); bad++; continue; }
+        if (type === "EQUIP") {
+          const wantMax = tier === "" ? 0 : TIERS[tier];
+          if (maxEnh !== wantMax) { fail("C8", `ItemInfo ${id}: MaxEnhanceLevel ${maxEnh} — ${tier || "1제·10제"} 는 ${wantMax} (10제 불가 · 15제 1 · 20제 2 · 25제 이상 3)`); bad++; }
+        }
+        if (tier !== "") n++;
+      }
+      if (!bad) ok("C8", `ItemInfo: 스타포스 대상 ${n}행 · 티어 · 보석 상한 정상`);
+    }
+  }
+  const sf = readCsv("StarForceTable");
+  if (!sf) fail("C8", "StarForceTable.csv 가 없다");
+  else {
+    const iT = sf.header.indexOf("StarTier"), iS = sf.header.indexOf("Star"), iM = sf.header.indexOf("MesoCost"), iR = sf.header.indexOf("SuccessRate"), iE = sf.header.indexOf("Enabled");
+    const byTier = {};
+    let bad = 0;
+    for (const r of sf.rows) {
+      const tier = String(r[iT] || "").trim().toUpperCase(), star = Number(r[iS]);
+      if (String(r[iE] || "true").trim().toLowerCase() === "false") continue;
+      if (!(tier in STARS)) { fail("C8", `StarForceTable ${tier}/${r[iS]}: 모르는 StarTier`); bad++; continue; }
+      if (!Number.isInteger(star) || star < 1) { fail("C8", `StarForceTable ${tier}/${r[iS]}: Star 는 1 이상 정수`); bad++; continue; }
+      const meso = Number(r[iM]), rate = Number(r[iR]);
+      if (!(meso > 0)) { fail("C8", `StarForceTable ${tier}/${star}: MesoCost "${r[iM]}" 는 양수`); bad++; }
+      if (!(rate > 0 && rate <= 1)) { fail("C8", `StarForceTable ${tier}/${star}: SuccessRate "${r[iR]}" 는 0 초과 1 이하`); bad++; }
+      (byTier[tier] = byTier[tier] || new Set()).add(star);
+    }
+    for (const [tier, want] of Object.entries(STARS)) {
+      const have = byTier[tier] || new Set();
+      const missing = []; for (let s = 1; s <= want; s++) if (!have.has(s)) missing.push(s);
+      if (missing.length || have.size !== want) { fail("C8", `StarForceTable ${tier}: 별 1~${want} 이 이어져야 한다(빠짐 ${missing.join(",") || "없음"} · 행 ${have.size})`); bad++; }
+    }
+    if (!bad) ok("C8", `StarForceTable: 5티어 · 별 1~N 연속 · 메소 · 확률 정상`);
   }
 }
 
