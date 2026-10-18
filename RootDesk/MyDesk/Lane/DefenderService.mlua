@@ -50,6 +50,9 @@ script DefenderService extends Logic
 	-- 수비대 · 파병 유닛 레벨(1.1-H03 · 원문 L638): 원래 몬스터 레벨 + 강화 1단계당 이만큼(강화 Lv1 = 원래 레벨). 명중 · 회피의 레벨 차에 그대로 쓰인다.
 	property integer LevelPerUpgrade = 2
 
+	-- 강화 때 이미 서 있는 수비대를 갱신하면(RefreshUpgrade) 개체마다 HP 전 → 후 한 줄씩 남긴다(Play 확인용 · 확인이 끝나면 false 로).
+	property boolean LogUpgradeUnits = true
+
 	@HideFromInspector
 	property integer spawnSeq = 0
 
@@ -122,6 +125,32 @@ script DefenderService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method any RecruitStats(string villageId, integer monsterId, number statMul, integer upgradeLevel)
+		-- 모집한 수비대(분신 · 소환체 아님)의 최종 최대 체력 · 공격력 · 판정 레벨 { maxHp, attack, level } 한 곳. 스폰(SpawnOne)과 강화 때 이미 선 개체의 갱신(RefreshUpgrade)이 이 함수를 같이 쓴다.
+		-- 수비대 스탯은 모집 티어 + 강화 레벨별 값(GuardHpOf/GuardAtkOf · 웨이브 기준). MonsterTraining.StatMul(= statMul)은 모집 행이 없는 몹의 옛 식 폴백에만 쓴다.
+		local baseHp = _MonsterCatalog:GetMaxHp(monsterId)
+		if baseHp == nil or baseHp <= 0 then baseHp = 300 end
+		local baseLevel = _MonsterCatalog:GetLevel(monsterId)
+		if baseLevel == nil or baseLevel <= 0 then baseLevel = 10 end
+		local maxHp = math.max(1, math.floor(baseHp * self.HpRatio * statMul))
+		local attack = math.max(1, math.floor(baseLevel * self.AttackPerLevel * statMul))
+		local rr = (_LaneStateService ~= nil) and _LaneStateService:RecruitRow(monsterId) or nil
+		if rr ~= nil then
+			local lv = math.max(1, math.min(5, upgradeLevel or 1))
+			maxHp = self:GuardHpOf(rr.tier or 1, lv)
+			attack = self:GuardAtkOf(rr.tier or 1, lv)
+		end
+		-- 체력 × 수비대 레벨(DefenderLevelIn = 지역 레벨 + 강화 1단계당 2)의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로"): 리본돼지(T2 · Lv17) 강화 Lv1 5,120 → 35,840 · Lv5(Lv25) 12,156 → 182,340.
+		--   공격력은 그대로. 파병(MinionFlowService.SpawnDispatched)도 같은 레벨 · 배율이라 2 : 1 이 유지된다. 지역 레벨 = 모집한 마을 사냥터에서 그 종의 레벨(1.0.4-3-03).
+		local unitLevel = self:DefenderLevelIn(villageId, monsterId, upgradeLevel)
+		maxHp = _MonsterCatalog:LevelHp(maxHp, unitLevel)
+		if _DestroyedVictoriaService ~= nil then
+			attack = _DestroyedVictoriaService:GuardAttack(monsterId, attack, unitLevel)
+		end
+		return { maxHp = maxHp, attack = attack, level = unitLevel }
+	end
+
+	@ExecSpace("ServerOnly")
 	method any UnitList(string villageId)
 		-- 마을의 추적 목록(없으면 생성). 사라진 엔티티는 걸러낸다.
 		if self.units == nil then self.units = {} end
@@ -156,43 +185,29 @@ script DefenderService extends Logic
 		if not isvalid(map) then return nil end
 		local modelId = _MonsterCatalog:GetModelId(monsterId)
 		if modelId == nil or modelId == "" then modelId = "monster" .. tostring(monsterId) end
-		local baseHp = _MonsterCatalog:GetMaxHp(monsterId)
-		if baseHp == nil or baseHp <= 0 then baseHp = 300 end
-		local level = _MonsterCatalog:GetLevel(monsterId)
-		if level == nil or level <= 0 then level = 10 end
-		local maxHp = math.max(1, math.floor(baseHp * self.HpRatio * statMul))
-		local attack = math.max(1, math.floor(level * self.AttackPerLevel * statMul))
-		-- 수비대 스탯은 모집 티어 + 강화 레벨별 값(GuardHpOf/GuardAtkOf · 웨이브 기준). MonsterTraining.StatMul 은 파병 등 다른 계산에 유지한다.
-		local rr = (_LaneStateService ~= nil) and _LaneStateService:RecruitRow(monsterId) or nil
-		if isSummon then
-			-- 분신 소환체(1.0.7 §10): 모집 행 없이 ov.tier(3) 표 값 · 강화 단계 ov.upgradeLevel(1).
+		-- 스탯: 모집한 수비대 = RecruitStats 한 곳(강화 때 이미 서 있는 개체를 갱신하는 RefreshUpgrade 도 같은 함수) · 분신 · 소환체 = 직접 지정값(ov).
+		local maxHp = 1
+		local attack = 1
+		local unitLevel = 0
+		if isClone then
+			-- 분신 레벨 = 넥서스 레벨(25 / 30 / 35) 그대로. 분신 HP 는 NexusCloneService 가 레벨 HP 배율까지 곱해 넘긴 최종값이라 여기서 다시 곱하지 않는다.
+			maxHp = math.max(1, math.floor(ov.hp))
+			attack = math.max(1, math.floor(ov.attack))
+			unitLevel = math.max(1, math.floor(ov.level or 1))
+		elseif isSummon then
+			-- 분신 소환체(1.0.7 §10): 모집 행 없이 ov.tier(3) 표 값 · 강화 단계 ov.upgradeLevel(1) · 레벨 = 분신 레벨 · 체력은 티어 표 체력 × 그 레벨의 배율(수비대와 같은 식).
 			local lv = math.max(1, math.min(5, math.floor(ov.upgradeLevel or 1)))
 			maxHp = self:GuardHpOf(ov.tier or 3, lv)
 			attack = self:GuardAtkOf(ov.tier or 3, lv)
 			-- 1.0.8(사용자 2026-10-14): 공격력은 분신이 넘긴 값(넥서스 강화 단계 500 → 1,000 · NexusCloneService) · 0/없음이면 위 표 값.
 			if (tonumber(ov.attack) or 0) > 0 then attack = math.max(1, math.floor(ov.attack)) end
-		elseif rr ~= nil and not isClone then
-			local lv = math.max(1, math.min(5, upgradeLevel or 1))
-			maxHp = self:GuardHpOf(rr.tier or 1, lv)
-			attack = self:GuardAtkOf(rr.tier or 1, lv)
-		end
-		-- 체력 × 수비대 레벨(DefenderLevelIn = 지역 레벨 + 강화 1단계당 2)의 HP 배율(1.1-E07 · 사용자 2026-10-12 "원문대로"): 리본돼지(T2 · Lv17) 강화 Lv1 5,120 → 35,840 · Lv5(Lv25) 12,156 → 182,340.
-		--   공격력은 그대로. 파병(MinionFlowService.SpawnDispatched)도 같은 레벨 · 배율이라 2 : 1 이 유지된다. 지역 레벨 = 모집한 마을 사냥터에서 그 종의 레벨(1.0.4-3-03).
-		local unitLevel = 0
-		if isClone or isSummon then
-			-- 분신 · 소환체 레벨 = 넥서스 레벨(25 / 30 / 35) 그대로. 분신 HP 는 NexusCloneService 가 레벨 HP 배율까지 곱해 넘긴 최종값이라 여기서 다시 곱하지 않는다. 소환체는 티어 표 체력 × 그 레벨의 배율(수비대와 같은 식).
 			unitLevel = math.max(1, math.floor(ov.level or 1))
-		else
-			unitLevel = self:DefenderLevelIn(villageId, monsterId, upgradeLevel)
-		end
-		if isClone then
-			maxHp = math.max(1, math.floor(ov.hp))
-			attack = math.max(1, math.floor(ov.attack))
-		else
 			maxHp = _MonsterCatalog:LevelHp(maxHp, unitLevel)
-		end
-		if not isClone and not isSummon and _DestroyedVictoriaService ~= nil then
-			attack = _DestroyedVictoriaService:GuardAttack(monsterId, attack, unitLevel)
+		else
+			local st = self:RecruitStats(villageId, monsterId, statMul, upgradeLevel)
+			maxHp = st.maxHp
+			attack = st.attack
+			unitLevel = st.level
 		end
 		local range = self:GuardRange()
 		local minX = row.pathMinX or -100000
@@ -319,7 +334,7 @@ script DefenderService extends Logic
 				end
 			end
 		end
-		-- 몬스터 이름표(1.1-I09): `Lv.N 이름` — 레벨 = DefenderLevelIn(지역 레벨 + 강화 1단계당 2). Regroup 이 같은 SpawnOne 을 u.upgradeLevel 로 다시 불러 재집결 개체도 같은 레벨로 붙는다. 훈련해도 이미 서 있는 개체의 이름표는 안 바뀐다(새로 모집하는 묶음부터).
+		-- 몬스터 이름표(1.1-I09): `Lv.N 이름` — 레벨 = DefenderLevelIn(지역 레벨 + 강화 1단계당 2). Regroup 이 같은 SpawnOne 을 u.upgradeLevel 로 다시 불러 재집결 개체도 같은 레벨로 붙는다. 강화(도감 레벨업 · 조련사) 때 이미 서 있는 개체의 이름표는 RefreshUpgrade 가 같은 방식으로 다시 쓴다.
 		-- 분신 · 소환체는 레벨 = 넥서스 레벨(`Lv.25 헬레나의 분신`).
 		if _MonsterNameTag ~= nil then
 			_MonsterNameTag:Attach(ent, _MonsterCatalog:GetName(monsterId), unitLevel)
@@ -517,6 +532,53 @@ script DefenderService extends Logic
 		local row = (_LaneFacilityService ~= nil) and _LaneFacilityService:LaneRow(villageId, role) or nil
 		log("[Defender] " .. villageId .. " bundle " .. tostring(monsterId) .. " x" .. tostring(spawned) .. " at " .. tostring(row and row.mapName or "?") .. " (" .. tostring(row and row.slotX or "?") .. "," .. tostring(row and row.pathY or "?") .. ") mul=" .. tostring(statMul) .. " front=" .. frontStage .. " tracked=" .. tostring(#list))
 		return spawned
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer RefreshUpgrade(string villageId, integer monsterId, number statMul, integer upgradeLevel)
+		-- 강화(도감 레벨업 RequestLevelCollection · 조련사 RequestTrain)로 그 종의 도감 레벨이 오른 직후 LaneStateService.RefreshDefendersAfterUpgrade 가 부른다
+		-- (사용자 2026-10-18 "수비대 모집 후에 강화를 해도 이미 모집된 애들도 강화되게 · 체력이 깎여 있으면 포탑처럼 강화로 오른 HP 만큼 오르게"). 갱신한 마릿수를 돌려준다.
+		--   · 최대 체력 · 공격력 · 판정 레벨(이름표 포함) = RecruitStats(= 새로 모집한 개체가 받는 값과 같은 식 한 곳). 방어는 수비대에 레벨 값이 없다(스폰이 안 넣는다) → 그대로.
+		--   · 현재 HP = 포탑 강화(LaneStateService.RequestTowerAction)와 같은 규칙: 새 HP = 지금 HP + (새 최대 − 지금 최대), 새 최대로 자른다. 가득 찬 개체는 가득 · 깎인 개체는 깎인 만큼(수리할 양)이 그대로.
+		--     최대가 줄어드는 경우(없어야 한다)는 더하지 않고 새 최대로 자르기만 한다. 살아 있으면 최소 1.
+		--   · 추적 목록(u.upgradeLevel · u.statMul)도 새 값으로 바꾼다 — 안 그러면 재집결(Regroup)이 같은 SpawnOne 으로 다시 세울 때 예전 레벨로 되돌린다. 파병 차출(TakeUnits)도 이 값을 읽는다.
+		--   · 죽은 개체(곧 사라진다) · 분신 · 소환체(u.clone)는 건드리지 않는다. 파병으로 이미 떠난 개체(TakeUnits 가 이 목록에서 지운다)와 파병 대기열은 대상이 아니다(보낸 순간의 스펙 그대로).
+		if _MonsterCatalog == nil then return 0 end
+		local st = self:RecruitStats(villageId, monsterId, statMul, upgradeLevel)
+		local name = _MonsterCatalog:GetName(monsterId)
+		local n = 0
+		local gain = 0
+		for _, u in ipairs(self:UnitList(villageId)) do
+			if u.monsterId == monsterId and u.clone == nil then
+				u.statMul = statMul
+				u.upgradeLevel = upgradeLevel
+				---@type Monster
+				local monster = nil
+				if isvalid(u.ent) then monster = u.ent.Monster end
+				if isvalid(monster) and not monster.IsDead and monster.Hp > 0 then
+					local oldMax = monster.MaxHp
+					local oldHp = monster.Hp
+					local newHp = math.max(1, math.min(st.maxHp, oldHp + math.max(0, st.maxHp - oldMax)))
+					monster.MaxHp = st.maxHp
+					monster.Hp = newHp
+					---@type FactionAttack
+					local atk = u.ent.FactionAttack
+					if isvalid(atk) then atk.BaseDamage = st.attack end
+					---@type DefenderUnit
+					local du = u.ent.DefenderUnit
+					if isvalid(du) then du.Level = st.level end
+					if _MonsterNameTag ~= nil then _MonsterNameTag:Attach(u.ent, name, st.level) end
+					n = n + 1
+					gain = math.max(gain, st.maxHp - oldMax)
+					if self.LogUpgradeUnits then
+						log("[Defender] upgrade unit " .. tostring(u.ent.Name) .. " hp " .. tostring(oldHp) .. "/" .. tostring(oldMax) .. " → " .. tostring(newHp) .. "/" .. tostring(st.maxHp))
+					end
+				end
+			end
+		end
+		log("[Defender] upgrade " .. tostring(monsterId) .. " Lv" .. tostring(upgradeLevel) .. " units=" .. tostring(n) .. " hp +" .. tostring(gain)
+			.. " (" .. villageId .. " newMax=" .. tostring(st.maxHp) .. " atk=" .. tostring(st.attack) .. " unitLv=" .. tostring(st.level) .. ")")
+		return n
 	end
 
 	@ExecSpace("ServerOnly")

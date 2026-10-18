@@ -13,6 +13,10 @@ script MinionFlowService extends Logic
 
 	property number DetectRange = 6.0
 
+	-- 레인 좀비머쉬맘의 보스 판정 접촉 비율(%) 기본값(1.0.16 · 사용자 2026-10-18 "최대체력 비례데미지 20%"). 평소 값은 DifficultyRule.ZOMBIE_CONTACT_HP_PCT(★ 별) —
+	-- 매치 밖(테스트 레인 · 튜토리얼)이나 그 ★ 에 행이 없으면 이 값을 쓴다. 0 이하로 두면 비례 피해 없이 공격력만(방어 적용).
+	property number ZombieContactHpPctDefault = 20
+
 	@HideFromInspector
 	property integer spawnSeq = 0
 
@@ -230,6 +234,21 @@ script MinionFlowService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method number ZombieContactHpPct()
+		-- 레인 좀비머쉬맘(보스 판정)의 한 타 최대 HP 비율(%) = 지금 매치 ★ 의 DifficultyRule.ZOMBIE_CONTACT_HP_PCT(★1 · 3 · 5 모두 20). 매치 밖이거나 그 ★ 에 행이 없으면 ZombieContactHpPctDefault.
+		local pct = self.ZombieContactHpPctDefault
+		if _DifficultyService ~= nil then
+			local d = _DifficultyService:Current()
+			if d >= 1 then
+				local raw = _DifficultyService:RawFor(d, "ZOMBIE_CONTACT_HP_PCT")
+				if raw ~= "" and tonumber(raw) ~= nil then pct = tonumber(raw) end
+			end
+		end
+		if pct < 0 then pct = 0 end
+		return pct
+	end
+
+	@ExecSpace("ServerOnly")
 	method Entity SpawnMinion(string villageId, string role, any spec)
 		-- 통로 시작점에 몬스터 모델을 스폰하고 미니언 부품을 붙인다.
 		local row = _LaneFacilityService:LaneRow(villageId, role)
@@ -377,6 +396,14 @@ script MinionFlowService extends Logic
 			-- 판정 · 이름표 레벨(1.1-H01 · H03): 웨이브 레벨 / 파병은 보낸 묶음 강화 레벨 기준. 0 = 모름(도감 레벨 · MonsterCatalog.LevelOfEntity).
 			mu.Level = math.floor(spec.level or 0)
 			mu.Defense = spec.defense or 0
+			-- 보스 판정(1.0.16 · 사용자 2026-10-18 "좀비머쉬맘 보스 판정 · 최종 피격 데미지 공식을 보스들과 똑같이"): 레인 좀비머쉬맘만. MonsterId 로 가르므로 맵 경계 Advance 의 새 스펙에서도 다시 켜진다.
+			--   켜면 ① 플레이어를 때리는 한 타 = 맞은 사람 최대 HP × ContactHpPct% + 공격력(MonsterAttack/FactionAttack.CalcDamage · PlayerHit 은 비례 피해로 처리) ② 플레이어가 칠 때 보스 회피율(StatService.ResolveTarget).
+			--   파병 유닛은 이 종이 될 수 없다(모집표에 없음) — noReward 는 따로 가르지 않는다.
+			if _BossHpBarService ~= nil and math.floor(tonumber(spec.monsterId) or 0) == _BossHpBarService.ZombieMonsterId then
+				mu.BossJudged = true
+				mu.ContactHpPct = self:ZombieContactHpPct()
+				log("[Zombie] boss-judged contact pct=" .. tostring(mu.ContactHpPct) .. " atk=" .. tostring(atk and atk.BaseDamage or -1) .. " lv=" .. tostring(mu.Level) .. " " .. name)
+			end
 		end
 		-- 몬스터 이름표(1.1-I07 · I08): `Lv.N 이름` — 레벨 = 웨이브 레벨(MinionWave.Level) · 파병은 보낸 묶음 강화 레벨(spec.level). 0 이면 mu.Level → 도감 레벨 순(MonsterNameTag.LevelOf).
 		--   파병(SpawnDispatched)과 맵 경계 이어 스폰(Advance · spec.level = mu.Level)도 이 줄을 지나므로 레벨이 유지된다. 색은 보는 사람마다 클라가 칠한다(1.1-I19).
