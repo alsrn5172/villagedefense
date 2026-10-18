@@ -19,6 +19,28 @@ script VillageRecordUIController extends Logic
 
 	property ButtonComponent btnPrimary = "ced28f13-b8b6-4ca4-b219-b1ab3366be97"
 
+	-- 일괄 해금(1.0.16 · 사용자 2026-10-18 "일괄 해금 버튼"): 지금 해금할 수 있는 몬스터 전부 → 서버 RequestUnlockCollectionMany.
+	property ButtonComponent btnUnlockAll = "4bca9a11-5743-4e23-9d91-b8eb44165ce1"
+
+	-- 더블클릭(같은 칸을 이 시간(초) 안에 두 번) · 우클릭(마우스가 올라간 칸 + Mouse1)으로도 해금(1.0.16 · 사용자 2026-10-18).
+	property number DoubleClickSeconds = 0.35
+
+	@HideFromInspector
+	property string hoverCellId = ""
+
+	@HideFromInspector
+	property string lastClickCellId = ""
+
+	@HideFromInspector
+	property number lastClickAt = -10
+
+	@HideFromInspector
+	property any keyHandler = nil
+
+	-- 고른 몬스터 id(정렬이 바뀌어도 같은 몬스터를 다시 고른다 · 1.0.16).
+	@HideFromInspector
+	property string selCollId = ""
+
 	property Entity contentCollection = "98e6e15a-5d6e-4f7e-9952-c06cef2e49be"
 
 	property Entity contentStats = "fd87ac83-221f-43bb-8826-9ff420578f1f"
@@ -150,6 +172,9 @@ script VillageRecordUIController extends Logic
 		end
 		if isvalid(self.btnClose) then bind(self.btnClose.Entity, function() self:Close() end) end
 		if isvalid(self.btnPrimary) then bind(self.btnPrimary.Entity, function() self:OnPrimary() end) end
+		if isvalid(self.btnUnlockAll) then bind(self.btnUnlockAll.Entity, function() self:OnUnlockAll() end) end
+		-- 우클릭 해금(1.0.16): 마우스가 올라간 칸(hoverCellId) + Mouse1 — 장비 판매 창(EquipSellUIController)과 같은 방식.
+		self.keyHandler = _InputService:ConnectEvent(KeyDownEvent, function(event) self:OnKeyDown(event) end)
 		self.boundCells = {}
 		self.sparkleDefaults = {}
 		self:CaptureButtonEffectDefaults()
@@ -226,6 +251,7 @@ script VillageRecordUIController extends Logic
 		if isvalid(self.contentStats) then self.contentStats.Enable = (route == "stats") end
 		-- collection 은 푸터(재료 · 해금/레벨업 버튼)를 쓴다. stats 는 없음.
 		self.selColl = 0
+		self.selCollId = ""
 		self.waiting = false
 		if isvalid(self.footer) then self.footer.Enable = (route == "collection") end
 		-- 제목 띠 장식(아이콘 · 반짝이)은 라우트별로 하나만.
@@ -331,6 +357,22 @@ script VillageRecordUIController extends Logic
 			end
 		end
 		self.waiting = false
+		-- 1.0.16(사용자 2026-10-18 "해금 가능하거나 해금된 몬스터는 앞으로"): 해금 가능 → 해금됨 → 나머지 순 · 같은 묶음 안은 서버 순서(레벨 순) 그대로.
+		for i, r in ipairs(self.collRows) do
+			r.order = i
+			if self:CanUnlock(r) then r.rank = 0 elseif r.monLv >= 1 then r.rank = 1 else r.rank = 2 end
+		end
+		table.sort(self.collRows, function(a, b)
+			if a.rank ~= b.rank then return a.rank < b.rank end
+			return a.order < b.order
+		end)
+		-- 고른 몬스터는 id 로 다시 찾는다(해금하면 자리가 바뀐다).
+		self.selColl = 0
+		if self.selCollId ~= "" then
+			for i, r in ipairs(self.collRows) do
+				if r.id == self.selCollId then self.selColl = i end
+			end
+		end
 		-- 행 수가 같으면 GridView 를 다시 만들지 않고(썸네일 재로드 방지) 이미 있는 셀만 제자리에서 다시 채운다.
 		if isvalid(self.collGrid) then
 			if self.collGrid.TotalCount ~= #self.collRows then
@@ -414,10 +456,29 @@ script VillageRecordUIController extends Logic
 		if bound == nil then
 			local id = cell.Id
 			local h = _ButtonHoverSound:Clickable(cell):ConnectEvent(ButtonClickEvent, function()
-				local rec = self.boundCells[id]
-				if rec ~= nil then self:OnCollSelect(rec.index + 1) end
+				local cur = self.boundCells[id]
+				if cur == nil then return end
+				-- 더블클릭(1.0.16): 같은 칸을 DoubleClickSeconds 안에 다시 누르면 해금.
+				local now = _UtilLogic.ElapsedSeconds
+				local dbl = (self.lastClickCellId == id) and (now - self.lastClickAt) <= self.DoubleClickSeconds
+				self.lastClickCellId = id
+				self.lastClickAt = now
+				if dbl then
+					self.lastClickCellId = ""
+					self:UnlockAt(cur.index + 1, "double click")
+				else
+					self:OnCollSelect(cur.index + 1)
+				end
 			end)
 			table.insert(self.handlers, { e = cell, h = h })
+			-- 마우스가 올라간 칸 기록(우클릭 해금 대상 · 1.0.16).
+			cell:ConnectEvent(ButtonStateChangeEvent, function(event)
+				if event.state == ButtonState.Normal then
+					if self.hoverCellId == id then self.hoverCellId = "" end
+				else
+					self.hoverCellId = id
+				end
+			end)
 		end
 		-- 1.0.15(사용자 2026-10-18): 마우스 올림 소리는 지금 해금할 수 있는 칸(재료가 모인 칸)에서만. 재료가 모자라거나 이미 해금된 칸은 골라도 할 일이 없다.
 		_ButtonHoverSound:SetClickable(cell, canUnlock)
@@ -583,8 +644,56 @@ script VillageRecordUIController extends Logic
 	method void OnCollSelect(integer idx)
 		-- 셀 선택 → 푸터 갱신 + 셀 색만 다시 칠하기.
 		self.selColl = idx
+		local r = self.collRows and self.collRows[idx] or nil
+		self.selCollId = (r ~= nil) and r.id or ""
 		self:RepaintCells()
 		self:UpdateFooter()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UnlockAt(integer idx, string why)
+		-- 더블클릭 · 우클릭 해금(1.0.16): 그 칸을 고르고 해금 버튼과 같은 길(OnPrimary)로 서버에 보낸다. 해금할 수 없으면 고르기만.
+		self:OnCollSelect(idx)
+		local r = self.collRows and self.collRows[idx] or nil
+		if self:CanUnlock(r) then
+			log("[Record] unlock by " .. why .. " " .. tostring(r.id))
+			self:OnPrimary()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyDown(KeyDownEvent event)
+		-- 우클릭(Mouse1) = 마우스가 올라간 도감 칸 해금(1.0.16 · 창이 열려 있고 도감 라우트일 때만).
+		if event.key ~= KeyboardKey.Mouse1 then return end
+		if not self.isOpen or self.route ~= "collection" or self.hoverCellId == "" or self.boundCells == nil then return end
+		local rec = self.boundCells[self.hoverCellId]
+		if rec == nil or not isvalid(rec.cell) or not rec.cell.EnabledInHierarchy then return end
+		self:UnlockAt(rec.index + 1, "right click")
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer UnlockableCount()
+		-- 지금 해금할 수 있는 몬스터 수(일괄 해금 버튼 숫자 · 1.0.16).
+		local n = 0
+		for _, r in ipairs(self.collRows or {}) do
+			if self:CanUnlock(r) then n = n + 1 end
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUnlockAll()
+		-- 일괄 해금(1.0.16): 해금 가능한 몬스터 id 를 모아 서버에 한 번에(서버가 재료 · 해금 여부를 다시 본다). 응답(SetView)으로만 갱신.
+		if self.route ~= "collection" or self.waiting or _LaneStateService == nil then return end
+		local ids = {}
+		for _, r in ipairs(self.collRows or {}) do
+			if self:CanUnlock(r) then table.insert(ids, tostring(r.id)) end
+		end
+		if #ids == 0 then return end
+		self.waiting = true
+		self:UpdateFooter()
+		log("[Record] unlock all " .. tostring(#ids))
+		_LaneStateService:RequestUnlockCollectionMany(table.concat(ids, ","))
 	end
 
 	@ExecSpace("ClientOnly")
@@ -648,6 +757,18 @@ script VillageRecordUIController extends Logic
 			-- 해금됨: 체크 + 글자(버튼 글자 대신 자식 글자)
 			self:Show(self.btnPrimary.Entity, "CheckIcon", owned)
 			self:Show(self.btnPrimary.Entity, "DoneLabel", owned)
+		end
+		-- 일괄 해금(1.0.16): 해금 가능한 몬스터가 있을 때만 켠다 · 글자에 개수.
+		if isvalid(self.btnUnlockAll) then
+			local n = self:UnlockableCount()
+			local onAll = (n > 0 and not self.waiting)
+			self.btnUnlockAll.Enable = onAll
+			local t = self.btnUnlockAll.Entity.TextGUIRendererComponent
+			if t ~= nil then
+				t.Text = (n > 0) and ("일괄 해금 (" .. tostring(n) .. ")") or "일괄 해금"
+				t.FontColor = onAll and self.cInk or self.cPale
+			end
+			_ButtonHoverSound:SetClickable(self.btnUnlockAll.Entity, onAll)
 		end
 	end
 
@@ -891,6 +1012,10 @@ script VillageRecordUIController extends Logic
 			for _, h in ipairs(self.handlers) do
 				if isvalid(h.e) then h.e:DisconnectEvent(ButtonClickEvent, h.h) end
 			end
+		end
+		if self.keyHandler ~= nil then
+			_InputService:DisconnectEvent(KeyDownEvent, self.keyHandler)
+			self.keyHandler = nil
 		end
 	end
 

@@ -1713,24 +1713,63 @@ script LaneStateService extends Logic
 		local monsterId = math.floor(tonumber(monsterIdStr) or 0)
 		if monsterId <= 0 then self:Push(uid, "collection") return end
 		if self:MonLevel(v, monsterId) >= 1 then self:Toast(uid, "이미 해금했습니다") self:Push(uid, "collection") return end
+		local res = self:UnlockCollectionOne(uid, v, monsterId)
+		if res.ok then _InventoryService:PushInventory(uid) end
+		-- 실패도 뷰를 다시 보내야 클라 waiting 이 풀린다 (2026-09-07 "해금 버튼이 안 눌림" 원인).
+		self:Toast(uid, res.msg)
+		self:Push(uid, "collection")
+	end
+
+	@ExecSpace("ServerOnly")
+	method any UnlockCollectionOne(string uid, any v, integer monsterId)
+		-- 도감 해금 한 종(RequestUnlockCollection · RequestUnlockCollectionMany 공용 · 1.0.16): 재료 확인 → 차감 → v.mon = 1. 반환 { ok = 성공 여부, msg = 토스트 문구 } · 인벤토리 Push 는 부르는 쪽이 한 번.
+		if self:MonLevel(v, monsterId) >= 1 then return { ok = false, msg = "이미 해금했습니다" } end
 		local mat = self:CollectionMaterialOf(v.id, monsterId)
-		if mat == nil then
-			self:Toast(uid, "모집 대상이 아닌 몬스터라 해금할 수 없습니다")
-			self:Push(uid, "collection")
-			return
-		end
-		if _InventoryService == nil or _InventoryService:CountItem(uid, mat.itemId) < mat.count then
-			-- 실패도 뷰를 다시 보내야 클라 waiting 이 풀린다 (2026-09-07 "해금 버튼이 안 눌림" 원인).
-			self:Toast(uid, mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다 (보유 " .. tostring(_InventoryService and _InventoryService:CountItem(uid, mat.itemId) or 0) .. ")")
-			self:Push(uid, "collection")
-			return
+		if mat == nil then return { ok = false, msg = "모집 대상이 아닌 몬스터라 해금할 수 없습니다" } end
+		local have = (_InventoryService ~= nil) and _InventoryService:CountItem(uid, mat.itemId) or 0
+		if _InventoryService == nil or have < mat.count then
+			return { ok = false, msg = mat.name .. " " .. tostring(mat.count) .. "개가 필요합니다 (보유 " .. tostring(have) .. ")" }
 		end
 		_InventoryService:RemoveItem(uid, mat.itemId, mat.count)
-		_InventoryService:PushInventory(uid)
 		v.mon[monsterId] = 1
 		local name = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
 		log("[Lane] " .. v.id .. " unlock " .. tostring(monsterId) .. " " .. mat.itemId .. "-" .. tostring(mat.count) .. " (" .. uid .. ")")
-		self:Toast(uid, tostring(name) .. " 해금 — 모집 가능 (Lv1)")
+		return { ok = true, msg = tostring(name) .. " 해금 — 모집 가능 (Lv1)" }
+	end
+
+	@ExecSpace("Server")
+	method void RequestUnlockCollectionMany(string monsterIdsCsv)
+		-- 도감 일괄 해금(1.0.16 · 사용자 2026-10-18 "일괄 해금 버튼"): 클라가 보낸 몬스터 id 목록("1210102,2230101,…")을 하나씩 UnlockCollectionOne 으로 — 재료 · 해금 여부는 서버가 다시 본다.
+		--   토스트 한 번("N종 해금") · 인벤토리 Push · 뷰 Push 한 번.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local uid = senderUserId
+		local v = self:StateOfUser(uid)
+		if v == nil then self:Toast(uid, "마을이 없습니다 — 넥서스를 먼저 연결하세요") return end
+		local done = 0
+		local names = {}
+		local seen = {}
+		for part in string.gmatch(tostring(monsterIdsCsv or ""), "[^,]+") do
+			local monsterId = math.floor(tonumber(part) or 0)
+			if monsterId > 0 and not seen[monsterId] then
+				seen[monsterId] = true
+				local res = self:UnlockCollectionOne(uid, v, monsterId)
+				if res.ok then
+					done = done + 1
+					local nm = (_MonsterCatalog ~= nil) and _MonsterCatalog:GetName(monsterId) or tostring(monsterId)
+					local ko = string.match(tostring(nm), "^(.-)%s*%(")
+					table.insert(names, (ko ~= nil and ko ~= "") and ko or tostring(nm))
+				end
+			end
+		end
+		if done > 0 then _InventoryService:PushInventory(uid) end
+		log("[Lane] " .. v.id .. " unlock many " .. tostring(done) .. " (" .. uid .. ")")
+		if done == 0 then
+			self:Toast(uid, "지금 해금할 수 있는 몬스터가 없습니다")
+		elseif done <= 3 then
+			self:Toast(uid, table.concat(names, " · ") .. " 해금 — 모집 가능 (Lv1)")
+		else
+			self:Toast(uid, names[1] .. " 외 " .. tostring(done - 1) .. "종 해금 — 모집 가능 (Lv1)")
+		end
 		self:Push(uid, "collection")
 	end
 
