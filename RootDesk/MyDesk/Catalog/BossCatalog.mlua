@@ -25,6 +25,11 @@ script BossCatalog extends Logic
 	@HideFromInspector
 	property any bossesByMap = nil
 
+	-- WO-056(1.0.15): 보스 피해 모드(BossInfo.ContactDamageMode · BossSkills.DamageMode). 이 값이면 피격 플레이어 최대 HP 의 % 로 준다(★1/★3/★5 열).
+	--   그 밖(FIXED · 빈칸)은 기존 고정 피해(AttackPower · Damage × ★ 공격 배율) 그대로.
+	@HideFromInspector
+	property string ModeMaxHpPercent = "MAX_HP_PERCENT"
+
 	method void OnBeginPlay()
 		-- 서버·클라 각자 자기 쪽에서 적재한다. MonsterCatalog 와 같은 규약.
 		self:EnsureLoaded()
@@ -92,6 +97,7 @@ script BossCatalog extends Logic
 
 		local bossRows = 0
 		local skipped = 0
+		local pctRows = 0   -- WO-056: 최대 HP 비례 피해 행(접촉 + 스킬) 수 · 로드 로그용
 
 		local info = _DataService:GetTable(self.InfoTableName)
 		if info == nil then
@@ -160,8 +166,19 @@ script BossCatalog extends Logic
 						spawnX = tonumber(info:GetCell(i, "SpawnX")) or 0,
 						spawnY = tonumber(info:GetCell(i, "SpawnY")) or 0,
 						respawnSeconds = tonumber(info:GetCell(i, "RespawnSeconds")) or 0,
+						-- WO-056: 접촉 피해 모드 · ★1/★3/★5 최대 HP 비율(%). FIXED · 빈칸이면 AttackPower 고정 피해.
+						contactDamageMode = string.upper(tostring(info:GetCell(i, "ContactDamageMode") or "")),
+						contactHpPct1 = tonumber(info:GetCell(i, "ContactHpPct1")) or 0,
+						contactHpPct3 = tonumber(info:GetCell(i, "ContactHpPct3")) or 0,
+						contactHpPct5 = tonumber(info:GetCell(i, "ContactHpPct5")) or 0,
 						note = info:GetCell(i, "#Note") or ""
 					}
+					if row.contactDamageMode == self.ModeMaxHpPercent then
+						pctRows = pctRows + 1
+						if row.contactHpPct1 <= 0 or row.contactHpPct3 <= 0 or row.contactHpPct5 <= 0 then
+							log_warning("[BossCatalog] " .. id .. " contact MAX_HP_PERCENT with empty star ratio — that star falls back to fixed damage")
+						end
+					end
 					self.infoById[id] = row
 					if self.bossesByMap[mapName] == nil then
 						self.bossesByMap[mapName] = {}
@@ -293,9 +310,21 @@ script BossCatalog extends Logic
 						-- shapeType=buff 전용. 범위 안 아군 몬스터의 이동속도 배율과 지속시간.
 						buffMoveRate = tonumber(skills:GetCell(i, "BuffMoveRate")) or 1,
 						buffDuration = tonumber(skills:GetCell(i, "BuffDuration")) or 5,
+						-- WO-056: 스킬 피해 모드 · ★1/★3/★5 최대 HP 비율(%). 공격 판정 행만 MAX_HP_PERCENT · 소환 · 버프 · 순간이동 · 페이크는 FIXED.
+						damageMode = string.upper(tostring(skills:GetCell(i, "DamageMode") or "")),
+						hpPct1 = tonumber(skills:GetCell(i, "HpPct1")) or 0,
+						hpPct3 = tonumber(skills:GetCell(i, "HpPct3")) or 0,
+						hpPct5 = tonumber(skills:GetCell(i, "HpPct5")) or 0,
 						note = skills:GetCell(i, "#Note") or ""
 					})
 					skillRows = skillRows + 1
+					local added = self.skillsById[bossId][#self.skillsById[bossId]]
+					if added.damageMode == self.ModeMaxHpPercent then
+						pctRows = pctRows + 1
+						if added.hpPct1 <= 0 or added.hpPct3 <= 0 or added.hpPct5 <= 0 then
+							log_warning("[BossCatalog] " .. dupKey .. " MAX_HP_PERCENT with empty star ratio — that star falls back to fixed damage")
+						end
+					end
 				end
 			end
 		end
@@ -332,7 +361,36 @@ script BossCatalog extends Logic
 		log("[BossCatalog] loaded bosses=" .. tostring(bossRows)
 			.. " skills=" .. tostring(skillRows)
 			.. " rewards=" .. tostring(rewardRows)
+			.. " maxHpPct=" .. tostring(pctRows)
 			.. " skipped=" .. tostring(skipped))
+	end
+
+	method number HpPctFor(string mode, number pct1, number pct3, number pct5, integer star)
+		-- WO-056: 최대 HP 비례 피해 비율(%) 고르기. 모드가 MAX_HP_PERCENT 이고 ★ 가 1 · 3 · 5 면 그 열 값.
+		--   매치 밖(★0 · 튜토리얼 등 · 사용자 2026-10-18 "같은거로 유지") · 꺼진 ★2 · ★4 · FIXED · 빈칸은 0 = 기존 고정 피해. ★2 · ★4 를 보간하지 않는다.
+		if mode ~= self.ModeMaxHpPercent then return 0 end
+		local p = 0
+		if star == 1 then
+			p = pct1
+		elseif star == 3 then
+			p = pct3
+		elseif star == 5 then
+			p = pct5
+		end
+		if p == nil or p <= 0 then return 0 end
+		return p
+	end
+
+	method number ContactHpPct(any info, integer star)
+		-- 보스 접촉 피해의 최대 HP 비율(%) · 0 = 고정 피해(AttackPower).
+		if info == nil then return 0 end
+		return self:HpPctFor(info.contactDamageMode or "", info.contactHpPct1 or 0, info.contactHpPct3 or 0, info.contactHpPct5 or 0, star)
+	end
+
+	method number SkillHpPct(any skill, integer star)
+		-- 보스 스킬 한 발(투사체는 발당)의 최대 HP 비율(%) · 0 = 고정 피해(Damage × ★ 공격 배율).
+		if skill == nil then return 0 end
+		return self:HpPctFor(skill.damageMode or "", skill.hpPct1 or 0, skill.hpPct3 or 0, skill.hpPct5 or 0, star)
 	end
 
 	method any GetInfo(any bossId)
