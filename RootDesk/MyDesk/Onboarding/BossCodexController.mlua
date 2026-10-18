@@ -1,0 +1,659 @@
+@Logic
+script BossCodexController extends Logic
+	-- 도움말 창 '보스 도감' 탭(1.0.16 · 사용자 2026-10-18) — GameIntroGroup/Root/Window/TabBoss 의 내용을 채우는 클라 컨트롤러.
+	--   왼쪽 목록(B1~B8 · 재화 · 아이템 탭 줄의 2배 높이) = 지역 보스는 지역 앰블럼 + 몬스터 썸네일 · 주니어 발록은 썸네일 하나.
+	--   오른쪽 = 보스 이름(크게) · 출신 지역(앰블럼 + 이름) · Lv · ★별 입장 재화 · 최대 체력 · 접촉 피해 · 스킬 카드(시전 · 공격 순간 사진 + ★별 피해).
+	--   숫자는 전부 실행 중에 표에서 계산한다(BossInfo · BossSkills · DifficultyRule · DifficultyConfig · VillageConfig · ItemInfo) — 값을 고쳐도 여기는 안 바꾼다.
+	--   탭 열기 · 닫기 · 버튼 모양은 GameIntroController 가 하고, 여기는 목록 · 상세만 채운다(GameIntroController.GoTab("boss") → Shown()).
+
+	property Entity pane = "07580777-c46b-4cb4-91c8-cbd5e5f69003"
+
+	-- 목록 순서(BossId) · 꺼진 보스(BossInfo.Enabled=false · 좀비머쉬맘 등)는 BossCatalog 가 안 주므로 저절로 빠진다.
+	property string BossOrder = "2220000,6130101,9300003,3220000,5250007,8510000,8130100"
+
+	-- 최종 보스(주니어 발록) 맵 이름 앞부분 — DifficultyService.BalrogMapPrefix 와 같은 값(그쪽은 서버 전용이라 읽지 못한다).
+	property string BalrogMapPrefix = "Sleepywood_Boss_JrBalrog"
+
+	-- 마을 id → 이름 · 문장(CommonNpcUIController.EmblemRuids 와 같은 그림 · 리스항구는 문장 그림이 없어 금빛 배지에 첫 글자)
+	property string RegionNames = "LITH=리스항구;HENESYS=헤네시스;KERNING=커닝시티;PERION=페리온;ELLINIA=엘리니아;NAUTILUS=노틸러스"
+
+	property string EmblemRuids = "HENESYS=621154ff2f374064a2d74245be1cce37;KERNING=a225cbb5951642d1a6738b16d3d812a9;ELLINIA=a67009c937104506b1f2d178e6477c1b;NAUTILUS=15ed9b9c0b064af096d80311cf92acbd;PERION=cf4a5dd3d9e54d2bb930bca7a19ceac8"
+
+	-- 보스 썸네일(WorldMapController.BossIcons 와 같은 값 · 월드맵 보스 줄과 같은 그림)
+	property string BossIcons = "2220000=e035bb90c053401b88de2159dfa230eb;6130101=86015373d23b4b05bb8fcc6086354652;9300003=6401ef4c5ccb4269a5c97831fa8fd329;3220000=0b6c2f6faccc44da980ce832ab636bf6;5250007=4c7e3e16e7e34de6ac6e382193d94604;8130100=4b3ad414c1184c02b5eb459b29ee8ece;8510000=207c5d6dcee243ad9a141397244ba9a9"
+
+	-- 발록 입장권(낙인의 영혼석) 아이템 id
+	property string BalrogTicketItem = "BRAND_SOULSTONE"
+
+	-- 목록 칸 · 스킬 카드 수(.ui 에 있는 개수)
+	property integer CellCount = 8
+
+	property integer CardCount = 10
+
+	-- 목록 칸 썸네일 틀 x: 지역 보스(앰블럼 오른쪽) · 발록(앰블럼 자리까지 가운데)
+	property number FrameXRegional = -50
+
+	property number FrameXSolo = -82
+
+	-- ★표 입장 재화 글자 x(아이콘 오른쪽 · 무료면 가운데쯤)
+	property number CostTextX = 20
+
+	property number FreeTextX = 70
+
+	@HideFromInspector
+	property any bosses = nil
+
+	@HideFromInspector
+	property any stars = nil
+
+	@HideFromInspector
+	property any rules = nil
+
+	@HideFromInspector
+	property any villageOfMap = nil
+
+	@HideFromInspector
+	property integer sel = 1
+
+	@HideFromInspector
+	property any handlers = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 목록 칸 클릭을 건다(올림 소리 · 빛 등록 포함). 데이터는 처음 열 때 읽는다(표 적재 순서와 무관하게).
+		self.handlers = {}
+		local list = self:Child(self.pane, "List")
+		local n = 0
+		for i = 1, self.CellCount do
+			local cell = self:Child(list, "B" .. tostring(i))
+			if isvalid(cell) and cell.ButtonComponent ~= nil then
+				local idx = i
+				table.insert(self.handlers, { e = cell, h = _ButtonHoverSound:Clickable(cell):ConnectEvent(ButtonClickEvent, function() self:Select(idx) end) })
+				n = n + 1
+			end
+		end
+		log("[BossCodex] ready cells=" .. tostring(n) .. " pane=" .. tostring(isvalid(self.pane)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity Child(Entity e, string name)
+		-- e 의 바로 아래 자식 name (없으면 nil).
+		if not isvalid(e) then
+			return nil
+		end
+		return e:GetChildByName(name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(Entity e, string text)
+		-- 글자 바꾸기(없으면 무시).
+		if isvalid(e) and e.TextGUIRendererComponent ~= nil then
+			e.TextGUIRendererComponent.Text = text
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetImage(Entity e, string ruid)
+		-- 그림 바꾸기 · 빈 RUID 면 끈다.
+		if not isvalid(e) then
+			return
+		end
+		if ruid ~= nil and ruid ~= "" and e.SpriteGUIRendererComponent ~= nil then
+			e.SpriteGUIRendererComponent.ImageRUID = ruid
+			e.Enable = true
+		else
+			e.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(Entity e, boolean on)
+		-- 켜기 · 끄기(없으면 무시).
+		if isvalid(e) then
+			e.Enable = on
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Lookup(string list, string key)
+		-- "K=V;K=V" 에서 key 의 값(없으면 "").
+		for k, v in string.gmatch(list or "", "([^;=]+)=([^;]+)") do
+			if k == key then
+				return v
+			end
+		end
+		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Comma(number v)
+		-- 1080000 → "1,080,000".
+		local s = tostring(math.floor(v))
+		local out = s
+		while true do
+			local nx, k = string.gsub(out, "^(-?%d+)(%d%d%d)", "%1,%2")
+			out = nx
+			if k == 0 then
+				break
+			end
+		end
+		return out
+	end
+
+	@ExecSpace("ClientOnly")
+	method string Pct(number p)
+		-- 피해 비율 글자(정수면 정수 · 아니면 소수 한 자리).
+		if math.abs(p - math.floor(p)) < 0.001 then
+			return tostring(math.floor(p)) .. "%"
+		end
+		return string.format("%.1f%%", p)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EnsureData()
+		-- 표를 한 번 읽는다: 켜진 ★(DifficultyConfig) · ★별 규칙(DifficultyRule) · 보스 맵 → 마을(VillageConfig) · 목록 순서의 보스.
+		if self.bosses ~= nil then
+			return
+		end
+		self.stars = {}
+		local cfg = _DataService:GetTable("DifficultyConfig")
+		if cfg ~= nil then
+			for i = 1, cfg:GetRowCount() do
+				local d = math.floor(tonumber(tostring(cfg:GetCell(i, "Difficulty") or "")) or 0)
+				local on = string.lower(tostring(cfg:GetCell(i, "Enabled") or "true")) ~= "false"
+				if d >= 1 and d <= 5 and on then
+					table.insert(self.stars, d)
+				end
+			end
+		end
+		table.sort(self.stars)
+		if #self.stars == 0 then
+			self.stars = { 1, 3, 5 }
+		end
+		self.rules = {}
+		local dr = _DataService:GetTable("DifficultyRule")
+		if dr ~= nil then
+			for i = 1, dr:GetRowCount() do
+				local on = string.lower(tostring(dr:GetCell(i, "Enabled") or "true")) ~= "false"
+				local d = math.floor(tonumber(tostring(dr:GetCell(i, "Difficulty") or "")) or 0)
+				local key = tostring(dr:GetCell(i, "Key") or "")
+				if on and d >= 1 and d <= 5 and key ~= "" then
+					if self.rules[d] == nil then
+						self.rules[d] = {}
+					end
+					self.rules[d][key] = tostring(dr:GetCell(i, "Value") or "")
+				end
+			end
+		end
+		self.villageOfMap = {}
+		local vc = _DataService:GetTable("VillageConfig")
+		if vc ~= nil then
+			for i = 1, vc:GetRowCount() do
+				local m = tostring(vc:GetCell(i, "BossMapName") or "")
+				if m ~= "" then
+					self.villageOfMap[m] = tostring(vc:GetCell(i, "VillageId") or "")
+				end
+			end
+		end
+		self.bosses = {}
+		for id in string.gmatch(self.BossOrder, "[^,]+") do
+			local info = _BossCatalog:GetInfo(id)
+			if info ~= nil then
+				table.insert(self.bosses, info)
+			end
+		end
+		log("[BossCodex] data bosses=" .. tostring(#self.bosses) .. " stars=" .. table.concat(self.stars, ","))
+	end
+
+	@ExecSpace("ClientOnly")
+	method number RuleNum(integer d, string key, number fallback)
+		-- DifficultyRule 의 ★ d · key 숫자(없으면 fallback).
+		local r = self.rules[d]
+		if r == nil or r[key] == nil then
+			return fallback
+		end
+		local v = tonumber(r[key])
+		if v == nil then
+			return fallback
+		end
+		return v
+	end
+
+	@ExecSpace("ClientOnly")
+	method string RuleText(integer d, string key)
+		-- DifficultyRule 의 ★ d · key 글자(없으면 "").
+		local r = self.rules[d]
+		if r == nil or r[key] == nil then
+			return ""
+		end
+		return r[key]
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsBalrog(any info)
+		-- 최종 보스(주니어 발록)인가 = 발록 방 맵.
+		local m = tostring(info.mapName or "")
+		return string.sub(m, 1, #self.BalrogMapPrefix) == self.BalrogMapPrefix
+	end
+
+	@ExecSpace("ClientOnly")
+	method string KoName(any info)
+		-- "머쉬맘 (Mushmom)" → "머쉬맘".
+		local n = tostring(info.name or "")
+		local ko = string.match(n, "^(.-)%s*%(")
+		if ko ~= nil and ko ~= "" then
+			return ko
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method string VillageOf(any info)
+		-- 보스 맵 → 마을 id(VillageConfig.BossMapName). 발록 · 표에 없으면 "".
+		local v = self.villageOfMap[tostring(info.mapName or "")]
+		if v == nil then
+			return ""
+		end
+		return v
+	end
+
+	@ExecSpace("ClientOnly")
+	method string RegionName(string village, any info)
+		-- 지역 이름(발록 = 슬리피우드).
+		if village == "" then
+			if self:IsBalrog(info) then
+				return "슬리피우드"
+			end
+			return ""
+		end
+		local n = self:Lookup(self.RegionNames, village)
+		if n == "" then
+			return village
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FirstChar(string s)
+		-- 글자 하나(UTF-8).
+		return string.match(s, "^[%z\1-\127\194-\244][\128-\191]*") or ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyEmblem(Entity holder, string village, string regionName)
+		-- holder 아래 Emblem(문장 그림) · Badge(금빛 배지 + Letter 첫 글자 · 문장 그림이 없는 마을)를 맞춘다. 마을이 없으면(발록) 둘 다 끈다.
+		local emblem = self:Child(holder, "Emblem")
+		local badge = self:Child(holder, "Badge")
+		local ruid = ""
+		if village ~= "" then
+			ruid = self:Lookup(self.EmblemRuids, village)
+		end
+		self:SetImage(emblem, ruid)
+		local useBadge = village ~= "" and ruid == ""
+		self:Show(badge, useBadge)
+		if useBadge then
+			self:SetText(self:Child(badge, "Letter"), self:FirstChar(regionName))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Shown()
+		-- 탭이 켜졌다: 목록을 채우고 지금 고른 보스를 다시 그린다.
+		self:EnsureData()
+		self:FillList()
+		self:Select(self.sel)
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer Count()
+		-- 목록 보스 수.
+		self:EnsureData()
+		return #self.bosses
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillList()
+		-- 왼쪽 칸: 지역 보스 = 앰블럼 + 썸네일 + 이름 + "지역 · Lv" · 발록 = 썸네일(가운데로) + 이름 + "최종 보스 · Lv".
+		local list = self:Child(self.pane, "List")
+		for i = 1, self.CellCount do
+			local cell = self:Child(list, "B" .. tostring(i))
+			local info = self.bosses[i]
+			self:Show(cell, info ~= nil)
+			if info ~= nil and isvalid(cell) then
+				local village = self:VillageOf(info)
+				local region = self:RegionName(village, info)
+				local solo = self:IsBalrog(info)
+				self:ApplyEmblem(cell, village, region)
+				local frame = self:Child(cell, "Frame")
+				if isvalid(frame) then
+					local t = frame.UITransformComponent
+					t.anchoredPosition = Vector2(solo and self.FrameXSolo or self.FrameXRegional, t.anchoredPosition.y)
+				end
+				self:SetImage(self:Child(frame, "Thumb"), self:Lookup(self.BossIcons, info.id))
+				self:SetText(self:Child(cell, "Name"), self:KoName(info))
+				local sub = region
+				if solo then
+					sub = "최종 보스"
+				end
+				self:SetText(self:Child(cell, "Sub"), sub .. " · Lv " .. tostring(math.floor(info.level or 0)))
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Select(integer n)
+		-- n 번째 보스를 고른다: 고른 칸 금테(Sel) · 오른쪽 상세를 다시 채운다.
+		self:EnsureData()
+		if #self.bosses == 0 then
+			log_warning("[BossCodex] no bosses")
+			return
+		end
+		local idx = math.max(1, math.min(#self.bosses, n))
+		self.sel = idx
+		local list = self:Child(self.pane, "List")
+		for i = 1, self.CellCount do
+			self:Show(self:Child(self:Child(list, "B" .. tostring(i)), "Sel"), i == idx)
+		end
+		self:FillDetail(self.bosses[idx])
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Step(integer d)
+		-- ← → : 이전 · 다음 보스.
+		self:EnsureData()
+		self:Select(math.max(1, math.min(#self.bosses, self.sel + d)))
+		local list = self:Child(self.pane, "List")
+		if isvalid(list) and list.ScrollLayoutGroupComponent ~= nil then
+			list.ScrollLayoutGroupComponent:SetScrollPositionByItemIndex(self.sel - 1)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillDetail(any info)
+		-- 오른쪽 상세: 머리(썸네일 · 이름 · 지역 · Lv · 종류) → ★표(입장 재화 · 최대 체력 · 접촉 피해) → 스킬 카드.
+		local det = self:Child(self.pane, "Detail")
+		if not isvalid(det) or info == nil then
+			return
+		end
+		local village = self:VillageOf(info)
+		local region = self:RegionName(village, info)
+		local solo = self:IsBalrog(info)
+		self:SetImage(self:Child(self:Child(det, "Frame"), "Thumb"), self:Lookup(self.BossIcons, info.id))
+		self:SetText(self:Child(det, "Name"), self:KoName(info))
+		self:ApplyEmblem(det, village, region)
+		self:SetText(self:Child(det, "Region"), region)
+		self:SetText(self:Child(self:Child(det, "Lv"), "Text"), "Lv " .. tostring(math.floor(info.level or 0)))
+		self:Show(self:Child(det, "KindRegion"), not solo)
+		self:Show(self:Child(det, "KindFinal"), solo)
+		self:FillTable(det, info, village, solo)
+		self:FillSkills(det, info, solo)
+		log("[BossCodex] select " .. tostring(info.id) .. " " .. self:KoName(info) .. " region=" .. region .. " skills=" .. tostring(#_BossCatalog:GetSkills(info.id)))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillTable(Entity det, any info, string village, boolean solo)
+		-- ★ 열(켜진 ★ 최대 3개)마다: 머리 "★N 이름" · 입장 재화(아이콘 + 개수 · 마노 무료) · 최대 체력(BossCatalog.FinalMaxHp) · 접촉 피해(최대 HP 의 % 또는 고정 피해).
+		local tbl = self:Child(det, "Table")
+		local free = false
+		if _PortalNetwork ~= nil and village ~= "" then
+			free = string.find("," .. tostring(_PortalNetwork.BossEntryFreeVillages) .. ",", "," .. village .. ",", 1, true) ~= nil
+		end
+		local itemId = self.BalrogTicketItem
+		local costKey = "BALROG_TICKET"
+		if not solo then
+			costKey = "BOSS_ENTRY_COST"
+			itemId = ""
+			if _DropTableLogic ~= nil and village ~= "" then
+				local map, _n = string.gsub(tostring(_DropTableLogic.RegionItems), ",", ";")
+				itemId = self:Lookup(map, "REGION_" .. village)
+			end
+		end
+		local icon = ""
+		local itemName = itemId
+		if itemId ~= "" and _ItemCatalog ~= nil then
+			local def = _ItemCatalog:Get(itemId)
+			if def ~= nil then
+				icon = tostring(def.icon or "")
+				itemName = tostring(def.name or itemId)
+			end
+		end
+		local hpKey = solo and "BALROG_HP_MUL" or "BOSS_HP_MUL"
+		local atkKey = solo and "BALROG_ATK_MUL" or "BOSS_ATK_MUL"
+		local costRow = self:Child(tbl, "R1")
+		local hpRow = self:Child(tbl, "R2")
+		local hitRow = self:Child(tbl, "R3")
+		local logs = {}
+		for c = 1, 3 do
+			local d = self.stars[c]
+			local col = "C" .. tostring(c)
+			self:Show(self:Child(tbl, "H" .. tostring(c)), d ~= nil)
+			self:Show(self:Child(costRow, col), d ~= nil)
+			self:Show(self:Child(hpRow, col), d ~= nil)
+			self:Show(self:Child(hitRow, col), d ~= nil)
+			if d ~= nil then
+				local title = self:RuleText(d, "TITLE")
+				local head = "★" .. tostring(d)
+				if title ~= "" then
+					head = head .. " " .. title
+				end
+				self:SetText(self:Child(tbl, "H" .. tostring(c)), head)
+				-- 입장 재화
+				local cell = self:Child(costRow, col)
+				local cost = math.floor(self:RuleNum(d, costKey, 0))
+				local costText = self:Child(cell, "Text")
+				if free then
+					self:SetImage(self:Child(cell, "Icon"), "")
+					self:SetText(costText, "무료")
+				else
+					self:SetImage(self:Child(cell, "Icon"), icon)
+					self:SetText(costText, itemName .. " × " .. self:Comma(cost))
+				end
+				-- 글자 상자는 왼쪽 정렬(아이콘 오른쪽부터) · 무료는 아이콘이 없으니 열 가운데쯤으로 민다.
+				if isvalid(costText) then
+					local t = costText.UITransformComponent
+					t.anchoredPosition = Vector2(free and self.FreeTextX or self.CostTextX, t.anchoredPosition.y)
+				end
+				-- 최대 체력
+				local hp = _BossCatalog:FinalMaxHp(info, self:RuleNum(d, hpKey, 1))
+				self:SetText(self:Child(hpRow, col), self:Comma(hp))
+				-- 접촉 피해
+				local pct = _BossCatalog:ContactHpPct(info, d)
+				local hitText = ""
+				if pct > 0 then
+					hitText = "최대 HP의 " .. self:Pct(pct)
+				else
+					hitText = self:Comma(math.max(1, math.floor((info.attackPower or 0) * self:RuleNum(d, atkKey, 1) + 0.5)))
+				end
+				self:SetText(self:Child(hitRow, col), hitText)
+				table.insert(logs, "★" .. tostring(d) .. " cost=" .. (free and "free" or tostring(cost)) .. " hp=" .. tostring(hp) .. " hit=" .. hitText)
+			end
+		end
+		log("[BossCodex] table " .. tostring(info.id) .. " item=" .. itemId .. " | " .. table.concat(logs, " | "))
+	end
+
+	@ExecSpace("ClientOnly")
+	method string SkillLabel(any info, any s)
+		-- 표시 이름 = SkillName 에서 앞의 보스 이름과 뒤의 "(클립 이름)"(영문 · 숫자 · + _ 만)을 뗀다.
+		local n = tostring(s.name or "")
+		local ko = self:KoName(info)
+		if string.sub(n, 1, #ko) == ko then
+			n = string.sub(n, #ko + 1)
+		end
+		local trimmed, _cnt = string.gsub(n, "^%s+", "")
+		n = trimmed
+		local body = string.match(n, "^(.-)%s*%([^%(%)]*%)%s*$")
+		local tail = string.match(n, "%(([^%(%)]*)%)%s*$")
+		if body ~= nil and body ~= "" and tail ~= nil and string.match(tail, "^[%w%+_ ]+$") ~= nil then
+			n = body
+		end
+		return n
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsAttack(any s)
+		-- 피해를 주는 스킬인가(최대 HP 비례 행 · 또는 고정 피해 Damage > 0 인 공격 모양).
+		if s.damageMode == _BossCatalog.ModeMaxHpPercent then
+			return true
+		end
+		local shape = tostring(s.shapeType or "")
+		if shape == "summon" or shape == "buff" or shape == "teleport" or shape == "fake" then
+			return false
+		end
+		return (s.damage or 0) > 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method string SkillTip(any s)
+		-- 카드 둘째 줄: 종류 · 피하는 법(확실한 것만) · 연사 · 페이즈 조건.
+		local parts = {}
+		local shape = tostring(s.shapeType or "")
+		if shape == "ground" then
+			table.insert(parts, "점프로 피함")
+		elseif shape == "crouchable" then
+			table.insert(parts, "숙여서 피함")
+		elseif shape == "summon" then
+			table.insert(parts, "부하 소환")
+		elseif shape == "buff" then
+			table.insert(parts, "주변 몬스터 이동속도 증가")
+		elseif shape == "teleport" then
+			table.insert(parts, "순간이동")
+		elseif shape == "projectile" then
+			table.insert(parts, "투사체")
+		end
+		if (s.shotCount or 1) > 1 then
+			table.insert(parts, tostring(math.floor(s.shotCount)) .. "발 연사 · 피해는 한 발마다")
+		end
+		if (s.maxHpPercent or 100) < 100 then
+			table.insert(parts, "체력 " .. tostring(math.floor(s.maxHpPercent)) .. "% 이하부터")
+		end
+		return table.concat(parts, " · ")
+	end
+
+	@ExecSpace("ClientOnly")
+	method any PicTable()
+		-- 스킬 사진(BossId:SkillId → { cast = 시전 모습, hit = 공격 순간 }) — Maker Play 캡처를 그룹 리소스(mIYbC)에 올린 RUID. 빈칸이면 "사진 준비 중".
+		--   CSV 가 아니라 여기 둔다(스키마 변경 없음). 새 스킬이 생기면 줄을 더한다.
+		return {
+			["2220000:S1"] = { cast = "", hit = "" },
+			["2220000:S2"] = { cast = "", hit = "" },
+			["6130101:S1"] = { cast = "", hit = "" },
+			["6130101:S3"] = { cast = "", hit = "" },
+			["9300003:S1"] = { cast = "", hit = "" },
+			["9300003:S3"] = { cast = "", hit = "" },
+			["3220000:S1"] = { cast = "", hit = "" },
+			["3220000:S2"] = { cast = "", hit = "" },
+			["3220000:S4"] = { cast = "", hit = "" },
+			["3220000:S5"] = { cast = "", hit = "" },
+			["5250007:S1"] = { cast = "", hit = "" },
+			["5250007:S2"] = { cast = "", hit = "" },
+			["5250007:S3"] = { cast = "", hit = "" },
+			["5250007:S4"] = { cast = "", hit = "" },
+			["5250007:S5"] = { cast = "", hit = "" },
+			["5250007:S6"] = { cast = "", hit = "" },
+			["5250007:S7"] = { cast = "", hit = "" },
+			["5250007:S9"] = { cast = "", hit = "" },
+			["8510000:S1"] = { cast = "", hit = "" },
+			["8510000:S2"] = { cast = "", hit = "" },
+			["8510000:S3"] = { cast = "", hit = "" },
+			["8510000:S7"] = { cast = "", hit = "" },
+			["8130100:S1"] = { cast = "", hit = "" },
+			["8130100:S2"] = { cast = "", hit = "" },
+			["8130100:S3"] = { cast = "", hit = "" },
+			["8130100:S4"] = { cast = "", hit = "" },
+			["8130100:S5"] = { cast = "", hit = "" },
+		}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPic(Entity frame, string ruid)
+		-- 사진 틀 하나: 그림이 있으면 Img 를 켜고, 없으면 "사진 준비 중"(Ph).
+		self:SetImage(self:Child(frame, "Img"), ruid)
+		self:Show(self:Child(frame, "Ph"), ruid == nil or ruid == "")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void FillSkills(Entity det, any info, boolean solo)
+		-- 스킬 카드: Enabled 행 중 페이크(ShapeType=fake)를 뺀 것 · 표 순서. ★별 피해 = 최대 HP 의 %(101% = 무조건 쓰러짐) · 고정 피해 행은 Damage × ★ 공격 배율 · 0 이면 "피해 없음".
+		local scroll = self:Child(det, "Skills")
+		local skills = {}
+		for _, s in ipairs(_BossCatalog:GetSkills(info.id)) do
+			if tostring(s.shapeType or "") ~= "fake" then
+				table.insert(skills, s)
+			end
+		end
+		local pics = self:PicTable()
+		local atkKey = solo and "BALROG_ATK_MUL" or "BOSS_ATK_MUL"
+		local missing = 0
+		for k = 1, self.CardCount do
+			local card = self:Child(scroll, "K" .. tostring(k))
+			local s = skills[k]
+			self:Show(card, s ~= nil)
+			if s ~= nil and isvalid(card) then
+				local attack = self:IsAttack(s)
+				self:SetText(self:Child(card, "Name"), self:SkillLabel(info, s))
+				self:SetText(self:Child(card, "Tip"), self:SkillTip(s))
+				local pic = pics[tostring(info.id) .. ":" .. tostring(s.skillId)]
+				local castRuid = ""
+				local hitRuid = ""
+				if pic ~= nil then
+					castRuid = pic.cast or ""
+					hitRuid = pic.hit or ""
+				end
+				if castRuid == "" then
+					missing = missing + 1
+				end
+				if hitRuid == "" then
+					missing = missing + 1
+				end
+				self:SetPic(self:Child(card, "Cast"), castRuid)
+				self:SetPic(self:Child(card, "Hit"), hitRuid)
+				self:SetText(self:Child(self:Child(card, "HitCap"), "Text"), attack and "공격 순간" or "발동")
+				-- ★별 피해 칩
+				local noDmg = not attack
+				for c = 1, 3 do
+					local chip = self:Child(card, "D" .. tostring(c))
+					local d = self.stars[c]
+					if noDmg then
+						self:Show(chip, c == 1)
+						if c == 1 then
+							self:SetText(self:Child(chip, "Text"), "피해 없음")
+						end
+					else
+						self:Show(chip, d ~= nil)
+						if d ~= nil then
+							local p = _BossCatalog:SkillHpPct(s, d)
+							local v = ""
+							if p > 0 then
+								v = self:Pct(p)
+							else
+								v = self:Comma(math.floor((s.damage or 0) * self:RuleNum(d, atkKey, 1) + 0.5))
+							end
+							self:SetText(self:Child(chip, "Text"), "★" .. tostring(d) .. "  " .. v)
+						end
+					end
+				end
+			end
+		end
+		if #skills > self.CardCount then
+			log_warning("[BossCodex] " .. tostring(info.id) .. " has " .. tostring(#skills) .. " skills > cards " .. tostring(self.CardCount))
+		end
+		self:Show(self:Child(det, "NoSkill"), #skills == 0)
+		if isvalid(scroll) and scroll.ScrollLayoutGroupComponent ~= nil then
+			scroll.ScrollLayoutGroupComponent:ResetScrollPosition(UITransformAxis.Vertical)
+		end
+		log("[BossCodex] skills " .. tostring(info.id) .. " n=" .. tostring(#skills) .. " picsMissing=" .. tostring(missing))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 연결 해제.
+		if self.handlers ~= nil then
+			for _, x in ipairs(self.handlers) do
+				if isvalid(x.e) then
+					x.e:DisconnectEvent(ButtonClickEvent, x.h)
+				end
+			end
+		end
+		self.handlers = {}
+	end
+end
