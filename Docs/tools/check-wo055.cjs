@@ -32,7 +32,9 @@ const items = table('ItemInfo');
 const bonus = table('EnhanceSlotBonus');
 const skills = table('SkillInfo');
 const four = ['BaseStr','BaseDex','BaseInt','BaseLuk'];
-assert.deepEqual(items.header, [...baseline.itemHeader, 'BaseAttackSpeed']);
+// 1.0.18 WO-057: 맨 뒤 StarTier 열 추가 · MaxEnhanceLevel 은 티어별 상한(1제·10제 0 · 15제 1 · 20제 2)으로 값이 바뀌어 보호 해시에서 뺀다.
+assert.deepEqual(items.header, [...baseline.itemHeader, 'BaseAttackSpeed', 'StarTier']);
+const protectedSkip = [...four, 'MaxEnhanceLevel'];
 assert.equal(items.rows.length, baseline.items.length);
 const primary = { WARRIOR:'BaseStr',MAGICIAN:'BaseInt',ARCHER:'BaseDex',THIEF:'BaseLuk',PIRATE:'BaseStr' };
 const secondary = { WARRIOR:'BaseDex',MAGICIAN:'BaseLuk',ARCHER:'BaseStr',THIEF:'BaseDex',PIRATE:'BaseDex' };
@@ -40,7 +42,7 @@ const basic = {10:[3,1],15:[7,2],20:[14,5],25:[22,8]};
 for (let i = 0; i < items.rows.length; i++) {
   const it = items.rows[i], before = baseline.items[i];
   assert.equal(it.ItemId, before.id, '아이템 순서');
-  assert.equal(hash(JSON.stringify(baseline.itemHeader.filter(k => !four.includes(k)).map(k => it[k]))), before.protectedHash, it.ItemId + ' 보호 옵션');
+  assert.equal(hash(JSON.stringify(baseline.itemHeader.filter(k => !protectedSkip.includes(k)).map(k => it[k]))), before.protectedHash, it.ItemId + ' 보호 옵션');
   const tier = Number(it.ReqLevel), count = (it.AvatarSlot === 'LONGCOAT' ? 2 : 1) * (it.WeaponType === 'SWORD_2H' ? 2 : 1);
   const eligible = it.ItemType === 'EQUIP' && it.EquipSlot !== 'SUBWEAPON' && basic[tier] && primary[it.ReqJob];
   for (let j = 0; j < four.length; j++) {

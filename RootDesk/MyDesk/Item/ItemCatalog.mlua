@@ -13,8 +13,8 @@ script ItemCatalog extends Logic
 	-- ⑫ 부위 × 요구레벨 티어 × 강화 단계 고정 상승치 (사용자 결정 2026-09-05)
 	property string SlotBonusTableName = "EnhanceSlotBonus"
 
-	-- 강화 보석 능력치 배율 (WO-050 §2-21)
-	property number GemEffectMul = 2.0
+	-- 강화 보석 능력치 배율 (WO-050 §2-21 에서 2.0). 1.0.18 WO-057 · 사용자 2026-10-19 "스타포스가 생겼으니 보석은 약해져도 됨" → 1.0(EnhanceSlotBonus 표 값 그대로 = 보석 1개 효과 절반).
+	property number GemEffectMul = 1.0
 
 	-- 직업 장비 +3 주/부스탯 기준표 (WO-050 §2-20)
 	property string JobStatPrimaryCurve = "10=3/4/5/6;15=7/9/11/13;20=14/19/23/28;25=22/30/37/44;30=30/40/50/60"
@@ -42,6 +42,16 @@ script ItemCatalog extends Logic
 
 	@HideFromInspector
 	property any slotBonus = nil
+
+	-- 스타포스 표 (WO-057 · 1.0.18 · 계약서 A-2-8e): starRows[StarTier][Star] = { mesoCost, successRate, stats = { 보석 스탯 키 = 양 } }
+	property string StarTableName = "StarForceTable"
+
+	@HideFromInspector
+	property any starRows = nil
+
+	-- 보석으로 올릴 수 있는 스탯 키(GemInfo.StatId 중복 제거 · 소문자) — 별이 올리는 스탯은 이 집합 ∩ 그 부위 1단계 행에 값이 있는 열.
+	@HideFromInspector
+	property any gemStatKeys = nil
 
 	-- 공방 거래 표 (계약서 A-2-8c · 2026-09-06)
 	property string RecipeTableName = "CraftRecipe"
@@ -123,6 +133,8 @@ script ItemCatalog extends Logic
 					-- 강화 티어(EnhanceSlotBonus 의 ReqLevel 줄 고르기 · 2026-10-01 열 추가). 빈칸이면 요구 레벨과 같다.
 					-- 보스 장비처럼 요구 레벨은 0 인데 강화는 30제만큼 되는 장비가 쓴다.
 					enhanceTier = math.floor(tonumber(t:GetCell(i, "EnhanceTier")) or num("ReqLevel")),
+					-- 스타포스 티어(WO-057 · 1.0.18 · 열 맨 뒤 StarTier · T15/T20/T25/T30/ABSOLAB · 빈칸 = 스타포스 불가). 최대 별 = StarForceTable 의 그 티어 행 수(MaxStar).
+					starTier = string.upper(t:GetCell(i, "StarTier") or ""),
 					reqJob = t:GetCell(i, "ReqJob") or "",
 					icon = t:GetCell(i, "IconRUID") or "",
 					-- 아이템 설명(인벤토리 툴팁에 나온다 · 2026-09-29 열 추가 · 빈칸이면 설명 없음).
@@ -511,6 +523,7 @@ script ItemCatalog extends Logic
 			log_warning("[Item] dataset not found: " .. self.EnhanceTableName)
 		end
 		self:LoadSlotBonus()
+		self:LoadStarForce()
 	end
 
 	method void LoadSlotBonus()
@@ -562,6 +575,136 @@ script ItemCatalog extends Logic
 			end
 		end
 		log("[Item] slot bonus loaded: " .. tostring(count) .. " rows")
+	end
+
+	method void LoadStarForce()
+		-- 스타포스 표(WO-057 · 1.0.18 · StarForceTable): starRows[StarTier][Star] = { mesoCost, successRate, stats = { 보석 스탯 키 = 양 } }. Enabled=false 행은 버린다.
+		-- gemStatKeys = GemInfo 의 StatId 를 중복 없이 모은 것(LoadGemsAndEnhance 가 먼저 돈다). 별이 올리는 스탯 = "보석으로 올릴 수 있는 스탯" 이라서 GemInfo 가 정의다.
+		self.starRows = {}
+		self.gemStatKeys = {}
+		local seen = {}
+		if self.gems ~= nil then
+			for _, g in pairs(self.gems) do
+				if g.statKey ~= nil and g.statKey ~= "" and not seen[g.statKey] then
+					seen[g.statKey] = true
+					table.insert(self.gemStatKeys, g.statKey)
+				end
+			end
+		end
+		table.sort(self.gemStatKeys)
+		local st = _DataService:GetTable(self.StarTableName)
+		if st == nil then
+			log_warning("[Item] dataset not found: " .. self.StarTableName)
+			return
+		end
+		local cols = {
+			str = "AddStr", dex = "AddDex", int = "AddInt", luk = "AddLuk",
+			attack = "AddAttack", magic = "AddMagic",
+			speed = "AddSpeed", jump = "AddJump", accuracy = "AddAccuracy", avoid = "AddAvoid",
+			maxhp = "AddMaxHp", maxmp = "AddMaxMp",
+		}
+		local count = 0
+		for i = 1, st:GetRowCount() do
+			local tier = string.upper(st:GetCell(i, "StarTier") or "")
+			local star = math.floor(tonumber(st:GetCell(i, "Star")) or 0)
+			local on = string.lower(tostring(st:GetCell(i, "Enabled") or "true")) ~= "false"
+			if tier ~= "" and star > 0 and on then
+				local byTier = self.starRows[tier]
+				if byTier == nil then
+					byTier = {}
+					self.starRows[tier] = byTier
+				end
+				local stats = {}
+				for k, col in pairs(cols) do
+					local v = tonumber(st:GetCell(i, col)) or 0
+					if v ~= 0 then
+						stats[k] = v
+					end
+				end
+				byTier[star] = {
+					tier = tier, star = star,
+					mesoCost = math.floor(tonumber(st:GetCell(i, "MesoCost")) or 0),
+					successRate = tonumber(st:GetCell(i, "SuccessRate")) or 1,
+					stats = stats,
+					-- 부위 무관 공/마(사용자 2026-10-18 "8·9·10성은 공격력이 증가" · 방어구도 받는다 · 무기·장갑은 AddAttack 과 합산).
+					allAttack = tonumber(st:GetCell(i, "AllAttack")) or 0,
+					allMagic = tonumber(st:GetCell(i, "AllMagic")) or 0,
+				}
+				count = count + 1
+			end
+		end
+		log("[Item] star force loaded: " .. tostring(count) .. " rows")
+	end
+
+	method any GetStarRow(string tier, integer star)
+		-- 스타포스 표 행 (StarForceTable · 티어 + 별). 없으면 nil.
+		self:EnsureLoaded()
+		if self.starRows == nil or tier == nil or tier == "" then
+			return nil
+		end
+		local byTier = self.starRows[string.upper(tier)]
+		if byTier == nil then
+			return nil
+		end
+		return byTier[star]
+	end
+
+	method integer MaxStar(any def)
+		-- 이 장비의 최대 별 = StarForceTable 에 그 티어의 1 부터 이어지는 행 수(T15 1 · T20 3 · T25 5 · T30 8 · ABSOLAB 10). 티어 없으면 0 = 스타포스 불가.
+		if def == nil or def.starTier == nil or def.starTier == "" then
+			return 0
+		end
+		local n = 0
+		while self:GetStarRow(def.starTier, n + 1) ~= nil do
+			n = n + 1
+		end
+		return n
+	end
+
+	method any StarGainOne(any def, integer star)
+		-- 별 `star` 하나가 올리는 양 { statKey = 양 }. 그 부위에서 보석으로 올릴 수 있는 스탯(EnhanceSlotBonus 1단계 행에 값이 있는 보석 열)에만 붙는다 · 한벌옷 ×2(PieceCount).
+		-- 방어력 · FixedAttack · FixedSpeed · FixedAccuracy · 직업 주/부스탯 곡선 같은 고정치는 보석 스탯이 아니라 안 오른다(사용자 2026-10-18 "보석으로 올릴 수 있는 스탯이 전부").
+		local out = {}
+		if def == nil then
+			return out
+		end
+		local sr = self:GetStarRow(def.starTier, star)
+		local mask = self:GetSlotBonus(def.slot, def.enhanceTier, 1)
+		if sr == nil or mask == nil then
+			return out
+		end
+		local mul = self:PieceCount(def)
+		for _, k in ipairs(self.gemStatKeys or {}) do
+			if (mask[k] or 0) ~= 0 and (sr.stats[k] or 0) ~= 0 then
+				out[k] = sr.stats[k] * mul
+			end
+		end
+		-- 8·9·10성 부위 무관 공/마(AllAttack/AllMagic · 사용자 2026-10-18): 보석 마스크와 무관하게 모든 부위에 붙는다(무기·장갑은 위 AddAttack 과 합산).
+		if (sr.allAttack or 0) ~= 0 then
+			out.attack = (out.attack or 0) + sr.allAttack * mul
+		end
+		if (sr.allMagic or 0) ~= 0 then
+			out.magic = (out.magic or 0) + sr.allMagic * mul
+		end
+		return out
+	end
+
+	method any ComputeStar(any def, integer star)
+		-- 1 ~ star 까지 누적 { star = { statKey = 양 } } (0 인 키 없음). 표에 행이 없는 별에서 멈춘다(RecalcLayer 가 런타임 오류로 끊기지 않게).
+		-- 장비창 · 툴팁 · 강화 창 미리보기 · EquipService.RecalcLayer 가 같은 식을 쓴다(ComputeEnhance 와 같은 자리).
+		local sum = {}
+		if def == nil then
+			return { star = sum }
+		end
+		for s = 1, (star or 0) do
+			if self:GetStarRow(def.starTier, s) == nil then
+				break
+			end
+			for k, v in pairs(self:StarGainOne(def, s)) do
+				sum[k] = (sum[k] or 0) + v
+			end
+		end
+		return { star = sum }
 	end
 
 	method any GetSlotBonus(string slot, integer reqLevel, integer level)
@@ -724,7 +867,11 @@ script ItemCatalog extends Logic
 		if v == math.floor(v) then
 			s = tostring(math.floor(v))
 		else
-			s = string.format("%.1f", v)
+			-- 소수 둘째 자리까지 쓰고 끝의 0 은 뗀다(2.5 는 2.5 · 1.25 는 1.25 · WO-057 스타포스 명중 1.5). %.1f 는 1.25 를 1.2/1.3 으로 깎아 "지금 → 후" 합이 안 맞아 보였다.
+			s = string.format("%.2f", v)
+			local noZero, _n1 = string.gsub(s, "0+$", "")
+			local noDot, _n2 = string.gsub(noZero, "%.$", "")
+			s = noDot
 		end
 		if key == "speed" or key == "accuracy" or key == "avoid" or key == "ignoredef" or key == "attackspeed" then s = s .. "%" end
 		return s

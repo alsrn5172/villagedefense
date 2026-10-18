@@ -1,0 +1,326 @@
+@Logic
+script StarForceService extends Logic
+
+	-- 스타포스 강화 (서버 · WO-057 · 1.0.18). 보석 강화(EnhanceService)와 같은 구조 · 재료는 메소만 · 스타캐치 없음.
+	-- 조건: ItemInfo.StarTier 가 있는 장비(15제 이상 · 앱솔) · 보석 강화를 상한(MaxEnhanceLevel)까지 끝낸 뒤 · 별 < 최대 별(StarForceTable 그 티어 행 수).
+	-- 성공: 인스턴스 star+1 → 메소 차감 → 착용 중이면 ENHANCE 레이어 재계산 → 클라 갱신. 실패(확률 < 1 일 때만): 메소만 소모 · 별 유지 · 파괴 · 하락 없음.
+	-- 비용 계산은 StarMesoCost 한 곳 — 서버 차감(RequestStarForce)과 공방 창 표시(WorkshopUIController.RefreshStarForce)가 같이 부른다(어긋나지 않게).
+	-- 판매 환급 없음(EquipSellService 는 별을 안 받는다 · 사용자 확정 Q5).
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 상태 없음.
+		log("[Item] StarForceService ready (server)")
+	end
+
+	@ExecSpace("Server")
+	method void RequestStarForce(string instanceId)
+		-- 클라 요청. 검증 실패는 Deny 로 돌려보낸다(아무것도 안 바꿈).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local userId = senderUserId
+		local p = self:StarCheck(userId, instanceId)
+		if p.reason ~= "" then
+			self:Deny(userId, instanceId, p.reason)
+			return
+		end
+
+		-- 판정 (1.0.18 은 100% · 스타캐치 없음)
+		if not self:StarTry(userId, instanceId, p) then
+			_InventoryService:PushInventory(userId)
+			log("[Item] starforce FAIL " .. p.it.itemId .. " " .. tostring(p.cur) .. "성 meso-" .. tostring(p.cost) .. " (" .. userId .. ")")
+			self:Result(userId, instanceId, false, "스타포스 강화 실패", p.cur)
+			return
+		end
+
+		-- 성공
+		if _EquipService:IsEquipped(userId, instanceId) then
+			_EquipService:RecalcLayer(userId)
+			_EquipService:PushEquipped(userId)
+		end
+		_InventoryService:PushInventory(userId)
+		log("[Item] starforce OK " .. p.it.itemId .. " " .. tostring(p.cur + 1) .. "성 meso-" .. tostring(p.cost) .. " (" .. userId .. ")")
+		self:Result(userId, instanceId, true, "스타포스 강화 성공! " .. tostring(p.cur + 1) .. "성", p.cur + 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any StarCheck(string userId, string instanceId)
+		-- 한 성 올리기 전 검사(RequestStarForce · RequestStarForceAll 공용 · 아무것도 안 바꿈). 반환 { reason = ""(통과) | 거부 문구, lowMeso = 메소만 모자람, it, def, cur, row, cost }.
+		local p = { reason = "", lowMeso = false, it = nil, def = nil, cur = 0, row = nil, cost = 0 }
+		local it = _InventoryService:Find(userId, instanceId)
+		if it == nil then
+			p.reason = "장비를 찾을 수 없습니다"
+			return p
+		end
+		p.it = it
+		local def = _ItemCatalog:Get(it.itemId)
+		if def == nil or def.type ~= "EQUIP" then
+			p.reason = "장비만 강화할 수 있습니다"
+			return p
+		end
+		p.def = def
+		local maxStar = _ItemCatalog:MaxStar(def)
+		if maxStar <= 0 then
+			p.reason = "이 장비는 스타포스 강화를 할 수 없습니다 (15제 이상)"
+			return p
+		end
+		local maxEnh = def.maxEnhance or 0
+		if (it.enh or 0) < maxEnh then
+			p.reason = "보석 강화를 먼저 끝내세요 (+" .. tostring(maxEnh) .. " 까지)"
+			return p
+		end
+		local cur = it.star or 0
+		p.cur = cur
+		if cur >= maxStar then
+			p.reason = "최대 스타포스입니다"
+			return p
+		end
+		local row = _ItemCatalog:GetStarRow(def.starTier, cur + 1)
+		if row == nil then
+			p.reason = "스타포스 표에 다음 별이 없습니다"
+			return p
+		end
+		p.row = row
+		local cost = self:StarMesoCost(userId, def, row)
+		p.cost = cost
+		local econ = _SummonManager:GetEcon(userId)
+		if econ == nil or econ.meso < cost then
+			p.reason = "메소가 부족합니다 (" .. tostring(cost) .. ")"
+			p.lowMeso = true
+			return p
+		end
+		return p
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean StarTry(string userId, string instanceId, any p)
+		-- StarCheck 를 통과한 p 로 한 번 판정한다: 메소는 성패와 무관하게 차감 · 성공이면 인스턴스 star+1. 레이어 재계산 · 클라 갱신 · 결과 통지는 부른 쪽이 한다. 성공이면 true.
+		local ok = _UtilLogic:RandomDouble() < p.row.successRate
+		_SummonManager:SpendMeso(userId, p.cost)
+		if ok then
+			_InventoryService:ApplyStar(userId, instanceId, p.cur + 1)
+		end
+		return ok
+	end
+
+	@ExecSpace("Server")
+	method void RequestStarForceAll(string mode)
+		-- 장착 장비 일괄 스타포스(사용자 2026-10-19). 한 라운드 = 착용 칸 순서대로 올릴 수 있는 장비마다 +1성(메소 모자란 장비는 건너뜀). mode "one" = 1라운드 · "max" = 아무것도 시도 못 하는 라운드까지 반복. 결과는 Result(iid "" · newStar = 올린 총 성 수).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local userId = senderUserId
+		local e = (_EquipService ~= nil) and _EquipService:EnsureUser(userId) or nil
+		if e == nil then
+			self:Result(userId, "", false, "올릴 수 있는 장착 장비가 없습니다", 0)
+			return
+		end
+		local function comma(n)
+			local s = tostring(math.floor(n))
+			local k = 1
+			while k > 0 do
+				s, k = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2")
+			end
+			return s
+		end
+		-- "max" 안전 상한: 별은 장비당 최대 10이라 100% 면 11라운드 안에 끝난다(실패 확률 · 비용 0 행이 생겨도 무한 반복하지 않게).
+		local rounds = 1
+		if mode == "max" then rounds = 100 end
+		local raised = 0
+		local fails = 0
+		local spent = 0
+		local attempted = 0
+		local lowMeso = false
+		local items = {}
+		local itemCount = 0
+		for _r = 1, rounds do
+			local tried = 0
+			local seen = {}
+			for _, s in ipairs(_EquipService.slots) do
+				local iid = e[s]
+				if iid ~= nil and iid ~= "" and not seen[iid] then
+					seen[iid] = true
+					local p = self:StarCheck(userId, iid)
+					if p.reason == "" then
+						tried = tried + 1
+						spent = spent + p.cost
+						if self:StarTry(userId, iid, p) then
+							raised = raised + 1
+							if not items[iid] then
+								items[iid] = true
+								itemCount = itemCount + 1
+							end
+						else
+							fails = fails + 1
+						end
+					elseif p.lowMeso then
+						lowMeso = true
+					end
+				end
+			end
+			attempted = attempted + tried
+			if tried == 0 then break end
+		end
+
+		if attempted > 0 then
+			if raised > 0 then _EquipService:RecalcLayer(userId) end
+			_EquipService:PushEquipped(userId)
+			_InventoryService:PushInventory(userId)
+		end
+		local failPart = ""
+		if fails > 0 then failPart = " · 실패 " .. tostring(fails) .. "회" end
+		local ok = raised > 0
+		local msg = ""
+		if ok then
+			msg = "장착 장비 " .. tostring(itemCount) .. "개 · 총 " .. tostring(raised) .. "성 상승 · " .. comma(spent) .. " 메소 사용" .. failPart
+		elseif attempted > 0 then
+			msg = "스타포스 강화 실패" .. failPart .. " · " .. comma(spent) .. " 메소 사용"
+		elseif lowMeso then
+			msg = "메소가 부족합니다"
+		else
+			msg = "올릴 수 있는 장착 장비가 없습니다"
+		end
+		log("[Item] starforce ALL " .. tostring(mode) .. " items=" .. tostring(itemCount) .. " +" .. tostring(raised) .. "성 fail=" .. tostring(fails) .. " meso-" .. tostring(spent) .. " (" .. userId .. ")")
+		self:Result(userId, "", ok, msg, raised)
+	end
+
+	method integer StarMesoCost(string userId, any def, any row)
+		-- 한 번의 메소 비용 = MesoCost × 부위 수(한벌옷 2) × 연성 배율(_JobPassiveLogic:GetJobCostMul(userId, "ENHANCE") · 없으면 1 · 사용자 확정 Q2 "스타포스에도 적용") · 내림 · 원래 1 이상이면 최소 1.
+		-- ExecSpace 없음 = 양쪽에서 부른다(EnhanceService.EnhanceMesoCost 와 같은 규칙 · 클라의 GetJobCostMul 은 로컬 유저 미러로 같은 값).
+		if def == nil or row == nil then return 0 end
+		local base = (row.mesoCost or 0) * _ItemCatalog:PieceCount(def)
+		if base <= 0 then return base end
+		local mul = 1
+		if _JobPassiveLogic ~= nil then mul = _JobPassiveLogic:GetJobCostMul(userId, "ENHANCE") end
+		if mul >= 1 then return base end
+		local cost = math.floor(base * mul + 0.000001)
+		if cost < 1 then cost = 1 end
+		return cost
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Deny(string userId, string instanceId, string reason)
+		-- 거절: 토스트 + 공방 창 상태줄. 아무것도 바꾸지 않았다.
+		log("[Item] starforce denied (" .. userId .. "): " .. reason)
+		self:Result(userId, instanceId, false, reason, -1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Result(string userId, string instanceId, boolean ok, string message, integer newStar)
+		-- 소유 클라에만 결과를 보낸다 (토스트 재사용 + 공방 창 SetStarResult).
+		if _UIToast ~= nil then
+			_UIToast:ShowMessage(message, userId)
+		end
+		if _WorkshopUIController ~= nil then
+			_WorkshopUIController:SetStarResult(ok, message, newStar, instanceId, userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestPowerPreview(string kind, string instanceId, string gemsCsv)
+		-- 공방 창 전투력 전→후 미리보기(읽기 전용 · 아무것도 안 바꿈). kind = "star"(다음 별) | "gem"(gemsCsv 보석을 다음 보석 강화 단계에 끼움). 다음 단계가 불가면 after = -1. 결과는 PowerPreview 로 요청자에게만.
+		local userId = senderUserId
+		if userId == nil or userId == "" or _StatService == nil then return end
+		-- 장비 한 벌의 총 스탯 = 기본(ItemInfo Base*) + 보석 강화(ComputeEnhance 고정치 + 보석) + 스타포스(ComputeStar). EquipService.RecalcLayer 와 같은 합.
+		local function total(def, enh, gems, star)
+			local out = {}
+			local function add(t)
+				for k, v in pairs(t) do
+					if v ~= 0 then out[k] = (out[k] or 0) + v end
+				end
+			end
+			add(def.stats)
+			local r = _ItemCatalog:ComputeEnhance(def, enh, gems)
+			add(r.fixed)
+			add(r.gem)
+			add(_ItemCatalog:ComputeStar(def, star).star)
+			return out
+		end
+		local function minus(a, b)
+			local out = {}
+			for k, v in pairs(a) do out[k] = v end
+			for k, v in pairs(b) do out[k] = (out[k] or 0) - v end
+			return out
+		end
+		local function copyGems(src)
+			local out = {}
+			if src ~= nil then
+				for _, g in ipairs(src) do table.insert(out, g) end
+			end
+			return out
+		end
+
+		local it = _InventoryService:Find(userId, instanceId)
+		local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
+		if it == nil or def == nil or def.type ~= "EQUIP" then
+			self:PowerPreview(kind, instanceId, _StatService:PreviewCombatPower(userId, {}), -1, userId)
+			return
+		end
+		local enh = it.enh or 0
+		local star = it.star or 0
+		local maxEnh = def.maxEnhance or 0
+		local s0 = total(def, enh, it.gems, star)
+		local s1 = nil
+		if kind == "star" then
+			-- RequestStarForce 와 같은 조건: 스타포스 가능 장비 · 보석 강화 완료 · 최대 별 미만 · 표에 다음 별 행.
+			local maxStar = _ItemCatalog:MaxStar(def)
+			if maxStar > 0 and enh >= maxEnh and star < maxStar and _ItemCatalog:GetStarRow(def.starTier, star + 1) ~= nil then
+				s1 = total(def, enh, it.gems, star + 1)
+			end
+		elseif kind == "gem" then
+			-- EnhanceService.RequestEnhance 와 같은 계산(ComputeEnhance · 넣은 순서대로 단계별 GemCount 만큼 소비): 지금 보석 뒤에 고른 보석을 붙여 enh+1 로.
+			-- 덜 고르면 고른 만큼만(빈 칸 = 고정치만) 센다. 보석 아이템 id("GEM_DIAMOND")도 보석 id("DIAMOND")로 받는다 · 구분자 쉼표 또는 +.
+			if maxEnh > 0 and enh < maxEnh and _ItemCatalog:GetEnhanceRow(enh + 1) ~= nil then
+				local gems = copyGems(it.gems)
+				for g in string.gmatch(gemsCsv or "", "[^,+%s]+") do
+					local gid = g
+					if _ItemCatalog:GetGem(gid) == nil then
+						local alt = _ItemCatalog:GemIdOfItem(gid)
+						if alt ~= "" then gid = alt end
+					end
+					table.insert(gems, gid)
+				end
+				s1 = total(def, enh + 1, gems, star)
+			end
+		end
+
+		local before = 0
+		local after = -1
+		if _EquipService ~= nil and _EquipService:IsEquipped(userId, instanceId) then
+			before = _StatService:PreviewCombatPower(userId, {})
+			if s1 ~= nil then after = _StatService:PreviewCombatPower(userId, minus(s1, s0)) end
+		else
+			-- 가방 장비: 끼우면 빠질 장비(같은 칸 + 두손무기 ↔ 방패 · 한벌옷 ↔ 하의 · EquipService.EquipInstance 와 같은 상호 배제)의 총 스탯 E 를 빼고 이 장비를 넣은 것으로 가정.
+			local e = (_EquipService ~= nil) and _EquipService:EnsureUser(userId) or nil
+			local function equippedAt(slot)
+				if e == nil or e[slot] == nil or e[slot] == "" then return nil end
+				return _InventoryService:Find(userId, e[slot])
+			end
+			local out = {}
+			local slots = { def.slot }
+			local w = equippedAt("WEAPON")
+			local top = equippedAt("TOP")
+			if def.slot == "WEAPON" and _ItemCatalog:IsTwoHand(it.itemId) then table.insert(slots, "SUBWEAPON") end
+			if def.slot == "SUBWEAPON" and w ~= nil and _ItemCatalog:IsTwoHand(w.itemId) then table.insert(slots, "WEAPON") end
+			if def.slot == "TOP" and _ItemCatalog:IsLongcoat(it.itemId) then table.insert(slots, "BOTTOM") end
+			if def.slot == "BOTTOM" and top ~= nil and _ItemCatalog:IsLongcoat(top.itemId) then table.insert(slots, "TOP") end
+			for _, s in ipairs(slots) do
+				local eit = equippedAt(s)
+				local edef = (eit ~= nil) and _ItemCatalog:Get(eit.itemId) or nil
+				if edef ~= nil then
+					for k, v in pairs(total(edef, eit.enh or 0, eit.gems, eit.star or 0)) do out[k] = (out[k] or 0) + v end
+				end
+			end
+			before = _StatService:PreviewCombatPower(userId, minus(s0, out))
+			if s1 ~= nil then after = _StatService:PreviewCombatPower(userId, minus(s1, out)) end
+		end
+		log("[Item] power preview " .. tostring(kind) .. " " .. it.itemId .. " " .. tostring(before) .. " -> " .. tostring(after) .. " (" .. userId .. ")")
+		self:PowerPreview(kind, instanceId, before, after, userId)
+	end
+
+	@ExecSpace("Client")
+	method void PowerPreview(string kind, string instanceId, integer before, integer after)
+		-- 서버 미리보기 결과를 소유 클라의 공방 창에 넘긴다(after = -1 이면 다음 단계 불가).
+		if _WorkshopUIController ~= nil then
+			_WorkshopUIController:SetPowerPreview(kind, instanceId, before, after)
+		end
+	end
+
+end

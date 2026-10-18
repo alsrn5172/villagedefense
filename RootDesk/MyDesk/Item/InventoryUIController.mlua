@@ -305,13 +305,13 @@ script InventoryUIController extends Logic
 
 	@ExecSpace("Client")
 	method void SetInventoryCsv(string csv)
-		-- "iid:itemId:count:enh:dur:e|..." 를 파싱해 인벤토리 탭을 다시 그린다.
+		-- "iid:itemId:count:enh:dur:e:gems:star|..." 를 파싱해 인벤토리 탭을 다시 그린다.
 		self.items = {}
 		if csv ~= nil and csv ~= "" then
 			for entry in string.gmatch(csv, "[^|]+") do
 				local f = self:Split(entry, ":")
 				if #f >= 6 then
-					table.insert(self.items, { iid = f[1], itemId = f[2], count = tonumber(f[3]) or 0, enh = tonumber(f[4]) or 0, dur = tonumber(f[5]) or 0, equipped = (f[6] == "1"), gems = f[7] or "" })
+					table.insert(self.items, { iid = f[1], itemId = f[2], count = tonumber(f[3]) or 0, enh = tonumber(f[4]) or 0, dur = tonumber(f[5]) or 0, equipped = (f[6] == "1"), gems = f[7] or "", star = tonumber(f[8]) or 0 })
 				end
 			end
 		end
@@ -329,14 +329,14 @@ script InventoryUIController extends Logic
 
 	@ExecSpace("Client")
 	method void SetEquippedCsv(string csv)
-		-- "WEAPON=iid:itemId:enh:dur;HAT=;..." 를 파싱해 슬롯을 다시 그린다.
+		-- "WEAPON=iid:itemId:enh:dur:star;HAT=;..." 를 파싱해 슬롯을 다시 그린다.
 		self.equipped = {}
 		if csv ~= nil and csv ~= "" then
 			for slot, val in string.gmatch(csv, "([^;=]+)=([^;]*)") do
 				if val ~= "" then
 					local f = self:Split(val, ":")
 					if #f >= 4 then
-						self.equipped[slot] = { iid = f[1], itemId = f[2], enh = tonumber(f[3]) or 0, dur = tonumber(f[4]) or 0 }
+						self.equipped[slot] = { iid = f[1], itemId = f[2], enh = tonumber(f[3]) or 0, dur = tonumber(f[4]) or 0, star = tonumber(f[5]) or 0 }
 					end
 				end
 			end
@@ -402,6 +402,12 @@ script InventoryUIController extends Logic
 				local label = ""
 				local def = _ItemCatalog:Get(eq.itemId)
 				if def ~= nil and def.icon == "" then label = def.name end
+				-- 스타포스(1.0.18): 별이 있으면 "N성" (보석 강화가 끝난 장비에만 붙으므로 +최대를 함의한다).
+				local st = eq.star or 0
+				if st > 0 then
+					if label ~= "" then label = label .. " " end
+					label = label .. tostring(st) .. "성"
+				end
 				enh.Text = label
 			else
 				enh.Text = ""
@@ -503,6 +509,7 @@ script InventoryUIController extends Logic
 			if def ~= nil then
 				local n = def.name
 				if eq.enh > 0 then n = n .. " +" .. tostring(eq.enh) end
+				if (eq.star or 0) > 0 then n = n .. " " .. tostring(eq.star) .. "성" end
 				nameT.Text = n
 			elseif slot ~= "" then
 				nameT.Text = "(비어 있음)"
@@ -531,11 +538,13 @@ script InventoryUIController extends Logic
 				-- 보석 목록: 인벤토리 항목은 "DIAMOND+STR_CRYSTAL" 문자열, 장착 슬롯 항목엔 없을 수 있어 iid 로 인벤토리에서 찾는다
 				local gems = self:GemListOf(eq)
 				local r = _ItemCatalog:ComputeEnhance(def, eq.enh or 0, gems)
+				-- 스타포스(1.0.18): 별 누적 스탯. 보석 강화가 끝난 장비에만 붙고 #FFE066 으로 따로 보인다.
+				local sf = _ItemCatalog:ComputeStar(def, eq.star or 0).star
 				-- STR · DEX · INT · LUK 이 전부 같고 강화로 달라지지 않았으면 "올스탯" 한 줄로 묶는다(앱솔랩스처럼 능력치가 6개인 장비도 5줄 안에 · 2026-10-01).
 				local s = def.stats
 				local allStat = (s.str or 0) ~= 0 and s.str == s.dex and s.str == s.int and s.str == s.luk
 				for _, k in ipairs({ "str", "dex", "int", "luk" }) do
-					if (r.fixed[k] or 0) ~= 0 or (r.gem[k] or 0) ~= 0 then allStat = false end
+					if (r.fixed[k] or 0) ~= 0 or (r.gem[k] or 0) ~= 0 or (sf[k] or 0) ~= 0 then allStat = false end
 				end
 				local keys = { "attackspeed", "attack", "magic", "defense", "str", "dex", "int", "luk", "speed", "jump", "accuracy", "avoid", "ignoredef", "maxhp", "maxmp" }
 				if allStat then keys = { "attackspeed", "attack", "magic", "defense", "allstat", "speed", "jump", "accuracy", "avoid", "ignoredef", "maxhp", "maxmp" } end
@@ -543,15 +552,17 @@ script InventoryUIController extends Logic
 					local base = (k == "allstat") and (s.str or 0) or (def.stats[k] or 0)
 					local f = r.fixed[k] or 0
 					local g = r.gem[k] or 0
-					local total = base + f + g
+					local sv = sf[k] or 0
+					local total = base + f + g + sv
 					if total ~= 0 and #rows < self.TipMaxRows then
 						-- 수치 글자(1.1-F16 · A07): 소수는 한 자리(가넷 2.5) · 이동속도 · 명중률 · 회피율은 숫자마다 % (예 "55% (25% +15% +15%)").
 						local text = _ItemCatalog:FmtStat(total, k)
-						if f ~= 0 or g ~= 0 then
+						if f ~= 0 or g ~= 0 or sv ~= 0 then
 							text = text .. " (" .. _ItemCatalog:FmtStat(base, k)
 							-- 시안 31번: 강화로 오른 값은 금 · 보석은 보라
 							if f ~= 0 then text = text .. " <color=#E8B64C>+" .. _ItemCatalog:FmtStat(f, k) .. "</color>" end
 							if g ~= 0 then text = text .. " <color=#C3A6FF>+" .. _ItemCatalog:FmtStat(g, k) .. "</color>" end
+							if sv ~= 0 then text = text .. " <color=#FFE066>+" .. _ItemCatalog:FmtStat(sv, k) .. "</color>" end
 							text = text .. ")"
 						end
 						table.insert(rows, { key = k, label = self:StatLabel(k), value = text })
@@ -661,7 +672,7 @@ script InventoryUIController extends Logic
 			self:HideTooltip()
 			return
 		end
-		self:FillItemView({ iid = it.iid, itemId = it.itemId, enh = it.enh, gems = it.gems }, "", self.tipIcon, self.tipName, self.tipReq, self.tipStatList)
+		self:FillItemView({ iid = it.iid, itemId = it.itemId, enh = it.enh, gems = it.gems, star = it.star or 0 }, "", self.tipIcon, self.tipName, self.tipReq, self.tipStatList)
 		self:LayoutTipDesc(it.itemId)
 
 		local index = self.cellIndexByIid[iid]
@@ -872,10 +883,11 @@ script InventoryUIController extends Logic
 		if isvalid(count) and count.TextGUIRendererComponent ~= nil then
 			count.TextGUIRendererComponent.Text = (it.count > 1) and tostring(it.count) or ""
 		end
-		-- 강화 단계는 글자 "+n" 대신 배지 그림(위)
+		-- 강화 단계는 글자 "+n" 대신 배지 그림(위) · 스타포스 별이 있으면 "N성" 글자(1.0.18)
 		local enh = cell:GetChildByName("EnhanceText")
 		if isvalid(enh) and enh.TextGUIRendererComponent ~= nil then
-			enh.TextGUIRendererComponent.Text = ""
+			local st = it.star or 0
+			enh.TextGUIRendererComponent.Text = (st > 0) and (tostring(st) .. "성") or ""
 		end
 		local name = cell:GetChildByName("Name")
 		if isvalid(name) and name.TextGUIRendererComponent ~= nil then
