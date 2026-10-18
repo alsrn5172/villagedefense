@@ -173,6 +173,15 @@ script BossSkillRunner extends AttackComponent
 	@HideFromInspector
 	property any activeSkill = nil
 
+	-- 연속 사용(1.0.16 · BossSkills.RepeatChance · 사용자 2026-10-18 "머쉬맘 · 킹슬라임 지진파는 쿨 5초지만 50% 확률로 연속 사용"):
+	--   판정이 나간 순간 확률에 걸리면 그 스킬 쿨을 0 으로 돌리고 repeatSkillId 에 적어 두었다가, 복귀 동작이 끝난 다음 고르기에서 그 스킬을 바로 한 번 더 쓴다.
+	--   연속으로 나간 그 한 번은 다시 굴리지 않는다(최대 2연속) · 대상이 사거리 밖이거나 HP 구간이 안 맞으면 평소처럼 고른다.
+	@HideFromInspector
+	property string repeatSkillId = ""
+
+	@HideFromInspector
+	property boolean repeatCasting = false
+
 	@HideFromInspector
 	property any Shape = nil
 
@@ -762,8 +771,36 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method any FindRepeatSkill(string skillId)
+		-- 연속 사용(1.0.16)할 스킬 행: 지금 HP 구간에 쓸 수 있고 대상이 사거리 안일 때만. 아니면 nil.
+		if _BossCatalog == nil or skillId == "" then
+			return nil
+		end
+		local dist = self:DistanceToTarget()
+		for _, s in ipairs(_BossCatalog:GetSkillsForHp(self.BossId, self:GetHpPercent())) do
+			if s.skillId == skillId and dist <= self:SkillReach(s) then
+				return s
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
 	method void PickAndCast()
-		local skill = self:PickSkill()
+		-- 다음 스킬을 골라 시전을 시작한다. 연속 사용이 걸려 있으면(1.0.16) 그 스킬을 먼저 쓴다.
+		local skill = nil
+		self.repeatCasting = false
+		if self.repeatSkillId ~= "" then
+			local want = self.repeatSkillId
+			self.repeatSkillId = ""
+			skill = self:FindRepeatSkill(want)
+			if skill ~= nil then
+				self.repeatCasting = true
+			end
+		end
+		if skill == nil then
+			skill = self:PickSkill()
+		end
 		if skill == nil then
 			return
 		end
@@ -934,6 +971,17 @@ script BossSkillRunner extends AttackComponent
 
 		-- 이 스킬만 쿨다운에 들어간다. 다른 스킬은 계속 준비 상태다.
 		self.cooldowns[skill.skillId] = skill.cooldown
+
+		-- 연속 사용(1.0.16 · RepeatChance): 연속으로 나간 한 번이 아니면 확률을 굴려, 걸리면 쿨을 지우고 다음 고르기에서 한 번 더 쓴다.
+		if self.repeatCasting then
+			self.repeatCasting = false
+		elseif (skill.repeatChance or 0) > 0 and _UtilLogic:RandomDouble() < skill.repeatChance then
+			self.cooldowns[skill.skillId] = 0
+			self.repeatSkillId = skill.skillId
+			if self.LogSkill then
+				log("[BossSkillRunner] " .. self.BossId .. " repeat " .. skill.skillId .. " (chance " .. tostring(skill.repeatChance) .. ")")
+			end
+		end
 
 		-- 앞에 뜨는 이펙트는 타격 궤적이다. 판정과 같은 순간에 띄워야 맞는 느낌이 난다.
 		-- (시전 시작에 띄우면 이펙트만 먼저 나오고 한참 뒤에 맞는다)
@@ -1322,20 +1370,36 @@ script BossSkillRunner extends AttackComponent
 		-- 🔴 1.0.9(사용자 2026-10-15 "아이언보어가 아이언호그를 부르는 건데 반대로 되어 있네 · 왜 반대로 되어 있지?"): 1.0.7 은 호그 · 보어 역할이 거꾸로였다 → 바로잡음.
 		--   발록 HP 30% 이하(BossSkills S4) → 아이언보어 5마리(보스 모델 monster4230400boss · 보스 판정) → 보어마다 자기 HP 50% 이하에서 아이언호그 3마리 한 번(최대 15마리 · 일반 몬스터).
 		if summonId == "4230400" then
-			-- 아이언보어(발록 졸개): Lv35 · HP = 도감 기초 9,200 × 레벨 배율 25 = 230,000(사용자가 따로 정하지 않아 도감대로) · 공격 519 · 방어는 도감대로.
+			-- 아이언보어(발록 졸개): Lv35(레벨 배율 25) · 기초 12,000 / 12,000 / 24,000 → 300,000 / 300,000 / 600,000(1.0.16 · 사용자 2026-10-18) · 공격 519 · 방어는 도감대로.
 			--   보스 판정은 보스 모델(monster4230400boss · BossSkillRunner 달림)로 소환해서 얻는다 — BossSkills S4 의 ProjectileModelId.
-			return { level = 35, split = { hpPercent = 50, modelId = "monster4230103", count = 3, spread = 1.2 } }
+			return { level = 35, baseHp = self:SummonStarPick(12000, 12000, 24000), split = { hpPercent = 50, modelId = "monster4230103", count = 3, spread = 1.2 } }
 		end
+		-- 🔴 1.0.16(사용자 2026-10-18 "10배 같은 거 빼 · 패치하기 쉽게 레벨 배율만"): 최대 HP = 기초 HP × 레벨 배율 하나로만 정한다(숨은 배율 없음).
+		--   기초 HP 는 ★ 별로 고를 수 있다(SummonStarPick · 매치 밖 = ★3 값) · attack = 몸통 접촉 공격(도감 Attack 덮어쓰기 · ★ 공격 배율 없음).
 		if summonId == "4230103" then
-			-- 아이언호그(보어가 부르는 졸개 · 일반 몬스터 · 보스 판정 아님): Lv30 · HP = 기초 7,500 × 레벨 배율 20 = 150,000(사용자 2026-10-15 "기초 체력 7천 500 · 레벨 보정 20배 · 15만").
-			return { level = 30, baseHp = 7500 }
+			-- 아이언호그(보어가 부르는 졸개 · 일반 몬스터 · 보스 판정 아님): Lv30(레벨 배율 20) · 기초 5,000 / 5,000 / 10,000 → 100,000 / 100,000 / 200,000(사용자 2026-10-18 "1/3 로") · 공격 3,500.
+			return { level = 30, baseHp = self:SummonStarPick(5000, 5000, 10000), attack = 3500 }
 		end
 		if summonId == "2230101" and self.BossId == "8130100" then
-			-- 주니어 발록이 부르는 좀비버섯(S5): 기초 HP × 10 = 15,000 × 레벨 배율 15(Lv25) = 225,000(사용자 2026-10-15 "기본 체력 10배 · 총 22만 5천").
-			--   좀비머쉬맘(2400572)이 부르는 좀비버섯 · 사냥터 좀비버섯은 그대로(도감 1,500 × 15 = 22,500).
-			return { baseHpMul = 10 }
+			-- 주니어 발록이 부르는 좀비버섯(S5): Lv25(레벨 배율 15) · 기초 15,000 / 15,000 / 30,000 → 225,000 / 225,000 / 450,000(사용자 2026-10-18) · 공격 2,500.
+			--   좀비머쉬맘(2400572)이 부르는 좀비버섯 · 사냥터 좀비버섯은 그대로(도감 1,500 × 15 = 22,500 · 도감 공격).
+			return { baseHp = self:SummonStarPick(15000, 15000, 30000), attack = 2500 }
+		end
+		if summonId == "1140100" and self.BossId == "3220000" then
+			-- 스텀피가 부르는 고스텀프(S4): Lv25(레벨 배율 15) · 기초 12,000 / 12,000 / 16,000 → 180,000 / 180,000 / 240,000(사용자 2026-10-18) · 공격 2,000(도감 Lv23 · 465 · 150 은 그대로).
+			return { level = 25, baseHp = self:SummonStarPick(12000, 12000, 16000), attack = 2000 }
 		end
 		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method number SummonStarPick(number v1, number v3, number v5)
+		-- 소환수 규칙표의 ★ 별 값(1.0.16): 진행 중인 매치 ★1 · ★3 · ★5 → v1 · v3 · v5. 매치 밖 · ★2 · ★4 · 모름은 ★3 값.
+		local d = 0
+		if _DifficultyService ~= nil then d = _DifficultyService:Current() end
+		if d == 1 then return v1 end
+		if d == 5 then return v5 end
+		return v3
 	end
 
 	@ExecSpace("ServerOnly")
@@ -1393,7 +1457,7 @@ script BossSkillRunner extends AttackComponent
 
 		-- 최대 HP = 도감 HP × 레벨 배율(1.1-E05 · 권장대로 모든 소환수 — E22 "소환수는 일반 몬스터와 같다"): 좀비버섯 Lv25 1,500 → 22,500.
 		--   ★ 배율은 지금처럼 곱하지 않는다.
-		-- 발록 졸개는 규칙표(SummonRule)가 레벨 · HP 를 정한다(1.0.9): 아이언보어 Lv35 (도감 9,200 × 25 = 230,000) · 아이언호그 Lv30 (기초 7,500 × 20 = 150,000) · 발록 좀비버섯 (기초 × 10 × 15 = 225,000).
+		-- 보스 소환수 규칙표(SummonRule)가 레벨 · 기초 HP · 공격을 정한다(1.0.9 · 1.0.16): 값은 SummonRule 주석 참고 · 최대 HP = 기초 HP × 레벨 배율.
 		local rule = self:SummonRule(summonId)
 		local level = self:SummonLevel(summonId, info)
 		local baseHp = tonumber(info.maxHp) or 1
@@ -1432,6 +1496,7 @@ script BossSkillRunner extends AttackComponent
 				--   스킬 표는 없고(BossId 빈칸 = OnUpdate 가 스킬을 안 돌린다) 보스 판정(명중 회피 20% · 판정 레벨 = LevelOverride · 도발 끌어오기 제외)과 접촉 피해만 갖는다.
 				--   접촉 피해 = 이 실행기의 AttackPower(= MonsterInfo.Attack · MonsterAttack.SummonAttack 과 같은 값 · ★ 배율 없음).
 				runner.AttackPower = tonumber(info.attack) or 1
+				if rule ~= nil and rule.attack ~= nil then runner.AttackPower = rule.attack end
 				runner.LevelOverride = level
 			end
 			-- 분열 소환(1.0.7 §1): 규칙표에 split 이 있으면 이 개체가 자기 HP 가 그 % 이하일 때 한 번 졸개를 낳는다(TickSplit).
@@ -1447,8 +1512,11 @@ script BossSkillRunner extends AttackComponent
 		-- 예전엔 FarmReward 가 없어 늘 1 이었다. ★ 공격 배율은 소환수에 곱하지 않는다(지금과 같음).
 		---@type MonsterAttack
 		local contact = unit.MonsterAttack
-		if isvalid(contact) and not isvalid(runner) and (tonumber(info.attack) or 0) > 0 then
-			contact.SummonAttack = math.floor(tonumber(info.attack))
+		-- 1.0.16: 규칙표 attack(보스가 부를 때만의 공격 · 고스텀프 2,000 · 발록 좀비버섯 2,500 · 아이언호그 3,500)이 있으면 도감 Attack 대신 쓴다.
+		local summonAtk = tonumber(info.attack) or 0
+		if rule ~= nil and rule.attack ~= nil then summonAtk = rule.attack end
+		if isvalid(contact) and not isvalid(runner) and summonAtk > 0 then
+			contact.SummonAttack = math.floor(summonAtk)
 		end
 		log("[BossSkillRunner] summon setup " .. tostring(summonId) .. " lv=" .. tostring(level) .. " hp=" .. tostring(summonHp) .. " (base " .. tostring(baseHp) .. ") def=" .. tostring(tonumber(info.defense) or 0)
 			.. " contact=" .. tostring(isvalid(contact) and contact.SummonAttack or -1)
@@ -1621,6 +1689,14 @@ script BossSkillRunner extends AttackComponent
 			log_error("[BossSkillRunner] projectile spawn failed model="
 				.. tostring(skill.projectileModelId))
 			return
+		end
+
+		-- 1.0.16: 투사체가 플레이어를 맞힌 피해 숫자도 보스(= 몬스터 보라 스킨 · Monster.DamageSkinRUID)와 같게. 투사체 모델엔 DamageSkinSettingComponent 가 없어 엔진 기본(빨강)이 나왔다.
+		local bossSkin = self.Entity.DamageSkinSettingComponent
+		if isvalid(bossSkin) then
+			local projSkin = proj.DamageSkinSettingComponent
+			if not isvalid(projSkin) then projSkin = proj:AddComponent("DamageSkinSettingComponent") end
+			if isvalid(projSkin) then projSkin.DamageSkinId = bossSkin.DamageSkinId end
 		end
 
 		-- ---@type 캐스트는 빼둔다. 빌드 시점에 사용자 타입을 못 찾아 LEA-1118 이 난다.
@@ -2013,6 +2089,10 @@ script BossSkillRunner extends AttackComponent
 		--   무적 · 보호막은 PlayerHit.OnHit → SkillBuffs.ModifyIncomingDamageFrom 에서(매직 가드 · 하이퍼 바디는 건너뛴다).
 		local pct = self:AttackHpPct(attackInfo)
 		if pct > 0 and _DamageFormula ~= nil then
+			-- 1.0.16(사용자 2026-10-18): 몸통 접촉 = 최대 HP % 추가 피해 + 공격력(AttackPower · ★ 배율 포함 · 플레이어 방어 적용). 스킬은 % 그대로.
+			if attackInfo == "contact" then
+				return _DamageFormula:ContactPctPlusAttackDamage(defender, pct, math.floor(self.AttackPower), tostring(self.BossId) .. ":contact")
+			end
 			return _DamageFormula:MaxHpPctDamage(defender, pct, tostring(self.BossId) .. ":" .. tostring(attackInfo))
 		end
 		local d = 1

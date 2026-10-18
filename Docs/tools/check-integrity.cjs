@@ -91,7 +91,7 @@ const CANONICAL = {
     "CastRUID2,CastDelay2,CastHitFrame,CastEffectAtStart,CastEffectPlayRate," +
     "CastEffectStartFrame,CastEffectEndFrame," +
     "ShotCount,ShotInterval,AimAtTarget,BuffMoveRate,BuffDuration," +
-    "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,DamageMode,HpPct1,HpPct3,HpPct5,#Note," +
+    "Reach,LoopStartFrame,LoopEndFrame,CloseEndFrame,DamageMode,HpPct1,HpPct3,HpPct5,RepeatChance,#Note," +
     "CrouchBand,FireEffectRUID,FireEffectScale,FireEffectFloors,FireEffectTiles",
   BossReward:
     "BossId,TopDamageItemId,TopDamageMeso,FirstClaimItemId," +
@@ -518,6 +518,23 @@ console.log("\nC7. 보스 피해 모드 (BossInfo 접촉 · BossSkills)");
     if (!ATTACK_SHAPES.has(shape)) return `ShapeType "${shape}" 는 직접 피해가 없다 — summon · buff · teleport · fake 는 FIXED`;
     return null;
   });
+  // 1.0.16: BossSkills.RepeatChance = 빈칸 또는 0 ~ 1 (판정 뒤 쿨 없이 한 번 더 쓸 확률)
+  const ts = readCsv("BossSkills");
+  if (ts) {
+    const iR = ts.header.indexOf("RepeatChance");
+    if (iR < 0) fail("C7", "BossSkills: RepeatChance 열이 없다");
+    else {
+      let n = 0, badR = 0;
+      for (const r of ts.rows) {
+        const v = String(r[iR] || "").trim();
+        if (v === "") continue;
+        const x = Number(v);
+        if (!Number.isFinite(x) || x < 0 || x > 1) { fail("C7", `BossSkills ${r[0]}/${r[1]}: RepeatChance "${v}" 는 0 ~ 1 이어야 한다`); badR++; }
+        else if (x > 0) n++;
+      }
+      if (!badR) ok("C7", `BossSkills: 연속 사용 ${n}행 · 값 정상`);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────

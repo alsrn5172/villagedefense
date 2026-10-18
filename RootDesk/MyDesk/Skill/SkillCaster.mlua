@@ -97,6 +97,14 @@ script SkillCaster extends Logic
     -- 이 시전이 StateComponent 를 껐는지(지상 시전만). 끈 시전만 되살린다.
     property boolean stateDisabled = false
 
+    -- 시전 중 하향 점프(1.0.16 · 사용자 2026-10-18 "방향키는 시전 중에도 눌리게 · 이동은 안 되지만 스킬 공격 중에 하향 점프가 되게 · 키 반응성"):
+    --   시전 락은 점프(Jump)와 위 · 아래(MoveUp / MoveDown)를 막아 ↓ 누름이 버려지고 ↓ + 점프도 막혔다(Play 실측: 락 중 ↓ + Space → 발판 그대로).
+    --   → 락 중 점프 액션이 시도될 때 ↓ 가 눌려 있으면 MovementComponent:DownJump() 를 직접 부른다(엔진 하향 점프는 "Jump" 액션 안에서 ↓ 를 보고 처리한다 · "DownJump" 액션 이름으로는 안 온다).
+    --   좌우 이동은 여전히 막는다 · 성공하면 떨어지는 동안 상태기를 켜(낙하 모션) InputSpeed 0 은 락이 풀릴 때까지 둔다. 락 하나에 한 번.
+    property boolean DownJumpDuringCast = true
+
+    property integer downJumpCastId = -1
+
     -- 서버 전용 상태: userId → 이 시각(ServerElapsedSeconds)까지 재시전 거절
     property table castLockUntil = {}
 
@@ -591,7 +599,18 @@ script SkillCaster extends Logic
             --             시전 도중 줄 · 사다리를 잡아 무적으로 빠져나가지 못한다(엔진 ActionClimb 은 MoveUp / MoveDown 키로 시작한다). 아래 키 엎드리기도 락 동안은 막힌다.
             if not self.jumpGateInstalled then
                 self.jumpGateInstalled = true
-                controller:AddCondition("Jump", function() return not self.castLockActive end)
+                -- 1.0.16: 락 중 점프 시도 = ↓ 를 누르고 있으면 하향 점프로 바꾼다(TryDownJumpDuringLock) · 그 밖은 지금처럼 막는다.
+                --   Jump2(기본 LeftAlt)는 원래 이 락이 막지 않았다 — 그대로 두고 ↓ 가 눌린 경우만 하향 점프로 가로챈다.
+                controller:AddCondition("Jump", function()
+                    if not self.castLockActive then return true end
+                    self:TryDownJumpDuringLock("Jump")
+                    return false
+                end)
+                controller:AddCondition("Jump2", function()
+                    if not self.castLockActive then return true end
+                    if self:TryDownJumpDuringLock("Jump2") then return false end
+                    return true
+                end)
                 controller:AddCondition("DownJump", function() return not self.castLockActive end)
                 controller:AddCondition("MoveUp", function() return not self.castLockActive end)
                 controller:AddCondition("MoveDown", function() return not self.castLockActive end)
@@ -636,6 +655,54 @@ script SkillCaster extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method boolean TryDownJumpDuringLock(string source)
+        -- 락 중 점프 시도(1.0.16): ↓(MoveDown 에 묶인 ↓ 키)를 누르고 있으면 이 시전 동안 한 번 하향 점프를 걸고 true(엔진 점프는 막는다) · 아니면 false.
+        --   땅에 있을 때만 · 아래 발판이 없으면 엔진 DownJump 가 false 를 돌려줘 아무 일도 없다. 실제 실행은 다음 프레임(조건 콜백 안에서 이동을 바꾸지 않는다).
+        if not self.DownJumpDuringCast or not self.castLockActive then return false end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return false end
+        local controller = player.PlayerControllerComponent
+        if not isvalid(controller) then return false end
+        if not _InputService:IsKeyPressed(KeyboardKey.DownArrow) or controller:GetActionName(KeyboardKey.DownArrow) ~= "MoveDown" then return false end
+        if self.downJumpCastId == self.activeCastId then return true end
+        local movement = player.MovementComponent
+        local body = player.RigidbodyComponent
+        if not isvalid(movement) then return true end
+        if isvalid(body) and not body:IsOnGround() then return true end
+        local castId = self.activeCastId
+        self.downJumpCastId = castId
+        _TimerService:SetTimerOnce(function()
+            if not self.castLockActive or self.activeCastId ~= castId then return end
+            local ok = movement:DownJump()
+            -- 떨어지는 동안은 상태기를 켜 낙하 모션을 보인다(좌우 이동은 MoveLeft / MoveRight 조건 · InputSpeed 0 으로 락이 풀릴 때까지 막힌 채).
+            if ok and self.stateDisabled then
+                local state = player.StateComponent
+                if isvalid(state) then state.Enable = true end
+                self.stateDisabled = false
+            end
+            if self.LogDiagnostics then log("SkillCaster: down jump during cast lock #" .. tostring(castId) .. " (" .. source .. ") ok=" .. tostring(ok)) end
+        end, 0)
+        return true
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ResumeHeldVertical(integer castId)
+        -- 락이 풀릴 때 ↑ · ↓ 를 아직 누르고 있으면 그 누름을 컨트롤러에 다시 보낸다(1.0.16 · ResumeHeldMove 의 위 · 아래판).
+        --   락 동안 MoveUp / MoveDown 조건이 거짓이라 그 KeyDown 이 버려졌다 → 풀린 뒤 ↓ 를 누른 채 점프해도 하향 점프 대신 일반 점프가 됐다(키 반응성).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local controller = player.PlayerControllerComponent
+        if not isvalid(controller) then return end
+        local down = _InputService:IsKeyPressed(KeyboardKey.DownArrow) and controller:GetActionName(KeyboardKey.DownArrow) == "MoveDown"
+        local up = _InputService:IsKeyPressed(KeyboardKey.UpArrow) and controller:GetActionName(KeyboardKey.UpArrow) == "MoveUp"
+        if down == up then return end
+        local key = KeyboardKey.UpArrow
+        if down then key = KeyboardKey.DownArrow end
+        _InputService:SendEvent(KeyDownEvent(key))
+        if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — held " .. tostring(key) .. " re-sent (KeyDown)") end
+    end
+
+    @ExecSpace("ClientOnly")
     method void ReleaseCastLock(integer castId, string why)
         -- 멱등. 타이머·서버 거절·직접 호출이 전부 여기로 온다. 활성 castId 가 아니면(이미 다음 시전이 시작됨) 무시.
         if not self.castLockActive or castId ~= self.activeCastId then return end
@@ -668,6 +735,7 @@ script SkillCaster extends Logic
         self.activeCastId = 0
         if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")") end
         if wasGroundLock and why ~= "dead" then self:ResumeHeldMove(castId) end
+        if why ~= "dead" then self:ResumeHeldVertical(castId) end
     end
 
     @ExecSpace("ClientOnly")
