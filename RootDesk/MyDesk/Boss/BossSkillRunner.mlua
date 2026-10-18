@@ -97,22 +97,39 @@ script BossSkillRunner extends AttackComponent
 	property integer ProjectileOrderInLayer = 100
 
 	-- 🔴 피격 이펙트가 그려질 레이어.
-	--    OnAttack 이 PlayEffect 를 옵션 없이 불러서 모델 기본값 "Default" 로 그려졌다.
-	--    "Default" 는 맵의 MapLayer0~7 보다 뒤라 배경에도 가린다 - 맞아도 아무것도 안 보였다.
-	--    캐릭터·몹이 전부 MapLayer7 이므로 같은 레이어에 두되 순서를 위로 올려 앞에 그린다.
-	--    (시전 이펙트가 MapLayer0 / 1~3 인 것과 다르다 - 그건 보스 뒤에 까는 게 의도다)
-	property string HitEffectSortingLayer = "MapLayer7"
+	--    1.0.19(사용자 2026-10-19 "피아누스 시전 이펙트가 피아누스보다 뒤에 나온다"): 1.0.7 부터 몬스터 · 보스가 Default/3(Monster.FixRenderLayer) ·
+	--    플레이어가 Default/4 로 고정됐는데 Default 는 MapLayer0~7 보다 위 층이다 → 예전 값 MapLayer7/200 은 보스 · 몬스터 뒤로 깔렸다.
+	--    이제 보스 몸과 같은 Default/3 + FrontEffectZ(같은 순번 안에서 앞) = 보스 앞 · 플레이어(Default/4) 뒤.
+	property string HitEffectSortingLayer = "Default"
 
-	property integer HitEffectOrderInLayer = 200
+	property integer HitEffectOrderInLayer = 3
 
-	-- 🔴 시전 이펙트가 앞에 그려질 레이어.
-	--    예전에는 MapLayer0 / order 3 고정이었다. 보스가 MapLayer0 / order 2 라 한 칸 차이뿐이라
-	--    확실하게 앞이라고 보장되지 않았다(사용자 관측 - 일부 스킬이 몬스터 뒤로 나온다).
-	--    투사체(MapLayer7/100)·피격 이펙트(MapLayer7/200)는 같은 방식으로 이미 해결했다.
-	--    CastEffectBehind=true 인 행(소환진 등)은 여전히 보스 뒤에 깔아야 하므로 건드리지 않는다.
-	property string CastEffectSortingLayer = "MapLayer7"
+	-- 🔴 시전 이펙트(앞) · 타격 이펙트(FireEffect) 가 그려질 레이어. 위 피격 이펙트와 같은 이유로 MapLayer7/150 → Default/3(1.0.19).
+	--    CastEffectBehind=true 인 행(소환진 · 마법진)은 여전히 보스 뒤(MapLayer0/1)에 깔아야 하므로 건드리지 않는다.
+	property string CastEffectSortingLayer = "Default"
 
-	property integer CastEffectOrderInLayer = 150
+	property integer CastEffectOrderInLayer = 3
+
+	-- 보스 앞 이펙트(시전 · 타격 · 피격)의 Z 보정(1.0.19). 같은 SortingLayer/OrderInLayer 안에서는 Z 가 작을수록 앞(BossHpBar 와 같은 규칙)이라 보스 몸보다 조금 앞으로 당긴다.
+	property number FrontEffectZ = -0.05
+
+	-- 시전 대기 중 프레임 고정(1.0.19 · 사용자 2026-10-19 "패턴이 너무 빨라 대응이 안 됨"): 투사체가 아닌 행에서 LoopStartFrame ≥ 0 이면
+	--   시전 클립이 그 프레임에 닿는 순간부터 [LoopStartFrame, LoopEndFrame] 구간만 돌린다(같으면 그 프레임에 멈춤) → 판정 순간 LoopEndFrame + 1 부터(CloseEndFrame 까지 · 없으면 끝까지) 재생.
+	--   발록 손톱 긁기 = 팔을 든 프레임에서 멈췄다가 CastDelay 뒤 휘두름 + 이펙트 + 판정 · 피아누스 = 입을 벌리기 직전에 멈췄다가 판정 순간 입을 연다.
+	--   holdAt[skillId] = 고정 프레임에 닿는 시각(초 · 재생 1배) · holdTail[skillId] = 판정 뒤 남은 꼬리(초 · RecoverTime -1 이 쓴다). MeasureCastClips 가 잰다.
+	@HideFromInspector
+	property any holdAt = nil
+
+	@HideFromInspector
+	property any holdTail = nil
+
+	@HideFromInspector
+	property number castElapsed = 0
+
+	@HideFromInspector
+	property boolean holdApplied = false
+
+	property boolean LogCastHold = true
 
 	@HideFromInspector
 	property any ContactShape = nil
@@ -223,6 +240,8 @@ script BossSkillRunner extends AttackComponent
 		self.clipLen2 = {}
 		self.clipFull = {}
 		self.fireEffectWidth = {}
+		self.holdAt = {}
+		self.holdTail = {}
 		self.buffed = {}
 
 		local sprite = self.Entity.SpriteRendererComponent
@@ -284,6 +303,15 @@ script BossSkillRunner extends AttackComponent
 				end
 				if sk.castRuid2 ~= "" then
 					self.clipLen2[sk.skillId] = self:ClipSeconds(sk.castRuid2)
+				end
+				-- 시전 대기 프레임 고정(1.0.19): 고정 프레임에 닿는 시각 = 그 앞 프레임들의 합 · 꼬리 = LoopEndFrame + 1 ~ 끝(CloseEndFrame).
+				if self:IsCastHoldSkill(sk) then
+					self.holdAt[sk.skillId] = self:ClipSecondsUpTo(sk.castRuid, math.floor(sk.loopStartFrame))
+					local tailEnd = 99999
+					if sk.closeEndFrame > sk.loopEndFrame then tailEnd = sk.closeEndFrame end
+					self.holdTail[sk.skillId] = self:ClipSecondsRange(sk.castRuid, sk.loopEndFrame + 1, tailEnd)
+					log("[BossSkillRunner] " .. self.BossId .. "/" .. sk.skillId .. " 시전 고정 f" .. tostring(math.floor(sk.loopStartFrame))
+						.. "~f" .. tostring(math.floor(sk.loopEndFrame)) .. " at " .. tostring(self.holdAt[sk.skillId]) .. "초 · 꼬리 " .. tostring(self.holdTail[sk.skillId]) .. "초")
 				end
 				if seconds > 0 then
 					self.clipLen[sk.skillId] = seconds
@@ -359,6 +387,15 @@ script BossSkillRunner extends AttackComponent
 		if skill.recoverTime >= 0 then
 			return skill.recoverTime
 		end
+		-- 시전 대기 프레임 고정 행(1.0.19)은 판정 순간 LoopEndFrame + 1 부터 다시 돌므로 꼬리 = 그 구간 길이(CastDelay 를 늘려도 꼬리가 0 으로 잘리지 않게).
+		if self:IsCastHoldSkill(skill) and self.holdTail ~= nil then
+			local tail = self.holdTail[skill.skillId]
+			if tail ~= nil and tail > 0 then
+				local hr = skill.castPlayRate
+				if hr <= 0 then hr = 1 end
+				return tail / hr
+			end
+		end
 		local full = self.clipFull[skill.skillId]
 		if full == nil or full <= 0 then
 			return 0
@@ -414,6 +451,70 @@ script BossSkillRunner extends AttackComponent
 			rate = 1
 		end
 		return measured / rate
+	end
+
+	method boolean IsCastHoldSkill(any skill)
+		-- 시전 대기 프레임 고정 행인가(1.0.19): 투사체가 아니고(투사체는 같은 열을 연사 반복 구간으로 쓴다) · 2단 시전이 아니고 · LoopStartFrame ≥ 0 · LoopEndFrame ≥ LoopStartFrame.
+		if skill == nil or skill.castRuid == nil or skill.castRuid == "" then
+			return false
+		end
+		if skill.shapeType == "projectile" or (skill.castRuid2 ~= nil and skill.castRuid2 ~= "") then
+			return false
+		end
+		return skill.loopStartFrame ~= nil and skill.loopStartFrame >= 0 and skill.loopEndFrame >= skill.loopStartFrame
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickCastHold(any skill)
+		-- 시전 대기 중(castLeft) 매 프레임: 시전 클립이 고정 프레임에 닿으면 [LoopStartFrame, LoopEndFrame] 창을 건다(한 번). 못 잰 클립이면 바로 건다.
+		if self.holdApplied or not self:IsCastHoldSkill(skill) then
+			return
+		end
+		local at = 0
+		if self.holdAt ~= nil and self.holdAt[skill.skillId] ~= nil then
+			at = self.holdAt[skill.skillId]
+		end
+		local rate = skill.castPlayRate
+		if rate <= 0 then
+			rate = 1
+		end
+		if self.castElapsed < at / rate then
+			return
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		if not isvalid(sprite) then
+			return
+		end
+		self.holdApplied = true
+		sprite.StartFrameIndex = math.floor(skill.loopStartFrame)
+		sprite.EndFrameIndex = math.floor(skill.loopEndFrame)
+		if self.LogCastHold then
+			log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " hold f" .. tostring(math.floor(skill.loopStartFrame))
+				.. "~f" .. tostring(math.floor(skill.loopEndFrame)) .. " at " .. string.format("%.2f", self.castElapsed) .. "s")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReleaseCastHold(any skill)
+		-- 판정 순간(FireSkill): 고정을 풀고 LoopEndFrame + 1 부터 CloseEndFrame(없으면 끝)까지 재생한다. 고정이 아직 안 걸렸어도(CastDelay 가 더 짧음) 같은 프레임으로 넘긴다.
+		self.holdApplied = false
+		if not self:IsCastHoldSkill(skill) then
+			return
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		if not isvalid(sprite) then
+			return
+		end
+		local from = math.floor(skill.loopEndFrame) + 1
+		local to = 2147483647
+		if skill.closeEndFrame >= from then
+			to = math.floor(skill.closeEndFrame)
+		end
+		sprite.StartFrameIndex = from
+		sprite.EndFrameIndex = to
+		if self.LogCastHold then
+			log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " release f" .. tostring(from) .. " at " .. string.format("%.2f", self.castElapsed) .. "s")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -647,6 +748,8 @@ script BossSkillRunner extends AttackComponent
 		-- 1단 시전(준비 동작). 끝나면 2단으로 넘기거나 바로 판정한다.
 		if self.castLeft >= 0 then
 			self:HoldCastSprite(self.pendingSkill)
+			self.castElapsed = self.castElapsed + delta
+			self:TickCastHold(self.pendingSkill)
 			self.castLeft = self.castLeft - delta
 			if self.castLeft <= 0 then
 				self.castLeft = -1
@@ -842,6 +945,11 @@ script BossSkillRunner extends AttackComponent
 			self.castHoldState = chaseNow.CurrentStateName
 		end
 
+		-- 시전 대기 프레임 고정(1.0.19): 시전 시작부터 잰다. 고정 프레임이 0 이면 여기서 바로 건다.
+		self.castElapsed = 0
+		self.holdApplied = false
+		self:TickCastHold(skill)
+
 		local delay = self:EffectiveCastDelay(skill)
 		if delay > 0 then
 			self.castLeft = delay
@@ -982,6 +1090,9 @@ script BossSkillRunner extends AttackComponent
 				log("[BossSkillRunner] " .. self.BossId .. " repeat " .. skill.skillId .. " (chance " .. tostring(skill.repeatChance) .. ")")
 			end
 		end
+
+		-- 시전 대기 프레임 고정(1.0.19)을 풀어 휘두르기 · 입 열기 프레임을 판정과 같은 순간에 재생한다.
+		self:ReleaseCastHold(skill)
 
 		-- 앞에 뜨는 이펙트는 타격 궤적이다. 판정과 같은 순간에 띄워야 맞는 느낌이 난다.
 		-- (시전 시작에 띄우면 이펙트만 먼저 나오고 한참 뒤에 맞는다)
@@ -1808,6 +1919,8 @@ script BossSkillRunner extends AttackComponent
 			return
 		end
 		local p = t.WorldPosition
+		-- 보스 앞(1.0.19): 같은 Default/3 순번 안에서 보스 몸보다 앞으로.
+		p = Vector3(p.x, p.y, p.z + self.FrontEffectZ)
 		local facing = self:GetFacing()
 		local s = skill.fireEffectScale
 		if s == nil or s <= 0 then
@@ -1962,15 +2075,17 @@ script BossSkillRunner extends AttackComponent
 		local p = t.WorldPosition
 		local facing = self:GetFacing()
 
-		-- 보스는 OrderInLayer 2 다. 뒤로 깔려면 그보다 낮게, 배경보다는 높게 둔다.
+		-- 보스는 Default/3 이다(1.0.7 Monster.FixRenderLayer). 뒤에 까는 행은 MapLayer0 · 앞 행은 보스와 같은 Default/3 + FrontEffectZ(보스 앞 · 플레이어 Default/4 뒤).
 		local options = {}
+		local z = p.z
 		if skill.castEffectBehind then
-			-- 보스 뒤에 까는 게 의도인 행(소환진 등). 보스 order 2 보다 낮게, 배경보다는 높게.
+			-- 보스 뒤에 까는 게 의도인 행(소환진 · 마법진). MapLayer0 은 Default 보다 아래라 보스 뒤 · 배경보다는 앞.
 			options["SortingLayer"] = "MapLayer0"
 			options["OrderInLayer"] = 1
 		else
 			options["SortingLayer"] = self.CastEffectSortingLayer
 			options["OrderInLayer"] = self.CastEffectOrderInLayer
+			z = p.z + self.FrontEffectZ
 		end
 		options["FlipX"] = (facing > 0)
 		options["PlayRate"] = skill.castEffectPlayRate
@@ -1989,7 +2104,7 @@ script BossSkillRunner extends AttackComponent
 		--    그래서 하나의 규칙으로는 못 맞추고 자산별로 실측해서 넣는다.
 		local s = skill.castEffectScale
 		_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
-			Vector3(p.x + skill.castEffectOffsetX * facing, p.y + skill.castEffectOffsetY, p.z),
+			Vector3(p.x + skill.castEffectOffsetX * facing, p.y + skill.castEffectOffsetY, z),
 			0, Vector3(s, s, 1), false, options)
 	end
 
@@ -2072,12 +2187,12 @@ script BossSkillRunner extends AttackComponent
 		end
 		-- 발밑이 아니라 몸통 높이에 뜨게 살짝 올린다.
 		local p = t.WorldPosition
-		-- 레이어를 안 주면 모델 기본 "Default" 로 그려져 캐릭터 뒤에 숨는다.
+		-- 층 = 보스 · 몬스터와 같은 Default/3 + FrontEffectZ(1.0.19) — 보스 · 몬스터 앞 · 맞은 플레이어(Default/4) 뒤.
 		local opt = {}
 		opt["SortingLayer"] = self.HitEffectSortingLayer
 		opt["OrderInLayer"] = self.HitEffectOrderInLayer
 		_EffectService:PlayEffect(ruid, self.Entity,
-			Vector3(p.x, p.y + 0.5, p.z), 0, Vector3(1, 1, 1), false, opt)
+			Vector3(p.x, p.y + 0.5, p.z + self.FrontEffectZ), 0, Vector3(1, 1, 1), false, opt)
 	end
 
 	method integer CalcDamage(Entity attacker, Entity defender, string attackInfo)

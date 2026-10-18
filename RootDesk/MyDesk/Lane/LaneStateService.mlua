@@ -48,6 +48,17 @@ script LaneStateService extends Logic
 
 	property integer SixPathTaxiCost = 5000
 
+	-- 마을 택시 사냥터 요금(사용자 2026-10-19): 내 마을의 사냥터 1(VillageConfig.Lane1MapName) · 사냥터 2(Lane2MapName) · 사냥터 3(RearMapName). 여섯갈래길은 위 SixPathTaxiCost.
+	property integer HuntTaxiCost1 = 1500
+
+	property integer HuntTaxiCost2 = 3500
+
+	property integer HuntTaxiCost3 = 1500
+
+	-- 택시 목적지 이름표 캐시(WorldMapNodes.Label · 맵 이름 → 표시 이름). 서버 · 클라 각자 처음 쓸 때 만든다.
+	@HideFromInspector
+	property any taxiLabels = nil
+
 	-- ── 침범 안정장치 (WO-016 · 추가기획2) — 잠정값은 전부 property (미정-값.md E-1·E-2). 값이 정해지면 여기만 바꾼다. ──
 	-- **수비대**가 플레이어를 때릴 때 곱하는 계수. 원문 "(계수-기본10)배" → 기본 10.0 (E-1 잠정).
 	-- 읽는 곳 = DefenderService.SpawnOne 한 곳. 시설(포탑 · 공격하는 억제기)은 1.1-H11 부터 플레이어 배수가 없다(×1 · 대신 FacilityNoMinionAtkMul). 미니언에는 안 붙는다(FactionAttack 기본 1.0).
@@ -1326,7 +1337,13 @@ script LaneStateService extends Logic
 					tostring(repLeft), tostring(rebLeft), block, tostring(self:FacilityLevelAt(stage, t.lv)) })
 			end
 			add({ "FRONT", front })
-			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap) })
+			-- 5번 = 모집한 묶음 "몬스터id:마릿수:썸네일RUID,…" (1.0.19 #16 · 방어 창 수비대 표식 · 바닥 칩 뒤에 썸네일 · append-only).
+			local slots = {}
+			for _, d in ipairs(v.defenders) do
+				local icon = (_MonsterCatalog ~= nil) and tostring(_MonsterCatalog:GetIconRuid(d.key) or "") or ""
+				table.insert(slots, d.key .. ":" .. tostring(d.qty) .. ":" .. icon)
+			end
+			add({ "DEF", tostring(#v.defenders), tostring(self:DefenderUnits(v)), tostring(v.cap), table.concat(slots, ",") })
 			add({ "COIN", tostring(self:Coin(userId)) })
 		elseif kind == "recruit" then
 			local front = self:FrontStage(v)
@@ -2173,30 +2190,114 @@ script LaneStateService extends Logic
 		return true
 	end
 
+	-- 마을 택시 목적지(사용자 2026-10-19): 내 마을의 사냥터 1 · 2 · 3 + 여섯갈래길 4곳 중 선택. 요금 1,500 / 3,500 / 1,500 / 5,000 메소(HuntTaxiCost1~3 · SixPathTaxiCost).
+	--   사냥터 번호는 가이드 문구와 같은 규칙 = Lane1MapName(사냥터 1) · Lane2MapName(사냥터 2 · 포탑 쪽) · RearMapName(사냥터 3). 다섯 마을 모두 이 순서가 몬스터 레벨대(≤14 · ≤21 · 그 위)와 같다.
+
+	method string TaxiVillageOfMap(string mapName)
+		-- 마을 택시가 서 있는 맵(VillageConfig.VillageMapName · 노틸러스는 NpcMapName 배 위)의 마을 id. 모르면 "". 클라 대화창이 내 마을 사냥터 이름을 찾을 때 쓴다(서버는 VillageOfUser 가 정본). ExecSpace 없음(표만 읽는다).
+		local t = _DataService:GetTable("VillageConfig")
+		if t == nil or mapName == nil or mapName == "" then return "" end
+		for i = 1, t:GetRowCount() do
+			local vid = tostring(t:GetCell(i, "VillageId") or "")
+			if vid ~= "" and vid ~= "LITH" and (tostring(t:GetCell(i, "VillageMapName") or "") == mapName or tostring(t:GetCell(i, "NpcMapName") or "") == mapName) then return vid end
+		end
+		return ""
+	end
+
+	method string TaxiMapLabel(string mapName)
+		-- 맵 표시 이름(WorldMapNodes.Label · 월드맵과 같은 이름). 없으면 "". ExecSpace 없음(표만 읽는다).
+		if mapName == nil or mapName == "" then return "" end
+		if self.taxiLabels == nil then
+			self.taxiLabels = {}
+			local t = _DataService:GetTable("WorldMapNodes")
+			if t ~= nil then
+				for i = 1, t:GetRowCount() do
+					local id = tostring(t:GetCell(i, "MapName") or "")
+					if id ~= "" then self.taxiLabels[id] = tostring(t:GetCell(i, "Label") or "") end
+				end
+			end
+		end
+		return self.taxiLabels[mapName] or ""
+	end
+
+	method any TaxiStops(string villageId)
+		-- 택시 목적지 목록 { key, title, label, map, cost } (key = HUNT1 · HUNT2 · HUNT3 · SIXPATH · title = "사냥터 1" 꼴 · label = 맵 표시 이름). 마을을 모르면 여섯갈래길 하나. ExecSpace 없음(서버 · 클라 공용 · 표만 읽는다).
+		local stops = {}
+		local t = _DataService:GetTable("VillageConfig")
+		if t ~= nil and villageId ~= nil and villageId ~= "" then
+			for i = 1, t:GetRowCount() do
+				if tostring(t:GetCell(i, "VillageId") or "") == villageId then
+					local maps = { tostring(t:GetCell(i, "Lane1MapName") or ""), tostring(t:GetCell(i, "Lane2MapName") or ""), tostring(t:GetCell(i, "RearMapName") or "") }
+					local costs = { self.HuntTaxiCost1, self.HuntTaxiCost2, self.HuntTaxiCost3 }
+					for n = 1, 3 do
+						if maps[n] ~= "" then
+							table.insert(stops, { key = "HUNT" .. tostring(n), title = "사냥터 " .. tostring(n), label = self:TaxiMapLabel(maps[n]), map = maps[n], cost = math.max(0, costs[n]) })
+						end
+					end
+					break
+				end
+			end
+		end
+		table.insert(stops, { key = "SIXPATH", title = "여섯갈래길", label = "", map = self.SixPathMapName, cost = math.max(0, self.SixPathTaxiCost) })
+		return stops
+	end
+
+	@ExecSpace("ServerOnly")
+	method any TaxiArrival(Entity map)
+		-- 택시 도착 자리(Vector2): 맵의 "SpawnLocation" 엔티티 → 없으면 첫 SpawnLocationComponent. 맵이 없거나 둘 다 없으면 nil(= 갈 수 없음 · 메소는 쓰지 않는다).
+		if not isvalid(map) then return nil end
+		local spawn = map:GetChildByName("SpawnLocation")
+		if isvalid(spawn) and isvalid(spawn.TransformComponent) then
+			local p = spawn.TransformComponent.WorldPosition
+			return Vector2(p.x, p.y)
+		end
+		local comps = map:GetChildComponentsByTypeName("SpawnLocationComponent", true)
+		if comps ~= nil then
+			for _, c in ipairs(comps) do
+				local e = c.Entity
+				if isvalid(e) and isvalid(e.TransformComponent) then
+					local p = e.TransformComponent.WorldPosition
+					return Vector2(p.x, p.y)
+				end
+			end
+		end
+		return nil
+	end
+
 	@ExecSpace("Server")
-	method void RequestSixPathTaxi()
-		-- 마을 택시 대화창 [이동한다](NpcTalkController). NPC 클릭 단계에서 이용 권한은 이미 확인했다. 확인을 누른 사람의 메소를 차감하고 여섯갈래길로 보낸다.
+	method void RequestVillageTaxi(string stopKey)
+		-- 마을 택시 대화창 [이동한다](NpcTalkController). stopKey = HUNT1 · HUNT2 · HUNT3 · SIXPATH. NPC 클릭 단계에서 이용 권한은 이미 확인했고, 여기서는 목적지(내 마을 = 소유권 원장) · 도착 자리 · 메소를 서버가 다시 본다.
+		--   거절(없는 목적지 · 도착 자리 없음 · 메소 부족)은 메소를 빼기 전에 한다. 확인을 누른 사람의 메소를 차감하고 이동시킨다.
 		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
 		local uid = senderUserId
 		local player = _UserService:GetUserEntityByUserId(uid)
-		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
-		local map = _EntityService:GetEntityByPath("/maps/" .. self.SixPathMapName)
-		local spawn = isvalid(map) and map:GetChildByName("SpawnLocation") or nil
-		if not isvalid(spawn) or not isvalid(spawn.TransformComponent) then
-			log_warning("[Lane] sixpath taxi: destination unavailable " .. self.SixPathMapName)
-			self:Toast(uid, "지금은 여섯갈래길로 갈 수 없습니다. 메소는 쓰지 않았습니다")
+		if not isvalid(player) or not isvalid(player.PlayerComponent) or player.PlayerComponent:IsDead() then return end
+		local stop = nil
+		for _, s in ipairs(self:TaxiStops(self:VillageOfUser(uid))) do
+			if s.key == stopKey then stop = s end
+		end
+		if stop == nil then
+			log_warning("[Lane] village taxi: unknown stop " .. tostring(stopKey) .. " (" .. uid .. ")")
+			self:Toast(uid, "갈 수 없는 곳입니다. 메소는 쓰지 않았습니다")
 			return
 		end
-		local cost = math.max(0, self.SixPathTaxiCost)
+		local pos = self:TaxiArrival(_EntityService:GetEntityByPath("/maps/" .. stop.map))
+		if pos == nil then
+			log_warning("[Lane] village taxi: destination unavailable " .. stop.map)
+			self:Toast(uid, "지금은 갈 수 없는 곳입니다. 메소는 쓰지 않았습니다")
+			return
+		end
+		local cost = stop.cost
 		if _SummonManager == nil or not _SummonManager:SpendMeso(uid, cost) then
 			self:Toast(uid, "메소가 부족합니다 (" .. self:Comma(cost) .. "메소 필요)")
 			return
 		end
-		local pos = spawn.TransformComponent.WorldPosition
-		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(self.SixPathMapName, uid) end
-		player.PlayerComponent:MoveToMapPosition(self.SixPathMapName, Vector2(pos.x, pos.y))
-		log("[Lane] sixpath taxi " .. uid .. " -> " .. self.SixPathMapName .. " meso-" .. tostring(cost))
-		self:Toast(uid, "여섯갈래길로 이동합니다 (-" .. self:Comma(cost) .. "메소)")
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(stop.map, uid) end
+		player.PlayerComponent:MoveToMapPosition(stop.map, pos)
+		local name = stop.title
+		if stop.label ~= "" then name = name .. " · " .. stop.label end
+		log("[Lane] village taxi " .. uid .. " -> " .. stopKey .. " " .. stop.map .. " meso-" .. tostring(cost))
+		self:Toast(uid, name .. "(으)로 이동합니다 (-" .. self:Comma(cost) .. "메소)")
 	end
 
 	@ExecSpace("ServerOnly")

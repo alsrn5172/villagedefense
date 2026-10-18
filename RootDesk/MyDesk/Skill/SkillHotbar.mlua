@@ -133,6 +133,28 @@ script SkillHotbar extends Logic
     @HideFromInspector
     property boolean holdRecast = false
 
+    -- 1.0.19(사용자 2026-10-19 "손을 떼고 있어도 꾹 누른 스킬이 계속 시전된다 · 10초 지속되기도"): 꾹 누르기를 끝내는 신호를 IsKeyPressed 하나에서 넷으로 늘린다.
+    --   ① IsKeyPressed false(예전 그대로) ② 그 키의 KeyUpEvent · KeyReleaseEvent ③ 창이 포커스를 잃음(ApplicationFocusOutEvent · Maker 창 · 알트탭 — 키를 뗀 신호가 게임에 안 와 눌림이 남는다)
+    --   ④ 메뉴 · 종료 팝업이 열림. 어느 하나라도 오면 바로 멈추고, 다시 누르기(PlayerActionEvent) 전까지 무장되지 않는다.
+    @HideFromInspector
+    property any keyUpHandler = nil
+
+    @HideFromInspector
+    property any keyReleaseHandler = nil
+
+    @HideFromInspector
+    property any focusOutHandler = nil
+
+    @HideFromInspector
+    property any menuPopupHandler = nil
+
+    @HideFromInspector
+    property any exitPopupHandler = nil
+
+    -- 서버가 "시전 중(casting …)" 으로 거절했을 때 다시 시도하기까지(1.0.19). 왕복 지연이 흔들려 서버 락(×0.9)이 아주 조금 남은 경우라 1초(HoldServerRefuseBackoff)를 쉬면
+    --   꾹 누르는 동안 1초씩 멈칫했다(조작감). 쿨다운 거절도 같은 짧은 간격 뒤 TickHold 가 남은 쿨을 다시 본다. 그 밖(맨손 · MP 등)은 예전처럼 HoldServerRefuseBackoff.
+    property number HoldLockRefuseGap = 0.05
+
     @ExecSpace("ClientOnly")
     method void OnBeginPlay()
         self:BuildSlotTable()
@@ -221,6 +243,12 @@ script SkillHotbar extends Logic
 
         self.actionEventHandler = player:ConnectEvent(PlayerActionEvent, self.OnPlayerAction)
         self.jumpKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyDown)
+        -- 꾹 누르기 끝 신호(1.0.19): 키를 뗌 · 창 포커스 잃음 · 메뉴/종료 팝업. 한 번만 건다(isWired 뒤엔 여기 안 온다).
+        self.keyUpHandler = _InputService:ConnectEvent(KeyUpEvent, self.OnHoldKeyUp)
+        self.keyReleaseHandler = _InputService:ConnectEvent(KeyReleaseEvent, self.OnHoldKeyRelease)
+        self.focusOutHandler = _ApplicationService:ConnectEvent(ApplicationFocusOutEvent, function() self:EndHold("focus lost") end)
+        self.menuPopupHandler = _InputService:ConnectEvent(MenuPopupOpenedEvent, function() self:EndHold("menu popup") end)
+        self.exitPopupHandler = _InputService:ConnectEvent(ExitPopupOpenedEvent, function() self:EndHold("exit popup") end)
         -- 점프 액션 자체에 걸기(JumpActionHook): 어느 키로 묶였든(Space · Alt · 사용자 설정) 점프가 시도될 때 OnJumpActionAttempt. 조건은 늘 true(점프를 막지 않는다).
         --   한 번만 건다(컨트롤러가 조건을 쌓는다 · SkillCaster 의 시전 락 조건과 함께 돈다).
         --   "Jump" 와 "Jump2"(기본 LeftAlt) 둘 다 — 같은 OnJumpActionAttempt 라 꾹 누르기 · 공중 1회 · 디바운스 판정도 한 벌이다.
@@ -341,10 +369,38 @@ script SkillHotbar extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void OnServerRefused(string skillId)
-        -- SkillCaster.CastResult(서버 거절): 꾹 누르는 중인 그 스킬이면 HoldServerRefuseBackoff 초 쉬었다가 다시.
+    method void OnServerRefused(string skillId, string reason)
+        -- SkillCaster.CastResult(서버 거절): 꾹 누르는 중인 그 스킬이면 잠깐 쉬었다가 다시. 시전 락 · 쿨다운 거절(왕복 지연 차이)은 HoldLockRefuseGap 만,
+        --   그 밖(맨손 · MP 부족 등 · 왕복마다 되풀이될 거절)은 HoldServerRefuseBackoff 초.
         if self.holdSkillId ~= skillId then return end
-        self.holdNextTry = _UtilLogic.ElapsedSeconds + self.HoldServerRefuseBackoff
+        local wait = self.HoldServerRefuseBackoff
+        if reason ~= nil and (string.sub(reason, 1, 7) == "casting" or string.sub(reason, 1, 11) == "on cooldown") then
+            wait = self.HoldLockRefuseGap
+        end
+        self.holdNextTry = _UtilLogic.ElapsedSeconds + wait
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnHoldKeyUp(KeyUpEvent event)
+        -- 키를 뗀 이벤트(1.0.19): 꾹 누르는 중인 키(또는 그 칸의 보조 키)면 바로 멈춘다 — IsKeyPressed 가 늦거나 남아 있어도.
+        self:EndHoldIfHoldKey(event.key, "key up event")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnHoldKeyRelease(KeyReleaseEvent event)
+        -- 길게 누른 키를 뗀 이벤트(1.0.19 · KeyReleaseEvent 는 길게 누른 뒤에만 온다): OnHoldKeyUp 과 같은 판정.
+        self:EndHoldIfHoldKey(event.key, "key release event")
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EndHoldIfHoldKey(any key, string why)
+        -- 키로 무장된 꾹 누르기(holdTouch 아님)의 키 · 보조 키와 같으면 EndHold. 모바일 칸 눌림(holdTouch)은 칸 상태(EndTouchHold)가 맡는다.
+        if self.holdSkillId == "" or self.holdTouch then return end
+        local entry = self.holdEntry
+        if entry == nil then return end
+        if key == entry.key or (entry.altKey ~= nil and key == entry.altKey) then
+            self:EndHold(why)
+        end
     end
 
     @ExecSpace("ClientOnly")
@@ -545,6 +601,26 @@ script SkillHotbar extends Logic
         if self.jumpKeyHandler ~= nil then
             _InputService:DisconnectEvent(KeyDownEvent, self.jumpKeyHandler)
             self.jumpKeyHandler = nil
+        end
+        if self.keyUpHandler ~= nil then
+            _InputService:DisconnectEvent(KeyUpEvent, self.keyUpHandler)
+            self.keyUpHandler = nil
+        end
+        if self.keyReleaseHandler ~= nil then
+            _InputService:DisconnectEvent(KeyReleaseEvent, self.keyReleaseHandler)
+            self.keyReleaseHandler = nil
+        end
+        if self.focusOutHandler ~= nil then
+            _ApplicationService:DisconnectEvent(ApplicationFocusOutEvent, self.focusOutHandler)
+            self.focusOutHandler = nil
+        end
+        if self.menuPopupHandler ~= nil then
+            _InputService:DisconnectEvent(MenuPopupOpenedEvent, self.menuPopupHandler)
+            self.menuPopupHandler = nil
+        end
+        if self.exitPopupHandler ~= nil then
+            _InputService:DisconnectEvent(ExitPopupOpenedEvent, self.exitPopupHandler)
+            self.exitPopupHandler = nil
         end
     end
 
