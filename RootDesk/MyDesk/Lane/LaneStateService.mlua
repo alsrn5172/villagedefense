@@ -55,6 +55,15 @@ script LaneStateService extends Logic
 
 	property integer HuntTaxiCost3 = 1500
 
+	-- 총알택시(사용자 2026-10-19 · 1.0.20): 마노 맵 왼쪽 포탈 옆 NPC(VD_BULLET_TAXI) · 요금 메소 → 리스항구 마을 SpawnLocation. 그 맵에서만 탈 수 있다.
+	property string BulletTaxiCatalogId = "VD_BULLET_TAXI"
+
+	property string BulletTaxiMapName = "LithHarbor_Boss_Mano"
+
+	property string BulletTaxiDestMap = "LithHarbor_Village_MinimiMain"
+
+	property integer BulletTaxiCost = 500
+
 	-- 택시 목적지 이름표 캐시(WorldMapNodes.Label · 맵 이름 → 표시 이름). 서버 · 클라 각자 처음 쓸 때 만든다.
 	@HideFromInspector
 	property any taxiLabels = nil
@@ -2299,6 +2308,41 @@ script LaneStateService extends Logic
 		if stop.label ~= nil and stop.label ~= "" then name = stop.label end
 		log("[Lane] village taxi " .. uid .. " -> " .. stopKey .. " " .. stop.map .. " meso-" .. tostring(cost))
 		self:Toast(uid, name .. "(으)로 이동합니다 (-" .. self:Comma(cost) .. "메소)")
+	end
+
+	method any BulletTaxiStops()
+		-- 총알택시 목적지(1.0.20): 리스항구 마을 하나 { key = "LITH", title, label, map, cost }. 대화창(NpcTalkController)과 서버가 같은 값을 쓴다. ExecSpace 없음(표만 읽는다).
+		local label = self:TaxiMapLabel(self.BulletTaxiDestMap)
+		return { { key = "LITH", title = "리스항구", label = (label ~= "" and label or "리스항구"), map = self.BulletTaxiDestMap, cost = math.max(0, self.BulletTaxiCost) } }
+	end
+
+	@ExecSpace("Server")
+	method void RequestBulletTaxi()
+		-- 총알택시 대화창 [리스항구](NpcTalkController · 1.0.20): 마노 맵에 있는 사람만 · 도착 자리 · 메소를 서버가 보고 메소를 뺀 뒤 리스항구 마을로 옮긴다.
+		--   거절(다른 맵 · 도착 자리 없음 · 메소 부족)은 메소를 빼기 전에 한다.
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local uid = senderUserId
+		local player = _UserService:GetUserEntityByUserId(uid)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) or player.PlayerComponent:IsDead() then return end
+		if not isvalid(player.CurrentMap) or player.CurrentMap.Name ~= self.BulletTaxiMapName then
+			log_warning("[Lane] bullet taxi: not on " .. self.BulletTaxiMapName .. " (" .. uid .. ")")
+			return
+		end
+		local stop = self:BulletTaxiStops()[1]
+		local pos = self:TaxiArrival(_EntityService:GetEntityByPath("/maps/" .. stop.map))
+		if pos == nil then
+			log_warning("[Lane] bullet taxi: destination unavailable " .. stop.map)
+			self:Toast(uid, "지금은 갈 수 없는 곳입니다. 메소는 쓰지 않았습니다")
+			return
+		end
+		if _SummonManager == nil or not _SummonManager:SpendMeso(uid, stop.cost) then
+			self:Toast(uid, "메소가 부족합니다 (" .. self:Comma(stop.cost) .. "메소 필요)")
+			return
+		end
+		if _LoadingScreenController ~= nil then _LoadingScreenController:ShowFor(stop.map, uid) end
+		player.PlayerComponent:MoveToMapPosition(stop.map, pos)
+		log("[Lane] bullet taxi " .. uid .. " -> " .. stop.map .. " meso-" .. tostring(stop.cost))
+		self:Toast(uid, stop.label .. "(으)로 이동합니다 (-" .. self:Comma(stop.cost) .. "메소)")
 	end
 
 	@ExecSpace("ServerOnly")
