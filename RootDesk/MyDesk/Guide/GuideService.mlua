@@ -127,7 +127,7 @@ script GuideService extends Logic
 		self.st = {}
 		for _, uid in ipairs(userIds or {}) do
 			table.insert(self.participants, uid)
-			self.st[uid] = { goal = "", goalText = "", marker = "", toasted = {}, checks = {}, waveToasted = {}, shown = false, shownChip = false, tips = {}, lowKills = 0 }
+			self.st[uid] = { goal = "", goalText = "", marker = "", toasted = {}, checks = {}, waveToasted = {}, shown = false, shownChip = false, tips = {}, lowKills = 0, lowKillsLevel = 0, recruited = false }
 		end
 		self.pollTimer = 0
 	end
@@ -733,7 +733,7 @@ script GuideService extends Logic
 				if d ~= nil and (e.level or 1) - (d.reqLevel or 0) >= 10 then self:QueueTip(userId, "gearlevel") break end
 			end
 		end
-		if self:MaxCountOf(userId, self.itemIds.mats) >= 40 then self:QueueTip(userId, "recruit40") end
+		if self:RecruitTipDue(userId) then self:QueueTip(userId, "recruit40") end
 		local lane = _LaneStateService
 		local v = lane ~= nil and lane:StateOfUser(userId) or nil
 		local tw = v ~= nil and v.towers ~= nil and v.towers.TOWER or nil
@@ -751,12 +751,52 @@ script GuideService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean RecruitTipDue(string userId)
+		-- 수비대 모집 안내(recruit40 · 1.0.20): 이번 판에 아직 모집 안 함 · 내 마을 있음 · 수비대 칸이 남음 · 모집할 수 있는 몬스터의 재료 하나가 40개 이상.
+		--   예전엔 MAT_ 재료 최대 수량만 봐서, 이미 모집해 칸이 찼거나 모집 대상이 아닌 재료만 많아도 떴다(사용자 2026-10-19 "이미 사용했는데 뜬다").
+		local s = self.st ~= nil and self.st[userId] or nil
+		if s == nil or s.recruited == true then return false end
+		local lane = _LaneStateService
+		local v = lane ~= nil and lane:StateOfUser(userId) or nil
+		if v == nil or #v.defenders >= v.cap then return false end
+		local seen = {}
+		for _, rr in pairs(lane.recruitDef or {}) do
+			local id = rr.materialItemId or ""
+			if id ~= "" and not seen[id] then
+				seen[id] = true
+				if self:CountItem(userId, id) >= 40 then return true end
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnRecruited(string userId)
+		-- 수비대 모집 성공(LaneStateService.RequestRecruit · 1.0.20): 이번 판엔 모집 안내를 다시 안 세우고, 이미 보낸 카드는 클라 줄에서 뺀다
+		--   (모집 창이 떠 있는 동안 줄에서 기다리다가 모집하고 창을 닫으면 그제야 떴다).
+		local s = self.st ~= nil and self.st[userId] or nil
+		if s == nil or s.recruited == true then return end
+		s.recruited = true
+		if s.tips == nil then s.tips = {} end
+		local sent = s.tips.recruit40 == true
+		s.tips.recruit40 = true
+		if sent and _TipController ~= nil then _TipController:CancelTip("recruit40", userId) end
+	end
+
+	@ExecSpace("ServerOnly")
 	method void OnLowMonsterKilled(string userId, integer monsterLevel)
 		local m = _MatchSessionLogic
 		local s = self.st ~= nil and self.st[userId] or nil
 		if s == nil or m == nil or not m.Running or not m:IsParticipant(userId) or m:IsTutorial() then return end
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
-		if e == nil or monsterLevel <= 0 or (e.level or 1) - monsterLevel < 5 then return end
+		if e == nil then return end
+		-- 지금 레벨에서 잡은 것만 센다(1.0.20 · 사용자 "누적이라 12렙 때 잡은 게 20렙에 판정됨"): 레벨이 바뀌면 0 부터.
+		local lv = e.level or 1
+		if s.lowKillsLevel ~= lv then
+			s.lowKillsLevel = lv
+			s.lowKills = 0
+		end
+		if monsterLevel <= 0 or lv - monsterLevel < 5 then return end
 		s.lowKills = (s.lowKills or 0) + 1
 		if s.lowKills >= 20 then self:QueueTip(userId, "huntlevel") end
 	end
