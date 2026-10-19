@@ -15,6 +15,8 @@ script ItemCatalog extends Logic
 
 	-- 강화 보석 능력치 배율 (WO-050 §2-21 에서 2.0). 1.0.18 WO-057 · 사용자 2026-10-19 "스타포스가 생겼으니 보석은 약해져도 됨" → 1.0(EnhanceSlotBonus 표 값 그대로 = 보석 1개 효과 절반).
 	property number GemEffectMul = 1.0
+	-- 스타포스 별당 직업 부스탯 깎기(1.0.19 · 사용자 2026-10-19 "부스탯은 구간별로 0/1/1/2/3 씩 깎아"): 티어=깎는 양. 표(StarForceTable)는 직업을 모르므로 StarGainOne 이 장비 직업의 부스탯 키에서 뺀다(주스탯 · 나머지 두 스탯 · 직업 없는 장비 · 방패는 그대로). 30제 4 → 부스탯 2.
+	property string StarSubStatCut = "T15=0;T20=1;T25=1;T30=2;ABSOLAB=3"
 
 	-- 직업 장비 +3 주/부스탯 기준표 (WO-050 §2-20)
 	property string JobStatPrimaryCurve = "10=3/4/5/6;15=7/9/11/13;20=14/19/23/28;25=22/30/37/44;30=30/40/50/60"
@@ -101,16 +103,29 @@ script ItemCatalog extends Logic
 	@HideFromInspector
 	property boolean loaded = false
 
+	-- 읽는 도중(재진입 방지). loaded 는 끝까지 읽은 뒤에만 true — 도중에 끊기면(Maker 스크립트 교체 등) 다음 호출이 다시 읽는다(1.0.19 · 클라에서 174/275 항목에서 끊겨 보석 · 스타포스 표가 빈 채 고정됐던 것).
+	@HideFromInspector
+	property boolean loading = false
+
+	@HideFromInspector
+	property number loadingSince = 0
+
 	method void EnsureLoaded()
 		-- 최초 1회 표를 읽는다. 표가 없으면 빈 도감 + 경고.
 		if self.loaded then
 			return
 		end
-		self.loaded = true
+		-- 읽는 도중이면 재진입하지 않는다. 단, 읽기가 끊긴 채(Maker 스크립트 교체 등) 2초가 지났으면 처음부터 다시 읽는다.
+		if self.loading and (_UtilLogic.ElapsedSeconds - self.loadingSince) < 2 then
+			return
+		end
+		self.loading = true
+		self.loadingSince = _UtilLogic.ElapsedSeconds
 		self.items = {}
 		local t = _DataService:GetTable(self.TableName)
 		if t == nil then
 			log_warning("[Item] dataset not found: " .. self.TableName)
+			self.loading = false
 			return
 		end
 		local count = 0
@@ -167,6 +182,8 @@ script ItemCatalog extends Logic
 		log("[Item] catalog loaded: " .. tostring(count) .. " items")
 		self:LoadGemsAndEnhance()
 		self:LoadTrade()
+		self.loaded = true
+		self.loading = false
 	end
 
 	method void LoadTrade()
@@ -679,6 +696,23 @@ script ItemCatalog extends Logic
 				out[k] = sr.stats[k] * mul
 			end
 		end
+		-- 직업 부스탯 깎기(1.0.19 · StarSubStatCut): 장비 직업의 부스탯 키(ComputeEnhance 와 같은 짝 · 전사·해적 dex · 마법사 luk · 궁수 str · 도적 dex)에서 티어별 양을 뺀다. 방패(SUBWEAPON) · 직업 없는 장비는 안 깎는다.
+		local subKey = nil
+		if def.slot ~= "SUBWEAPON" then
+			if def.reqJob == "WARRIOR" or def.reqJob == "PIRATE" or def.reqJob == "THIEF" then subKey = "dex"
+			elseif def.reqJob == "MAGICIAN" then subKey = "luk"
+			elseif def.reqJob == "ARCHER" then subKey = "str" end
+		end
+		if subKey ~= nil and (out[subKey] or 0) ~= 0 then
+			local cut = 0
+			for tierKey, amount in string.gmatch(self.StarSubStatCut, "([%w_]+)=([%d%.]+)") do
+				if tierKey == tostring(def.starTier) then cut = tonumber(amount) or 0 break end
+			end
+			if cut > 0 then
+				out[subKey] = math.max(0, out[subKey] - cut * mul)
+				if out[subKey] == 0 then out[subKey] = nil end
+			end
+		end
 		-- 8·9·10성 부위 무관 공/마(AllAttack/AllMagic · 사용자 2026-10-18): 보석 마스크와 무관하게 모든 부위에 붙는다(무기·장갑은 위 AddAttack 과 합산).
 		if (sr.allAttack or 0) ~= 0 then
 			out.attack = (out.attack or 0) + sr.allAttack * mul
@@ -686,6 +720,8 @@ script ItemCatalog extends Logic
 		if (sr.allMagic or 0) ~= 0 then
 			out.magic = (out.magic or 0) + sr.allMagic * mul
 		end
+		-- 마력은 마법사 장비에만(1.0.19 · 사용자 2026-10-19 "공격력 무기들은 마력 오를 필요 없어 · 마법사가 쓰는 무기만 공격력·마력 둘 다"): 마법사가 아닌(직업 없는 것 포함) 장비는 별 공마 · 8~10성 전부위 마력을 뺀다. 마법사 장비는 공격력 · 마력 둘 다 그대로.
+		if def.reqJob ~= "MAGICIAN" then out.magic = nil end
 		return out
 	end
 

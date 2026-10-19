@@ -23,12 +23,18 @@ script DropTableLogic extends Logic
 	@HideFromInspector
 	property string GemItems = "GEM_DIAMOND,GEM_SAPPHIRE,GEM_AMETHYST,GEM_AQUAMARINE,GEM_GARNET,GEM_OPAL,GEM_TOPAZ,GEM_EMERALD,GEM_STR_CRYSTAL,GEM_DEX_CRYSTAL,GEM_LUK_CRYSTAL,GEM_INT_CRYSTAL"
 
+	-- 보석 종류별 드랍 배율(1.0.19 · 사용자 2026-10-19): 기준 = 예전 균등(GROUND 행 Chance ÷ 12). 스탯 4종 결정 ×1.25 · 다이아(공격력) · 사파이어(마력) ×0.8 · 가넷 ×0.5 · 나머지 1(그대로).
+	--   적용: GEM_RANDOM 행의 전체 확률을 (배율 합 ÷ 종류 수) 배로 늘리고(=나머지 보석의 절대 확률 유지), 종류는 배율로 가중 추첨. 없는 종류는 1.
+	@HideFromInspector
+	property string GemDropWeights = "GEM_STR_CRYSTAL=1.25,GEM_DEX_CRYSTAL=1.25,GEM_INT_CRYSTAL=1.25,GEM_LUK_CRYSTAL=1.25,GEM_DIAMOND=0.8,GEM_SAPPHIRE=0.8,GEM_GARNET=0.5"
+
 	-- 파괴된 빅토리아 변형 몹 드랍(WO-054 · 사용자 2026-10-15): 지역 재화는 이 마을들 것을 각각 굴린다 · 꿈의 조각 · 빅토리아 주화 확률(개수 1).
 	property string VariantRegionVillages = "HENESYS,ELLINIA,KERNING,PERION,NAUTILUS"
 
 	property number VariantDreamChance = 0.33
 
-	property number VariantCoinChance = 0.1
+	-- 변형 몹 빅토리아 주화 확률. 1.0.19(사용자 2026-10-19 "빅토리아 주화 드랍 확률 2배"): 0.1 → 0.2.
+	property number VariantCoinChance = 0.2
 
 	@HideFromInspector
 	property boolean loaded = false
@@ -46,6 +52,10 @@ script DropTableLogic extends Logic
 
 	@HideFromInspector
 	property any gems = nil
+
+	-- 보석 종류별 가중치(self.gems 와 같은 순서) · 합(1.0.19 GemDropWeights · EnsureLoaded 가 채운다).
+	property any gemWeights = nil
+	property number gemWeightSum = 0
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
@@ -69,6 +79,16 @@ script DropTableLogic extends Logic
 			end
 		end
 		for g in string.gmatch(self.GemItems, "[^,]+") do table.insert(self.gems, g) end
+		-- 종류별 배율 → 가중치 목록(self.gems 와 같은 순서) · 합. 1.0.19 GemDropWeights.
+		local weightOf = {}
+		for key, val in string.gmatch(self.GemDropWeights, "([%w_]+)=([%d%.]+)") do weightOf[key] = tonumber(val) or 1 end
+		self.gemWeights = {}
+		self.gemWeightSum = 0
+		for _, g in ipairs(self.gems) do
+			local w = weightOf[g] or 1
+			table.insert(self.gemWeights, w)
+			self.gemWeightSum = self.gemWeightSum + w
+		end
 
 		local n = 0
 		local t = _DataService:GetTable(self.TableName)
@@ -176,6 +196,16 @@ script DropTableLogic extends Logic
 		-- 토큰 → 실제 ItemId. 못 풀면 "".
 		if itemId == "GEM_RANDOM" then
 			if #self.gems == 0 then return "" end
+			-- 종류별 가중 추첨(1.0.19 GemDropWeights). 가중치가 없으면 예전처럼 균등.
+			if self.gemWeights ~= nil and (self.gemWeightSum or 0) > 0 then
+				local roll = _UtilLogic:RandomDouble() * self.gemWeightSum
+				local acc = 0
+				for i, g in ipairs(self.gems) do
+					acc = acc + (self.gemWeights[i] or 1)
+					if roll < acc then return g end
+				end
+				return self.gems[#self.gems]
+			end
 			return self.gems[_UtilLogic:RandomIntegerRange(1, #self.gems)]
 		end
 		if itemId == "REGION_LOCAL" then
@@ -197,6 +227,10 @@ script DropTableLogic extends Logic
 			local chance = r.chance
 			if _DifficultyService ~= nil and string.find(r.itemId, "MAT_", 1, true) == 1 then
 				chance = math.min(1, chance * _DifficultyService:GetMul("HUNT_MAT_CHANCE_MUL"))
+			end
+			-- 보석 무작위 행(1.0.19 GemDropWeights): 종류별 배율의 합 ÷ 종류 수만큼 전체 확률을 조정 → 배율 1 인 보석의 절대 확률은 그대로(12종 기준 12.1/12 ≈ ×1.008).
+			if r.itemId == "GEM_RANDOM" and self.gemWeights ~= nil and #self.gems > 0 and (self.gemWeightSum or 0) > 0 then
+				chance = math.min(1, chance * self.gemWeightSum / #self.gems)
 			end
 			if chance >= 1 or _UtilLogic:RandomDouble() < chance then
 				local cnt = r.min

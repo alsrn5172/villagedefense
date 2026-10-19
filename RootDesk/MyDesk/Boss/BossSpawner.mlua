@@ -73,6 +73,11 @@ script BossSpawner extends Component
 	@HideFromInspector
 	property integer ledgerDiff = 0
 
+	-- 이번 매치에서 처치돼 다시 안 나오는 중(1.0.19 · 사용자 2026-10-19 "지역보스들 죽이고 다시 태어난다. 안태어나게"): BossInfo.RespawnSeconds 0 인 보스(지역 보스 5종)가 죽으면 켠다.
+	--   같은 룸에서 새 매치(MatchSerial 이 바뀜)가 시작되면 그때 한 번 새로 깐다. 스폰(SpawnBoss)하면 끈다.
+	@HideFromInspector
+	property boolean deadForMatch = false
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		self:InitializeSpawner()
@@ -222,6 +227,7 @@ script BossSpawner extends Component
 		self.bossEntity = unit
 		self.deadSeen = false
 		self.respawnAt = -1
+		self.deadForMatch = false
 
 		-- 난이도 배율 + 누적 피해 원장 (B6).
 		self.appliedDiff = -1
@@ -369,11 +375,23 @@ script BossSpawner extends Component
 		local serial = 0
 		if _MatchSessionLogic ~= nil then serial = _MatchSessionLogic.MatchSerial end
 		if serial ~= self.seenSerial then
+			local firstLook = (self.seenSerial < 0)
 			self.seenSerial = serial
 			self:ResetLedger()
 			if isvalid(self.bossEntity) then
 				local m = self.bossEntity.Monster
 				if isvalid(m) and not m.IsDead and m.MaxHp > 0 then m.Hp = m.MaxHp end
+			end
+			-- 1.0.19: 지난 매치에서 처치돼 멈춰 있던 보스(RespawnSeconds 0)는 새 매치에 한 번 새로 깐다(같은 룸에서 StartMatch 가 다시 불린 경우 · 보통은 매치마다 새 룸이라 안 탄다).
+			if self.deadForMatch and not firstLook then
+				log("[BossSpawner] new match serial=" .. tostring(serial) .. " → respawn " .. tostring(self.bossRow.id))
+				self:DisconnectHit()
+				if isvalid(self.bossEntity) then
+					self.bossEntity:Destroy()
+				end
+				self.bossEntity = nil
+				self:SpawnBoss()
+				return
 			end
 		end
 
@@ -398,7 +416,10 @@ script BossSpawner extends Component
 			if self.bossRow.respawnSeconds > 0 then
 				self.respawnAt = self.elapsed + self.bossRow.respawnSeconds
 			else
-				self.stopped = true
+				-- 1.0.19: RespawnSeconds 0 = 이번 매치에서 다시 안 나온다(지역 보스 5종). 스포너는 멈추지 않고 새 매치(MatchSerial)만 기다린다.
+				self.respawnAt = -1
+				self.deadForMatch = true
+				log("[BossSpawner] boss=" .. tostring(self.bossRow.id) .. " down — no respawn this match")
 			end
 		end
 
@@ -424,6 +445,7 @@ script BossSpawner extends Component
 		self.initialized = false
 		self.stopped = false
 		self.deadSeen = false
+		self.deadForMatch = false
 		self.respawnAt = -1
 		self.elapsed = 0
 		self.updateAccumulator = 0

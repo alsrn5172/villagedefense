@@ -6215,6 +6215,22 @@ script SkillExecutors extends Logic
         end
     end
 
+    method boolean IsShieldedStructure(Entity e)
+        -- 레인 시설(포탑 · 억제기 · 넥서스 · script.LaneFacility)이 지금 피해를 받을 수 없는가(1.0.19 · 투사체가 건물에 막히던 것):
+        --   파괴됨(원장 alive false) 또는 순차 무적(앞 시설이 살아 있음 = LaneStateService.ApplyDamage 의 FrontStage 게이트와 같은 판정)이면 true.
+        --   SkillProjectile.IsAttackTarget(투사체가 그 시설을 지나간다) · SkillAttack.FindSkillTarget(유도 대상으로 안 고른다)이 부른다. 시설이 아니거나 원장이 없거나 클라면 false.
+        if not isvalid(e) or _LaneStateService == nil or not self:IsServer() then return false end
+        local fc = e:GetComponent("script.LaneFacility")
+        if not isvalid(fc) then return false end
+        local villageId = fc.VillageId
+        local stage = fc.Stage
+        if villageId == nil or villageId == "" or stage == nil or stage == "" then return false end
+        local v = _LaneStateService:EnsureVillage(villageId)
+        if v == nil or v.towers == nil or v.towers[stage] == nil then return false end
+        if not v.towers[stage].alive then return true end
+        return _LaneStateService:FrontStage(v) ~= stage
+    end
+
     @ExecSpace("ServerOnly")
     method table FindMesoCoins(Entity casterEntity, number radius, string userId)
         -- 시전자 반경 radius 안의 메소 동전(A 의 mesocoin 모델 · 같은 맵 · 아직 안 주움 · 시전자가 주울 수 있는 것 = DropOwner 가 없거나 IsPickableBy). 가까운 순 정렬 없음.
@@ -6260,8 +6276,8 @@ script SkillExecutors extends Logic
     method void ExecuteMesoOrigin(string skillId, table skillData, Entity casterEntity, number level)
         -- 메소 익스플로전(SK_T31 · 추가기획1 도적 궁 · #40 5884390073 5번 "동전 하나 = 공격 한 번"):
         --   반경 Range(6) 안의 픽파켓 동전 N 개(FindMesoCoins · PreCheck 가 N ≥ 1 을 보장)를 MesoExplodeInterval 간격으로 하나씩 터뜨린다(coinHits 순환 · 동전 소멸).
-        --   동전마다 **그 자리**(터지는 순간의 동전 위치)에서 반지름 MesoCoinBlastRadius 원 안 몬스터에 atk × BaseEffect 50% 1타(DealSkillDamageCircleScaled · 배율 1 · 표시 1타).
-        --   모인 동전은 같은 적을 여러 번 때린다. 예전 = CSV Duration 시점에 시전자 반경 Range 원 하나로 50% × N.
+        --   1.0.19: 동전마다 고정한 대상 전부에 atk × BaseEffect 50% 1타(MesoCoinBlast · 대상 = 시전 순간 + 첫 동전 순간 어느 동전이든 반지름 MesoCoinBlastRadius 안의 적) → 대상마다 50% × N 똑같이.
+        --   예전(~1.0.18) = 동전마다 터지는 순간 그 자리 원 안만 1타(보스가 컷신 동안 걸어 나가면 빗나감) · 그 전 = CSV Duration 시점에 시전자 반경 Range 원 하나로 50% × N.
         --   마지막 동전은 CSV Duration(컷신 뒤 피해 시점) 0.15s 전에 터진다. 중심 폭발 그림(impact)은 그 시점에 연출로만 남긴다(피해 없음).
         --   동전은 Collected 로 먼저 잠가 자석·줍기가 같은 프레임에 가져가지 않게 한다. 픽파켓으로 떨어뜨린 동전이 재료다(자동획득을 끄면 남는다).
         --   피해는 시전자의 SkillAttack 으로 낸다 → 처치 귀속 = 시전자(#123 AttackCredit · A 가이드 5906002741 4번 (a)).
@@ -6336,6 +6352,41 @@ script SkillExecutors extends Logic
                 play()
             end
         end
+        -- 대상 고정(1.0.19 · 사용자 2026-10-19 "터질 때까지 보스가 움직여 아예 안 맞기도 · 메소 주변에 있다면 터뜨리는 메소 개수에 비례해서 데미지 다 동등하게"):
+        --   예전 = 동전마다 터지는 순간 그 자리 반지름 MesoCoinBlastRadius 원 안만 1타 → 컷신(≈7.75s) 동안 보스가 걸어 나가면 일부만 맞거나 하나도 안 맞았다.
+        --   지금 = 메소 근처(어느 동전이든 반지름 MesoCoinBlastRadius 안)에 있던 적을 두 번 모은다 — ① 시전 순간 ② 첫 동전이 터지는 순간(그때까지 다가온 적).
+        --   모은 적은 모두 동전마다 1타(50%)씩 = 동전 N 개면 똑같이 N 타 · 50% × N. 터지는 순간 자리와 무관하다. 동전 상한 · 반지름 · 터지는 시각 · 연출은 그대로.
+        local lock = { list = {}, seen = {}, second = false }
+        local probe = casterEntity:GetComponent("script.SkillAttack")
+        local blastR = self.MesoCoinBlastRadius
+        if blastR <= 0 then blastR = 1 end
+        local function lockAround(x, y)
+            if not isvalid(probe) then return end
+            for _, e in ipairs(probe:FindTargetsInCircle(skillId, x, y, blastR)) do
+                if not lock.seen[e] then
+                    lock.seen[e] = true
+                    table.insert(lock.list, e)
+                end
+            end
+        end
+        local function lockSnapshot(tag)
+            local before = #lock.list
+            for _, c in ipairs(coins) do
+                if isvalid(c) and isvalid(c.TransformComponent) then
+                    local q = c.TransformComponent.WorldPosition
+                    lockAround(q.x, q.y + 0.3)
+                end
+            end
+            for _, sp in ipairs(summonPoints) do lockAround(sp.x, sp.y + 0.3) end
+            if self.LogDiagnostics then log("SkillExecutors: MESO " .. skillId .. " targets locked at " .. tag .. " +" .. tostring(#lock.list - before) .. " (total " .. tostring(#lock.list) .. ")") end
+        end
+        lockSnapshot("cast")
+        local function firstBlastLock()
+            -- 첫 동전이 터지는 순간 한 번 더 모은다(그 동전을 지우기 전 · 남은 동전 자리 전부).
+            if lock.second then return end
+            lock.second = true
+            lockSnapshot("first blast")
+        end
         local order = 0
         for i, coin in ipairs(coins) do
             order = order + 1
@@ -6349,17 +6400,18 @@ script SkillExecutors extends Logic
             if #hits > 0 then ruid = hits[((order - 1) % #hits) + 1] end
             local k = order
             _TimerService:SetTimerOnce(function()
-                -- 터지는 순간의 동전 자리(날던 동전은 그사이 앉았다). 동전이 이미 사라졌으면 시전 순간 자리.
+                -- 터지는 순간의 동전 자리(날던 동전은 그사이 앉았다 · 연출 자리). 동전이 이미 사라졌으면 시전 순간 자리.
                 if isvalid(coin) and isvalid(coin.TransformComponent) then
                     local now = coin.TransformComponent.WorldPosition
                     ex = now.x
                     ey = now.y
                 end
+                firstBlastLock()
                 if ruid ~= nil and isvalid(casterEntity) then
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(ex, ey + 0.3, ez), 0, Vector3(1, 1, 1), false)
                 end
                 if isvalid(coin) then coin:Destroy() end
-                self:MesoCoinBlast(skillId, casterEntity, level, ex, ey + 0.3, k, n)
+                self:MesoCoinBlast(skillId, casterEntity, level, lock.list, k, n)
                 coinSound(ex, ey + 0.3, ez, k)
             end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
@@ -6370,11 +6422,12 @@ script SkillExecutors extends Logic
             local serial = summonSerials[j]
             local k = order
             _TimerService:SetTimerOnce(function()
+                firstBlastLock()
                 if serial ~= nil and serial ~= 0 then _EffectService:RemoveEffect(serial) end
                 if ruid ~= nil and isvalid(casterEntity) then
                     _EffectService:PlayEffect(ruid, casterEntity, Vector3(sp.x, sp.y + 0.3, sp.z), 0, Vector3(1, 1, 1), false)
                 end
-                self:MesoCoinBlast(skillId, casterEntity, level, sp.x, sp.y + 0.3, k, n)
+                self:MesoCoinBlast(skillId, casterEntity, level, lock.list, k, n)
                 coinSound(sp.x, sp.y + 0.3, sp.z, k)
             end, self:MesoCoinTime(useVideoTimes, coinTimes, detonateStart, order))
         end
@@ -6394,7 +6447,7 @@ script SkillExecutors extends Logic
             timesText = " · video times +[" .. table.concat(parts, ", ") .. "]s"
         end
         if self.LogDiagnostics then log("SkillExecutors: MESO " .. skillId .. " detonating " .. tostring(n) .. " coins from +" .. string.format("%.2f", detonateStart) .. "s every " .. tostring(self.MesoExplodeInterval) .. timesText
-            .. "s · each blast r=" .. tostring(self.MesoCoinBlastRadius) .. " x " .. tostring(_SkillDatabase:RatioAt(skillId, level)) .. "% · center fx at +" .. tostring(delay) .. "s (" .. uid .. ")") end
+            .. "s · lock r=" .. tostring(self.MesoCoinBlastRadius) .. " · each coin hits every locked target x " .. tostring(_SkillDatabase:RatioAt(skillId, level)) .. "% · center fx at +" .. tostring(delay) .. "s (" .. uid .. ")") end
     end
 
     method number MesoCoinTime(boolean useVideoTimes, table coinTimes, number detonateStart, integer order)
@@ -6404,8 +6457,9 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method void MesoCoinBlast(string skillId, Entity casterEntity, number level, number x, number y, integer k, integer n)
-        -- 메소 익스플로전 동전 하나의 폭발(#40 5884390073 5번): (x, y) 중심 반지름 MesoCoinBlastRadius 원 안 몬스터에 atk × BaseEffect 1타.
+    method void MesoCoinBlast(string skillId, Entity casterEntity, number level, table targets, integer k, integer n)
+        -- 메소 익스플로전 동전 하나의 폭발(1.0.19): 고정한 대상(ExecuteMesoOrigin 의 lock · 시전 순간 + 첫 동전 순간 메소 근처의 적) 모두에 atk × BaseEffect 1타씩 — 지금 자리와 무관.
+        --   대상마다 DealSkillDamageToTargetScaled(배율 1 · 표시 1타) — 그 대상 자리에 상자를 놓고 그 하나만(SingleTarget). 죽었거나 죽는 중이면 건너뛴다.
         -- 시전자의 SkillAttack 으로 때린다(처치 귀속 = 시전자 · #123). 이 타격은 픽파켓 동전을 떨구지 않는다(SkillBuffs.PickpocketExcludedSkillIds = "SK_T31").
         if not isvalid(casterEntity) then return end
         local skillAttack = casterEntity:GetComponent("script.SkillAttack")
@@ -6413,10 +6467,14 @@ script SkillExecutors extends Logic
             log_warning("SkillExecutors: no script.SkillAttack on caster, skipping meso blast for " .. skillId)
             return
         end
-        local r = self.MesoCoinBlastRadius
-        if r <= 0 then r = 1 end
-        skillAttack:DealSkillDamageCircleScaled(skillId, level, x, y, r, 1, 1)
-        if self.LogDiagnostics then log("SkillExecutors: MESO blast " .. tostring(k) .. "/" .. tostring(n) .. " at (" .. string.format("%.2f", x) .. ", " .. string.format("%.2f", y) .. ") r=" .. tostring(r)) end
+        local struck = 0
+        for _, t in ipairs(targets or {}) do
+            if isvalid(t) and isvalid(t.TransformComponent) and not skillAttack:IsDeadOrDying(t) then
+                skillAttack:DealSkillDamageToTargetScaled(skillId, level, t, 1, 1)
+                struck = struck + 1
+            end
+        end
+        if self.LogDiagnostics then log("SkillExecutors: MESO blast " .. tostring(k) .. "/" .. tostring(n) .. " locked targets=" .. tostring(#(targets or {})) .. " struck=" .. tostring(struck)) end
     end
 
     @ExecSpace("ServerOnly")
