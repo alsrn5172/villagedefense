@@ -30,8 +30,8 @@ script FactionAuraController extends Component
 	-- 억제기 본인(RegenSelf)에게 거는 비율 배율(1.0.21 #6 · AURA_REGEN_SELF_MUL 0.1 · 사용자 "억제기 본인은 아군 비율의 10%"): 본인 회복 = max(최소치, AllyRegenPct × 이 값 % × 본인 최대 체력). 1.0 = 아군과 같음.
 	property number SelfRegenMul = 1.0
 
-	-- 아군 회피율 오라(%p · 1.0.21 #7 · 커닝 억제기 AURA_EVA 20/30/40 · 예전 명중률 오라 AURA_ACC 를 같은 값으로 바꿈). 받는 대상 = 범위 안 아군 플레이어 · 아군 수비대(미니언은 안 받음).
-	-- 플레이어 → StatService.SetAuraEvasion(최종 회피율에 더함 · 캐릭터 창에도 보임) · 수비대 → Buff.EvaAdd(그 수비대를 치는 적 플레이어의 명중 판정에서 그만큼 빠짐 · StatService.ResolveTarget).
+	-- 아군 회피율 오라(%p · 1.0.21 #7 · 커닝 억제기 AURA_EVA 20/30/40 · 예전 명중률 오라 AURA_ACC 를 같은 값으로 바꿈). 받는 대상 = 범위 안 아군 플레이어 · 아군 수비대 · 아군 시설(포탑 · 1.0.21 #19)(미니언은 안 받음).
+	-- 플레이어 → StatService.SetAuraEvasion(최종 회피율에 더함 · 캐릭터 창에도 보임) · 수비대 · 시설 → Buff.EvaAdd(그 대상을 치는 적 플레이어의 명중 판정에서 그만큼 빠짐 · StatService.ResolveTarget).
 	property number AllyEvaBonus = 0
 
 	-- 소스 자신에게도 회복을 건다 (B3b · 노틸러스 억제기 "본인 포함" · 1.0.21 #6 부터 비율 부분은 SelfRegenMul 배 = RegenOf). 공격·이속은 자기에게 걸지 않는다. 시설은 ApplyRegen 의 원장 경로.
@@ -66,6 +66,10 @@ script FactionAuraController extends Component
 	@HideFromInspector
 	property any PlayerEvaApplied = nil
 
+	-- 이 컨트롤러가 공격력 배율 · 회피율 보정을 써 넣은 시설(포탑 등 · Entity → true · 1.0.21 #19). 컨트롤러가 사라질 때(OnEndPlay) 되돌린다 — 시설은 오래 남아 마지막 값이 그대로 남지 않게.
+	@HideFromInspector
+	property any FacilityBuffed = nil
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 인스펙터에서 지정한 플레이어 팀을 FactionLogic 에 반영하고, 오라 타이머를 시작한다.
@@ -97,6 +101,24 @@ script FactionAuraController extends Component
 			self.TimerId = 0
 		end
 		self:ResetPlayerSpeedExcept(nil)
+		self:ResetFacilityBuffs()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetFacilityBuffs()
+		-- 이 컨트롤러가 오라를 써 넣은 시설(포탑 등)의 공격력 배율 · 회피율 보정을 되돌린다(1.0.21 #19 · OnEndPlay).
+		if self.FacilityBuffed == nil then return end
+		for e, _ in pairs(self.FacilityBuffed) do
+			if isvalid(e) then
+				---@type Buff
+				local b = e.Buff
+				if isvalid(b) then
+					b.AtkMul = 1.0
+					b.EvaAdd = 0
+				end
+			end
+		end
+		self.FacilityBuffed = nil
 	end
 
 	@ExecSpace("ServerOnly")
@@ -272,8 +294,8 @@ script FactionAuraController extends Component
 									dmg[j] = dmg[j] - self.AllyDmgTakenReduce
 									-- 회복은 대상마다 max(최소치, 비율 × 그 대상 최대 체력) (1.0.21 #6). 비율이 0 이면 예전처럼 고정값 그대로.
 									regen[j] = regen[j] + self:RegenOf(dst, 1.0)
-									-- 회피율 오라는 아군 플레이어 · 수비대만(미니언 제외 · 원문 L703 · 1.0.21 #7).
-									if self.AllyEvaBonus ~= 0 and (isvalid(dst.PlayerComponent) or isvalid(dst.DefenderUnit)) then
+									-- 회피율 오라는 아군 플레이어 · 수비대 · 시설(포탑 · 1.0.21 #19)만(미니언 제외 · 원문 L703 · 1.0.21 #7).
+									if self.AllyEvaBonus ~= 0 and (isvalid(dst.PlayerComponent) or isvalid(dst.DefenderUnit) or isvalid(dst.LaneFacility)) then
 										eva[j] = eva[j] + self.AllyEvaBonus
 									end
 								elseif relation == "ENEMY" then
@@ -418,8 +440,19 @@ script FactionAuraController extends Component
 				_StatService:SetAuraEvasion(uid, evaAdd)
 			end
 		end
-		-- 시설(LaneFacility)은 Buff 를 붙이지 않는다 — 회복만 원장으로 보낸다 (B3b · 노틸러스 억제기 본인 회복). 아래 Buff 경로는 몬스터·플레이어용.
+		-- 시설(LaneFacility · 포탑 등)은 움직이지 않는다 — 공격력 오라(Buff.AtkMul → FactionAttack 피해 배율)와 회피율 오라(Buff.EvaAdd → 그 시설을 치는 적 플레이어의 명중 판정 · StatService.ResolveTarget)만 받고
+		--   (1.0.21 #19 · 사용자 2026-10-20 "억제기 오라가 포탑에도 적용돼야"), 회복은 원장으로 보낸다(B3b · 노틸러스 억제기 본인 회복). 이속 · 받는 피해 배율은 시설에 쓰지 않는다. 아래 Buff 경로는 몬스터·플레이어용.
 		if target.LaneFacility ~= nil then
+			local fbuff = self:EnsureBuff(target)
+			if isvalid(fbuff) then
+				local mul = math.max(atkMul, self.MinMultiplier)
+				if fbuff.AtkMul ~= mul then fbuff.AtkMul = mul end
+				if (fbuff.EvaAdd or 0) ~= evaAdd then fbuff.EvaAdd = evaAdd end
+				if mul ~= 1.0 or evaAdd ~= 0 then
+					if self.FacilityBuffed == nil then self.FacilityBuffed = {} end
+					self.FacilityBuffed[target] = true
+				end
+			end
 			if regenPerSec > 0 then self:ApplyRegen(target, regenPerSec * self.TickInterval) end
 			return
 		end
