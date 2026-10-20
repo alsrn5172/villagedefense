@@ -180,6 +180,14 @@ script WorkshopUIController extends Logic
 	@HideFromInspector
 	property integer bulkTier = 0
 
+	-- [착용 중 장비 N성으로 강화]의 목표 별 N(1.0.21 · 사용자 2026-10-20). 0 = 아직 안 골랐다 → 올릴 수 있는 착용 장비 중 가장 낮은 별 + 1(RefreshBulkButtons).
+	-- ▼ ▲ 로 바꾼다 · 창을 열 때(Open) 0 으로 되돌린다.
+	@HideFromInspector
+	property integer starTarget = 0
+
+	-- 목표 별 N 의 상한(서버 StarForceService.StarTargetMax 와 같은 값 · 장비 최대 별 = 앱솔 10). 실제 ▲ 상한은 착용 장비 중 가장 높은 최대 별.
+	property integer StarTargetMax = 10
+
 	@HideFromInspector
 	property any potionView = nil
 
@@ -356,9 +364,11 @@ script WorkshopUIController extends Logic
 			self.bagGrid.TotalCount = 0
 			self.bagGrid:Refresh(true, true)
 		end
-		-- 스타포스 패널: 장착 장비 일괄 버튼 2개(전투력 줄 오른쪽 · 사용자 지시 2026-10-19).
-		bindChild(self.contentStar, "BtnBulkOne", function() self:OnBulkStar("one") end)
-		bindChild(self.contentStar, "BtnBulkMax", function() self:OnBulkStar("max") end)
+		-- 스타포스 패널: [착용 중 장비 N성으로 강화] 버튼 하나(두 칸 높이) + N 좌우 ▼ ▲(1.0.21 · 사용자 2026-10-20 — 예전 "+1성" · "최대" 두 버튼을 대신한다).
+		bindChild(self.contentStar, "BtnBulkTo", function() self:OnBulkStarTo() end)
+		local bulkTo = isvalid(self.contentStar) and self.contentStar:GetChildByName("BtnBulkTo") or nil
+		bindChild(bulkTo, "Down", function() self:OnStarTargetStep(-1) end)
+		bindChild(bulkTo, "Up", function() self:OnStarTargetStep(1) end)
 
 		-- ESC 닫기용. 여는 건 NPC 라우터뿐 (임시 단축키 E 는 2026-09-09 제거)
 		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
@@ -764,7 +774,8 @@ script WorkshopUIController extends Logic
 		self.chosenGems = {}
 		self.craftSel = ""
 		self.craftSlot = "ALL"
-		self.bulkTier = 0   -- 일괄 구매 렙제는 창을 열 때마다 다시 "지금 레벨로 입을 수 있는 가장 높은 렙제"에서 시작(1.0.21 #13)
+		self.bulkTier = 0   -- 일괄 제작 렙제는 창을 열 때마다 다시 "지금 레벨로 입을 수 있는 가장 높은 렙제"에서 시작(1.0.21 #13)
+		self.starTarget = 0   -- [착용 중 장비 N성으로 강화]의 N 도 창을 열 때마다 "가장 낮은 별 + 1" 에서 시작(1.0.21)
 		self.potionSel = ""
 		self.potionQty = 1
 		self.waiting = false
@@ -1673,42 +1684,86 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RefreshBulkButtons()
-		-- 일괄 버튼 2개(사용자 지시 2026-10-19 · 2차): 한 줄 글자만 — "착용 중 장비 일괄 강화 +1성" / "착용 중 장비 일괄 강화 최대"(사용자 "그냥 일괄 강화면 모르니까"). 장착 장비 중 올릴 수 있는 게 없으면(또는 응답 대기 중) 흐리게 끈다.
+		-- [착용 중 장비 N성으로 강화](1.0.21 · 사용자 2026-10-20 "일괄 1성 강화를 '전체 N성으로 강화'로 → 정정 '전체가 아니라 착용 중 장비' · 높이를 두 개 다 흡수해 2칸 크기 · N 의 좌우에 아래 · 위 화살표"):
+		--   BtnBulkTo 한 버튼(예전 BtnBulkOne · BtnBulkMax 자리) 안에 "착용 중 장비 ▼ N ▲ 성으로 강화". N(starTarget)은 1 ~ 착용 장비 중 가장 높은 최대 별 사이.
+		--   처음(0) = 올릴 수 있는 착용 장비 중 가장 낮은 별 + 1. 버튼은 N성 아래인 장비 중 지금 한 성 올릴 수 있는 것(티어 · 보석 강화 끝 · 최대 별 아님)이
+		--   하나라도 있고 응답 대기가 아닐 때만 눌린다 — 메소는 서버(StarForceService.RequestStarForceTo)가 단계마다 보고 모자라면 멈춘다.
 		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
-		local n = 0
+		local lowest = -1
+		local cap = 0
+		local list = {}
 		if equipped ~= nil then
 			for s in string.gmatch(self.SideSlots, "[^,]+") do
 				local eq = equipped[s]
 				local def = (eq ~= nil) and _ItemCatalog:Get(eq.itemId) or nil
-				if def ~= nil and self:CanEnhance(def, eq, true) then n = n + 1 end
+				if def ~= nil then
+					local maxStar = _ItemCatalog:MaxStar(def)
+					if maxStar > 0 and (eq.enh or 0) >= (def.maxEnhance or 0) then
+						if maxStar > cap then cap = maxStar end
+						local cur = eq.star or 0
+						if cur < maxStar and (lowest < 0 or cur < lowest) then lowest = cur end
+						table.insert(list, { cur = cur, max = maxStar })
+					end
+				end
 			end
 		end
-		local on = (n > 0 and not self.waiting)
-		local function setBtn(name, label)
-			local b = self:Kid(self.contentStar, name)
-			if not isvalid(b) then return end
-			if b.TextGUIRendererComponent ~= nil then
-				b.TextGUIRendererComponent.Text = label
-				b.TextGUIRendererComponent.FontColor = self:Hex(on and "#F3EEE2" or "#7C88A4", 1)
-			end
-			self:SetTint(b, "#FFFFFF", on and 1 or 0.45)
-			self:SetTint(self:Kid(b, "Dot"), "#E8B64C", on and 1 or 0.35)
-			if b.ButtonComponent ~= nil then b.ButtonComponent.Enable = on end
+		if cap <= 0 then cap = self.StarTargetMax end
+		if self.starTarget <= 0 then
+			if lowest >= 0 then self.starTarget = lowest + 1 else self.starTarget = cap end
 		end
-		setBtn("BtnBulkOne", "착용 중 장비 일괄 강화 +1성")
-		setBtn("BtnBulkMax", "착용 중 장비 일괄 강화 최대")
+		self.starTarget = math.max(1, math.min(self.starTarget, cap, self.StarTargetMax))
+		local can = false
+		for _, r in ipairs(list) do
+			if r.cur < self.starTarget and r.cur < r.max then can = true end
+		end
+		local on = can and not self.waiting
+		local btn = self:Kid(self.contentStar, "BtnBulkTo")
+		if not isvalid(btn) then return end
+		self:SetTint(btn, "#FFFFFF", on and 1 or 0.45)
+		if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = on end
+		local ink = self:Hex(on and "#F3EEE2" or "#7C88A4", 1)
+		for _, name in ipairs({ "Head", "Tail" }) do
+			local t = self:Kid(btn, name)
+			if isvalid(t) and t.TextGUIRendererComponent ~= nil then t.TextGUIRendererComponent.FontColor = ink end
+		end
+		local num = self:Kid(btn, "Num")
+		if isvalid(num) and num.TextGUIRendererComponent ~= nil then
+			num.TextGUIRendererComponent.Text = tostring(self.starTarget)
+			num.TextGUIRendererComponent.FontColor = self:Hex(on and "#FFD966" or "#7C88A4", 1)
+		end
+		local function arrow(name, enabled)
+			local a = self:Kid(btn, name)
+			if not isvalid(a) then return end
+			local en = enabled and not self.waiting
+			if a.ButtonComponent ~= nil then a.ButtonComponent.Enable = en end
+			self:SetTint(a, "#FFFFFF", en and 1 or 0.45)
+		end
+		arrow("Down", self.starTarget > 1)
+		arrow("Up", self.starTarget < math.min(cap, self.StarTargetMax))
 	end
 
 	@ExecSpace("ClientOnly")
-	method void OnBulkStar(string mode)
-		-- 장착 장비 일괄 스타포스("one" = 전부 +1성 · "max" = 전부 최대까지). 응답(SetStarResult · iid "") 까지 버튼 잠금.
+	method void OnStarTargetStep(integer delta)
+		-- ▼ ▲(1.0.21): 목표 별 N 을 한 칸 내리거나 올린다. 범위(1 ~ 착용 장비 최대 별)는 RefreshBulkButtons 가 다시 맞춘다.
 		if self.waiting then return end
+		if self.starTarget <= 0 then self:RefreshBulkButtons() end
+		self.starTarget = self.starTarget + delta
+		self:RefreshBulkButtons()
+		log("[Workshop] starforce target=" .. tostring(self.starTarget))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBulkStarTo()
+		-- [착용 중 장비 N성으로 강화] → 서버 StarForceService.RequestStarForceTo(N). 응답(SetStarResult · iid "")까지 버튼 잠금.
+		if self.waiting then return end
+		local n = self.starTarget
+		if n <= 0 then return end
 		self.waiting = true
 		self:SetPrimary(false, "")
-		self:ShowStatus("busy", (mode == "max") and "장착 장비를 최대까지 올리는 중..." or "장착 장비를 +1성씩 올리는 중...")
+		self:ShowStatus("busy", "착용 중 장비를 " .. tostring(n) .. "성으로 올리는 중...")
 		self:RefreshBulkButtons()
-		_StarForceService:RequestStarForceAll(mode)
-		log("[Workshop] starforce-all requested mode=" .. mode)
+		_StarForceService:RequestStarForceTo(n)
+		log("[Workshop] starforce-to requested target=" .. tostring(n))
 	end
 
 	@ExecSpace("Client")
@@ -1992,14 +2047,14 @@ script WorkshopUIController extends Logic
 		-- 칩은 최대 2개(재료 → 메소 순서 · 마을 장비는 지역 재화 1종 + 메소). 켜 둔 부위가 없거나 살 장비가 없으면 안내 한 줄.
 		local parts = self:BulkPartsCsv()
 		if parts == "" then
-			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
+			self:ShowFootInfo("만들 부위를 하나 이상 켜 주세요")
 			return
 		end
 		local key = self:ShopKey()
 		local tier = self:BulkTierNow()
 		local need = self:BulkNeeds(key, tier, parts)
 		if need.count == 0 then
-			self:ShowFootInfo(tostring(tier) .. "렙제는 살 장비가 없어요")
+			self:ShowFootInfo(tostring(tier) .. "렙제는 만들 장비가 없어요")
 			return
 		end
 		local all = {}
@@ -2058,7 +2113,7 @@ script WorkshopUIController extends Logic
 		local tier = self:BulkTierNow()
 		local parts = self:BulkPartsCsv()
 		if #_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts) == 0 then
-			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
+			self:ShowFootInfo("만들 부위를 하나 이상 켜 주세요")
 			return
 		end
 		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34). 바닥 띠 비용 칩이 모자란 것을 붉게 보인다.
