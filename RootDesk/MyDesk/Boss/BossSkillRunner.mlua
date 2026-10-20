@@ -137,6 +137,8 @@ script BossSkillRunner extends AttackComponent
 	--   S7 장판("문양 나온 뒤 바닥에 범위 표시 이펙트 생기고 1.5초 뒤에 공격 판정과 이펙트(바닥 장판)"):
 	--     문양(CastEffect · 시전 시작) → 판정 때 깔릴 자리(FireEffect 와 같은 발판 자동 모드)에 반투명 범위 표시 → 판정 순간 범위 표시를 걷고 노란 전기(FireEffect).
 	--   예고 시작 = CastDelay − Lead(CastDelay 가 판정 시각을 정한다 · 음수면 시전 시작부터). 문양 → 범위 표시 간격 = CastDelay − FloorMarkLead(지금 1.8 − 1.5 = 0.3초). 0 이하 = 그 예고를 끈다.
+	--   🔴 표시 → 판정은 늘 Lead 다(사용자 2026-10-20 "표시가 뜬 순간부터 정확히 1.5초 뒤"). 서버 프레임이 튀어 표시가 예정(CastDelay − Lead)보다 늦게 깔리면 판정을 늦은 만큼 미룬다(TickPreFx).
+	--   입 벌리기 해제(ReleaseCastHold) · 범위 표시 걷기(EndPreFx) · 판정 · 타격 이펙트는 전부 FireSkill 한 곳에서 나가므로 미뤄진 판정에 함께 따라온다.
 	property number ChargeLead = 1.5
 
 	property number FloorMarkLead = 1.5
@@ -634,6 +636,8 @@ script BossSkillRunner extends AttackComponent
 	@ExecSpace("ServerOnly")
 	method void TickPreFx(any skill)
 		-- 시전 시작 때 한 번 + 시전 대기 중(castLeft) 매 프레임: 판정 lead 초 전이 되면 예고 이펙트를 한 번 띄운다(1.0.21).
+		-- 🔴 표시 → 판정 간격은 늘 lead 다. 예정(startAt = CastDelay − lead)보다 늦게 깔리면(서버 프레임이 튀면 delta 한 번이 0.27초까지 간다)
+		--    늦은 만큼(late) 판정을 미룬다. 안 미루면 판정은 시전 시작 기준 CastDelay 에 고정이라 표시 → 판정이 lead − late 로 줄었다(관측: 1.23초).
 		if self.preFxDone or skill == nil then
 			return
 		end
@@ -653,12 +657,33 @@ script BossSkillRunner extends AttackComponent
 			return
 		end
 		self.preFxDone = true
-		self:PlayPreFx(skill, rule, delay - self.castElapsed)
+		-- 깔린 순간부터 판정까지 = 예정 간격(delay − startAt = lead · CastDelay 가 lead 보다 짧으면 CastDelay). 모으기 재생 속도 · 범위 표시 안전 타이머가 이 값을 쓴다.
+		local remaining = delay - startAt
+		local late = self.castElapsed - startAt
+		if not self:PlayPreFx(skill, rule, remaining) then
+			return
+		end
+		-- 시전 시작에 바로 깔리는 예고(S3 모으기 · startAt 0)는 late 가 0 이라 여기서 끝난다. castLeft < 0 = PickAndCast 안(아직 안 세웠다 · late 도 항상 0).
+		if late <= 0.001 or self.castLeft < 0 then
+			return
+		end
+		-- 이 프레임 끝에 OnUpdate 가 castLeft −= delta 를 이어서 하므로, 그걸 감안해 늦은 만큼 얹으면 그 뒤 남은 시간이 정확히 remaining 이 된다.
+		self.castLeft = self.castLeft + late
+		-- 시전 중 이동 정지(FreezeMovement)도 같이 늘린다 — 안 늘리면 미뤄진 판정 · 입 벌리는 꼬리 동안 정지가 먼저 풀려 보스가 걸어 나간다.
+		local chase = self.Entity.StateChaseMonster
+		if isvalid(chase) and chase.CastFreezeLeft > 0 then
+			chase.CastFreezeLeft = chase.CastFreezeLeft + late
+		end
+		if self.LogPreFx then
+			log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " pre-fx late +" .. string.format("%.2f", late)
+				.. "s -> fire at " .. string.format("%.2f", self.castElapsed + remaining) .. "s (was " .. string.format("%.2f", delay) .. "s)")
+		end
 	end
 
 	@ExecSpace("ServerOnly")
-	method void PlayPreFx(any skill, any rule, number remaining)
-		-- 예고 이펙트를 띄운다. remaining = 지금부터 판정까지 남은 초(프레임 오차 안에서 CastDelay − 예고 시작 시각 = Lead).
+	method boolean PlayPreFx(any skill, any rule, number remaining)
+		-- 예고 이펙트를 띄운다. remaining = 깔린 순간부터 판정까지 남은 초(= Lead · 늦게 깔렸으면 TickPreFx 가 판정을 미뤄 그만큼 남긴다).
+		-- 반환 = 실제로 띄웠는가(못 띄웠으면 false — 보이지도 않는 표시 때문에 판정을 미루지 않는다).
 		if rule.kind == "charge" then
 			-- 모으기: 시전 이펙트 클립의 앞부분(f0 ~ CastEffectStartFrame−1)을 판정까지 남은 시간에 맞춰 늘려 재생한다 → 끝나는 순간이 레이저(뒷부분) + 판정이다.
 			--   ChargeRuid 를 넣었으면 그 클립 전체를 같은 방식으로(자리 · 크기는 CastEffectOffset · Scale 그대로).
@@ -667,7 +692,7 @@ script BossSkillRunner extends AttackComponent
 			if chargeRuid ~= nil and chargeRuid ~= "" then
 				last = -1
 			elseif last < 0 or skill.castEffectRuid == nil or skill.castEffectRuid == "" then
-				return
+				return false
 			end
 			local natural = 0
 			if self.preFxSeconds ~= nil and self.preFxSeconds[skill.skillId] ~= nil then
@@ -692,6 +717,7 @@ script BossSkillRunner extends AttackComponent
 					.. " natural=" .. string.format("%.2f", natural) .. "s rate=" .. string.format("%.2f", rate)
 					.. " until-fire=" .. string.format("%.2f", remaining) .. "s at=" .. string.format("%.2f", self.castElapsed) .. "s")
 			end
+			return true
 		elseif rule.kind == "floor" then
 			-- 범위 표시: 판정 때 FireEffect 가 깔릴 자리(같은 발판 자동 모드)에 반투명으로 미리 깔고 판정 순간 걷는다.
 			local ruid = self.FloorMarkRuid
@@ -713,7 +739,7 @@ script BossSkillRunner extends AttackComponent
 				end
 			end
 			if ruid == nil or ruid == "" then
-				return
+				return false
 			end
 			local markScale = self.FloorMarkScale
 			if markScale == nil or markScale <= 0 then
@@ -725,9 +751,9 @@ script BossSkillRunner extends AttackComponent
 			self:EndPreFx()
 			local serials = self:PlayFloorFx(skill, ruid, nativeW, markScale, self.FloorMarkAlpha, true, "pre-fx-floor", anchorX, anchorY)
 			if #serials == 0 then
-				return
+				return false
 			end
-			-- 반복 재생이라 안 지우면 영영 남는다 → 판정 순간(FireSkill → EndPreFx)에 지우고 · 안전 타이머가 한 번 더 지운다(보스가 죽거나 시전이 끊겨도).
+			-- 반복 재생이라 안 지우면 영영 남는다 → 판정 순간(FireSkill → EndPreFx)에 지우고 · 안전 타이머가 한 번 더 지운다(보스가 죽거나 시전이 끊겨도). 시각 = 새 남은 시간(remaining = Lead) + 0.1.
 			local box = { serials = serials, removed = false }
 			self.preFxBox = box
 			_TimerService:SetTimerOnce(function()
@@ -743,7 +769,9 @@ script BossSkillRunner extends AttackComponent
 				log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " pre-fx floor placed=" .. tostring(#serials)
 					.. " alpha=" .. string.format("%.2f", self.FloorMarkAlpha) .. " until-fire=" .. string.format("%.2f", remaining) .. "s at=" .. string.format("%.2f", self.castElapsed) .. "s")
 			end
+			return true
 		end
+		return false
 	end
 
 	@ExecSpace("ServerOnly")
