@@ -188,6 +188,17 @@ script WorkshopUIController extends Logic
 	-- 목표 별 N 의 상한(서버 StarForceService.StarTargetMax 와 같은 값 · 장비 최대 별 = 앱솔 10). 실제 ▲ 상한은 착용 장비 중 가장 높은 최대 별.
 	property integer StarTargetMax = 10
 
+	-- 스타포스 일괄 모드(1.0.21 · 사용자 2026-10-20 "버튼을 누르면 강화가 아니고 그걸 골랐다는 판정 · 1개씩 강화하려던 건 할당 해제 · 오른쪽 밑 강화 버튼을 눌러야 강화 ·
+	--   장비를 하나 직접 할당하면 그거 하나만 · 서로 활성화돼 있을 땐 다른 쪽은 비활성"). true = [착용 중 장비 ▼ N ▲ 성으로 강화]가 골라져 있다 → 단일 대상(targetIid)은 비고
+	--   [강화](OnPrimary)가 RequestStarForceTo(N)을 보낸다. 장비를 고르면(SelectTarget) false. 창을 열 때 · 다른 라우트로 가면 false.
+	@HideFromInspector
+	property boolean starBulk = false
+
+	-- 일괄 모드 표시: 골라져 있으면 금색 버튼 그림 · 아니면 파랑(원래 그림). 글자색은 금색 위 = 짙은 갈색.
+	property string BulkOnRuid = "4d2c7ac08107433e8a3fb9b09b6fbb8e"
+
+	property string BulkOffRuid = "2a45e95a9c0348b88b257ed75885cab6"
+
 	@HideFromInspector
 	property any potionView = nil
 
@@ -776,6 +787,7 @@ script WorkshopUIController extends Logic
 		self.craftSlot = "ALL"
 		self.bulkTier = 0   -- 일괄 제작 렙제는 창을 열 때마다 다시 "지금 레벨로 입을 수 있는 가장 높은 렙제"에서 시작(1.0.21 #13)
 		self.starTarget = 0   -- [착용 중 장비 N성으로 강화]의 N 도 창을 열 때마다 "가장 낮은 별 + 1" 에서 시작(1.0.21)
+		self.starBulk = false   -- 일괄 모드도 창을 열 때마다 풀린다(장비 하나 · 일괄 모두 안 골라진 상태로 시작)
 		self.potionSel = ""
 		self.potionQty = 1
 		self.waiting = false
@@ -810,6 +822,7 @@ script WorkshopUIController extends Logic
 	method void GoRoute(string route)
 		-- Content 하위 컨테이너를 하나만 켠다. Footer 는 enhance 에서만.
 		self.route = route
+		if route ~= "starforce" then self.starBulk = false end   -- 스타포스 일괄 모드는 스타포스 화면 안에서만(1.0.21)
 		-- Footer 버튼 문구는 라우트가 정한다 (강화 화면에 "구매" 가 남던 문제 · 2026-09-06). 시안: 글자 사이 띄움 없이 "강화" "제작" "구매".
 		local pt = self:PrimaryText()
 		if pt ~= nil then
@@ -1241,6 +1254,16 @@ script WorkshopUIController extends Logic
 			self:ShowStatus("busy", "강화 중...")
 			_EnhanceService:RequestEnhance(self.targetIid, table.concat(self.chosenGems, "+"))
 			log("[Workshop] enhance requested " .. self.targetIid .. " gems=" .. table.concat(self.chosenGems, "+"))
+		elseif self.route == "starforce" and self.starBulk then
+			-- 일괄 모드(1.0.21): [착용 중 장비 N성으로 강화]를 골라 둔 채 [강화] → 서버 StarForceService.RequestStarForceTo(N). 응답(SetStarResult · iid "")까지 잠금 · 응답 뒤에도 일괄 모드는 유지.
+			local n = self.starTarget
+			if n <= 0 then return end
+			self.waiting = true
+			self:SetPrimary(false, "")
+			self:ShowStatus("busy", "착용 중 장비를 " .. tostring(n) .. "성으로 올리는 중...")
+			self:RefreshBulkButtons()
+			_StarForceService:RequestStarForceTo(n)
+			log("[Workshop] starforce-to requested target=" .. tostring(n))
 		elseif self.route == "starforce" then
 			if self.targetIid == "" then return end
 			self.waiting = true
@@ -1524,7 +1547,12 @@ script WorkshopUIController extends Logic
 		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
 		for s in string.gmatch(self.SideSlots, "[^,]+") do
 			local eq = (equipped ~= nil) and equipped[s] or nil
-			self:FillSideCell(self:Kid(eqRoot, "Slot_" .. s), eq, star)
+			local cell = self:Kid(eqRoot, "Slot_" .. s)
+			self:FillSideCell(cell, eq, star)
+			-- 스타포스 일괄 모드(1.0.21): 이번 [강화]로 올라갈 착용 장비(N성 아래 · 올릴 수 있음)를 전부 선택 테두리로 — "전체 강화" 가 골라져 있다는 표시.
+			if star and self.starBulk and eq ~= nil then
+				self:SetOn(cell, "Sel", self:BulkWillRaise(_ItemCatalog:Get(eq.itemId), eq))
+			end
 		end
 		self.bagView = {}
 		for _, it in ipairs(self:Items()) do
@@ -1569,6 +1597,8 @@ script WorkshopUIController extends Logic
 			self.targetIid = iid
 			self.chosenGems = {}
 		end
+		-- 장비를 하나 직접 고르면 스타포스 일괄 모드는 풀린다 — 그 장비 하나만 강화(1.0.21 · 서로 배타).
+		self.starBulk = false
 		self.statusKind = "none"
 		self:ShowStatus("none", "")
 		log("[Workshop] target " .. iid .. " (" .. self.route .. ")")
@@ -1686,8 +1716,8 @@ script WorkshopUIController extends Logic
 	method void RefreshBulkButtons()
 		-- [착용 중 장비 N성으로 강화](1.0.21 · 사용자 2026-10-20 "일괄 1성 강화를 '전체 N성으로 강화'로 → 정정 '전체가 아니라 착용 중 장비' · 높이를 두 개 다 흡수해 2칸 크기 · N 의 좌우에 아래 · 위 화살표"):
 		--   BtnBulkTo 한 버튼(예전 BtnBulkOne · BtnBulkMax 자리) 안에 "착용 중 장비 ▼ N ▲ 성으로 강화". N(starTarget)은 1 ~ 착용 장비 중 가장 높은 최대 별 사이.
-		--   처음(0) = 올릴 수 있는 착용 장비 중 가장 낮은 별 + 1. 버튼은 N성 아래인 장비 중 지금 한 성 올릴 수 있는 것(티어 · 보석 강화 끝 · 최대 별 아님)이
-		--   하나라도 있고 응답 대기가 아닐 때만 눌린다 — 메소는 서버(StarForceService.RequestStarForceTo)가 단계마다 보고 모자라면 멈춘다.
+		--   처음(0) = 올릴 수 있는 착용 장비 중 가장 낮은 별 + 1. 누르면 바로 강화하지 않고 일괄 모드를 고른다(OnBulkStarTo · 금색 = 골라짐 · 파랑 = 아님) —
+		--   강화는 오른쪽 아래 [강화](OnPrimary → RequestStarForceTo(N) · 메소는 서버가 단계마다 보고 모자라면 멈춘다).
 		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
 		local lowest = -1
 		local cap = 0
@@ -1712,16 +1742,20 @@ script WorkshopUIController extends Logic
 			if lowest >= 0 then self.starTarget = lowest + 1 else self.starTarget = cap end
 		end
 		self.starTarget = math.max(1, math.min(self.starTarget, cap, self.StarTargetMax))
-		local can = false
-		for _, r in ipairs(list) do
-			if r.cur < self.starTarget and r.cur < r.max then can = true end
-		end
-		local on = can and not self.waiting
+		-- 1.0.21(사용자 "버튼을 누르면 강화가 아니고 그걸 골랐다는 판정"): 이 버튼은 일괄 모드를 고르는 버튼이라 응답 대기가 아니면 늘 눌린다 —
+		--   N성 아래 장비가 없으면 일괄 화면(RefreshStarBulkView)이 "이미 N성 이상 · ▲ 로 목표를 올려 주세요" 를 띄우고 [강화]를 잠근다.
+		local on = not self.waiting
 		local btn = self:Kid(self.contentStar, "BtnBulkTo")
 		if not isvalid(btn) then return end
-		self:SetTint(btn, "#FFFFFF", on and 1 or 0.45)
+		-- 일괄 모드(1.0.21)가 골라져 있으면 금색 버튼 · 짙은 글자(선택됨) · 아니면 파랑 · 밝은 글자(누르면 고를 수 있음) · 올릴 장비가 없으면 흐리게(못 누름).
+		local active = self.starBulk
+		local sr = btn.SpriteGUIRendererComponent
+		if sr ~= nil then sr.ImageRUID = active and self.BulkOnRuid or self.BulkOffRuid end
+		self:SetTint(btn, "#FFFFFF", (on or active) and 1 or 0.45)
 		if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = on end
-		local ink = self:Hex(on and "#F3EEE2" or "#7C88A4", 1)
+		local inkHex = "#7C88A4"
+		if active then inkHex = "#1C1405" elseif on then inkHex = "#F3EEE2" end
+		local ink = self:Hex(inkHex, 1)
 		for _, name in ipairs({ "Head", "Tail" }) do
 			local t = self:Kid(btn, name)
 			if isvalid(t) and t.TextGUIRendererComponent ~= nil then t.TextGUIRendererComponent.FontColor = ink end
@@ -1729,7 +1763,9 @@ script WorkshopUIController extends Logic
 		local num = self:Kid(btn, "Num")
 		if isvalid(num) and num.TextGUIRendererComponent ~= nil then
 			num.TextGUIRendererComponent.Text = tostring(self.starTarget)
-			num.TextGUIRendererComponent.FontColor = self:Hex(on and "#FFD966" or "#7C88A4", 1)
+			local numHex = "#7C88A4"
+			if active then numHex = "#1C1405" elseif on then numHex = "#FFD966" end
+			num.TextGUIRendererComponent.FontColor = self:Hex(numHex, 1)
 		end
 		local function arrow(name, enabled)
 			local a = self:Kid(btn, name)
@@ -1744,26 +1780,114 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnStarTargetStep(integer delta)
-		-- ▼ ▲(1.0.21): 목표 별 N 을 한 칸 내리거나 올린다. 범위(1 ~ 착용 장비 최대 별)는 RefreshBulkButtons 가 다시 맞춘다.
+		-- ▼ ▲(1.0.21): 목표 별 N 을 한 칸 내리거나 올린다(일괄 모드도 함께 고른다 — N 은 일괄 모드에서만 쓰인다). 범위(1 ~ 착용 장비 최대 별)는 RefreshBulkButtons 가 다시 맞춘다.
 		if self.waiting then return end
 		if self.starTarget <= 0 then self:RefreshBulkButtons() end
 		self.starTarget = self.starTarget + delta
-		self:RefreshBulkButtons()
-		log("[Workshop] starforce target=" .. tostring(self.starTarget))
+		self:EnterStarBulk("arrow")
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnBulkStarTo()
-		-- [착용 중 장비 N성으로 강화] → 서버 StarForceService.RequestStarForceTo(N). 응답(SetStarResult · iid "")까지 버튼 잠금.
+		-- [착용 중 장비 N성으로 강화] 누름(1.0.21 · 사용자 2026-10-20 "버튼을 누르면 강화가 아니고 그걸 골랐다는 판정"): 일괄 모드를 고른다 — 실제 강화는 오른쪽 아래 [강화](OnPrimary).
 		if self.waiting then return end
+		self:EnterStarBulk("button")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EnterStarBulk(string why)
+		-- 일괄 모드로: 단일 대상(1개씩 강화하려고 골라 둔 장비)을 풀고 · 안내를 비우고 · 화면(왼쪽 판 선택 테두리 · 가운데 · 버튼)을 다시 그린다.
+		self.starBulk = true
+		self.targetIid = ""
+		self.statusKind = "none"
+		self:ShowStatus("none", "")
+		log("[Workshop] starforce bulk mode (" .. why .. ") target=" .. tostring(self.starTarget))
+		self:GoRoute(self.route)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean BulkWillRaise(any def, any eq)
+		-- 일괄 모드의 [강화]로 이 착용 장비가 올라가는가: 스타포스 가능(티어 · 보석 강화 끝 · 최대 별 아님) + 지금 별 < 목표 N(서버 RequestStarForceTo 와 같은 조건).
+		if def == nil or eq == nil then return false end
+		return self:CanEnhance(def, eq, true) and (eq.star or 0) < self.starTarget
+	end
+
+	@ExecSpace("ClientOnly")
+	method string SlotLabel(string slot)
+		-- 착용 부위 → 표시 이름(일괄 화면 줄 · 1.0.21).
+		if slot == "WEAPON" then return "무기" elseif slot == "SUBWEAPON" then return "보조무기" elseif slot == "GLOVES" then return "장갑"
+		elseif slot == "TOP" then return "상의" elseif slot == "BOTTOM" then return "하의" elseif slot == "HAT" then return "모자" elseif slot == "SHOES" then return "신발" end
+		return slot
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshStarBulkView(Entity root)
+		-- 일괄 모드 화면(1.0.21): 가운데 큰 칸은 비우고(단일 대상 없음) · 이름 = "착용 중 장비 전체" · 줄 = 이번에 올라갈 장비(부위 · 장비 그림 · ★지금 → ★목표 · 서버 순서 무기 → 보조무기 → 장갑 → 상의 → 하의 → 모자 → 신발)
+		--   · 확률 · 전투력 = "-" · 비용 칩 = 전부 성공했을 때의 메소(최소 · 실패하면 더 든다) · [강화] = 올라갈 장비가 하나라도 있으면.
 		local n = self.starTarget
-		if n <= 0 then return end
-		self.waiting = true
-		self:SetPrimary(false, "")
-		self:ShowStatus("busy", "착용 중 장비를 " .. tostring(n) .. "성으로 올리는 중...")
+		local ts = self:Kid(root, "TargetSlot")
+		self:SetIcon(self:Kid(ts, "Icon"), "")
+		self:SetOn(ts, "EmptyFrame", true)
+		self:SetOn(ts, "Text", false)   -- "왼쪽에서 장비를 골라요" 안내는 일괄 모드에선 숨긴다(장비 하나를 고르는 화면이 아니다 · 단일 화면이 다시 켠다)
+		for k = 1, 3 do self:SetOn(ts, "EnhBadge_" .. tostring(k), false) end
+		self:SetText(root, "TargetName", "<color=#FFD966>착용 중 장비 전체</color>")
+		self:SetText(root, "StarRange", (n > 0) and ("<color=#7C88A4>목표</color> <color=#E8B64C>" .. tostring(n) .. "성</color>") or "")
+		self:SetText(root, "StarRow", "")
+		self:SetOn(root, "Lock", false)
+
+		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
+		local rows = {}
+		local total = 0
+		local order = (_StarForceService ~= nil) and _StarForceService.TargetOrder or self.SideSlots
+		for s in string.gmatch(order, "[^,]+") do
+			local eq = (equipped ~= nil) and equipped[s] or nil
+			local def = (eq ~= nil) and _ItemCatalog:Get(eq.itemId) or nil
+			if def ~= nil and self:BulkWillRaise(def, eq) then
+				local cur = eq.star or 0
+				local goal = math.min(n, _ItemCatalog:MaxStar(def))
+				for st = cur + 1, goal do
+					local row = _ItemCatalog:GetStarRow(def.starTier, st)
+					if row ~= nil then total = total + self:StarCost(def, row) end
+				end
+				table.insert(rows, { label = self:SlotLabel(s), icon = def.icon or "", value = "<color=#F3EEE2>★" .. tostring(cur) .. "</color> <color=#7C88A4>→</color> <color=#FFE066>★" .. tostring(goal) .. "</color>" })
+			end
+		end
+		local sp = self:Kid(root, "StatPreview")
+		for i = 0, 6 do
+			local r = self:Kid(sp, "PRow" .. tostring(i))
+			if isvalid(r) then
+				local d = rows[i + 1]
+				r.Enable = (d ~= nil)
+				if d ~= nil then
+					self:SetText(r, "Chip", d.label)
+					self:SetText(r, "Cell", d.value)
+					self:SetIcon(self:Kid(r, "Icon"), d.icon)
+				end
+			end
+		end
+		local emptyMsg = "올릴 수 있는 착용 장비가 없어요 (스타포스 가능 · 보석 강화 끝 · 최대 별 아님)"
+		if equipped ~= nil and #rows == 0 and n > 0 then emptyMsg = "착용 중 장비가 이미 전부 " .. tostring(n) .. "성 이상이에요 · ▲ 로 목표를 올려 주세요" end
+		self:SetOn(sp, "PreviewEmpty", #rows == 0)
+		self:SetText(sp, "PreviewEmpty", emptyMsg)
+
+		self:WritePower("star", nil)
+		local rateLine = self:Kid(root, "RateBox/RateLine")
+		for _, p in ipairs({ { "Success", "성공 확률" }, { "Fail", "실패 확률" }, { "Destroy", "파괴 확률" } }) do
+			self:SetText(rateLine, p[1], "<color=#F3EEE2>" .. p[2] .. "</color>  <color=#7C88A4>-</color>")
+		end
+
+		local ready = (#rows > 0)
+		if ready then
+			local meso = self:MesoNow()
+			self:ShowFootChips({ { icon = self.RuidMeso, label = "메소(최소)", num = self:Fmt(total), hold = "보유 " .. self:Fmt(meso), short = meso < total } }, "메소 " .. tostring(total))
+			if isvalid(self.costLabel) then self.costLabel.Text = "메소 " .. tostring(total) end
+			if self.statusKind == "none" then self:ShowStatus("none", "착용 중 장비 " .. tostring(#rows) .. "개를 " .. tostring(n) .. "성까지 · 실패하면 메소가 더 들고, 모자라면 그 자리에서 멈춰요") end
+		else
+			self:ShowFootInfo(emptyMsg)
+			if self.statusKind == "none" then self:ShowStatus("none", "") end
+		end
+		self:SetPrimary(ready and not self.waiting, "")
 		self:RefreshBulkButtons()
-		_StarForceService:RequestStarForceTo(n)
-		log("[Workshop] starforce-to requested target=" .. tostring(n))
 	end
 
 	@ExecSpace("Client")
@@ -1785,6 +1909,11 @@ script WorkshopUIController extends Logic
 		-- 스타포스 패널: 큰 대상 칸 · 이름 · N성 → N+1성 · 별 줄(5개마다 띄움) · 지금→후 능력치(최대 7줄) · 전투력 전→후 · 확률 · 비용 칩 · 일괄 버튼.
 		local root = self.contentStar
 		if not isvalid(root) then return end
+		-- 일괄 모드(1.0.21)면 단일 대상 화면 대신 일괄 화면.
+		if self.starBulk then
+			self:RefreshStarBulkView(root)
+			return
+		end
 		local it = (self.targetIid ~= "") and self:FindItem(self.targetIid) or nil
 		local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
 		local has = (def ~= nil)
