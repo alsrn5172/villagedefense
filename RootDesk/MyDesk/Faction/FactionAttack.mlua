@@ -65,6 +65,11 @@ script FactionAttack extends AttackComponent
 	@HideFromInspector
 	property integer ReflectDamage = 0
 
+	-- 이번 반사가 "맞은 플레이어 최대 체력 %" 한 타인가(1.0.21 #6 · 페리온 억제기 REFLECT_PLAYER_HP_PCT). DoReflectHpPct 가 DoReflect 를 부르는 동안만 true.
+	--   true 면 CalcDamage 가 플레이어 방어를 안 거치고, DamageFormula.IsMaxHpPctHit 이 true → PlayerHit 이 비례 피해로 다룬다(무적 · 보호막만 · 매직 가드 · 하이퍼 바디 건너뜀).
+	@HideFromInspector
+	property boolean ReflectIsHpPct = false
+
 	-- HitTarget 전용: 분할 타격의 k 번째/n (노틸러스 3분할 = 1/3 · 2/3 · 3/3). 0 = 온전한 한 방. Attack() 이 동기라 호출 뒤 0 으로 되돌린다.
 	-- k 번째 몫 = floor(피해·k/n) − floor(피해·(k−1)/n) 이라 n 발 합이 정확히 원 피해다(Codex 리뷰 2026-09-14 · 65/3 를 21×3=63 으로 잃던 것).
 	@HideFromInspector
@@ -395,9 +400,21 @@ script FactionAttack extends AttackComponent
 		if hitsPlayer ~= nil then
 			for _ in ipairs(hitsPlayer) do n = n + 1 end
 		end
-		log((n > 0 and "[Facility] reflect landed n=" or "[Facility] reflect MISSED n=") .. tostring(n) .. " target=" .. targetName .. " amount=" .. tostring(amount) .. " shape=(" .. string.format("%.2f,%.2f", tp.x, tp.y + 0.6) .. ")")
+		log((n > 0 and "[Facility] reflect landed n=" or "[Facility] reflect MISSED n=") .. tostring(n) .. " target=" .. targetName .. " amount=" .. tostring(amount) .. (self.ReflectIsHpPct and " (최대 체력 %)" or "") .. " shape=(" .. string.format("%.2f,%.2f", tp.x, tp.y + 0.6) .. ")")
 		self.ReflectTargetId = ""
 		self.ReflectDamage = 0
+		self.ReflectIsHpPct = false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoReflectHpPct(Entity target, integer amount)
+		-- 최대 체력 % 반사 (1.0.21 #6 · 페리온 억제기 REFLECT_PLAYER_HP_PCT · 사용자 2026-10-20 "맞을 때마다 그 플레이어 최대 체력의 10%"): amount 는 부르는 쪽이 정한 최종 피해
+		-- (맞은 플레이어 최대 HP × % 올림 · DamageFormula.MaxHpPctUnreduced — 다크 사이트 · 하이퍼 바디의 비례 피해 감소도 없다). DoReflect 와 같은 길을 태우되 ReflectIsHpPct 를 켠다:
+		--   ① CalcDamage 가 플레이어 방어를 안 거친다 ② DamageFormula.IsMaxHpPctHit 이 true → PlayerHit.OnHit 이 비례 피해(무적 · 보호막만, 매직 가드 · 하이퍼 바디 건너뜀)로 다룬다.
+		-- 무적(1초 피격 쿨)을 지나는 것은 그대로 PlayerHit.ReflectBypassImmunity(attackInfo "reflect"). Attack() 이 동기라 켠 채로 부르고 바로 끈다.
+		self.ReflectIsHpPct = true
+		self:DoReflect(target, amount)
+		self.ReflectIsHpPct = false
 	end
 
 	method boolean IsAttackTarget(Entity defender, string attackInfo)
@@ -458,6 +475,8 @@ script FactionAttack extends AttackComponent
 		if attackInfo == "reflect" then
 			-- 반사 고정 피해도 플레이어 방어 감산은 받는다 (B4 · Codex 리뷰 2026-09-23).
 			local r = math.max(1, math.floor(self.ReflectDamage))
+			-- 단 최대 체력 % 반사(ReflectIsHpPct · 1.0.21 #6)는 방어를 안 거친다 — 부르는 쪽이 이미 최종값을 정했다(방어로 줄이면 "최대 체력의 10%" 가 아니게 된다).
+			if self.ReflectIsHpPct then return r end
 			if _DamageFormula ~= nil then r = _DamageFormula:ApplyPlayerDefense(defender, r) end
 			return r
 		end
@@ -527,14 +546,10 @@ script FactionAttack extends AttackComponent
 		-- 회피율 %p = StatService 최종치(LUK × 0.05 × 효율 + 장비 · 오팔 · 버프 · 1.1-A08 · G05). DEX 는 회피에 안 더한다.
 		local avoid = stats.final.avoid or 0
 		local playerLevel = math.max(1, math.floor(stats.level or 1))
-		-- 몬스터 명중률 보정(1.1-A10): 커닝 억제기 오라를 받은 아군 수비대만 Buff.AccAdd(%p) — 플레이어 회피 합계에서 뺀다. 미니언은 0.
-		local accAdd = 0
-		---@type Buff
-		local ab = attacker.Buff
-		if isvalid(ab) then accAdd = ab.AccAdd or 0 end
-		if not _DamageFormula:DodgeCheck(avoid, playerLevel, mobLevel, accAdd) then return false end
+		-- (1.0.21 #7: 예전 "오라 받은 수비대가 플레이어 회피 합계에서 Buff.AccAdd 를 뺀다"는 없앴다 — 커닝 억제기 오라가 명중률 → 회피율 오라로 바뀌었다. 지금은 회피율 오라가 아군 수비대의 회피율(StatService.ResolveTarget)로 들어간다.)
+		if not _DamageFormula:DodgeCheck(avoid, playerLevel, mobLevel) then return false end
 
-		log("[Stat] DODGE source=" .. tostring(attacker.Name) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " avoid=" .. tostring(avoid) .. " accAdd=" .. tostring(accAdd) .. " (" .. userId .. ")")
+		log("[Stat] DODGE source=" .. tostring(attacker.Name) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " avoid=" .. tostring(avoid) .. " (" .. userId .. ")")
 		_DamageFormula:ShowMiss(defender)
 		return true
 	end

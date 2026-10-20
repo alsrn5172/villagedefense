@@ -45,7 +45,7 @@ script LaneFacility extends Component
 	@HideFromInspector
 	property number shieldLayerAt = 0
 
-	-- 페리온 억제기 반사의 상한: 한 번의 반사로 돌려줄 최대 피해. 0 = 무제한. 반사 배율 = 플레이어 ×1(REFLECT_PLAYER) · 미니언 ×5(REFLECT) — 1.1-H15. property 는 안전망으로만 남긴다.
+	-- 페리온 억제기 반사의 상한: 한 번의 반사로 돌려줄 최대 피해. 0 = 무제한. 반사 = 미니언 ×5(REFLECT · 1.1-H15) · 플레이어는 1.0.21 부터 맞은 사람 최대 체력의 REFLECT_PLAYER_HP_PCT %(10) (옛 REFLECT_PLAYER ×1 은 행을 꺼 둠). property 는 안전망으로만 남긴다.
 	property integer ReflectCap = 0
 
 	-- 클릭 영역(TouchReceiveComponent)의 월드 크기 — 넥서스만(서버가 LaneFacilityService.HitSize 로 정한다 · 0 = 건드리지 않음). WO-040 M2 · 2026-10-02.
@@ -174,8 +174,17 @@ script LaneFacility extends Component
 		if isPlayer and _SwordEnergy ~= nil then _SwordEnergy:OnStructureDamaged(attacker.PlayerComponent.UserId, self.VillageId, self.Stage) end
 		-- 페리온 억제기 반사 (WO-021 · 1.1-H15): 게이트를 통과해 **실제로 들어간 피해**(미니언이 없으면 5% 로 깎인 값) × 배율을 공격자에게 — 플레이어 = REFLECT_PLAYER(×1) · 그 밖(미니언 · 파병 유닛) = REFLECT(×5).
 		-- 무적 중엔 위에서 이미 돌아갔으므로 반사도 없다. FactionAttack.DoReflect 가 대상 하나에게만 고정 피해로 준다 — 시설끼리는 서로 안 때리므로 반사가 반사를 부르지 않는다.
+		-- 1.0.21 #6(사용자 2026-10-20 "맞을 때마다 그 플레이어 최대 체력의 10%"): 플레이어에게 돌려주는 반사는 받은 피해와 무관한 **맞은 사람 최대 체력의 REFLECT_PLAYER_HP_PCT %** 한 타로 바꿨다(아래 ReflectMaxHpPct).
+		--   REFLECT_PLAYER 행(받은 피해 × 배율)은 꺼 둔 상태 — 행을 켜고 REFLECT_PLAYER_HP_PCT 행을 끄면 예전 식으로 돌아간다. 미니언 · 파병 유닛 ×5 는 그대로.
 		local st = _LaneStateService:FacilityState(self.VillageId, self.Stage)
 		local lv = (st ~= nil) and st.lv or 1
+		if isPlayer then
+			local hpPct = _LaneStateService:TraitValue(self.VillageId, self.Stage, "REFLECT_PLAYER_HP_PCT", lv)
+			if hpPct > 0 then
+				self:ReflectMaxHpPct(attacker, hpPct)
+				return
+			end
+		end
 		local key = "REFLECT"
 		if isPlayer then key = "REFLECT_PLAYER" end
 		local reflect = _LaneStateService:TraitValue(self.VillageId, self.Stage, key, lv)
@@ -194,6 +203,24 @@ script LaneFacility extends Component
 		elseif reflect > 0 then
 			-- 1.1-L06: 공격자 엔티티가 반사 직전에 사라진 경우.
 			log_warning("[Facility] REFLECT skipped " .. self.VillageId .. " " .. self.Stage .. " " .. key .. " attacker invalid dmgAfterResist=" .. tostring(dmg))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReflectMaxHpPct(Entity player, number hpPct)
+		-- 페리온 억제기가 플레이어에게 돌려주는 반사 한 번 (1.0.21 #6 · REFLECT_PLAYER_HP_PCT): 맞은 플레이어의 그 순간 최대 체력 × hpPct % 를 올림해 한 타로 준다.
+		--   받은 피해와 무관 · 방어 · 매직 가드 · 하이퍼 바디 · 다크 사이트 감소가 없다(DamageFormula.MaxHpPctUnreduced + FactionAttack.DoReflectHpPct → PlayerHit 비례 피해). 무적(피격 쿨)은 안 막는다(PlayerHit.ReflectBypassImmunity 그대로).
+		--   ReflectCap(0 = 무제한)은 안전망으로 여기도 건다.
+		if not isvalid(player) or _DamageFormula == nil then return end
+		local amount = _DamageFormula:MaxHpPctUnreduced(player, hpPct, "reflect:" .. self.VillageId .. ":" .. self.Stage)
+		if self.ReflectCap > 0 then amount = math.min(amount, self.ReflectCap) end
+		---@type FactionAttack
+		local atk = self.Entity.FactionAttack
+		if isvalid(atk) and amount > 0 then
+			log("[Facility] " .. self.VillageId .. " " .. self.Stage .. " REFLECT_PLAYER_HP_PCT " .. tostring(hpPct) .. "% of maxHp = " .. tostring(amount) .. " -> " .. player.Name)
+			atk:DoReflectHpPct(player, amount)
+		else
+			log_warning("[Facility] REFLECT skipped " .. self.VillageId .. " " .. self.Stage .. " REFLECT_PLAYER_HP_PCT atk=" .. tostring(isvalid(atk)) .. " amount=" .. tostring(amount))
 		end
 	end
 

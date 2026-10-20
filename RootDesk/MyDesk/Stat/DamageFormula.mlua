@@ -21,7 +21,8 @@ script DamageFormula extends Logic
 
 	property number HitPenaltyPerLevel = 10
 
-	-- 플레이어 회피(1.1-A09 · A10): 회피 확률 = 회피율(%p) + 나보다 낮은 몬스터 1레벨당 이만큼 − 몬스터 명중률 보정 · 0 아래만 자른다(상한 없음 · 100 이상이면 반드시 MISS).
+	-- 플레이어 회피(1.1-A09): 회피 확률 = 회피율(%p) + 나보다 낮은 몬스터 1레벨당 이만큼 · 0 아래만 자른다(상한 없음 · 100 이상이면 반드시 MISS).
+	-- (1.1-A10 의 "몬스터 명중률 보정을 뺀다"는 1.0.21 #7 에서 없앴다 — 커닝 억제기 오라가 명중률 → 회피율 오라로 바뀌어 회피율은 StatService 최종 회피율에 오라가 더해진다.)
 	property number DodgeGapPerLevelPct = 10
 
 	-- 치명타(1.1-A12 · A13 · G05): 원확률 = CritBase + 유효 LUK × CritPerLuk (유효 LUK = 최종 LUK × LUK 추가효과 효율 · 주 · 부스탯 1.0 / 그 외 0.1).
@@ -79,23 +80,24 @@ script DamageFormula extends Logic
 		return _UtilLogic:RandomDouble() < self:HitChance(accuracyPct, attackerLevel, targetLevel, targetAvoidPct)
 	end
 
-	method number DodgeChance(number avoidPct, integer playerLevel, integer mobLevel, number mobAccAddPct)
-		-- 플레이어 회피 확률(0~, 1.1-A09): 회피율 + 10%p × (나보다 낮은 레벨 차) − 몬스터 명중률 보정(커닝 억제기 오라 받은 수비대 · A10). 높은 몬스터에게는 보정 없음.
-		--   명중률 보정은 회피 합계(스탯 회피 + 레벨 차 보정)에서 뺀다(사용자 2026-10-12). 0 아래만 자르고 상한은 없다.
+	method number DodgeChance(number avoidPct, integer playerLevel, integer mobLevel)
+		-- 플레이어 회피 확률(0~, 1.1-A09): 회피율 + 10%p × (나보다 낮은 레벨 차). 높은 몬스터에게는 보정 없음. 0 아래만 자르고 상한은 없다.
+		--   회피율(avoidPct)은 StatService 최종치라 커닝 억제기 회피율 오라(1.0.21 #7)가 이미 들어 있다. (옛 4번째 인자 "몬스터 명중률 보정 mobAccAddPct"는 1.0.21 에서 삭제.)
 		local gap = math.max(0, playerLevel - mobLevel)
-		local pct = avoidPct + self.DodgeGapPerLevelPct * gap - (mobAccAddPct or 0)
+		local pct = avoidPct + self.DodgeGapPerLevelPct * gap
 		if pct < 0 then pct = 0 end
 		return pct / 100
 	end
 
-	method boolean DodgeCheck(number avoidPct, integer playerLevel, integer mobLevel, number mobAccAddPct)
+	method boolean DodgeCheck(number avoidPct, integer playerLevel, integer mobLevel)
 		-- 회피 판정 한 번. 확률 1 이상이면 반드시 회피(MISS).
-		return _UtilLogic:RandomDouble() < self:DodgeChance(avoidPct, playerLevel, mobLevel, mobAccAddPct)
+		return _UtilLogic:RandomDouble() < self:DodgeChance(avoidPct, playerLevel, mobLevel)
 	end
 
 	method boolean TryPlayerDodge(Entity defender, integer attackerLevel, number accAdd, string sourceName)
 		-- 보스 공격(접촉 · 스킬 · 투사체)의 플레이어 회피 판정(1.1-A11 ② · 사용자 2026-10-12 "보스 공격도 회피"). 회피면 MISS 글자를 띄우고 true.
 		-- 서버 피격 파이프라인(CalcDamage · self:IsServer() 가드)에서만 부른다 — 스탯 원장이 서버에만 있다. 일반 몹 · 미니언 · 수비대는 MonsterAttack/FactionAttack.TryDodgePlayer.
+		-- accAdd: 1.0.21 #7 부터 안 쓴다(옛 몬스터 명중률 보정 · 호출부 BossSkillRunner · BossProjectileAttack 가 늘 0 을 넘겨 시그니처만 남겼다).
 		if not isvalid(defender) or not isvalid(defender.PlayerComponent) or _StatService == nil then return false end
 		local userId = defender.PlayerComponent.UserId
 		if userId == nil or userId == "" then return false end
@@ -104,7 +106,7 @@ script DamageFormula extends Logic
 		local playerLevel = math.max(1, math.floor(stats.level or 1))
 		local avoid = stats.final.avoid or 0
 		local mobLevel = math.max(1, attackerLevel)
-		if not self:DodgeCheck(avoid, playerLevel, mobLevel, accAdd) then return false end
+		if not self:DodgeCheck(avoid, playerLevel, mobLevel) then return false end
 		log("[Stat] DODGE source=" .. tostring(sourceName) .. " mobLv=" .. tostring(mobLevel) .. " playerLv=" .. tostring(playerLevel) .. " avoid=" .. tostring(avoid) .. " (" .. userId .. ")")
 		self:ShowMiss(defender)
 		return true
@@ -179,14 +181,15 @@ script DamageFormula extends Logic
 	method integer MaxHpPctDamage(Entity defender, number pct, string source)
 		-- 보스 최대 HP 비례 피해(WO-056 · 사용자 2026-10-17): 맞은 플레이어의 그 순간 최대 HP × pct% × (1 − HP 비례 피해 감소%) 를 한 번 올림.
 		--   방어력 · ★ 공격 배율 · 최소 1 보정을 거치지 않는다. 101% 도 자르지 않고 현재 HP 를 상한으로 삼지 않는다.
-		--   감소% = SkillBuffs.GetHpPctDamageReduction(지금은 다크 사이트 50 뿐 · 일반 피해 감소와 별개). 회피(MISS)는 부르는 쪽이 먼저 본다.
-		--   무적 · 보호막은 이 값을 받은 뒤 PlayerHit.OnHit → SkillBuffs.ModifyIncomingDamageFrom 이 처리한다(매직 가드 · 하이퍼 바디 감소 없음).
+		--   감소% = SkillBuffs.GetHpPctPartReduction(1.0.21 · 사용자 2026-10-20: 다크 사이트 50 · 하이퍼 바디 지속 중 50 — 겹치면 큰 쪽 하나 · 일반 피해 감소와 별개). 회피(MISS)는 부르는 쪽이 먼저 본다.
+		--   무적 · 보호막은 이 값을 받은 뒤 PlayerHit.OnHit → SkillBuffs.ModifyIncomingDamageFrom 이 처리한다(매직 가드 · 하이퍼 바디의 일반 피해 감소 20~40% 는 없음 — 하이퍼 바디는 위 % 계산 안에서 절반).
+		--   이 함수가 보스 · 보스 투사체 · 보스 판정 좀비머쉬맘(MinionUnit.BossJudged) · 넥서스 분신의 % 부분을 전부 맡는다(IsMaxHpPctHit 이 true 인 공격 — 접촉 피해는 ContactPctPlusAttackDamage 가 이 함수를 부른다).
 		if pct == nil or pct <= 0 then return 0 end
 		if not isvalid(defender) or not isvalid(defender.PlayerComponent) then return 0 end
 		local pc = defender.PlayerComponent
 		local maxHp = math.max(0, math.floor(pc.MaxHp))
 		local cut = 0
-		if self:IsServer() and _SkillBuffs ~= nil then cut = _SkillBuffs:GetHpPctDamageReduction(pc.UserId) end
+		if self:IsServer() and _SkillBuffs ~= nil then cut = _SkillBuffs:GetHpPctPartReduction(pc.UserId) end
 		if cut < 0 then cut = 0 elseif cut > 100 then cut = 100 end
 		local d = self:CeilHpPct(maxHp, pct, cut)
 		if self.LogHpPctDamage then
@@ -195,9 +198,25 @@ script DamageFormula extends Logic
 		return d
 	end
 
+	method integer MaxHpPctUnreduced(Entity defender, number pct, string source)
+		-- 맞은 플레이어의 그 순간 최대 HP × pct% 를 올림(CeilHpPct · 감소 0) — MaxHpPctDamage 와 같은 계산이지만 다크 사이트 · 하이퍼 바디의 비례 피해 감소(GetHpPctPartReduction)를 **안 건다**.
+		--   페리온 억제기 플레이어 반사(1.0.21 #6 · 사용자 2026-10-20 "맞을 때마다 그 플레이어 최대 체력의 10%")용 — 보스가 주는 비례 공격이 아니라서 보스 비례 감소가 걸리면 안 된다. 방어 · 매직 가드도 안 거친다(PlayerHit 이 IsMaxHpPctHit 로 비례 피해 처리).
+		--   플레이어가 아니면 0. 회피(MISS)는 반사에 없다(시설 공격은 TryDodgePlayer 제외).
+		if pct == nil or pct <= 0 then return 0 end
+		if not isvalid(defender) or not isvalid(defender.PlayerComponent) then return 0 end
+		local pc = defender.PlayerComponent
+		local maxHp = math.max(0, math.floor(pc.MaxHp))
+		local d = self:CeilHpPct(maxHp, pct, 0)
+		if self.LogHpPctDamage then
+			log("[Stat] HP_PCT_UNREDUCED source=" .. tostring(source) .. " maxHp=" .. tostring(maxHp) .. " pct=" .. tostring(pct) .. " -> " .. tostring(d) .. " (" .. tostring(pc.UserId) .. ")")
+		end
+		return d
+	end
+
 	method integer ContactPctPlusAttackDamage(Entity defender, number pct, integer attackPower, string source)
 		-- 보스 몸통 접촉 피해(1.0.16 · 사용자 2026-10-18 "몸통 접촉 피해 = 최대 HP % 추가 피해 + 공격력"):
-		--   % 부분 = MaxHpPctDamage(방어 무시 · 다크 사이트 등 HP 비례 감소 반영) + 공격력 부분 = ApplyPlayerDefense(공격력) 뒤 같은 감소%(다크 사이트 50) 올림.
+		--   % 부분 = MaxHpPctDamage(방어 무시 · 다크 사이트 · 하이퍼 바디 지속 중 HP 비례 감소 반영 — 1.0.21 GetHpPctPartReduction) + 공격력 부분 = ApplyPlayerDefense(공격력) 뒤 다크 사이트 감소%(GetHpPctDamageReduction 50) 올림.
+		--   🔴 1.0.21(사용자 2026-10-20 "접촉피해의 경우 공격력은 방어력으로 계산, hp비례 공격은 절반만 계산"): 하이퍼 바디의 절반은 % 부분에만 — 공격력 부분은 방어만(하이퍼 바디로 안 줄인다). 그래서 아래 공격력 부분은 GetHpPctDamageReduction(다크 사이트만)을 그대로 쓴다.
 		--   합친 한 타는 PlayerHit 에서 비례 피해(pctHit)로 다뤄 무적 · 보호막만 거치고 매직 가드 · 하이퍼 바디는 건너뛴다(1.0.15 비례 피해 규칙과 같게).
 		local pctPart = self:MaxHpPctDamage(defender, pct, source)
 		local flat = math.max(0, math.floor(attackPower or 0))
@@ -247,8 +266,18 @@ script DamageFormula extends Logic
 
 	method boolean IsMaxHpPctHit(Entity attacker, string attackInfo)
 		-- PlayerHit.OnHit 이 이 타격을 최대 HP 비례 피해로 볼지(WO-056). 공격 엔티티가 그 판단을 한다 — 보스(BossSkillRunner) · 보스 투사체(BossProjectileAttack) · 보스 판정 미니언(MinionUnit.BossJudged · 1.0.16).
-		--   보스 · 스킬 이름 문자열을 해석하지 않는다. 그 밖의 공격자(일반 몹 · 일반 미니언 · 수비대 · 시설 · 반사)는 false = 기존 고정 피해 경로.
+		--   보스 · 스킬 이름 문자열을 해석하지 않는다. 그 밖의 공격자(일반 몹 · 일반 미니언 · 수비대 · 시설 · 미니언 반사)는 false = 기존 고정 피해 경로. 1.0.21: 페리온 억제기의 플레이어 반사(최대 체력 %)는 true.
 		if not isvalid(attacker) then return false end
+		-- 시설 반사 중 "맞은 플레이어 최대 체력 %" 한 타(1.0.21 #6 · 페리온 REFLECT_PLAYER_HP_PCT): FactionAttack.DoReflectHpPct 가 도는 동안(ReflectIsHpPct)만 비례 피해 —
+		--   무적 · 보호막만 거치고 매직 가드 · 하이퍼 바디는 건너뛴다(다크 사이트 50% 는 이 한 타엔 없다 — MaxHpPctUnreduced 가 감소 0 으로 계산).
+		if attackInfo == "reflect" then
+			---@type FactionAttack
+			local reflector = attacker.FactionAttack
+			if isvalid(reflector) and reflector.ReflectIsHpPct then
+				if self.LogHpPctDamage then log("[Stat] HP_PCT_HIT reflect=" .. tostring(attacker.Name)) end
+				return true
+			end
+		end
 		-- 레인 좀비머쉬맘은 꺼진 BossSkillRunner 를 갖고 있어(IsMaxHpPctAttack = false) 아래 러너 검사보다 먼저 본다.
 		local minionPct = self:MinionContactHpPct(attacker, attackInfo)
 		if minionPct > 0 then
