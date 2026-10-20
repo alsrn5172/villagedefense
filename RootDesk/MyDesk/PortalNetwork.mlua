@@ -48,8 +48,22 @@ script PortalNetwork extends Logic
 	--   가장 가까운 표면으로 옮긴다. 탐색 = 텔레포트 착지 0단계와 같은 함수(_SkillMovement:ProbeBand). 범위 안에 발판이 없으면 그대로 둔다.
 	property number ArrivalSnapBand = 0.2
 
+	-- 🔴 착지 보정 · 구조는 발판 표면에서 이만큼 **위**에 놓는다(1.1.1 · Play 실측): 플레이어를 발판 높이와 정확히 같은 y 에 놓으면
+	--   Rigidbody 가 바닥을 뚫고 떨어진다(돼지 해변 바닥 y −2.15 에 놓기 6번 중 5번 · 0.05 위는 정상 착지). 포탈은 발판과 같은 높이에 놓여 있어
+	--   ↑ 이동(MoveToEntityByPath = 포탈 자리 그대로)이 이 상태로 도착한다 — 공중이면 이 높이로 들어 올려 떨어져 앉게 한다.
+	property number ArrivalSnapLift = 0.05
+
 	-- 도착 뒤 이 시간 안에 한 번만 보정한다(맵 로딩 · MoveToEntityByPath 가 몇 프레임 늦게 옮겨도 기다린다).
+	-- 1.1.1: 창은 새 맵에 들어온 첫 프레임부터 센다(예전 = ↑ 누른 순간부터 · 라이브는 맵 로딩이 그보다 길 수 있다). 보정 뒤에도 창이 끝날 때까지 아래 낙하 구조를 지킨다.
 	property number ArrivalSnapWindow = 3
+
+	-- 도착 직후 맵 밖 낙하 구조(1.1.1 · 사용자 2026-10-21 "리스항구 사냥터3 왼쪽 포탈에서 나오면 맵 밖으로 떨어진다"):
+	--   창 안에서 도착 기준 자리(목적 포탈 · 모르면 새 맵에 처음 선 자리)보다 이만큼 넘게 아래로 떨어졌고 · 공중이고 · 그 아래로 ArrivalVoidDepth 안에
+	--   수평 발판이 하나도 없으면(= 맵 밖으로 빠지는 중) 기준 자리로 되돌린다(힘 0). 기준 자리 아래에 발판이 아직 하나도 없으면(발판이 늦게 깔림)
+	--   발판이 잡힐 때까지 기준 자리에 붙잡아 둔다. 아래에 발판이 있는 낙하(공중에 뜬 포탈 · 하향 점프)는 건드리지 않는다.
+	property number ArrivalRescueDrop = 1.0
+
+	property number ArrivalVoidDepth = 30
 
 	@HideFromInspector
 	property string snapMap = ""
@@ -71,6 +85,22 @@ script PortalNetwork extends Logic
 
 	@HideFromInspector
 	property string snapSeenMap = ""
+
+	-- 도착 기준 자리(잡았는지 · x · y) · 착지 보정을 했는지 · 낙하 구조 횟수
+	@HideFromInspector
+	property boolean snapRefSet = false
+
+	@HideFromInspector
+	property number snapRefX = 0
+
+	@HideFromInspector
+	property number snapRefY = 0
+
+	@HideFromInspector
+	property boolean snapDone = false
+
+	@HideFromInspector
+	property integer snapRescues = 0
 
 	@HideFromInspector
 	property number arrivedAt = 0
@@ -712,6 +742,9 @@ script PortalNetwork extends Logic
 		self.snapPortal = portalName
 		self.snapUntil = _UtilLogic.ElapsedSeconds + self.ArrivalSnapWindow
 		self.snapFromMap = ""
+		self.snapRefSet = false
+		self.snapDone = false
+		self.snapRescues = 0
 		local player = _UserService.LocalPlayer
 		if isvalid(player) and isvalid(player.CurrentMap) then
 			local p = player.TransformComponent.WorldPosition
@@ -724,45 +757,115 @@ script PortalNetwork extends Logic
 	@ExecSpace("ClientOnly")
 	method void UpdateArrivalSnap()
 		-- 매 프레임: 맵이 바뀐 첫 프레임에 보정을 건다(엔진 포탈 · 서버 이동처럼 ↑ 스크립트를 안 거친 도착).
-		-- 걸려 있으면 도착 기준 높이 ±ArrivalSnapBand 안의 가장 가까운 수평 발판으로 한 번 옮긴다.
+		-- 걸려 있으면 ① 도착 기준 자리를 잡고 ② 기준 높이 ±ArrivalSnapBand 안의 가장 가까운 수평 발판으로 한 번 옮긴 뒤
+		-- ③ 창이 끝날 때까지 맵 밖 낙하를 되돌린다(1.1.1 · ArrivalRescueDrop).
 		local player = _UserService.LocalPlayer
 		if not isvalid(player) or not isvalid(player.CurrentMap) then return end
 		local mapName = player.CurrentMap.Name
+		local now = _UtilLogic.ElapsedSeconds
 		if mapName ~= self.snapSeenMap then
 			self.snapSeenMap = mapName
-			if self.snapMap ~= mapName then self:ArmArrivalSnap(mapName, "") end
+			if self.snapMap ~= mapName then
+				self:ArmArrivalSnap(mapName, "")
+			else
+				self.snapUntil = now + self.ArrivalSnapWindow
+			end
 		end
 		if self.snapMap == "" then return end
-		if _UtilLogic.ElapsedSeconds > self.snapUntil then
-			log("[PortalNetwork] arrival snap timeout " .. self.snapMap .. "/" .. self.snapPortal)
+		if now > self.snapUntil then
+			if not self.snapDone then log("[PortalNetwork] arrival snap timeout " .. self.snapMap .. "/" .. self.snapPortal) end
 			self.snapMap = ""
 			return
 		end
 		if mapName ~= self.snapMap then return end
 		local pos = player.TransformComponent.WorldPosition
-		local refY = pos.y
-		if self.snapPortal ~= "" then
-			-- 아직 출발 자리에 있으면(같은 맵 이동은 한두 프레임 늦게 옮겨진다) 기다린다.
-			if mapName == self.snapFromMap and math.abs(pos.x - self.snapFromX) < 0.05 and math.abs(pos.y - self.snapFromY) < 0.05 then return end
-			local portal = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. self.snapPortal)
-			if isvalid(portal) then
-				local pp = portal.TransformComponent.WorldPosition
-				if math.abs(pos.x - pp.x) > 1.0 or math.abs(pos.y - pp.y) > 1.0 then return end
-				refY = pp.y
+		if not self.snapRefSet then
+			local refX = pos.x
+			local refY = pos.y
+			if self.snapPortal ~= "" then
+				-- 아직 출발 자리에 있으면(같은 맵 이동은 한두 프레임 늦게 옮겨진다) 기다린다.
+				if mapName == self.snapFromMap and math.abs(pos.x - self.snapFromX) < 0.05 and math.abs(pos.y - self.snapFromY) < 0.05 then return end
+				local portal = _EntityService:GetEntityByPath("/maps/" .. mapName .. "/" .. self.snapPortal)
+				if isvalid(portal) then
+					local pp = portal.TransformComponent.WorldPosition
+					-- 포탈에서 멀면 아직 안 옮겨졌다 → 기다린다. 단 포탈 바로 아래로 이미 떨어지는 중이면(프레임 끊김 · 발판이 늦게 깔림) 포탈 자리를 기준으로 잡는다.
+					if math.abs(pos.x - pp.x) > 1.0 or pos.y - pp.y > 1.0 then return end
+					if pos.y - pp.y < -1.0 then refX = pp.x end
+					refY = pp.y
+				end
 			end
+			self.snapRefSet = true
+			self.snapRefX = refX
+			self.snapRefY = refY
 		end
-		self.snapMap = ""
 		local map = player.CurrentMap
 		if _SkillMovement == nil or not isvalid(map.FootholdComponent) or not isvalid(player.MovementComponent) then return end
-		local fy = _SkillMovement:ProbeBand(map.FootholdComponent, pos.x, refY, self.ArrivalSnapBand)
-		if fy == nil then
-			log("[PortalNetwork] arrival snap none " .. mapName .. " x=" .. string.format("%.2f", pos.x) .. " refY=" .. string.format("%.2f", refY))
+		if not self.snapDone then
+			local fy = _SkillMovement:ProbeBand(map.FootholdComponent, self.snapRefX, self.snapRefY, self.ArrivalSnapBand)
+			if fy ~= nil then
+				self.snapDone = true
+				-- 이미 발판에 서 있으면 그대로 · 아니면(도착 직후는 공중) 표면 + ArrivalSnapLift 에 놓아 떨어져 앉게 한다(표면에 딱 맞추면 뚫고 떨어진다).
+				local grounded = isvalid(player.RigidbodyComponent) and player.RigidbodyComponent:IsOnGround()
+				local setY = fy + self.ArrivalSnapLift
+				if grounded and math.abs(pos.x - self.snapRefX) <= 0.005 and math.abs(pos.y - fy) <= 0.005 then
+					setY = pos.y
+				else
+					player.MovementComponent:SetWorldPosition(Vector2(self.snapRefX, setY))
+				end
+				log("[PortalNetwork] arrival snap " .. mapName .. "/" .. self.snapPortal .. " y " .. string.format("%.2f", pos.y) .. " -> " .. string.format("%.2f", setY) .. " (floor " .. string.format("%.2f", fy) .. " · refY " .. string.format("%.2f", self.snapRefY) .. " · grounded " .. tostring(grounded) .. ")")
+				self.snapRefY = fy
+				return
+			end
+			if self:HasFloorBelow(map.FootholdComponent, self.snapRefX, self.snapRefY) then
+				-- 기준 높이 근처엔 발판이 없지만 아래엔 있다(공중에 뜬 포탈 · 스폰 자리) → 예전처럼 그대로 떨어지게 둔다.
+				self.snapDone = true
+				log("[PortalNetwork] arrival snap none " .. mapName .. " x=" .. string.format("%.2f", self.snapRefX) .. " refY=" .. string.format("%.2f", self.snapRefY))
+				return
+			end
+			-- 기준 자리 아래로 발판이 하나도 없다(발판이 아직 안 깔렸거나 맵 밖) → 발판이 잡힐 때까지 기준 자리에 붙잡는다.
+			if pos.y < self.snapRefY - 0.3 then self:RescueArrival(player, "hold") end
 			return
 		end
-		if math.abs(pos.y - fy) > 0.005 then
-			player.MovementComponent:SetWorldPosition(Vector2(pos.x, fy))
+		-- 보정 뒤 창 안: 맵 밖으로 빠지는 낙하만 되돌린다(사다리 · 밧줄 · 땅 위 · 아래에 발판이 있는 낙하는 그대로).
+		if pos.y > self.snapRefY - self.ArrivalRescueDrop then return end
+		if not isvalid(player.RigidbodyComponent) or player.RigidbodyComponent:IsOnGround() then return end
+		if _SkillCaster ~= nil and _SkillCaster:LocalIsClimbing() then return end
+		if self:HasFloorBelow(map.FootholdComponent, pos.x, pos.y) then return end
+		self:RescueArrival(player, "void")
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean HasFloorBelow(any foothold, number x, number y)
+		-- (x, y) 에서 아래로 ArrivalVoidDepth 안에 수평 발판이 하나라도 있는가(바로 그 높이 포함).
+		local hits = foothold:RaycastAll(Vector2(x, y + 0.05), Vector2(0, -1), self.ArrivalVoidDepth)
+		if hits == nil then return false end
+		for _, fh in ipairs(hits) do
+			if fh ~= nil and not fh:IsVertical() then return true end
 		end
-		log("[PortalNetwork] arrival snap " .. mapName .. "/" .. self.snapPortal .. " y " .. string.format("%.2f", pos.y) .. " -> " .. string.format("%.2f", fy) .. " (refY " .. string.format("%.2f", refY) .. ")")
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RescueArrival(Entity player, string why)
+		-- 도착 기준 자리(+ ArrivalSnapLift)로 되돌리고 힘 0(PlayerSafetyNet.Fix 와 같은 방식 · Transform 대입은 되돌려진다). 로그는 도착마다 처음 3번만.
+		local from = player.TransformComponent.WorldPosition
+		local target = Vector2(self.snapRefX, self.snapRefY + self.ArrivalSnapLift)
+		local rb = player.RigidbodyComponent
+		if isvalid(rb) then
+			rb:SetWorldPosition(target)
+			rb:SetForce(Vector2(0, 0))
+		else
+			player.MovementComponent:SetWorldPosition(target)
+		end
+		self.snapRescues = self.snapRescues + 1
+		if self.snapRescues <= 3 then
+			log("[PortalNetwork] arrival rescue " .. why .. " " .. self.snapMap .. " (" .. string.format("%.2f", from.x) .. "," .. string.format("%.2f", from.y) .. ") -> (" .. string.format("%.2f", target.x) .. "," .. string.format("%.2f", target.y) .. ") #" .. tostring(self.snapRescues))
+		end
+		-- 도착마다 첫 번째만 서버 [Safety] 로그로 남긴다(라이브에서 원인 조사 · PlayerSafetyNet 과 같은 줄 · cond=arrival-void / arrival-hold).
+		if self.snapRescues == 1 and _PlayerSafetyNet ~= nil then
+			local since = _UtilLogic.ElapsedSeconds - (self.snapUntil - self.ArrivalSnapWindow)
+			_PlayerSafetyNet:ReportFix(self.snapMap, from.x, from.y, "arrival-" .. why, 0, since, self.snapFromMap, "arrival")
+		end
 	end
 
 	@ExecSpace("ServerOnly")

@@ -33,6 +33,11 @@ script GuideService extends Logic
 
 	property string DreamItemId = "DREAM_PIECE"
 
+	-- "적절한 레벨의 사냥터로" 카드(huntlevel): 내 레벨보다 이 값 이상 낮은 몬스터를 지금 레벨에서 LowKillTipCount 마리 잡으면 뜬다 · 레벨이 오르면 0 부터(OnPlayerLevelUp · 1.1.1).
+	property integer LowKillLevelGap = 5
+
+	property integer LowKillTipCount = 20
+
 	-- steps[key] = { kind, text, marker, once }
 	@HideFromInspector
 	property any steps = nil
@@ -785,20 +790,38 @@ script GuideService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnLowMonsterKilled(string userId, integer monsterLevel)
+		-- 처치마다(FarmReward · 경험치 지급 뒤): 내 레벨보다 LowKillLevelGap 이상 낮은 몬스터면 +1 → LowKillTipCount 마리면 "적절한 레벨의 사냥터로" 카드.
 		local m = _MatchSessionLogic
 		local s = self.st ~= nil and self.st[userId] or nil
 		if s == nil or m == nil or not m.Running or not m:IsParticipant(userId) or m:IsTutorial() then return end
 		local e = (_SummonManager ~= nil) and _SummonManager:GetEcon(userId) or nil
 		if e == nil then return end
 		-- 지금 레벨에서 잡은 것만 센다(1.0.20 · 사용자 "누적이라 12렙 때 잡은 게 20렙에 판정됨"): 레벨이 바뀌면 0 부터.
+		--   1.1.1: 레벨업 순간에 OnPlayerLevelUp 이 먼저 0 으로 돌린다 — 여기 비교는 그 알림을 못 받은 경우(리모컨 레벨 조정 등)의 안전망.
 		local lv = e.level or 1
 		if s.lowKillsLevel ~= lv then
 			s.lowKillsLevel = lv
 			s.lowKills = 0
 		end
-		if monsterLevel <= 0 or lv - monsterLevel < 5 then return end
+		if monsterLevel <= 0 or lv - monsterLevel < self.LowKillLevelGap then return end
 		s.lowKills = (s.lowKills or 0) + 1
-		if s.lowKills >= 20 then self:QueueTip(userId, "huntlevel") end
+		if s.lowKills >= self.LowKillTipCount then self:QueueTip(userId, "huntlevel") end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnPlayerLevelUp(string userId, integer newLevel)
+		-- 1.1.1(사용자 2026-10-21 "렙업하면 → 누적 수치 초기화 · 이거 중요함"): 레벨이 오르는 순간 낮은 레벨 처치 수를 0 으로.
+		--   이미 보낸 "적절한 레벨의 사냥터로" 카드는 거둬들이고(떠 있으면 내린다) 새 레벨에서 다시 LowKillTipCount 마리를 채우면 다시 뜰 수 있게 한다(예전 = 판에 한 번).
+		local s = self.st ~= nil and self.st[userId] or nil
+		if s == nil then return end
+		local before = s.lowKills or 0
+		s.lowKills = 0
+		s.lowKillsLevel = newLevel
+		if s.tips ~= nil and s.tips.huntlevel == true then
+			s.tips.huntlevel = nil
+			if _TipController ~= nil then _TipController:RearmTip("huntlevel", userId) end
+		end
+		if before > 0 then log("[TipRule] huntlevel reset on level up Lv" .. tostring(newLevel) .. " (was " .. tostring(before) .. ") -> " .. userId) end
 	end
 
 end

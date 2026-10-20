@@ -114,9 +114,22 @@ script SkillExecutors extends Logic
     --   시전자 클라만(사용자 선택) · 가르는 순간(③ tCut)보다 DeathfaultTearCaptureLead 초 먼저 ScreenshotService 로 화면(UI 포함)을 캡처해 ui/SkillCutsceneGroup/CdfTear 로 화면 전체를 덮고(멈춘 화면),
     --   가르는 순간부터 그 그림을 사선(screen 클립 대각선과 같은 기울기 · 바라보는 쪽으로 뒤집기)을 따라 두 쪽으로 찢어 벌린다 + 맨 위에 원작 대각 베기(effect 15 ~ 23 프레임).
     --   MSW UI 마스크는 회전이 안 돼 정확한 사선을 못 자른다 → 가로 DeathfaultTearStrips 줄로 잘라 줄마다 사선 위치에서 좌우로 나눈 계단식(사용자 선택 "계단식 사선").
+    -- 1.1.1(사용자 2026-10-21 "화면 갈라지는 이펙트 그대로 정지하기 · 매번 정지되는 타이밍이 다른데 갈라지고 보라색으로 물들었을 때 캡처하고 멈추기 · 이 타이밍 맞추는 게 중요"):
+    --   예전엔 서버 타이머(가르는 순간 − 0.10초)에 캡처를 시켜, 화면 클립(서버 재생 · 첫 시전은 로드도 늦음)과 캡처 요청이 서로 다른 지연으로 클라에 닿아 잡히는 프레임이 매번 달랐다.
+    --   → 화면 클립(cut.ruid · 원작 screen 48프레임 60ms)을 맵 유저 클라마다 각자 튼다(PlayDeathfaultScreenLocal) · 시전자 클라는 **자기 클립 시계로** DeathfaultTearCaptureFrame
+    --     (= 32 · 순백 31 다음 "갈라지고 보라색으로 물든" 화면 · Play 프레임 실측)의 가운데 시각에 클립을 그 프레임에 세우고(같은 자리 · 같은 층 · 프레임 고정) 다음 프레임에 캡처한다
+    --     → 지연 · 로드 · 프레임 드롭과 상관없이 매번 같은 화면이 잡힌다. 캡처가 오면 덮고(정지 화면) 클립은 다음 프레임부터 덮개 밑에서 이어 틀고,
+    --     DeathfaultTearHoldSeconds 뒤 찢는다(예전 "캡처 → 0.10초 뒤 찢기"와 같은 정지 길이).
     property boolean DeathfaultTearEnabled = true
 
-    property number DeathfaultTearCaptureLead = 0.10
+    property integer DeathfaultTearCaptureFrame = 32
+
+    property number DeathfaultClipFrameSeconds = 0.06
+
+    property number DeathfaultTearHoldSeconds = 0.10
+
+    -- 프레임을 세운 뒤 캡처를 부르기까지(초 · 세운 그림이 화면에 그려진 다음에 찍도록 2프레임쯤).
+    property number DeathfaultTearFreezeSeconds = 0.03
 
     property integer DeathfaultTearStrips = 36
 
@@ -851,6 +864,10 @@ script SkillExecutors extends Logic
         end
         for skillId, entry in pairs(self.effectOverrides) do
             local skill = _SkillDatabase:GetSkill(skillId)
+            -- 1.1.1: SkillInfo 행이 아닌 연출 키(콤보 데스폴트 SK_W21_CDF)는 prewarmJob 으로 직업을 보고 prewarmRuids 를 받아 둔다.
+            if skill == nil and entry.prewarmJob == jobId and entry.prewarmRuids ~= nil then
+                for _, r in ipairs(entry.prewarmRuids) do add(r) end
+            end
             if skill ~= nil and skill.requiredJobLine == jobId then
                 local spec = entry.cast
                 if spec ~= nil and (spec.cutsceneSeconds ~= nil or spec.prewarm == true) then add(spec.ruid) end
@@ -1273,6 +1290,9 @@ script SkillExecutors extends Logic
                 hits = 14, ratioPct = 880, maxTargets = 15,        -- 대상마다 880% × 14번(타마다 스탯공격력 굴림 × 880% · 방어 · 크리 · 명중 판정은 일반 스킬과 같다) · 가까운 순 최대 15명
                 boxWidth = 12.8, boxHeight = 7.2,                  -- 시전자 중심 PC 화면 크기(world unit · ScreenBoxSize 와 같다)
                 invulnPad = 0.15,                                  -- 무적을 전체 길이보다 이만큼 더 둔다(클라에 시전 연출이 늦게 닿는 만큼 · SkillCaster.CutsceneInvulnPad 와 같은 값)
+                -- 1.1.1: 미리 받아 둘 클립(SkillInfo 행이 아닌 키라 직업을 따로 적는다 · PrewarmRuidsFor) — 첫 시전에 베기 · 화면 · 명중 클립이 늦게 떠 화면 찢기 프레임이 어긋나지 않게.
+                prewarmJob = "WARRIOR",
+                prewarmRuids = { "fa4309d8353440ca8abe6f6992fb7106", "9aac6392c97e4b7f96899d3b02de1cf9", "2ef064f22b8542a093e4d95becd2349a" },
                 -- hitTimes = { 1.00, 1.06, ... },                 -- 선택: 타 시각 목록(시전 시작 기준 초 · 있으면 cut.hitStart / hitSpan 대신 · 개수가 타수). 비우면 ③ 구간에 hits 번을 고르게.
                 -- ── 원작 리소스 · 시각표(사용자 2026-10-15 "원작 세트 · 원작 그대로 약 2.9초") ──
                 --   원작 = KMS 389 Skill/40001.img/skill/400011027(5thDeathFault) · MSW 팩 skill/40001.img/skill/400011027(팩 이름 zh "空間斬"). 시전 시작 = 0초 · 원작 프레임 60ms:
@@ -1351,8 +1371,10 @@ script SkillExecutors extends Logic
                 -- 원본 픽셀 크기가 1920×1080 화면보다 작아 scale 1.4 로 화면을 채운다 (2026-09-10 사용자 제보 "화면을 못 채우고 낮다" → 1차 보정 · 스크린샷으로 재조정).
                 -- cutsceneSeconds 4.8 = 컷신 표시 + 실측 실패 때의 대체 길이(2026-09-13 Play 스크린샷으로 잰 89프레임 ≈ 4.8s · 실제 길이는 MeasureCutsceneClips). buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 불굴의 진 버프(HP 고정 · 경직 없음 ·
                 --   피격 무적 25% · 1.1-B08)를 시전 즉시 걸되 길이 = 컷신 + CSV Duration(15 · 1.1-B07) → 컷신이 걷힌 뒤에도 15초. 전사는 다른 직업의 "피격 무시" 궁 무적 대신 이 고정으로 버틴다(SkillCaster.GetUltimateInvulnMul SK_W31 = 0).
+                -- 1.1.1(사용자 2026-10-21 "궁 컷신이 끝난 후부터 지속시간이 흐르며 · 컷신 지속 동안 부딪혀도 반사 X"): buffExtendsByCutscene → buffAfterCutscene.
+                --   컷신 동안 = 다른 직업과 같은 궁 시전 무적 창(SkillCaster · 피격 판정 자체가 없다 = SkillBuffs.NoHitJudgeUltimates) · 버프(CSV Duration 8초)는 그 창이 끝나는 순간(컷신 + CutsceneInvulnPad) 건다.
                 cast = { ruid = "132f5fc6a6614ea4bc9a52f27877c1ce", noFlip = true, offsetY = 1.0, scale = 1.4, cutsceneSeconds = 4.8 },
-                buffExtendsByCutscene = true,
+                buffAfterCutscene = true,
             },
             --
             -- b/skill-archer-thief-pirate (2026-09-12 · 사용자 요청 "원작과 같은 모습 · 다른 직업과 겹치지 않게"): 15종 전부 원작 팩 RUID(msw-search 리소스 API).
@@ -2043,6 +2065,8 @@ script SkillExecutors extends Logic
         end
         local function moved()
             if not isvalid(tf) then return false end
+            -- 1.1.1(공격 모션 고정): 시전 락이 살아 있는 동안의 움직임(공중 시전의 낙하 · 궤적)은 끊는 이유가 아니다 — 락이 풀린 뒤 걸어서 옮겨졌을 때만 끊는다.
+            if _SkillCaster ~= nil and _SkillCaster.castLockActive then return false end
             local q = tf.WorldPosition
             if math.abs(q.x - sx) > 0.05 or math.abs(q.y - sy) > 0.05 then
                 for _, id in ipairs(self.bodyFrameTimers) do _TimerService:ClearTimer(id) end
@@ -2341,8 +2365,16 @@ script SkillExecutors extends Logic
                 elseif cut.behindPlayer then
                     self:ApplyBehindPlayerSorting(opt, casterEntity)
                 end
-                _EffectService:PlayEffect(cut.ruid, casterEntity, at, cut.rotation or 0, Vector3(s, s, 1), false, opt)
-                if self.LogDiagnostics then log("[Deathfault] screen clip at +" .. string.format("%.2f", clipAt) .. "s scale=" .. tostring(s) .. " layer=" .. tostring(opt["SortingLayer"]) .. "/" .. tostring(opt["OrderInLayer"]) .. " (" .. uid .. ")") end
+                -- 1.1.1: 서버 재생(PlayEffect) 대신 맵 유저 클라마다 따로 튼다 — 시전자 클라는 자기 클립 시계로 화면 찢기 캡처 순간(프레임 DeathfaultTearCaptureFrame)을 잡는다.
+                local flipX = (opt["FlipX"] == true)
+                local layer = ""
+                local order = 0
+                if opt["SortingLayer"] ~= nil then
+                    layer = tostring(opt["SortingLayer"])
+                    order = math.floor(opt["OrderInLayer"] or 0)
+                end
+                local sent = self:PlayDeathfaultScreenToMap(cut.ruid, s, cut.rotation or 0, flipX, at, layer, order, casterEntity, facing)
+                if self.LogDiagnostics then log("[Deathfault] screen clip at +" .. string.format("%.2f", clipAt) .. "s scale=" .. tostring(s) .. " layer=" .. layer .. "/" .. tostring(order) .. " -> " .. tostring(sent) .. " client(s) (" .. uid .. ")") end
             end
         end, clipAt)
         _TimerService:SetTimerOnce(function()
@@ -2352,15 +2384,8 @@ script SkillExecutors extends Logic
             if self.LogDiagnostics then log("[Deathfault] cut " .. string.format("%.2f", tl.cutEnd - tl.tCut) .. "s (" .. uid .. ")") end
         end, tl.tCut)
 
-        -- 화면 찢기(1.0.9 · 시전자 클라만): 가르는 순간(tCut)보다 DeathfaultTearCaptureLead 먼저 캡처 → 덮기 → tCut 에 찢기(BeginDeathfaultTear · 마지막 인자 = 받는 유저).
-        if self.DeathfaultTearEnabled then
-            local lead = math.max(0, self.DeathfaultTearCaptureLead)
-            _TimerService:SetTimerOnce(function()
-                if not isvalid(casterEntity) then return end
-                if not _SwordEnergy:IsDeathfaultCurrent(uid, stamp) then return end
-                self:BeginDeathfaultTear(self:GetFacingX(casterEntity), lead, uid)
-            end, math.max(0, tl.tCut - lead))
-        end
+        -- 화면 찢기(1.0.9 · 시전자 클라만): 1.1.1 부터 위 화면 클립과 같이 간다 — 시전자 클라가 자기 클립의 프레임 DeathfaultTearCaptureFrame 에서 세워 캡처 → 덮기 → 찢기
+        --   (PlayDeathfaultScreenLocal → FreezeDeathfaultAndTear). 예전 서버 타이머(가르는 순간 − 0.10초 · BeginDeathfaultTear)는 없앴다.
 
         -- 타격(1.0.9 · 사용자 2026-10-15 "14번 공격인데 1타씩 데미지 주는 것 같아 · 14타를 한 번에 주도록"): 첫 타 시각(times[1] = 2.04)에
         --   대상마다 판정 1번 × 14타(DealSkillDamage · 표시 14 · 880% × 14 · 치명은 한 번에 같이 판정 · 상한 maxTargets 가까운 순). 숫자 14개는 시전자 스킨 간격으로 · 명중 그림은 14번(연출만 · times 간격).
@@ -2448,28 +2473,99 @@ script SkillExecutors extends Logic
         if self.LogDiagnostics then log("[Deathfault] tint keys=" .. tostring(#tint.keys) .. " frame=" .. tostring(frame) .. " scale=" .. tostring(sx) .. "x" .. tostring(sy) .. " (" .. uid .. ")") end
     end
 
+    @ExecSpace("ServerOnly")
+    method integer PlayDeathfaultScreenToMap(string ruid, number scale, number rot, boolean flip, Vector3 at, string layer, integer order, Entity casterEntity, number facing)
+        -- 1.1.1: 콤보 데스폴트 화면 클립을 시전자가 있는 맵의 유저 클라마다 따로 튼다(PlayDeathfaultScreenLocal · 서버 PlayEffect 대신 · PlayBlinkImpactToOthers 와 같은 꼴).
+        --   시전자 클라에는 찢기 캡처 시각(클립 시작 기준 · 프레임 DeathfaultTearCaptureFrame 의 가운데)을 같이 보낸다 — 다른 유저는 -1(클립만). 보낸 클라 수를 돌려준다.
+        if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return 0 end
+        local map = casterEntity.CurrentMap
+        if not isvalid(map) or not isvalid(map.MapComponent) then return 0 end
+        local users = _UserService:GetUsersByMapComponent(map.MapComponent)
+        if users == nil then return 0 end
+        local casterUid = casterEntity.PlayerComponent.UserId
+        local captureIn = -1
+        if self.DeathfaultTearEnabled then captureIn = (self.DeathfaultTearCaptureFrame + 0.5) * self.DeathfaultClipFrameSeconds end
+        local n = 0
+        for _, u in ipairs(users) do
+            if isvalid(u) and isvalid(u.PlayerComponent) then
+                local cin = -1
+                if u.PlayerComponent.UserId == casterUid then cin = captureIn end
+                self:PlayDeathfaultScreenLocal(ruid, scale, rot, flip, at.x, at.y, at.z, layer, order, cin, facing, u.PlayerComponent.UserId)
+                n = n + 1
+            end
+        end
+        return n
+    end
+
     @ExecSpace("Client")
-    method void BeginDeathfaultTear(number facing, number lead)
-        -- 시전자 클라: 화면(UI 포함)을 캡처해 CdfTear 로 화면 전체를 덮고, lead 초 뒤(= 가르는 순간) 찢기 시작(ShowDeathfaultTear). 캡처가 늦게 오면 그만큼 덜 기다린다.
-        if not self.DeathfaultTearEnabled then return end
+    method void PlayDeathfaultScreenLocal(string ruid, number scale, number rot, boolean flip, number x, number y, number z, string layer, integer order, number captureIn, number facing)
+        -- 1.1.1: 받는 유저의 클라에서 콤보 데스폴트 화면 클립(원작 screen 48프레임)을 고정 위치에 튼다. 인자는 원시 타입만(ExecSpace 너머로 table/any 금지).
+        --   captureIn >= 0 = 시전자 클라 → 이 클립을 튼 순간부터 captureIn 초 뒤 프레임을 세우고 캡처해 찢는다(FreezeDeathfaultAndTear) — 클립과 같은 시계라 매번 같은 프레임.
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local opt = {}
+        if flip then opt["FlipX"] = true end
+        if layer ~= "" then
+            opt["SortingLayer"] = layer
+            opt["OrderInLayer"] = order
+        end
+        local pos = Vector3(x, y, z)
+        local sv = Vector3(scale, scale, 1)
+        local playing = _EffectService:PlayEffect(ruid, player, pos, rot, sv, false, opt)
+        if captureIn < 0 or not self.DeathfaultTearEnabled then return end
+        local startedAt = _UtilLogic.ElapsedSeconds
+        if self.LogDiagnostics then log("[Deathfault] local screen clip started — tear capture at clip +" .. string.format("%.3f", captureIn) .. "s (frame " .. tostring(self.DeathfaultTearCaptureFrame) .. ")") end
+        _TimerService:SetTimerOnce(function()
+            self:FreezeDeathfaultAndTear(ruid, pos, rot, sv, flip, layer, order, playing, facing, startedAt)
+        end, captureIn)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void FreezeDeathfaultAndTear(string ruid, Vector3 pos, number rot, Vector3 sv, boolean flip, string layer, integer order, integer playing, number facing, number startedAt)
+        -- 1.1.1 시전자 클라: ① 돌고 있는 화면 클립을 지우고 같은 자리 · 같은 층에 프레임 DeathfaultTearCaptureFrame(갈라지고 보라색으로 물든 화면)을 고정해 띄운다(정지)
+        --   ② 다음 프레임에 화면(UI 포함)을 캡처 ③ 캡처가 오면 CdfTear 로 덮고(정지 화면) 고정 그림을 지운 뒤 클립을 다음 프레임부터 이어 튼다(덮개 밑에서 폭발 · 가루가 이어진다)
+        --   ④ DeathfaultTearHoldSeconds 뒤 찢기(ShowDeathfaultTear). 로그 "[Deathfault] tear captured …" 에 클립 시작부터 캡처까지 걸린 초를 남긴다.
         local root = self:DeathfaultTearRoot()
         if root == nil then
             log_warning("[Deathfault] tear skipped — ui/SkillCutsceneGroup/CdfTear not found (apply-cdf-tear 미실행?)")
             return
         end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
         self.tearSerial = self.tearSerial + 1
         local serial = self.tearSerial
-        local askedAt = _UtilLogic.ElapsedSeconds
-        _ScreenshotService:CaptureFullScreenAsPixelDataAsync(function(err, img)
-            if serial ~= self.tearSerial then return end
-            if err ~= ScreenshotError.Success or img == nil then
-                log_warning("[Deathfault] tear capture failed: " .. tostring(err))
-                return
+        local frame = math.floor(self.DeathfaultTearCaptureFrame)
+        local function optWith(startFrame, endFrame)
+            local o = {}
+            if flip then o["FlipX"] = true end
+            if layer ~= "" then
+                o["SortingLayer"] = layer
+                o["OrderInLayer"] = order
             end
-            local wait = lead - (_UtilLogic.ElapsedSeconds - askedAt)
-            if wait < 0 then wait = 0 end
-            self:ShowDeathfaultTear(root, img, facing, wait, serial)
-        end, true)
+            o["StartFrameIndex"] = startFrame
+            if endFrame >= 0 then o["EndFrameIndex"] = endFrame end
+            return o
+        end
+        _EffectService:RemoveEffect(playing)
+        local frozen = _EffectService:PlayEffect(ruid, player, pos, rot, sv, true, optWith(frame, frame))
+        local frozenAt = _UtilLogic.ElapsedSeconds
+        _TimerService:SetTimerOnce(function()
+            local askedAt = _UtilLogic.ElapsedSeconds
+            _ScreenshotService:CaptureFullScreenAsPixelDataAsync(function(err, img)
+                _EffectService:RemoveEffect(frozen)
+                if serial ~= self.tearSerial then return end
+                local p2 = _UserService.LocalPlayer
+                if isvalid(p2) then _EffectService:PlayEffect(ruid, p2, pos, rot, sv, false, optWith(frame + 1, -1)) end
+                if err ~= ScreenshotError.Success or img == nil then
+                    log_warning("[Deathfault] tear capture failed: " .. tostring(err))
+                    return
+                end
+                local now = _UtilLogic.ElapsedSeconds
+                if self.LogDiagnostics then log("[Deathfault] tear captured frame " .. tostring(frame) .. " — clip +" .. string.format("%.3f", frozenAt - startedAt) .. "s froze · asked +" .. string.format("%.3f", askedAt - startedAt)
+                    .. "s · got +" .. string.format("%.3f", now - startedAt) .. "s · hold " .. string.format("%.2f", self.DeathfaultTearHoldSeconds) .. "s") end
+                self:ShowDeathfaultTear(root, img, facing, math.max(0, self.DeathfaultTearHoldSeconds), serial)
+            end, true)
+        end, math.max(0, self.DeathfaultTearFreezeSeconds))
     end
 
     @ExecSpace("ClientOnly")
@@ -5994,7 +6090,7 @@ script SkillExecutors extends Logic
         -- 궁 합계 데미지(#40 5988188679): 영상이 있으면 이 시전의 타격 피해를 영상 끝까지 모은다.
         self:OpenUltimateTally(skillId, casterEntity)
 
-        -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 시전 즉시 버프를 컷신 + Duration(15초 · 1.1-B07) 동안 켠다.
+        -- 버프형 오리진(불굴의 진 SK_W31 · BuffTag INVULNERABLE · EffectUnit SEC): 피해 없이 버프를 켠다 — 1.1.1 부터 컷신이 끝난 뒤 Duration(8초) 동안(buffAfterCutscene).
         -- 컷신은 SkillCaster.castLockOverrides 가 만들고, 무적 판정은 SkillBuffs.IsInvincible/ModifyIncomingDamage 가 낸다(A 의 PlayerHit 연결 대기).
         if skillData.buffTag ~= nil and skillData.buffTag ~= "" and skillData.effectUnit ~= "ATK_PCT" then
             if _SkillBuffs == nil or not isvalid(casterEntity.PlayerComponent) then
@@ -6002,10 +6098,35 @@ script SkillExecutors extends Logic
                 return
             end
             local duration = _SkillDatabase:DurationAt(skillId, level)
-            -- buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 버프 길이 = 컷신(cast.cutsceneSeconds) + CSV Duration — 시전 즉시 걸어 컷신 내내 HP 고정·반사가 살아 있고
-            -- 컷신이 걷힌 뒤에도 Duration(15초 · 1.1-B07 · 사용자 결정 2026-10-12 "컷신 끝난 뒤 15초") 만큼 이어진다. 다른 직업의 궁은 SkillCaster 의 "피격 무시" 무적 창(컷신 길이)을 쓰고 전사는 이 고정으로 버틴다(GetUltimateInvulnMul SK_W31 = 0).
-            local extra = 0
             local entry = self.effectOverrides[skillId]
+            -- buffAfterCutscene(1.1.1 · 불굴의 진 · 사용자 2026-10-21 "궁 컷신이 끝난 후부터 지속시간이 흐르며 · 컷신 지속 동안 부딪혀도 반사 X"):
+            --   컷신 동안은 SkillCaster 가 연 궁 시전 무적 창(컷신 + CutsceneInvulnPad · 판정 자체 없음)뿐이고, 그 창이 끝나는 순간 Duration(8초) 버프를 건다.
+            --   기다리는 동안 매치 초기화 · 사망이면 걸지 않는다(SkillBuffs.ReserveAfterCutscene / TakeAfterCutscene · 살아 있는지 한 번 더 본다).
+            if entry ~= nil and entry.buffAfterCutscene then
+                local uid = casterEntity.PlayerComponent.UserId
+                local wait = self:GetCutsceneSeconds(skillId)
+                if _SkillCaster ~= nil then wait = wait + _SkillCaster.CutsceneInvulnPad end
+                local serial = _SkillBuffs:ReserveAfterCutscene(uid)
+                self:PlayStageEffect(skillId, "impact", casterEntity, pos, nil)
+                local buffTag = skillData.buffTag
+                _TimerService:SetTimerOnce(function()
+                    if not _SkillBuffs:TakeAfterCutscene(uid, serial) then return end
+                    if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return end
+                    local pc = casterEntity.PlayerComponent
+                    if pc.Hp <= 0 or pc:IsDead() then
+                        if self.LogDiagnostics then log("SkillExecutors: ORIGIN " .. skillId .. " buff after cutscene skipped — caster down (" .. uid .. ")") end
+                        return
+                    end
+                    _SkillBuffs:ApplyBuff(uid, skillId, buffTag, level, duration)
+                    self:PlayBuffLoop(skillId, buffTag, casterEntity, duration)
+                    if self.LogDiagnostics then log("SkillExecutors: ORIGIN " .. skillId .. " buff " .. buffTag .. " ON after cutscene for " .. tostring(duration) .. "s (" .. uid .. ")") end
+                end, wait)
+                if self.LogDiagnostics then log("SkillExecutors: ORIGIN " .. skillId .. " buff " .. buffTag .. " reserved — starts after cutscene in " .. string.format("%.2f", wait) .. "s for " .. tostring(duration) .. "s (no damage)") end
+                return
+            end
+            -- buffExtendsByCutscene(2026-09-13 사용자 요청 "전사는 컷신 뒤 8초 동안 HP 100%"): 버프 길이 = 컷신(cast.cutsceneSeconds) + CSV Duration — 시전 즉시 걸어 컷신 내내 HP 고정·반사가 살아 있고
+            -- 컷신이 걷힌 뒤에도 Duration 만큼 이어진다(1.1.1 부터 불굴의 진은 위 buffAfterCutscene · 이 길은 표에 이 칸을 둔 스킬만).
+            local extra = 0
             if entry ~= nil and entry.buffExtendsByCutscene then extra = self:GetCutsceneSeconds(skillId) end
             local total = duration + extra
             _SkillBuffs:ApplyBuff(casterEntity.PlayerComponent.UserId, skillId, skillData.buffTag, level, total)
