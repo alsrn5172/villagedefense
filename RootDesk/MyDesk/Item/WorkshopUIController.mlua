@@ -167,12 +167,18 @@ script WorkshopUIController extends Logic
 	@HideFromInspector
 	property string craftSlot = "ALL"
 
-	-- BULK = 레벨제 일괄 구매 칸(1.1-J02): 이 칩을 고르면 목록 자리에 Craft/BulkPanel(렙제 버튼 5 · 부위 토글 5)이 뜬다. 마을 장비 상인에서만 보인다.
+	-- BULK = 레벨제 일괄 구매 칸(1.1-J02): 이 칩을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다. 마을 장비 상인에서만 보인다.
+	--   1.0.21 #13 개편: 왼쪽 렙제 버튼 5(하나만 고름) · 가운데 부위 토글 5 · 오른쪽 [선택 항목 일괄 구매].
 	property string CraftSlots = "ALL,WEAPON,HAT,CLOTH,GLOVES,SHOES,SPECIAL,BULK"
 
 	-- 일괄 구매에서 뺀 부위 집합 { WEAPON=true … }(1.1-J02). 비어 있으면 전부 켜짐. 창을 열고 닫아도 유지하고 새 매치(OnMatchStart)에서만 비운다(1.1-J03).
 	@HideFromInspector
 	property any bulkOff = nil
+
+	-- 일괄 구매에서 고른 렙제(1.0.21 #13 · 하나만 고름). 0 = 아직 안 골랐다 → 지금 레벨로 입을 수 있는 가장 높은 렙제(DefaultBulkTier · 레벨 10 미만이면 10).
+	-- 창을 열 때(Open)와 새 매치(OnMatchStart)에서 0 으로 되돌린다 — 같은 창을 연 채로는 고른 렙제가 유지된다.
+	@HideFromInspector
+	property integer bulkTier = 0
 
 	@HideFromInspector
 	property any potionView = nil
@@ -278,7 +284,9 @@ script WorkshopUIController extends Logic
 			bindChild(self.contentCraft, "Slot_" .. slot, function() self:SetCraftSlot(slot) end)
 		end
 		-- 레벨제 일괄 구매 판(1.1-J02): Craft/BulkPanel 바로 아래의 Part_{부위} 토글 5개 · Tier_{렙제} 버튼 5개(이름 = ItemCatalog.BulkPartOrder · BulkTiers).
+		-- 1.0.21 #13: 렙제 버튼은 "고르기"만 하고 구매는 오른쪽 BtnBuy([선택 항목 일괄 구매])가 한다.
 		self.bulkOff = {}
+		self.bulkTier = 0
 		local bulk = isvalid(self.contentCraft) and self.contentCraft:GetChildByName("BulkPanel") or nil
 		for part in string.gmatch(_ItemCatalog.BulkPartOrder, "[^,]+") do
 			local p = part
@@ -288,6 +296,7 @@ script WorkshopUIController extends Logic
 			local n = tonumber(t)
 			bindChild(bulk, "Tier_" .. t, function() self:OnBulkTier(n) end)
 		end
+		bindChild(bulk, "BtnBuy", function() self:OnBulkBuy() end)
 		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
 		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
 		-- 수량 +5 · +10(1.1-J04): +1 은 기존 BtnPlus 그대로. 상한(MaxCount)은 RefreshPotion 이 자른다.
@@ -755,6 +764,7 @@ script WorkshopUIController extends Logic
 		self.chosenGems = {}
 		self.craftSel = ""
 		self.craftSlot = "ALL"
+		self.bulkTier = 0   -- 일괄 구매 렙제는 창을 열 때마다 다시 "지금 레벨로 입을 수 있는 가장 높은 렙제"에서 시작(1.0.21 #13)
 		self.potionSel = ""
 		self.potionQty = 1
 		self.waiting = false
@@ -1899,36 +1909,71 @@ script WorkshopUIController extends Logic
 		log("[Workshop] craft slot=" .. slot)
 	end
 
-	-- ── 레벨제 일괄 구매 (1.1-J02 · J03) ─────────────────────────
-	-- 제작 창 "일괄" 칸(Slot_BULK)을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다: 살 부위 토글 5개(눌러서 빼기) + 10 · 15 · 20 · 25 · 30렙제 버튼 5개.
-	-- 렙제 버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 전부 산다(서버 CraftService.RequestCraftBulk).
-	-- 켜 둔 부위 전체를 살 메소 · 재료 합이 모자라면 그 렙제 버튼은 처음부터 잠긴다 — 일부만 사는 일은 없다(사용자 2026-10-13 · 디자인 사이트 N-34).
+	-- ── 레벨제 일괄 구매 (1.1-J02 · J03 · 1.0.21 #13 개편) ─────────────────────────
+	-- 제작 창 "일괄" 칸(Slot_BULK)을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다(사용자 2026-10-20 콘티 · 위에서 아래로 세 줄기):
+	--   왼쪽 = 렙제 10 · 15 · 20 · 25 · 30 버튼(Tier_{렙제} · 하나만 고름 · 고른 것 = 켜짐 모양) · 가운데 = 살 부위 토글 모자 → 옷 → 무기 → 장갑 → 신발(Part_{부위} · 눌러서 빼기)
+	--   · 오른쪽 = [선택 항목 일괄 구매](BtnBuy · 다섯 줄 높이). 처음 고른 렙제 = 지금 레벨로 입을 수 있는 가장 높은 렙제(DefaultBulkTier).
+	-- 구매 = 고른 렙제 + 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 전부 산다(서버 CraftService.RequestCraftBulk · 순서 = ItemCatalog.BulkPartOrder 그대로 · 화면 순서와는 다르다).
+	-- 켜 둔 부위 전체를 살 메소 · 재료 합이 모자라면 구매 버튼이 잠긴다 — 일부만 사는 일은 없다(사용자 2026-10-13 · 디자인 사이트 N-34). 합계 비용 · 모자란 것은 바닥 띠 비용 칩에(RefreshBulkFoot).
+
+	@ExecSpace("ClientOnly")
+	method any BulkNeeds(string key, integer tier, string parts)
+		-- 그 렙제 · 켜 둔 부위 전체가 드는 합(1.0.21 #13 · 바닥 띠 비용 칩과 구매 잠금이 같이 쓴다): { count = 살 장비 수, meso = 메소 합, mats = { { itemId, count }, … }(처음 나온 순서) }.
+		-- 서버 CraftService.BulkShortfall 과 같은 합계다.
+		local mats = {}
+		local at = {}
+		local meso = 0
+		local list = _ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts)
+		for _, r in ipairs(list) do
+			meso = meso + r.mesoCost
+			for _, m in ipairs(_ItemCatalog:RecipeMats(r, key)) do
+				if at[m.itemId] == nil then
+					table.insert(mats, { itemId = m.itemId, count = 0 })
+					at[m.itemId] = #mats
+				end
+				local row = mats[at[m.itemId]]
+				row.count = row.count + m.count
+			end
+		end
+		return { count = #list, meso = meso, mats = mats }
+	end
 
 	@ExecSpace("ClientOnly")
 	method string BulkShort(string key, integer tier, string parts)
 		-- 그 렙제 · 켜 둔 부위 전체의 메소 · 재료 합을 지금 가진 것과 비교(클라 캐시 · N-34). 다 있으면 "" · 모자라면 첫 부족 이름(재료 이름 또는 "메소").
-		-- 서버 RequestCraftBulk 의 BulkShortfall 과 같은 계산이다(서버가 최종 판정 · 여기는 버튼 잠금용).
-		local need = {}
-		local order = {}
-		local meso = 0
-		for _, r in ipairs(_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts)) do
-			meso = meso + r.mesoCost
-			for _, m in ipairs(_ItemCatalog:RecipeMats(r, key)) do
-				if need[m.itemId] == nil then
-					need[m.itemId] = 0
-					table.insert(order, m.itemId)
-				end
-				need[m.itemId] = need[m.itemId] + m.count
+		-- 서버 RequestCraftBulk 의 BulkShortfall 과 같은 계산이다(서버가 최종 판정 · 여기는 구매 버튼 잠금용).
+		local need = self:BulkNeeds(key, tier, parts)
+		for _, m in ipairs(need.mats) do
+			if self:CountItem(m.itemId) < m.count then
+				local d = _ItemCatalog:Get(m.itemId)
+				return (d ~= nil) and d.name or m.itemId
 			end
 		end
-		for _, id in ipairs(order) do
-			if self:CountItem(id) < need[id] then
-				local d = _ItemCatalog:Get(id)
-				return (d ~= nil) and d.name or id
-			end
-		end
-		if meso > 0 and self:MesoNow() < meso then return "메소" end
+		if need.meso > 0 and self:MesoNow() < need.meso then return "메소" end
 		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer DefaultBulkTier()
+		-- 처음 골라 둘 렙제(1.0.21 #13 · 사용자 2026-10-20 "처음엔 지금 레벨로 입을 수 있는 가장 높은 렙제"): BulkTiers 중 내 레벨 이하의 최댓값 · 레벨 10 미만이면 첫 렙제(10).
+		local level = 1
+		if _PlayerSkillState ~= nil then level = math.floor(_PlayerSkillState:LocalLevel() or 1) end
+		local first = 0
+		local best = 0
+		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
+			local n = math.floor(tonumber(t) or 0)
+			if first == 0 then first = n end
+			if n <= level and n > best then best = n end
+		end
+		if best == 0 then best = first end
+		return best
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer BulkTierNow()
+		-- 지금 고른 렙제. 아직 안 골랐거나(0) BulkTiers 에 없는 값이면 기본 렙제(DefaultBulkTier).
+		if self.bulkTier > 0 and _ItemCatalog:IsBulkTier(self.bulkTier) then return self.bulkTier end
+		return self:DefaultBulkTier()
 	end
 
 	@ExecSpace("ClientOnly")
@@ -1942,19 +1987,48 @@ script WorkshopUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method string BulkFootText()
-		-- 일괄 칸의 바닥 띠 안내(1.1-J02): 켜 둔 부위가 하나도 없으면 그 안내(렙제 버튼이 다 잠겨 눌러 볼 수 없다),
-		-- 재화가 모자라 잠긴 렙제가 하나라도 있으면 그 안내(N-34), 아니면 사용법 한 줄.
+	method void RefreshBulkFoot()
+		-- 일괄 칸의 바닥 띠(1.1-J02 안내 → 1.0.21 #13 비용 칩): 고른 렙제 · 켜 둔 부위 전체의 합계 비용을 비용 칩으로 보인다 — 모자란 칩은 붉고 "· 부족"(N-34 · 구매 버튼이 잠긴 까닭).
+		-- 칩은 최대 2개(재료 → 메소 순서 · 마을 장비는 지역 재화 1종 + 메소). 켜 둔 부위가 없거나 살 장비가 없으면 안내 한 줄.
 		local parts = self:BulkPartsCsv()
-		if parts == "" then return "살 부위를 하나 이상 켜 주세요" end
+		if parts == "" then
+			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
+			return
+		end
 		local key = self:ShopKey()
-		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
-			local n = math.floor(tonumber(t) or 0)
-			if #_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0 and self:BulkShort(key, n, parts) ~= "" then
-				return "재화가 모자란 렙제는 잠겨요"
+		local tier = self:BulkTierNow()
+		local need = self:BulkNeeds(key, tier, parts)
+		if need.count == 0 then
+			self:ShowFootInfo(tostring(tier) .. "렙제는 살 장비가 없어요")
+			return
+		end
+		local all = {}
+		local plain = {}
+		for _, m in ipairs(need.mats) do
+			local md = _ItemCatalog:Get(m.itemId)
+			local name = (md ~= nil) and md.name or m.itemId
+			local have = self:CountItem(m.itemId)
+			table.insert(all, { icon = (md ~= nil) and md.icon or "", label = name, num = tostring(m.count), hold = "보유 " .. tostring(have) .. ((have < m.count) and " · 부족" or ""), short = have < m.count })
+			table.insert(plain, name .. " " .. tostring(m.count))
+		end
+		if need.meso > 0 then
+			local meso = self:MesoNow()
+			table.insert(all, { icon = self.RuidMeso, label = "메소", num = self:Fmt(need.meso), hold = "보유 " .. self:Fmt(meso) .. ((meso < need.meso) and " · 부족" or ""), short = meso < need.meso })
+			table.insert(plain, "메소 " .. tostring(need.meso))
+		end
+		-- 칩이 3개 이상이면(재료가 여러 종일 때) 모자란 것을 먼저 담아 가려지지 않게 한다.
+		local chips = {}
+		if #all <= 2 then
+			chips = all
+		else
+			for _, c in ipairs(all) do
+				if c.short and #chips < 2 then table.insert(chips, c) end
+			end
+			for _, c in ipairs(all) do
+				if not c.short and #chips < 2 then table.insert(chips, c) end
 			end
 		end
-		return "렙제 버튼을 누르면 바로 구매해요"
+		self:ShowFootChips(chips, tostring(tier) .. "렙제 " .. tostring(need.count) .. "개 · " .. table.concat(plain, " · "))
 	end
 
 	@ExecSpace("ClientOnly")
@@ -1968,20 +2042,30 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnBulkTier(integer tier)
-		-- 렙제 버튼 → 서버에 일괄 구매 요청(확인 팝업 없이 바로 · 응답이 올 때까지 버튼 잠금). 인자는 integer · string 만 보낸다.
+		-- 렙제 버튼: 렙제 하나를 고른다(1.0.21 #13 · 하나만 고름 — 고른 것이 켜짐 모양). 구매는 오른쪽 [선택 항목 일괄 구매](OnBulkBuy). 바닥 띠 합계가 그 렙제로 바뀐다.
+		if not _ItemCatalog:IsBulkTier(tier) then return end
+		self.bulkTier = tier
+		self:RefreshBulkPanel()
+		log("[Workshop] bulk tier=" .. tostring(tier))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBulkBuy()
+		-- [선택 항목 일괄 구매] → 서버에 고른 렙제 + 켜 둔 부위 일괄 구매 요청(확인 팝업 없이 바로 · 응답이 올 때까지 버튼 잠금). 인자는 integer · string 만 보낸다.
 		if self.waiting then return end
 		local key = self:ShopKey()
 		if not _ItemCatalog:IsRegionShop(key) then return end
+		local tier = self:BulkTierNow()
 		local parts = self:BulkPartsCsv()
 		if #_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts) == 0 then
 			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
 			return
 		end
-		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34).
+		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34). 바닥 띠 비용 칩이 모자란 것을 붉게 보인다.
 		local short = self:BulkShort(key, tier, parts)
 		if short ~= "" then
-			self:ShowFootInfo(short .. " 이(가) 모자라요")
 			self:RefreshBulkPanel()
+			log("[Workshop] bulk buy blocked tier=" .. tostring(tier) .. " short=" .. short)
 			return
 		end
 		self.waiting = true
@@ -1993,9 +2077,10 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RefreshBulkPanel()
-		-- 일괄 판 그리기(1.1-J02). 켜짐 조건 = 부위 칸이 BULK 이고 마을 장비 상인(IsRegionShop). 아니면 판을 끄고 끝.
-		--   부위 토글 5개: 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(RefreshCraftSlotTabs 의 부위 칩과 같은 모양).
-		--   렙제 버튼 5개: 살 장비가 있고 · 그 전부를 살 메소 · 재료가 있고(BulkShort · N-34) · 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩).
+		-- 일괄 판 그리기(1.1-J02 · 1.0.21 #13 개편). 켜짐 조건 = 부위 칸이 BULK 이고 마을 장비 상인(IsRegionShop). 아니면 판을 끄고 끝.
+		--   부위 토글 5개(가운데): 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(RefreshCraftSlotTabs 의 부위 칩과 같은 모양).
+		--   렙제 버튼 5개(왼쪽): 고른 하나만 켜짐 = 금 칩 + 진한 글자 · 나머지 = 짙은 파랑 칩(늘 눌린다 — 재화가 모자라도 고를 수 있다).
+		--   [선택 항목 일괄 구매](오른쪽): 살 장비가 있고 · 그 전부를 살 메소 · 재료가 있고(BulkShort · N-34) · 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 잠김 = 짙은 파랑 칩 + 흐린 글자).
 		if not isvalid(self.contentCraft) then return end
 		-- 제작 화면이 아닌 라우트(물약 · 수리 · 강화)에서는 건드리지 않는다 — 바닥 띠 안내가 그 화면 것을 덮으면 안 된다(OnMatchStart 가 창이 열린 채 부를 수 있다).
 		if self.route ~= "craft" and self.route ~= "shop_equip" then return end
@@ -2014,19 +2099,28 @@ script WorkshopUIController extends Logic
 				self:ChipLabelStyle(self:Kid(chip, "Label"), on and "ink" or "", "#F3EEE2")
 			end
 		end
-		local parts = self:BulkPartsCsv()
+		-- 렙제 5개: 고른 하나만 켜짐 모양(안 골랐으면 기본 렙제 = 지금 레벨로 입을 수 있는 가장 높은 렙제).
+		local tier = self:BulkTierNow()
 		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
 			local btn = panel:GetChildByName("Tier_" .. t)
 			if isvalid(btn) then
 				local n = math.floor(tonumber(t) or 0)
-				local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0) and (self:BulkShort(key, n, parts) == "")
-				if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = can end
-				self:SetOn(btn, "On", can)
-				self:ChipLabelStyle(self:Kid(btn, "Label"), can and "ink" or "", "#F3EEE2")
+				local on = (n == tier)
+				self:SetOn(btn, "On", on)
+				self:ChipLabelStyle(self:Kid(btn, "Label"), on and "ink" or "", "#F3EEE2")
 			end
 		end
-		-- 부위 토글을 누를 때는 RefreshCraft 를 거치지 않으니 바닥 띠 안내도 여기서 맞춘다(RefreshCraft 의 일괄 분기와 같은 문장).
-		self:ShowFootInfo(self:BulkFootText())
+		-- [선택 항목 일괄 구매]: 고른 렙제 + 켜 둔 부위 전체를 살 수 있을 때만 눌린다.
+		local parts = self:BulkPartsCsv()
+		local buy = panel:GetChildByName("BtnBuy")
+		if isvalid(buy) then
+			local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts) > 0) and (self:BulkShort(key, tier, parts) == "")
+			if buy.ButtonComponent ~= nil then buy.ButtonComponent.Enable = can end
+			self:SetOn(buy, "On", can)
+			self:ChipLabelStyle(self:Kid(buy, "Label"), can and "ink" or "", "#7C88A4")
+		end
+		-- 렙제 · 부위 토글을 누를 때는 RefreshCraft 를 거치지 않으니 바닥 띠 비용 칩도 여기서 맞춘다(RefreshCraft 의 일괄 분기와 같은 그림).
+		self:RefreshBulkFoot()
 	end
 
 	@ExecSpace("ClientOnly")
@@ -2034,6 +2128,7 @@ script WorkshopUIController extends Logic
 		-- 새 매치: 일괄 구매 부위 토글을 전부 켠 상태(= 꺼 둔 부위 없음)로 되돌린다(1.1-J03). OnboardingService.PushState 가 판 번호가 바뀐 첫 호출에서 부른다.
 		-- 창 열기 · 닫기에서는 건드리지 않는다 — 같은 매치 안에서는 닫았다 열어도 토글이 유지된다. 부위 토글은 화면 설정이라 서버 원장 없이 클라에만 둔다(서버는 요청마다 오는 partsCsv 만 쓴다).
 		self.bulkOff = {}
+		self.bulkTier = 0   -- 고른 렙제도 처음(기본 렙제)으로(1.0.21 #13)
 		if self.isOpen then self:RefreshBulkPanel() end
 		log("[Workshop] bulk toggles reset (new match)")
 	end
@@ -2235,9 +2330,9 @@ script WorkshopUIController extends Logic
 				end
 			end
 		end
-		-- 일괄(BULK) 칸(1.1-J02): 바닥 띠는 안내 한 줄뿐이고 주 버튼은 잠근다(구매는 판의 렙제 버튼이 한다).
+		-- 일괄(BULK) 칸(1.1-J02): 바닥 띠는 일괄 합계 비용 칩(1.0.21 #13 · 이전엔 안내 한 줄)이고 주 버튼은 잠근다(구매는 판의 [선택 항목 일괄 구매]가 한다).
 		if self.craftSlot == "BULK" and byJob then
-			self:ShowFootInfo(self:BulkFootText())
+			self:RefreshBulkFoot()
 			self:SetPrimary(false, "구매")
 			return
 		end
