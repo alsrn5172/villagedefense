@@ -202,6 +202,14 @@ script StatService extends Logic
 				local judged = defender.MinionUnit
 				if isvalid(judged) and judged.BossJudged then avoid = _DamageFormula.BossAvoidPct end
 			end
+			-- 커닝 억제기 회피율 오라(1.0.21 #7 · 사용자 2026-10-20): 오라를 받은 아군 수비대(DefenderUnit · 넥서스 분신 · 소환체 포함)는 회피율에 Buff.EvaAdd(%p)를 더한다 →
+			--   그 수비대를 치는 적 플레이어의 명중 확률(100 + 명중률 − 레벨 차 − 대상 회피율)에서 그만큼 빠진다. 기본 공격(CalcPlayerDamage) · 스킬(SkillDatabase.RollSkillHit)이 이 함수 한 곳을 같이 쓴다.
+			--   1.0.21 #19(사용자 2026-10-20 "억제기 오라가 포탑에도"): 오라 안의 아군 시설(포탑 등 · LaneFacility)도 같은 규칙.
+			if isvalid(defender.DefenderUnit) or isvalid(defender.LaneFacility) then
+				---@type Buff
+				local eb = defender.Buff
+				if isvalid(eb) and (eb.EvaAdd or 0) > 0 then avoid = avoid + eb.EvaAdd end
+			end
 		end
 		return { level = level, avoid = avoid }
 	end
@@ -537,12 +545,13 @@ script StatService extends Logic
 			return self.NonCoreEffectMul
 		end
 		-- 명중률 %p(1.1-A02 · G04): 기본 20 + 장비 · 강화 · 버프(효율 없이) + DEX × 0.15 × 효율. LUK 은 명중에 안 더한다. 소수 3자리.
-		-- 커닝 억제기 명중 오라(%p · 1.1-A17 · SetAuraAccuracy)도 장비 · 버프처럼 효율 없이 더한다 → 캐릭터 창 명중률 칸에도 보인다.
+		-- (1.0.21 #7: 커닝 억제기 오라가 명중률 → 회피율 오라로 바뀌어 여기엔 오라 항이 없다.)
 		-- 넥서스 분신 암흑(1.0.7 §10 · CloneStatusService): 걸린 동안 명중률 −20%p(0 아래로는 안 내려간다).
 		local blind = (_CloneStatusService ~= nil) and _CloneStatusService:AccuracyDebuffOf(userId) or 0
-		f.accuracy = math.max(0, math.floor((f.accuracy + (f.dex or 0) * self.AccuracyPerDex * eff("dex") + (u.auraAccuracy or 0) - blind) * 1000 + 0.5) / 1000)
+		f.accuracy = math.max(0, math.floor((f.accuracy + (f.dex or 0) * self.AccuracyPerDex * eff("dex") - blind) * 1000 + 0.5) / 1000)
 		-- 회피율 %p(1.1-A08 · G05): 기본 0 + 장비 · 오팔 · 버프(효율 없이) + LUK × 0.05 × 효율. DEX 는 안 더한다. 소수 3자리.
-		f.avoid = math.floor((f.avoid + (f.luk or 0) * self.AvoidPerLuk * eff("luk")) * 1000 + 0.5) / 1000
+		-- 커닝 억제기 회피율 오라(%p · 1.0.21 #7 · SetAuraEvasion)도 장비 · 버프처럼 효율 없이 더한다 → 캐릭터 창 회피율 칸에도 보이고 몬스터 · 수비대 · 보스의 공격 회피 판정(TryDodgePlayer · TryPlayerDodge)에 그대로 쓰인다.
+		f.avoid = math.floor((f.avoid + (f.luk or 0) * self.AvoidPerLuk * eff("luk") + (u.auraEvasion or 0)) * 1000 + 0.5) / 1000
 		-- STR(1.1-G02): 방어 +0.1 · 최대 HP +20 (× 효율). INT(1.1-G03 · B11): 최대 MP +20 (× 효율).
 		f.defense = f.defense + math.floor((f.str or 0) * self.DefensePerStr * eff("str") + 1e-6)
 		f.maxhp = f.maxhp + math.floor((f.str or 0) * self.HpPerStr * eff("str") + 1e-6)
@@ -669,16 +678,16 @@ script StatService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void SetAuraAccuracy(string userId, number pct)
-		-- 시설 명중 오라(%p · 1.1-A17 · 커닝 억제기 AURA_ACC): FactionAuraController 가 값이 바뀔 때만 부른다. 0 = 오라 밖.
-		-- 최종 명중률이 바뀌므로 이속(SetAuraSpeedMul)과 달리 Recalculate 까지 한다.
+	method void SetAuraEvasion(string userId, number pct)
+		-- 시설 회피율 오라(%p · 1.0.21 #7 · 커닝 억제기 AURA_EVA · 옛 명중 오라 SetAuraAccuracy 를 대신한다): FactionAuraController 가 값이 바뀔 때만 부른다. 0 = 오라 밖.
+		-- 최종 회피율이 바뀌므로 이속(SetAuraSpeedMul)과 달리 Recalculate 까지 한다.
 		local u = self:EnsureUser(userId)
 		if u == nil then return end
 		if pct < 0 then pct = 0 end
-		if (u.auraAccuracy or 0) == pct then return end
-		u.auraAccuracy = pct
-		log("[Stat] aura accuracy=" .. tostring(pct) .. " (" .. userId .. ")")
-		self:Recalculate(userId, "AURA_ACC")
+		if (u.auraEvasion or 0) == pct then return end
+		u.auraEvasion = pct
+		log("[Stat] aura evasion=" .. tostring(pct) .. " (" .. userId .. ")")
+		self:Recalculate(userId, "AURA_EVA")
 	end
 
 	@ExecSpace("Client")
@@ -967,7 +976,10 @@ script StatService extends Logic
 		add("attack", "스탯 공격력", "주스탯 ×4 + 부스탯과 총 공격력으로 계산한 방어 적용 전 피해 범위\n현재 " .. tostring(range.min) .. " ~ " .. tostring(range.max) .. " · 숙련도 " .. num(self:MasteryOf(u) * 100) .. "%\n스킬은 이 범위에 각 스킬의 피해 비율·타수가 적용됨")
 		add("defense", "방어력", "받는 피해를 줄이는 능력치 · 피해 배율: 100 ÷ (100 + 방어력)\n현재 방어력 " .. num(f.defense) .. " · 기본 피해의 " .. num(_DamageFormula:DefenseFactor(f.defense or 0) * 100) .. "%를 받음\n최종 피해는 최소 1")
 		add("accuracy", "추가 명중률", "기본 명중 보정과 장비·DEX·버프를 합친 값\n명중 판정: 100% + 추가 명중률 − 나보다 높은 대상의 레벨 차 ×10%p − 대상 회피율\n현재 +" .. num(f.accuracy) .. "%p · 일반 몬스터 회피 10% / 보스 20% · 판정 범위 0~100%")
-		add("avoid", "회피율", "장비·버프와 LUK 추가효과로 적의 공격을 피함\n현재 " .. num(f.avoid) .. "% · 나보다 낮은 적은 레벨 차 1당 +10%p\n적의 명중 보정은 차감 · 최종 100% 이상이면 반드시 회피")
+		-- 회피율(1.0.21 #7): 커닝 억제기 회피율 오라(u.auraEvasion)가 최종치에 들어 있다. 옛 "적의 명중 보정은 차감"(수비대 명중 오라)은 없어졌다.
+		local evaAura = ""
+		if (u.auraEvasion or 0) > 0 then evaAura = " (마을 오라 +" .. num(u.auraEvasion) .. "%p 포함)" end
+		add("avoid", "회피율", "장비·버프·마을 오라와 LUK 추가효과로 적의 공격을 피함\n현재 " .. num(f.avoid) .. "%" .. evaAura .. " · 나보다 낮은 적은 레벨 차 1당 +10%p\n최종 100% 이상이면 반드시 회피")
 		add("ignoredef", "방어율 무시", "도발로 낮아진 대상 방어력에 적용됨\n현재 " .. num(self:GetIgnoreDef(userId)) .. "% · 무시 수치가 적용 대상 방어력보다 크면 방어 0\n그 외 대상 방어력에서 해당 비율만큼 무시")
 		add("speed", "이동속도", "기본 이동속도를 기준으로 적용되는 비율\n현재 " .. num(f.speed) .. "% · 마을 오라 배율 ×" .. num(u.auraSpeedMul or 1))
 		add("jump", "점프력", "기본 점프 높이를 기준으로 적용되는 비율\n현재 " .. num(f.jump) .. "% · 점프 힘에는 이 비율의 제곱근을 적용")

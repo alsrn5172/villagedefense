@@ -7,6 +7,12 @@ script StarForceService extends Logic
 	-- 비용 계산은 StarMesoCost 한 곳 — 서버 차감(RequestStarForce)과 공방 창 표시(WorkshopUIController.RefreshStarForce)가 같이 부른다(어긋나지 않게).
 	-- 판매 환급 없음(EquipSellService 는 별을 안 받는다 · 사용자 확정 Q5).
 
+	-- [착용 중 장비 N성으로 강화](RequestStarForceTo · 1.0.21 · 사용자 2026-10-20 "무기장갑옷머리신발순"): 단계마다 장비를 보는 순서. 보조무기는 무기 바로 뒤 · 옷 = 상의 · 하의.
+	property string TargetOrder = "WEAPON,SUBWEAPON,GLOVES,TOP,BOTTOM,HAT,SHOES"
+
+	-- 목표 별 N 의 상한(장비 최대 별 = 앱솔 10). 클라 WorkshopUIController.StarTargetMax 와 같은 값.
+	property integer StarTargetMax = 10
+
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
 		-- 상태 없음.
@@ -178,6 +184,102 @@ script StarForceService extends Logic
 			msg = "올릴 수 있는 장착 장비가 없습니다"
 		end
 		log("[Item] starforce ALL " .. tostring(mode) .. " items=" .. tostring(itemCount) .. " +" .. tostring(raised) .. "성 fail=" .. tostring(fails) .. " meso-" .. tostring(spent) .. " (" .. userId .. ")")
+		self:Result(userId, "", ok, msg, raised)
+	end
+
+	@ExecSpace("Server")
+	method void RequestStarForceTo(integer target)
+		-- [착용 중 장비 N성으로 강화](1.0.21 · 사용자 2026-10-20 "목표치까지 무기장갑옷머리신발순으로 1성씩 강화하다가(강화수준이 이상이면 패스) 돈모자라면 도중에 멈추는거지"
+		--   · "4 4 4 4 2 에 전체 5성이면 4 4 4 4 3 → 4 4 4 4 4 → 5 5 5 5 5 순서"): 단계 L = 1 ~ N 을 차례로 돌고, 단계마다 착용 장비를 TargetOrder 순서로 보며
+		--   지금 별이 L 보다 낮은 장비만 +1성 한 번 → 가장 낮은 별부터 한 단계씩 맞춰 올라간다. 이미 그 단계 이상 · 보석 강화 미완료 · 최대 별 · 스타포스 불가 장비는 건너뛴다.
+		--   메소가 모자라면(StarCheck lowMeso) 그 자리에서 전체를 멈춘다. 결과는 RequestStarForceAll 과 같은 Result(iid "" · newStar = 올린 총 성 수).
+		if _SpectateService ~= nil and _SpectateService:Blocked(senderUserId) then return end
+		local userId = senderUserId
+		local e = (_EquipService ~= nil) and _EquipService:EnsureUser(userId) or nil
+		if e == nil then
+			self:Result(userId, "", false, "올릴 수 있는 장착 장비가 없습니다", 0)
+			return
+		end
+		local function comma(n)
+			local s = tostring(math.floor(n))
+			local k = 1
+			while k > 0 do
+				s, k = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2")
+			end
+			return s
+		end
+		local goal = math.max(1, math.min(target, self.StarTargetMax))
+		-- 착용 순서(무기 · 보조무기 → 장갑 → 옷(상의 · 하의) → 모자 → 신발). 같은 인스턴스가 두 칸에 걸쳐 있으면(한벌옷 등) 한 번만.
+		local order = {}
+		local seen = {}
+		for s in string.gmatch(self.TargetOrder, "[^,]+") do
+			local iid = e[s]
+			if iid ~= nil and iid ~= "" and not seen[iid] then
+				seen[iid] = true
+				table.insert(order, iid)
+			end
+		end
+		local raised = 0
+		local fails = 0
+		local spent = 0
+		local attempted = 0
+		local below = 0
+		local stopped = false
+		local items = {}
+		local itemCount = 0
+		for _, iid in ipairs(order) do
+			local it = _InventoryService:Find(userId, iid)
+			if it ~= nil and (it.star or 0) < goal then below = below + 1 end
+		end
+		for level = 1, goal do
+			for _, iid in ipairs(order) do
+				local it = _InventoryService:Find(userId, iid)
+				if it ~= nil and (it.star or 0) < level then
+					local p = self:StarCheck(userId, iid)
+					if p.reason == "" then
+						attempted = attempted + 1
+						spent = spent + p.cost
+						if self:StarTry(userId, iid, p) then
+							raised = raised + 1
+							if not items[iid] then
+								items[iid] = true
+								itemCount = itemCount + 1
+							end
+						else
+							fails = fails + 1
+						end
+					elseif p.lowMeso then
+						stopped = true
+						break
+					end
+				end
+			end
+			if stopped then break end
+		end
+
+		if attempted > 0 then
+			if raised > 0 then _EquipService:RecalcLayer(userId) end
+			_EquipService:PushEquipped(userId)
+			_InventoryService:PushInventory(userId)
+		end
+		local failPart = ""
+		if fails > 0 then failPart = " · 실패 " .. tostring(fails) .. "회" end
+		local stopPart = ""
+		if stopped then stopPart = " · 메소가 모자라 멈춤" end
+		local ok = raised > 0
+		local msg = ""
+		if ok then
+			msg = "착용 중 장비 " .. tostring(goal) .. "성 강화 · 장비 " .. tostring(itemCount) .. "개 · 총 " .. tostring(raised) .. "성 상승 · " .. comma(spent) .. " 메소 사용" .. failPart .. stopPart
+		elseif attempted > 0 then
+			msg = "스타포스 강화 실패" .. failPart .. " · " .. comma(spent) .. " 메소 사용" .. stopPart
+		elseif stopped then
+			msg = "메소가 부족합니다"
+		elseif below == 0 then
+			msg = "이미 전부 " .. tostring(goal) .. "성 이상이에요"
+		else
+			msg = "올릴 수 있는 장착 장비가 없습니다"
+		end
+		log("[Item] starforce TO " .. tostring(goal) .. " items=" .. tostring(itemCount) .. " +" .. tostring(raised) .. "성 fail=" .. tostring(fails) .. " meso-" .. tostring(spent) .. " stopped=" .. tostring(stopped) .. " (" .. userId .. ")")
 		self:Result(userId, "", ok, msg, raised)
 	end
 

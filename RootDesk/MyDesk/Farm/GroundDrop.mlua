@@ -28,6 +28,63 @@ script GroundDrop extends Logic
 	-- 착지한 뒤 이 시간 동안은 줍히지도 끌려가지도 않는다(사용자 결정 2026-09-29 "0.3초 유예 — 바로 먹으니까 안 보인다"). 동전 · 아이템 공용.
 	property number LandHoldSeconds = 0.3
 
+	-- ── 한 줄 배치 (1.0.21 #3 · 사용자 2026-10-20 "아이템이 떨어질때 바닥을 탐색하고 그 바닥에 겹치지않게 일렬로 · 제일 가까운 foothold에 정확히 · 픽파켓도 마찬가지") ──
+	-- 한 마리가 떨군 것(메소 동전 · 아이템 · 주화 · 엘리트/보스 보상)은 한 key 의 한 줄: 1칸 = 죽은 x, 다음부터 오른쪽 · 왼쪽 번갈아(도발 끌어오기 SkillExecutors.ExecuteTaunt 와 같은 방식).
+	--   · 발판 = 죽은 발 높이에 가장 가까운 가로 발판이 속한 줄(Next/Previous 로 이어진 발판) · y = Foothold.GetYByX 정확값 · 칸이 줄 밖이면 반대쪽으로 채워 같은 층에 남긴다.
+	--   · 그 x 아래에 발판이 없으면(절벽 밖 · 틈 · 공중) 가장 가까운 발판 안쪽으로 당긴다 → 물리 낙하로 맵 밖에 떨어지는 일이 없다. FootholdComponent 가 없는 맵 · 발판이 하나도 없는 맵만 예전 동작.
+	--   · 부르는 법: SpawnItem 은 같은 자리에서 나온 드랍을 알아서 한 줄로 묶는다(자동 key). 직접 스폰하는 쪽(MesoCoin 동전 · 픽파켓)은
+	--     key = RowKeyAt(map, x, feetY)(또는 자기 key) → landing = NextRowLanding(map, x, feetY, key) → 스폰한 뒤 AssignLanding(drop, landing).
+	-- 칸 간격 RowGap = 0.6 u (1 u = 100 px). 근거 = 리소스 API 로 잰 드랍 그림 가로(2026-10-20): 메소 클립 4종 최대 28 · 28 · 36(지폐 뭉치) · 32(돈 주머니) px · 빅토리아 주화 28 · 보석/재화/물약 16~32 · 영혼석 36 px(→ 모두 0.36 u 이하),
+	--   몬스터 재료(MAT_*)는 그 몬스터의 클립 원본 28~192 px 를 ItemDrop.MaterialDropScale(0.3333)로 줄여 9~64 px — 스톤골렘 계열 180 px → 0.60 u · 변형 슬라임 192 px → 0.64 u 가 가장 크다.
+	--   0.6 이면 거의 전부(180 px 재료까지) 그림끼리 안 겹치고, 가장 큰 변형 슬라임 재료만 0.04 u 걸린다. 작은 그림(동전 · 보석)은 그만큼 성기게 놓인다. 그림 원점이 왼쪽 아래라(Docs/Changelog/a-item-look-meso) 그림은 칸 x 에서 오른쪽으로 뻗는다.
+	property number RowGap = 0.6
+
+	-- 같은 key 를 이 시간(초) 안에 다시 부르면 같은 줄의 다음 칸. 마지막 호출 기준으로 이어진다(연속 처치 · 연타 픽파켓).
+	property number RowWindowSeconds = 1.5
+
+	-- 한 줄이 가질 최대 칸 수(가운데 포함 · 11 = 양쪽 5칸씩 = 가운데에서 ±3.0 u). 다 쓰면 가운데부터 다시(너무 넓게 흩어져 자석 반경 4.5 밖으로 나가지 않게).
+	-- 한 마리가 떨구는 양은 동전 최대 3 + 아이템 · 주화 몇 개(엘리트 · 보스 보상 포함 보통 10 이하)라 한 줄에 들어간다.
+	property integer RowMaxSlots = 11
+
+	-- 발판 줄 양 끝에서 안쪽으로 이만큼은 비운다(끝에 딱 붙어 반쯤 걸리지 않게).
+	property number RowEdgeMargin = 0.1
+
+	-- 죽은 발 높이 위 · 아래로 발판을 찾는 거리(도발 TauntFloorSearch 와 같은 3.0). 못 찾으면 RowNearSearch 안에서 가장 가까운 발판 → 그것도 없으면 맵 전체.
+	property number RowFloorSearch = 3.0
+
+	property number RowNearSearch = 20.0
+
+	-- 발 위로 이만큼까지 솟은 발판은 "발과 같은 층" 으로 본다. 그보다 높은 발판은 아래 발판이 하나도 없을 때만 고른다(드랍이 위층으로 솟지 않게).
+	property number RowUpTolerance = 0.35
+
+	-- 이어진 발판을 따라가는 최대 조각 수(한쪽 방향).
+	property integer RowChainMax = 64
+
+	-- SpawnItem 이 key 를 자리로 정할 때 "같은 자리" 로 보는 거리(가로 · 세로). 한 마리가 떨군 동전 · 아이템 · 주화를 별개 컴포넌트가 따로 불러도 한 줄이 된다.
+	property number RowMatchDistance = 0.4
+
+	property number RowMatchHeight = 0.8
+
+	-- 같은 key 로 부른 자리가 줄을 처음 연 자리에서 이만큼(가로 · 세로) 넘게 벗어나면 새 줄을 연다 — 연타 픽파켓처럼 맞는 몬스터가 움직이는 경우 동전이 옛 자리에 쌓이지 않게.
+	property number RowReanchorDistance = 1.5
+
+	property number RowReanchorHeight = 1.0
+
+	@HideFromInspector
+	property any rows = nil
+
+	@HideFromInspector
+	property any autoKeys = nil
+
+	@HideFromInspector
+	property any chains = nil
+
+	@HideFromInspector
+	property integer keySeq = 0
+
+	@HideFromInspector
+	property number rowsSweepAt = 0
+
 	@ExecSpace("ServerOnly")
 	method boolean Settled(boolean landed, number age, number landedAt)
 		-- 착지했고 LandHoldSeconds 가 지났는가. 동전 · 아이템 드랍이 줍기 · 자석 직전에 묻는다.
@@ -94,33 +151,351 @@ script GroundDrop extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
+	method boolean IsSteepFoothold(any fh)
+		-- 45° 이상 가파른 발판(벽)에는 드랍을 놓지 않는다 — Map/FootholdSwitch.IsWall 과 같은 기준(Foothold.IsVertical 은 완전 수직만 참일 수 있다).
+		return math.abs(fh.EndPoint.y - fh.StartPoint.y) >= math.abs(fh.EndPoint.x - fh.StartPoint.x) - 0.005
+	end
+
+	@ExecSpace("ServerOnly")
+	method any NearestFoothold(any fc, number x, number feetY)
+		-- (x, feetY) 에서 가장 가까운 가로(45° 미만) 발판. 엔진 조회(RowNearSearch 안)가 가파른 발판을 주거나 못 찾으면 맵 전체에서 다시 찾는다. 하나도 없으면 nil.
+		local near = fc:GetNearestFootholdByPoint(Vector2(x, feetY), self.RowNearSearch)
+		if near ~= nil and not self:IsSteepFoothold(near) then
+			return near
+		end
+		local all = fc:GetFootholdAll()
+		if all == nil then
+			return nil
+		end
+		local best = nil
+		local bestD = math.huge
+		for _, fh in ipairs(all) do
+			if fh ~= nil and not self:IsSteepFoothold(fh) then
+				local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
+				local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
+				local cx = math.max(lo, math.min(hi, x))
+				local dx = cx - x
+				local dy = fh:GetYByX(cx) - feetY
+				local d = dx * dx + dy * dy
+				if d < bestD then
+					bestD = d
+					best = fh
+				end
+			end
+		end
+		return best
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ChainOf(Entity map, any fc, any base)
+		-- base 발판에서 양쪽으로 이어진(Next/Previous) 가로 발판을 모은 한 줄 { segs = { {id, lo, hi, x1, y1, x2, y2} … }, lo, hi }.
+		-- 가파른 발판 · 이미 본 발판 · RowChainMax 에서 멈춘다. (맵, 발판) 마다 한 번만 만든다 — 발판은 런타임에 안 바뀐다(Map/FootholdSwitch.GetWalls 와 같은 전제). 숫자만 저장한다.
+		if self.chains == nil then
+			self.chains = {}
+		end
+		local cacheKey = tostring(map.Id) .. ":" .. tostring(base.Id)
+		local cached = self.chains[cacheKey]
+		if cached ~= nil then
+			return cached
+		end
+		local segs = {}
+		local seen = {}
+		seen[base.Id] = true
+		table.insert(segs, { id = base.Id, lo = math.min(base.StartPoint.x, base.EndPoint.x), hi = math.max(base.StartPoint.x, base.EndPoint.x), x1 = base.StartPoint.x, y1 = base.StartPoint.y, x2 = base.EndPoint.x, y2 = base.EndPoint.y })
+		for _, d in ipairs({ 1, -1 }) do
+			local seg = base
+			for i = 1, self.RowChainMax do
+				-- seg 의 d 쪽 끝과 그쪽 링크(선분이 어느 방향으로 그려졌든 d 쪽 끝을 고른다 · FootholdSwitch.ChainEndAhead 와 같은 규칙).
+				local linkId = seg.PreviousFootholdId
+				if (seg.EndPoint.x - seg.StartPoint.x) * d > 0 then
+					linkId = seg.NextFootholdId
+				end
+				if linkId == nil or linkId == 0 then
+					break
+				end
+				local link = fc:GetFoothold(linkId)
+				if link == nil or seen[link.Id] == true or self:IsSteepFoothold(link) then
+					break
+				end
+				seen[link.Id] = true
+				table.insert(segs, { id = link.Id, lo = math.min(link.StartPoint.x, link.EndPoint.x), hi = math.max(link.StartPoint.x, link.EndPoint.x), x1 = link.StartPoint.x, y1 = link.StartPoint.y, x2 = link.EndPoint.x, y2 = link.EndPoint.y })
+				seg = link
+			end
+		end
+		local lo = math.huge
+		local hi = -math.huge
+		for _, s in ipairs(segs) do
+			if s.lo < lo then
+				lo = s.lo
+			end
+			if s.hi > hi then
+				hi = s.hi
+			end
+		end
+		local chain = { segs = segs, lo = lo, hi = hi }
+		self.chains[cacheKey] = chain
+		return chain
+	end
+
+	@ExecSpace("ServerOnly")
+	method any FloorLineAt(Entity map, number x, number feetY)
+		-- (x, feetY) 에서 가장 가까운 가로 발판이 속한 한 줄 { fc, segs, lo, hi, vlo, vhi, x }. x = 그 줄 안으로 당긴 시작 x · vlo~vhi = 드랍을 놓을 수 있는 범위(양 끝 RowEdgeMargin 안쪽).
+		-- 발판이 아예 없으면 nil(FootholdComponent 가 없는 맵 포함 → 부르는 쪽이 예전 동작).
+		-- ① x 의 위 · 아래 RowFloorSearch 안 발판 중 발 높이에 가장 가까운 것 — 발 위 RowUpTolerance 까지는 같은 층, 그보다 높은 발판은 아래 발판이 하나도 없을 때만(드랍이 위층으로 솟지 않게).
+		-- ② x 에 발판이 없으면(절벽 밖 · 틈 · 공중) 가장 가까운 발판 → x 를 그 줄 안으로 당긴다.
+		local fc = self:FootholdsOf(map)
+		if not isvalid(fc) then
+			return nil
+		end
+		local belowFh = nil
+		local belowBest = math.huge
+		local aboveFh = nil
+		local aboveBest = math.huge
+		local search = self.RowFloorSearch
+		local hits = fc:RaycastAll(Vector2(x, feetY + search), Vector2(0, -1), search * 2)
+		if hits ~= nil then
+			for _, fh in ipairs(hits) do
+				if fh ~= nil and not self:IsSteepFoothold(fh) then
+					local lo = math.min(fh.StartPoint.x, fh.EndPoint.x)
+					local hi = math.max(fh.StartPoint.x, fh.EndPoint.x)
+					if x >= lo - 0.02 and x <= hi + 0.02 then
+						local dy = fh:GetYByX(x) - feetY
+						if dy <= self.RowUpTolerance then
+							if math.abs(dy) < belowBest then
+								belowBest = math.abs(dy)
+								belowFh = fh
+							end
+						elseif dy < aboveBest then
+							aboveBest = dy
+							aboveFh = fh
+						end
+					end
+				end
+			end
+		end
+		local base = belowFh
+		if base == nil then
+			base = aboveFh
+		end
+		if base == nil then
+			base = self:NearestFoothold(fc, x, feetY)
+			if base == nil then
+				return nil
+			end
+		end
+		local chain = self:ChainOf(map, fc, base)
+		local vlo = chain.lo + self.RowEdgeMargin
+		local vhi = chain.hi - self.RowEdgeMargin
+		if vlo > vhi then
+			vlo = (chain.lo + chain.hi) * 0.5
+			vhi = vlo
+		end
+		return { fc = fc, segs = chain.segs, lo = chain.lo, hi = chain.hi, vlo = vlo, vhi = vhi, x = math.max(vlo, math.min(vhi, x)) }
+	end
+
+	@ExecSpace("ServerOnly")
+	method number LineYAt(any line, number x)
+		-- 줄 위 x 의 발판 높이 = Foothold.GetYByX 정확값. 줄 안 조각 사이 틈에 걸리면 가장 가까운 조각의 끝 값.
+		local bestSeg = nil
+		local bestGap = math.huge
+		for _, s in ipairs(line.segs) do
+			local gap = 0
+			if x < s.lo then
+				gap = s.lo - x
+			elseif x > s.hi then
+				gap = x - s.hi
+			end
+			if gap < bestGap then
+				bestGap = gap
+				bestSeg = s
+				if gap == 0 then
+					break
+				end
+			end
+		end
+		if bestSeg == nil then
+			return 0
+		end
+		local cx = math.max(bestSeg.lo, math.min(bestSeg.hi, x))
+		local fh = line.fc:GetFoothold(bestSeg.id)
+		if fh ~= nil then
+			return fh:GetYByX(cx)
+		end
+		-- 조각을 못 읽으면 저장해 둔 양 끝으로 직선 보간(Foothold 는 직선 선분이다).
+		local dx = bestSeg.x2 - bestSeg.x1
+		if math.abs(dx) < 0.0001 then
+			return bestSeg.y1
+		end
+		return bestSeg.y1 + (bestSeg.y2 - bestSeg.y1) * (cx - bestSeg.x1) / dx
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SweepRows(number now)
+		-- 오래된 줄 · 자동 key 를 치운다(5초마다). 윈도(RowWindowSeconds) 4배가 지난 것.
+		if now < self.rowsSweepAt then
+			return
+		end
+		self.rowsSweepAt = now + 5
+		local limit = self.RowWindowSeconds * 4
+		if self.rows ~= nil then
+			for key, row in pairs(self.rows) do
+				if now - row.at > limit then
+					self.rows[key] = nil
+				end
+			end
+		end
+		if self.autoKeys ~= nil then
+			for key, g in pairs(self.autoKeys) do
+				if now - g.at > limit then
+					self.autoKeys[key] = nil
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string RowKeyAt(Entity map, number x, number feetY)
+		-- 자리로 정하는 줄 key: 같은 맵 · 같은 자리(RowMatchDistance · RowMatchHeight) · RowWindowSeconds 안에 나온 드랍은 같은 key 를 받는다
+		-- → 한 마리가 떨군 동전 · 아이템 · 주화를 서로 다른 컴포넌트(FarmReward · MinionUnit · 보스/엘리트 보상)가 따로 불러도 한 줄이 된다. 맵이 없으면 "".
+		if not isvalid(map) then
+			return ""
+		end
+		if self.autoKeys == nil then
+			self.autoKeys = {}
+		end
+		local now = _UtilLogic.ServerElapsedSeconds
+		for key, g in pairs(self.autoKeys) do
+			if g.mapId == map.Id and now - g.at <= self.RowWindowSeconds and math.abs(g.x - x) <= self.RowMatchDistance and math.abs(g.y - feetY) <= self.RowMatchHeight then
+				g.at = now
+				return key
+			end
+		end
+		self.keySeq = self.keySeq + 1
+		local newKey = "~" .. tostring(self.keySeq)
+		self.autoKeys[newKey] = { mapId = map.Id, x = x, y = feetY, at = now }
+		return newKey
+	end
+
+	@ExecSpace("ServerOnly")
+	method number RowStep(any row)
+		-- 줄의 다음 칸 x: 가운데 → 오른쪽 → 왼쪽 → 오른쪽 … (도발 끌어오기와 같은 순서). 한쪽이 발판 줄 끝에 닿으면 반대쪽으로 채운다.
+		-- 양쪽이 다 끝났거나 RowMaxSlots 칸을 다 썼으면 가운데부터 다시.
+		if row.count == 0 then
+			row.count = 1
+			return row.x0
+		end
+		if row.count < self.RowMaxSlots then
+			for attempt = 1, 2 do
+				if row.turn > 0 then
+					local cx = row.x0 + self.RowGap * row.nextR
+					if cx <= row.line.vhi then
+						row.nextR = row.nextR + 1
+						row.turn = -1
+						row.count = row.count + 1
+						return cx
+					end
+				else
+					local cx = row.x0 - self.RowGap * row.nextL
+					if cx >= row.line.vlo then
+						row.nextL = row.nextL + 1
+						row.turn = 1
+						row.count = row.count + 1
+						return cx
+					end
+				end
+				-- 그쪽 끝이 막혔다 → 반대쪽으로.
+				row.turn = -row.turn
+			end
+		end
+		-- 줄이 다 찼다 → 가운데부터 다시.
+		row.nextR = 1
+		row.nextL = 1
+		row.turn = 1
+		row.count = 1
+		return row.x0
+	end
+
+	@ExecSpace("ServerOnly")
+	method any NextRowLanding(Entity map, number x, number feetY, string key)
+		-- (약속 · Skill/SkillBuffs 픽파켓이 부른다) (x, feetY) 에서 가장 가까운 가로 발판 위, 그 key 의 다음 칸 착지점 Vector2. 맵에 발판이 아예 없으면 nil.
+		-- 같은 key 를 RowWindowSeconds 안에 다시 부르면 같은 줄의 다음 칸(가운데 → 오른쪽 → 왼쪽 → …) · 윈도가 지났거나 다른 맵이면 새 줄(가운데부터).
+		-- feetY = 죽은 발 높이(드랍 스폰 높이 − SpawnLift). 줄의 가운데는 처음 부른 x(발판 줄 밖이면 가장 가까운 안쪽).
+		if not isvalid(map) or key == nil or key == "" then
+			return nil
+		end
+		if self.rows == nil then
+			self.rows = {}
+		end
+		local now = _UtilLogic.ServerElapsedSeconds
+		self:SweepRows(now)
+		local row = self.rows[key]
+		-- 윈도가 지났거나 · 다른 맵이거나 · 처음 부른 자리에서 멀리 벗어나면(연타하는 동안 몬스터가 움직인 경우) 새 줄 — 동전이 옛 자리에 쌓이지 않고 몬스터를 따라간다.
+		if row ~= nil and (row.mapId ~= map.Id or now - row.at > self.RowWindowSeconds or math.abs(x - row.reqX) > self.RowReanchorDistance or math.abs(feetY - row.reqY) > self.RowReanchorHeight) then
+			row = nil
+		end
+		if row == nil then
+			local line = self:FloorLineAt(map, x, feetY)
+			if line == nil then
+				if self.LogDiagnostics then log("[GroundDrop] row " .. key .. " no foothold on " .. tostring(map.Name) .. " (" .. string.format("%.2f", x) .. "," .. string.format("%.2f", feetY) .. ") — old physics") end
+				return nil
+			end
+			row = { mapId = map.Id, line = line, x0 = line.x, reqX = x, reqY = feetY, nextR = 1, nextL = 1, turn = 1, count = 0, at = now }
+			self.rows[key] = row
+			if self.LogDiagnostics then log("[GroundDrop] row " .. key .. " new on " .. tostring(map.Name) .. " line x=[" .. string.format("%.2f", line.lo) .. "," .. string.format("%.2f", line.hi) .. "] segs=" .. tostring(#line.segs) .. " center=" .. string.format("%.2f", line.x)) end
+		end
+		row.at = now
+		local sx = self:RowStep(row)
+		local sy = self:LineYAt(row.line, sx)
+		if self.LogDiagnostics then log("[GroundDrop] row " .. key .. " slot " .. tostring(row.count) .. " -> (" .. string.format("%.2f", sx) .. "," .. string.format("%.2f", sy) .. ")") end
+		return Vector2(sx, sy)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AssignLanding(Entity drop, Vector2 landing)
+		-- (약속) 그 드랍(MesoCoin · ItemDrop)은 자기 무작위 착지 대신 landing 에 떨어진다(포물선은 그대로). 스폰 직후(값 · DropOwner 를 넣은 뒤)에 부른다.
+		-- 드랍 컴포넌트가 OnBeginPlay 보다 먼저/나중에 받아도 된다(SetLanding 이 둘 다 처리) · landing 이 nil 이면 아무것도 안 한다(드랍이 예전 착지를 쓴다).
+		if not isvalid(drop) or landing == nil then
+			return
+		end
+		---@type MesoCoin
+		local coin = drop:GetComponent("script.MesoCoin")
+		if isvalid(coin) then
+			coin:SetLanding(landing.x, landing.y)
+			return
+		end
+		---@type ItemDrop
+		local item = drop:GetComponent("script.ItemDrop")
+		if isvalid(item) then
+			item:SetLanding(landing.x, landing.y)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
 	method any PlanLanding(Entity drop, number spread, number sameFloorTolerance, number search)
-		-- 드랍의 착지점 { x, y, fromX, fromY }. 생성 위치 아래 발판(= 죽은 층)에 내려놓는다.
-		-- 퍼진 자리가 절벽 밖이거나 다른 층이면 제자리에 · 아래에 발판이 아예 없으면 nil(부르는 쪽이 물리로 떨어뜨린다).
-		-- 🔴 발판은 **죽은 몬스터의 발 높이**(생성 위치 − SpawnLift)부터 아래로 찾는다. 생성 위치에서 찾으면 발 바로 위의 낮은 단(0.3 위)에 얹혔다(2026-09-29 Play).
+		-- 드랍의 기본 착지점 { x, y, fromX, fromY } — AssignLanding 이 오지 않은 드랍(예전 경로 · 픽파켓이 아직 안 바뀐 때)이 OnBeginPlay 에서 부른다. 생성 위치 아래 발판(= 죽은 층)에 내려놓는다.
+		-- 1.0.21 #3: 발판 줄(FloorLineAt)을 쓴다 — 죽은 x 에서 ±spread 로 흩뜨리되 줄 밖이면 반대쪽으로 접어 같은 층에 남기고, 그 x 아래에 발판이 없어도 가장 가까운 발판 안쪽으로 당긴다(물리로 떨어져 맵 밖으로 빠지지 않게).
+		-- FootholdComponent 가 없는 맵 · 발판이 하나도 없는 맵만 nil(부르는 쪽이 예전 물리). sameFloorTolerance · search 는 호환용으로 남겼다(이제 RowUpTolerance · RowFloorSearch 를 쓴다).
+		-- 🔴 발판은 **죽은 몬스터의 발 높이**(생성 위치 − SpawnLift) 기준으로 찾는다. 생성 위치에서 찾으면 발 바로 위의 낮은 단(0.3 위)에 얹혔다(2026-09-29 Play).
 		if not isvalid(drop) or not isvalid(drop.TransformComponent) then
 			return nil
 		end
 		local map = drop.CurrentMap
 		local p = drop.TransformComponent.WorldPosition
 		local feetY = p.y - self.SpawnLift
+		local line = self:FloorLineAt(map, p.x, feetY)
+		if line == nil then
+			return nil
+		end
 		local dir = 1
 		if _UtilLogic:RandomDouble() < 0.5 then
 			dir = -1
 		end
-		local ownFloor = self:FloorYAt(map, p.x, feetY, search)
-		local wantX = p.x + dir * spread * _UtilLogic:RandomDouble()
-		local wantFloor = self:FloorYAt(map, wantX, feetY, search)
-		local lx = wantX
-		local ly = wantFloor
-		if ownFloor ~= nil and (wantFloor == nil or math.abs(wantFloor - ownFloor) > sameFloorTolerance) then
-			lx = p.x
-			ly = ownFloor
+		local lx = line.x + dir * spread * _UtilLogic:RandomDouble()
+		if lx < line.vlo or lx > line.vhi then
+			lx = line.x - dir * spread * _UtilLogic:RandomDouble()
 		end
-		if ly == nil then
-			return nil
-		end
-		return { x = lx, y = ly, fromX = p.x, fromY = p.y }
+		lx = math.max(line.vlo, math.min(line.vhi, lx))
+		return { x = lx, y = self:LineYAt(line, lx), fromX = p.x, fromY = p.y }
 	end
 
 	method number ArcY(number fromY, number toY, number height, number u)
@@ -212,6 +587,13 @@ script GroundDrop extends Logic
 			return false
 		end
 		own.OwnerUserId = ownerId
+		-- 한 줄 배치(1.0.21 #3): 같은 자리에서 나온 드랍(한 마리의 동전 · 아이템 · 주화 · 엘리트/보스 보상)은 자동 key 로 한 줄 — 죽은 발 높이에 가장 가까운 발판 위에 겹치지 않게.
+		--   발판이 아예 없는 맵이면 landing 이 nil 이라 드랍이 자기 착지(PlanLanding → 물리)를 쓴다.
+		local rowKey = self:RowKeyAt(map, base.x, base.y)
+		local landing = self:NextRowLanding(map, base.x, base.y, rowKey)
+		if landing ~= nil then
+			self:AssignLanding(drop, landing)
+		end
 		if self.LogDiagnostics then log("[GroundDrop] " .. kind .. " " .. itemId .. " x" .. tostring(count) .. " at " .. tostring(map.Name) .. " (" .. string.format("%.2f", base.x + ox) .. "," .. string.format("%.2f", base.y + self.SpawnLift) .. ") for " .. ownerId) end
 		return true
 	end

@@ -131,6 +131,60 @@ script BossSkillRunner extends AttackComponent
 
 	property boolean LogCastHold = true
 
+	-- 예고 이펙트(1.0.21 #10 · #11 · 사용자 2026-10-20): 판정 몇 초 전에 미리 띄우는 이펙트 — 피아누스 S3 · S7 만(PreFxRule · TickPreFx).
+	--   S3 레이저("레이저포 쏘는 타이밍에 맞춰 공격타이밍 맞추기 · 레이저 모으는 효과 나온 뒤 1.5초 뒤에 레이저 쏘고 공격 판정"):
+	--     모으기 = 시전 이펙트 클립의 앞부분(f0 ~ CastEffectStartFrame−1)을 시전 시작부터 판정까지 늘려 재생 → 판정 순간 뒷부분(CastEffectStartFrame ~ · CastEffectAtStart=false)이 레이저 + 판정 + 입 열기.
+	--   S7 장판("문양 나온 뒤 바닥에 범위 표시 이펙트 생기고 1.5초 뒤에 공격 판정과 이펙트(바닥 장판)"):
+	--     문양(CastEffect · 시전 시작) → 판정 때 깔릴 자리(FireEffect 와 같은 발판 자동 모드)에 반투명 범위 표시 → 판정 순간 범위 표시를 걷고 노란 전기(FireEffect).
+	--   예고 시작 = CastDelay − Lead(CastDelay 가 판정 시각을 정한다 · 음수면 시전 시작부터). 문양 → 범위 표시 간격 = CastDelay − FloorMarkLead(지금 1.8 − 1.5 = 0.3초). 0 이하 = 그 예고를 끈다.
+	--   🔴 표시 → 판정은 늘 Lead 다(사용자 2026-10-20 "표시가 뜬 순간부터 정확히 1.5초 뒤"). 서버 프레임이 튀어 표시가 예정(CastDelay − Lead)보다 늦게 깔리면 판정을 늦은 만큼 미룬다(TickPreFx).
+	--   입 벌리기 해제(ReleaseCastHold) · 범위 표시 걷기(EndPreFx) · 판정 · 타격 이펙트는 전부 FireSkill 한 곳에서 나가므로 미뤄진 판정에 함께 따라온다.
+	property number ChargeLead = 1.5
+
+	property number FloorMarkLead = 1.5
+
+	-- S3 모으기 그림(animationclip RUID). 비우면 시전 이펙트 클립(CastEffectRUID)의 앞부분(f0 ~ CastEffectStartFrame−1)을 쓴다. 다른 그림을 넣으면 그 클립 전체를 같은 방식으로 늘려 재생한다(자리 · 크기는 CastEffectOffset · Scale 그대로).
+	property string ChargeRuid = ""
+
+	-- S7 범위 표시 그림(animationclip RUID). 비우면 FireEffectRUID(노란 전기)를 그대로 반투명으로 깐다. 다른 그림은 RUID 만 넣는다(원본 폭은 MeasureCastClips 가 잰다).
+	property string FloorMarkRuid = ""
+
+	-- 범위 표시 투명도(0 ~ 1 · 1 = 불투명) · 크기 배율(0 = FireEffectScale 그대로). 0.6 은 구현 기본값(사용자 확정 아님) — 노란 전기는 얇은 선이라 0.4 면 흐려서 안 보인다.
+	property number FloorMarkAlpha = 0.6
+
+	property number FloorMarkScale = 0
+
+	-- FloorMarkRuid 에 다른 그림을 넣었을 때만: true = 그림의 가운데 · 아래끝을 세그먼트 가운데 · 발판 높이에 맞춘다(띠 · 장판 그림은 피벗이 한쪽 끝 · 위에 있는 게 흔해서 피벗 그대로 놓으면 반쯤 밀리고 발판 밑으로 파묻힌다).
+	--   false = 그림 피벗을 자리에 그대로(FireEffect 의 노란 전기처럼 피벗이 선 위에 있는 그림). FloorMarkRuid 가 비었으면(= 노란 전기) 이 값과 무관하게 피벗 그대로다.
+	property boolean FloorMarkAlignBottom = true
+
+	property boolean LogPreFx = true
+
+	-- 예고 이펙트가 있는 스킬(PreFxRule)은 시전 시작 때 보던 쪽(−1 왼쪽 · +1 오른쪽)을 판정까지 고정한다(1.0.21 #10 · #11 · 구현 쪽 안전장치 — 사용자 지시 아님 · 판정 범위 값은 그대로). GetFacing 은 부를 때마다 추격 대상 위치로 다시 정해서, 예고(범위 표시 · 모으기)를 띄운 뒤 플레이어가 보스를 가로지르면
+	--   레이저 · 노란 전기 · 판정 박스가 예고와 반대쪽으로 튄다(예고가 거짓말이 된다). 보스 몸은 시전 중 안 돌아선다(StateTypeChase 가 시전 정지 중 방향을 안 바꾼다). false 면 예전처럼 판정 순간 대상 쪽.
+	property boolean LockCastFacing = true
+
+	@HideFromInspector
+	property number castFacing = 0
+
+	@HideFromInspector
+	property boolean preFxDone = false
+
+	-- 반복 재생하는 예고 이펙트(범위 표시)의 제거표 { serials = {번호…}, removed = false }. 판정 순간(EndPreFx) · 안전 타이머 · 죽음(OnEndPlay) 중 먼저 오는 쪽이 한 번만 지운다.
+	@HideFromInspector
+	property any preFxBox = nil
+
+	-- 예고 이펙트 구간의 자연 길이(skillId -> 초) · 범위 표시 그림의 원본 폭(skillId -> 유닛). MeasureCastClips 가 잰다.
+	@HideFromInspector
+	property any preFxSeconds = nil
+
+	@HideFromInspector
+	property any preFxWidth = nil
+
+	-- 범위 표시 그림의 피벗 보정(skillId -> { ax, ay } · 배율 1 유닛). FloorMarkAlignBottom 이 쓴다.
+	@HideFromInspector
+	property any preFxAnchor = nil
+
 	@HideFromInspector
 	property any ContactShape = nil
 
@@ -240,6 +294,9 @@ script BossSkillRunner extends AttackComponent
 		self.clipLen2 = {}
 		self.clipFull = {}
 		self.fireEffectWidth = {}
+		self.preFxSeconds = {}
+		self.preFxWidth = {}
+		self.preFxAnchor = {}
 		self.holdAt = {}
 		self.holdTail = {}
 		self.buffed = {}
@@ -279,6 +336,18 @@ script BossSkillRunner extends AttackComponent
 			if sk.castRuid ~= "" then table.insert(ruids, sk.castRuid) end
 			if sk.castRuid2 ~= "" then table.insert(ruids, sk.castRuid2) end
 			if sk.fireEffectRuid ~= nil and sk.fireEffectRuid ~= "" then table.insert(ruids, sk.fireEffectRuid) end
+			-- 예고 이펙트(1.0.21): 모으기 = 시전 이펙트 클립 · 범위 표시 = FloorMarkRuid(비면 FireEffect 그림 — 위에서 이미 넣었다).
+			local pre = self:PreFxRule(sk)
+			if pre ~= nil then
+				if pre.kind == "charge" then
+					if self.ChargeRuid ~= "" then
+						table.insert(ruids, self.ChargeRuid)
+					elseif sk.castEffectRuid ~= "" then
+						table.insert(ruids, sk.castEffectRuid)
+					end
+				end
+				if pre.kind == "floor" and self.FloorMarkRuid ~= "" then table.insert(ruids, self.FloorMarkRuid) end
+			end
 		end
 		if #ruids == 0 then
 			return
@@ -298,6 +367,35 @@ script BossSkillRunner extends AttackComponent
 						local sp = fc.Frames[1].FrameSprite
 						if sp.PixelPerUnit > 0 then
 							self.fireEffectWidth[sk.skillId] = sp.Width / sp.PixelPerUnit
+						end
+					end
+				end
+				-- 예고 이펙트(1.0.21): 모으기 구간(f0 ~ CastEffectStartFrame−1)의 자연 길이 · 범위 표시 그림의 원본 폭(첫 프레임 Width / PixelPerUnit).
+				local pre = self:PreFxRule(sk)
+				if pre ~= nil then
+					if pre.kind == "charge" then
+						local chargeSec = 0
+						local chargeWhere = ""
+						if self.ChargeRuid ~= "" then
+							chargeSec = self:ClipSecondsRange(self.ChargeRuid, 0, 99999)
+							chargeWhere = "ChargeRuid 전체"
+						else
+							chargeSec = self:ClipSecondsRange(sk.castEffectRuid, 0, math.floor(sk.castEffectStartFrame) - 1)
+							chargeWhere = "f0~f" .. tostring(math.floor(sk.castEffectStartFrame) - 1)
+						end
+						self.preFxSeconds[sk.skillId] = chargeSec
+						log("[BossSkillRunner] " .. self.BossId .. "/" .. sk.skillId .. " 모으기 구간 " .. chargeWhere
+							.. " 실측 " .. string.format("%.2f", chargeSec) .. "초 -> 판정 " .. string.format("%.2f", pre.lead) .. "초 전부터 그 시간에 맞춰 늘려 재생")
+					elseif pre.kind == "floor" and self.FloorMarkRuid ~= "" then
+						local mc = _ResourceService:LoadAnimationClipAndWait(self.FloorMarkRuid)
+						if mc ~= nil and mc.Frames ~= nil and mc.Frames[1] ~= nil and mc.Frames[1].FrameSprite ~= nil then
+							local msp = mc.Frames[1].FrameSprite
+							if msp.PixelPerUnit > 0 then
+								self.preFxWidth[sk.skillId] = msp.Width / msp.PixelPerUnit
+								-- 피벗 보정: 그림 가운데 · 아래끝을 자리에 맞추려면 피벗(원점)을 가운데에서 (피벗 x − 폭/2) 만큼 옆으로 · 피벗 y 만큼 위로 띄운다.
+								local mpv = msp.PivotPixel:ToVector2()
+								self.preFxAnchor[sk.skillId] = { ax = (mpv.x - msp.Width / 2) / msp.PixelPerUnit, ay = mpv.y / msp.PixelPerUnit }
+							end
 						end
 					end
 				end
@@ -518,6 +616,179 @@ script BossSkillRunner extends AttackComponent
 	end
 
 	@ExecSpace("ServerOnly")
+	method any PreFxRule(any skill)
+		-- 예고 이펙트 규칙표(1.0.21 #10 · #11 · 사용자 2026-10-20) — 피아누스(8510000) S3 · S7 만. 없으면 nil. lead = 판정 몇 초 전에 띄우나(0 이하 = 끔).
+		--   kind "charge": 시전 이펙트(CastEffectRUID) 클립의 앞부분 f0 ~ CastEffectStartFrame−1 = 모으기(시전 시작부터 판정까지 늘려 재생). 뒷부분은 판정 순간 레이저(CSV: CastEffectAtStart=false · StartFrame=5).
+		--   kind "floor" : 판정 때 FireEffect 가 깔릴 자리에 반투명으로 미리 깔아 범위를 보여 준다(FloorMarkRuid · FloorMarkAlpha · FloorMarkScale).
+		--   (코드 상수로 둔 이유) BossSkills 새 열 = 헤더 변경 = 스키마 계약 공지 · 35행 수정인데 쓰는 곳이 이 두 행뿐이다(SummonRule 과 같은 사정). 값이 늘면 그때 열로 옮긴다.
+		if skill == nil or self.BossId ~= "8510000" then
+			return nil
+		end
+		if skill.skillId == "S3" and self.ChargeLead > 0 then
+			return { kind = "charge", lead = self.ChargeLead }
+		end
+		if skill.skillId == "S7" and self.FloorMarkLead > 0 then
+			return { kind = "floor", lead = self.FloorMarkLead }
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TickPreFx(any skill)
+		-- 시전 시작 때 한 번 + 시전 대기 중(castLeft) 매 프레임: 판정 lead 초 전이 되면 예고 이펙트를 한 번 띄운다(1.0.21).
+		-- 🔴 표시 → 판정 간격은 늘 lead 다. 예정(startAt = CastDelay − lead)보다 늦게 깔리면(서버 프레임이 튀면 delta 한 번이 0.27초까지 간다)
+		--    늦은 만큼(late) 판정을 미룬다. 안 미루면 판정은 시전 시작 기준 CastDelay 에 고정이라 표시 → 판정이 lead − late 로 줄었다(관측: 1.23초).
+		if self.preFxDone or skill == nil then
+			return
+		end
+		local rule = self:PreFxRule(skill)
+		if rule == nil then
+			return
+		end
+		local delay = self:EffectiveCastDelay(skill)
+		if delay <= 0 then
+			return
+		end
+		local startAt = delay - rule.lead
+		if startAt < 0 then
+			startAt = 0
+		end
+		if self.castElapsed < startAt then
+			return
+		end
+		self.preFxDone = true
+		-- 깔린 순간부터 판정까지 = 예정 간격(delay − startAt = lead · CastDelay 가 lead 보다 짧으면 CastDelay). 모으기 재생 속도 · 범위 표시 안전 타이머가 이 값을 쓴다.
+		local remaining = delay - startAt
+		local late = self.castElapsed - startAt
+		if not self:PlayPreFx(skill, rule, remaining) then
+			return
+		end
+		-- 시전 시작에 바로 깔리는 예고(S3 모으기 · startAt 0)는 late 가 0 이라 여기서 끝난다. castLeft < 0 = PickAndCast 안(아직 안 세웠다 · late 도 항상 0).
+		if late <= 0.001 or self.castLeft < 0 then
+			return
+		end
+		-- 이 프레임 끝에 OnUpdate 가 castLeft −= delta 를 이어서 하므로, 그걸 감안해 늦은 만큼 얹으면 그 뒤 남은 시간이 정확히 remaining 이 된다.
+		self.castLeft = self.castLeft + late
+		-- 시전 중 이동 정지(FreezeMovement)도 같이 늘린다 — 안 늘리면 미뤄진 판정 · 입 벌리는 꼬리 동안 정지가 먼저 풀려 보스가 걸어 나간다.
+		local chase = self.Entity.StateChaseMonster
+		if isvalid(chase) and chase.CastFreezeLeft > 0 then
+			chase.CastFreezeLeft = chase.CastFreezeLeft + late
+		end
+		if self.LogPreFx then
+			log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " pre-fx late +" .. string.format("%.2f", late)
+				.. "s -> fire at " .. string.format("%.2f", self.castElapsed + remaining) .. "s (was " .. string.format("%.2f", delay) .. "s)")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PlayPreFx(any skill, any rule, number remaining)
+		-- 예고 이펙트를 띄운다. remaining = 깔린 순간부터 판정까지 남은 초(= Lead · 늦게 깔렸으면 TickPreFx 가 판정을 미뤄 그만큼 남긴다).
+		-- 반환 = 실제로 띄웠는가(못 띄웠으면 false — 보이지도 않는 표시 때문에 판정을 미루지 않는다).
+		if rule.kind == "charge" then
+			-- 모으기: 시전 이펙트 클립의 앞부분(f0 ~ CastEffectStartFrame−1)을 판정까지 남은 시간에 맞춰 늘려 재생한다 → 끝나는 순간이 레이저(뒷부분) + 판정이다.
+			--   ChargeRuid 를 넣었으면 그 클립 전체를 같은 방식으로(자리 · 크기는 CastEffectOffset · Scale 그대로).
+			local chargeRuid = self.ChargeRuid
+			local last = math.floor(skill.castEffectStartFrame) - 1
+			if chargeRuid ~= nil and chargeRuid ~= "" then
+				last = -1
+			elseif last < 0 or skill.castEffectRuid == nil or skill.castEffectRuid == "" then
+				return false
+			end
+			local natural = 0
+			if self.preFxSeconds ~= nil and self.preFxSeconds[skill.skillId] ~= nil then
+				natural = self.preFxSeconds[skill.skillId]
+			end
+			if natural <= 0 then
+				natural = self:ClipSecondsRange(chargeRuid ~= "" and chargeRuid or skill.castEffectRuid, 0, last < 0 and 99999 or last)
+			end
+			local rate = 1
+			if natural > 0 and remaining > 0.05 then
+				rate = natural / remaining
+			end
+			if rate < 0.05 then
+				rate = 0.05
+			end
+			if rate > 8 then
+				rate = 8
+			end
+			self:PlayCastEffectWindow(skill, chargeRuid, 0, last, rate)
+			if self.LogPreFx then
+				log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " pre-fx charge f0~" .. (last < 0 and "end" or ("f" .. tostring(last)))
+					.. " natural=" .. string.format("%.2f", natural) .. "s rate=" .. string.format("%.2f", rate)
+					.. " until-fire=" .. string.format("%.2f", remaining) .. "s at=" .. string.format("%.2f", self.castElapsed) .. "s")
+			end
+			return true
+		elseif rule.kind == "floor" then
+			-- 범위 표시: 판정 때 FireEffect 가 깔릴 자리(같은 발판 자동 모드)에 반투명으로 미리 깔고 판정 순간 걷는다.
+			local ruid = self.FloorMarkRuid
+			local nativeW = 0
+			local anchorX = 0
+			local anchorY = 0
+			if ruid == nil or ruid == "" then
+				ruid = skill.fireEffectRuid
+				if self.fireEffectWidth ~= nil and self.fireEffectWidth[skill.skillId] ~= nil then
+					nativeW = self.fireEffectWidth[skill.skillId]
+				end
+			else
+				if self.preFxWidth ~= nil and self.preFxWidth[skill.skillId] ~= nil then
+					nativeW = self.preFxWidth[skill.skillId]
+				end
+				if self.FloorMarkAlignBottom and self.preFxAnchor ~= nil and self.preFxAnchor[skill.skillId] ~= nil then
+					anchorX = self.preFxAnchor[skill.skillId].ax
+					anchorY = self.preFxAnchor[skill.skillId].ay
+				end
+			end
+			if ruid == nil or ruid == "" then
+				return false
+			end
+			local markScale = self.FloorMarkScale
+			if markScale == nil or markScale <= 0 then
+				markScale = skill.fireEffectScale
+				if markScale == nil or markScale <= 0 then
+					markScale = 1
+				end
+			end
+			self:EndPreFx()
+			local serials = self:PlayFloorFx(skill, ruid, nativeW, markScale, self.FloorMarkAlpha, true, "pre-fx-floor", anchorX, anchorY)
+			if #serials == 0 then
+				return false
+			end
+			-- 반복 재생이라 안 지우면 영영 남는다 → 판정 순간(FireSkill → EndPreFx)에 지우고 · 안전 타이머가 한 번 더 지운다(보스가 죽거나 시전이 끊겨도). 시각 = 새 남은 시간(remaining = Lead) + 0.1.
+			local box = { serials = serials, removed = false }
+			self.preFxBox = box
+			_TimerService:SetTimerOnce(function()
+				if box.removed then
+					return
+				end
+				box.removed = true
+				for _, sid in ipairs(box.serials) do
+					_EffectService:RemoveEffect(sid)
+				end
+			end, remaining + 0.1)
+			if self.LogPreFx then
+				log("[BossSkillRunner] " .. self.BossId .. "/" .. skill.skillId .. " pre-fx floor placed=" .. tostring(#serials)
+					.. " alpha=" .. string.format("%.2f", self.FloorMarkAlpha) .. " until-fire=" .. string.format("%.2f", remaining) .. "s at=" .. string.format("%.2f", self.castElapsed) .. "s")
+			end
+			return true
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndPreFx()
+		-- 반복 재생하던 예고 이펙트(범위 표시)를 걷는다. 판정 순간(FireSkill) · 안전 타이머 · 죽음(OnEndPlay) 중 먼저 오는 쪽이 한 번만 지운다.
+		local box = self.preFxBox
+		self.preFxBox = nil
+		if box == nil or box.removed then
+			return
+		end
+		box.removed = true
+		for _, sid in ipairs(box.serials) do
+			_EffectService:RemoveEffect(sid)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
 	method void StartContactDamage()
 		-- 몸통 크기의 판정 박스를 짧은 간격으로 계속 때린다 = 접촉 데미지.
 		-- 박스는 스프라이트 실제 크기에서 뽑는다(MonsterAttack 과 같은 방식).
@@ -609,6 +880,8 @@ script BossSkillRunner extends AttackComponent
 		end
 		-- 버프를 건 채로 죽으면 대상 속도가 영구히 올라간 채 남는다.
 		self:ClearAllBuffs()
+		-- 반복 재생하던 예고 이펙트(1.0.21 범위 표시)도 지운다.
+		self:EndPreFx()
 	end
 
 	@ExecSpace("ServerOnly")
@@ -638,6 +911,10 @@ script BossSkillRunner extends AttackComponent
 		--    StateTypeChase 는 방향을 sprite.FlipX 로 표현하고 Scale.x 는 건드리지 않는다.
 		--    Scale.x 를 보면 값이 안 변해서 스킬이 항상 한쪽으로만 나간다.
 		--
+		-- 시전 중 방향 고정(1.0.21 · LockCastFacing): 예고 이펙트가 있는 스킬은 시전 시작 때 정한 쪽을 판정까지 쓴다.
+		if self.castFacing ~= 0 then
+			return self.castFacing
+		end
 		-- 추격 대상이 있으면 그쪽을 본다. 이게 가장 확실하다.
 		local target = self:GetChaseTarget()
 		local myTr = self.Entity.TransformComponent
@@ -750,6 +1027,7 @@ script BossSkillRunner extends AttackComponent
 			self:HoldCastSprite(self.pendingSkill)
 			self.castElapsed = self.castElapsed + delta
 			self:TickCastHold(self.pendingSkill)
+			self:TickPreFx(self.pendingSkill)
 			self.castLeft = self.castLeft - delta
 			if self.castLeft <= 0 then
 				self.castLeft = -1
@@ -909,6 +1187,12 @@ script BossSkillRunner extends AttackComponent
 		end
 		self.pendingSkill = skill
 
+		-- 예고 이펙트가 있는 스킬은 시전 시작 때 보던 쪽을 판정까지 고정한다(1.0.21 · GetFacing 이 이 값을 먼저 본다). 그 외 스킬은 예전처럼 부를 때마다 대상 쪽.
+		self.castFacing = 0
+		if self.LockCastFacing and self:PreFxRule(skill) ~= nil then
+			self.castFacing = self:GetFacing()
+		end
+
 		-- 시전하는 동안 제자리에 선다. 걸어다니면서 스킬을 쓰면 모션이 겉돈다.
 		-- 쿨다운 중이거나 사거리 밖이면 여기까지 안 오므로 그때는 계속 추격한다.
 		self:FreezeMovement(self:EffectiveCastDelay(skill) + self:EffectiveCastDelay2(skill)
@@ -949,6 +1233,9 @@ script BossSkillRunner extends AttackComponent
 		self.castElapsed = 0
 		self.holdApplied = false
 		self:TickCastHold(skill)
+		-- 예고 이펙트(1.0.21): 판정 Lead 초 전에 띄운다. Lead 가 CastDelay 이상이면 시전 시작 바로 여기서(S3 모으기).
+		self.preFxDone = false
+		self:TickPreFx(skill)
 
 		local delay = self:EffectiveCastDelay(skill)
 		if delay > 0 then
@@ -1094,6 +1381,9 @@ script BossSkillRunner extends AttackComponent
 		-- 시전 대기 프레임 고정(1.0.19)을 풀어 휘두르기 · 입 열기 프레임을 판정과 같은 순간에 재생한다.
 		self:ReleaseCastHold(skill)
 
+		-- 예고 이펙트(1.0.21): 반복 재생하던 범위 표시를 걷는다 — 바로 아래 PlayFireEffects 가 그 자리에 진짜 이펙트를 깐다(모으기는 이미 끝났다).
+		self:EndPreFx()
+
 		-- 앞에 뜨는 이펙트는 타격 궤적이다. 판정과 같은 순간에 띄워야 맞는 느낌이 난다.
 		-- (시전 시작에 띄우면 이펙트만 먼저 나오고 한참 뒤에 맞는다)
 		if not skill.castEffectAtStart then
@@ -1130,6 +1420,9 @@ script BossSkillRunner extends AttackComponent
 		-- 판정 순간에 바닥마다 띄우는 두 번째 이펙트 (예고는 CastEffect · 타격은 FireEffect).
 		-- 피아누스 S7: 크림빛 대파동이 예고로 뜬 뒤 여기서 노란 전기가 모든 층에 깔린다.
 		self:PlayFireEffects(skill)
+
+		-- 시전 중 방향 고정(1.0.21)은 판정 · 이펙트가 다 나간 여기서 푼다.
+		self.castFacing = 0
 
 		local recover = self:EffectiveRecoverTime(skill)
 		if recover > 0 then
@@ -1906,30 +2199,59 @@ script BossSkillRunner extends AttackComponent
 	@ExecSpace("ServerOnly")
 	method void PlayFireEffects(any skill)
 		-- 판정 순간에 바닥마다 띄우는 타격 이펙트 (FireEffectRUID). 피아누스 S7 의 노란 전기.
+		-- 깔기 본체는 PlayFloorFx(1.0.21: 판정 전 범위 표시와 같은 자리를 쓰려고 뺐다). 여기는 FireEffect 열 값을 넘기는 얇은 껍데기다.
+		if skill.fireEffectRuid == nil or skill.fireEffectRuid == "" then
+			return
+		end
+		local fireW = 0
+		if self.fireEffectWidth ~= nil and self.fireEffectWidth[skill.skillId] ~= nil then
+			fireW = self.fireEffectWidth[skill.skillId]
+		end
+		local fireScale = skill.fireEffectScale
+		if fireScale == nil or fireScale <= 0 then
+			fireScale = 1
+		end
+		self:PlayFloorFx(skill, skill.fireEffectRuid, fireW, fireScale, 1, false, "fire-effect", 0, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any PlayFloorFx(any skill, string ruid, number nativeW, number s, number alpha, boolean loop, string tag, number ax, number ay)
+		-- ruid 이펙트를 판정 박스가 덮는 바닥(foothold 세그먼트)마다 깐다. PlayFireEffects(판정 순간 · 불투명 · 1회)와 PlayPreFx 의 범위 표시(판정 전 · 반투명 · 반복)가 같이 쓴다.
+		--   nativeW = 그림 원본 폭(유닛 · 0 이하면 2.92) · s = 크기 배율 · alpha < 1 이면 반투명 · loop 이면 반복 재생(안 지우면 영영 남는다 — 호출한 쪽이 반환한 번호로 RemoveEffect).
+		--   ax · ay = 피벗 보정(배율 1 · 유닛) — 그림 가운데 · 아래끝을 자리(세그먼트 가운데 · 발판 높이)에 맞출 때만 넣는다. 0 · 0 = 그림 피벗을 자리에 그대로(FireEffect 의 노란 전기가 이쪽 · 피벗이 선 위에 있다).
+		--   반환 = 만든 이펙트 번호 배열(실패 0 은 뺀다). 판정 박스 · 층 · 보스 앞 Z 는 두 쪽이 똑같다 = 범위 표시가 곧 깔릴 자리.
 		-- 🔴 foothold 세그먼트 단위로 깐다(사용자 관측 - 2층 발판 2개·3층 1개가 짧은데 타일이 허공까지 나갔다).
 		--    X 를 샘플링하면 발판 길이를 모른다. 대신 판정 박스에 걸리는 세그먼트를 전부 열거해
 		--    세그먼트마다 "그 길이에 딱 맞게 가로만 늘린" 이펙트 1장을 놓는다 (PlayEffect 는 X·Y 배율이 따로다).
 		--    긴 1층은 박스 폭으로 잘리고, 짧은 2·3층은 발판 길이만큼만, 경사는 각도까지 맞춘다.
 		--    FireEffectFloors 가 비어 있지 않으면 예전 고정 오프셋 모드(보스 y 기준 ; 목록 · Tiles 장 균등 배치).
-		if skill.fireEffectRuid == nil or skill.fireEffectRuid == "" then
-			return
+		local serials = {}
+		if ruid == nil or ruid == "" then
+			return serials
 		end
 		local t = self.Entity.TransformComponent
 		if not isvalid(t) then
-			return
+			return serials
 		end
 		local p = t.WorldPosition
 		-- 보스 앞(1.0.19): 같은 Default/3 순번 안에서 보스 몸보다 앞으로.
 		p = Vector3(p.x, p.y, p.z + self.FrontEffectZ)
 		local facing = self:GetFacing()
-		local s = skill.fireEffectScale
 		if s == nil or s <= 0 then
 			s = 1
+		end
+		-- 피벗 보정의 좌우 부호: FlipX(오른쪽을 볼 때)면 그림이 피벗을 기준으로 뒤집혀 가운데가 반대쪽으로 간다.
+		local flipSign = 1
+		if facing > 0 then
+			flipSign = -1
 		end
 		local o = {}
 		o["SortingLayer"] = self.CastEffectSortingLayer
 		o["OrderInLayer"] = self.CastEffectOrderInLayer
 		o["FlipX"] = (facing > 0)
+		if alpha ~= nil and alpha < 1 then
+			o["Alpha"] = alpha
+		end
 		local placed = 0
 		local MAX_PLACED = 24
 
@@ -1951,16 +2273,19 @@ script BossSkillRunner extends AttackComponent
 			for _, fy in ipairs(fixedFloors) do
 				for i = 1, tiles do
 					if placed < MAX_PLACED then
-						_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
-							Vector3(left + (i - 0.5) * step * facing, p.y + fy, p.z), 0, Vector3(s, s, 1), false, o)
+						local sid = _EffectService:PlayEffect(ruid, self.Entity,
+							Vector3(left + (i - 0.5) * step * facing + ax * s * flipSign, p.y + fy + ay * s, p.z), 0, Vector3(s, s, 1), loop, o)
 						placed = placed + 1
+						if sid ~= nil and sid ~= 0 then
+							table.insert(serials, sid)
+						end
 					end
 				end
 			end
 			if self.LogSkill then
-				log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId .. " mode=fixed placed=" .. tostring(placed))
+				log("[BossSkillRunner] " .. self.BossId .. " " .. tag .. "=" .. skill.skillId .. " mode=fixed placed=" .. tostring(placed))
 			end
-			return
+			return serials
 		end
 
 		-- foothold 세그먼트 모드
@@ -1971,12 +2296,15 @@ script BossSkillRunner extends AttackComponent
 		end
 		if not isvalid(fh) then
 			-- 발판 정보가 없으면 보스 발 높이에 한 장.
-			_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
-				Vector3(p.x + skill.offsetX * facing, p.y, p.z), 0, Vector3(s, s, 1), false, o)
-			if self.LogSkill then
-				log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId .. " mode=none placed=1")
+			local sid = _EffectService:PlayEffect(ruid, self.Entity,
+				Vector3(p.x + skill.offsetX * facing + ax * s * flipSign, p.y + ay * s, p.z), 0, Vector3(s, s, 1), loop, o)
+			if sid ~= nil and sid ~= 0 then
+				table.insert(serials, sid)
 			end
-			return
+			if self.LogSkill then
+				log("[BossSkillRunner] " .. self.BossId .. " " .. tag .. "=" .. skill.skillId .. " mode=none placed=1")
+			end
+			return serials
 		end
 
 		-- 판정 박스의 월드 범위 (facing 에 따라 좌우가 뒤집히므로 min/max 로 정리)
@@ -1987,8 +2315,7 @@ script BossSkillRunner extends AttackComponent
 		local boxB = p.y + skill.offsetY - skill.rangeY * 0.5
 		local boxT = p.y + skill.offsetY + skill.rangeY * 0.5
 
-		-- 이펙트 원본 폭. MeasureCastClips 가 실측해 둔다. 없으면 이 자산(292px)의 2.92 를 쓴다.
-		local nativeW = self.fireEffectWidth[skill.skillId]
+		-- 이펙트 원본 폭. MeasureCastClips 가 실측해 둔다(nativeW 인자). 없으면 이 자산(292px)의 2.92 를 쓴다.
 		if nativeW == nil or nativeW <= 0 then
 			nativeW = 2.92
 		end
@@ -2050,22 +2377,48 @@ script BossSkillRunner extends AttackComponent
 				if not rn.flat and atan ~= nil then
 					ang = math.deg(atan(rn.y1 - rn.y0, w))
 				end
-				_EffectService:PlayEffect(skill.fireEffectRuid, self.Entity,
-					Vector3((rn.x0 + rn.x1) * 0.5, (rn.y0 + rn.y1) * 0.5, p.z), ang, Vector3(sx, s, 1), false, o)
+				-- 피벗 보정(ax · ay)도 경사 각도만큼 같이 돌린다. 0 · 0 이면 예전과 같은 자리.
+				local offX = ax * sx * flipSign
+				local offY = ay * s
+				if ang ~= 0 and (offX ~= 0 or offY ~= 0) then
+					local rad = math.rad(ang)
+					local cosA = math.cos(rad)
+					local sinA = math.sin(rad)
+					local rotX = offX * cosA - offY * sinA
+					offY = offX * sinA + offY * cosA
+					offX = rotX
+				end
+				local sid = _EffectService:PlayEffect(ruid, self.Entity,
+					Vector3((rn.x0 + rn.x1) * 0.5 + offX, (rn.y0 + rn.y1) * 0.5 + offY, p.z), ang, Vector3(sx, s, 1), loop, o)
 				placed = placed + 1
+				if sid ~= nil and sid ~= 0 then
+					table.insert(serials, sid)
+				end
 			end
 		end
 		if self.LogSkill then
-			log("[BossSkillRunner] " .. self.BossId .. " fire-effect=" .. skill.skillId
+			log("[BossSkillRunner] " .. self.BossId .. " " .. tag .. "=" .. skill.skillId
 				.. " mode=segment cands=" .. tostring(#cands) .. " runs=" .. tostring(#runs) .. " placed=" .. tostring(placed) .. " nativeW=" .. string.format("%.2f", nativeW)
 				.. " box x " .. string.format("%.2f", boxL) .. "~" .. string.format("%.2f", boxR))
 		end
+		return serials
 	end
 	@ExecSpace("ServerOnly")
 	method void PlayCastEffect(any skill)
 		-- 시전 중 보스 주변에 띄우는 이펙트. 투사체와 달리 제자리에 있다.
 		-- 마법진처럼 보스 뒤에 깔아야 하는 것은 CastEffectBehind=true 로 둔다.
-		if skill.castEffectRuid == nil or skill.castEffectRuid == "" then
+		-- 구간 · 속도는 CSV 열 그대로(CastEffectStartFrame · EndFrame · PlayRate). 본체는 PlayCastEffectWindow(1.0.21: 모으기가 같은 클립의 앞부분을 다른 속도로 쓰려고 뺐다).
+		self:PlayCastEffectWindow(skill, "", skill.castEffectStartFrame, skill.castEffectEndFrame, skill.castEffectPlayRate)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayCastEffectWindow(any skill, string ruidOverride, number startFrame, number endFrame, number playRate)
+		-- 이펙트 클립(ruidOverride · 비면 CastEffectRUID)의 [startFrame, endFrame](0-based · 양끝 포함 · endFrame < 0 = 끝까지)를 playRate 배속으로 한 번 재생한다. 자리 · 크기 · 층은 PlayCastEffect 와 같다.
+		local ruid = skill.castEffectRuid
+		if ruidOverride ~= nil and ruidOverride ~= "" then
+			ruid = ruidOverride
+		end
+		if ruid == nil or ruid == "" then
 			return
 		end
 		local t = self.Entity.TransformComponent
@@ -2088,13 +2441,13 @@ script BossSkillRunner extends AttackComponent
 			z = p.z + self.FrontEffectZ
 		end
 		options["FlipX"] = (facing > 0)
-		options["PlayRate"] = skill.castEffectPlayRate
+		options["PlayRate"] = playRate
 		-- 원본 이펙트에 폭발이 여러 번 들어 있으면 구간을 잘라 한 번만 쓴다.
-		if skill.castEffectStartFrame > 0 then
-			options["StartFrameIndex"] = skill.castEffectStartFrame
+		if startFrame > 0 then
+			options["StartFrameIndex"] = startFrame
 		end
-		if skill.castEffectEndFrame >= 0 then
-			options["EndFrameIndex"] = skill.castEffectEndFrame
+		if endFrame >= 0 then
+			options["EndFrameIndex"] = endFrame
 		end
 
 		-- 🔴 판정 박스의 OffsetX/Y 를 쓰면 안 된다. 이펙트 전용 좌표를 따로 둔다.
@@ -2103,7 +2456,7 @@ script BossSkillRunner extends AttackComponent
 		--    attack3/info/effect 는 pivot (138,-27) 이라 원점에 놓으면 몸통에 겹친다.
 		--    그래서 하나의 규칙으로는 못 맞추고 자산별로 실측해서 넣는다.
 		local s = skill.castEffectScale
-		_EffectService:PlayEffect(skill.castEffectRuid, self.Entity,
+		_EffectService:PlayEffect(ruid, self.Entity,
 			Vector3(p.x + skill.castEffectOffsetX * facing, p.y + skill.castEffectOffsetY, z),
 			0, Vector3(s, s, 1), false, options)
 	end

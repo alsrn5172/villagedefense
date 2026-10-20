@@ -167,12 +167,48 @@ script WorkshopUIController extends Logic
 	@HideFromInspector
 	property string craftSlot = "ALL"
 
-	-- BULK = 레벨제 일괄 구매 칸(1.1-J02): 이 칩을 고르면 목록 자리에 Craft/BulkPanel(렙제 버튼 5 · 부위 토글 5)이 뜬다. 마을 장비 상인에서만 보인다.
+	-- BULK = 레벨제 일괄 구매 칸(1.1-J02): 이 칩을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다. 마을 장비 상인에서만 보인다.
+	--   1.0.21 #13 개편: 왼쪽 렙제 버튼 5(하나만 고름) · 가운데 부위 토글 5 · 오른쪽 [선택 항목 일괄 구매].
 	property string CraftSlots = "ALL,WEAPON,HAT,CLOTH,GLOVES,SHOES,SPECIAL,BULK"
 
 	-- 일괄 구매에서 뺀 부위 집합 { WEAPON=true … }(1.1-J02). 비어 있으면 전부 켜짐. 창을 열고 닫아도 유지하고 새 매치(OnMatchStart)에서만 비운다(1.1-J03).
 	@HideFromInspector
 	property any bulkOff = nil
+
+	-- 일괄 구매에서 고른 렙제(1.0.21 #13 · 하나만 고름). 0 = 아직 안 골랐다 → 지금 레벨로 입을 수 있는 가장 높은 렙제(DefaultBulkTier · 레벨 10 미만이면 10).
+	-- 창을 열 때(Open)와 새 매치(OnMatchStart)에서 0 으로 되돌린다 — 같은 창을 연 채로는 고른 렙제가 유지된다.
+	@HideFromInspector
+	property integer bulkTier = 0
+
+	-- [착용 중 장비 N성으로 강화]의 목표 별 N(1.0.21 · 사용자 2026-10-20). 0 = 아직 안 골랐다 → 올릴 수 있는 착용 장비 중 가장 낮은 별 + 1(RefreshBulkButtons).
+	-- ▼ ▲ 로 바꾼다 · 창을 열 때(Open) 0 으로 되돌린다.
+	@HideFromInspector
+	property integer starTarget = 0
+
+	-- 목표 별 N 의 상한(서버 StarForceService.StarTargetMax 와 같은 값 · 장비 최대 별 = 앱솔 10). 실제 ▲ 상한은 착용 장비 중 가장 높은 최대 별.
+	property integer StarTargetMax = 10
+
+	-- 스타포스 일괄 모드(1.0.21 · 사용자 2026-10-20 "버튼을 누르면 강화가 아니고 그걸 골랐다는 판정 · 1개씩 강화하려던 건 할당 해제 · 오른쪽 밑 강화 버튼을 눌러야 강화 ·
+	--   장비를 하나 직접 할당하면 그거 하나만 · 서로 활성화돼 있을 땐 다른 쪽은 비활성"). true = [착용 중 장비 ▼ N ▲ 성으로 강화]가 골라져 있다 → 단일 대상(targetIid)은 비고
+	--   [강화](OnPrimary)가 RequestStarForceTo(N)을 보낸다. 장비를 고르면(SelectTarget) false. 창을 열 때 · 다른 라우트로 가면 false.
+	@HideFromInspector
+	property boolean starBulk = false
+
+	-- 일괄 모드 표시: 골라져 있으면 금색 버튼 그림 · 아무것도 안 골랐으면 파랑(원래 그림) · 장비 하나가 골라져 있으면 어두운 파랑(미선택처럼 · 사용자 2026-10-20 "장비가 들어가 있으니까
+	--   착용 중 장비 버튼이 안 눌린 것처럼 살짝 어둡게 · 반대가 되면 마찬가지"). 글자색은 금색 위 = 짙은 갈색. 버튼은 색 틴트 전환이라 틴트 대신 그림을 바꾼다.
+	property string BulkOnRuid = "4d2c7ac08107433e8a3fb9b09b6fbb8e"
+
+	property string BulkOffRuid = "2a45e95a9c0348b88b257ed75885cab6"
+
+	property string BulkDimRuid = "8e8bd0f7f3dc426fa3d03747c2c5cd71"
+
+	-- ▼ ▲ 칩: 평소 금색 칩 · 미선택(장비 하나가 골라져 있음)이면 어두운 칩(.ui 의 꺼짐 그림과 같은 것).
+	property string ChipOnRuid = "b91280dbcdfa4b09a5408d1dd25e18ec"
+
+	property string ChipDimRuid = "f4e4cd09e9d74a05831990911013fd3d"
+
+	-- 일괄 모드일 때 가운데 장비 칸(틀 · 빈 칸)을 이 색으로 곱해 어둡게(미선택처럼) · 아니면 흰색(원래).
+	property string SlotDimHex = "#8F949E"
 
 	@HideFromInspector
 	property any potionView = nil
@@ -278,7 +314,9 @@ script WorkshopUIController extends Logic
 			bindChild(self.contentCraft, "Slot_" .. slot, function() self:SetCraftSlot(slot) end)
 		end
 		-- 레벨제 일괄 구매 판(1.1-J02): Craft/BulkPanel 바로 아래의 Part_{부위} 토글 5개 · Tier_{렙제} 버튼 5개(이름 = ItemCatalog.BulkPartOrder · BulkTiers).
+		-- 1.0.21 #13: 렙제 버튼은 "고르기"만 하고 구매는 오른쪽 BtnBuy([선택 항목 일괄 구매])가 한다.
 		self.bulkOff = {}
+		self.bulkTier = 0
 		local bulk = isvalid(self.contentCraft) and self.contentCraft:GetChildByName("BulkPanel") or nil
 		for part in string.gmatch(_ItemCatalog.BulkPartOrder, "[^,]+") do
 			local p = part
@@ -288,6 +326,7 @@ script WorkshopUIController extends Logic
 			local n = tonumber(t)
 			bindChild(bulk, "Tier_" .. t, function() self:OnBulkTier(n) end)
 		end
+		bindChild(bulk, "BtnBuy", function() self:OnBulkBuy() end)
 		bindChild(self.potionDetail, "BtnMinus", function() self:OnPotionQty(-1) end)
 		bindChild(self.potionDetail, "BtnPlus", function() self:OnPotionQty(1) end)
 		-- 수량 +5 · +10(1.1-J04): +1 은 기존 BtnPlus 그대로. 상한(MaxCount)은 RefreshPotion 이 자른다.
@@ -347,9 +386,11 @@ script WorkshopUIController extends Logic
 			self.bagGrid.TotalCount = 0
 			self.bagGrid:Refresh(true, true)
 		end
-		-- 스타포스 패널: 장착 장비 일괄 버튼 2개(전투력 줄 오른쪽 · 사용자 지시 2026-10-19).
-		bindChild(self.contentStar, "BtnBulkOne", function() self:OnBulkStar("one") end)
-		bindChild(self.contentStar, "BtnBulkMax", function() self:OnBulkStar("max") end)
+		-- 스타포스 패널: [착용 중 장비 N성으로 강화] 버튼 하나(두 칸 높이) + N 좌우 ▼ ▲(1.0.21 · 사용자 2026-10-20 — 예전 "+1성" · "최대" 두 버튼을 대신한다).
+		bindChild(self.contentStar, "BtnBulkTo", function() self:OnBulkStarTo() end)
+		local bulkTo = isvalid(self.contentStar) and self.contentStar:GetChildByName("BtnBulkTo") or nil
+		bindChild(bulkTo, "Down", function() self:OnStarTargetStep(-1) end)
+		bindChild(bulkTo, "Up", function() self:OnStarTargetStep(1) end)
 
 		-- ESC 닫기용. 여는 건 NPC 라우터뿐 (임시 단축키 E 는 2026-09-09 제거)
 		self.hKey = _InputService:ConnectEvent(KeyDownEvent, self.OnKeyDown)
@@ -755,6 +796,9 @@ script WorkshopUIController extends Logic
 		self.chosenGems = {}
 		self.craftSel = ""
 		self.craftSlot = "ALL"
+		self.bulkTier = 0   -- 일괄 제작 렙제는 창을 열 때마다 다시 "지금 레벨로 입을 수 있는 가장 높은 렙제"에서 시작(1.0.21 #13)
+		self.starTarget = 0   -- [착용 중 장비 N성으로 강화]의 N 도 창을 열 때마다 "가장 낮은 별 + 1" 에서 시작(1.0.21)
+		self.starBulk = false   -- 일괄 모드도 창을 열 때마다 풀린다(장비 하나 · 일괄 모두 안 골라진 상태로 시작)
 		self.potionSel = ""
 		self.potionQty = 1
 		self.waiting = false
@@ -789,6 +833,7 @@ script WorkshopUIController extends Logic
 	method void GoRoute(string route)
 		-- Content 하위 컨테이너를 하나만 켠다. Footer 는 enhance 에서만.
 		self.route = route
+		if route ~= "starforce" then self.starBulk = false end   -- 스타포스 일괄 모드는 스타포스 화면 안에서만(1.0.21)
 		-- Footer 버튼 문구는 라우트가 정한다 (강화 화면에 "구매" 가 남던 문제 · 2026-09-06). 시안: 글자 사이 띄움 없이 "강화" "제작" "구매".
 		local pt = self:PrimaryText()
 		if pt ~= nil then
@@ -1220,6 +1265,16 @@ script WorkshopUIController extends Logic
 			self:ShowStatus("busy", "강화 중...")
 			_EnhanceService:RequestEnhance(self.targetIid, table.concat(self.chosenGems, "+"))
 			log("[Workshop] enhance requested " .. self.targetIid .. " gems=" .. table.concat(self.chosenGems, "+"))
+		elseif self.route == "starforce" and self.starBulk then
+			-- 일괄 모드(1.0.21): [착용 중 장비 N성으로 강화]를 골라 둔 채 [강화] → 서버 StarForceService.RequestStarForceTo(N). 응답(SetStarResult · iid "")까지 잠금 · 응답 뒤에도 일괄 모드는 유지.
+			local n = self.starTarget
+			if n <= 0 then return end
+			self.waiting = true
+			self:SetPrimary(false, "")
+			self:ShowStatus("busy", "착용 중 장비를 " .. tostring(n) .. "성으로 올리는 중...")
+			self:RefreshBulkButtons()
+			_StarForceService:RequestStarForceTo(n)
+			log("[Workshop] starforce-to requested target=" .. tostring(n))
 		elseif self.route == "starforce" then
 			if self.targetIid == "" then return end
 			self.waiting = true
@@ -1503,7 +1558,12 @@ script WorkshopUIController extends Logic
 		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
 		for s in string.gmatch(self.SideSlots, "[^,]+") do
 			local eq = (equipped ~= nil) and equipped[s] or nil
-			self:FillSideCell(self:Kid(eqRoot, "Slot_" .. s), eq, star)
+			local cell = self:Kid(eqRoot, "Slot_" .. s)
+			self:FillSideCell(cell, eq, star)
+			-- 스타포스 일괄 모드(1.0.21): 이번 [강화]로 올라갈 착용 장비(N성 아래 · 올릴 수 있음)를 전부 선택 테두리로 — "전체 강화" 가 골라져 있다는 표시.
+			if star and self.starBulk and eq ~= nil then
+				self:SetOn(cell, "Sel", self:BulkWillRaise(_ItemCatalog:Get(eq.itemId), eq))
+			end
 		end
 		self.bagView = {}
 		for _, it in ipairs(self:Items()) do
@@ -1548,6 +1608,8 @@ script WorkshopUIController extends Logic
 			self.targetIid = iid
 			self.chosenGems = {}
 		end
+		-- 장비를 하나 직접 고르면 스타포스 일괄 모드는 풀린다 — 그 장비 하나만 강화(1.0.21 · 서로 배타).
+		self.starBulk = false
 		self.statusKind = "none"
 		self:ShowStatus("none", "")
 		log("[Workshop] target " .. iid .. " (" .. self.route .. ")")
@@ -1663,42 +1725,193 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RefreshBulkButtons()
-		-- 일괄 버튼 2개(사용자 지시 2026-10-19 · 2차): 한 줄 글자만 — "착용 중 장비 일괄 강화 +1성" / "착용 중 장비 일괄 강화 최대"(사용자 "그냥 일괄 강화면 모르니까"). 장착 장비 중 올릴 수 있는 게 없으면(또는 응답 대기 중) 흐리게 끈다.
+		-- [착용 중 장비 N성으로 강화](1.0.21 · 사용자 2026-10-20 "일괄 1성 강화를 '전체 N성으로 강화'로 → 정정 '전체가 아니라 착용 중 장비' · 높이를 두 개 다 흡수해 2칸 크기 · N 의 좌우에 아래 · 위 화살표"):
+		--   BtnBulkTo 한 버튼(예전 BtnBulkOne · BtnBulkMax 자리) 안에 "착용 중 장비 ▼ N ▲ 성으로 강화". N(starTarget)은 1 ~ 착용 장비 중 가장 높은 최대 별 사이.
+		--   처음(0) = 올릴 수 있는 착용 장비 중 가장 낮은 별 + 1. 누르면 바로 강화하지 않고 일괄 모드를 고른다(OnBulkStarTo · 금색 = 골라짐 · 파랑 = 아님) —
+		--   강화는 오른쪽 아래 [강화](OnPrimary → RequestStarForceTo(N) · 메소는 서버가 단계마다 보고 모자라면 멈춘다).
 		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
-		local n = 0
+		local lowest = -1
+		local cap = 0
+		local list = {}
 		if equipped ~= nil then
 			for s in string.gmatch(self.SideSlots, "[^,]+") do
 				local eq = equipped[s]
 				local def = (eq ~= nil) and _ItemCatalog:Get(eq.itemId) or nil
-				if def ~= nil and self:CanEnhance(def, eq, true) then n = n + 1 end
+				if def ~= nil then
+					local maxStar = _ItemCatalog:MaxStar(def)
+					if maxStar > 0 and (eq.enh or 0) >= (def.maxEnhance or 0) then
+						if maxStar > cap then cap = maxStar end
+						local cur = eq.star or 0
+						if cur < maxStar and (lowest < 0 or cur < lowest) then lowest = cur end
+						table.insert(list, { cur = cur, max = maxStar })
+					end
+				end
 			end
 		end
-		local on = (n > 0 and not self.waiting)
-		local function setBtn(name, label)
-			local b = self:Kid(self.contentStar, name)
-			if not isvalid(b) then return end
-			if b.TextGUIRendererComponent ~= nil then
-				b.TextGUIRendererComponent.Text = label
-				b.TextGUIRendererComponent.FontColor = self:Hex(on and "#F3EEE2" or "#7C88A4", 1)
-			end
-			self:SetTint(b, "#FFFFFF", on and 1 or 0.45)
-			self:SetTint(self:Kid(b, "Dot"), "#E8B64C", on and 1 or 0.35)
-			if b.ButtonComponent ~= nil then b.ButtonComponent.Enable = on end
+		if cap <= 0 then cap = self.StarTargetMax end
+		if self.starTarget <= 0 then
+			if lowest >= 0 then self.starTarget = lowest + 1 else self.starTarget = cap end
 		end
-		setBtn("BtnBulkOne", "착용 중 장비 일괄 강화 +1성")
-		setBtn("BtnBulkMax", "착용 중 장비 일괄 강화 최대")
+		self.starTarget = math.max(1, math.min(self.starTarget, cap, self.StarTargetMax))
+		-- 1.0.21(사용자 "버튼을 누르면 강화가 아니고 그걸 골랐다는 판정"): 이 버튼은 일괄 모드를 고르는 버튼이라 응답 대기가 아니면 늘 눌린다 —
+		--   N성 아래 장비가 없으면 일괄 화면(RefreshStarBulkView)이 "이미 N성 이상 · ▲ 로 목표를 올려 주세요" 를 띄우고 [강화]를 잠근다.
+		local on = not self.waiting
+		local btn = self:Kid(self.contentStar, "BtnBulkTo")
+		if not isvalid(btn) then return end
+		-- 일괄 모드(1.0.21)가 골라져 있으면 금색 버튼 · 짙은 글자(선택됨) · 아니면 파랑 · 밝은 글자(누르면 고를 수 있음) · 올릴 장비가 없으면 흐리게(못 누름).
+		local active = self.starBulk
+		-- 장비 하나가 골라져 있다(단일 모드) → 이 버튼은 미선택: 어두운 파랑 · 흐린 글자 · 어두운 칩(누르면 일괄 모드로 바뀐다).
+		local other = (not active) and self.targetIid ~= ""
+		local sr = btn.SpriteGUIRendererComponent
+		if sr ~= nil then
+			local ruid = self.BulkOffRuid
+			if active then ruid = self.BulkOnRuid elseif other then ruid = self.BulkDimRuid end
+			sr.ImageRUID = ruid
+		end
+		self:SetTint(btn, "#FFFFFF", (on or active) and 1 or 0.45)
+		if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = on end
+		local inkHex = "#7C88A4"
+		if active then inkHex = "#1C1405" elseif other then inkHex = "#9AA3B8" elseif on then inkHex = "#F3EEE2" end
+		local ink = self:Hex(inkHex, 1)
+		for _, name in ipairs({ "Head", "Tail" }) do
+			local t = self:Kid(btn, name)
+			if isvalid(t) and t.TextGUIRendererComponent ~= nil then t.TextGUIRendererComponent.FontColor = ink end
+		end
+		local num = self:Kid(btn, "Num")
+		if isvalid(num) and num.TextGUIRendererComponent ~= nil then
+			num.TextGUIRendererComponent.Text = tostring(self.starTarget)
+			local numHex = "#7C88A4"
+			if active then numHex = "#1C1405" elseif other then numHex = "#B7A160" elseif on then numHex = "#FFD966" end
+			num.TextGUIRendererComponent.FontColor = self:Hex(numHex, 1)
+		end
+		local function arrow(name, enabled)
+			local a = self:Kid(btn, name)
+			if not isvalid(a) then return end
+			local en = enabled and not self.waiting
+			if a.ButtonComponent ~= nil then a.ButtonComponent.Enable = en end
+			self:SetTint(a, "#FFFFFF", en and 1 or 0.45)
+			-- 미선택(단일 모드)이면 어두운 칩 · 흐린 ▼▲ — 마우스를 올리면 버튼 전환이 금색 칩을 보여 준다.
+			local asr = a.SpriteGUIRendererComponent
+			if asr ~= nil then asr.ImageRUID = other and self.ChipDimRuid or self.ChipOnRuid end
+			if a.TextGUIRendererComponent ~= nil then a.TextGUIRendererComponent.FontColor = self:Hex(other and "#9AA3B8" or "#1C1405", 1) end
+		end
+		arrow("Down", self.starTarget > 1)
+		arrow("Up", self.starTarget < math.min(cap, self.StarTargetMax))
 	end
 
 	@ExecSpace("ClientOnly")
-	method void OnBulkStar(string mode)
-		-- 장착 장비 일괄 스타포스("one" = 전부 +1성 · "max" = 전부 최대까지). 응답(SetStarResult · iid "") 까지 버튼 잠금.
+	method void OnStarTargetStep(integer delta)
+		-- ▼ ▲(1.0.21): 목표 별 N 을 한 칸 내리거나 올린다(일괄 모드도 함께 고른다 — N 은 일괄 모드에서만 쓰인다). 범위(1 ~ 착용 장비 최대 별)는 RefreshBulkButtons 가 다시 맞춘다.
 		if self.waiting then return end
-		self.waiting = true
-		self:SetPrimary(false, "")
-		self:ShowStatus("busy", (mode == "max") and "장착 장비를 최대까지 올리는 중..." or "장착 장비를 +1성씩 올리는 중...")
+		if self.starTarget <= 0 then self:RefreshBulkButtons() end
+		self.starTarget = self.starTarget + delta
+		self:EnterStarBulk("arrow")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBulkStarTo()
+		-- [착용 중 장비 N성으로 강화] 누름(1.0.21 · 사용자 2026-10-20 "버튼을 누르면 강화가 아니고 그걸 골랐다는 판정"): 일괄 모드를 고른다 — 실제 강화는 오른쪽 아래 [강화](OnPrimary).
+		if self.waiting then return end
+		self:EnterStarBulk("button")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EnterStarBulk(string why)
+		-- 일괄 모드로: 단일 대상(1개씩 강화하려고 골라 둔 장비)을 풀고 · 안내를 비우고 · 화면(왼쪽 판 선택 테두리 · 가운데 · 버튼)을 다시 그린다.
+		self.starBulk = true
+		self.targetIid = ""
+		self.statusKind = "none"
+		self:ShowStatus("none", "")
+		log("[Workshop] starforce bulk mode (" .. why .. ") target=" .. tostring(self.starTarget))
+		self:GoRoute(self.route)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean BulkWillRaise(any def, any eq)
+		-- 일괄 모드의 [강화]로 이 착용 장비가 올라가는가: 스타포스 가능(티어 · 보석 강화 끝 · 최대 별 아님) + 지금 별 < 목표 N(서버 RequestStarForceTo 와 같은 조건).
+		if def == nil or eq == nil then return false end
+		return self:CanEnhance(def, eq, true) and (eq.star or 0) < self.starTarget
+	end
+
+	@ExecSpace("ClientOnly")
+	method string SlotLabel(string slot)
+		-- 착용 부위 → 표시 이름(일괄 화면 줄 · 1.0.21).
+		if slot == "WEAPON" then return "무기" elseif slot == "SUBWEAPON" then return "보조무기" elseif slot == "GLOVES" then return "장갑"
+		elseif slot == "TOP" then return "상의" elseif slot == "BOTTOM" then return "하의" elseif slot == "HAT" then return "모자" elseif slot == "SHOES" then return "신발" end
+		return slot
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshStarBulkView(Entity root)
+		-- 일괄 모드 화면(1.0.21): 가운데 큰 칸은 비우고(단일 대상 없음) · 이름 = "착용 중 장비 전체" · 줄 = 이번에 올라갈 장비(부위 · 장비 그림 · ★지금 → ★목표 · 서버 순서 무기 → 보조무기 → 장갑 → 상의 → 하의 → 모자 → 신발)
+		--   · 확률 · 전투력 = "-" · 비용 칩 = 전부 성공했을 때의 메소(최소 · 실패하면 더 든다) · [강화] = 올라갈 장비가 하나라도 있으면.
+		local n = self.starTarget
+		local ts = self:Kid(root, "TargetSlot")
+		-- 장비 하나 고르기 쪽은 미선택처럼 어둡게(사용자 "반대가 되면 마찬가지") — 단일 화면(RefreshStarForce)이 흰색으로 되돌린다.
+		self:SetTint(ts, self.SlotDimHex, 1)
+		self:SetTint(self:Kid(ts, "EmptyFrame"), self.SlotDimHex, 1)
+		self:SetIcon(self:Kid(ts, "Icon"), "")
+		self:SetOn(ts, "EmptyFrame", true)
+		self:SetOn(ts, "Text", false)   -- "왼쪽에서 장비를 골라요" 안내는 일괄 모드에선 숨긴다(장비 하나를 고르는 화면이 아니다 · 단일 화면이 다시 켠다)
+		for k = 1, 3 do self:SetOn(ts, "EnhBadge_" .. tostring(k), false) end
+		self:SetText(root, "TargetName", "<color=#FFD966>착용 중 장비 전체</color>")
+		self:SetText(root, "StarRange", (n > 0) and ("<color=#7C88A4>목표</color> <color=#E8B64C>" .. tostring(n) .. "성</color>") or "")
+		self:SetText(root, "StarRow", "")
+		self:SetOn(root, "Lock", false)
+
+		local equipped = (_InventoryUIController ~= nil) and _InventoryUIController.equipped or nil
+		local rows = {}
+		local total = 0
+		local order = (_StarForceService ~= nil) and _StarForceService.TargetOrder or self.SideSlots
+		for s in string.gmatch(order, "[^,]+") do
+			local eq = (equipped ~= nil) and equipped[s] or nil
+			local def = (eq ~= nil) and _ItemCatalog:Get(eq.itemId) or nil
+			if def ~= nil and self:BulkWillRaise(def, eq) then
+				local cur = eq.star or 0
+				local goal = math.min(n, _ItemCatalog:MaxStar(def))
+				for st = cur + 1, goal do
+					local row = _ItemCatalog:GetStarRow(def.starTier, st)
+					if row ~= nil then total = total + self:StarCost(def, row) end
+				end
+				table.insert(rows, { label = self:SlotLabel(s), icon = def.icon or "", value = "<color=#F3EEE2>★" .. tostring(cur) .. "</color> <color=#7C88A4>→</color> <color=#FFE066>★" .. tostring(goal) .. "</color>" })
+			end
+		end
+		local sp = self:Kid(root, "StatPreview")
+		for i = 0, 6 do
+			local r = self:Kid(sp, "PRow" .. tostring(i))
+			if isvalid(r) then
+				local d = rows[i + 1]
+				r.Enable = (d ~= nil)
+				if d ~= nil then
+					self:SetText(r, "Chip", d.label)
+					self:SetText(r, "Cell", d.value)
+					self:SetIcon(self:Kid(r, "Icon"), d.icon)
+				end
+			end
+		end
+		local emptyMsg = "올릴 수 있는 착용 장비가 없어요 (스타포스 가능 · 보석 강화 끝 · 최대 별 아님)"
+		if equipped ~= nil and #rows == 0 and n > 0 then emptyMsg = "착용 중 장비가 이미 전부 " .. tostring(n) .. "성 이상이에요 · ▲ 로 목표를 올려 주세요" end
+		self:SetOn(sp, "PreviewEmpty", #rows == 0)
+		self:SetText(sp, "PreviewEmpty", emptyMsg)
+
+		self:WritePower("star", nil)
+		local rateLine = self:Kid(root, "RateBox/RateLine")
+		for _, p in ipairs({ { "Success", "성공 확률" }, { "Fail", "실패 확률" }, { "Destroy", "파괴 확률" } }) do
+			self:SetText(rateLine, p[1], "<color=#F3EEE2>" .. p[2] .. "</color>  <color=#7C88A4>-</color>")
+		end
+
+		local ready = (#rows > 0)
+		if ready then
+			local meso = self:MesoNow()
+			self:ShowFootChips({ { icon = self.RuidMeso, label = "메소(최소)", num = self:Fmt(total), hold = "보유 " .. self:Fmt(meso), short = meso < total } }, "메소 " .. tostring(total))
+			if isvalid(self.costLabel) then self.costLabel.Text = "메소 " .. tostring(total) end
+			if self.statusKind == "none" then self:ShowStatus("none", "착용 중 장비 " .. tostring(#rows) .. "개를 " .. tostring(n) .. "성까지 · 실패하면 메소가 더 들고, 모자라면 그 자리에서 멈춰요") end
+		else
+			self:ShowFootInfo(emptyMsg)
+			if self.statusKind == "none" then self:ShowStatus("none", "") end
+		end
+		self:SetPrimary(ready and not self.waiting, "")
 		self:RefreshBulkButtons()
-		_StarForceService:RequestStarForceAll(mode)
-		log("[Workshop] starforce-all requested mode=" .. mode)
 	end
 
 	@ExecSpace("Client")
@@ -1720,6 +1933,11 @@ script WorkshopUIController extends Logic
 		-- 스타포스 패널: 큰 대상 칸 · 이름 · N성 → N+1성 · 별 줄(5개마다 띄움) · 지금→후 능력치(최대 7줄) · 전투력 전→후 · 확률 · 비용 칩 · 일괄 버튼.
 		local root = self.contentStar
 		if not isvalid(root) then return end
+		-- 일괄 모드(1.0.21)면 단일 대상 화면 대신 일괄 화면.
+		if self.starBulk then
+			self:RefreshStarBulkView(root)
+			return
+		end
 		local it = (self.targetIid ~= "") and self:FindItem(self.targetIid) or nil
 		local def = (it ~= nil) and _ItemCatalog:Get(it.itemId) or nil
 		local has = (def ~= nil)
@@ -1731,6 +1949,9 @@ script WorkshopUIController extends Logic
 		if has and maxStar > 0 and gemDone and star < maxStar then row = _ItemCatalog:GetStarRow(def.starTier, star + 1) end
 
 		local ts = self:Kid(root, "TargetSlot")
+		-- 일괄 모드에서 어둡게 했던 장비 칸을 원래 색으로(1.0.21).
+		self:SetTint(ts, "#FFFFFF", 1)
+		self:SetTint(self:Kid(ts, "EmptyFrame"), "#FFFFFF", 1)
 		self:SetIcon(self:Kid(ts, "Icon"), has and def.icon or "")
 		self:SetOn(ts, "EmptyFrame", not has)
 		self:SetOn(ts, "Text", not has)
@@ -1899,36 +2120,71 @@ script WorkshopUIController extends Logic
 		log("[Workshop] craft slot=" .. slot)
 	end
 
-	-- ── 레벨제 일괄 구매 (1.1-J02 · J03) ─────────────────────────
-	-- 제작 창 "일괄" 칸(Slot_BULK)을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다: 살 부위 토글 5개(눌러서 빼기) + 10 · 15 · 20 · 25 · 30렙제 버튼 5개.
-	-- 렙제 버튼 하나로 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 전부 산다(서버 CraftService.RequestCraftBulk).
-	-- 켜 둔 부위 전체를 살 메소 · 재료 합이 모자라면 그 렙제 버튼은 처음부터 잠긴다 — 일부만 사는 일은 없다(사용자 2026-10-13 · 디자인 사이트 N-34).
+	-- ── 레벨제 일괄 구매 (1.1-J02 · J03 · 1.0.21 #13 개편) ─────────────────────────
+	-- 제작 창 "일괄" 칸(Slot_BULK)을 고르면 목록 자리에 Craft/BulkPanel 이 뜬다(사용자 2026-10-20 콘티 · 위에서 아래로 세 줄기):
+	--   왼쪽 = 렙제 10 · 15 · 20 · 25 · 30 버튼(Tier_{렙제} · 하나만 고름 · 고른 것 = 켜짐 모양) · 가운데 = 살 부위 토글 모자 → 옷 → 무기 → 장갑 → 신발(Part_{부위} · 눌러서 빼기)
+	--   · 오른쪽 = [선택 항목 일괄 구매](BtnBuy · 다섯 줄 높이). 처음 고른 렙제 = 지금 레벨로 입을 수 있는 가장 높은 렙제(DefaultBulkTier).
+	-- 구매 = 고른 렙제 + 켜 둔 부위를 무기 → 옷 → 모자 → 장갑 → 신발 순서로 전부 산다(서버 CraftService.RequestCraftBulk · 순서 = ItemCatalog.BulkPartOrder 그대로 · 화면 순서와는 다르다).
+	-- 켜 둔 부위 전체를 살 메소 · 재료 합이 모자라면 구매 버튼이 잠긴다 — 일부만 사는 일은 없다(사용자 2026-10-13 · 디자인 사이트 N-34). 합계 비용 · 모자란 것은 바닥 띠 비용 칩에(RefreshBulkFoot).
+
+	@ExecSpace("ClientOnly")
+	method any BulkNeeds(string key, integer tier, string parts)
+		-- 그 렙제 · 켜 둔 부위 전체가 드는 합(1.0.21 #13 · 바닥 띠 비용 칩과 구매 잠금이 같이 쓴다): { count = 살 장비 수, meso = 메소 합, mats = { { itemId, count }, … }(처음 나온 순서) }.
+		-- 서버 CraftService.BulkShortfall 과 같은 합계다.
+		local mats = {}
+		local at = {}
+		local meso = 0
+		local list = _ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts)
+		for _, r in ipairs(list) do
+			meso = meso + r.mesoCost
+			for _, m in ipairs(_ItemCatalog:RecipeMats(r, key)) do
+				if at[m.itemId] == nil then
+					table.insert(mats, { itemId = m.itemId, count = 0 })
+					at[m.itemId] = #mats
+				end
+				local row = mats[at[m.itemId]]
+				row.count = row.count + m.count
+			end
+		end
+		return { count = #list, meso = meso, mats = mats }
+	end
 
 	@ExecSpace("ClientOnly")
 	method string BulkShort(string key, integer tier, string parts)
 		-- 그 렙제 · 켜 둔 부위 전체의 메소 · 재료 합을 지금 가진 것과 비교(클라 캐시 · N-34). 다 있으면 "" · 모자라면 첫 부족 이름(재료 이름 또는 "메소").
-		-- 서버 RequestCraftBulk 의 BulkShortfall 과 같은 계산이다(서버가 최종 판정 · 여기는 버튼 잠금용).
-		local need = {}
-		local order = {}
-		local meso = 0
-		for _, r in ipairs(_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts)) do
-			meso = meso + r.mesoCost
-			for _, m in ipairs(_ItemCatalog:RecipeMats(r, key)) do
-				if need[m.itemId] == nil then
-					need[m.itemId] = 0
-					table.insert(order, m.itemId)
-				end
-				need[m.itemId] = need[m.itemId] + m.count
+		-- 서버 RequestCraftBulk 의 BulkShortfall 과 같은 계산이다(서버가 최종 판정 · 여기는 구매 버튼 잠금용).
+		local need = self:BulkNeeds(key, tier, parts)
+		for _, m in ipairs(need.mats) do
+			if self:CountItem(m.itemId) < m.count then
+				local d = _ItemCatalog:Get(m.itemId)
+				return (d ~= nil) and d.name or m.itemId
 			end
 		end
-		for _, id in ipairs(order) do
-			if self:CountItem(id) < need[id] then
-				local d = _ItemCatalog:Get(id)
-				return (d ~= nil) and d.name or id
-			end
-		end
-		if meso > 0 and self:MesoNow() < meso then return "메소" end
+		if need.meso > 0 and self:MesoNow() < need.meso then return "메소" end
 		return ""
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer DefaultBulkTier()
+		-- 처음 골라 둘 렙제(1.0.21 #13 · 사용자 2026-10-20 "처음엔 지금 레벨로 입을 수 있는 가장 높은 렙제"): BulkTiers 중 내 레벨 이하의 최댓값 · 레벨 10 미만이면 첫 렙제(10).
+		local level = 1
+		if _PlayerSkillState ~= nil then level = math.floor(_PlayerSkillState:LocalLevel() or 1) end
+		local first = 0
+		local best = 0
+		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
+			local n = math.floor(tonumber(t) or 0)
+			if first == 0 then first = n end
+			if n <= level and n > best then best = n end
+		end
+		if best == 0 then best = first end
+		return best
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer BulkTierNow()
+		-- 지금 고른 렙제. 아직 안 골랐거나(0) BulkTiers 에 없는 값이면 기본 렙제(DefaultBulkTier).
+		if self.bulkTier > 0 and _ItemCatalog:IsBulkTier(self.bulkTier) then return self.bulkTier end
+		return self:DefaultBulkTier()
 	end
 
 	@ExecSpace("ClientOnly")
@@ -1942,19 +2198,48 @@ script WorkshopUIController extends Logic
 	end
 
 	@ExecSpace("ClientOnly")
-	method string BulkFootText()
-		-- 일괄 칸의 바닥 띠 안내(1.1-J02): 켜 둔 부위가 하나도 없으면 그 안내(렙제 버튼이 다 잠겨 눌러 볼 수 없다),
-		-- 재화가 모자라 잠긴 렙제가 하나라도 있으면 그 안내(N-34), 아니면 사용법 한 줄.
+	method void RefreshBulkFoot()
+		-- 일괄 칸의 바닥 띠(1.1-J02 안내 → 1.0.21 #13 비용 칩): 고른 렙제 · 켜 둔 부위 전체의 합계 비용을 비용 칩으로 보인다 — 모자란 칩은 붉고 "· 부족"(N-34 · 구매 버튼이 잠긴 까닭).
+		-- 칩은 최대 2개(재료 → 메소 순서 · 마을 장비는 지역 재화 1종 + 메소). 켜 둔 부위가 없거나 살 장비가 없으면 안내 한 줄.
 		local parts = self:BulkPartsCsv()
-		if parts == "" then return "살 부위를 하나 이상 켜 주세요" end
+		if parts == "" then
+			self:ShowFootInfo("만들 부위를 하나 이상 켜 주세요")
+			return
+		end
 		local key = self:ShopKey()
-		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
-			local n = math.floor(tonumber(t) or 0)
-			if #_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0 and self:BulkShort(key, n, parts) ~= "" then
-				return "재화가 모자란 렙제는 잠겨요"
+		local tier = self:BulkTierNow()
+		local need = self:BulkNeeds(key, tier, parts)
+		if need.count == 0 then
+			self:ShowFootInfo(tostring(tier) .. "렙제는 만들 장비가 없어요")
+			return
+		end
+		local all = {}
+		local plain = {}
+		for _, m in ipairs(need.mats) do
+			local md = _ItemCatalog:Get(m.itemId)
+			local name = (md ~= nil) and md.name or m.itemId
+			local have = self:CountItem(m.itemId)
+			table.insert(all, { icon = (md ~= nil) and md.icon or "", label = name, num = tostring(m.count), hold = "보유 " .. tostring(have) .. ((have < m.count) and " · 부족" or ""), short = have < m.count })
+			table.insert(plain, name .. " " .. tostring(m.count))
+		end
+		if need.meso > 0 then
+			local meso = self:MesoNow()
+			table.insert(all, { icon = self.RuidMeso, label = "메소", num = self:Fmt(need.meso), hold = "보유 " .. self:Fmt(meso) .. ((meso < need.meso) and " · 부족" or ""), short = meso < need.meso })
+			table.insert(plain, "메소 " .. tostring(need.meso))
+		end
+		-- 칩이 3개 이상이면(재료가 여러 종일 때) 모자란 것을 먼저 담아 가려지지 않게 한다.
+		local chips = {}
+		if #all <= 2 then
+			chips = all
+		else
+			for _, c in ipairs(all) do
+				if c.short and #chips < 2 then table.insert(chips, c) end
+			end
+			for _, c in ipairs(all) do
+				if not c.short and #chips < 2 then table.insert(chips, c) end
 			end
 		end
-		return "렙제 버튼을 누르면 바로 구매해요"
+		self:ShowFootChips(chips, tostring(tier) .. "렙제 " .. tostring(need.count) .. "개 · " .. table.concat(plain, " · "))
 	end
 
 	@ExecSpace("ClientOnly")
@@ -1968,20 +2253,30 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void OnBulkTier(integer tier)
-		-- 렙제 버튼 → 서버에 일괄 구매 요청(확인 팝업 없이 바로 · 응답이 올 때까지 버튼 잠금). 인자는 integer · string 만 보낸다.
+		-- 렙제 버튼: 렙제 하나를 고른다(1.0.21 #13 · 하나만 고름 — 고른 것이 켜짐 모양). 구매는 오른쪽 [선택 항목 일괄 구매](OnBulkBuy). 바닥 띠 합계가 그 렙제로 바뀐다.
+		if not _ItemCatalog:IsBulkTier(tier) then return end
+		self.bulkTier = tier
+		self:RefreshBulkPanel()
+		log("[Workshop] bulk tier=" .. tostring(tier))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBulkBuy()
+		-- [선택 항목 일괄 구매] → 서버에 고른 렙제 + 켜 둔 부위 일괄 구매 요청(확인 팝업 없이 바로 · 응답이 올 때까지 버튼 잠금). 인자는 integer · string 만 보낸다.
 		if self.waiting then return end
 		local key = self:ShopKey()
 		if not _ItemCatalog:IsRegionShop(key) then return end
+		local tier = self:BulkTierNow()
 		local parts = self:BulkPartsCsv()
 		if #_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts) == 0 then
-			self:ShowFootInfo("살 부위를 하나 이상 켜 주세요")
+			self:ShowFootInfo("만들 부위를 하나 이상 켜 주세요")
 			return
 		end
-		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34).
+		-- 모자라면 보내지 않는다(버튼이 잠겨 있어 보통은 여기까지 안 온다 · N-34). 바닥 띠 비용 칩이 모자란 것을 붉게 보인다.
 		local short = self:BulkShort(key, tier, parts)
 		if short ~= "" then
-			self:ShowFootInfo(short .. " 이(가) 모자라요")
 			self:RefreshBulkPanel()
+			log("[Workshop] bulk buy blocked tier=" .. tostring(tier) .. " short=" .. short)
 			return
 		end
 		self.waiting = true
@@ -1993,9 +2288,10 @@ script WorkshopUIController extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void RefreshBulkPanel()
-		-- 일괄 판 그리기(1.1-J02). 켜짐 조건 = 부위 칸이 BULK 이고 마을 장비 상인(IsRegionShop). 아니면 판을 끄고 끝.
-		--   부위 토글 5개: 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(RefreshCraftSlotTabs 의 부위 칩과 같은 모양).
-		--   렙제 버튼 5개: 살 장비가 있고 · 그 전부를 살 메소 · 재료가 있고(BulkShort · N-34) · 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩).
+		-- 일괄 판 그리기(1.1-J02 · 1.0.21 #13 개편). 켜짐 조건 = 부위 칸이 BULK 이고 마을 장비 상인(IsRegionShop). 아니면 판을 끄고 끝.
+		--   부위 토글 5개(가운데): 켜짐 = 금 칩 + 진한 글자 · 꺼짐 = 짙은 파랑 칩(RefreshCraftSlotTabs 의 부위 칩과 같은 모양).
+		--   렙제 버튼 5개(왼쪽): 고른 하나만 켜짐 = 금 칩 + 진한 글자 · 나머지 = 짙은 파랑 칩(늘 눌린다 — 재화가 모자라도 고를 수 있다).
+		--   [선택 항목 일괄 구매](오른쪽): 살 장비가 있고 · 그 전부를 살 메소 · 재료가 있고(BulkShort · N-34) · 응답을 기다리는 중이 아닐 때만 눌린다(켜짐 = 금 칩 + 진한 글자 · 잠김 = 짙은 파랑 칩 + 흐린 글자).
 		if not isvalid(self.contentCraft) then return end
 		-- 제작 화면이 아닌 라우트(물약 · 수리 · 강화)에서는 건드리지 않는다 — 바닥 띠 안내가 그 화면 것을 덮으면 안 된다(OnMatchStart 가 창이 열린 채 부를 수 있다).
 		if self.route ~= "craft" and self.route ~= "shop_equip" then return end
@@ -2014,19 +2310,28 @@ script WorkshopUIController extends Logic
 				self:ChipLabelStyle(self:Kid(chip, "Label"), on and "ink" or "", "#F3EEE2")
 			end
 		end
-		local parts = self:BulkPartsCsv()
+		-- 렙제 5개: 고른 하나만 켜짐 모양(안 골랐으면 기본 렙제 = 지금 레벨로 입을 수 있는 가장 높은 렙제).
+		local tier = self:BulkTierNow()
 		for t in string.gmatch(_ItemCatalog.BulkTiers, "[^,]+") do
 			local btn = panel:GetChildByName("Tier_" .. t)
 			if isvalid(btn) then
 				local n = math.floor(tonumber(t) or 0)
-				local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, n, parts) > 0) and (self:BulkShort(key, n, parts) == "")
-				if btn.ButtonComponent ~= nil then btn.ButtonComponent.Enable = can end
-				self:SetOn(btn, "On", can)
-				self:ChipLabelStyle(self:Kid(btn, "Label"), can and "ink" or "", "#F3EEE2")
+				local on = (n == tier)
+				self:SetOn(btn, "On", on)
+				self:ChipLabelStyle(self:Kid(btn, "Label"), on and "ink" or "", "#F3EEE2")
 			end
 		end
-		-- 부위 토글을 누를 때는 RefreshCraft 를 거치지 않으니 바닥 띠 안내도 여기서 맞춘다(RefreshCraft 의 일괄 분기와 같은 문장).
-		self:ShowFootInfo(self:BulkFootText())
+		-- [선택 항목 일괄 구매]: 고른 렙제 + 켜 둔 부위 전체를 살 수 있을 때만 눌린다.
+		local parts = self:BulkPartsCsv()
+		local buy = panel:GetChildByName("BtnBuy")
+		if isvalid(buy) then
+			local can = (not self.waiting) and (#_ItemCatalog:BulkRecipes(key, self.craftJob, tier, parts) > 0) and (self:BulkShort(key, tier, parts) == "")
+			if buy.ButtonComponent ~= nil then buy.ButtonComponent.Enable = can end
+			self:SetOn(buy, "On", can)
+			self:ChipLabelStyle(self:Kid(buy, "Label"), can and "ink" or "", "#7C88A4")
+		end
+		-- 렙제 · 부위 토글을 누를 때는 RefreshCraft 를 거치지 않으니 바닥 띠 비용 칩도 여기서 맞춘다(RefreshCraft 의 일괄 분기와 같은 그림).
+		self:RefreshBulkFoot()
 	end
 
 	@ExecSpace("ClientOnly")
@@ -2034,6 +2339,7 @@ script WorkshopUIController extends Logic
 		-- 새 매치: 일괄 구매 부위 토글을 전부 켠 상태(= 꺼 둔 부위 없음)로 되돌린다(1.1-J03). OnboardingService.PushState 가 판 번호가 바뀐 첫 호출에서 부른다.
 		-- 창 열기 · 닫기에서는 건드리지 않는다 — 같은 매치 안에서는 닫았다 열어도 토글이 유지된다. 부위 토글은 화면 설정이라 서버 원장 없이 클라에만 둔다(서버는 요청마다 오는 partsCsv 만 쓴다).
 		self.bulkOff = {}
+		self.bulkTier = 0   -- 고른 렙제도 처음(기본 렙제)으로(1.0.21 #13)
 		if self.isOpen then self:RefreshBulkPanel() end
 		log("[Workshop] bulk toggles reset (new match)")
 	end
@@ -2235,9 +2541,9 @@ script WorkshopUIController extends Logic
 				end
 			end
 		end
-		-- 일괄(BULK) 칸(1.1-J02): 바닥 띠는 안내 한 줄뿐이고 주 버튼은 잠근다(구매는 판의 렙제 버튼이 한다).
+		-- 일괄(BULK) 칸(1.1-J02): 바닥 띠는 일괄 합계 비용 칩(1.0.21 #13 · 이전엔 안내 한 줄)이고 주 버튼은 잠근다(구매는 판의 [선택 항목 일괄 구매]가 한다).
 		if self.craftSlot == "BULK" and byJob then
-			self:ShowFootInfo(self:BulkFootText())
+			self:RefreshBulkFoot()
 			self:SetPrimary(false, "구매")
 			return
 		end

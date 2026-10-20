@@ -372,25 +372,35 @@ script LaneFacilityService extends Logic
 			ai.RangeOffsetY = -self:GroundOffset(villageId, stage)
 			ai.Enable = alive and attacks
 		end
-		-- 오라 특성 (AURA_SPEED · AURA_ATK · AURA_REGEN · AURA_ACC): Lv 값을 컨트롤러에 넣는다. 파괴되면 0 = 효과 없음(타이머는 두고 재건 시 값만 돌아온다).
+		-- 오라 특성 (AURA_SPEED · AURA_ATK · AURA_REGEN(최소치) · AURA_REGEN_PCT · AURA_REGEN_SELF_MUL · AURA_EVA): Lv 값을 컨트롤러에 넣는다. 파괴되면 0 = 효과 없음(타이머는 두고 재건 시 값만 돌아온다).
 		---@type FactionAuraController
 		local aura = ent.FactionAuraController
 		local auraSpd = 0
-		local auraAcc = 0
+		local auraEva = 0
+		local auraRegenPct = 0
 		if isvalid(aura) then
 			local auraAtk = 0
 			local auraRegen = 0
+			local auraRegenSelf = 1.0
 			if alive then
 				auraSpd = _LaneStateService:TraitValue(villageId, stage, "AURA_SPEED", lv)
 				auraAtk = _LaneStateService:TraitValue(villageId, stage, "AURA_ATK", lv)
+				-- 체력 회복(노틸러스 · 1.0.21 #6 · 사용자 2026-10-20 "대상 최대 체력의 2.5% / 5% / 10% (초당) · 최소 25 / 50 / 100"): 대상마다 초당 max(AURA_REGEN(최소치), AURA_REGEN_PCT % × 그 대상 최대 체력).
+				--   억제기 본인은 비율에 AURA_REGEN_SELF_MUL(0.1 = "아군 비율의 10%")을 곱한다 — 행이 없으면 아군과 같다(×1).
 				auraRegen = _LaneStateService:TraitValue(villageId, stage, "AURA_REGEN", lv)
-				-- 명중률 오라(%p · 1.1-A10 · H13 · 커닝 억제기 20/30/40): 아군 플레이어 명중률에 더하고 · 아군 수비대는 플레이어 회피를 그만큼 깎는다.
-				auraAcc = _LaneStateService:TraitValue(villageId, stage, "AURA_ACC", lv)
+				auraRegenPct = _LaneStateService:TraitValue(villageId, stage, "AURA_REGEN_PCT", lv)
+				if _LaneStateService:HasTrait(villageId, stage, "AURA_REGEN_SELF_MUL") then
+					auraRegenSelf = _LaneStateService:TraitValue(villageId, stage, "AURA_REGEN_SELF_MUL", lv)
+				end
+				-- 회피율 오라(%p · 1.0.21 #7 · 커닝 억제기 20/30/40 · 예전 명중률 오라 AURA_ACC): 아군 플레이어는 최종 회피율에 더하고 · 아군 수비대는 그 수비대를 치는 적 플레이어의 명중에서 그만큼 빠진다.
+				auraEva = _LaneStateService:TraitValue(villageId, stage, "AURA_EVA", lv)
 			end
 			aura.AllySpeedBonus = auraSpd
 			aura.AllyAtkBonus = auraAtk
 			aura.AllyRegenPerSec = auraRegen
-			aura.AllyAccBonus = auraAcc
+			aura.AllyRegenPct = auraRegenPct
+			aura.SelfRegenMul = auraRegenSelf
+			aura.AllyEvaBonus = auraEva
 			-- 부서지면 띠 그림도 끈다 (사용자 2026-10-07 "억제기 부서지면 오라도 off") — 값만 0 이면 띠가 그대로 남아 오라가 살아 있는 것처럼 보였다.
 			--   그림이 꺼진 시설은 FactionAuraController.CollectSources 가 소스에서도 뺀다(같은 맵 다른 오라 시설의 값으로 버프가 새지 않게). 재건되면 다시 켠다.
 			---@type AuraEmitter
@@ -412,8 +422,8 @@ script LaneFacilityService extends Logic
 			if isvalid(artFx) then artFx:ApplyToFx(fx) end
 		end
 		if attacks or isvalid(aura) then
-			log(string.format("[Facility] combat %s:%s lv=%d art=%d alive=%s attacks=%s dmg=%d range=%.1f zone=%.1f cd=%.2f maxTargets=%d noMinionMul=%.1f auraSpeed=%.2f auraAcc=%.1f splash=%.1f fx=%s",
-				villageId, stage, lv, _LaneStateService:FacilityArtGrade(lv), tostring(alive), tostring(attacks), math.floor(baseDamage), range, isvalid(zoneFc) and zoneFc.RangeHalfW or 0, cooldown, math.max(0, maxTargets), _LaneStateService.FacilityNoMinionAtkMul, auraSpd, auraAcc, splashRadius, tostring(isvalid(fx) and fx.Mode or "-")))
+			log(string.format("[Facility] combat %s:%s lv=%d art=%d alive=%s attacks=%s dmg=%d range=%.1f zone=%.1f cd=%.2f maxTargets=%d noMinionMul=%.1f auraSpeed=%.2f auraEva=%.1f regenPct=%.1f splash=%.1f fx=%s",
+				villageId, stage, lv, _LaneStateService:FacilityArtGrade(lv), tostring(alive), tostring(attacks), math.floor(baseDamage), range, isvalid(zoneFc) and zoneFc.RangeHalfW or 0, cooldown, math.max(0, maxTargets), _LaneStateService.FacilityNoMinionAtkMul, auraSpd, auraEva, auraRegenPct, splashRadius, tostring(isvalid(fx) and fx.Mode or "-")))
 		end
 	end
 
@@ -459,18 +469,19 @@ script LaneFacilityService extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean HasAuraTrait(string villageId, string stage)
-		-- 마을×시설에 오라 특성(AURA_SPEED · AURA_ATK · AURA_REGEN · AURA_ACC)이 하나라도 있는가. 표가 정본.
+		-- 마을×시설에 오라 특성(AURA_SPEED · AURA_ATK · AURA_REGEN · AURA_REGEN_PCT · AURA_EVA)이 하나라도 있는가. 표가 정본. (AURA_REGEN_SELF_MUL 은 회복 오라의 본인 배율이라 단독으로는 오라가 아니다.)
 		if _LaneStateService == nil then return false end
 		return _LaneStateService:HasTrait(villageId, stage, "AURA_SPEED")
 			or _LaneStateService:HasTrait(villageId, stage, "AURA_ATK")
 			or _LaneStateService:HasTrait(villageId, stage, "AURA_REGEN")
-			or _LaneStateService:HasTrait(villageId, stage, "AURA_ACC")
+			or _LaneStateService:HasTrait(villageId, stage, "AURA_REGEN_PCT")
+			or _LaneStateService:HasTrait(villageId, stage, "AURA_EVA")
 	end
 
 	@ExecSpace("ServerOnly")
 	method void AttachAura(Entity ent, string villageId, string stage)
 		-- 오라 특성용 부품 (WO-021 · 커닝 억제기 이속 등): FactionAuraController(판정 · 이 엔티티에 붙는다) + AuraEmitter(소스 표시 · 띠 그림).
-		-- 버프 3종은 기존 컨트롤러의 AllySpeedBonus/AllyAtkBonus/AllyRegenPerSec 를 그대로 쓴다(새 버프 없음). 값은 ApplyCombat 이 Lv 에 맞춰 넣는다.
+		-- 버프 3종은 기존 컨트롤러의 AllySpeedBonus/AllyAtkBonus/AllyRegenPerSec 를 그대로 쓴다(새 버프 없음). 1.0.21: 회복의 비율 부분 AllyRegenPct · 본인 배율 SelfRegenMul · 회피율 AllyEvaBonus 가 더해졌다. 값은 ApplyCombat 이 Lv 에 맞춰 넣는다.
 		---@type FactionAuraController
 		local aura = ent:AddComponent("script.FactionAuraController")
 		if not isvalid(aura) then
@@ -485,7 +496,9 @@ script LaneFacilityService extends Logic
 		aura.AllySpeedBonus = 0
 		aura.AllyDmgTakenReduce = 0
 		aura.AllyRegenPerSec = 0
-		aura.AllyAccBonus = 0
+		aura.AllyRegenPct = 0
+		aura.SelfRegenMul = 1.0
+		aura.AllyEvaBonus = 0
 		aura.EnemyAtkPenalty = 0
 		aura.EnemySpeedPenalty = 0
 		aura.EnemyDmgTakenIncrease = 0

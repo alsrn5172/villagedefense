@@ -7,6 +7,7 @@ script FarmReward extends Component
 	--      경험치와 동전(주인 표시 Farm/DropOwner)을 막타가 전부 가진다. 스틸 플레이가 살아난다.
 	--      **막타가 플레이어가 아니면(수비대·미니언·포탑이 잡음) 경험치도 동전도 없다** — 방치 파밍 차단은 유지.
 	--      예외(1.1-D18): 레인 미니언을 시설(포탑 · 억제기 · 넥서스)이 잡으면 그 마을 주인이 막타로 본다(RewardOwner).
+	--      예외(1.0.21 #4): 레인 미니언을 수비대 · 넥서스 분신 같은 마을 편 유닛이 잡으면 **메소 동전만** 그 마을 주인 앞에 떨군다(DropOwnerOf · 경험치 · 집계는 여전히 없음).
 	--
 	-- 누적 피해 원장(dmg/order · TopDamager)은 로그·통계용으로만 남긴다. 보스 보상(BossReward · 최다 피해 독식)은 별개 경로.
 
@@ -194,6 +195,15 @@ script FarmReward extends Component
 	end
 
 	@ExecSpace("ServerOnly")
+	method string DropOwnerOf()
+		-- 메소 동전 주인(1.0.21 #4): 레인 미니언(MonsterId 0 · 자이언트 아님)만 — 막타 플레이어 · 시설이 아니어도 마을 편 유닛(수비대 · 분신)이 잡았으면 그 마을 주인. 아니면 "".
+		if self.MonsterId == 0 and self.EliteId == "" and _AttackCredit ~= nil then
+			return _AttackCredit:DropUserIdOf(self.LastAttacker)
+		end
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
 	method string LastHitter()
 		-- 막타 친 **플레이어**의 userId. 플레이어 본인 또는 플레이어의 투사체(SkillProjectile.CasterUserId · PR #119).
 		-- 마지막 공격자가 그 둘이 아니면(수비대·미니언·포탑·오라) "".
@@ -222,6 +232,16 @@ script FarmReward extends Component
 			if isvalid(kmap) and isvalid(ktr) then _EliteSpawner:OnMonsterKilled(kmap.Name, self.MonsterId, ktr.WorldPosition, kmap) end
 		end
 		if ownerId == "" then
+			-- 1.0.21 #4(사용자 2026-10-20 "좀비버섯 좀비머쉬맘 막타아니어도 템나오기 · 아군 미니언이든 포탑이든 죽으면 그냥 아이템과 메소 뱉도록"):
+			--   레인 미니언(MonsterId 0)은 플레이어 막타 · 시설 처치가 아니어도 수비대 · 넥서스 분신 등 마을 편 유닛이 잡으면 그 마을 주인 앞에 메소 동전을 떨군다(AttackCredit.DropUserIdOf).
+			--   경험치 · 처치 집계는 그대로 없다(위 ownerId = 플레이어 막타 · 시설 처치만). 주인을 못 찾으면(폭발 · 정리 · 주인 없는 마을) 지금처럼 보상 없음.
+			--   파병 유닛은 FarmReward 가 아예 안 붙어 여기 오지 않는다(GDD §4.3 보상 없음 그대로).
+			local dropOwner = self:DropOwnerOf()
+			if dropOwner ~= "" then
+				log("[FarmReward] " .. self.Entity.Name .. " killed by village unit " .. tostring(isvalid(self.LastAttacker) and self.LastAttacker.Name or "?") .. " — 메소만 " .. dropOwner .. " 앞에 (경험치 없음)")
+				self:DropCoins(dropOwner)
+				return
+			end
 			log("[FarmReward] " .. self.Entity.Name .. " killed by non-player — 보상 없음")
 			return
 		end
@@ -309,6 +329,10 @@ script FarmReward extends Component
 		local count = math.min(self.MaxCoinEntities, total)
 		local each = math.floor(total / count)
 		local rest = total - each * count
+		-- 한 줄 배치(1.0.21 #3 · 사용자 2026-10-20 "그 바닥에 겹치지않게 일렬로"): 이 몬스터가 떨구는 동전 · 아이템 · 주화는 같은 자리 key 로 한 줄 —
+		--   죽은 발 높이에 가장 가까운 발판 위(Farm/GroundDrop.NextRowLanding · 첫 칸 = 죽은 x). 발판이 아예 없는 맵이면 landing 이 nil 이라 예전처럼 동전이 알아서 떨어진다.
+		local rowKey = ""
+		if _GroundDrop ~= nil then rowKey = _GroundDrop:RowKeyAt(map, base.x, base.y) end
 
 		for i = 1, count do
 			-- 약간 좌우로 흩뿌려 스폰한다(동전 스크립트가 팝 + 낙하 처리).
@@ -331,6 +355,11 @@ script FarmReward extends Component
 					own.OwnerUserId = ownerId
 				else
 					log_warning("[FarmReward] DropOwner attach failed — 동전이 주인 없이 남는다")
+				end
+				-- 값 · 주인을 넣은 뒤 한 줄의 다음 칸을 준다(MesoCoin 이 OnBeginPlay 전/후 어느 쪽이든 받는다).
+				if rowKey ~= "" then
+					local landing = _GroundDrop:NextRowLanding(map, base.x, base.y, rowKey)
+					if landing ~= nil then _GroundDrop:AssignLanding(coin, landing) end
 				end
 			end
 		end

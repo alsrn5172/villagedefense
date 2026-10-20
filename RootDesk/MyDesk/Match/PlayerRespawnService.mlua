@@ -3,8 +3,14 @@ script PlayerRespawnService extends Logic
 	-- 플레이어 사망·리스폰 (9/14 기획 · WO-027 §9-0 3차 ④ · WO-028 T17 · a/plan-0914 B9).
 	--   · 감지 = 매치 참가자의 PlayerComponent:IsDead() 폴링(PollInterval) — 엔진 사망(= A 쪽 피해 적용점 뒤 HP≤0) 그대로. PlayerHit(B) 손대지 않음.
 	--   · 매치 중 사망 = 어디서 죽든(사냥터 · 마을 · 보스 · 여섯갈래길…) 내 마을의 1레인 포탈 자리로 리스폰(마을을 못 정했으면 리스항구) + 팝업 선택(PlayerRespawnUIController): 5,000메소(MesoPenalty) / 현재 레벨 경험치 −50%(ExpPenaltyRatio · 구간 안 경험치가 적으면 0% 까지 · 누적 차감 · 레벨 유지).
-	--     선택 창 = RespawnDuration(ChoiceSeconds) 동안. 고르면 즉시 부활(ProcessRevive) · 안 고르면 엔진 자동 부활 뒤 기본(경험치) 적용. 메소가 모자라면 경험치만.
+	--     선택 창 = ChoiceSeconds 동안. 고르면 즉시 부활(ProcessRevive) · 안 고르면 엔진 자동 부활 뒤 기본(경험치) 적용. 메소가 모자라면 경험치만. (↑ 1.0.21 에서 바뀜 — 아래)
 	--   · 발록 방 사망은 기존(BalrogRoomService) · 매치 밖 사망은 손대지 않는다. 사망 횟수는 서버 메모리(저장 안 함).
+	--   · 🔴 1.0.21 #1 (사용자 2026-10-20 "죽자마자 아예 비활성화 시키고 부활버튼 눌러도 이동 후에 부활시켜라 · 유예시간을 넉넉히" · 답 "도착 0.5초 뒤 + 무적 2초"):
+	--     예전엔 부활(ProcessRevive) → 이동이라 이동이 끝나기 전에 죽은 자리에서 몬스터에게 다시 맞아 죽었다. 이제
+	--       ① 사망 엣지부터 부활 보호(IsReviveProtected → PlayerHit.OnHit 이 피해 · 넉백 · 경직을 통째로 건너뜀) — 발록 방 사망도 같은 보호(순서는 BalrogRoomService 그대로: 엔진 자동 부활 → 마을로 내보냄).
+	--       ② 부활 버튼(Choose)과 선택 시간 만료(자체 타이머 ChoiceSeconds · 기본 선택 EXP)가 같은 길(BeginRevive): 비용 → 죽은 채로 부활 지점으로 먼저 이동 → 도착 확인 → ReviveDelayAfterArrive(0.5초) 뒤
+	--          ProcessRevive + HP · MP 최대(FinishRevive) → ReviveProtectSeconds(2초) 보호 해제. 엔진 자동 부활(RespawnDuration)은 ChoiceSeconds + EngineRespawnExtraSeconds 안전망.
+	--       ③ 죽은 채로는 안 옮겨지면 보호를 켠 채 먼저 부활시키고 다시 옮긴다(revive-first) · 엔진이 먼저 되살렸으면 예전처럼 부활 처리 + 이동(engine-first). 어느 길을 탔는지 [Death] path= 로그.
 
 	property integer MesoPenalty = 5000
 
@@ -35,6 +41,23 @@ script PlayerRespawnService extends Logic
 	-- 옮기기 전 자리에서 이 거리 안에 그대로 있으면 "이동이 안 먹었다" 로 본다(재시도 조건).
 	property number MoveStuckTolerance = 1.0
 
+	-- ── 1.0.21 #1 부활 순서 (사용자 2026-10-20 "죽자마자 아예 비활성화 시키고 부활버튼 눌러도 이동 후에 부활시켜라 · 유예시간을 넉넉히" · 답 "도착 0.5초 뒤 + 무적 2초") ──
+	-- 예전엔 부활 → 이동 순서라 이동이 끝나기 전에 죽은 자리에서(몬스터가 겹쳐 있으면) 다시 맞았다. 이제:
+	--   죽는 순간부터 부활 보호(피해 · 넉백 · 경직 없음) → 선택(Choose) 또는 선택 시간 만료(기본 EXP)가 같은 길 → 죽은 채로 부활 지점으로 먼저 이동 → 도착 확인 →
+	--   ReviveDelayAfterArrive 뒤 ProcessRevive + HP · MP 최대 → ReviveProtectSeconds 보호 → 끝. 죽은 채로는 안 옮겨지면(엔진 미확인) 보호를 켠 채 먼저 부활 후 다시 이동(revive-first).
+	-- 도착을 확인한 뒤 부활시키기까지 기다리는 시간(초).
+	property number ReviveDelayAfterArrive = 0.5
+
+	-- 부활한 뒤 무적 시간(초). 이동한 자리에 겹친 몬스터 · 늦게 오는 공격에 다시 맞지 않게.
+	property number ReviveProtectSeconds = 2.0
+
+	-- 엔진 자동 부활(PlayerComponent.RespawnDuration)은 ChoiceSeconds + 이 시간으로 늦춘 안전망이다 — 우리 타이머(ChoiceSeconds)가 먼저 기본 선택으로 같은 길을 태운다. 발록 방 안은 ChoiceSeconds 그대로.
+	-- 5초: 시간 만료 뒤 우리 흐름(이동 확인 0.5초 × 최대 2번 + 부활 대기 0.5초)은 최악이어도 약 2초에 끝난다 → 3초 남짓의 여유. 더 길면 죽은 채 포기 · 매치 종료로 나간 사람이 로비에서 그만큼 더 쓰러져 있다(엔진이 죽는 순간의 값을 쓴다고 가정 — 🟡 미확인).
+	property number EngineRespawnExtraSeconds = 5
+
+	-- 이동 · 대기 중 보호를 이어 가는 여유(초). 정상 흐름에서는 부활하는 순간 ReviveProtectSeconds 로 줄어든다(어떤 단계가 멈춰도 시각으로 스스로 끝난다).
+	property number ProtectGuardSeconds = 10
+
 	-- 예약된 이동 확인의 세대: moveEpoch = 매치 단위(시작·종료 때 +1) · moveSeq[uid] = 유저 단위(새 부활·이탈 때 +1)
 	@HideFromInspector
 	property integer moveEpoch = 0
@@ -49,16 +72,20 @@ script PlayerRespawnService extends Logic
 	@HideFromInspector
 	property any wasDead = nil
 
-	-- pending[uid] = { penalty, choice, phase, map, expCut } (사망 ~ 부활 사이)
+	-- pending[uid] = { penalty, choice, phase, map, expCut, stage, how, dest, applied, amount } (사망 ~ 부활 사이 · 1.0.21: stage = CHOOSING(팝업) → MOVING(죽은 채 이동 · 도착 대기) → 부활하면 지운다 · StatusBoard 가 "쓰러짐" 으로 읽는다)
 	@HideFromInspector
 	property any pending = nil
 
 	@HideFromInspector
 	property any deaths = nil
 
-	-- reviveAt[uid] = 마지막 부활 처리(OnRevive) 시각(ServerElapsedSeconds) — PlayerSafetyNet 의 [Safety] 원인 조사 로그용(1.0.5-3-01 · SecondsSinceRevive).
+	-- reviveAt[uid] = 마지막 부활 처리(FinishRevive) 시각(ServerElapsedSeconds) — PlayerSafetyNet 의 [Safety] 원인 조사 로그용(1.0.5-3-01 · SecondsSinceRevive).
 	@HideFromInspector
 	property any reviveAt = nil
+
+	-- protect[uid] = { untilAt, kind, blocked, since } — 부활 보호(1.0.21 #1 · IsReviveProtected). 서버 시각(ServerElapsedSeconds)으로 스스로 끝난다.
+	@HideFromInspector
+	property any protect = nil
 
 	@HideFromInspector
 	property number pollTimer = 0
@@ -70,6 +97,7 @@ script PlayerRespawnService extends Logic
 		self.pending = {}
 		self.deaths = {}
 		self.reviveAt = {}
+		self.protect = {}
 	end
 
 	@ExecSpace("ServerOnly")
@@ -80,6 +108,7 @@ script PlayerRespawnService extends Logic
 		self.pending = {}
 		self.deaths = {}
 		self.reviveAt = {}
+		self.protect = {}
 		-- 안전장치(PlayerSafetyNet) 한 판 발동 횟수도 이 시점에 비운다(1.0.5-3-01).
 		if _PlayerSafetyNet ~= nil then _PlayerSafetyNet:ResetForMatch() end
 		self.moveEpoch = self.moveEpoch + 1
@@ -88,7 +117,8 @@ script PlayerRespawnService extends Logic
 			table.insert(self.participants, uid)
 			local player = _UserService:GetUserEntityByUserId(uid)
 			if isvalid(player) and isvalid(player.PlayerComponent) then
-				player.PlayerComponent.RespawnDuration = self.ChoiceSeconds
+				-- 엔진 자동 부활 = 안전망(ChoiceSeconds + EngineRespawnExtraSeconds · 발록 방 안은 폴링이 ChoiceSeconds 로 맞춘다 · 1.0.21 #1). 선택 시간 만료는 우리 타이머(OnChoiceTimeout)가 먼저 처리한다.
+				player.PlayerComponent.RespawnDuration = self.ChoiceSeconds + self.EngineRespawnExtraSeconds
 				self.wasDead[uid] = player.PlayerComponent:IsDead()
 			end
 		end
@@ -107,6 +137,7 @@ script PlayerRespawnService extends Logic
 		end
 		self.participants = nil
 		self.pending = {}
+		self.protect = {}
 		self.moveEpoch = self.moveEpoch + 1
 	end
 
@@ -119,6 +150,7 @@ script PlayerRespawnService extends Logic
 		end
 		if self.pending ~= nil then self.pending[userId] = nil end
 		if self.wasDead ~= nil then self.wasDead[userId] = nil end
+		self:EndProtect(userId, "left")
 		self:BumpMove(userId)
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if isvalid(player) and isvalid(player.PlayerComponent) then player.PlayerComponent.RespawnDuration = self.DefaultRespawnSeconds end
@@ -131,6 +163,7 @@ script PlayerRespawnService extends Logic
 		-- wasDead[uid] 는 건드리지 않는다 — 폴링 엣지가 OnRevive 로 가도 OnRevive 의 관전자 가드가 걸러낸다.
 		local had = (self.pending ~= nil and self.pending[userId] ~= nil)
 		if self.pending ~= nil then self.pending[userId] = nil end
+		self:EndProtect(userId, "spectate")
 		self:BumpMove(userId)
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
 		if had then log("[Death] user=" .. userId .. " 탈락 — 열려 있던 부활 팝업 닫음 · 페널티 없음") end
@@ -154,6 +187,9 @@ script PlayerRespawnService extends Logic
 					self:OnRevive(uid, player)
 				end
 				self.wasDead[uid] = dead
+				-- 1.0.21 #1: 엔진 자동 부활 시간을 사망 전에 맞춰 두고(발록 방 안 = ChoiceSeconds · 그 밖 = + EngineRespawnExtraSeconds), 시간이 지난 부활 보호를 정리한다(끝 로그).
+				self:SyncRespawnDuration(player)
+				self:IsReviveProtected(uid)
 			end
 		end
 	end
@@ -193,7 +229,10 @@ script PlayerRespawnService extends Logic
 		local mapName = ""
 		if isvalid(player.CurrentMap) then mapName = player.CurrentMap.Name end
 		if string.find(mapName, self.BalrogMapPrefix, 1, true) == 1 then
-			log("[Death] user=" .. userId .. " map=" .. mapName .. " 발록 방 — BalrogRoomService 몫")
+			-- 발록 방 사망은 팝업이 없고 정식 부활이 엔진 자동 부활(RespawnDuration = ChoiceSeconds)이다 → BalrogRoomService 가 부활한 사람을 마을로 내보낸다(그 순서는 그대로).
+			-- 1.0.21 #1: 순서(부활 → 내보내기)는 두고 **사망 순간부터 부활 보호만** 건다 — 부활한 방 안에서 발록에게 다시 맞아 죽지 않게. 엔진 부활 엣지(OnRevive)에서 ReviveProtectSeconds 로 줄인다.
+			self:SetProtect(userId, self:DeathProtectSeconds(), "BALROG")
+			log("[Death] user=" .. userId .. " map=" .. mapName .. " 발록 방 — BalrogRoomService 몫 (부활 보호만 건다)")
 			return
 		end
 		if _MatchSessionLogic == nil or not _MatchSessionLogic.Running then return end
@@ -206,33 +245,33 @@ script PlayerRespawnService extends Logic
 			if e ~= nil then meso = e.meso or 0 end
 		end
 		local canMeso = meso >= self.MesoPenalty
-		self.pending[userId] = { penalty = true, choice = "", phase = phase, map = mapName, expCut = cut }
+		local p = { penalty = true, choice = "", phase = phase, map = mapName, expCut = cut, stage = "CHOOSING" }
+		self.pending[userId] = p
+		-- 1.0.21 #1: 죽는 순간부터 부활 보호(피해 · 넉백 · 경직 없음) — 죽은 자리에 몬스터가 겹쳐 있어도, 부활해서 옮겨지는 동안에도 다시 맞지 않는다.
+		self:SetProtect(userId, self:DeathProtectSeconds(), "POPUP")
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Show(self.MesoPenalty, cut, canMeso, userId) end
+		-- 선택 시간이 끝나면 기본 선택(경험치)으로 같은 길(BeginRevive)을 탄다 — 엔진 자동 부활(안전망)이 먼저 제자리 부활시키지 않게 우리 타이머가 먼저다.
+		local timeoutEpoch = self.moveEpoch
+		_TimerService:SetTimerOnce(function() self:OnChoiceTimeout(userId, p, timeoutEpoch) end, self.ChoiceSeconds)
 		log("[Death] user=" .. userId .. " phase=" .. phase .. " map=" .. mapName .. " choice? meso=" .. tostring(meso) .. " expCut=" .. tostring(cut) .. " (deaths=" .. tostring(self.deaths[userId]) .. ")")
 	end
 
 	@ExecSpace("Server")
 	method void Choose(string kind)
-		-- 클라 팝업 선택 ("MESO" / "EXP"). 고르면 바로 부활시킨다 — 부활 처리(OnRevive)가 페널티·이동을 한다.
+		-- 클라 팝업 선택 ("MESO" / "EXP"). 1.0.21 #1: 고르면 **그 자리에서 부활시키지 않는다** — 선택 시간 만료(OnChoiceTimeout)와 같은 길(BeginRevive)로 비용 → 죽은 채 이동 → 도착 0.5초 뒤 부활(FinishRevive) → 2초 보호.
+		--   (예전: 여기서 바로 ProcessRevive + HP 최대 → 폴링 OnRevive 가 이동. 그 사이 죽은 자리에서 겹친 몬스터에게 다시 맞았다. ProcessRevive · HP 최대 · MP 최대는 이제 FinishRevive 가 한다.)
 		local userId = senderUserId
 		if userId == nil or userId == "" or self.pending == nil then return end
 		-- 관전자는 부활을 고를 수 없다 — 조용히 무시(팝업은 CancelFor 가 이미 닫았다 · Blocked 토스트가 팝업 닫힘 직후 뜨는 걸 피함 · 1.0.3-M4-02).
 		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then return end
 		local p = self.pending[userId]
 		if p == nil or not p.penalty then return end
+		-- 이미 이동 중이다(더블 클릭 · 시간 만료 직후 클릭)면 무시.
+		if p.stage ~= "CHOOSING" then return end
 		if kind ~= "MESO" and kind ~= "EXP" then return end
 		p.choice = kind
 		log("[Death] user=" .. userId .. " chose " .. kind)
-		local player = _UserService:GetUserEntityByUserId(userId)
-		if isvalid(player) and isvalid(player.PlayerComponent) and player.PlayerComponent:IsDead() then
-			local pc = player.PlayerComponent
-			pc:ProcessRevive(userId)
-			-- ProcessRevive 는 HP 를 채우지 않아 HP 0 인 채 살아 있었다(2026-09-25 Play · #40 comment 5830769756).
-			-- 시간 부활(엔진 자동 부활 = HP 최대치)과 같게 바로 채운다 — 폴링 OnRevive 까지 기다리면 그 사이(최대 PollInterval) HP 0 으로 맞는다.
-			-- MP 는 엔진에 없고 SummonManager econ 이 진상이다. MP 는 두 부활이 모두 지나가는 OnRevive 에서 최대치로 채운다(#40 comment 5844239483 A 결정).
-			pc.Hp = pc.MaxHp
-			log("[Death] user=" .. userId .. " revive=choice hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
-		end
+		self:BeginRevive(userId, "choice")
 	end
 
 	@ExecSpace("ServerOnly")
@@ -317,11 +356,12 @@ script PlayerRespawnService extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method void MoveToRespawn(string userId, string destMap, Vector2 destPos, integer attempt)
+	method void MoveToRespawn(string userId, string destMap, Vector2 destPos, integer attempt, string phase)
 		-- 리스폰 위치로 옮기고 MoveCheckSeconds 뒤 실제로 갔는지 되읽는다(WO-035 B · 2026-09-29). 안 갔으면 한 번 더 · 그래도 아니면 에러 로그.
 		-- 목적지 맵이 이 룸에 없으면(맵 하나만 연 테스트 · 정적 룸) 엔진 이동이 조용히 실패해 죽은 자리에 남았다 → 지금 맵의 스폰 지점으로 보낸다.
 		-- 🔴 재시도는 **옮기기 전 자리에 그대로 남아 있을 때만** 한다. 목적지가 아니라는 이유만으로 다시 옮기면, 부활하자마자 포탈을 탔거나
 		--    매치가 끝나 다른 곳으로 간 사람을 끌고 온다. 예약된 확인은 매치 종료 · 다음 매치 · 이탈 · 새 부활에서 무효가 된다(Codex 리뷰 2026-09-29).
+		-- 1.0.21 #1: phase = "DEAD"(정식 · 죽은 채로 먼저 옮긴다 → 확인 결과를 OnMoveSettled 가 받아 0.5초 뒤 부활시킨다) / "ALIVE"(이미 부활한 뒤 옮기는 대체 길 · 엔진이 먼저 되살린 경우 · 예전 순서).
 		local player = _UserService:GetUserEntityByUserId(userId)
 		if not isvalid(player) or not isvalid(player.PlayerComponent) or not isvalid(player.TransformComponent) then return end
 		if self.moveSeq == nil then self.moveSeq = {} end
@@ -337,6 +377,8 @@ script PlayerRespawnService extends Logic
 			local sp = self:SpawnPointOf(here)
 			if sp == nil then
 				log_warning("[Death] respawn map " .. map .. " is not in this room · 스폰 지점도 없음 → 제자리 (" .. userId .. ")")
+				-- 1.0.21 #1: 옮길 곳이 없어도 흐름은 이어 간다(죽은 채 멈춰 두면 엔진 안전망 부활까지 기다린다) → 제자리에서 보호를 켠 채 부활.
+				self:OnMoveSettled(userId, map, pos, phase, "none", epoch, seq)
 				return
 			end
 			log_warning("[Death] respawn map " .. map .. " is not in this room → " .. tostring(here.Name) .. " 스폰 지점 (" .. userId .. ")")
@@ -360,40 +402,128 @@ script PlayerRespawnService extends Logic
 			local where = "map=" .. nowMap .. " pos=(" .. string.format("%.2f", wp.x) .. "," .. string.format("%.2f", wp.y) .. ") want=" .. map
 				.. " (" .. string.format("%.2f", pos.x) .. "," .. string.format("%.2f", pos.y) .. ")"
 			if nowMap == map and near then
-				log("[Death] respawn check ok " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				log("[Death] respawn check ok " .. where .. " try=" .. tostring(attempt) .. " phase=" .. phase .. " (" .. userId .. ")")
+				self:OnMoveSettled(userId, map, pos, phase, "ok", epoch, seq)
 				return
 			end
 			local sx = wp.x - fp.x
 			local sy = wp.y - fp.y
 			local stuck = nowMap == fromMap and (sx * sx + sy * sy) <= self.MoveStuckTolerance * self.MoveStuckTolerance
 			if not stuck then
-				-- 목적지는 아니지만 옮기기 전 자리도 아니다 = 스스로 움직였다(포탈 등). 건드리지 않는다.
-				log("[Death] respawn check moved on " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				-- 목적지는 아니지만 옮기기 전 자리도 아니다 = 스스로 움직였다(포탈 등). 다시 옮기지는 않는다(건드리지 않는다). 죽은 채 옮기는 중이면 도착한 것으로 보고 흐름을 잇는다.
+				log("[Death] respawn check moved on " .. where .. " try=" .. tostring(attempt) .. " phase=" .. phase .. " (" .. userId .. ")")
+				self:OnMoveSettled(userId, map, pos, phase, "moved", epoch, seq)
 				return
 			end
-			if attempt < self.MoveMaxTries and not pl.PlayerComponent:IsDead() then
-				log_warning("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " → retry (" .. userId .. ")")
-				self:MoveToRespawn(userId, map, pos, attempt + 1)
+			-- 재시도: 살아 있는 사람(ALIVE)은 예전처럼 죽지 않았을 때만 · 죽은 채 옮기는 중(DEAD)은 죽어 있는 게 정상이다.
+			if attempt < self.MoveMaxTries and (phase == "DEAD" or not pl.PlayerComponent:IsDead()) then
+				log_warning("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " phase=" .. phase .. " → retry (" .. userId .. ")")
+				self:MoveToRespawn(userId, map, pos, attempt + 1, phase)
 			else
-				log_error("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				if phase == "DEAD" then
+					log_warning("[Death] respawn move(dead) failed " .. where .. " try=" .. tostring(attempt) .. " → revive-first path (" .. userId .. ")")
+				else
+					log_error("[Death] respawn move failed " .. where .. " try=" .. tostring(attempt) .. " (" .. userId .. ")")
+				end
+				self:OnMoveSettled(userId, map, pos, phase, "failed", epoch, seq)
 			end
 		end, self.MoveCheckSeconds)
 	end
 
 	@ExecSpace("ServerOnly")
-	method void OnRevive(string userId, Entity player)
-		-- 부활 1건: 페널티 적용 → 리스폰 위치로 이동 → 팝업 닫기.
-		-- 관전자는 페널티도 부활 이동도 없다. 엔진 부활이 숨김 · 조작 · 피격 상태를 되돌렸을 수 있어 다시 건다 (1.0.3-M4-02).
-		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
-			_SpectateService:Reassert(userId, "revive")
+	method number DeathProtectSeconds()
+		-- 사망 순간에 거는 보호의 안전 상한(초): 선택 시간 + 엔진 안전망 부활 + 여유. 정상 흐름에서는 부활하는 순간 ReviveProtectSeconds 로 줄어든다. 시각으로 스스로 끝나므로 멈춘 채 무적으로 남지 않는다.
+		return self.ChoiceSeconds + self.EngineRespawnExtraSeconds + self.ProtectGuardSeconds
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetProtect(string userId, number seconds, string kind)
+		-- 부활 보호를 지금부터 seconds 로 건다(이미 있으면 그 시간으로 맞춘다 — 줄이기도 한다). kind(로그용) = POPUP(사망 ~ 부활) / BALROG(발록 방 사망 ~ 엔진 부활) / REVIVED / BALROG_REVIVED / EXTRA.
+		-- 보호 중에는 PlayerHit.OnHit 이 피해 · 넉백 · 경직 · 표시를 통째로 건너뛴다(IsReviveProtected). HitComponent.Enable 은 관전(SpectateService) · 튜토리얼이 쓰는 스위치라 건드리지 않는다.
+		if self.protect == nil then self.protect = {} end
+		local now = _UtilLogic.ServerElapsedSeconds
+		local pr = self.protect[userId]
+		if pr ~= nil and now >= pr.untilAt then
+			-- 시간이 지난 채 남은 옛 보호는 정리하고 새로 건다.
+			self:EndProtect(userId, "stale")
+			pr = nil
+		end
+		if pr == nil then
+			self.protect[userId] = { untilAt = now + seconds, kind = kind, blocked = 0, since = now }
+			log("[Death] user=" .. userId .. " protect ON kind=" .. kind .. " for " .. string.format("%.1f", seconds) .. "s")
 			return
 		end
-		if self.pending == nil then return end
-		local p = self.pending[userId]
-		if p == nil then return end
-		self.pending[userId] = nil
-		if self.reviveAt == nil then self.reviveAt = {} end
-		self.reviveAt[userId] = _UtilLogic.ServerElapsedSeconds
+		pr.untilAt = now + seconds
+		pr.kind = kind
+		log("[Death] user=" .. userId .. " protect set kind=" .. kind .. " for " .. string.format("%.1f", seconds) .. "s (blocked " .. tostring(pr.blocked) .. ")")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ExtendProtect(string userId, number seconds)
+		-- 보호가 지금부터 seconds 이상 이어지게 늘린다(이미 더 길면 그대로 · 없으면 새로 건다).
+		if self.protect == nil then self.protect = {} end
+		local pr = self.protect[userId]
+		if pr == nil then
+			self:SetProtect(userId, seconds, "EXTRA")
+			return
+		end
+		local endAt = _UtilLogic.ServerElapsedSeconds + seconds
+		if endAt > pr.untilAt then pr.untilAt = endAt end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndProtect(string userId, string why)
+		-- 보호를 끝낸다(시간 · 정리). 막은 타격 수를 로그로 남긴다 — Play 에서 "다시 맞지 않았는가" 를 이 줄로 본다.
+		if self.protect == nil then return end
+		local pr = self.protect[userId]
+		if pr == nil then return end
+		self.protect[userId] = nil
+		log("[Death] user=" .. userId .. " protect OFF (" .. why .. ") kind=" .. pr.kind .. " lasted=" .. string.format("%.1f", _UtilLogic.ServerElapsedSeconds - pr.since) .. "s blocked=" .. tostring(pr.blocked))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsReviveProtected(string userId)
+		-- 부활 보호 중인가(1.0.21 #1). PlayerHit.OnHit 이 맞는 순간마다 묻는다 — 사망 순간 ~ 부활 + ReviveProtectSeconds. 시각이 지났으면 여기서 스스로 끝낸다.
+		if self.protect == nil or userId == nil or userId == "" then return false end
+		local pr = self.protect[userId]
+		if pr == nil then return false end
+		if _UtilLogic.ServerElapsedSeconds >= pr.untilAt then
+			self:EndProtect(userId, "time")
+			return false
+		end
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void NoteProtectedHit(string userId)
+		-- 보호가 막은 타격 한 번(로그 집계용 · PlayerHit.OnHit 이 부른다).
+		if self.protect == nil then return end
+		local pr = self.protect[userId]
+		if pr ~= nil then pr.blocked = pr.blocked + 1 end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean InBalrogRoom(Entity player)
+		-- 발록 방(BalrogMapPrefix) 안에 있는가.
+		if not isvalid(player) or not isvalid(player.CurrentMap) then return false end
+		return string.find(player.CurrentMap.Name, self.BalrogMapPrefix, 1, true) == 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SyncRespawnDuration(Entity player)
+		-- 엔진 자동 부활 시간(PlayerComponent.RespawnDuration)을 맞춘다(1.0.21 #1). 팝업이 있는 곳 = ChoiceSeconds + EngineRespawnExtraSeconds(우리 타이머가 기본 선택을 먼저 처리하고 엔진은 안전망 — 엔진이 먼저 제자리 부활시키지 않게),
+		--   발록 방 안 = ChoiceSeconds 그대로(그 방 사망은 팝업이 없어 엔진 자동 부활이 정식 부활이다 — 기다림이 늘어나지 않게). 사망 전에 맞춰져 있어야 하므로 폴링마다 본다. 값이 다를 때만 쓴다(@Sync).
+		local pc = player.PlayerComponent
+		local want = self.ChoiceSeconds + self.EngineRespawnExtraSeconds
+		if self:InBalrogRoom(player) then want = self.ChoiceSeconds end
+		if math.abs(pc.RespawnDuration - want) > 0.01 then pc.RespawnDuration = want end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ApplyPenalty(string userId, any p)
+		-- 부활 비용을 낸다(선택 MESO / EXP · 안 골랐으면 기본 EXP · 메소가 모자라면 경험치만). 한 번만(p.applied 가 차 있으면 건너뜀). 결과는 p.applied("MESO" / "EXP" / "none") · p.amount.
+		-- (1.0.21 #1: 예전엔 부활한 뒤 OnRevive 가 냈다. 이제 선택 · 시간 만료 순간에 내고 토스트만 부활 뒤에 띄운다.)
+		if p.applied ~= nil then return end
 		local applied = "none"
 		local amount = 0
 		if p.penalty then
@@ -412,18 +542,19 @@ script PlayerRespawnService extends Logic
 				if _SummonManager ~= nil then amount = _SummonManager:DeductExpInLevel(userId, self.ExpPenaltyRatio) end
 			end
 		end
+		p.applied = applied
+		p.amount = amount
+	end
+
+	@ExecSpace("ServerOnly")
+	method any ResolveDestination(string userId, any p)
+		-- 부활 지점 { target, map, pos, label, rule }. 어디서 죽든(사냥터 · 마을 · 보스 · 여섯갈래길 등) 내 마을의 1레인 쪽 포탈 자리 → 마을이 없으면(마을 연결 전에 죽음) 리스항구 (1.0.5-4-01 · 2026-10-13).
+		--   예전 "사냥터에서 죽으면 그 지역 마을"(WO-049 ⑦ · HUNT_REGION)과 "1페이즈는 리스항구" 규칙은 걷어 냈다 — 죽은 곳 · 페이즈와 상관없다. (1.0.21 #1: 예전 OnRevive 의 계산을 그대로 옮겼다 — 순서만 바뀜.)
 		local target = ""
 		local destMap = ""
 		local destPos = nil
-		local pc = player.PlayerComponent
-		-- 시간 만료 부활은 엔진이 HP를 채운다고 보장하지 않는다. 선택 부활과 같은 지점에서 항상 최대 HP로 보정한다.
-		pc.Hp = pc.MaxHp
-		local reviveEpoch = self.moveEpoch
-		_TimerService:SetTimerOnce(function() self:EnsureReviveHp(userId, 1, reviveEpoch) end, 0.4)
 		local label = ""
 		local rule = ""
-		-- 어디서 죽든(사냥터 · 마을 · 보스 · 여섯갈래길 등) 내 마을의 1레인 쪽 포탈 자리 → 마을이 없으면(마을 연결 전에 죽음) 리스항구 (1.0.5-4-01 · 2026-10-13).
-		--   예전 "사냥터에서 죽으면 그 지역 마을"(WO-049 ⑦ · HUNT_REGION)과 "1페이즈는 리스항구" 규칙은 걷어 냈다 — 죽은 곳 · 페이즈와 상관없다.
 		if target == "" and p.penalty then
 			local vid = ""
 			if _LaneStateService ~= nil then vid = _LaneStateService:VillageOfUser(userId) end
@@ -461,11 +592,48 @@ script PlayerRespawnService extends Logic
 			label = "리스항구"
 			rule = "LITH"
 		end
-		if destMap ~= "" and destPos ~= nil then
-			self:BumpMove(userId)
-			self:MoveToRespawn(userId, destMap, destPos, 1)
+		return { target = target, map = destMap, pos = destPos, label = label, rule = rule }
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FinishRevive(string userId, string way)
+		-- 부활 본체(1.0.21 #1): 죽어 있으면 ProcessRevive → HP · MP 최대 → 부활한 순간부터 ReviveProtectSeconds 보호 → 팝업 닫기 · 토스트 · 로그. (예전 OnRevive 뒷부분 + Choose 의 ProcessRevive.)
+		-- way(로그용) = move-first(정식: 죽은 채 이동 → 도착 확인 → ReviveDelayAfterArrive 뒤) / revive-first(죽은 채로는 안 옮겨져 먼저 부활 → 이동) / engine-first(엔진이 먼저 되살림 → 이동) / no-destination(목적지 없음 → 제자리).
+		local p = nil
+		if self.pending ~= nil then p = self.pending[userId] end
+		if p == nil then return end
+		self.pending[userId] = nil
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then
+			self:EndProtect(userId, "gone")
+			return
 		end
+		if self.reviveAt == nil then self.reviveAt = {} end
+		self.reviveAt[userId] = _UtilLogic.ServerElapsedSeconds
+		local pc = player.PlayerComponent
+		local wasDead = pc:IsDead()
+		if wasDead then pc:ProcessRevive(userId) end
+		-- ProcessRevive 는 HP 를 채우지 않아 HP 0 인 채 살아 있었다(2026-09-25 Play · #40 comment 5830769756). 시간 부활(엔진 자동 부활 = HP 최대치)과 같게 바로 채운다 — 폴링 엣지까지 기다리면 그 사이 HP 0 으로 맞는다.
+		--   엔진이 HP 를 늦게 · 다르게 쓰는 경우는 EnsureReviveHp(0.4초 간격 3번)가 최소 비율(ReviveMinHpRatio)까지 다시 채운다. MP 는 엔진에 없고 SummonManager econ 이 진상이라 아래에서 따로 채운다.
+		pc.Hp = pc.MaxHp
+		local reviveEpoch = self.moveEpoch
+		_TimerService:SetTimerOnce(function() self:EnsureReviveHp(userId, 1, reviveEpoch) end, 0.4)
+		-- 부활한 순간부터 ReviveProtectSeconds(2초) 무적 — 도착 직후 겹친 몬스터 · 늦게 오는 공격에 다시 맞지 않게. 대체 길(부활 뒤 이동)이 길어지면 OnMoveSettled 가 늘린다.
+		self:SetProtect(userId, self.ReviveProtectSeconds, "REVIVED")
 		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
+		local dest = p.dest
+		local label = ""
+		local rule = ""
+		local target = ""
+		if dest ~= nil then
+			label = dest.label
+			rule = dest.rule
+			target = dest.target
+		end
+		local applied = p.applied
+		if applied == nil then applied = "none" end
+		local amount = p.amount
+		if amount == nil then amount = 0 end
 		if p.penalty and _UIToast ~= nil then
 			local where = (label ~= "") and label or "마을"
 			if applied == "MESO" then _UIToast:ShowMessage(where .. "에서 부활 — 메소 " .. tostring(amount) .. " 차감", userId)
@@ -479,9 +647,113 @@ script PlayerRespawnService extends Logic
 				if refill > 0 then _SummonManager:GrantMp(userId, refill) end
 			end
 		end
-		local how = "timed"
-		if p.choice ~= "" then how = "choice" end
+		local how = p.how
+		if how == nil or how == "" then how = "engine" end
 		log("[Death] user=" .. userId .. " phase=" .. tostring(p.phase) .. " rule=" .. rule .. " respawn=" .. target .. " penalty=" .. applied .. ":" .. tostring(amount) .. " deaths=" .. tostring(self.deaths[userId] or 0)
-			.. " revive=" .. how .. " hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
+			.. " revive=" .. how .. " path=" .. way .. " wasDead=" .. tostring(wasDead) .. " hp=" .. tostring(pc.Hp) .. "/" .. tostring(pc.MaxHp) .. " mp=" .. self:MpText(userId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMoveSettled(string userId, string destMap, Vector2 destPos, string phase, string result, integer epoch, integer seq)
+		-- 이동 확인 결과를 받는다(MoveToRespawn 이 부른다 · 1.0.21 #1). result = ok(목적지 도착) / moved(스스로 옮겨짐) / failed(안 옮겨졌다) / none(옮길 곳이 없다).
+		if phase == "DEAD" then
+			if result == "failed" then
+				-- 죽은 상태에서는 MoveToMapPosition 이 안 먹는 경우(엔진 미확인) → 보호를 켠 채 먼저 부활시키고 다시 옮긴다(예전 순서 · revive-first).
+				log_warning("[Death] user=" .. userId .. " path=revive-first (dead move did not take) → revive now, then move again")
+				self:FinishRevive(userId, "revive-first")
+				self:MoveToRespawn(userId, destMap, destPos, 1, "ALIVE")
+				return
+			end
+			-- 도착(또는 스스로 옮겨짐 / 옮길 곳 없음): ReviveDelayAfterArrive 뒤 부활. 그사이 이탈 · 매치 종료 · 엔진 부활(AdoptEngineRevive 가 BumpMove)이면 이 예약은 버린다.
+			log("[Death] user=" .. userId .. " path=move-first arrived(" .. result .. ") → revive in " .. string.format("%.1f", self.ReviveDelayAfterArrive) .. "s")
+			_TimerService:SetTimerOnce(function()
+				if self.moveEpoch ~= epoch or self.moveSeq == nil or (self.moveSeq[userId] or 0) ~= seq then return end
+				if not self:IsParticipant(userId) then return end
+				self:FinishRevive(userId, "move-first")
+			end, self.ReviveDelayAfterArrive)
+			return
+		end
+		-- ALIVE(부활한 뒤 옮기는 길): 도착한(실패 포함) 순간부터 ReviveProtectSeconds 더 지킨다.
+		self:ExtendProtect(userId, self.ReviveProtectSeconds)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginRevive(string userId, string how)
+		-- 부활 시작(1.0.21 #1 · 부활 버튼 Choose 와 선택 시간 만료 OnChoiceTimeout 이 같은 길): 팝업 닫기 → 부활 비용 → 목적지 → **죽은 채로 먼저 이동**(MoveToRespawn DEAD)
+		--   → 도착 확인 → ReviveDelayAfterArrive(0.5초) 뒤 부활(FinishRevive) → ReviveProtectSeconds(2초) 보호. how = "choice"(버튼) / "timed"(시간 만료 · 기본 선택 EXP).
+		local p = nil
+		if self.pending ~= nil then p = self.pending[userId] end
+		if p == nil or p.stage ~= "CHOOSING" then return end
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) or not isvalid(player.PlayerComponent) then return end
+		p.stage = "MOVING"
+		p.how = how
+		if _PlayerRespawnUIController ~= nil then _PlayerRespawnUIController:Hide(userId) end
+		self:ApplyPenalty(userId, p)
+		local dest = self:ResolveDestination(userId, p)
+		p.dest = dest
+		-- 이동 · 대기 동안 보호를 넉넉히 이어 간다(부활하는 순간 ReviveProtectSeconds 로 맞춘다).
+		self:SetProtect(userId, self.ProtectGuardSeconds, "POPUP")
+		self:BumpMove(userId)
+		log("[Death] user=" .. userId .. " revive start how=" .. how .. " choice=" .. tostring(p.choice) .. " penalty=" .. tostring(p.applied) .. ":" .. tostring(p.amount) .. " dest=" .. dest.map .. " rule=" .. dest.rule .. " (dead → move first)")
+		if dest.map == "" or dest.pos == nil then
+			log_warning("[Death] user=" .. userId .. " no respawn destination → revive in place (protected)")
+			self:FinishRevive(userId, "no-destination")
+			return
+		end
+		self:MoveToRespawn(userId, dest.map, dest.pos, 1, "DEAD")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnChoiceTimeout(string userId, any p, integer epoch)
+		-- 선택 시간(ChoiceSeconds)이 끝났다(1.0.21 #1): 아무것도 안 골랐으면 기본 선택(경험치)으로 같은 길(BeginRevive)을 탄다. 엔진 자동 부활이 먼저 제자리 부활시키지 않게 우리 타이머가 먼저다.
+		-- 그사이 고르거나 · 이탈 · 탈락 · 매치 종료 · 엔진 부활이 있었으면(pending 이 바뀌었으면) 아무것도 안 한다.
+		if epoch ~= self.moveEpoch or self.pending == nil or self.pending[userId] ~= p then return end
+		if p.stage ~= "CHOOSING" then return end
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then return end
+		log("[Death] user=" .. userId .. " choice time over (" .. string.format("%.0f", self.ChoiceSeconds) .. "s) → default EXP")
+		self:BeginRevive(userId, "timed")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AdoptEngineRevive(string userId, Entity player, any p)
+		-- 엔진이 먼저 되살렸다(RespawnDuration 안전망 · 그 밖의 원인 · 1.0.21 #1): 보호를 켠 채 예전처럼 부활 처리를 하고 부활 지점으로 옮긴다(revive-first). 비용이 아직이면 지금 낸다.
+		log_warning("[Death] user=" .. userId .. " engine revived first (stage=" .. tostring(p.stage) .. ") → path=engine-first")
+		self:ApplyPenalty(userId, p)
+		if p.dest == nil then p.dest = self:ResolveDestination(userId, p) end
+		local dest = p.dest
+		self:BumpMove(userId)
+		self:FinishRevive(userId, "engine-first")
+		-- FinishRevive 가 보호를 ReviveProtectSeconds 로 맞췄다 → 이동 확인(최대 MoveMaxTries 번)이 끝날 때까지는 더 지킨다(도착하면 OnMoveSettled 가 다시 ReviveProtectSeconds 만큼 늘린다).
+		self:ExtendProtect(userId, self.ReviveProtectSeconds + self.MoveCheckSeconds * (self.MoveMaxTries + 1))
+		if dest.map ~= "" and dest.pos ~= nil then
+			self:MoveToRespawn(userId, dest.map, dest.pos, 1, "ALIVE")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnRevive(string userId, Entity player)
+		-- 부활 엣지(폴링). 정식 부활은 우리가 FinishRevive 로 하므로 여기 오는 건 대개 그 뒤 늦게 보이는 엣지(무시)다. 남는 경우 둘(1.0.21 #1):
+		--   ① 엔진이 먼저 되살렸다 → pending 이 남아 있다 → AdoptEngineRevive(보호를 켠 채 예전처럼 부활 처리 + 이동).
+		--   ② 발록 방 엔진 자동 부활 → pending 은 없고 BALROG 보호만 있다 → 부활 시각부터 ReviveProtectSeconds 로 맞춘다(BalrogRoomService 가 곧 마을로 내보낸다).
+		-- 관전자는 페널티도 부활 이동도 없다. 엔진 부활이 숨김 · 조작 · 피격 상태를 되돌렸을 수 있어 다시 건다 (1.0.3-M4-02).
+		if _SpectateService ~= nil and _SpectateService:IsSpectator(userId) then
+			_SpectateService:Reassert(userId, "revive")
+			return
+		end
+		local p = nil
+		if self.pending ~= nil then p = self.pending[userId] end
+		if p == nil then
+			local pr = nil
+			if self.protect ~= nil then pr = self.protect[userId] end
+			if pr ~= nil and pr.kind == "BALROG" then
+				if self.reviveAt == nil then self.reviveAt = {} end
+				self.reviveAt[userId] = _UtilLogic.ServerElapsedSeconds
+				self:SetProtect(userId, self.ReviveProtectSeconds, "BALROG_REVIVED")
+				log("[Death] user=" .. userId .. " balrog room engine revive → protect " .. string.format("%.1f", self.ReviveProtectSeconds) .. "s (BalrogRoomService 가 마을로 내보낸다)")
+			end
+			return
+		end
+		self:AdoptEngineRevive(userId, player, p)
 	end
 end

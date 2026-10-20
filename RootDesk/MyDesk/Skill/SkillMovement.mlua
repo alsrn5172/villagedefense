@@ -135,6 +135,19 @@ script SkillMovement extends Logic
     -- 클라 인스턴스의 SkillExecutors.effectOverrides/castSounds 는 비어 있다(SkillExecutors.OnBeginPlay 가 ServerOnly) → 클라가 RUID 를 따로 알아야 한다.
     property table blinkLocalFx = {}
 
+    -- 텔레포트 강화 명중음(번개 소리) 예측(1.0.21 #2 · 사용자 2026-10-20 "텔레포트 강화의 이펙트와 소리 타이밍이 서로 안맞음. 소리가 늦게나는 것 같은데, 텔레포트 예전 버전의 오류와 똑같음"):
+    --   명중 소리는 서버가 BlinkArrivalDelay(0.15초) 뒤 도착 광역을 판정하고 전달해서 틀었다 → 시전자에게는 도착 이펙트 · 시전음(키를 누른 프레임)보다 늦었다(1.1-L04 와 같은 구조).
+    --   이제 시전자 클라가 도착 순간 도착 광역 상자(서버 SkillExecutors.BlinkArrivalAoeSize · 도착점 기준) 안에 적 몬스터가 있는지 클라 위치로 예측해 바로 튼다(PredictBlinkHitSound).
+    --   서버의 같은 소리는 시전자를 뺀 다른 유저에게만 간다(SkillExecutors.ExecuteBlink · effectOverrides.impact.localHitSound). 몬스터 위 명중 그림(hit)은 서버 그대로.
+    -- 도착 광역 상자 크기를 못 읽을 때의 대체값. 평소엔 SkillExecutors.BlinkArrivalAoeSize 를 그대로 읽는다 — 그쪽을 바꾸면 이 값도 같이(서버와 같은 크기여야 예측이 맞는다).
+    property Vector2 BlinkHitBoxFallback = Vector2(2.4, 1.6)
+
+    -- 예측 상자를 사방으로 넓히는 여유(월드 길이). 0 = 서버와 같은 크기. 서버 판정은 도착 0.15초 뒤라 그사이 몬스터가 움직여 예측이 서버보다 자주 빗나가면 올린다(대신 헛소리가 늘 수 있다).
+    property number BlinkHitBoxMargin = 0
+
+    -- 몬스터 피격 상자(HitComponent.BoxSize)를 못 읽거나 0 일 때 쓰는 대체 몸 상자(가로 × 세로 · 발에서 위로 · 월드 길이 · 1 = 100px).
+    property Vector2 BlinkHitMonsterBoxFallback = Vector2(0.8, 1.0)
+
     -- [클라] 이 맵에 들어온 위치(닷지 폴백 · SpawnLocation 선택 기준). OnUpdate 가 CurrentMap 이름이 바뀌는 순간 기록한다.
     @HideFromInspector
     property string lastMapName = ""
@@ -163,17 +176,22 @@ script SkillMovement extends Logic
         -- 1.1-L04: 시전자 클라에서 즉시 재생할 도착 이펙트 · 시전음. 🔴 값은 서버 쪽과 **같아야 한다**(한쪽만 바꾸면 시전자와 다른 유저 화면이 어긋난다):
         --   이펙트 = SkillExecutors.effectOverrides.SK_M13.impact / SK_M21.impact (ruid · scale · flipWithFacing · offsetY)
         --   소리   = SkillExecutors.castSounds.SK_M13 / SK_M21
-        --   서버의 같은 두 impact 에는 localFirst = true 가 붙어 있다(그 표식이 있어야 서버 재생이 시전자를 건너뛴다 · 1.1-L05).
+        --   명중음 = SkillExecutors.extraSounds.SK_M21.hit → 여기 hitSoundRuid(1.0.21 #2 · 도착 순간 적이 상자 안에 있으면 시전자 클라가 바로 튼다 · PredictBlinkHitSound).
+        --   서버의 같은 두 impact 에는 localFirst = true 가 붙어 있다(그 표식이 있어야 서버 재생이 시전자를 건너뛴다 · 1.1-L05). SK_M21 impact 의 localHitSound = true 는 명중음도 시전자를 건너뛴다는 표식(1.0.21 #2).
         --   SK_M21 의 scaleX / scaleY / offsetY 는 1.0.3-M1-06(2026-10-12 사용자 결정 "이펙트를 판정에 맞춤" — 도착 광역 판정 2.4 × 1.6 에 고리를 맞춤)으로 바뀐 값이다. scaleX / scaleY 가 없으면 scale(균등).
         self.blinkLocalFx = {
             SK_M13 = { ruid = "1fc628fe0f0d40c9bce10b1a3b434b89", scale = 1.15, flipWithFacing = true, offsetY = 0, soundRuid = "6046095db6a24eaab07d268f7d3040c2" },
-            SK_M21 = { ruid = "5acb898b8198481ca425148da2193feb", scaleX = 1.27, scaleY = 0.977, flipWithFacing = true, offsetY = 0.38, soundRuid = "7c1c509dc17c459da9a496da153e8d4b" },
+            SK_M21 = { ruid = "5acb898b8198481ca425148da2193feb", scaleX = 1.27, scaleY = 0.977, flipWithFacing = true, offsetY = 0.38, soundRuid = "7c1c509dc17c459da9a496da153e8d4b", hitSoundRuid = "e8e38d3aaf5e4d5c9f9d735e92679835" },
         }
         self.downKeyHandler = _InputService:ConnectEvent(KeyDownEvent, self.OnJumpKeyForDownJump)
         -- 텔레포트 시전음을 미리 불러 둔다(사용자 2026-10-14 "텔레포트 강화 소리가 이펙트보다 한층 늦게 들린다" — 처음 틀 때 소리 파일을 불러오느라 늦는 것을 없앤다).
         for _, f in pairs(self.blinkLocalFx) do
             if f.soundRuid ~= nil and f.soundRuid ~= "" then
                 pcall(function() _SoundService:LoadSound(f.soundRuid) end)
+            end
+            -- 1.0.21 #2: 명중(번개) 소리도 미리 불러 둔다 — 처음 틀 때 소리 파일을 불러오느라 시전음보다 늦는 것을 없앤다(시전음과 같은 이유).
+            if f.hitSoundRuid ~= nil and f.hitSoundRuid ~= "" then
+                pcall(function() _SoundService:LoadSound(f.hitSoundRuid) end)
             end
         end
     end
@@ -501,6 +519,111 @@ script SkillMovement extends Logic
         if fx.soundRuid ~= nil and fx.soundRuid ~= "" then _SoundService:PlaySound(fx.soundRuid, 1.0) end
         log("[Skill] blink local fx " .. skillId .. " at (" .. tostring(moved.toX) .. "," .. tostring(moved.toY) .. ") flip=" .. tostring(opt ~= nil)
             .. " scale=" .. tostring(sxv) .. "x" .. tostring(syv) .. " offsetY=" .. tostring(fx.offsetY or 0))
+        -- 1.0.21 #2: 도착 광역 피해가 있는 스킬(텔레포트 강화)은 명중(번개) 소리도 같은 순간에 — 적이 도착 상자 안에 있다고 예측되면 바로 튼다(hitSoundRuid 가 없는 스킬은 아무것도 안 한다).
+        self:PredictBlinkHitSound(skillId, fx, moved)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PredictBlinkHitSound(string skillId, table fx, table moved)
+        -- 1.0.21 #2(사용자 2026-10-20 "텔레포트 강화의 이펙트와 소리 타이밍이 서로 안맞음 · 소리가 늦게나는 것 같은데"): 텔레포트 강화 명중(번개) 소리를 시전자 클라가 도착 순간 바로 튼다.
+        -- 서버(ExecuteBlink)는 도착 위치가 동기화된 뒤(BlinkArrivalDelay 0.15초) 도착 광역 상자 안 적을 찾고 맞은 대상이 있으면 소리를 한 번 냈다 → 시전자는 도착 이펙트 · 시전음보다 늦게 들었다.
+        -- 여기서는 같은 상자(SkillExecutors.BlinkArrivalAoeSize · 가로 중앙 = 도착점 x · 세로 = 도착점 발에서 위로 높이만큼)를 클라 위치로 겹쳐 보고, 적 몬스터가 하나라도 있으면 바로 튼다.
+        -- 서버 규칙에 가깝게(SkillAttack.IsAttackTarget 의 후보 모으기 길): ① 적 = FactionLogic 관계(Faction 없는 몬스터는 공통 몬스터 진영 = 적) ② 죽었거나 죽는 중(Monster.IsDead · Hp ≤ 0) 제외 ③ 피격 상자(HitComponent)와 겹침.
+        -- 예측일 뿐이다 — 서버 결과와 어긋나면(상자 가장자리 · 움직이는 몬스터) 소리가 한 번 없거나 더 날 수 있다. 서버 쪽 결과는 "[Skill] blink hit server" 로그(서버 SkillExecutors.LogDiagnostics)와 맞춰 본다.
+        local hitRuid = fx.hitSoundRuid
+        if hitRuid == nil or hitRuid == "" then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local map = player.CurrentMap
+        if not isvalid(map) then return end
+        local size = self.BlinkHitBoxFallback
+        if _SkillExecutors ~= nil and _SkillExecutors.BlinkArrivalAoeSize ~= nil then size = _SkillExecutors.BlinkArrivalAoeSize end
+        local boxL = moved.toX - size.x / 2 - self.BlinkHitBoxMargin
+        local boxR = moved.toX + size.x / 2 + self.BlinkHitBoxMargin
+        local boxB = moved.toY - self.BlinkHitBoxMargin
+        local boxT = moved.toY + size.y + self.BlinkHitBoxMargin
+        -- 내 진영 번호: 클라는 FactionLogic.GetTeam 이 서버 전용 마을 원장을 못 읽어 플레이어를 모두 "1" 로 보므로 MonsterNameTag.MyTeam(서버가 넣어 준 ownVillage)으로 구한다.
+        -- 마을이 없으면(빈 문자열) 서버와 같은 기본 진영(FactionLogic.PlayerTeamOf 의 폴백 = FactionLogic.PlayerTeam)으로 본다.
+        local myTeam = ""
+        if _MonsterNameTag ~= nil then myTeam = _MonsterNameTag:MyTeam() end
+        if myTeam == "" and _FactionLogic ~= nil then myTeam = _FactionLogic.PlayerTeam end
+        local comps = map:GetChildComponentsByTypeName("script.Monster", true)
+        local scanned = 0
+        local enemies = 0
+        local firstName = "-"
+        if comps ~= nil then
+            for _, c in ipairs(comps) do
+                local e = nil
+                if isvalid(c) then e = c.Entity end
+                if isvalid(e) and isvalid(e.TransformComponent) then
+                    scanned = scanned + 1
+                    if self:IsPredictedBlinkTarget(e, myTeam) then
+                        local body = self:MonsterBodyBox(e)
+                        if body.r >= boxL and body.l <= boxR and body.t >= boxB and body.b <= boxT then
+                            enemies = enemies + 1
+                            if enemies == 1 then firstName = tostring(e.Name) end
+                        end
+                    end
+                end
+            end
+        end
+        local play = enemies > 0
+        if play then _SoundService:PlaySound(hitRuid, 1.0) end
+        log("[Skill] blink hit predict " .. skillId .. " to=(" .. string.format("%.2f,%.2f", moved.toX, moved.toY) .. ") box x[" .. string.format("%.2f..%.2f", boxL, boxR) .. "] y[" .. string.format("%.2f..%.2f", boxB, boxT)
+            .. "] monsters=" .. tostring(scanned) .. " enemiesInBox=" .. tostring(enemies) .. " first=" .. firstName .. " myTeam=" .. tostring(myTeam) .. " -> hit sound " .. tostring(play))
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean IsPredictedBlinkTarget(Entity e, string myTeam)
+        -- PredictBlinkHitSound 의 대상 거름(서버 SkillAttack.IsAttackTarget probe 길의 클라 근사): 살아 있는 몬스터 · 피격 상자가 켜져 있음 · 나에게 적대(진영 관계).
+        ---@type Monster
+        local mon = e.Monster
+        if not isvalid(mon) then return false end
+        if mon.IsDead then return false end
+        if mon.Hp ~= nil and mon.Hp <= 0 then return false end
+        local hc = e.HitComponent
+        if not isvalid(hc) or not hc.Enable then return false end
+        if _FactionLogic == nil then return true end
+        -- Faction 이 없으면 공통 몬스터 진영(FactionLogic.GetTeam 3순위) = 누구에게나 적. 있으면 그 Faction.Team(미니언 · 수비대 · 시설 · 분신 · @Sync).
+        local team = _FactionLogic.MonsterTeam
+        ---@type Faction
+        local f = e.Faction
+        if isvalid(f) then team = _FactionLogic:NormalizeTeam(f.Team) end
+        return _FactionLogic:RelationOfTeams(myTeam, team) == "ENEMY"
+    end
+
+    @ExecSpace("ClientOnly")
+    method table MonsterBodyBox(Entity e)
+        -- 몬스터 몸(피격) 상자 { l, r, b, t }(월드). HitComponent 의 BoxSize · ColliderOffset 은 몬스터 로컬 단위(@Sync 라 클라도 읽는다) → 월드 길이 = 값 × TransformComponent.Scale
+        --   (SkillAttack.BodyBoxBandOf · BossHpBar 와 같은 규칙: 가로 offset 은 부호 있는 Scale.x · 크기와 세로는 절댓값). 원형 콜라이더는 지름으로, 못 읽거나 0 이면 발 기준 BlinkHitMonsterBoxFallback.
+        local tr = e.TransformComponent
+        local p = tr.WorldPosition
+        local sc = tr.Scale
+        local sx = math.abs(sc.x)
+        local sy = math.abs(sc.y)
+        local hc = e.HitComponent
+        if isvalid(hc) then
+            -- 이 프로젝트 모델은 전부 IsLegacy false(.model 검색 0건 · 2026-10-20) — 옛 BoxOffset 은 읽으면 빌드 경고(LWA-1110)만 늘어서 읽지 않는다.
+            local off = hc.ColliderOffset
+            local bw = 0
+            local bh = 0
+            if hc.ColliderType == ColliderType.Circle and hc.CircleRadius > 0 then
+                bw = hc.CircleRadius * 2
+                bh = bw
+            elseif hc.BoxSize ~= nil then
+                bw = hc.BoxSize.x
+                bh = hc.BoxSize.y
+            end
+            if bw > 0.01 and bh > 0.01 and off ~= nil then
+                local cx = p.x + off.x * sc.x
+                local cy = p.y + off.y * sy
+                local hw = bw * sx / 2
+                local hh = bh * sy / 2
+                return { l = cx - hw, r = cx + hw, b = cy - hh, t = cy + hh }
+            end
+        end
+        local fb = self.BlinkHitMonsterBoxFallback
+        return { l = p.x - fb.x / 2, r = p.x + fb.x / 2, b = p.y, t = p.y + fb.y }
     end
 
     @ExecSpace("Server")
