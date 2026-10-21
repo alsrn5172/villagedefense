@@ -2,16 +2,18 @@
 script UiClickStats extends Logic
 
 	-- UI 클릭 통계 (1.1.2 · 사용자 2026-10-21 "ui 마다 몇 번 클릭당했는지 저장해서 개발자 통계로 · 비용 안정적으로").
-	-- 흐름: 클라(UiClickSound)가 로비 · 매치 대기 · 매치에서 누른 버튼 수를 **들고 있다** → 매치를 끝내고 로비(정적 룸)에 들어와
-	--   계정 로드가 끝나면(PlayerDBManager → OnAccountLoaded) 서버가 AskHeld 로 한 번 달라고 한다 → 클라가 Report 로 한 번 보내고 비운다
-	--   (사용자 "매치 종료마다 플레이어 본인이 갖고 있다가 로비로 나갈 때 서버에 전달").
-	-- 로비 룸은 받은 걸 메모리(pending)에 모아 FlushSeconds 마다 + 룸이 끝날 때 전역 저장소 한 키(JSON 한 덩어리)에
-	--   UpdateAndWait(비교 후 교체)로 한 번 쓴다. 다른 로비가 먼저 썼으면 다시 읽어 합치고 한 번만 재시도, 그래도 안 되면 다음 회차.
+	-- 흐름(사용자 "매치 종료마다 저장 · 비용 안정"):
+	--   ① 클라(UiClickSound)가 누른 버튼 수를 들고 있다가 **지금 있는 룸 서버에** 넘긴다 — SendSeconds 마다 · "로비로" 누를 때 · 서버가 달라고 할 때
+	--      (그 룸 계정 로드 직후 · 로비 출발 카운트다운 시작). 🔴 룸을 옮기면 클라 Logic 이 새로 뜬다(공식 RoomService 예제가 룸마다 클라 OnBeginPlay 로
+	--      화면을 가른다) → 들고 다니지 않고 떠나기 전에 넘긴다. 넘기는 건 RPC 라 저장 비용이 없다.
+	--   ② 룸 서버는 받은 걸 메모리(pending)에 모아 **룸이 비면(= 매치 끝 · 마지막 사람이 나감) 한 번** + FlushSeconds 마다(로비처럼 오래 사는 룸) +
+	--      룸이 끝날 때 전역 저장소 한 키(JSON 한 덩어리)에 UpdateAndWait(비교 후 교체)로 쓴다. 다른 룸이 먼저 썼으면 다시 읽어 합치고 한 번만 재시도.
 	-- 덩어리 = { all = 전체 클릭, players = 보고한 계정 수, b = { [버튼 경로] = { c = 클릭, u = 누른 계정 수 } } }
-	-- 누른 사람(계정 1번) = AccountRecordData 의 ui 부분(로비에서만 로드 · 버전이 바뀌면 비운다) — 처음 보고한 계정이면 players +1.
-	-- 🔴 비용(datastorage.md): 덩어리 쓰기는 로비 룸당 FlushSeconds 에 1번. 1000005(Credit 초과)가 한 번이라도 오면 PauseSeconds 동안 통계 쓰기를 멈춘다.
+	-- 누른 사람(계정 1번) = AccountRecordData 의 ui 부분(UiSeen · 버전이 바뀌면 비운다) — 처음 보고한 계정이면 players +1.
+	-- 🔴 비용(datastorage.md): 덩어리 쓰기는 매치 룸당 1번 · 로비는 FlushSeconds 에 1번. 1000005(Credit 초과)가 한 번이라도 오면 PauseSeconds 동안 통계 쓰기를 멈춘다.
 	--    계정 저장 창구(PlayerDBManager)는 쓰지도 막지도 않는다 — 이 파일은 월드 통계 전용 저장소만 만진다.
-	-- 보기: 채팅 `!클릭`(개발자 · 본인에게만) · 디스코드 개발 채널(로비가 한국시간 DiscordHourKst 시 이후 하루 1번).
+	-- 보기: 디스코드 개발 채널(로비가 한국시간 DiscordHourKst 시 이후 하루 1번). 웹후크 주소는 채팅 `!클릭웹후크` 로 전역 저장소에 등록한다
+	--   (레포가 공개라 코드에 넣지 않는다 · Maker 와 라이브는 저장소가 따로라 라이브에서 한 번).
 	-- 🔴 패치마다 Version 을 올린다 → 새 키에 0부터 쌓인다.
 
 	property string Version = "1.1.2"
@@ -19,8 +21,11 @@ script UiClickStats extends Logic
 	-- 전역 저장소 이름. 키 = "v" .. Version · "webhook" · "lastPost"
 	property string StorageName = "UiClickStats"
 
-	-- 로비가 모은 걸 저장소에 쓰는 간격(초). 시험할 땐 잠깐 30 으로.
+	-- 오래 사는 룸(로비)이 모은 걸 저장소에 쓰는 간격(초). 매치 룸은 비는 순간 쓴다.
 	property number FlushSeconds = 1800
+
+	-- 같은 사람의 보고 최소 간격(초) — 클라는 SendSeconds(30) 마다 보낸다. 더 잦은 건 버린다(부풀리기 방지)
+	property number MinReportGapSeconds = 2
 
 	-- 1000005(Credit 초과) 뒤 통계 쓰기를 멈추는 시간(초)
 	property number PauseSeconds = 3600
@@ -28,24 +33,22 @@ script UiClickStats extends Logic
 	-- 한 번 보고에 받는 버튼 수 · 버튼당 클릭 상한 · 버튼 이름 길이 상한(바이트) — 부풀린 보고를 자른다
 	property integer MaxKeysPerReport = 300
 
-	property integer MaxCountPerKey = 1000
+	property integer MaxCountPerKey = 200
 
 	property integer MaxKeyBytes = 200
 
 	-- 덩어리가 이 바이트를 넘으면 새 버튼은 "#other" 로 묶는다(UpdateAndWait 값 상한 50,000)
 	property integer MaxBlobBytes = 45000
 
-	-- 로비 입장 뒤 AskHeld 를 보내기까지(초) — 클라가 막 들어와 RPC 를 놓치지 않게
+	-- 계정 로드 뒤 AskHeld 를 보내기까지(초) — 클라가 막 들어와 RPC 를 놓치지 않게
 	property number AskDelaySeconds = 3
 
-	-- `!클릭` 줄 수 · 디스코드 줄 수 · 읽기 캐시(초)
-	property integer ChatTopN = 15
-
+	-- 디스코드 줄 수 · 읽기 캐시(초)
 	property integer DiscordTopN = 30
 
 	property number CacheSeconds = 60
 
-	-- 개발자 계정(ProfileCode 쉼표 목록). 비어 있으면 Maker Play 에서만 쓸 수 있다.
+	-- 개발자 계정(ProfileCode 쉼표 목록 · 비밀 아님). 비어 있으면: 웹후크는 "아직 없을 때 한 번" 누구나 등록 · 시험 보내기는 Maker Play 에서만.
 	property string DevProfileCodes = ""
 
 	-- 디스코드 하루 1번: 한국시간 이 시 이후 · 확인 간격(초)
@@ -53,7 +56,7 @@ script UiClickStats extends Logic
 
 	property number DiscordCheckSeconds = 3600
 
-	-- 서버: 정적 룸(로비)이면 true — 보고를 받고 저장하는 건 로비뿐이다
+	-- 서버: 로비(정적 룸 · Maker 는 첫 방)면 true — 디스코드 하루 1번은 로비만 확인한다
 	@HideFromInspector
 	property boolean lobby = false
 
@@ -61,9 +64,12 @@ script UiClickStats extends Logic
 	@HideFromInspector
 	property any pending = nil
 
-	-- 서버: AskHeld 를 보낸 유저(userId → true). 한 번 보고하면 지운다 — 같은 입장에 두 번 받지 않는다.
+	-- 서버: 유저별 마지막 보고 시각(userId → 초)
 	@HideFromInspector
-	property any asked = nil
+	property any lastReportAt = nil
+
+	@HideFromInspector
+	property any leaveHandler = nil
 
 	-- 서버: 마지막으로 읽었거나 쓴 덩어리 문자열(UpdateAndWait 의 비교값). nil = 다시 읽어야 함
 	@HideFromInspector
@@ -94,70 +100,93 @@ script UiClickStats extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void OnBeginPlay()
-		-- 로비(정적 룸)만 모으고 쓴다. 매치 룸은 `!클릭` 조회만 받는다.
+		-- 모든 룸이 받고 모은다. 룸이 비면(매치 끝) 한 번 쓰고, 오래 사는 룸(로비)은 FlushSeconds 마다도 쓴다. 디스코드는 로비만.
 		self.pending = self:NewPending()
-		self.asked = {}
+		self.lastReportAt = {}
 		self.hookParts = {}
-		self.lobby = not (_RoomService ~= nil and _RoomService:IsInstanceRoom())
+		self.lobby = self:IsLobbyRoom()
+		local period = self.FlushSeconds
+		if period < 30 then period = 30 end   -- 방어: 짧은 주기는 Credit 을 태운다
+		self.flushTimerId = _TimerService:SetTimerRepeat(function() self:Flush("timer") end, period, period)
 		if self.lobby then
-			local period = self.FlushSeconds
-			if period < 30 then period = 30 end   -- 방어: 짧은 주기는 Credit 을 태운다
-			self.flushTimerId = _TimerService:SetTimerRepeat(function() self:Flush("timer") end, period, period)
 			local check = self.DiscordCheckSeconds
 			if check < 300 then check = 300 end
 			self.discordTimerId = _TimerService:SetTimerRepeat(function() self:DailyDiscord() end, check, 60)
 		end
-		log("[UiStats] ready v=" .. self.Version .. " lobby=" .. tostring(self.lobby) .. " flush=" .. tostring(self.FlushSeconds) .. "s")
+		self.leaveHandler = _UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
+		log("[UiStats] ready v=" .. self.Version .. " lobby=" .. tostring(self.lobby) .. " room=" .. tostring(_RoomService ~= nil and _RoomService.RoomKey or "") .. " flush=" .. tostring(self.FlushSeconds) .. "s")
 	end
 
 	@ExecSpace("ServerOnly")
 	method void OnEndPlay()
-		-- 타이머를 풀고, 로비면 남은 몫을 마지막으로 쓴다.
+		-- 타이머 · 이벤트를 풀고 남은 몫을 마지막으로 쓴다.
 		if self.flushTimerId ~= 0 then _TimerService:ClearTimer(self.flushTimerId) end
 		if self.discordTimerId ~= 0 then _TimerService:ClearTimer(self.discordTimerId) end
+		if self.leaveHandler ~= nil then _UserService:DisconnectEvent(UserLeaveEvent, self.leaveHandler) end
 		self.flushTimerId = 0
 		self.discordTimerId = 0
-		if self.lobby then
-			local ok, err = pcall(function() self:Flush("end") end)
-			if not ok then log_warning("[UiStats] final flush failed: " .. tostring(err)) end
+		self.leaveHandler = nil
+		local ok, err = pcall(function() self:Flush("end") end)
+		if not ok then log_warning("[UiStats] final flush failed: " .. tostring(err)) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsLobbyRoom()
+		-- 로비 = 정적 룸. Maker Play 는 방 하나(TestPlayInstance · 인스턴스로 판정됨)라 그 방도 로비로 친다.
+		if _RoomService == nil or not _RoomService:IsInstanceRoom() then return true end
+		return Environment:IsMakerPlay() and tostring(_RoomService.RoomKey or "") == "TestPlayInstance"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserLeave(UserLeaveEvent event)
+		-- 마지막 사람이 나가 룸이 비면(= 매치 끝 · 룸 이동) 그 룸이 모은 몫을 한 번 쓴다. 로비는 FlushSeconds 타이머가 쓴다.
+		local uid = event.UserId
+		if self.lastReportAt ~= nil and uid ~= nil then self.lastReportAt[uid] = nil end
+		local left = 0
+		for _, u in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(u) and isvalid(u.PlayerComponent) and u.PlayerComponent.UserId ~= uid then left = left + 1 end
 		end
+		if left == 0 then self:Flush("empty") end
 	end
 
 	-- ── 받기 ─────────────────────────────────────────────────
 
 	@ExecSpace("ServerOnly")
 	method void OnAccountLoaded(string userId)
-		-- PlayerDBManager 가 계정 로드를 끝낸 직후 부른다. 로비면 잠깐 뒤 그 클라에 들고 있는 것을 달라고 한다.
-		if not self.lobby or userId == nil or userId == "" then return end
-		self.asked[userId] = true
+		-- PlayerDBManager 가 계정 로드를 끝낸 직후 부른다. 잠깐 뒤 그 클라에 들고 있는 것을 달라고 한다(룸을 옮겨도 클라 값이 남는 경우를 위해).
+		if userId == nil or userId == "" then return end
 		_TimerService:SetTimerOnce(function()
-			if self.asked[userId] ~= true then return end
-			if not isvalid(_UserService:GetUserEntityByUserId(userId)) then
-				self.asked[userId] = nil
-				return
-			end
-			self:AskHeld(userId)
+			if isvalid(_UserService:GetUserEntityByUserId(userId)) then self:AskHeld(userId) end
 		end, self.AskDelaySeconds)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AskMany(any userIds)
+		-- 곧 룸을 옮길 사람들(로비 출발 카운트다운 시작 · MatchLobbyGateway)에게 들고 있는 걸 지금 달라고 한다.
+		if userIds == nil then return end
+		for _, uid in ipairs(userIds) do
+			if isvalid(_UserService:GetUserEntityByUserId(uid)) then self:AskHeld(uid) end
+		end
 	end
 
 	@ExecSpace("Client")
 	method void AskHeld()
-		-- 서버 → 이 클라: 들고 있던 클릭 수를 한 번 넘기고 비운다. 빈손이면 보내지 않는다.
-		if _UiClickSound == nil then return end
-		local packed = _UiClickSound:TakeHeld()
-		if packed ~= "" then self:Report(packed) end
+		-- 서버 → 이 클라: 들고 있던 클릭 수를 지금 넘긴다(빈손이면 안 보냄).
+		if _UiClickSound ~= nil then _UiClickSound:HandOver("ask") end
 	end
 
 	@ExecSpace("Server")
 	method void Report(string packed)
-		-- 클라 → 로비 서버: "버튼경로\t클릭수\n…" 한 번. 상한으로 자르고 pending 에 더한다. 누른 사람은 계정 기록으로 가린다.
+		-- 클라 → 지금 룸 서버: "버튼경로\t클릭수\n…". 상한으로 자르고 pending 에 더한다. 누른 사람은 계정 기록으로 가린다.
 		local uid = senderUserId
-		if uid == nil or uid == "" or not self.lobby then return end
-		if self.asked[uid] ~= true then
-			log_warning("[UiStats] report without ask — ignored " .. uid)
+		if uid == nil or uid == "" then return end
+		local now = _UtilLogic.ElapsedSeconds
+		local last = self.lastReportAt[uid]
+		if last ~= nil and now - last < self.MinReportGapSeconds then
+			log_warning("[UiStats] report too soon — ignored " .. uid)
 			return
 		end
-		self.asked[uid] = nil
+		self.lastReportAt[uid] = now
 		local counts = {}
 		local nKeys = 0
 		local nClicks = 0
@@ -218,7 +247,7 @@ script UiClickStats extends Logic
 	@ExecSpace("ServerOnly")
 	method void Flush(string why)
 		-- 모은 몫을 덩어리에 합쳐 한 번 쓴다. 실패한 몫은 pending 으로 되돌려 다음 회차에 다시 쓴다.
-		if not self.lobby or self.flushing then return end
+		if self.flushing then return end
 		local p = self.pending
 		if p == nil or (p.all == 0 and p.players == 0) then return end
 		local now = _UtilLogic.ElapsedSeconds
@@ -407,7 +436,7 @@ script UiClickStats extends Logic
 			local blob = self:Decode(value or "")
 			if blob == nil then return nil end
 			self.cache = blob
-			if self.lobby and not self.flushing then self.lastRaw = value end
+			if not self.flushing then self.lastRaw = value end
 		end
 		self.cacheAt = now
 		return self.cache
@@ -443,8 +472,8 @@ script UiClickStats extends Logic
 			return lines
 		end
 		local head = "v" .. self.Version .. " · 전체 클릭 " .. self:Comma(blob.all) .. " · 플레이 " .. self:Comma(blob.players) .. "명"
-		if self.lobby and self.pending ~= nil and self.pending.all > 0 then
-			head = head .. " · 이 로비 미저장 " .. self:Comma(self.pending.all) .. "회"
+		if self.pending ~= nil and self.pending.all > 0 then
+			head = head .. " · 이 룸 미저장 " .. self:Comma(self.pending.all) .. "회"
 		end
 		table.insert(lines, head)
 		local rows = {}
@@ -481,7 +510,7 @@ script UiClickStats extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean IsDev(string userId)
-		-- 개발자 계정인가. Maker Play 는 모두 허용.
+		-- 개발자 계정인가(DevProfileCodes 에 있음). Maker Play 는 모두 허용.
 		if Environment:IsMakerPlay() then return true end
 		local code = self:ProfileCodeOf(userId)
 		if code == "" then return false end
@@ -489,6 +518,16 @@ script UiClickStats extends Logic
 			if c == code then return true end
 		end
 		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanRegister(string userId)
+		-- 웹후크를 등록 · 지울 수 있나: 개발자 · 또는 개발자 목록이 비어 있고 아직 아무 웹후크도 없을 때(라이브 첫 등록 한 번).
+		if self:IsDev(userId) then return true end
+		if string.match(self.DevProfileCodes, "%S") ~= nil then return false end
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local code, url = ds:GetAndWait("webhook")
+		return code == 1000002 or (code == 0 and (url == nil or url == ""))
 	end
 
 	@ExecSpace("ServerOnly")
@@ -507,33 +546,30 @@ script UiClickStats extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean HandleCommand(string userId, string text)
-		-- ChatService.RequestSend 가 중계 전에 부른다. `!클릭…` 이면 처리하고 true(중계 안 함).
-		--   !클릭 · !클릭 <글자> · !클릭웹후크 <id> 다음 !클릭웹후크 <토큰>(채팅 글자 수 상한 때문에 둘로 나눔 · 주소 통째도 됨) · !클릭웹후크 지우기 · !클릭보내기
+		-- ChatService.RequestSend 가 중계 전에 부른다. 웹후크 등록 · 시험 보내기만 처리하고 true(중계 안 함) · 나머지는 false(보통 채팅).
+		--   !클릭웹후크 <id> 다음 !클릭웹후크 <토큰>(채팅 80자 상한 때문에 둘로 · 주소 통째도 됨) · !클릭웹후크 지우기 = 등록(CanRegister)
+		--   !클릭보내기 = 지금 디스코드로(개발자 · Maker Play 만 — 라이브에선 남이 쳐도 보통 채팅이라 채널 도배가 안 된다)
+		-- 통계 조회 명령은 두지 않는다(사용자 2026-10-21 "!클릭 같은 거 필요 없음 · 디코로 가는 게 중요").
 		local t0, _n0 = string.gsub(text or "", "^%s+", "")
 		local t, _n1 = string.gsub(t0, "%s+$", "")
-		local cmd = "!클릭"
-		if string.sub(t, 1, #cmd) ~= cmd then return false end
-		if not self:IsDev(userId) then
-			self:Say(userId, "권한 없음 · 내 코드 " .. self:ProfileCodeOf(userId))
-			log("[UiStats] command denied " .. userId)
+		local hookCmd = "!클릭웹후크"
+		local sendCmd = "!클릭보내기"
+		if string.sub(t, 1, #hookCmd) == hookCmd then
+			if not self:CanRegister(userId) then
+				self:Say(userId, "웹후크가 이미 등록돼 있습니다")
+				log("[UiStats] webhook register denied " .. userId)
+				return true
+			end
+			local arg, _n2 = string.gsub(string.sub(t, #hookCmd + 1), "^%s+", "")
+			self:SetWebhookPart(userId, arg)
 			return true
 		end
-		local rest = string.sub(t, #cmd + 1)
-		local hookCmd = "웹후크"
-		local sendCmd = "보내기"
-		if string.sub(rest, 1, #hookCmd) == hookCmd then
-			local arg, _n2 = string.gsub(string.sub(rest, #hookCmd + 1), "^%s+", "")
-			self:SetWebhookPart(userId, arg)
-		elseif string.sub(rest, 1, #sendCmd) == sendCmd then
+		if string.sub(t, 1, #sendCmd) == sendCmd and self:IsDev(userId) then
 			self:Say(userId, self:PostDiscord())
-		else
-			local filter, _n3 = string.gsub(rest, "^%s+", "")
-			for _, line in ipairs(self:BuildLines(filter, self.ChatTopN, false)) do
-				self:Say(userId, line)
-			end
+			log("[UiStats] manual discord by " .. userId)
+			return true
 		end
-		log("[UiStats] command " .. userId .. " " .. t)
-		return true
+		return false
 	end
 
 	-- ── 디스코드 ───────────────────────────────────────────────
@@ -566,7 +602,7 @@ script UiClickStats extends Logic
 			return
 		end
 		local code = ds:SetAndWait("webhook", url)
-		self:Say(userId, code == 0 and "웹후크 저장됨 — !클릭보내기 로 시험" or ("웹후크 저장 실패 code " .. tostring(code)))
+		self:Say(userId, code == 0 and "웹후크 저장됨 — 매일 9시(한국시간) 이후 자동 전송" or ("웹후크 저장 실패 code " .. tostring(code)))
 		log("[UiStats] webhook set code=" .. tostring(code) .. " by " .. userId)
 	end
 
@@ -620,14 +656,17 @@ script UiClickStats extends Logic
 			end
 		end
 		table.insert(chunks, cur)
+		-- 🔴 PostAndWait 는 실패(401 · 404)에도 예외 없이 "" 를 돌려준다(Maker 실측 2026-10-21) → ?wait=true 로 보내 성공이면 만든 메시지 JSON("id")이 오게 해 가른다.
+		local postUrl = url
+		if string.find(postUrl, "?", 1, true) == nil then postUrl = postUrl .. "?wait=true" else postUrl = postUrl .. "&wait=true" end
 		local sent = 0
 		for _, body in ipairs(chunks) do
 			local ok, res = pcall(function()
-				return _HttpService:PostAndWait(url, _HttpService:JSONEncode({ content = body }), HttpContentType.ApplicationJson)
+				return _HttpService:PostAndWait(postUrl, _HttpService:JSONEncode({ content = body }), HttpContentType.ApplicationJson)
 			end)
-			if not ok then
-				log_warning("[UiStats] discord post failed: " .. tostring(res))
-				return "디스코드 전송 실패: " .. string.sub(tostring(res), 1, 60)
+			if not ok or string.find(tostring(res), "\"id\"", 1, true) == nil then
+				log_warning("[UiStats] discord post failed ok=" .. tostring(ok) .. " res=" .. string.sub(tostring(res), 1, 120))
+				return "디스코드 전송 실패 (" .. tostring(sent) .. "개 보낸 뒤) — 웹후크 주소를 확인"
 			end
 			sent = sent + 1
 		end
