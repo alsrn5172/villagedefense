@@ -94,13 +94,32 @@ script SkillCaster extends Logic
 
     property boolean jumpGateInstalled = false
 
-    -- 이 시전이 StateComponent 를 껐는지(지상 시전만). 끈 시전만 되살린다.
+    -- 이 시전이 StateComponent 를 껐는지(스킬 시전 · 1.1.1 부터 공중 시전 포함). 끈 시전만 되살린다.
     property boolean stateDisabled = false
+
+    -- ───────────── 공격 모션 고정 (1.1.1 · 사용자 2026-10-21 "점프나 착지 시 이동한다고 공격 모션이 바뀌지 않도록 · 공격 모션은 무슨 일이 있어도 미변동 ·
+    --   공중에서 스킬 눌러 공격하다가 바닥에 닿으면 모션이 취소되어 공격하며 걸어갈 수 있음 · 다른 행동하는 것이 불가능하게") ─────────────
+    -- Play 실측(1.1.1 기준선): 공중 시전은 상태기를 안 꺼서 착지 순간 엔진이 JUMP → IDLE(stand1) · 방향키를 누르고 있으면 → MOVE(walk1)로 공격 모션을 덮었고,
+    --   좌우 조건도 "땅 락"만 막아 락이 남은 동안 걸어갔다. 기본 공격(Ctrl)도 공중 → 착지 뒤 ATTACK_WAIT 에서 바로 MOVE 로 걸었다. Alt(Jump2) · 더블 점프는 락 중에도 나갔다.
+    --   → ① 스킬 시전은 공중이어도 상태기를 끈다(지금 상태 그대로 멈춤 · 땅이면 예전처럼 IDLE 로 보낸 뒤) — 착지 · 낙하가 공격 모션을 못 바꾼다.
+    --     ② 공중 락(스킬 · 기본 공격)은 착지하는 순간 땅 락으로 바꾼다(LandWatch: 이동 캐시 · Stop · InputSpeed 0 · 좌우 조건) — 락이 끝날 때까지 못 걷는다.
+    --     ③ Jump2(Alt)도 Jump 와 같이 막는다(↓ 하향 점프 가로채기는 1.0.16 그대로) · 더블 점프는 SkillHotbar.TryAirDoubleJump 가 락 중이면 안 낸다.
+    --     공중 궤적(점프로 받은 속도 · 방향키 공중 조작)은 예전처럼 둔다(원작도 공중 시전 가능) — 모션만 고정된다. 이동 스킬(텔레포트 캔슬)은 예전처럼 락 예외.
+    property number LandWatchInterval = 0.02
+
+    -- 시전 동안 플레이어를 그 자리에 붙잡는 락 키(1.1.1 · 사용자 2026-10-21 "콤데폴 시전 시 아예 못 움직이게 홀딩(공중에 있어도 정지)"):
+    --   RigidbodyComponent.Enable = false(물리를 꺼서 중력 · 속도 모두 멈춤 · Play 실측: 공중에서 y 그대로 · 다시 켜면 그 자리에서 정상 낙하) + 땅 락과 같은 입력 · 이동 잠금.
+    --   락이 풀리는 모든 길(타이머 · 서버 거절 · 사망 · 다음 시전)이 ReleaseCastLock 하나로 모이므로 거기서 되돌린다.
+    property table castHoldKeys = { SK_W21_RECAST = true }
+
+    -- 이 시전이 물리를 끈 플레이어 몸(castHoldKeys). ReleaseCastLock 이 다시 켠다.
+    property any heldBody = nil
 
     -- 시전 중 하향 점프(1.0.16 · 사용자 2026-10-18 "방향키는 시전 중에도 눌리게 · 이동은 안 되지만 스킬 공격 중에 하향 점프가 되게 · 키 반응성"):
     --   시전 락은 점프(Jump)와 위 · 아래(MoveUp / MoveDown)를 막아 ↓ 누름이 버려지고 ↓ + 점프도 막혔다(Play 실측: 락 중 ↓ + Space → 발판 그대로).
     --   → 락 중 점프 액션이 시도될 때 ↓ 가 눌려 있으면 MovementComponent:DownJump() 를 직접 부른다(엔진 하향 점프는 "Jump" 액션 안에서 ↓ 를 보고 처리한다 · "DownJump" 액션 이름으로는 안 온다).
-    --   좌우 이동은 여전히 막는다 · 성공하면 떨어지는 동안 상태기를 켜(낙하 모션) InputSpeed 0 은 락이 풀릴 때까지 둔다. 락 하나에 한 번.
+    --   좌우 이동은 여전히 막는다 · InputSpeed 0 은 락이 풀릴 때까지 둔다. 락 하나에 한 번.
+    --   1.1.1: 떨어지는 동안에도 상태기를 켜지 않는다(예전 = 낙하 모션) — 공격 모션이 그대로 이어진다(공격 모션 고정). 붙잡는 락(castHoldKeys)에선 하향 점프도 안 된다.
     property boolean DownJumpDuringCast = true
 
     property integer downJumpCastId = -1
@@ -354,13 +373,10 @@ script SkillCaster extends Logic
 
     method number GetUltimateInvulnMul(string skillId)
         -- 궁 시전 무적 창 배율(컷신 길이 × 이 값 · 2026-09-13 b/skill-pirate-motion). 기본 1 = 컷신 내내 피격 무시.
-        -- 불굴의 진 SK_W31 = 0: 전사는 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 아이언 바디 반사 유지)로 버틴다 — "전사는 컷신 뒤 8초 HP 100% · 무적 시간 절반" 요청.
-        -- 전사도 컷신 동안 피격을 무시하게 하려면 1(전부) 또는 0.5(절반)로 한 칸.
+        -- (예전) 불굴의 진 SK_W31 = 0: 전사는 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 아이언 바디 반사 유지)로 버텼다 — "전사는 컷신 뒤 8초 HP 100% · 무적 시간 절반" 요청.
         -- 궁 컷신 영상(b/skill-ultimate-cutscenes · 사용자 결정 2026-10-05 "모든 직업 컷신 내내 무적"): 영상이 있으면 전사도 1 — 영상 동안 피격 무시, 그 뒤 8초는 자기 버프.
-        if skillId == "SK_W31" then
-            if _SkillExecutors ~= nil and _SkillExecutors:CutsceneVideoSeconds(skillId) > 0 then return 1 end
-            return 0
-        end
+        -- 1.1.1(사용자 2026-10-21 "불굴의 진 사용할 때는 접촉 판정 절대 안 일어나게 · 컷신 지속 동안 부딪혀도 반사 X"): 영상이 없어도 전사도 1 — 컷신 동안은 이 창만 있고
+        --   (판정 자체 없음 · SkillBuffs.NoHitJudgeUltimates) 버프는 창이 끝난 뒤 건다(SkillExecutors buffAfterCutscene). 예전 SK_W31 = 0(영상 없을 때) 분기는 없앴다.
         return 1
     end
 
@@ -515,7 +531,7 @@ script SkillCaster extends Logic
         self.lockIsBasic = false
         self.castLockActive = true
         self.activeCastId = castId
-        self:LockPresentation(castId, skillId)
+        self:LockPresentation(castId, skillId, lockKey)
         self:RequestCast(skillId, castId)
         if lockSeconds > 0 then
             self.castLockTimerId = _TimerService:SetTimerOnce(function()
@@ -548,15 +564,15 @@ script SkillCaster extends Logic
         self.castLockActive = true
         self.lockIsBasic = true
         self.activeCastId = castId
-        self:LockPresentation(castId, "BASIC")
+        self:LockPresentation(castId, "BASIC", "BASIC")
         self.castLockTimerId = _TimerService:SetTimerOnce(function()
             self:ReleaseCastLock(castId, "timer")
         end, seconds)
     end
 
     @ExecSpace("ClientOnly")
-    method void LockPresentation(integer castId, string skillId)
-        -- 이동·시선·점프를 이 시전 동안 잠근다. 서버는 여기 관여하지 않는다.
+    method void LockPresentation(integer castId, string skillId, string lockKey)
+        -- 이동·시선·점프를 이 시전 동안 잠근다. 서버는 여기 관여하지 않는다. lockKey = CastLockKey(재시전 · 변형 포함 · 기본 공격은 "BASIC") — 붙잡는 락(castHoldKeys) 판정에 쓴다.
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
         local movement = player.MovementComponent
@@ -566,27 +582,41 @@ script SkillCaster extends Logic
         -- 지상 여부: MapleTile 은 RigidbodyComponent:IsOnGround(). 공중이면 이동을 건드리지 않는다(점프 궤적 보존 · 원작도 공중 시전 가능).
         local grounded = true
         if isvalid(body) then grounded = body:IsOnGround() end
+        -- 붙잡는 락(1.1.1 · castHoldKeys · 콤보 데스폴트): 공중이어도 땅 락과 같이 이동을 잠그고 물리를 끈다(아래).
+        local hold = self.castHoldKeys[lockKey] == true
 
-        if grounded and isvalid(movement) then
+        if (grounded or hold) and isvalid(movement) then
             -- 이미 잡아 둔 락에서 이어지면(기본 공격 락 → 다음 Ctrl 또는 스킬 · M1) 처음 캐시를 지킨다 — 지금 InputSpeed 는 0 이라 다시 캐시하면 풀린 뒤에도 못 걷는다.
             if not self.hasCachedInputSpeed then self.cachedInputSpeed = movement.InputSpeed end
             self.hasCachedInputSpeed = true
             movement:Stop()
             movement.InputSpeed = 0
-
-            -- 2026-09-09 2차: 방향키를 누른 채 시전하면 제자리에서 계속 걷는 모션이 나왔다. InputSpeed=0 은 "이동"만 막고,
-            -- 상태기(StateComponent)는 입력을 보고 MOVE 로 가서 걷기 애니메이션을 계속 밀어넣기 때문이다.
-            -- casting.md 원칙 2·7: 시전 프레젠테이션 동안 StateComponent 를 끈다(제거가 아니라 Enable=false, 서버가 아닌 클라가).
-            -- 끄기 전에 IDLE 로 보내 걷는 프레임에 멈추지 않게 한다. 그 위에 A 의 PlayerMotion 이 보내는 공격 액션만 재생된다.
-            -- 기본 공격(BASIC · M1)은 상태기를 건드리지 않는다: 엔진 ATTACK 상태가 지금 그 공격 모션을 재생 중이라 IDLE 로 보내면 휘두르기가 끊긴다.
-            --   걷기 모션은 MoveLeft / MoveRight 조건이 이동 액션 자체를 막아 나오지 않는다(아래 입력 게이트).
-            local state = player.StateComponent
-            if isvalid(state) and skillId ~= "BASIC" then
-                if state.CurrentStateName ~= "IDLE" then state:ChangeState("IDLE") end
-                state.Enable = false
-                self.stateDisabled = true
-            end
         end
+
+        -- 2026-09-09 2차: 방향키를 누른 채 시전하면 제자리에서 계속 걷는 모션이 나왔다. InputSpeed=0 은 "이동"만 막고,
+        -- 상태기(StateComponent)는 입력을 보고 MOVE 로 가서 걷기 애니메이션을 계속 밀어넣기 때문이다.
+        -- casting.md 원칙 2·7: 시전 프레젠테이션 동안 StateComponent 를 끈다(제거가 아니라 Enable=false, 서버가 아닌 클라가).
+        -- 끄기 전에 IDLE 로 보내 걷는 프레임에 멈추지 않게 한다. 그 위에 A 의 PlayerMotion 이 보내는 공격 액션만 재생된다.
+        -- 기본 공격(BASIC · M1)은 상태기를 건드리지 않는다: 엔진 ATTACK 상태가 지금 그 공격 모션을 재생 중이라 IDLE 로 보내면 휘두르기가 끊긴다.
+        --   걷기 모션은 MoveLeft / MoveRight 조건이 이동 액션 자체를 막아 나오지 않는다(아래 입력 게이트). 착지해도 ATTACK 상태가 모션을 지킨다(1.1.1 Play 실측).
+        -- 1.1.1(공격 모션 고정): 공중 시전도 끈다 — 공중이면 지금 상태(JUMP · FALL) 그대로 멈춘다(IDLE 로 보내면 공중에서 서 있는 자세가 된다).
+        --   예전엔 땅 시전만 꺼서 공중 시전이 착지하는 순간 JUMP → IDLE(stand1) · MOVE(walk1)가 공격 모션을 덮었다. 다시 켜면 엔진이 지금 자리에 맞는 상태로 곧바로 간다(실측: 땅이면 JUMP → IDLE).
+        local state = player.StateComponent
+        if isvalid(state) and skillId ~= "BASIC" then
+            if grounded and state.CurrentStateName ~= "IDLE" then state:ChangeState("IDLE") end
+            state.Enable = false
+            self.stateDisabled = true
+        end
+
+        -- 붙잡기(1.1.1 · castHoldKeys): 공중이면 물리를 끈다 — 그 높이에 그대로 멈춘다(중력 · 남은 속도 모두). ReleaseCastLock 이 다시 켠다.
+        --   땅이면 끄지 않는다(위 땅 락이 이미 못 움직이게 한다 · 시전 중 무적이라 넉백도 없다) — 껐다 켜면 풀리는 순간 한 프레임 공중으로 잡혀 점프 자세가 끼었다(Play 실측 +2.908 jump → +2.924 stand1).
+        if hold and not grounded and isvalid(body) and body.Enable then
+            body.Enable = false
+            self.heldBody = body
+        end
+
+        -- 공중 락(붙잡기 아님)은 착지하는 순간 땅 락으로 바꾼다(1.1.1 · 스킬 · 기본 공격 공통 · StartLandWatch).
+        if not grounded and not hold then self:StartLandWatch(castId) end
 
         if isvalid(controller) then
             -- 시선 고정: 이동은 막혀도 방향키로 제자리 회전은 되므로(casting.md 원칙 9) FixedLookAt 으로 시전 시점 방향에 묶는다.
@@ -600,7 +630,8 @@ script SkillCaster extends Logic
             if not self.jumpGateInstalled then
                 self.jumpGateInstalled = true
                 -- 1.0.16: 락 중 점프 시도 = ↓ 를 누르고 있으면 하향 점프로 바꾼다(TryDownJumpDuringLock) · 그 밖은 지금처럼 막는다.
-                --   Jump2(기본 LeftAlt)는 원래 이 락이 막지 않았다 — 그대로 두고 ↓ 가 눌린 경우만 하향 점프로 가로챈다.
+                --   Jump2(기본 LeftAlt)는 원래 이 락이 막지 않았다(↓ 가 눌린 경우만 하향 점프로 가로챘다).
+                --   1.1.1(공격 모션 고정 · "다른 행동하는 것이 불가능하게"): Jump2 도 Jump 와 같이 막는다 — 예전엔 공격 중에 Alt 로 뛸 수 있었다.
                 controller:AddCondition("Jump", function()
                     if not self.castLockActive then return true end
                     self:TryDownJumpDuringLock("Jump")
@@ -608,8 +639,8 @@ script SkillCaster extends Logic
                 end)
                 controller:AddCondition("Jump2", function()
                     if not self.castLockActive then return true end
-                    if self:TryDownJumpDuringLock("Jump2") then return false end
-                    return true
+                    self:TryDownJumpDuringLock("Jump2")
+                    return false
                 end)
                 controller:AddCondition("DownJump", function() return not self.castLockActive end)
                 controller:AddCondition("MoveUp", function() return not self.castLockActive end)
@@ -655,10 +686,38 @@ script SkillCaster extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method void StartLandWatch(integer castId)
+        -- 1.1.1 공격 모션 고정: 공중에서 건 락이 살아 있는 동안 착지하면 그 순간 땅 락으로 바꾼다(이동 캐시 · Stop · InputSpeed 0 → MoveLeft / MoveRight 조건이 막는다).
+        --   스킬 시전은 상태기가 이미 꺼져 있어 착지가 공격 모션을 못 바꾸고, 기본 공격은 엔진 ATTACK 상태가 모션을 지킨다(그 뒤 ATTACK_WAIT → MOVE 로 걷는 것만 여기서 막는다).
+        --   이 시전의 락이 끝나면(타이머 · 서버 거절 · 사망 · 다음 시전) 스스로 멈춘다.
+        local watchId = 0
+        watchId = _TimerService:SetTimerRepeat(function()
+            if not self.castLockActive or self.activeCastId ~= castId then
+                _TimerService:ClearTimer(watchId)
+                return
+            end
+            local pl = _UserService.LocalPlayer
+            if not isvalid(pl) then return end
+            local rb = pl.RigidbodyComponent
+            if not isvalid(rb) or not rb:IsOnGround() then return end
+            _TimerService:ClearTimer(watchId)
+            local mv = pl.MovementComponent
+            if isvalid(mv) then
+                if not self.hasCachedInputSpeed then self.cachedInputSpeed = mv.InputSpeed end
+                self.hasCachedInputSpeed = true
+                mv:Stop()
+                mv.InputSpeed = 0
+            end
+            if self.LogDiagnostics then log("SkillCaster: cast lock #" .. tostring(castId) .. " landed — ground lock (no walking until the lock ends)") end
+        end, self.LandWatchInterval)
+    end
+
+    @ExecSpace("ClientOnly")
     method boolean TryDownJumpDuringLock(string source)
         -- 락 중 점프 시도(1.0.16): ↓(MoveDown 에 묶인 ↓ 키)를 누르고 있으면 이 시전 동안 한 번 하향 점프를 걸고 true(엔진 점프는 막는다) · 아니면 false.
         --   땅에 있을 때만 · 아래 발판이 없으면 엔진 DownJump 가 false 를 돌려줘 아무 일도 없다. 실제 실행은 다음 프레임(조건 콜백 안에서 이동을 바꾸지 않는다).
         if not self.DownJumpDuringCast or not self.castLockActive then return false end
+        if self.heldBody ~= nil then return false end   -- 1.1.1: 붙잡는 락(콤보 데스폴트)은 하향 점프도 안 된다
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return false end
         local controller = player.PlayerControllerComponent
@@ -674,12 +733,7 @@ script SkillCaster extends Logic
         _TimerService:SetTimerOnce(function()
             if not self.castLockActive or self.activeCastId ~= castId then return end
             local ok = movement:DownJump()
-            -- 떨어지는 동안은 상태기를 켜 낙하 모션을 보인다(좌우 이동은 MoveLeft / MoveRight 조건 · InputSpeed 0 으로 락이 풀릴 때까지 막힌 채).
-            if ok and self.stateDisabled then
-                local state = player.StateComponent
-                if isvalid(state) then state.Enable = true end
-                self.stateDisabled = false
-            end
+            -- 1.1.1(공격 모션 고정): 떨어지는 동안에도 상태기를 켜지 않는다 — 예전(1.0.16)엔 켜서 낙하 모션이 공격 모션을 덮었다. 좌우 이동은 MoveLeft / MoveRight 조건 · InputSpeed 0 으로 락이 풀릴 때까지 막힌 채.
             if self.LogDiagnostics then log("SkillCaster: down jump during cast lock #" .. tostring(castId) .. " (" .. source .. ") ok=" .. tostring(ok)) end
         end, 0)
         return true
@@ -727,6 +781,11 @@ script SkillCaster extends Logic
                 local state = player.StateComponent
                 if isvalid(state) then state.Enable = true end
             end
+        end
+        -- 붙잡기 풀기(1.1.1 · castHoldKeys): 이 시전이 끈 물리를 다시 켠다 — 공중이면 그 자리에서 떨어지기 시작한다. 그사이 엔티티가 바뀌었으면(맵 이동) 건드리지 않는다.
+        if self.heldBody ~= nil then
+            if isvalid(self.heldBody) then self.heldBody.Enable = true end
+            self.heldBody = nil
         end
         self.stateDisabled = false
         self.hasCachedInputSpeed = false
@@ -978,7 +1037,7 @@ script SkillCaster extends Logic
         -- 궁(Behavior ORIGIN · 직업별 R · 대마법·불굴의 진·폭풍의 화살·메소 익스플로전·함포 사격) 시전 중 무적(2026-09-13 사용자 요청 "모든 직업의 궁은 사용 중 무적" · b/skill-thief-motion):
         -- SkillBuffs 가 피격을 통째로 무시한다(PlayerHit.OnHit → OnCastInvulnerableHit · ModifyIncomingDamage 0).
         -- 2026-09-13 사용자 요청 ② (b/skill-pirate-motion): 창 길이 = 시전 락이 아니라 **컷신 길이** × GetUltimateInvulnMul —
-        -- "다른 직업은 컷신 동안 단순히 피격 무시" · 전사(불굴의 진)는 0 = 피격 무시 대신 자기 버프(HP 100% 고정 · 컷신 + 8초 · 피격 무적 시간 절반 · 반사 유지)로 버틴다.
+        -- "다른 직업은 컷신 동안 단순히 피격 무시" · 1.1.1 부터 전사(불굴의 진)도 같은 창(판정 자체 없음 · SkillBuffs.NoHitJudgeUltimates)이고 자기 버프는 창이 끝난 뒤 8초(SkillExecutors buffAfterCutscene).
         -- 2026-09-24 (b/skill-cutscene-measured): 컷신 길이 = SkillExecutors.GetCutsceneSeconds = 클립 Frame.Delay 실측(MeasureCutsceneClips · 없으면 cast.cutsceneSeconds 리터럴)
         -- + CutsceneInvulnPad(클라에 컷신이 늦게 뜨는 만큼). 컷신 길이가 없으면 예전처럼 시전 락.
         if skill.behavior == "ORIGIN" and _SkillBuffs ~= nil and lockSeconds > 0 then
