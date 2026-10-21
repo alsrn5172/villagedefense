@@ -116,20 +116,27 @@ script SkillExecutors extends Logic
     --   MSW UI 마스크는 회전이 안 돼 정확한 사선을 못 자른다 → 가로 DeathfaultTearStrips 줄로 잘라 줄마다 사선 위치에서 좌우로 나눈 계단식(사용자 선택 "계단식 사선").
     -- 1.1.1(사용자 2026-10-21 "화면 갈라지는 이펙트 그대로 정지하기 · 매번 정지되는 타이밍이 다른데 갈라지고 보라색으로 물들었을 때 캡처하고 멈추기 · 이 타이밍 맞추는 게 중요"):
     --   예전엔 서버 타이머(가르는 순간 − 0.10초)에 캡처를 시켜, 화면 클립(서버 재생 · 첫 시전은 로드도 늦음)과 캡처 요청이 서로 다른 지연으로 클라에 닿아 잡히는 프레임이 매번 달랐다.
-    --   → 화면 클립(cut.ruid · 원작 screen 48프레임 60ms)을 맵 유저 클라마다 각자 튼다(PlayDeathfaultScreenLocal) · 시전자 클라는 **자기 클립 시계로** DeathfaultTearCaptureFrame
-    --     (= 32 · 순백 31 다음 "갈라지고 보라색으로 물든" 화면 · Play 프레임 실측)의 가운데 시각에 클립을 그 프레임에 세우고(같은 자리 · 같은 층 · 프레임 고정) 다음 프레임에 캡처한다
-    --     → 지연 · 로드 · 프레임 드롭과 상관없이 매번 같은 화면이 잡힌다. 캡처가 오면 덮고(정지 화면) 클립은 다음 프레임부터 덮개 밑에서 이어 틀고,
-    --     DeathfaultTearHoldSeconds 뒤 찢는다(예전 "캡처 → 0.10초 뒤 찢기"와 같은 정지 길이).
+    --   → 화면 클립(cut.ruid · 원작 screen 48프레임 60ms)을 맵 유저 클라마다 각자 틀고(PlayDeathfaultScreenLocal), 클라마다 **자기 클립 시계의 정한 시각**에 같은 순서로 간다(FreezeDeathfaultAndTear):
+    --     DeathfaultFreezeAt    프레임 DeathfaultTearCaptureFrame(32 = 갈라지고 보라색으로 물든 화면)을 고정한 그림을 돌던 클립 **앞**에 띄우고 DeathfaultSwapFrames 프레임 뒤 돌던 클립을 지운다.
+    --                           순백 31 프레임(1.86 ~)은 건너뛴다 — 예전엔 정지 직전에 0 ~ 3 프레임씩 보였다 말았다 했고, 지우고 띄우는 사이 한 프레임은 클립 없는 화면이 깜빡였다(사용자 2026-10-21 프레임 캡처).
+    --     (시전자) 세운 그림만 그려진 프레임이 DeathfaultCaptureFrames 번 지나면 화면(UI 포함)을 캡처 — 초가 아니라 그려진 프레임을 센다(화면이 멈칫해 타이머가 몰려도 그 전 화면 = 암전 검정을 찍지 않는다).
+    --     DeathfaultTearStartAt 세운 그림을 지우고 클립을 다음 프레임부터 이어 튼다 · 시전자는 같은 순간 캡처 그림으로 덮고 바로 찢는다(ShowDeathfaultTear).
+    --   → 캡처가 오는 시각(0.3 ~ 0.5초 · 들쭉날쭉)과 상관없이 정지 · 찢기 시각이 시전마다 같다(사용자 2026-10-21 "스킬 시전마다 항상 다른 게 문제"). 캡처가 그보다 늦으면 도착하는 순간 찢는다(로그 late).
     property boolean DeathfaultTearEnabled = true
 
     property integer DeathfaultTearCaptureFrame = 32
 
-    property number DeathfaultClipFrameSeconds = 0.06
+    -- 클립 시작 기준 초: 세우기(프레임 30 가운데 · 순백 31 이 1.86 에 시작하기 전) · 찢기(예전 캡처 도착 2.31 ~ 2.33 + 정지 0.10 ≈ 2.41 ~ 2.43 과 비슷 · 캡처 여유 0.5초).
+    property number DeathfaultFreezeAt = 1.82
 
-    property number DeathfaultTearHoldSeconds = 0.10
+    property number DeathfaultTearStartAt = 2.45
 
-    -- 프레임을 세운 뒤 캡처를 부르기까지(초 · 세운 그림이 화면에 그려진 다음에 찍도록 2프레임쯤).
-    property number DeathfaultTearFreezeSeconds = 0.03
+    -- 세운 그림을 띄운 뒤 돌던 클립을 지우기까지 · 지운 뒤 캡처까지 그려진 프레임 수 · 세운 그림을 돌던 클립보다 앞에 둘 z 차이.
+    property integer DeathfaultSwapFrames = 2
+
+    property integer DeathfaultCaptureFrames = 2
+
+    property number DeathfaultFreezeFrontZ = 0.001
 
     property integer DeathfaultTearStrips = 36
 
@@ -1308,9 +1315,11 @@ script SkillExecutors extends Logic
                     sortBehind = false,                            -- true 면 플레이어 바로 뒤 층(레이징 블로우 베기와 같은 방식)
                     sound = "b9c62d5fa12f461889d3392164112234",    -- 원작 _audio/Use
                     -- 몸 동작 = 원작 Character/00002000.img/5thDeathFault 7프레임(합 1.68초 = 원작 무적 길이). 비표준 이름이라 기본 액션 프레임 고정으로 재현(레이징 블로우와 같은 방식).
+                    -- 1.1.1(사용자 2026-10-21 "모션도 멈춰야지 · 검 집어넣으면 어따 쓰냐"): 마지막 베기 자세(swingT1 2)를 시전 끝(2.90)까지 붙잡는다 — 예전엔 1.56 에 alert ·
+                    --   1.68 에 서기로 돌아가 보라 정지 화면(1.82 ~) 동안 칼을 내리고 서 있었다(원작 7프레임의 alert 0.12 를 뺐다). 끝 서 있기(bodyEnd)는 락이 풀리는 2.90 에.
                     bodyFrames = {
                         { "swingT3", 1, 1.14 }, { "swingT2", 1, 0.06 }, { "swingT1", 0, 0.06 }, { "swingTF", 0, 0.06 },
-                        { "swingT2", 1, 0.06 }, { "swingT1", 2, 0.18 }, { "alert", 0, 0.12 },
+                        { "swingT2", 1, 0.06 }, { "swingT1", 2, 1.52 },
                     },
                     bodyEnd1H = "stand1", bodyEnd2H = "stand1",
                     -- bodyFrames = { { "swingO1", 0, 0.12 }, ... }, bodyEnd1H = "stand1", bodyEnd2H = "stand1",   -- 선택: 있으면 몸 동작을 이 프레임 표(레이징 블로우 방식 { 액션, 프레임, 초 })로 · 없으면 SkillCaster 가 튼 무기 기본 공격 모션(자리표시자 · WeaponMotion 에 `SK_W21_RECAST` 행을 넣으면 그 행으로 대체)
@@ -1329,8 +1338,8 @@ script SkillExecutors extends Logic
                     --   scale 2 = 684×384 px → 13.7 × 7.7 world unit(PC 화면 12.8 × 7.2 를 덮는다) · 시전자 발 기준(그림 피벗 341,146).
                     tint = {
                         ruid = "9aac6392c97e4b7f96899d3b02de1cf9", frame = 31, scaleX = 2.0, scaleY = 2.0, offsetY = 0,
+                        -- 1.1.1(사용자 2026-10-21 "시전 순간 흰 막 없애"): 시전 순간 흰 번쩍 3키(0 · 0.06 · 0.12초 · 흰 40 → 20 → 10%)를 지웠다.
                         keys = {
-                            { 0.00, 0.06, 1, 1, 1, 0.4 }, { 0.06, 0.06, 1, 1, 1, 0.2 }, { 0.12, 0.06, 1, 1, 1, 0.1 },          -- 시전 순간 흰 번쩍(옅게)
                             { 1.14, 0.60, 0, 0, 0, 0.7 }, { 1.74, 0.06, 0, 0, 0, 0.6 }, { 1.80, 0.06, 0, 0, 0, 0.4 },          -- 암전
                             { 1.86, 0.06, 0, 0, 0, 1.0 },                                                                       -- 가르는 순간(위에 screen 순백 프레임)
                             { 1.92, 0.60, 0, 0, 0, 0.5 }, { 2.52, 0.06, 0, 0, 0, 0.4 }, { 2.58, 0.06, 0, 0, 0, 0.3 },
@@ -1352,7 +1361,7 @@ script SkillExecutors extends Logic
                     hitRuid = "2ef064f22b8542a093e4d95becd2349a", hitScale = 1,   -- 원작 hit/0 6프레임 0.54초(맞은 대상마다 매 타 · 발 + 0.5)
                     hitSound = "f8840bbb6c5f46fba1afbb90270f15a3", -- 원작 _audio/Hit
                     hitSoundEvery = 4,                             -- 명중음을 몇 타마다(1 · 5 · 9 · 13타 · 맞은 대상이 있을 때) — 궁 타격음이 안 들린다는 지적(사용자 2026-10-15)
-                    hitStart = 0.18,                               -- 1.86 + 0.18 = 2.04 첫 타(원작 hit delayedTime 2040ms)
+                    hitStart = 0.18,                               -- 1.86 + 0.18 = 2.04 첫 타(원작 hit delayedTime 2040ms) · 1.1.1: 화면 찢기를 쓰면 첫 타 = 찢기 시각(SkillExecutors.DeathfaultTearStartAt)
                     hitSpan = 0.84,                                -- 14타 × 0.06초(원작 프레임) → 마지막 타 2.82
                 },
                 -- ── ④ 끝 ──
@@ -2285,6 +2294,13 @@ script SkillExecutors extends Logic
 
         -- 시전 시작: 무적 창 + 시전 상태(검의 기운 정지 · 끝 처리 열쇠).
         local stamp = _SwordEnergy:BeginDeathfault(uid, tl.total)
+        -- 1.1.1(사용자 2026-10-21 "모션도 멈춰야지"): 하이퍼 바디 시전 몸 동작 순서(_2 1.0 · _END 1.6초)가 남아 있으면 지운다 — 하이퍼 바디 직후 쓰면 _END 서기가
+        --   붙잡은 베기 자세를 덮었다(Play 실측 +0.38초 stand1).
+        local pendingSeq = self.motionSeqTimers[uid]
+        if pendingSeq ~= nil then
+            for _, id in ipairs(pendingSeq) do _TimerService:ClearTimer(id) end
+            self.motionSeqTimers[uid] = nil
+        end
         if _SkillBuffs ~= nil then _SkillBuffs:BeginCastInvulnerability(uid, tl.total + (entry.invulnPad or 0.15), key) end
         if self.LogDiagnostics then log("[Deathfault] begin lv=" .. tostring(level) .. " total=" .. string.format("%.2f", tl.total) .. "s swing->freeze@" .. string.format("%.2f", tl.tFreeze) .. " cut@" .. string.format("%.2f", tl.tCut)
             .. " cutEnd@" .. string.format("%.2f", tl.cutEnd) .. " hits=" .. tostring(hits) .. " first@" .. string.format("%.2f", times[1]) .. " last@" .. string.format("%.2f", times[#times])
@@ -2313,7 +2329,10 @@ script SkillExecutors extends Logic
             self:PlayBodyFrames(swing.bodyFrames, swing.bodyEnd1H or "stand1", swing.bodyEnd2H or "stand1", uid)
         end
         -- 화면 색 겹침(원작 effectFlash 흰 번쩍 · 암전 · 시전 기준 시각표 — freeze.tint.keys).
-        if freeze.tint ~= nil then self:PlayDeathfaultTint(freeze.tint, casterEntity, uid, stamp) end
+        -- 1.1.1: 화면 클립이 있으면 색 겹침도 클립과 같이 클라마다 튼다(③ 의 PlayDeathfaultScreenToMap · 클립과 같은 시계) — 서버에서 틀면 클라에서 클립과 시전마다 0.06초쯤 어긋나
+        --   정지 직전 화면이 어떤 때는 암전 40% · 어떤 때는 완전 검정이었다(사용자 2026-10-21 "스킬 시전마다 항상 다른 게 문제" · Play 프레임 캡처). 클립이 없으면 예전처럼 서버.
+        local tintLocal = freeze.tint ~= nil and cut.ruid ~= nil and cut.ruid ~= ""
+        if freeze.tint ~= nil and not tintLocal then self:PlayDeathfaultTint(freeze.tint, casterEntity, uid, stamp) end
 
         -- 대상 고정(② 에서 한 번 · 안전하게 첫 타에서도): 시전자 중심 상자의 대상 가까운 순 최대 maxTargets 명.
         local box = { posX = pos.x, posY = pos.y, sizeX = boxW, sizeY = boxH }
@@ -2365,7 +2384,7 @@ script SkillExecutors extends Logic
                 elseif cut.behindPlayer then
                     self:ApplyBehindPlayerSorting(opt, casterEntity)
                 end
-                -- 1.1.1: 서버 재생(PlayEffect) 대신 맵 유저 클라마다 따로 튼다 — 시전자 클라는 자기 클립 시계로 화면 찢기 캡처 순간(프레임 DeathfaultTearCaptureFrame)을 잡는다.
+                -- 1.1.1: 서버 재생(PlayEffect) 대신 맵 유저 클라마다 따로 튼다 — 클라마다 자기 클립 시계로 세우고(프레임 DeathfaultTearCaptureFrame) 잇는다 · 시전자는 캡처해 찢는다.
                 local flipX = (opt["FlipX"] == true)
                 local layer = ""
                 local order = 0
@@ -2373,7 +2392,22 @@ script SkillExecutors extends Logic
                     layer = tostring(opt["SortingLayer"])
                     order = math.floor(opt["OrderInLayer"] or 0)
                 end
-                local sent = self:PlayDeathfaultScreenToMap(cut.ruid, s, cut.rotation or 0, flipX, at, layer, order, casterEntity, facing)
+                -- 색 겹침을 문자열로(ExecSpace 너머로 table 금지): "프레임,배율x,배율y,dx,dy,dz,순서,층;시작,길이,r,g,b,알파;…" — d = 클립 자리 기준 · 시작 = 클립 기준 초.
+                local tintRuid = ""
+                local tintSpec = ""
+                if tintLocal then
+                    local tint = freeze.tint
+                    local topt = {}
+                    self:ApplyBehindPlayerSorting(topt, casterEntity)
+                    local parts = { string.format("%d,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%s", math.floor(tint.frame or 0), tint.scaleX or 1, tint.scaleY or 1, -(cut.offsetX or 0) * facing,
+                        (tint.offsetY or 0) - (cut.offsetY or 0), 0.02, math.floor(topt["OrderInLayer"] or 0), tostring(topt["SortingLayer"] or "")) }
+                    for _, k in ipairs(tint.keys or {}) do
+                        table.insert(parts, string.format("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f", (k[1] or 0) - clipAt, k[2] or 0.06, k[3] or 0, k[4] or 0, k[5] or 0, k[6] or 1))
+                    end
+                    tintRuid = tint.ruid or ""
+                    tintSpec = table.concat(parts, ";")
+                end
+                local sent = self:PlayDeathfaultScreenToMap(cut.ruid, s, cut.rotation or 0, flipX, at, layer, order, casterEntity, facing, tintRuid, tintSpec)
                 if self.LogDiagnostics then log("[Deathfault] screen clip at +" .. string.format("%.2f", clipAt) .. "s scale=" .. tostring(s) .. " layer=" .. layer .. "/" .. tostring(order) .. " -> " .. tostring(sent) .. " client(s) (" .. uid .. ")") end
             end
         end, clipAt)
@@ -2384,15 +2418,19 @@ script SkillExecutors extends Logic
             if self.LogDiagnostics then log("[Deathfault] cut " .. string.format("%.2f", tl.cutEnd - tl.tCut) .. "s (" .. uid .. ")") end
         end, tl.tCut)
 
-        -- 화면 찢기(1.0.9 · 시전자 클라만): 1.1.1 부터 위 화면 클립과 같이 간다 — 시전자 클라가 자기 클립의 프레임 DeathfaultTearCaptureFrame 에서 세워 캡처 → 덮기 → 찢기
+        -- 화면 찢기(1.0.9 · 시전자 클라만): 1.1.1 부터 위 화면 클립과 같이 간다 — 클라마다 자기 클립 시계로 DeathfaultFreezeAt 에 세우고 DeathfaultTearStartAt 에 잇는다 · 시전자는 그 사이 캡처 → 덮기 → 찢기
         --   (PlayDeathfaultScreenLocal → FreezeDeathfaultAndTear). 예전 서버 타이머(가르는 순간 − 0.10초 · BeginDeathfaultTear)는 없앴다.
 
         -- 타격(1.0.9 · 사용자 2026-10-15 "14번 공격인데 1타씩 데미지 주는 것 같아 · 14타를 한 번에 주도록"): 첫 타 시각(times[1] = 2.04)에
         --   대상마다 판정 1번 × 14타(DealSkillDamage · 표시 14 · 880% × 14 · 치명은 한 번에 같이 판정 · 상한 maxTargets 가까운 순). 숫자 14개는 시전자 스킨 간격으로 · 명중 그림은 14번(연출만 · times 간격).
+        --   1.1.1(사용자 2026-10-21 "데미지가 먼저 뜨잖아 · 캡처 후 갈라질 때 데미지 떠야지"): 화면 정지 · 찢기를 쓰면(DeathfaultTearEnabled · 화면 클립 있음) 첫 타 = 찢기 시각
+        --   (클립 시작 + DeathfaultTearStartAt) — 예전 2.04 는 보라 정지 화면 위에 숫자가 먼저 떴다. 14타 연출 간격은 그대로(times 간격).
         local hitRuid = cut.hitRuid or ""
         local hitScale = cut.hitScale or 1
         local gap = 0.06
         if #times > 1 then gap = (times[#times] - times[1]) / (#times - 1) end
+        local hitAt = times[1]
+        if self.DeathfaultTearEnabled and cut.ruid ~= nil and cut.ruid ~= "" then hitAt = clipAt + self.DeathfaultTearStartAt end
         _TimerService:SetTimerOnce(function()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
             if not _SwordEnergy:IsDeathfaultCurrent(uid, stamp) then return end   -- 매치 초기화 등으로 시전이 지워졌으면 그만
@@ -2410,7 +2448,7 @@ script SkillExecutors extends Logic
             skillAttack.PendingImpactRuid = ""
             skillAttack.PendingImpactScale = 1
             local landed = skillAttack.PassHitCount
-            if self.LogDiagnostics then log("[Deathfault] hit " .. tostring(hits) .. " at once x" .. tostring(ratio) .. "% landed=" .. tostring(landed) .. " (" .. uid .. ")") end
+            if self.LogDiagnostics then log("[Deathfault] hit " .. tostring(hits) .. " at once x" .. tostring(ratio) .. "% landed=" .. tostring(landed) .. " at +" .. string.format("%.2f", hitAt) .. "s (" .. uid .. ")") end
             -- 명중음: 맞은 대상이 있으면 cut.hitSoundEvery 타 간격마다(14타 연출 동안 · 1 · 5 · 9 · 13번째 자리).
             if landed > 0 then
                 local every = math.max(1, math.floor(cut.hitSoundEvery or hits))
@@ -2420,7 +2458,7 @@ script SkillExecutors extends Logic
                     end, (k - 1) * gap)
                 end
             end
-        end, times[1])
+        end, hitAt)
 
         -- ④ 끝: 하이퍼 바디 쿨다운 0 → 하이퍼 바디 종료(검의 기운 0).
         _TimerService:SetTimerOnce(function()
@@ -2443,6 +2481,7 @@ script SkillExecutors extends Logic
         --   tint.ruid(screen 클립)의 tint.frame(31 = 순백 684×384)에 고정한 이펙트를 tint.keys 의 { 시작(시전 기준 초), 길이, r, g, b, 알파 } 마다 하나씩 깔고 길이 뒤 지운다.
         --   색 = 흰 그림 × Color(r, g, b) · 알파 = Alpha 옵션. 층 = 플레이어 바로 뒤(ApplyBehindPlayerSorting) · screen 클립보다 뒤(z +0.02 쪽).
         --   시전이 지워지면(매치 초기화 · 새 시전) 남은 키는 건너뛴다(IsDeathfaultCurrent).
+        --   1.1.1: 화면 클립(cut.ruid)이 있으면 쓰지 않는다 — 클라마다 클립과 같은 시계로 튼다(PlayDeathfaultTintLocal). 이건 클립이 없을 때의 예비.
         if tint == nil or tint.ruid == nil or tint.ruid == "" or tint.keys == nil then return end
         local frame = math.floor(tint.frame or 0)
         local sx = tint.scaleX or 1
@@ -2474,23 +2513,19 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method integer PlayDeathfaultScreenToMap(string ruid, number scale, number rot, boolean flip, Vector3 at, string layer, integer order, Entity casterEntity, number facing)
+    method integer PlayDeathfaultScreenToMap(string ruid, number scale, number rot, boolean flip, Vector3 at, string layer, integer order, Entity casterEntity, number facing, string tintRuid, string tintSpec)
         -- 1.1.1: 콤보 데스폴트 화면 클립을 시전자가 있는 맵의 유저 클라마다 따로 튼다(PlayDeathfaultScreenLocal · 서버 PlayEffect 대신 · PlayBlinkImpactToOthers 와 같은 꼴).
-        --   시전자 클라에는 찢기 캡처 시각(클립 시작 기준 · 프레임 DeathfaultTearCaptureFrame 의 가운데)을 같이 보낸다 — 다른 유저는 -1(클립만). 보낸 클라 수를 돌려준다.
+        --   모든 클라가 같은 시각표로 세우고 잇는다 · 시전자 클라만(caster = true) 캡처해 찢는다. 보낸 클라 수를 돌려준다.
         if not isvalid(casterEntity) or not isvalid(casterEntity.PlayerComponent) then return 0 end
         local map = casterEntity.CurrentMap
         if not isvalid(map) or not isvalid(map.MapComponent) then return 0 end
         local users = _UserService:GetUsersByMapComponent(map.MapComponent)
         if users == nil then return 0 end
         local casterUid = casterEntity.PlayerComponent.UserId
-        local captureIn = -1
-        if self.DeathfaultTearEnabled then captureIn = (self.DeathfaultTearCaptureFrame + 0.5) * self.DeathfaultClipFrameSeconds end
         local n = 0
         for _, u in ipairs(users) do
             if isvalid(u) and isvalid(u.PlayerComponent) then
-                local cin = -1
-                if u.PlayerComponent.UserId == casterUid then cin = captureIn end
-                self:PlayDeathfaultScreenLocal(ruid, scale, rot, flip, at.x, at.y, at.z, layer, order, cin, facing, u.PlayerComponent.UserId)
+                self:PlayDeathfaultScreenLocal(ruid, scale, rot, flip, at.x, at.y, at.z, layer, order, u.PlayerComponent.UserId == casterUid, facing, tintRuid, tintSpec, u.PlayerComponent.UserId)
                 n = n + 1
             end
         end
@@ -2498,9 +2533,9 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("Client")
-    method void PlayDeathfaultScreenLocal(string ruid, number scale, number rot, boolean flip, number x, number y, number z, string layer, integer order, number captureIn, number facing)
+    method void PlayDeathfaultScreenLocal(string ruid, number scale, number rot, boolean flip, number x, number y, number z, string layer, integer order, boolean caster, number facing, string tintRuid, string tintSpec)
         -- 1.1.1: 받는 유저의 클라에서 콤보 데스폴트 화면 클립(원작 screen 48프레임)을 고정 위치에 튼다. 인자는 원시 타입만(ExecSpace 너머로 table/any 금지).
-        --   captureIn >= 0 = 시전자 클라 → 이 클립을 튼 순간부터 captureIn 초 뒤 프레임을 세우고 캡처해 찢는다(FreezeDeathfaultAndTear) — 클립과 같은 시계라 매번 같은 프레임.
+        --   DeathfaultTearEnabled 면 이 클립을 튼 순간부터 자기 시계로 세우기 → (시전자 = caster) 캡처 → 잇기 · 찢기(FreezeDeathfaultAndTear) — 클립과 같은 시계라 시전마다 같다.
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
         local opt = {}
@@ -2512,28 +2547,98 @@ script SkillExecutors extends Logic
         local pos = Vector3(x, y, z)
         local sv = Vector3(scale, scale, 1)
         local playing = _EffectService:PlayEffect(ruid, player, pos, rot, sv, false, opt)
-        if captureIn < 0 or not self.DeathfaultTearEnabled then return end
+        if tintRuid ~= "" and tintSpec ~= "" then self:PlayDeathfaultTintLocal(tintRuid, tintSpec, pos) end
+        if not self.DeathfaultTearEnabled then return end
         local startedAt = _UtilLogic.ElapsedSeconds
-        if self.LogDiagnostics then log("[Deathfault] local screen clip started — tear capture at clip +" .. string.format("%.3f", captureIn) .. "s (frame " .. tostring(self.DeathfaultTearCaptureFrame) .. ")") end
+        if self.LogDiagnostics and caster then log("[Deathfault] local screen clip started — freeze at clip +" .. string.format("%.2f", self.DeathfaultFreezeAt) .. "s (frame " .. tostring(self.DeathfaultTearCaptureFrame) .. ") · tear at +" .. string.format("%.2f", self.DeathfaultTearStartAt) .. "s") end
         _TimerService:SetTimerOnce(function()
-            self:FreezeDeathfaultAndTear(ruid, pos, rot, sv, flip, layer, order, playing, facing, startedAt)
-        end, captureIn)
+            self:FreezeDeathfaultAndTear(ruid, pos, rot, sv, flip, layer, order, playing, facing, startedAt, caster)
+        end, math.max(0, self.DeathfaultFreezeAt))
     end
 
     @ExecSpace("ClientOnly")
-    method void FreezeDeathfaultAndTear(string ruid, Vector3 pos, number rot, Vector3 sv, boolean flip, string layer, integer order, integer playing, number facing, number startedAt)
-        -- 1.1.1 시전자 클라: ① 돌고 있는 화면 클립을 지우고 같은 자리 · 같은 층에 프레임 DeathfaultTearCaptureFrame(갈라지고 보라색으로 물든 화면)을 고정해 띄운다(정지)
-        --   ② 다음 프레임에 화면(UI 포함)을 캡처 ③ 캡처가 오면 CdfTear 로 덮고(정지 화면) 고정 그림을 지운 뒤 클립을 다음 프레임부터 이어 튼다(덮개 밑에서 폭발 · 가루가 이어진다)
-        --   ④ DeathfaultTearHoldSeconds 뒤 찢기(ShowDeathfaultTear). 로그 "[Deathfault] tear captured …" 에 클립 시작부터 캡처까지 걸린 초를 남긴다.
-        local root = self:DeathfaultTearRoot()
-        if root == nil then
-            log_warning("[Deathfault] tear skipped — ui/SkillCutsceneGroup/CdfTear not found (apply-cdf-tear 미실행?)")
-            return
+    method void PlayDeathfaultTintLocal(string ruid, string spec, Vector3 clipPos)
+        -- 1.1.1: 색 겹침(PlayDeathfaultTint 와 같은 그림 · 같은 키)을 이 클라에서 화면 클립과 같은 시계로 깐다.
+        --   spec = "프레임,배율x,배율y,dx,dy,dz,순서,층;시작,길이,r,g,b,알파;…"(d = 클립 자리 기준 · 시작 = 클립 기준 초 · ExecuteDeathfault 가 만든다).
+        --   이어지는 키(앞 키 끝 = 다음 키 시작)는 다음 그림을 먼저 띄우고 DeathfaultSwapFrames 프레임 뒤 앞 그림을 지운다 — 지우고 띄우면 새 그림이 그려지기 전 한 프레임
+        --   겹침이 비어 화면이 번쩍 밝아졌다(1.1.1 · Play 캡처 1.74 · 1.80 초). 이어지지 않는 키 · 마지막 키는 제 길이 뒤 지운다.
+        local head = nil
+        local keys = {}
+        for part in string.gmatch(spec, "[^;]+") do
+            local v = {}
+            for tok in string.gmatch(part, "[^,]+") do table.insert(v, tok) end
+            if head == nil then
+                head = v
+            else
+                table.insert(keys, { at = tonumber(v[1]) or 0, sec = tonumber(v[2]) or 0.06, r = tonumber(v[3]) or 0, g = tonumber(v[4]) or 0, b = tonumber(v[5]) or 0, a = tonumber(v[6]) or 1 })
+            end
         end
+        if head == nil then return end
+        local function afterFrames(n, fn)
+            local left = math.max(1, math.floor(n))
+            local tk = 0
+            tk = _TimerService:SetTimerRepeat(function()
+                left = left - 1
+                if left > 0 then return end
+                _TimerService:ClearTimer(tk)
+                fn()
+            end, 0.001)
+        end
+        local frame = math.floor(tonumber(head[1]) or 0)
+        local p = Vector3(clipPos.x + (tonumber(head[4]) or 0), clipPos.y + (tonumber(head[5]) or 0), clipPos.z + (tonumber(head[6]) or 0))
+        local sv = Vector3(tonumber(head[2]) or 1, tonumber(head[3]) or 1, 1)
+        local serials = {}
+        for i, k in ipairs(keys) do
+            local opt = {}
+            opt["StartFrameIndex"] = frame
+            opt["EndFrameIndex"] = frame
+            opt["Color"] = Color(k.r, k.g, k.b, 1)
+            opt["Alpha"] = k.a
+            if head[8] ~= nil and head[8] ~= "" then
+                opt["SortingLayer"] = head[8]
+                opt["OrderInLayer"] = math.floor(tonumber(head[7]) or 0)
+            end
+            local prevJoined = i > 1 and math.abs(keys[i - 1].at + keys[i - 1].sec - k.at) < 0.005
+            local nextJoined = i < #keys and math.abs(k.at + k.sec - keys[i + 1].at) < 0.005
+            _TimerService:SetTimerOnce(function()
+                local me = _UserService.LocalPlayer
+                if not isvalid(me) then return end
+                serials[i] = _EffectService:PlayEffect(ruid, me, p, 0, sv, true, opt)
+                if prevJoined and serials[i - 1] ~= nil then
+                    local old = serials[i - 1]
+                    afterFrames(self.DeathfaultSwapFrames, function() _EffectService:RemoveEffect(old) end)
+                end
+                if not nextJoined then
+                    local mine = serials[i]
+                    _TimerService:SetTimerOnce(function() _EffectService:RemoveEffect(mine) end, k.sec)
+                end
+            end, math.max(0, k.at))
+        end
+        -- 안전망: 마지막 키가 끝나고 0.3초 뒤 남은 그림을 모두 지운다(이어지는 키의 지우기가 빠졌을 때).
+        local lastEnd = 0
+        for _, k in ipairs(keys) do lastEnd = math.max(lastEnd, k.at + k.sec) end
+        _TimerService:SetTimerOnce(function()
+            for _, s in pairs(serials) do _EffectService:RemoveEffect(s) end
+        end, lastEnd + 0.3)
+        if self.LogDiagnostics then log("[Deathfault] local tint keys=" .. tostring(#keys)) end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void FreezeDeathfaultAndTear(string ruid, Vector3 pos, number rot, Vector3 sv, boolean flip, string layer, integer order, integer playing, number facing, number startedAt, boolean caster)
+        -- 1.1.1(모든 클라 · 찢기는 시전자만 · 시각표는 클래스 위 주석):
+        --   ① 프레임 DeathfaultTearCaptureFrame 을 고정한 그림을 돌던 클립 앞(z − DeathfaultFreezeFrontZ)에 띄우고 ② DeathfaultSwapFrames 프레임 뒤 돌던 클립을 지운다
+        --   ③ (시전자) 그 뒤 DeathfaultCaptureFrames 프레임이 더 그려지면 화면(UI 포함)을 캡처 ④ 클립 시작 + DeathfaultTearStartAt 에 세운 그림을 지우고 클립을 다음 프레임부터 이어 틀며,
+        --      시전자는 캡처 그림으로 덮어 바로 찢는다. 캡처가 그때까지 안 왔으면 도착하는 순간(로그 late) · 안 와도 1초 뒤엔 잇는다(timeout).
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
-        self.tearSerial = self.tearSerial + 1
-        local serial = self.tearSerial
+        local root = nil
+        local serial = 0
+        if caster then
+            root = self:DeathfaultTearRoot()
+            if root == nil then log_warning("[Deathfault] tear skipped — ui/SkillCutsceneGroup/CdfTear not found (apply-cdf-tear 미실행?)") end
+            self.tearSerial = self.tearSerial + 1
+            serial = self.tearSerial
+        end
         local frame = math.floor(self.DeathfaultTearCaptureFrame)
         local function optWith(startFrame, endFrame)
             local o = {}
@@ -2546,26 +2651,60 @@ script SkillExecutors extends Logic
             if endFrame >= 0 then o["EndFrameIndex"] = endFrame end
             return o
         end
-        _EffectService:RemoveEffect(playing)
-        local frozen = _EffectService:PlayEffect(ruid, player, pos, rot, sv, true, optWith(frame, frame))
+        local function afterFrames(n, fn)
+            -- 그려진 프레임을 n 번 넘긴 뒤 fn() — 반복 타이머(간격 0.001)는 프레임마다 한 번 돈다(Play 실측 58/s).
+            local left = math.max(1, math.floor(n))
+            local tk = 0
+            tk = _TimerService:SetTimerRepeat(function()
+                left = left - 1
+                if left > 0 then return end
+                _TimerService:ClearTimer(tk)
+                fn()
+            end, 0.001)
+        end
+        local frozen = _EffectService:PlayEffect(ruid, player, Vector3(pos.x, pos.y, pos.z - self.DeathfaultFreezeFrontZ), rot, sv, true, optWith(frame, frame))
         local frozenAt = _UtilLogic.ElapsedSeconds
+        afterFrames(self.DeathfaultSwapFrames, function() _EffectService:RemoveEffect(playing) end)
+        local img = nil
+        local waiting = root ~= nil
+        local due = false
+        local started = false
+        local askedAt = -1
+        local gotAt = -1
+        local function start(why)
+            if started then return end
+            started = true
+            -- 잇는 클립(다음 프레임부터 · 세운 그림 뒤 z)을 먼저 틀고 DeathfaultSwapFrames 프레임 뒤 세운 그림을 지운다(빈 프레임 깜빡 없음).
+            local p2 = _UserService.LocalPlayer
+            if isvalid(p2) then _EffectService:PlayEffect(ruid, p2, pos, rot, sv, false, optWith(frame + 1, -1)) end
+            afterFrames(self.DeathfaultSwapFrames, function() _EffectService:RemoveEffect(frozen) end)
+            if not caster then return end
+            local now = _UtilLogic.ElapsedSeconds
+            if self.LogDiagnostics then log("[Deathfault] tear frame " .. tostring(frame) .. " — froze +" .. string.format("%.3f", frozenAt - startedAt) .. "s · asked +" .. string.format("%.3f", askedAt - startedAt)
+                .. "s · got +" .. string.format("%.3f", gotAt - startedAt) .. "s · tear +" .. string.format("%.3f", now - startedAt) .. "s (" .. why .. ")") end
+            if root ~= nil and img ~= nil and serial == self.tearSerial then self:ShowDeathfaultTear(root, img, facing, 0, serial) end
+        end
+        if waiting then
+            afterFrames(self.DeathfaultSwapFrames + self.DeathfaultCaptureFrames, function()
+                askedAt = _UtilLogic.ElapsedSeconds
+                _ScreenshotService:CaptureFullScreenAsPixelDataAsync(function(err, image)
+                    gotAt = _UtilLogic.ElapsedSeconds
+                    waiting = false
+                    if err == ScreenshotError.Success and image ~= nil then
+                        img = image
+                    else
+                        log_warning("[Deathfault] tear capture failed: " .. tostring(err))
+                    end
+                    if due then start("late") end
+                end, true)
+            end)
+        end
+        local tearIn = math.max(0, startedAt + self.DeathfaultTearStartAt - _UtilLogic.ElapsedSeconds)
         _TimerService:SetTimerOnce(function()
-            local askedAt = _UtilLogic.ElapsedSeconds
-            _ScreenshotService:CaptureFullScreenAsPixelDataAsync(function(err, img)
-                _EffectService:RemoveEffect(frozen)
-                if serial ~= self.tearSerial then return end
-                local p2 = _UserService.LocalPlayer
-                if isvalid(p2) then _EffectService:PlayEffect(ruid, p2, pos, rot, sv, false, optWith(frame + 1, -1)) end
-                if err ~= ScreenshotError.Success or img == nil then
-                    log_warning("[Deathfault] tear capture failed: " .. tostring(err))
-                    return
-                end
-                local now = _UtilLogic.ElapsedSeconds
-                if self.LogDiagnostics then log("[Deathfault] tear captured frame " .. tostring(frame) .. " — clip +" .. string.format("%.3f", frozenAt - startedAt) .. "s froze · asked +" .. string.format("%.3f", askedAt - startedAt)
-                    .. "s · got +" .. string.format("%.3f", now - startedAt) .. "s · hold " .. string.format("%.2f", self.DeathfaultTearHoldSeconds) .. "s") end
-                self:ShowDeathfaultTear(root, img, facing, math.max(0, self.DeathfaultTearHoldSeconds), serial)
-            end, true)
-        end, math.max(0, self.DeathfaultTearFreezeSeconds))
+            due = true
+            if not waiting then start("on time") end
+        end, tearIn)
+        _TimerService:SetTimerOnce(function() start("timeout") end, tearIn + 1.0)
     end
 
     @ExecSpace("ClientOnly")
