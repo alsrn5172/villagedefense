@@ -3,12 +3,14 @@ script AccountRecordData extends Logic
 
 	-- 계정 기록 저장 도메인 (WO-031 묶음 4~6 · 계약서 §1 기록·칭호 등록서 · A-4 저장 레코드).
 	--   coll = 도감(AccountCollection) · ach = 업적(AccountAchievement) · hist = 플레이 기록(MatchHistory)
+	--   ui = UI 클릭 통계의 "누른 사람" 표시(UiSeen · 1.1.2) — **로비(정적 룸)에서만** 읽고 쓴다(uiOn). 매치 룸 BatchGet 엔 키를 안 넣어 읽기 비용이 안 는다.
+	--        깨져 있어도 로드를 멈추지 않는다(빈 표로 시작) — 통계 한 칸 때문에 계정이 LOADING 에 갇히면 안 된다.
 	-- PlayerDBManager 의 5메서드 계약을 AccountData 와 같은 꼴로 구현한다. **키마다** 더티·세대를 따로 둔다 — 바뀐 키만 저장(Credit 절약).
 	-- 🔴 _DataStorageService 를 직접 부르지 않는다(저장 창구는 PlayerDBManager 하나).
 	-- 🔴 로드가 끝나기 전 쓰기는 거절한다(AccountData.CanWrite 와 같은 이유 — 기본값에 쓰면 로드가 덮어쓰거나, 로드 실패 때 진짜 데이터를 밀어낸다).
 	-- 🔴 JSON 숫자는 실수로 돌아올 수 있다 → 읽을 때 math.floor 로 맞춘다(tostring(5.0) = "5.0").
 
-	-- users[userId] = { coll = {...}, ach = {...}, hist = {...}, dirty = { coll, ach, hist }, gen = { coll, ach, hist }, loaded }
+	-- users[userId] = { coll = {...}, ach = {...}, hist = {...}, ui = {...}, dirty = { coll, ach, hist, ui }, gen = { coll, ach, hist, ui }, loaded, uiOn }
 	@HideFromInspector
 	property any users = nil
 
@@ -23,7 +25,15 @@ script AccountRecordData extends Logic
 		-- 부분 이름 → 저장 키(_AccountStorageLogic 한 곳에서만 정한다).
 		if part == "coll" then return _AccountStorageLogic.CollectionKey end
 		if part == "ach" then return _AccountStorageLogic.AchievementKey end
+		if part == "ui" then return _AccountStorageLogic.UiSeenKey end
 		return _AccountStorageLogic.HistoryKey
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Parts(any u)
+		-- 이 룸에서 저장하는 부분들(ui 는 로비에서 읽었을 때만).
+		if u ~= nil and u.uiOn then return { "coll", "ach", "hist", "ui" } end
+		return { "coll", "ach", "hist" }
 	end
 
 	@ExecSpace("ServerOnly")
@@ -32,6 +42,8 @@ script AccountRecordData extends Logic
 		if part == "coll" then return { v = 1, mon = {}, boss = {} } end
 		-- s = "내 기록" 탭에서 확인한 개수(t = 보유 칭호 · a = 달성 업적) — 지금 개수가 더 많으면 그 탭에 ! (2026-10-07)
 		if part == "ach" then return { v = 1, c = {}, d = {}, s = { t = 0, a = 0 } } end
+		-- v = 통계 버전(UiClickStats.Version · 다르면 비운다) · k = 눌러 본 버튼 짧은 이름 → 1
+		if part == "ui" then return { v = "", k = {} } end
 		return { v = 1, r = {} }
 	end
 
@@ -43,10 +55,11 @@ script AccountRecordData extends Logic
 		local u = self.users[userId]
 		if u == nil then
 			u = {
-				coll = self:Blank("coll"), ach = self:Blank("ach"), hist = self:Blank("hist"),
-				dirty = { coll = false, ach = false, hist = false },
-				gen = { coll = 0, ach = 0, hist = 0 },
+				coll = self:Blank("coll"), ach = self:Blank("ach"), hist = self:Blank("hist"), ui = self:Blank("ui"),
+				dirty = { coll = false, ach = false, hist = false, ui = false },
+				gen = { coll = 0, ach = 0, hist = 0, ui = 0 },
 				loaded = false,
+				uiOn = false,
 			}
 			self.users[userId] = u
 		end
@@ -63,11 +76,14 @@ script AccountRecordData extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean LoadFromDB(string userId, table loadKeys)
-		-- ① 내 키 3개를 밀어 넣기만 한다.
-		self:EnsureUser(userId)
+		-- ① 내 키 3개를 밀어 넣기만 한다. 로비(정적 룸)면 UiSeen 도(클릭 통계 보고를 받는 곳이 로비뿐이다).
+		local u = self:EnsureUser(userId)
 		table.insert(loadKeys, _AccountStorageLogic.CollectionKey)
 		table.insert(loadKeys, _AccountStorageLogic.AchievementKey)
 		table.insert(loadKeys, _AccountStorageLogic.HistoryKey)
+		local lobby = not (_RoomService ~= nil and _RoomService:IsInstanceRoom())
+		if u ~= nil then u.uiOn = lobby end
+		if lobby then table.insert(loadKeys, _AccountStorageLogic.UiSeenKey) end
 		return true
 	end
 
@@ -88,6 +104,19 @@ script AccountRecordData extends Logic
 				rec = self:Normalize(part, t)
 			end
 			u[part] = rec
+		end
+		-- UiSeen(로비만): 깨졌으면 빈 표로 시작한다 — 로드를 멈추지 않는다.
+		u.ui = self:Blank("ui")
+		if u.uiOn then
+			local item = loadedData[self:KeyOf("ui")]
+			if item ~= nil and not _UtilLogic:IsNilorEmptyString(item.Value) then
+				local ok, t = pcall(function() return _HttpService:JSONDecode(item.Value) end)
+				if ok and type(t) == "table" then
+					u.ui = self:Normalize("ui", t)
+				else
+					log_warning("[AcctRec] UiSeen decode failed for " .. userId .. " — 빈 표로 시작")
+				end
+			end
 		end
 		u.loaded = true
 		log("[AcctRec] loaded " .. userId .. " mon=" .. tostring(self:CountKeys(u.coll.mon)) .. " boss=" .. tostring(self:CountKeys(u.coll.boss))
@@ -116,7 +145,7 @@ script AccountRecordData extends Logic
 		--    인코딩 실패는 그 키만 건너뛴다(더티가 남아 다음 저장에 다시 시도) — 한 키가 다른 키·다른 도메인 저장을 막지 않게.
 		local u = self.users ~= nil and self.users[userId] or nil
 		if u == nil or not u.loaded then return end
-		for _, part in ipairs({ "coll", "ach", "hist" }) do
+		for _, part in ipairs(self:Parts(u)) do
 			if u.dirty[part] then
 				local key = self:KeyOf(part)
 				local packed = self:StripEmpty(u[part], 0)
@@ -166,7 +195,7 @@ script AccountRecordData extends Logic
 		if u == nil then return end
 		local ok = {}
 		for i = 1, #successKeys do ok[tostring(successKeys[i])] = true end
-		for _, part in ipairs({ "coll", "ach", "hist" }) do
+		for _, part in ipairs(self:Parts(u)) do
 			local key = self:KeyOf(part)
 			local snap = savedGenerations[key]
 			if ok[key] and snap ~= nil and u.gen[part] == snap then u.dirty[part] = false end
@@ -188,6 +217,14 @@ script AccountRecordData extends Logic
 		local u = self.users ~= nil and self.users[userId] or nil
 		if u == nil or not u.loaded then return nil end
 		return u[part]
+	end
+
+	@ExecSpace("ServerOnly")
+	method any GetUi(string userId)
+		-- UI 클릭 통계(UiClickStats.Report)용 "누른 버튼" 표. 로비에서 읽은 계정만 — 아니면 nil(그 보고는 클릭 수만 센다). 고쳤으면 Touch(userId, "ui").
+		local u = self.users ~= nil and self.users[userId] or nil
+		if u == nil or not u.loaded or not u.uiOn then return nil end
+		return u.ui
 	end
 
 	@ExecSpace("ServerOnly")
@@ -244,6 +281,11 @@ script AccountRecordData extends Logic
 				rec.s = { t = self:Int(t.s.t), a = self:Int(t.s.a) }
 			else
 				rec.s = nil
+			end
+		elseif part == "ui" then
+			rec.v = tostring(t.v or "")
+			if type(t.k) == "table" then
+				for id, _n in pairs(t.k) do rec.k[tostring(id)] = 1 end
 			end
 		else
 			if type(t.r) == "table" then
