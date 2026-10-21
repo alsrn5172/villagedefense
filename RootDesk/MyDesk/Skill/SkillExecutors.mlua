@@ -120,7 +120,8 @@ script SkillExecutors extends Logic
     --     DeathfaultFreezeAt    프레임 DeathfaultTearCaptureFrame(32 = 갈라지고 보라색으로 물든 화면)을 고정한 그림을 돌던 클립 **앞**에 띄우고 DeathfaultSwapFrames 프레임 뒤 돌던 클립을 지운다.
     --                           순백 31 프레임(1.86 ~)은 건너뛴다 — 예전엔 정지 직전에 0 ~ 3 프레임씩 보였다 말았다 했고, 지우고 띄우는 사이 한 프레임은 클립 없는 화면이 깜빡였다(사용자 2026-10-21 프레임 캡처).
     --     (시전자) 세운 그림만 그려진 프레임이 DeathfaultCaptureFrames 번 지나면 화면(UI 포함)을 캡처 — 초가 아니라 그려진 프레임을 센다(화면이 멈칫해 타이머가 몰려도 그 전 화면 = 암전 검정을 찍지 않는다).
-    --     DeathfaultTearStartAt 세운 그림을 지우고 클립을 다음 프레임부터 이어 튼다 · 시전자는 같은 순간 캡처 그림으로 덮고 바로 찢는다(ShowDeathfaultTear).
+    --     DeathfaultTearStartAt 세운 그림을 지우고 클립을 다음 프레임부터 이어 튼다 · 시전자는 같은 순간 캡처 그림 덮개(멈춘 동안 깔아 둔 것 · PrepareDeathfaultTear)를 켜고
+    --                           화면 밖까지 갈라 연다(OpenDeathfaultTear · 사용자 2026-10-21 "가르고 → 멈췄다가 → 풀림과 동시에 갈라지면서 열리기").
     --   → 캡처가 오는 시각(0.3 ~ 0.5초 · 들쭉날쭉)과 상관없이 정지 · 찢기 시각이 시전마다 같다(사용자 2026-10-21 "스킬 시전마다 항상 다른 게 문제"). 캡처가 그보다 늦으면 도착하는 순간 찢는다(로그 late).
     property boolean DeathfaultTearEnabled = true
 
@@ -143,12 +144,17 @@ script SkillExecutors extends Logic
     -- 가르는 선 기울기(세로 ÷ 가로 · 원작 screen 31 ~ 32 프레임 대각선 ≈ 275 / 682).
     property number DeathfaultTearSlope = 0.40
 
-    -- 두 쪽이 벌어지는 거리(UI px) · 시간(초) · 흐려지기 시작(그 시간 중 비율) · 맨 위 베기 크기 배율 · 베기 프레임 창.
-    property number DeathfaultTearDistance = 340
+    -- 두 쪽이 벌어지는 거리(UI px) · 시간(초) · 흐려지기 시작(그 시간 중 비율 · 1 = 안 흐림) · 맨 위 베기 크기 배율 · 베기 프레임 창.
+    -- 1.1.1(사용자 2026-10-21 "갈라지는 게 아예 안 보인다 · 가르고 → 멈췄다가 → 풀림과 동시에 갈라지면서 열리기"): 예전 340 px · 0.5초 · 0.23초부터 흐려짐은 벌어지다 말고 사라져
+    --   거의 안 보였다 → 두 쪽이 화면 밖까지 열린다(900 px > 가르는 선에서 화면 끝까지 최대 857 px · 1920×1080 · 기울기 0.40) · 0.6초 · 흐리기 없음.
+    property number DeathfaultTearDistance = 900
 
-    property number DeathfaultTearSeconds = 0.5
+    property number DeathfaultTearSeconds = 0.6
 
-    property number DeathfaultTearFadeFrom = 0.45
+    property number DeathfaultTearFadeFrom = 1.0
+
+    -- 풀리는 순간 덮개를 켠 뒤 벌리기 시작까지 그려진 프레임 수(덮개 그림이 먼저 그려지게 · 1.1.1).
+    property integer DeathfaultTearHoldFrames = 2
 
     property number DeathfaultSlashScale = 1.7
 
@@ -161,6 +167,10 @@ script SkillExecutors extends Logic
 
     @HideFromInspector
     property integer tearSerial = 0
+
+    -- [클라] 깔아 둔 덮개 { serial, root, pieces, dir, slash, cg } — PrepareDeathfaultTear 가 채우고 OpenDeathfaultTear 가 연다.
+    @HideFromInspector
+    property any tearPrep = nil
 
     -- MELEE_ARC 중 단일 대상으로 푸는 스킬 (skillId -> true). BuildHandlerTable 에서 채운다.
     property table meleeSingleTarget = {}
@@ -2627,8 +2637,9 @@ script SkillExecutors extends Logic
     method void FreezeDeathfaultAndTear(string ruid, Vector3 pos, number rot, Vector3 sv, boolean flip, string layer, integer order, integer playing, number facing, number startedAt, boolean caster)
         -- 1.1.1(모든 클라 · 찢기는 시전자만 · 시각표는 클래스 위 주석):
         --   ① 프레임 DeathfaultTearCaptureFrame 을 고정한 그림을 돌던 클립 앞(z − DeathfaultFreezeFrontZ)에 띄우고 ② DeathfaultSwapFrames 프레임 뒤 돌던 클립을 지운다
-        --   ③ (시전자) 그 뒤 DeathfaultCaptureFrames 프레임이 더 그려지면 화면(UI 포함)을 캡처 ④ 클립 시작 + DeathfaultTearStartAt 에 세운 그림을 지우고 클립을 다음 프레임부터 이어 틀며,
-        --      시전자는 캡처 그림으로 덮어 바로 찢는다. 캡처가 그때까지 안 왔으면 도착하는 순간(로그 late) · 안 와도 1초 뒤엔 잇는다(timeout).
+        --   ③ (시전자) 그 뒤 DeathfaultCaptureFrames 프레임이 더 그려지면 화면(UI 포함)을 캡처 — 오면 덮개를 꺼 둔 채 깔아 둔다(PrepareDeathfaultTear)
+        --   ④ 클립 시작 + DeathfaultTearStartAt 에 세운 그림을 지우고 클립을 다음 프레임부터 이어 틀며, 시전자는 같은 순간 덮개를 켜고 벌린다(OpenDeathfaultTear · 풀림과 동시에 갈라져 열림).
+        --      캡처가 그때까지 안 왔으면 도착하는 순간(late) · 안 와도 1초 뒤엔 찢기 없이 잇는다(timeout) — 둘 다 경고 로그.
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
         local root = nil
@@ -2680,9 +2691,11 @@ script SkillExecutors extends Logic
             afterFrames(self.DeathfaultSwapFrames, function() _EffectService:RemoveEffect(frozen) end)
             if not caster then return end
             local now = _UtilLogic.ElapsedSeconds
-            if self.LogDiagnostics then log("[Deathfault] tear frame " .. tostring(frame) .. " — froze +" .. string.format("%.3f", frozenAt - startedAt) .. "s · asked +" .. string.format("%.3f", askedAt - startedAt)
-                .. "s · got +" .. string.format("%.3f", gotAt - startedAt) .. "s · tear +" .. string.format("%.3f", now - startedAt) .. "s (" .. why .. ")") end
-            if root ~= nil and img ~= nil and serial == self.tearSerial then self:ShowDeathfaultTear(root, img, facing, 0, serial) end
+            local line = "[Deathfault] tear frame " .. tostring(frame) .. " — froze +" .. string.format("%.3f", frozenAt - startedAt) .. "s · asked +" .. string.format("%.3f", askedAt - startedAt)
+                .. "s · got +" .. string.format("%.3f", gotAt - startedAt) .. "s · tear +" .. string.format("%.3f", now - startedAt) .. "s (" .. why .. ")"
+            -- 늦음 · 시간 초과(찢기 없이 풀림)는 진단을 꺼 둬도 남긴다 — 캡처가 느린 환경을 로그로 찾게(1.1.1).
+            if why ~= "on time" then log_warning(line) elseif self.LogDiagnostics then log(line) end
+            self:OpenDeathfaultTear(serial)
         end
         if waiting then
             afterFrames(self.DeathfaultSwapFrames + self.DeathfaultCaptureFrames, function()
@@ -2692,6 +2705,8 @@ script SkillExecutors extends Logic
                     waiting = false
                     if err == ScreenshotError.Success and image ~= nil then
                         img = image
+                        -- 멈춘 동안 덮개를 꺼 둔 채 깔아 둔다 — 풀리는 순간 켜고 벌린다(예전엔 풀리는 순간 깔고 바로 움직여 첫 프레임이 늦게 그려질 수 있었다).
+                        if not started and serial == self.tearSerial then self:PrepareDeathfaultTear(root, img, facing, serial) end
                     else
                         log_warning("[Deathfault] tear capture failed: " .. tostring(err))
                     end
@@ -2719,10 +2734,10 @@ script SkillExecutors extends Logic
     end
 
     @ExecSpace("ClientOnly")
-    method void ShowDeathfaultTear(Entity root, RawImage img, number facing, number wait, integer serial)
-        -- 덮기: 가로 N 줄 × (왼 · 오른) 조각마다 캡처 그림을 화면 제자리에 깐다(조각 = 마스크 · 안의 Img 는 화면 크기 · 반대로 옮겨 맞춘다).
+    method void PrepareDeathfaultTear(Entity root, RawImage img, number facing, integer serial)
+        -- 덮개 깔아 두기(캡처가 오면 · 멈춘 동안 · 덮개는 꺼 둔 채): 가로 N 줄 × (왼 · 오른) 조각마다 캡처 그림을 화면 제자리에 넣는다(조각 = 마스크 · 안의 Img 는 화면 크기 · 반대로 옮겨 맞춘다).
         --   가르는 선 = 화면 가운데를 지나는 기울기 DeathfaultTearSlope 직선(바라보는 쪽으로 뒤집기 · 원작 screen 대각선). 줄마다 그 높이의 선 x 에서 좌우로 나눈다(계단식).
-        --   wait 초 뒤 찢기: 조각마다 선의 자기 쪽 수직 방향으로 DeathfaultTearDistance 만큼 벌어지고(ease-out) · 끝 무렵 흐려지고 · 맨 위에 원작 대각 베기.
+        --   켜기 · 벌리기는 풀리는 순간 OpenDeathfaultTear.
         local cw = 1920
         local ch = 1080
         local rs = root.UITransformComponent.RectSize
@@ -2786,14 +2801,38 @@ script SkillExecutors extends Logic
         if isvalid(slash) then slash.Enable = false end
         local cg = root.CanvasGroupComponent
         if cg ~= nil then cg.GroupAlpha = 1 end
-        root.Enable = true
+        root.Enable = false
         if self.tearTimer ~= 0 then
             _TimerService:ClearTimer(self.tearTimer)
             self.tearTimer = 0
         end
-        if self.LogDiagnostics then log("[Deathfault] tear cover " .. tostring(#pieces) .. " pieces " .. tostring(math.floor(cw)) .. "x" .. tostring(math.floor(ch)) .. " tear in " .. string.format("%.2f", wait) .. "s") end
-        _TimerService:SetTimerOnce(function()
+        self.tearPrep = { serial = serial, root = root, pieces = pieces, dir = dir, slash = slash, cg = cg }
+        if self.LogDiagnostics then log("[Deathfault] tear cover " .. tostring(#pieces) .. " pieces " .. tostring(math.floor(cw)) .. "x" .. tostring(math.floor(ch)) .. " ready") end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OpenDeathfaultTear(integer serial)
+        -- 풀리는 순간(FreezeDeathfaultAndTear 가 클립을 잇는 그 순간): 깔아 둔 덮개를 켜고 DeathfaultTearHoldFrames 프레임 뒤(덮개가 먼저 그려지게) 찢는다 —
+        --   조각마다 선의 자기 쪽 수직 방향으로 DeathfaultTearDistance 만큼 벌어지고(ease-out · 화면 밖까지) · DeathfaultTearFadeFrom 부터 흐려지고(1 = 안 흐림) · 맨 위에 원작 대각 베기.
+        local prep = self.tearPrep
+        if prep == nil or prep.serial ~= serial or serial ~= self.tearSerial then return end
+        self.tearPrep = nil
+        local root = prep.root
+        if not isvalid(root) then return end
+        local pieces = prep.pieces
+        local dir = prep.dir
+        local slash = prep.slash
+        local cg = prep.cg
+        root.Enable = true
+        local coveredAt = _UtilLogic.ElapsedSeconds
+        local left = math.max(1, math.floor(self.DeathfaultTearHoldFrames))
+        local hold = 0
+        hold = _TimerService:SetTimerRepeat(function()
+            left = left - 1
+            if left > 0 then return end
+            _TimerService:ClearTimer(hold)
             if serial ~= self.tearSerial or not isvalid(root) then return end
+            if self.LogDiagnostics then log("[Deathfault] tear open " .. string.format("%.3f", _UtilLogic.ElapsedSeconds - coveredAt) .. "s after cover") end
             -- 맨 위 베기(원작 effect 15 ~ 23 프레임 · 바라보는 쪽으로 뒤집기 · 화면 가운데).
             if isvalid(slash) then
                 local sr = slash.SpriteGUIRendererComponent
@@ -2829,8 +2868,8 @@ script SkillExecutors extends Logic
                     if self.LogDiagnostics then log("[Deathfault] tear done") end
                 end
             end, 1 / 60)
-        end, wait)
-        -- 안전망: 무슨 일이 있어도 1.5초 뒤엔 덮개를 걷는다.
+        end, 0.001)
+        -- 안전망: 무슨 일이 있어도 벌리기 시간 + 1초 뒤엔 덮개를 걷는다.
         _TimerService:SetTimerOnce(function()
             if serial ~= self.tearSerial or not isvalid(root) or not root.Enable then return end
             root.Enable = false
@@ -2838,7 +2877,7 @@ script SkillExecutors extends Logic
             if self.tearTimer ~= 0 then _TimerService:ClearTimer(self.tearTimer) end
             self.tearTimer = 0
             log_warning("[Deathfault] tear forced off")
-        end, wait + self.DeathfaultTearSeconds + 1.0)
+        end, self.DeathfaultTearSeconds + 1.0)
     end
 
     @ExecSpace("ServerOnly")
