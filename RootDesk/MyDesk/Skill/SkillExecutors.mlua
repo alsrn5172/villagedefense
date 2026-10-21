@@ -2601,23 +2601,8 @@ script SkillExecutors extends Logic
         if tintRuid ~= "" and tintSpec ~= "" then self:PlayDeathfaultTintLocal(tintRuid, tintSpec, pos) end
         if not self.DeathfaultTearEnabled then return end
         local startedAt = _UtilLogic.ElapsedSeconds
-        if self.LogDiagnostics and caster then
-            -- (진단) 클립 시작부터 상한 + 0.5초까지 40 ms 넘게 걸린 프레임(멈칫)을 클립 시각과 같이 남긴다 — 캡처 · 덮개 깔기 · 켜기 · 그림 로드가 화면을 멈칫하게 하는지(1.1.1).
-            local lastT = startedAt
-            local hitches = {}
-            local mon = 0
-            mon = _TimerService:SetTimerRepeat(function()
-                local now = _UtilLogic.ElapsedSeconds
-                if now - lastT > 0.04 then table.insert(hitches, string.format("+%.2f %.0fms", now - startedAt, (now - lastT) * 1000)) end
-                lastT = now
-                if now - startedAt > self.DeathfaultReleaseLatest + 0.5 then
-                    _TimerService:ClearTimer(mon)
-                    local list = "none"
-                    if #hitches > 0 then list = table.concat(hitches, ", ") end
-                    log("[Deathfault] frames over 40ms since the clip started: " .. list)
-                end
-            end, 0.001)
-        end
+        -- (진단) 클립 시작부터 상한 + 0.5초까지 멈칫(40 ms 넘는 프레임)과 메모리 변화를 한 줄로 남긴다(MonitorFrames · 1.1.1).
+        if self.LogDiagnostics and caster then self:MonitorFrames("deathfault clip", self.DeathfaultReleaseLatest + 0.5) end
         if self.LogDiagnostics and caster then log("[Deathfault] local screen clip started — freeze at clip +" .. string.format("%.2f", self.DeathfaultFreezeAt) .. "s (frame " .. tostring(self.DeathfaultTearCaptureFrame) .. ") · release when the capture is in (≥ +"
             .. string.format("%.2f", self.DeathfaultTearStartAt) .. "s · ≤ +" .. string.format("%.2f", self.DeathfaultReleaseLatest) .. "s)") end
         _TimerService:SetTimerOnce(function()
@@ -2782,6 +2767,40 @@ script SkillExecutors extends Logic
         end, tearIn)
         local latestIn = math.max(tearIn, startedAt + self.DeathfaultReleaseLatest - _UtilLogic.ElapsedSeconds)
         _TimerService:SetTimerOnce(function() start("timeout") end, latestIn)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void MonitorFrames(string tag, number seconds)
+        -- 🧪 진단: 지금부터 seconds 동안 40 ms 넘게 걸린 프레임(멈칫)을 시각 · 길이로 모으고, 시작 · 끝의 메모리(Lua · 엔진 · 전체 MB · ApplicationService 가 있을 때)를 한 줄로 남긴다.
+        --   콤보 데스폴트 멈칫 추적(1.1.1 · 사용자 "캡처 후 불러오는 과정이 자원을 잡아먹는 것 같다")용 — 스킬 밖(가만히 · 다른 스킬 · 캡처만)에서도 같은 자로 재게 따로 뺐다.
+        local startedAt = _UtilLogic.ElapsedSeconds
+        local function mem()
+            local ok, s = pcall(function()
+                local lua = _ApplicationService:GetMemoryUsage(ApplicationMemoryCategory.Lua) / 1048576
+                local native = _ApplicationService:GetMemoryUsage(ApplicationMemoryCategory.Native) / 1048576
+                local total = _ApplicationService:GetTotalMemoryUsage() / 1048576
+                return string.format("lua %.1f · native %.1f · total %.1f MB", lua, native, total)
+            end)
+            if ok then return s end
+            return "n/a"
+        end
+        local memStart = mem()
+        local lastT = startedAt
+        local hitches = {}
+        local frames = 0
+        local mon = 0
+        mon = _TimerService:SetTimerRepeat(function()
+            local now = _UtilLogic.ElapsedSeconds
+            frames = frames + 1
+            if now - lastT > 0.04 then table.insert(hitches, string.format("+%.2f %.0fms", now - startedAt, (now - lastT) * 1000)) end
+            lastT = now
+            if now - startedAt > seconds then
+                _TimerService:ClearTimer(mon)
+                local list = "none"
+                if #hitches > 0 then list = table.concat(hitches, ", ") end
+                log(string.format("[Frames] %s · %.1fs · %d frames · over 40ms: %s · mem start %s · end %s", tag, now - startedAt, frames, list, memStart, mem()))
+            end
+        end, 0.001)
     end
 
     @ExecSpace("ClientOnly")
