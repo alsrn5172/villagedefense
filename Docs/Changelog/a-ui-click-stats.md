@@ -36,7 +36,9 @@
 - LSP 진단 0 · refresh · build 오류 0 · `check-integrity` 통과.
 - Maker Play: 클라 3회 → 넘기기(`handed over`) → 서버 `report keys=2 clicks=3 newPressed=2` → `Flush` → 저장소 `all=3 players=1 · LobbyBtn c=2 u=1` → 표 줄 생성 ✅
 - 외부 HTTPS: `_HttpService:GetAndWait("https://discord.com/api/v10/gateway")` 응답 받음 ✅ (Maker 서버에서 디스코드까지 나간다)
-- ❌ 못 본 것: 진짜 웹후크로 디스코드 도착(웹후크 없음) · 룸 이동 · 룸이 비었을 때 저장(Maker 는 인스턴스 룸을 못 만든다 — `CreateInstanceRoom failed`) · 배포 월드에서의 외부 HTTP.
+- 진짜 웹후크(디스코드 🤖｜봇-로그 · 이름 "UI 클릭 통계" · 사용자 지시로 AI 가 만듦)로 Maker Play 에서 `!클릭웹후크 <id>` → `<토큰>` 등록 → `PostDiscord` = "디스코드로 보냄 (1개 메시지)" →
+  디스코드 API 로 채널을 다시 읽어 그 웹후크가 보낸 메시지가 20:21 에 올라온 것 확인 ✅ (Maker 시험 데이터 `VRF/…` 가 실린 시험 메시지). 일반 채팅은 가로채지 않음(`handled=false`) ✅
+- ❌ 못 본 것: 룸 이동 · 룸이 비었을 때 저장(Maker 는 인스턴스 룸을 못 만든다 — `CreateInstanceRoom failed`) · 배포 월드에서의 외부 HTTP · 라이브 등록.
 - 참고: Maker Play 의 첫 방(`TestPlayInstance`)은 `IsInstanceRoom()` 이 true 다 → 로비 판정에 Maker 예외를 넣었다(`UiClickStats.IsLobbyRoom`).
 
 ### 잃는 것
