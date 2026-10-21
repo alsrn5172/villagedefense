@@ -6,6 +6,10 @@ script UiClickSound extends Logic
 	-- /ui 아래를 프레임마다 ScanPerFrame 개씩 깊이 우선으로 훑어, 처음 보는 ButtonComponent 에 ButtonClickEvent 를 건다.
 	--   컨트롤러가 나중에 복제한 버튼(목록 칸 등)도 다음 바퀴에 잡힌다. 한 바퀴가 끝나면 사라진 버튼을 정리하고 /ui 부터 다시.
 	-- 자기 클릭음을 이미 내는 창은 겹치지 않게 뺀다(SkipGroups · 월드맵 = WorldMapController.PlayClick).
+	-- 클릭 통계(1.1.2 · UiClickStats): 같은 훅에서 버튼 경로(/ui 아래)마다 누른 수를 held 에 모았다가 **지금 룸 서버에** 넘긴다(HandOver) —
+	--   SendSeconds 마다 · "로비로" 누를 때(Spectate/MatchResult UI) · 서버가 달라고 할 때(AskHeld). 룸을 옮기면 클라 Logic 이 새로 뜨므로 떠나기 전에 넘긴다.
+	--   넘기는 건 RPC 라 저장 비용이 없다 — 저장은 룸 서버가 판이 끝날 때 한 번 한다.
+	--   SkipGroups 창도 훑어서 세기만 한다(소리는 그대로 안 냄) · StatExcludeGroups 창(개발용)은 세지 않는다.
 
 	property string ClickSoundRUID = "972843e759204d3e9ad84e7d3fa94f83"
 
@@ -20,7 +24,26 @@ script UiClickSound extends Logic
 	-- 같은 순간 겹쳐 울리지 않게(초)
 	property number MinGapSeconds = 0.05
 
-	-- hooked[entityId] = { e = Entity, h = 핸들러 }
+	-- 쉼표 목록 · 클릭 통계에서 뺄 UIGroup 이름(개발용 창)
+	property string StatExcludeGroups = "DevStatRemoteGroup"
+
+	-- 들고 있는 클릭 수를 룸 서버에 넘기는 간격(초 · RPC 만 · 저장 비용 없음)
+	property number SendSeconds = 30
+
+	@HideFromInspector
+	property number sendWait = 30
+
+	-- held[버튼 경로] = 누른 수(아직 서버에 안 넘긴 것) · heldClicks = 그 합
+	@HideFromInspector
+	property any held = nil
+
+	@HideFromInspector
+	property integer heldClicks = 0
+
+	@HideFromInspector
+	property any statSkip = nil
+
+	-- hooked[entityId] = { e = Entity, h = 핸들러, key = 버튼 경로, sound = 소리 냄, stat = 셈 }
 	@HideFromInspector
 	property any hooked = nil
 
@@ -45,14 +68,25 @@ script UiClickSound extends Logic
 		for g in string.gmatch(self.SkipGroups, "[^,]+") do
 			self.skip[g] = true
 		end
-		log("[UiClick] ready sound=" .. self.ClickSoundRUID)
+		self.statSkip = {}
+		for g in string.gmatch(self.StatExcludeGroups, "[^,]+") do
+			self.statSkip[g] = true
+		end
+		-- 들고 있는 통계는 여기서만 만든다. 룸을 옮길 때 이 줄이 다시 찍히면(held 0) 클라 Logic 이 새로 뜬 것 = 로비 몫이 사라진다는 뜻.
+		if self.held == nil then self.held = {} end
+		log("[UiClick] ready sound=" .. self.ClickSoundRUID .. " held=" .. tostring(self.heldClicks))
 	end
 
 	@ExecSpace("ClientOnly")
 	method void OnUpdate(number delta)
-		-- 스택이 비면 새 바퀴(정리 + /ui 의 그룹들), 아니면 ScanPerFrame 개만 처리.
+		-- 스택이 비면 새 바퀴(정리 + /ui 의 그룹들), 아니면 ScanPerFrame 개만 처리. 통계는 SendSeconds 마다 넘긴다.
 		if self.stack == nil then
 			return
+		end
+		self.sendWait = self.sendWait - delta
+		if self.sendWait <= 0 then
+			self.sendWait = self.SendSeconds
+			if self.heldClicks > 0 then self:HandOver("timer") end
 		end
 		if #self.stack == 0 then
 			self:StartRound()
@@ -75,7 +109,7 @@ script UiClickSound extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void StartRound()
-		-- 사라진 버튼을 빼고 /ui 의 그룹(SkipGroups 제외)을 스택에 넣는다.
+		-- 사라진 버튼을 빼고 /ui 의 그룹(소리도 통계도 안 하는 그룹 제외)을 스택에 넣는다.
 		local alive = {}
 		local count = 0
 		for id, x in pairs(self.hooked) do
@@ -94,7 +128,7 @@ script UiClickSound extends Logic
 			return
 		end
 		for _, g in ipairs(root.Children) do
-			if isvalid(g) and not self.skip[g.Name] then
+			if isvalid(g) and not (self.skip[g.Name] and self.statSkip[g.Name]) then
 				table.insert(self.stack, g)
 			end
 		end
@@ -102,11 +136,55 @@ script UiClickSound extends Logic
 
 	@ExecSpace("ClientOnly")
 	method void Hook(Entity e)
-		-- 이 버튼에 클릭음을 건다(한 번만).
-		local h = e:ConnectEvent(ButtonClickEvent, function()
-			self:Play()
-		end)
-		self.hooked[e.Id] = { e = e, h = h }
+		-- 이 버튼에 클릭 처리를 건다(한 번만): 소리(SkipGroups 밖) + 통계(StatExcludeGroups 밖). 둘 다 아니면 표시만 해 두고 다시 보지 않는다.
+		local path = e.Path or ""
+		local key = path
+		if string.sub(path, 1, 4) == "/ui/" then key = string.sub(path, 5) end
+		local clean, _n = string.gsub(key, "[\t\n\r]", " ")
+		key = clean
+		local group = string.match(key, "^[^/]+") or ""
+		local rec = { e = e, h = nil, key = key, sound = not self.skip[group], stat = not self.statSkip[group] }
+		if rec.sound or rec.stat then
+			rec.h = e:ConnectEvent(ButtonClickEvent, function()
+				if rec.sound then self:Play() end
+				if rec.stat then self:Count(rec.key) end
+			end)
+		end
+		self.hooked[e.Id] = rec
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Count(string key)
+		-- 통계: 이 버튼 한 번 더(들고만 있는다).
+		if self.held == nil then self.held = {} end
+		self.held[key] = (self.held[key] or 0) + 1
+		self.heldClicks = self.heldClicks + 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HandOver(string why)
+		-- 들고 있던 클릭 수를 지금 룸 서버(UiClickStats.Report)에 넘기고 비운다. 빈손이면 아무것도 안 한다.
+		if _UiClickStats == nil then return end
+		local packed = self:TakeHeld()
+		if packed == "" then return end
+		_UiClickStats:Report(packed)
+		log("[UiClick] handed over (" .. why .. ")")
+	end
+
+	@ExecSpace("ClientOnly")
+	method string TakeHeld()
+		-- 들고 있던 걸 "경로\t수\n…" 한 줄로 꺼내고 비운다. 없으면 "".
+		if self.held == nil or self.heldClicks <= 0 then return "" end
+		local parts = {}
+		local n = 0
+		for key, c in pairs(self.held) do
+			table.insert(parts, key .. "\t" .. tostring(c))
+			n = n + 1
+		end
+		log("[UiClick] hand over keys=" .. tostring(n) .. " clicks=" .. tostring(self.heldClicks))
+		self.held = {}
+		self.heldClicks = 0
+		return table.concat(parts, "\n")
 	end
 
 	@ExecSpace("ClientOnly")
@@ -134,5 +212,6 @@ script UiClickSound extends Logic
 		end
 		self.hooked = {}
 		self.stack = {}
+		if self.heldClicks > 0 then log("[UiClick] end play — held lost clicks=" .. tostring(self.heldClicks)) end
 	end
 end

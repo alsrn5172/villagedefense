@@ -1,0 +1,676 @@
+@Logic
+script UiClickStats extends Logic
+
+	-- UI 클릭 통계 (1.1.2 · 사용자 2026-10-21 "ui 마다 몇 번 클릭당했는지 저장해서 개발자 통계로 · 비용 안정적으로").
+	-- 흐름(사용자 "매치 종료마다 저장 · 비용 안정"):
+	--   ① 클라(UiClickSound)가 누른 버튼 수를 들고 있다가 **지금 있는 룸 서버에** 넘긴다 — SendSeconds 마다 · "로비로" 누를 때 · 서버가 달라고 할 때
+	--      (그 룸 계정 로드 직후 · 로비 출발 카운트다운 시작). 🔴 룸을 옮기면 클라 Logic 이 새로 뜬다(공식 RoomService 예제가 룸마다 클라 OnBeginPlay 로
+	--      화면을 가른다) → 들고 다니지 않고 떠나기 전에 넘긴다. 넘기는 건 RPC 라 저장 비용이 없다.
+	--   ② 룸 서버는 받은 걸 메모리(pending)에 모아 **룸이 비면(= 매치 끝 · 마지막 사람이 나감) 한 번** + FlushSeconds 마다(로비처럼 오래 사는 룸) +
+	--      룸이 끝날 때 전역 저장소 한 키(JSON 한 덩어리)에 UpdateAndWait(비교 후 교체)로 쓴다. 다른 룸이 먼저 썼으면 다시 읽어 합치고 한 번만 재시도.
+	-- 덩어리 = { all = 전체 클릭, players = 보고한 계정 수, b = { [버튼 경로] = { c = 클릭, u = 누른 계정 수 } } }
+	-- 누른 사람(계정 1번) = AccountRecordData 의 ui 부분(UiSeen · 버전이 바뀌면 비운다) — 처음 보고한 계정이면 players +1.
+	-- 🔴 비용(datastorage.md): 덩어리 쓰기는 매치 룸당 1번 · 로비는 FlushSeconds 에 1번. 1000005(Credit 초과)가 한 번이라도 오면 PauseSeconds 동안 통계 쓰기를 멈춘다.
+	--    계정 저장 창구(PlayerDBManager)는 쓰지도 막지도 않는다 — 이 파일은 월드 통계 전용 저장소만 만진다.
+	-- 보기: 디스코드 개발 채널(로비가 한국시간 DiscordHourKst 시 이후 하루 1번). 웹후크 주소는 채팅 `!클릭웹후크` 로 전역 저장소에 등록한다
+	--   (레포가 공개라 코드에 넣지 않는다 · Maker 와 라이브는 저장소가 따로라 라이브에서 한 번).
+	-- 🔴 패치마다 Version 을 올린다 → 새 키에 0부터 쌓인다.
+
+	property string Version = "1.1.2"
+
+	-- 전역 저장소 이름. 키 = "v" .. Version · "webhook" · "lastPost"
+	property string StorageName = "UiClickStats"
+
+	-- 오래 사는 룸(로비)이 모은 걸 저장소에 쓰는 간격(초). 매치 룸은 비는 순간 쓴다.
+	property number FlushSeconds = 1800
+
+	-- 같은 사람의 보고 최소 간격(초) — 클라는 SendSeconds(30) 마다 보낸다. 더 잦은 건 버린다(부풀리기 방지)
+	property number MinReportGapSeconds = 2
+
+	-- 1000005(Credit 초과) 뒤 통계 쓰기를 멈추는 시간(초)
+	property number PauseSeconds = 3600
+
+	-- 한 번 보고에 받는 버튼 수 · 버튼당 클릭 상한 · 버튼 이름 길이 상한(바이트) — 부풀린 보고를 자른다
+	property integer MaxKeysPerReport = 300
+
+	property integer MaxCountPerKey = 200
+
+	property integer MaxKeyBytes = 200
+
+	-- 덩어리가 이 바이트를 넘으면 새 버튼은 "#other" 로 묶는다(UpdateAndWait 값 상한 50,000)
+	property integer MaxBlobBytes = 45000
+
+	-- 계정 로드 뒤 AskHeld 를 보내기까지(초) — 클라가 막 들어와 RPC 를 놓치지 않게
+	property number AskDelaySeconds = 3
+
+	-- 디스코드 줄 수 · 읽기 캐시(초)
+	property integer DiscordTopN = 30
+
+	property number CacheSeconds = 60
+
+	-- 개발자 계정(ProfileCode 쉼표 목록 · 비밀 아님). 비어 있으면: 웹후크는 "아직 없을 때 한 번" 누구나 등록 · 시험 보내기는 Maker Play 에서만.
+	property string DevProfileCodes = ""
+
+	-- 디스코드 하루 1번: 한국시간 이 시 이후 · 확인 간격(초)
+	property integer DiscordHourKst = 9
+
+	property number DiscordCheckSeconds = 3600
+
+	-- 서버: 로비(정적 룸 · Maker 는 첫 방)면 true — 디스코드 하루 1번은 로비만 확인한다
+	@HideFromInspector
+	property boolean lobby = false
+
+	-- 서버: 아직 안 쓴 몫 { all, players, c = { [키] = n }, u = { [키] = n } }
+	@HideFromInspector
+	property any pending = nil
+
+	-- 서버: 유저별 마지막 보고 시각(userId → 초)
+	@HideFromInspector
+	property any lastReportAt = nil
+
+	@HideFromInspector
+	property any leaveHandler = nil
+
+	-- 서버: 마지막으로 읽었거나 쓴 덩어리 문자열(UpdateAndWait 의 비교값). nil = 다시 읽어야 함
+	@HideFromInspector
+	property any lastRaw = nil
+
+	-- 서버: 조회용 캐시(덩어리 표) · 읽은 시각
+	@HideFromInspector
+	property any cache = nil
+
+	@HideFromInspector
+	property number cacheAt = -1000
+
+	@HideFromInspector
+	property number pausedUntil = -1
+
+	@HideFromInspector
+	property boolean flushing = false
+
+	@HideFromInspector
+	property integer flushTimerId = 0
+
+	@HideFromInspector
+	property integer discordTimerId = 0
+
+	-- 서버: 웹후크 등록 중인 조각(userId → { id, token })
+	@HideFromInspector
+	property any hookParts = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 모든 룸이 받고 모은다. 룸이 비면(매치 끝) 한 번 쓰고, 오래 사는 룸(로비)은 FlushSeconds 마다도 쓴다. 디스코드는 로비만.
+		self.pending = self:NewPending()
+		self.lastReportAt = {}
+		self.hookParts = {}
+		self.lobby = self:IsLobbyRoom()
+		local period = self.FlushSeconds
+		if period < 30 then period = 30 end   -- 방어: 짧은 주기는 Credit 을 태운다
+		self.flushTimerId = _TimerService:SetTimerRepeat(function() self:Flush("timer") end, period, period)
+		if self.lobby then
+			local check = self.DiscordCheckSeconds
+			if check < 300 then check = 300 end
+			self.discordTimerId = _TimerService:SetTimerRepeat(function() self:DailyDiscord() end, check, 60)
+		end
+		self.leaveHandler = _UserService:ConnectEvent(UserLeaveEvent, self.OnUserLeave)
+		log("[UiStats] ready v=" .. self.Version .. " lobby=" .. tostring(self.lobby) .. " room=" .. tostring(_RoomService ~= nil and _RoomService.RoomKey or "") .. " flush=" .. tostring(self.FlushSeconds) .. "s")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 타이머 · 이벤트를 풀고 남은 몫을 마지막으로 쓴다.
+		if self.flushTimerId ~= 0 then _TimerService:ClearTimer(self.flushTimerId) end
+		if self.discordTimerId ~= 0 then _TimerService:ClearTimer(self.discordTimerId) end
+		if self.leaveHandler ~= nil then _UserService:DisconnectEvent(UserLeaveEvent, self.leaveHandler) end
+		self.flushTimerId = 0
+		self.discordTimerId = 0
+		self.leaveHandler = nil
+		local ok, err = pcall(function() self:Flush("end") end)
+		if not ok then log_warning("[UiStats] final flush failed: " .. tostring(err)) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsLobbyRoom()
+		-- 로비 = 정적 룸. Maker Play 는 방 하나(TestPlayInstance · 인스턴스로 판정됨)라 그 방도 로비로 친다.
+		if _RoomService == nil or not _RoomService:IsInstanceRoom() then return true end
+		return Environment:IsMakerPlay() and tostring(_RoomService.RoomKey or "") == "TestPlayInstance"
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUserLeave(UserLeaveEvent event)
+		-- 마지막 사람이 나가 룸이 비면(= 매치 끝 · 룸 이동) 그 룸이 모은 몫을 한 번 쓴다. 로비는 FlushSeconds 타이머가 쓴다.
+		local uid = event.UserId
+		if self.lastReportAt ~= nil and uid ~= nil then self.lastReportAt[uid] = nil end
+		local left = 0
+		for _, u in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(u) and isvalid(u.PlayerComponent) and u.PlayerComponent.UserId ~= uid then left = left + 1 end
+		end
+		if left == 0 then self:Flush("empty") end
+	end
+
+	-- ── 받기 ─────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void OnAccountLoaded(string userId)
+		-- PlayerDBManager 가 계정 로드를 끝낸 직후 부른다. 잠깐 뒤 그 클라에 들고 있는 것을 달라고 한다(룸을 옮겨도 클라 값이 남는 경우를 위해).
+		if userId == nil or userId == "" then return end
+		_TimerService:SetTimerOnce(function()
+			if isvalid(_UserService:GetUserEntityByUserId(userId)) then self:AskHeld(userId) end
+		end, self.AskDelaySeconds)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AskMany(any userIds)
+		-- 곧 룸을 옮길 사람들(로비 출발 카운트다운 시작 · MatchLobbyGateway)에게 들고 있는 걸 지금 달라고 한다.
+		if userIds == nil then return end
+		for _, uid in ipairs(userIds) do
+			if isvalid(_UserService:GetUserEntityByUserId(uid)) then self:AskHeld(uid) end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void AskHeld()
+		-- 서버 → 이 클라: 들고 있던 클릭 수를 지금 넘긴다(빈손이면 안 보냄).
+		if _UiClickSound ~= nil then _UiClickSound:HandOver("ask") end
+	end
+
+	@ExecSpace("Server")
+	method void Report(string packed)
+		-- 클라 → 지금 룸 서버: "버튼경로\t클릭수\n…". 상한으로 자르고 pending 에 더한다. 누른 사람은 계정 기록으로 가린다.
+		local uid = senderUserId
+		if uid == nil or uid == "" then return end
+		local now = _UtilLogic.ElapsedSeconds
+		local last = self.lastReportAt[uid]
+		if last ~= nil and now - last < self.MinReportGapSeconds then
+			log_warning("[UiStats] report too soon — ignored " .. uid)
+			return
+		end
+		self.lastReportAt[uid] = now
+		local counts = {}
+		local nKeys = 0
+		local nClicks = 0
+		for line in string.gmatch(packed or "", "[^\n]+") do
+			local tab, _tabEnd = string.find(line, "\t", 1, true)
+			local key = nil
+			local n = 0
+			if tab ~= nil then
+				key = string.sub(line, 1, tab - 1)
+				n = math.floor(tonumber(string.sub(line, tab + 1)) or 0)
+			end
+			if key ~= nil and key ~= "" and #key <= self.MaxKeyBytes and n > 0 and counts[key] == nil then
+				if nKeys >= self.MaxKeysPerReport then break end
+				if n > self.MaxCountPerKey then n = self.MaxCountPerKey end
+				counts[key] = n
+				nKeys = nKeys + 1
+				nClicks = nClicks + n
+			end
+		end
+		if nKeys == 0 then return end
+		local p = self.pending
+		local ui = (_AccountRecordData ~= nil) and _AccountRecordData:GetUi(uid) or nil
+		local newUsers = 0
+		if ui ~= nil then
+			local touched = false
+			if ui.v ~= self.Version then
+				ui.v = self.Version
+				ui.k = {}
+				p.players = p.players + 1
+				touched = true
+			end
+			for key, _ in pairs(counts) do
+				local id = self:ShortId(key)
+				if ui.k[id] == nil then
+					ui.k[id] = 1
+					p.u[key] = (p.u[key] or 0) + 1
+					newUsers = newUsers + 1
+					touched = true
+				end
+			end
+			if touched then _AccountRecordData:Touch(uid, "ui") end
+		end
+		for key, n in pairs(counts) do
+			p.c[key] = (p.c[key] or 0) + n
+		end
+		p.all = p.all + nClicks
+		log("[UiStats] report " .. uid .. " keys=" .. tostring(nKeys) .. " clicks=" .. tostring(nClicks) .. " newPressed=" .. tostring(newUsers) .. " seen=" .. tostring(ui ~= nil) .. " pendingAll=" .. tostring(p.all))
+	end
+
+	-- ── 쓰기 ─────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method any NewPending()
+		-- 빈 몫.
+		return { all = 0, players = 0, c = {}, u = {} }
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Flush(string why)
+		-- 모은 몫을 덩어리에 합쳐 한 번 쓴다. 실패한 몫은 pending 으로 되돌려 다음 회차에 다시 쓴다.
+		if self.flushing then return end
+		local p = self.pending
+		if p == nil or (p.all == 0 and p.players == 0) then return end
+		local now = _UtilLogic.ElapsedSeconds
+		if now < self.pausedUntil then
+			log("[UiStats] flush paused (" .. why .. ") pendingAll=" .. tostring(p.all))
+			return
+		end
+		self.flushing = true
+		self.pending = self:NewPending()
+		local ok, res = pcall(function() return self:WriteMerged(p) end)
+		if not ok or res ~= true then
+			if not ok then log_warning("[UiStats] flush error: " .. tostring(res)) end
+			self:AddPending(self.pending, p)
+		end
+		self.flushing = false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddPending(any into, any p)
+		-- p 를 into 에 더한다(실패한 몫 되돌리기).
+		into.all = into.all + p.all
+		into.players = into.players + p.players
+		for k, n in pairs(p.c) do into.c[k] = (into.c[k] or 0) + n end
+		for k, n in pairs(p.u) do into.u[k] = (into.u[k] or 0) + n end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean WriteMerged(any p)
+		-- 읽기(필요할 때만) → 합치기 → UpdateAndWait(비교 후 교체). 두 번까지.
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local key = "v" .. self.Version
+		for attempt = 1, 2 do
+			local raw = self.lastRaw
+			if raw == nil then
+				local code, value = ds:GetAndWait(key)
+				if code == 1000002 then
+					raw = ""
+				elseif code ~= 0 then
+					self:OnStorageError("get", code)
+					return false
+				else
+					raw = value or ""
+				end
+			end
+			local blob = self:Decode(raw)
+			if blob == nil then
+				log_error("[UiStats] stored blob is broken — not overwriting (key " .. key .. ")")
+				return false
+			end
+			self:Merge(blob, p, #raw)
+			local newRaw = self:Encode(blob)
+			if newRaw == "" then return false end
+			local code = 0
+			if raw == "" then
+				code = ds:SetAndWait(key, newRaw)
+			else
+				local c2, _v = ds:UpdateAndWait(key, raw, newRaw)
+				code = c2
+			end
+			if code == 0 then
+				self.lastRaw = newRaw
+				self.cache = blob
+				self.cacheAt = _UtilLogic.ElapsedSeconds
+				log("[UiStats] flushed all+" .. tostring(p.all) .. " players+" .. tostring(p.players) .. " bytes=" .. tostring(#newRaw) .. " try=" .. tostring(attempt))
+				return true
+			end
+			if code == 1000005 then
+				self:OnStorageError("update", code)
+				return false
+			end
+			-- 다른 로비가 먼저 썼다(또는 일시 오류) → 다시 읽어 합친다.
+			log("[UiStats] update conflict code=" .. tostring(code) .. " — re-read (try " .. tostring(attempt) .. ")")
+			self.lastRaw = nil
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnStorageError(string what, integer code)
+		-- 저장소 오류 기록. Credit 초과면 통계 쓰기를 멈춘다.
+		if code == 1000005 then
+			self.pausedUntil = _UtilLogic.ElapsedSeconds + self.PauseSeconds
+			log_warning("[UiStats] ResourceExhausted on " .. what .. " — stats paused " .. tostring(self.PauseSeconds) .. "s")
+		else
+			log_warning("[UiStats] storage " .. what .. " failed code=" .. tostring(code))
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Decode(string raw)
+		-- 덩어리 문자열 → 표. 빈 문자열 = 빈 표 · 깨졌으면 nil(덮어쓰지 않는다).
+		local blob = { all = 0, players = 0, b = {} }
+		if raw == nil or raw == "" then return blob end
+		local ok, t = pcall(function() return _HttpService:JSONDecode(raw) end)
+		if not ok or type(t) ~= "table" then return nil end
+		blob.all = self:Int(t.all)
+		blob.players = self:Int(t.players)
+		if type(t.b) == "table" then
+			for k, e in pairs(t.b) do
+				if type(e) == "table" then blob.b[tostring(k)] = { c = self:Int(e.c), u = self:Int(e.u) } end
+			end
+		end
+		return blob
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Encode(any blob)
+		-- 표 → 문자열. 🔴 빈 자식 표는 JSONEncode 가 예외를 던진다(LEA-3001) → b 가 비면 뺀다.
+		local out = { all = blob.all, players = blob.players }
+		if next(blob.b) ~= nil then out.b = blob.b end
+		local ok, json = pcall(function() return _HttpService:JSONEncode(out) end)
+		if not ok or type(json) ~= "string" then
+			log_error("[UiStats] encode failed: " .. tostring(json))
+			return ""
+		end
+		return json
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Merge(any blob, any p, integer rawBytes)
+		-- 몫을 덩어리에 더한다. 덩어리가 MaxBlobBytes 를 넘었으면 처음 보는 버튼은 "#other" 로.
+		blob.all = blob.all + p.all
+		blob.players = blob.players + p.players
+		local full = rawBytes > self.MaxBlobBytes
+		for k, n in pairs(p.c) do
+			local e = self:Slot(blob, k, full)
+			e.c = e.c + n
+		end
+		for k, n in pairs(p.u) do
+			local e = self:Slot(blob, k, full)
+			e.u = e.u + n
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method any Slot(any blob, string k, boolean full)
+		-- 덩어리의 버튼 칸(없으면 만든다).
+		local key = k
+		if blob.b[key] == nil and full then key = "#other" end
+		local e = blob.b[key]
+		if e == nil then
+			e = { c = 0, u = 0 }
+			blob.b[key] = e
+		end
+		return e
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer Int(any v)
+		-- JSON 숫자 → 정수(없으면 0).
+		return math.floor(tonumber(v) or 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ShortId(string s)
+		-- 버튼 경로 → 짧은 이름(계정 기록용 · djb2 32비트 → 36진). 계정 기록 바이트를 1KB 안팎으로 묶는다.
+		local h = 5381
+		for i = 1, #s do
+			h = (h * 33 + string.byte(s, i)) % 4294967296
+		end
+		local digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+		local out = ""
+		repeat
+			local r = h % 36
+			out = string.sub(digits, r + 1, r + 1) .. out
+			h = h // 36
+		until h == 0
+		return "h" .. out
+	end
+
+	-- ── 보기 ─────────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method any ReadBlob(boolean fresh)
+		-- 조회용 덩어리(CacheSeconds 캐시). 아직 없으면 빈 표 · 읽기 실패면 nil.
+		local now = _UtilLogic.ElapsedSeconds
+		if not fresh and self.cache ~= nil and now - self.cacheAt < self.CacheSeconds then return self.cache end
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local code, value = ds:GetAndWait("v" .. self.Version)
+		if code == 1000002 then
+			self.cache = { all = 0, players = 0, b = {} }
+		elseif code ~= 0 then
+			self:OnStorageError("read", code)
+			return nil
+		else
+			local blob = self:Decode(value or "")
+			if blob == nil then return nil end
+			self.cache = blob
+			if not self.flushing then self.lastRaw = value end
+		end
+		self.cacheAt = now
+		return self.cache
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Comma(integer n)
+		-- 12345 → "12,345"
+		local s = tostring(n)
+		local out = ""
+		for i = 1, #s do
+			out = out .. string.sub(s, i, i)
+			local left = #s - i
+			if left > 0 and left % 3 == 0 then out = out .. "," end
+		end
+		return out
+	end
+
+	@ExecSpace("ServerOnly")
+	method string Pct(integer a, integer b)
+		-- a ÷ b 백분율 한 자리.
+		if b <= 0 then return "-" end
+		return string.format("%.1f%%", a * 100 / b)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any BuildLines(string filter, integer topN, boolean fullName)
+		-- 표 줄 목록: 머리 한 줄 + 클릭 많은 순 topN 줄. filter 가 있으면 이름에 그 글자가 든 버튼만.
+		local blob = self:ReadBlob(false)
+		local lines = {}
+		if blob == nil then
+			table.insert(lines, "통계를 읽지 못했습니다(저장소 오류)")
+			return lines
+		end
+		local head = "v" .. self.Version .. " · 전체 클릭 " .. self:Comma(blob.all) .. " · 플레이 " .. self:Comma(blob.players) .. "명"
+		if self.pending ~= nil and self.pending.all > 0 then
+			head = head .. " · 이 룸 미저장 " .. self:Comma(self.pending.all) .. "회"
+		end
+		table.insert(lines, head)
+		local rows = {}
+		for k, e in pairs(blob.b) do
+			if filter == "" or string.find(k, filter, 1, true) ~= nil then
+				table.insert(rows, { k = k, c = e.c, u = e.u })
+			end
+		end
+		table.sort(rows, function(a, b) return a.c > b.c end)
+		if #rows == 0 then
+			table.insert(lines, "아직 기록이 없습니다")
+			return lines
+		end
+		for i = 1, math.min(topN, #rows) do
+			local r = rows[i]
+			local name = r.k
+			if not fullName then name = self:ShortName(r.k) end
+			local safe, _nSafe = string.gsub(name, "<", "‹")
+			name = safe
+			table.insert(lines, tostring(i) .. ". " .. name .. "  " .. self:Comma(r.c) .. "회(" .. self:Pct(r.c, blob.all) .. ") · " .. self:Comma(r.u) .. "명(" .. self:Pct(r.u, blob.players) .. ")")
+		end
+		if #rows > topN then table.insert(lines, "… 외 " .. tostring(#rows - topN) .. "개") end
+		return lines
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ShortName(string k)
+		-- 채팅 창 폭에 맞게 경로의 마지막 두 칸만.
+		local parts = {}
+		for seg in string.gmatch(k, "[^/]+") do table.insert(parts, seg) end
+		if #parts <= 2 then return k end
+		return parts[#parts - 1] .. "/" .. parts[#parts]
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsDev(string userId)
+		-- 개발자 계정인가(DevProfileCodes 에 있음). Maker Play 는 모두 허용.
+		if Environment:IsMakerPlay() then return true end
+		local code = self:ProfileCodeOf(userId)
+		if code == "" then return false end
+		for c in string.gmatch(self.DevProfileCodes, "[^,%s]+") do
+			if c == code then return true end
+		end
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanRegister(string userId)
+		-- 웹후크를 등록 · 지울 수 있나: 개발자 · 또는 개발자 목록이 비어 있고 아직 아무 웹후크도 없을 때(라이브 첫 등록 한 번).
+		if self:IsDev(userId) then return true end
+		if string.match(self.DevProfileCodes, "%S") ~= nil then return false end
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local code, url = ds:GetAndWait("webhook")
+		return code == 1000002 or (code == 0 and (url == nil or url == ""))
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ProfileCodeOf(string userId)
+		-- 유저 → ProfileCode(없으면 "").
+		local u = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(u) and isvalid(u.PlayerComponent) then return u.PlayerComponent.ProfileCode or "" end
+		return ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Say(string userId, string text)
+		-- 그 사람 채팅 창에만 한 줄.
+		if _ChatService ~= nil then _ChatService:ReceiveChat("통계", text, userId) end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean HandleCommand(string userId, string text)
+		-- ChatService.RequestSend 가 중계 전에 부른다. 웹후크 등록 · 시험 보내기만 처리하고 true(중계 안 함) · 나머지는 false(보통 채팅).
+		--   !클릭웹후크 <id> 다음 !클릭웹후크 <토큰>(채팅 80자 상한 때문에 둘로 · 주소 통째도 됨) · !클릭웹후크 지우기 = 등록(CanRegister)
+		--   !클릭보내기 = 지금 디스코드로(개발자 · Maker Play 만 — 라이브에선 남이 쳐도 보통 채팅이라 채널 도배가 안 된다)
+		-- 통계 조회 명령은 두지 않는다(사용자 2026-10-21 "!클릭 같은 거 필요 없음 · 디코로 가는 게 중요").
+		local t0, _n0 = string.gsub(text or "", "^%s+", "")
+		local t, _n1 = string.gsub(t0, "%s+$", "")
+		local hookCmd = "!클릭웹후크"
+		local sendCmd = "!클릭보내기"
+		if string.sub(t, 1, #hookCmd) == hookCmd then
+			if not self:CanRegister(userId) then
+				self:Say(userId, "웹후크가 이미 등록돼 있습니다")
+				log("[UiStats] webhook register denied " .. userId)
+				return true
+			end
+			local arg, _n2 = string.gsub(string.sub(t, #hookCmd + 1), "^%s+", "")
+			self:SetWebhookPart(userId, arg)
+			return true
+		end
+		if string.sub(t, 1, #sendCmd) == sendCmd and self:IsDev(userId) then
+			self:Say(userId, self:PostDiscord())
+			log("[UiStats] manual discord by " .. userId)
+			return true
+		end
+		return false
+	end
+
+	-- ── 디스코드 ───────────────────────────────────────────────
+
+	@ExecSpace("ServerOnly")
+	method void SetWebhookPart(string userId, string arg)
+		-- 웹후크 등록: 주소 통째 · 또는 id(숫자) → 토큰 순서로 두 번. "지우기" = 등록 해제.
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local prefix = "https://discord.com/api/webhooks/"
+		local url = ""
+		if arg == "지우기" then
+			local code = ds:DeleteAndWait("webhook")
+			self:Say(userId, "웹후크 지움 (code " .. tostring(code) .. ")")
+			return
+		elseif string.sub(arg, 1, 8) == "https://" then
+			url = arg
+		elseif string.match(arg, "^%d+$") ~= nil then
+			self.hookParts[userId] = { id = arg }
+			self:Say(userId, "id 받음 — 이어서 !클릭웹후크 <토큰>")
+			return
+		elseif arg ~= "" and self.hookParts[userId] ~= nil then
+			url = prefix .. self.hookParts[userId].id .. "/" .. arg
+			self.hookParts[userId] = nil
+		else
+			self:Say(userId, "사용법: !클릭웹후크 <id> 다음 !클릭웹후크 <토큰>")
+			return
+		end
+		if string.sub(url, 1, #prefix) ~= prefix and string.sub(url, 1, 36) ~= "https://discordapp.com/api/webhooks/" then
+			self:Say(userId, "디스코드 웹후크 주소가 아닙니다")
+			return
+		end
+		local code = ds:SetAndWait("webhook", url)
+		self:Say(userId, code == 0 and "웹후크 저장됨 — 매일 9시(한국시간) 이후 자동 전송" or ("웹후크 저장 실패 code " .. tostring(code)))
+		log("[UiStats] webhook set code=" .. tostring(code) .. " by " .. userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method any KstNow()
+		-- 지금 한국시간(DateTime).
+		return DateTime(DateTime.UtcNow.Elapsed + 9 * 3600 * 1000)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DailyDiscord()
+		-- 로비 타이머: 한국시간 DiscordHourKst 시 이후 그날 아직 안 보냈으면, lastPost 를 비교 후 교체로 잡은 한 곳만 보낸다.
+		local kst = self:KstNow()
+		if kst.Hour < self.DiscordHourKst then return end
+		local today = string.format("%04d-%02d-%02d", kst.Year, kst.Month, kst.Day)
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local code, last = ds:GetAndWait("lastPost")
+		if code ~= 0 and code ~= 1000002 then
+			self:OnStorageError("lastPost", code)
+			return
+		end
+		if code == 0 and last == today then return end
+		local claim = 0
+		if code == 1000002 then
+			claim = ds:SetAndWait("lastPost", today)
+		else
+			local c2, _v = ds:UpdateAndWait("lastPost", last, today)
+			claim = c2
+		end
+		if claim ~= 0 then return end   -- 다른 로비가 먼저 잡았다
+		log("[UiStats] daily discord " .. today .. " " .. self:PostDiscord())
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PostDiscord()
+		-- 등록된 웹후크로 지금 표를 보낸다(2000자 제한 → 나눠 보냄). 반환 = 결과 한 줄(성공이면 "디스코드로 보냄"으로 시작).
+		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
+		local code, url = ds:GetAndWait("webhook")
+		if code ~= 0 or url == nil or url == "" then return "웹후크가 없습니다 — !클릭웹후크 로 등록" end
+		local kst = self:KstNow()
+		local lines = self:BuildLines("", self.DiscordTopN, true)
+		local title = "📊 UI 클릭 통계 " .. string.format("%04d-%02d-%02d %02d:%02d KST", kst.Year, kst.Month, kst.Day, kst.Hour, kst.Minute) .. " (클릭 수(비중) · 누른 사람(플레이한 사람 중))"
+		local chunks = {}
+		local cur = title
+		for _, line in ipairs(lines) do
+			if #cur + #line + 1 > 1800 then
+				table.insert(chunks, cur)
+				cur = line
+			else
+				cur = cur .. "\n" .. line
+			end
+		end
+		table.insert(chunks, cur)
+		-- 🔴 PostAndWait 는 실패(401 · 404)에도 예외 없이 "" 를 돌려준다(Maker 실측 2026-10-21) → ?wait=true 로 보내 성공이면 만든 메시지 JSON("id")이 오게 해 가른다.
+		local postUrl = url
+		if string.find(postUrl, "?", 1, true) == nil then postUrl = postUrl .. "?wait=true" else postUrl = postUrl .. "&wait=true" end
+		local sent = 0
+		for _, body in ipairs(chunks) do
+			local ok, res = pcall(function()
+				return _HttpService:PostAndWait(postUrl, _HttpService:JSONEncode({ content = body }), HttpContentType.ApplicationJson)
+			end)
+			if not ok or string.find(tostring(res), "\"id\"", 1, true) == nil then
+				log_warning("[UiStats] discord post failed ok=" .. tostring(ok) .. " res=" .. string.sub(tostring(res), 1, 120))
+				return "디스코드 전송 실패 (" .. tostring(sent) .. "개 보낸 뒤) — 웹후크 주소를 확인"
+			end
+			sent = sent + 1
+		end
+		return "디스코드로 보냄 (" .. tostring(sent) .. "개 메시지)"
+	end
+
+end
