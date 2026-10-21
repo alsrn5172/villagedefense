@@ -796,7 +796,7 @@ script UiClickStats extends Logic
 				return true
 			end
 			self.lastManualAt = now
-			self:Say(userId, self:PostDiscord())
+			self:Say(userId, self:PostDiscord("지금 보내기"))
 			log("[UiStats] manual discord by " .. userId)
 			return true
 		end
@@ -893,12 +893,14 @@ script UiClickStats extends Logic
 			claim = c2
 		end
 		if claim ~= 0 then return end   -- 다른 로비가 먼저 잡았다
-		log("[UiStats] daily discord " .. today .. " " .. self:PostDiscord())
+		log("[UiStats] daily discord " .. today .. " " .. self:PostDiscord(""))
 	end
 
 	@ExecSpace("ServerOnly")
-	method string PostDiscord()
+	method string PostDiscord(string label)
 		-- 등록된 웹후크로 지금 표를 임베드 메시지 2~3개로 보낸다(BuildReport → PackMessages). 반환 = 결과 한 줄(성공이면 "디스코드로 보냄"으로 시작).
+		-- 웹후크가 포럼 채널(📊｜ui-버튼-통계)에 있으면 **포스트 하나**로: 첫 메시지에 thread_name 을 붙여 포스트를 만들고, 나머지는 응답의 channel_id(= 그 포스트)에 thread_id 로 잇는다.
+		--   일반 채널 웹후크면 thread_name 이 거절된다 → 첫 메시지만 thread_name 없이 다시 보내고 이어서 메시지로 보낸다. label = 포스트 제목 꼬리("" = 하루 보고).
 		-- 🔴 txt 첨부는 안 된다 — MSW HttpService 가 multipart(파일 업로드)를 못 보낸다(Maker 실측 2026-10-21 · httpbin 에도 안 닿음).
 		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
 		local code, url = ds:GetAndWait("webhook")
@@ -911,17 +913,50 @@ script UiClickStats extends Logic
 		-- 🔴 PostAndWait 는 실패(401 · 404)에도 예외 없이 "" 를 돌려준다(Maker 실측 2026-10-21) → ?wait=true 로 보내 성공이면 만든 메시지 JSON("id")이 오게 해 가른다.
 		local postUrl = url
 		if string.find(postUrl, "?", 1, true) == nil then postUrl = postUrl .. "?wait=true" else postUrl = postUrl .. "&wait=true" end
-		local sent = 0
-		for _, embeds in ipairs(chunks) do
+		local kst = self:KstNow()
+		local threadName = string.format("%04d-%02d-%02d UI 버튼 통계", kst.Year, kst.Month, kst.Day)
+		if label ~= nil and label ~= "" then
+			threadName = string.format("%04d-%02d-%02d %02d:%02d UI 버튼 통계 (%s)", kst.Year, kst.Month, kst.Day, kst.Hour, kst.Minute, label)
+		end
+		local function post(target, payload)
 			local ok, res = pcall(function()
-				return _HttpService:PostAndWait(postUrl, _HttpService:JSONEncode({ embeds = embeds }), HttpContentType.ApplicationJson)
+				return _HttpService:PostAndWait(target, _HttpService:JSONEncode(payload), HttpContentType.ApplicationJson)
 			end)
-			if not ok or string.find(tostring(res), "\"id\"", 1, true) == nil then
-				log_warning("[UiStats] discord post failed ok=" .. tostring(ok) .. " res=" .. string.sub(tostring(res), 1, 120))
+			if ok and string.find(tostring(res), "\"id\"", 1, true) ~= nil then return tostring(res) end
+			log_warning("[UiStats] discord post failed ok=" .. tostring(ok) .. " res=" .. string.sub(tostring(res), 1, 120))
+			return nil
+		end
+		local sent = 0
+		local threadId = ""
+		local asPost = false
+		for i, embeds in ipairs(chunks) do
+			local res = nil
+			if i == 1 then
+				res = post(postUrl, { embeds = embeds, thread_name = threadName })
+				if res ~= nil then
+					asPost = true
+					-- 포스트 번호 = 응답 메시지의 channel_id. 🔴 응답 전체를 JSONDecode 하지 않는다 — 긴 응답에서 실패해 번호가 비었다(Maker 실측 2026-10-21).
+					threadId = string.match(res, "\"channel_id\"%s*:%s*\"(%d+)\"") or ""
+				else
+					res = post(postUrl, { embeds = embeds })   -- 일반 채널 웹후크
+				end
+			else
+				local target = postUrl
+				if asPost and threadId ~= "" then target = postUrl .. "&thread_id=" .. threadId end
+				res = post(target, { embeds = embeds })
+				if res == nil and asPost then
+					wait(1)   -- 막 만든 포스트가 아직 안 잡혔을 수 있다 → 1초 뒤 한 번만 다시
+					res = post(target, { embeds = embeds })
+				end
+			end
+			if res == nil then
+				log_warning("[UiStats] discord send stopped at message " .. tostring(i) .. " post=" .. tostring(asPost) .. " thread=" .. threadId)
 				return "디스코드 전송 실패 (" .. tostring(sent) .. "개 보낸 뒤) — 웹후크 주소를 확인"
 			end
 			sent = sent + 1
 		end
+		log("[UiStats] discord sent messages=" .. tostring(sent) .. " post=" .. tostring(asPost) .. " thread=" .. threadId)
+		if asPost then return "디스코드 포스트로 보냄 (" .. threadName .. " · 메시지 " .. tostring(sent) .. "개)" end
 		return "디스코드로 보냄 (" .. tostring(sent) .. "개 메시지)"
 	end
 
