@@ -47,6 +47,21 @@ script UiClickStats extends Logic
 	-- 디스코드 "많이 눌린 버튼" 줄 수 · 읽기 캐시(초)
 	property integer DiscordTopN = 15
 
+	-- !클릭보내기 최소 간격(초 · 룸마다) · 웹후크 주인 코드 캐시(초)
+	property number ManualSendGapSeconds = 60
+
+	property number OwnerCacheSeconds = 600
+
+	-- 서버: 웹후크를 등록한 계정(owner) 캐시 · 읽은 시각 · 마지막 !클릭보내기 시각
+	@HideFromInspector
+	property string ownerCode = ""
+
+	@HideFromInspector
+	property number ownerAt = -100000
+
+	@HideFromInspector
+	property number lastManualAt = -100000
+
 	-- 로비가 버튼 전체 목록(안 눌린 버튼 계산용)을 다시 받는 간격(초) · 계정 로드 뒤 달라고 하기까지(초 — 클라가 /ui 를 다 훑을 시간) · 받는 경로 상한
 	property number CatalogRefreshSeconds = 1800
 
@@ -725,13 +740,23 @@ script UiClickStats extends Logic
 	end
 
 	@ExecSpace("ServerOnly")
-	method boolean CanRegister(string userId)
-		-- 웹후크를 등록 · 지울 수 있나: 개발자 · 또는 개발자 목록이 비어 있고 아직 아무 웹후크도 없을 때(라이브 첫 등록 한 번).
-		if self:IsDev(userId) then return true end
-		if string.match(self.DevProfileCodes, "%S") ~= nil then return false end
+	method string OwnerCode()
+		-- 웹후크를 등록한 계정의 ProfileCode(전역 저장소 "owner" · OwnerCacheSeconds 캐시 — 남이 명령을 연타해도 읽기는 캐시 주기에 한 번).
+		local now = _UtilLogic.ElapsedSeconds
+		if now - self.ownerAt < self.OwnerCacheSeconds then return self.ownerCode end
 		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
-		local code, url = ds:GetAndWait("webhook")
-		return code == 1000002 or (code == 0 and (url == nil or url == ""))
+		local code, v = ds:GetAndWait("owner")
+		if code == 0 and v ~= nil then self.ownerCode = v else self.ownerCode = "" end
+		self.ownerAt = now
+		return self.ownerCode
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanSend(string userId)
+		-- !클릭보내기 · 웹후크 지우기를 쓸 수 있나: 개발자(Maker Play 포함) · 또는 웹후크를 등록한 계정.
+		if self:IsDev(userId) then return true end
+		local code = self:ProfileCodeOf(userId)
+		return code ~= "" and code == self:OwnerCode()
 	end
 
 	@ExecSpace("ServerOnly")
@@ -750,25 +775,27 @@ script UiClickStats extends Logic
 
 	@ExecSpace("ServerOnly")
 	method boolean HandleCommand(string userId, string text)
-		-- ChatService.RequestSend 가 중계 전에 부른다. 웹후크 등록 · 시험 보내기만 처리하고 true(중계 안 함) · 나머지는 false(보통 채팅).
-		--   !클릭웹후크 <id> 다음 !클릭웹후크 <토큰>(채팅 80자 상한 때문에 둘로 · 주소 통째도 됨) · !클릭웹후크 지우기 = 등록(CanRegister)
-		--   !클릭보내기 = 지금 디스코드로(개발자 · Maker Play 만 — 라이브에선 남이 쳐도 보통 채팅이라 채널 도배가 안 된다)
+		-- ChatService.RequestSend 가 중계 전에 부른다. 웹후크 등록 · 지금 보내기만 처리하고 true(중계 안 함) · 나머지는 false(보통 채팅).
+		--   !클릭웹후크 <id> 다음 !클릭웹후크 <토큰>(채팅 80자 상한 때문에 둘로 · 주소 통째도 됨) · !클릭웹후크 지우기 — 권한은 SetWebhookPart
+		--   !클릭보내기 = 지금 표를 디스코드로(개발자 · 웹후크를 등록한 계정 · ManualSendGapSeconds 에 한 번). 다른 사람이 치면 보통 채팅이라 채널 도배가 안 된다.
 		-- 통계 조회 명령은 두지 않는다(사용자 2026-10-21 "!클릭 같은 거 필요 없음 · 디코로 가는 게 중요").
 		local t0, _n0 = string.gsub(text or "", "^%s+", "")
 		local t, _n1 = string.gsub(t0, "%s+$", "")
 		local hookCmd = "!클릭웹후크"
 		local sendCmd = "!클릭보내기"
 		if string.sub(t, 1, #hookCmd) == hookCmd then
-			if not self:CanRegister(userId) then
-				self:Say(userId, "웹후크가 이미 등록돼 있습니다")
-				log("[UiStats] webhook register denied " .. userId)
-				return true
-			end
 			local arg, _n2 = string.gsub(string.sub(t, #hookCmd + 1), "^%s+", "")
 			self:SetWebhookPart(userId, arg)
 			return true
 		end
-		if string.sub(t, 1, #sendCmd) == sendCmd and self:IsDev(userId) then
+		if string.sub(t, 1, #sendCmd) == sendCmd and self:CanSend(userId) then
+			local now = _UtilLogic.ElapsedSeconds
+			local wait = self.ManualSendGapSeconds - (now - self.lastManualAt)
+			if wait > 0 then
+				self:Say(userId, "방금 보냈습니다 — " .. tostring(math.ceil(wait)) .. "초 뒤에 다시")
+				return true
+			end
+			self.lastManualAt = now
 			self:Say(userId, self:PostDiscord())
 			log("[UiStats] manual discord by " .. userId)
 			return true
@@ -780,12 +807,20 @@ script UiClickStats extends Logic
 
 	@ExecSpace("ServerOnly")
 	method void SetWebhookPart(string userId, string arg)
-		-- 웹후크 등록: 주소 통째 · 또는 id(숫자) → 토큰 순서로 두 번. "지우기" = 등록 해제.
+		-- 웹후크 등록: 주소 통째 · 또는 id(숫자) → 토큰 순서로 두 번. 저장하면 등록한 계정이 주인(owner = !클릭보내기 권한). "지우기" = 등록 해제(개발자 · 주인).
+		-- 저장 권한: 개발자 · 아직 웹후크가 없고 개발자 목록이 비었음(라이브 첫 등록) · 또는 저장된 주소와 똑같은 주소(= 비밀 주소를 아는 사람 → 주인을 다시 잡는다).
 		local ds = _DataStorageService:GetGlobalDataStorage(self.StorageName)
 		local prefix = "https://discord.com/api/webhooks/"
 		local url = ""
 		if arg == "지우기" then
+			if not self:CanSend(userId) then
+				self:Say(userId, "웹후크를 지울 권한이 없습니다")
+				return
+			end
 			local code = ds:DeleteAndWait("webhook")
+			ds:DeleteAndWait("owner")
+			self.ownerCode = ""
+			self.ownerAt = _UtilLogic.ElapsedSeconds
 			self:Say(userId, "웹후크 지움 (code " .. tostring(code) .. ")")
 			return
 		elseif string.sub(arg, 1, 8) == "https://" then
@@ -805,9 +840,26 @@ script UiClickStats extends Logic
 			self:Say(userId, "디스코드 웹후크 주소가 아닙니다")
 			return
 		end
-		local code = ds:SetAndWait("webhook", url)
-		self:Say(userId, code == 0 and "웹후크 저장됨 — 매일 9시(한국시간) 이후 자동 전송" or ("웹후크 저장 실패 code " .. tostring(code)))
-		log("[UiStats] webhook set code=" .. tostring(code) .. " by " .. userId)
+		local wc, cur = ds:GetAndWait("webhook")
+		local exists = wc == 0 and cur ~= nil and cur ~= ""
+		local allowed = self:IsDev(userId) or (exists and cur == url) or (not exists and string.match(self.DevProfileCodes, "%S") == nil)
+		if not allowed then
+			self:Say(userId, "웹후크가 이미 등록돼 있습니다")
+			log("[UiStats] webhook register denied " .. userId)
+			return
+		end
+		local code = 0
+		if cur ~= url then code = ds:SetAndWait("webhook", url) end
+		if code ~= 0 then
+			self:Say(userId, "웹후크 저장 실패 code " .. tostring(code))
+			return
+		end
+		local owner = self:ProfileCodeOf(userId)
+		local oc = ds:SetAndWait("owner", owner)
+		self.ownerCode = owner
+		self.ownerAt = _UtilLogic.ElapsedSeconds
+		self:Say(userId, "웹후크 저장됨 — 매일 9시(한국시간) 이후 자동 전송 · !클릭보내기 로 지금 보내기")
+		log("[UiStats] webhook set by " .. userId .. " owner=" .. tostring(oc == 0) .. " same=" .. tostring(cur == url))
 	end
 
 	@ExecSpace("ServerOnly")
