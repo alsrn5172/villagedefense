@@ -286,6 +286,10 @@ script SkillBuffs extends Logic
     -- 메소는 정수 재화라 소수점 값이 없다 → 표의 대체 규칙을 기본값으로 둔다. 그림은 값에 따라 MesoCoin.TierSprites 가 고른다(1~49 = 동 메소 · #121).
     property boolean PickpocketRoundDown = true
 
+    -- 어벤저(SK_T11_AV) 한 타에 떨어지는 픽파켓 동전 수(1.1.3 · 사용자 2026-10-22 "어벤저가 얻는 픽파켓 3배는 메소 갯수가 3개인 거지 메소량 3배가 아님 · 메소 익스플로전에서 이득 보게").
+    --   동전 하나의 값은 다른 공격과 같다(PickpocketValue). 예전(1.0.11 ~ 1.1.2)은 동전 1개의 값만 ×3 이었다. 쉐도우 파트너 쿨 감소 타수는 그대로 1.
+    property integer AvengerPickpocketCoins = 3
+
     -- 픽파켓 동전 모델(A 의 Farm/MesoCoin · FarmReward.DropCoins 와 같은 EntryKey). 주인은 DropOwner 로 시전자에게.
     property string MesoCoinModelId = "mesocoin"
 
@@ -1522,8 +1526,10 @@ script SkillBuffs extends Logic
             local frac = perHit - value
             if frac > 0 and _UtilLogic:RandomDouble() < frac then value = value + 1 end
         end
-        if skillId == "SK_T11_AV" then value = value * 3 end
         if value <= 0 then return end
+        -- 어벤저는 같은 값의 동전 AvengerPickpocketCoins 개(1.1.3 · 예전 = 값 ×3 동전 1개). 이 훅은 한 번만 불리므로 쉐도우 파트너 타수(위)는 그대로 1.
+        local coinCount = 1
+        if skillId == "SK_T11_AV" then coinCount = math.max(1, self.AvengerPickpocketCoins) end
         local now = _UtilLogic.ServerElapsedSeconds
 
         local map = target.CurrentMap
@@ -1538,38 +1544,46 @@ script SkillBuffs extends Logic
         if isvalid(foothold) then feetFloor = self:PickpocketFloorY(foothold, tp.x, probeY) end
         local floorNote = "none(+0.3)"
         if feetFloor ~= nil then floorNote = string.format("%.2f (feet %.2f)", feetFloor, tp.y) end
-        local ox = (_UtilLogic:RandomDouble() - 0.5) * 0.6
-        local cx = tp.x + ox
-        local cy = tp.y + 0.3
-        if feetFloor ~= nil then
-            local y = self:PickpocketFloorY(foothold, cx, probeY)
-            if y == nil or y < feetFloor - self.PickpocketFloorProbeUp then
-                cx = tp.x
-                y = feetFloor
+        local spawned = 0
+        local landingNote = "old(random)"
+        for _ = 1, coinCount do
+            local ox = (_UtilLogic:RandomDouble() - 0.5) * 0.6
+            local cx = tp.x + ox
+            local cy = tp.y + 0.3
+            if feetFloor ~= nil then
+                local y = self:PickpocketFloorY(foothold, cx, probeY)
+                if y == nil or y < feetFloor - self.PickpocketFloorProbeUp then
+                    cx = tp.x
+                    y = feetFloor
+                end
+                cy = y + self.PickpocketFloorLift
             end
-            cy = y + self.PickpocketFloorLift
+            -- 착지(1.0.21 #3 · 사용자 2026-10-20 "몬스터가 떨군 메소가 맵 끝(발판 밖)으로 떨어지던 것: 죽은 자리에서 가장 가까운 발판 위에 겹치지 않게 한 줄로 · 픽파켓 메소도 같은 규칙"):
+            --   맞은 몬스터마다(key = "pp:" .. 몬스터 엔티티 Id) 그 발 아래 가장 가까운 발판 위에 가운데 → 오른쪽 → 왼쪽 … 한 줄의 다음 칸을 받는다(Farm/GroundDrop.NextRowLanding · 같은 몬스터를 짧은 시간 안에 또 맞히면 같은 줄의 다음 칸).
+            --   동전이 만들어진 뒤 AssignLanding 이 그 점에 내려앉게 한다(포물선은 그대로). 발판이 아예 없거나 _GroundDrop 이 없으면 nil = 예전 착지(MesoCoin 의 무작위 착지) 그대로.
+            --   메소 익스플로전(SkillExecutors.FindMesoCoins)은 동전 이름(PickpocketCoinName) · script.MesoCoin · Collected · DropOwner · 반경으로만 찾는다 — 착지 방식과 무관하다(MesoLandedOnly 기본 false).
+            --   어벤저의 동전 여러 개도 같은 key 라 같은 줄의 다음 칸에 나란히 놓인다.
+            local landing = nil
+            if _GroundDrop ~= nil then landing = _GroundDrop:NextRowLanding(map, tp.x, tp.y, "pp:" .. tostring(target.Id)) end
+            local coin = _SpawnService:SpawnByModelId(self.MesoCoinModelId, self.PickpocketCoinName, Vector3(cx, cy, 0), map)
+            if not isvalid(coin) then
+                log_error("[Buff] PICKPOCKET coin spawn failed — modelId=" .. self.MesoCoinModelId)
+                break
+            end
+            -- 값은 스폰 직후 넣는다(FarmReward.DropCoins 와 같은 순서 · MesoCoin 이 첫 틱에 값에 맞는 그림을 고른다).
+            ---@type MesoCoin
+            local mc = coin:GetComponent("script.MesoCoin")
+            if isvalid(mc) then mc.Value = value end
+            coin:AddComponent("script.DropOwner")
+            ---@type DropOwner
+            local own = coin:GetComponent("script.DropOwner")
+            if isvalid(own) then own.OwnerUserId = userId end
+            if landing ~= nil and _GroundDrop ~= nil then _GroundDrop:AssignLanding(coin, landing) end
+            if landing ~= nil then landingNote = string.format("(%.2f,%.2f)", landing.x, landing.y) end
+            spawned = spawned + 1
         end
-        -- 착지(1.0.21 #3 · 사용자 2026-10-20 "몬스터가 떨군 메소가 맵 끝(발판 밖)으로 떨어지던 것: 죽은 자리에서 가장 가까운 발판 위에 겹치지 않게 한 줄로 · 픽파켓 메소도 같은 규칙"):
-        --   맞은 몬스터마다(key = "pp:" .. 몬스터 엔티티 Id) 그 발 아래 가장 가까운 발판 위에 가운데 → 오른쪽 → 왼쪽 … 한 줄의 다음 칸을 받는다(Farm/GroundDrop.NextRowLanding · 같은 몬스터를 짧은 시간 안에 또 맞히면 같은 줄의 다음 칸).
-        --   동전이 만들어진 뒤 AssignLanding 이 그 점에 내려앉게 한다(포물선은 그대로). 발판이 아예 없거나 _GroundDrop 이 없으면 nil = 예전 착지(MesoCoin 의 무작위 착지) 그대로.
-        --   메소 익스플로전(SkillExecutors.FindMesoCoins)은 동전 이름(PickpocketCoinName) · script.MesoCoin · Collected · DropOwner · 반경으로만 찾는다 — 착지 방식과 무관하다(MesoLandedOnly 기본 false).
-        local landing = nil
-        if _GroundDrop ~= nil then landing = _GroundDrop:NextRowLanding(map, tp.x, tp.y, "pp:" .. tostring(target.Id)) end
-        local coin = _SpawnService:SpawnByModelId(self.MesoCoinModelId, self.PickpocketCoinName, Vector3(cx, cy, 0), map)
-        if not isvalid(coin) then
-            log_error("[Buff] PICKPOCKET coin spawn failed — modelId=" .. self.MesoCoinModelId)
-            return
-        end
-        -- 값은 스폰 직후 넣는다(FarmReward.DropCoins 와 같은 순서 · MesoCoin 이 첫 틱에 값에 맞는 그림을 고른다).
-        ---@type MesoCoin
-        local mc = coin:GetComponent("script.MesoCoin")
-        if isvalid(mc) then mc.Value = value end
-        coin:AddComponent("script.DropOwner")
-        ---@type DropOwner
-        local own = coin:GetComponent("script.DropOwner")
-        if isvalid(own) then own.OwnerUserId = userId end
-        if landing ~= nil and _GroundDrop ~= nil then _GroundDrop:AssignLanding(coin, landing) end
-        -- 소리(1.0.7): 시전자 본인 클라에서만 재생한다(다른 유저에게는 안 들린다). 끈 유저는 소리도 로그도 없다. 간격 제한은 소리가 날 때만 갱신(켜자마자 들린다).
+        if spawned <= 0 then return end
+        -- 소리(1.0.7 · 동전 수와 무관하게 한 타에 한 번): 시전자 본인 클라에서만 재생한다(다른 유저에게는 안 들린다). 끈 유저는 소리도 로그도 없다. 간격 제한은 소리가 날 때만 갱신(켜자마자 들린다).
         local lastAt = self.pickpocketSoundAtByUser[userId] or -10
         if now - lastAt >= self.PickpocketSoundInterval and self.PickpocketSoundRuid ~= "" then
             if _AccountData == nil or _AccountData:IsPickpocketSoundOn(userId) then
@@ -1579,9 +1593,7 @@ script SkillBuffs extends Logic
             end
         end
         if self.LogDiagnostics then
-            local landingNote = "old(random)"
-            if landing ~= nil then landingNote = string.format("(%.2f,%.2f)", landing.x, landing.y) end
-            log("[Buff] PICKPOCKET +1 coin value=" .. tostring(value) .. " at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ") floor=" .. floorNote .. " landing=" .. landingNote)
+            log("[Buff] PICKPOCKET +" .. tostring(spawned) .. " coin value=" .. tostring(value) .. " at " .. tostring(target.Name) .. " (perHit=" .. tostring(perHit) .. " skill=" .. tostring(skillId) .. ") (" .. userId .. ") floor=" .. floorNote .. " landing=" .. landingNote)
         end
     end
 
