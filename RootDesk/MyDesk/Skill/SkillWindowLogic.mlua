@@ -70,9 +70,20 @@ script SkillWindowLogic extends Logic
 
     property string SoundChipOffRUID = "59baa8df765f434b9ffeb0bd1c4906ef"
 
-    property string SoundOnText = "소리 ON"
+    -- 1.1.3(사용자 2026-10-22 "글자 줄여 나란히"): 같은 줄에 "줍기" 칩이 생겨 두 칩 모두 글자에서 ON / OFF 를 뺐다 — 켜짐 = 금 칩 · 꺼짐 = 회색 칩으로만 보인다.
+    --   (예전 "소리 ON" / "소리 OFF" · 92 px 칩 두 개는 오른쪽 + 버튼 때문에 나란히 둘 자리가 없었다.)
+    property string SoundOnText = "소리"
 
-    property string SoundOffText = "소리 OFF"
+    property string SoundOffText = "소리"
+
+    -- 픽파켓 줄의 "줍기" 토글 칩(1.1.3 · 사용자 지시 2026-10-22): 끄면 내 픽파켓 메소를 줍지도 끌어오지도 않는다(메소 익스플로전 재료로 남김 · 몬스터 드랍 메소는 그대로).
+    --   행 템플릿에 노드가 없어 픽파켓 줄을 만들 때 BtnSound 를 복제해 "BtnPickup" 으로 쓴다(.ui 는 그대로) · 소리 칩 바로 오른쪽(PickupChipGap) · 같은 그림 · 글자 규칙.
+    --   설정은 계정에 저장된다(SkillBuffs.RequestSetPickpocketPickup → AccountData · 서버 Farm/MesoCoin 이 판정).
+    property string PickupOnText = "줍기"
+
+    property string PickupOffText = "줍기"
+
+    property number PickupChipGap = 6
 
     property number SoundChipBorder = 10
 
@@ -284,7 +295,7 @@ script SkillWindowLogic extends Logic
         --   예전 = "데미지 {v}% x 주변 메소 갯수(바닥에 떨어진 메소)" — 한 원에 50% x N.
         --   1.0.19(사용자 2026-10-19): 메소 근처의 적은 터진 메소 개수만큼 모두 맞는다(SkillExecutors.MesoCoinBlast 대상 고정) — 예전 "동전마다 주변 몬스터" 문구를 바꿨다.
         self.SkillEffectLines = {
-            SK_T31 = "주변 픽파켓 메소가 하나씩 터지며 메소 근처의 몬스터는 터진 메소 개수만큼 데미지 {v}%씩 · 없으면 시전 불가",
+            SK_T31 = "맵의 내 픽파켓 메소 + 캐릭터 주변 메소 7개가 하나씩 터지며 메소 근처의 몬스터는 터진 메소 개수만큼 데미지 {v}%씩",   -- 1.1.3: 맵 전체 · 주변 7개(SkillExecutors.MesoSearchWholeMap · MesoSummonCount) · 늘 시전 가능
         }
         -- WO-056(1.0.15): 다크 사이트 감소% · 쿨 증가 초 · 닷지 회복% 는 SkillBuffs 값 그대로 보여 준다(문구와 실제 값이 어긋나지 않게).
         -- 1.0.21(사용자 2026-10-20): 불굴의 진 문구의 아이언 바디 반사 배율(×3 → ×1.5)도 SkillBuffs.UnyieldingReflectMul 그대로 보여 준다.
@@ -935,6 +946,23 @@ script SkillWindowLogic extends Logic
                 table.insert(self.rowHandlers, { entity = soundEntity, conn = soundHandler, eventType = ButtonClickEvent })
                 local soundHoverHandler = soundEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
                 table.insert(self.rowHandlers, { entity = soundEntity, conn = soundHoverHandler, eventType = ButtonStateChangeEvent })
+                -- "줍기" 칩(1.1.3): 소리 칩을 복제해 같은 줄에 둔다(자리 · 색은 ApplyRowState → PlacePickupChip · PaintPickupChip).
+                local pickupEntity = row:GetChildByName("BtnPickup")
+                if not isvalid(pickupEntity) then pickupEntity = soundEntity:Clone("BtnPickup") end
+                if isvalid(pickupEntity) then
+                    -- 위 ApplyRowState 는 복제 전에 돌았다 → 보이는지 · 자리 · 색을 여기서 한 번 맞춘다(복제본은 소리 칩 모양 · 자리를 그대로 들고 온다).
+                    pickupEntity:SetEnable(soundEntity.Enable)
+                    if soundEntity.Enable then
+                        self:PlacePickupChip(soundEntity, pickupEntity)
+                        self:PaintPickupChip(pickupEntity)
+                    end
+                    local pickupHandler = _ButtonHoverSound:Clickable(pickupEntity):ConnectEvent(ButtonClickEvent, function() self:OnPickpocketPickupClicked() end)
+                    table.insert(self.rowHandlers, { entity = pickupEntity, conn = pickupHandler, eventType = ButtonClickEvent })
+                    local pickupHoverHandler = pickupEntity:ConnectEvent(ButtonStateChangeEvent, function(event) self:OnRowButtonState(capturedId, row, event) end)
+                    table.insert(self.rowHandlers, { entity = pickupEntity, conn = pickupHoverHandler, eventType = ButtonStateChangeEvent })
+                else
+                    log_warning("SkillWindowLogic: BtnSound clone failed - pickpocket pickup toggle disabled")
+                end
             else
                 log_warning("SkillWindowLogic: BtnSound missing in row template - pickpocket sound toggle disabled")
             end
@@ -1027,10 +1055,19 @@ script SkillWindowLogic extends Logic
 
         -- 픽파켓 줄의 "소리 ON / OFF" 칩(1.0.7): 배운 뒤(잠기지 않고 레벨 1 이상)에만 보인다. 다른 줄은 늘 꺼 둔다(복제 원본에서 따라온 것).
         local soundChip = row:GetChildByName("BtnSound")
+        local showSound = self:IsPickpocketSkill(skill) and (not locked) and level > 0
         if isvalid(soundChip) then
-            local showSound = self:IsPickpocketSkill(skill) and (not locked) and level > 0
             soundChip:SetEnable(showSound)
             if showSound then self:PaintSoundChip(soundChip) end
+        end
+        -- "줍기" 칩(1.1.3): 소리 칩과 같은 조건 · 소리 칩 바로 오른쪽.
+        local pickupChip = row:GetChildByName("BtnPickup")
+        if isvalid(pickupChip) then
+            pickupChip:SetEnable(showSound)
+            if showSound then
+                self:PlacePickupChip(soundChip, pickupChip)
+                self:PaintPickupChip(pickupChip)
+            end
         end
     end
 
@@ -1049,10 +1086,28 @@ script SkillWindowLogic extends Logic
     end
 
     @ExecSpace("ClientOnly")
+    method boolean PickpocketPickupOn()
+        -- 스킬 창이 보여 주는 내 픽파켓 메소 줍기 켜짐(1.1.3 · 서버가 SyncPickpocketPickup 으로 밀어 준 미러 · 기본 켬).
+        if _SkillBuffs == nil then return true end
+        return _SkillBuffs.pickpocketPickupOnMirror ~= false
+    end
+
+    @ExecSpace("ClientOnly")
     method void PaintSoundChip(any chip)
-        -- "소리 ON / OFF" 칩 한 개를 지금 설정대로 칠한다: 그림 · 글자 · 글자 규칙 · 폭. ON = 금 칩 + 어두운 잉크 글자(UiChipText 규칙) / OFF = 회색 어두운 칩 + 흐린 글자(규칙 대상 아님 → 직접).
+        -- "소리" 칩 한 개를 지금 설정대로 칠한다(PaintToggleChip).
+        self:PaintToggleChip(chip, self:PickpocketSoundOn(), self.SoundOnText, self.SoundOffText)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PaintPickupChip(any chip)
+        -- "줍기" 칩 한 개를 지금 설정대로 칠한다(1.1.3 · PaintToggleChip).
+        self:PaintToggleChip(chip, self:PickpocketPickupOn(), self.PickupOnText, self.PickupOffText)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PaintToggleChip(any chip, boolean on, string onText, string offText)
+        -- 픽파켓 줄 토글 칩(소리 · 줍기) 한 개를 칠한다: 그림 · 글자 · 글자 규칙 · 폭. ON = 금 칩 + 어두운 잉크 글자(UiChipText 규칙) / OFF = 회색 어두운 칩 + 흐린 글자(규칙 대상 아님 → 직접).
         if not isvalid(chip) then return end
-        local on = self:PickpocketSoundOn()
         local ruid = self.SoundChipOffRUID
         if on then ruid = self.SoundChipOnRUID end
         local sprite = chip.SpriteGUIRendererComponent
@@ -1061,21 +1116,32 @@ script SkillWindowLogic extends Logic
         if not isvalid(label) or label.TextGUIRendererComponent == nil then return end
         local text = label.TextGUIRendererComponent
         if on then
-            text.Text = self.SoundOnText
+            text.Text = onText
             if _UiChipText ~= nil then _UiChipText:Apply(chip, ruid) end
         else
-            text.Text = self.SoundOffText
+            text.Text = offText
             text.FontColor = Color(0.486, 0.533, 0.643, 1)
             text.OutlineWidth = 0
             text.Underlay = false
         end
         -- 폭: 켜도 꺼도 같은 폭(더 넓은 글자 기준). 측정이 0 근처면(켜지기 전 등) .ui 에 구운 폭을 그대로 둔다.
-        local w = math.max(text:GetPreferredWidth(self.SoundOnText), text:GetPreferredWidth(self.SoundOffText))
+        local w = math.max(text:GetPreferredWidth(onText), text:GetPreferredWidth(offText))
         if w > 10 and _UiChipText ~= nil then
             local width = _UiChipText:Width(w, self.SoundChipBorder, self.SoundChipHeight, 0)
             _UiChipText:SetWidthKeepLeft(chip, width)
             label.UITransformComponent.RectSize = Vector2(width, self.SoundChipHeight)
         end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void PlacePickupChip(any soundChip, any pickupChip)
+        -- "줍기" 칩을 소리 칩 바로 오른쪽에 둔다(1.1.3 · 같은 줄 · 왼쪽 끝 = 소리 칩 왼쪽 끝 + 폭 + PickupChipGap). 소리 칩 폭은 PaintSoundChip 이 먼저 정한다.
+        if not isvalid(soundChip) or not isvalid(pickupChip) then return end
+        local st = soundChip.UITransformComponent
+        local pt = pickupChip.UITransformComponent
+        if st == nil or pt == nil then return end
+        local x = st.anchoredPosition.x + st.RectSize.x + self.PickupChipGap
+        self:PlaceRowNode(pickupChip, x, st.anchoredPosition.y, pt.RectSize.x, pt.RectSize.y)
     end
 
     @ExecSpace("ClientOnly")
@@ -1085,6 +1151,12 @@ script SkillWindowLogic extends Logic
             if isvalid(row) then
                 local chip = row:GetChildByName("BtnSound")
                 if isvalid(chip) and chip.Enable then self:PaintSoundChip(chip) end
+                -- 1.1.3: 같은 줄의 "줍기" 칩도(SyncPickpocketPickup 도 이 함수를 부른다).
+                local pickup = row:GetChildByName("BtnPickup")
+                if isvalid(pickup) and pickup.Enable then
+                    self:PlacePickupChip(chip, pickup)
+                    self:PaintPickupChip(pickup)
+                end
             end
         end
     end
@@ -1096,6 +1168,15 @@ script SkillWindowLogic extends Logic
         local want = not self:PickpocketSoundOn()
         log("SkillWindowLogic: pickpocket sound click -> " .. (want and "on" or "off"))
         _SkillBuffs:RequestSetPickpocketSound(want)
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnPickpocketPickupClicked()
+        -- "줍기" 칩을 누르면 반대 값을 서버에 요청한다(1.1.3 · 계정에 저장). 화면은 서버가 되돌려 준 값(SyncPickpocketPickup)으로만 바뀐다.
+        if _SkillBuffs == nil then return end
+        local want = not self:PickpocketPickupOn()
+        log("SkillWindowLogic: pickpocket pickup click -> " .. (want and "on" or "off"))
+        _SkillBuffs:RequestSetPickpocketPickup(want)
     end
 
     @ExecSpace("ClientOnly")
@@ -1156,6 +1237,7 @@ script SkillWindowLogic extends Logic
         local plus = row:GetChildByName("BtnPlus")
         if isvalid(plus) then self:SetChildEnable(plus, "DisImg", false) end
         self:SetChildEnable(row, "BtnSound", false)
+        self:SetChildEnable(row, "BtnPickup", false)
     end
 
     @ExecSpace("ClientOnly")
