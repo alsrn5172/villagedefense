@@ -124,6 +124,53 @@ script SkillCaster extends Logic
 
     property integer downJumpCastId = -1
 
+    -- ───────────── 락 중 좌우 입력 미루기 (1.1.3 · 사용자 2026-10-22 "럭키세븐 · 더블샷 · 에너지볼트 · 스나이핑 · 어벤저는 시전이 먼저 풀리고 이동락은 안 풀렸던 것 같다") ─────────────
+    -- 원인: 땅 락 동안 MoveLeft / MoveRight 조건이 거짓이라 컨트롤러가 방향키 누름을 버린다. 락이 풀릴 때 ResumeHeldMove 는 "아직 누르고 있는" 키만 다시 보내서
+    --   락 중에 톡 눌렀다 뗀 방향키는 사라졌다. 반면 스킬 키는 누르고 있으면 꾹 누르기(SkillHotbar.TickHold)가 풀리는 그 프레임에 다시 시전한다 → 다음 시전은 되는데 이동은 다시 눌러야 했다.
+    --   (공격 모션이 락보다 긴 스킬일수록 눈에 띈다: 럭키 세븐 · 더블 샷 0.40 / 모션 ≈0.67 · 에너지 볼트 0.40 / 0.80 · 스나이핑 0.675 / 1.00 · 어벤저 0.67 / 1.11)
+    -- 고침: 스킬 땅 락 동안 좌우 키 누름을 기억했다가(마지막 누름 · 누른 시각 · 뗀 시각) 락이 풀리는 순간, 이미 뗀 키면 그 방향으로 누르고 있던 시간만큼 걷고 멈춘다
+    --   (KeyDown → 그 시간 뒤 KeyUp · 입력이 사라지지 않고 늦게 실행된다). 아직 누르고 있는 키는 예전처럼 ResumeHeldMove 가 계속 걷게 한다.
+    --   기본 공격 락 · 궁(ORIGIN) · 붙잡는 락(castHoldKeys)은 기억하지 않는다. 락 길이 · 시전 간격 · 서버 판정은 그대로.
+    --   풀리는 그 프레임에 꾹 누르기 재시전이 걸리면(스킬 키를 누르고 있음 · 공격 우선) 남은 걷기는 다음 락으로 다시 미뤄진다(LockPresentation).
+    property boolean DeferMoveInputDuringCast = true
+
+    -- 클라 전용: 지금 락이 좌우 입력을 기억하는 락인가(LockPresentation 이 정한다).
+    property boolean lockDefersMove = false
+
+    -- 클라 전용: 락 중에 마지막으로 누른 좌우 키 · 누른 시각 · 뗀 시각(ElapsedSeconds · 안 뗐으면 -1).
+    property any deferredMoveKey = nil
+
+    property number deferredMoveDownAt = -1
+
+    property number deferredMoveUpAt = -1
+
+    -- 클라 전용: 락이 풀린 뒤 재생 중인 걷기(KeyUp 을 아직 안 보낸 키 · 길이 · 지난 시간).
+    --   🔴 KeyDownEvent 만 보내면 실제로 누르고 있지 않은 키라 컨트롤러가 걷지 않는다(Play 실측 2026-10-23 · x 그대로) →
+    --   매 프레임 KeyHoldEvent 를 같이 보내야 걷는다(실측 x -8.53 → -7.72 · 상태 MOVE). MovementComponent:MoveToDirection 은 이 맵(발판식)에서 움직이지 않았다.
+    property any replayMoveKey = nil
+
+    property number replayMoveSeconds = 0
+
+    property number replayMoveElapsed = 0
+
+    -- 클라 전용: 좌우 키 누름 · 뗌 구독(InputService · 한 번만 건다).
+    property any moveKeyDownHandler = nil
+
+    property any moveKeyUpHandler = nil
+
+    -- ───────────── 락이 풀린 뒤 남은 공격 모션이 이동을 막는 것 (1.1.3 · Play 실측 2026-10-23 · 진짜 원인) ─────────────
+    -- 실측: 럭키 세븐 락 0.41초가 풀린 뒤에도 → 를 누르고 있는데 0.29초 동안 x 가 그대로였다 — 공격 모션(swingO3 ×1.2 ≈ 0.67초)이 끝나서야 걷기 시작.
+    --   코드로 보낸 키도 같다(락이 풀린 0.02초 뒤 = 안 걸음 · 0.3초 뒤 = 걸음). 상태기를 MOVE 로 바꾸거나 몸에 서기 동작을 보내 모션을 끊으면 그 자리에서 바로 걷는다.
+    -- → 스킬 락(lockDefersMove · 기본 공격 · 궁 · 붙잡는 락 제외)이 풀린 뒤 MoveCutWindowSeconds 안에 좌우 이동 입력이 오면(누르고 있던 키 · 미룬 키 · 새로 누른 키)
+    --   남은 공격 모션을 끊고(상태기 MOVE) 그 키를 다시 보내 곧바로 걷는다. 입력이 없으면 모션은 끝까지 그대로("후딜은 없어도 공격 모션은 유지").
+    --   공중이면 끊지 않는다(낙하 · 점프 자세를 MOVE 로 바꾸지 않게). 다음 시전이 가능한 시각 = 이동이 가능한 시각.
+    property number MoveCutWindowSeconds = 1.0
+
+    -- 클라 전용: 이 시각(ElapsedSeconds)까지 좌우 입력이 오면 남은 모션을 끊는다(-1 = 아님) · 끊고 다시 보내는 KeyDown 이 다시 끊기를 부르지 않게 하는 표시.
+    property number moveCutUntil = -1
+
+    property boolean resendingMove = false
+
     -- 서버 전용 상태: userId → 이 시각(ServerElapsedSeconds)까지 재시전 거절
     property table castLockUntil = {}
 
@@ -317,6 +364,12 @@ script SkillCaster extends Logic
             end)
             if self.LogDiagnostics then log("SkillCaster: basic attack lock hooked (PlayerActionEvent Attack · " .. tostring(self.BasicAttackLockSeconds) .. "s)") end
         end
+        -- ④ 락 중 좌우 입력 미루기(1.1.3): 키 누름 · 뗌을 InputService 에서 한 번만 구독한다(엔티티와 무관).
+        if self.moveKeyDownHandler == nil then
+            self.moveKeyDownHandler = _InputService:ConnectEvent(KeyDownEvent, function(event) self:OnLockMoveKeyDown(event.key) end)
+            self.moveKeyUpHandler = _InputService:ConnectEvent(KeyUpEvent, function(event) self:OnLockMoveKeyUp(event.key) end)
+        end
+        self:StepMoveReplay(delta)
         local climbing = self:IsClimbingEntity(player)
         if climbing ~= self.localClimbReported or self.localClimbReportedFor ~= player then
             self.localClimbReported = climbing
@@ -585,6 +638,31 @@ script SkillCaster extends Logic
         -- 붙잡는 락(1.1.1 · castHoldKeys · 콤보 데스폴트): 공중이어도 땅 락과 같이 이동을 잠그고 물리를 끈다(아래).
         local hold = self.castHoldKeys[lockKey] == true
 
+        -- 락 중 좌우 입력 미루기(1.1.3): 이 락이 좌우 누름을 기억하는가 = 스킬 땅 락(기본 공격 · 궁 · 붙잡는 락 제외 · 공중 락은 착지 뒤부터 · OnLockMoveKeyDown).
+        --   앞 락에서 미룬 걷기를 재생하던 중이면(풀리는 프레임에 꾹 누르기 재시전 등) 그 걷기를 여기서 끊고, 이 락도 기억하는 락이면 남은 길이를 다음 풀림으로 넘긴다.
+        local defers = false
+        if self.DeferMoveInputDuringCast and skillId ~= "BASIC" and not hold and _SkillDatabase ~= nil then
+            local sk = _SkillDatabase:GetSkill(skillId)
+            defers = sk ~= nil and sk.behavior ~= "ORIGIN"
+        end
+        local carryKey = nil
+        local carrySeconds = 0
+        if self.replayMoveKey ~= nil then
+            carryKey = self.replayMoveKey
+            carrySeconds = math.max(0, self.replayMoveSeconds - self.replayMoveElapsed)
+            self:EndMoveReplay("next lock")
+        end
+        self:ClearDeferredMove()
+        self.moveCutUntil = -1   -- 새 락의 모션은 끊지 않는다(끊기 창은 락이 풀릴 때 다시 열린다)
+        self.lockDefersMove = defers
+        if carryKey ~= nil and defers and grounded then
+            local now = _UtilLogic.ElapsedSeconds
+            self.deferredMoveKey = carryKey
+            self.deferredMoveDownAt = now - carrySeconds
+            self.deferredMoveUpAt = now
+            if self.LogDiagnostics then log("SkillCaster: deferred move " .. tostring(carryKey) .. " carried to cast lock #" .. tostring(castId) .. " (" .. string.format("%.2f", carrySeconds) .. "s left)") end
+        end
+
         if (grounded or hold) and isvalid(movement) then
             -- 이미 잡아 둔 락에서 이어지면(기본 공격 락 → 다음 Ctrl 또는 스킬 · M1) 처음 캐시를 지킨다 — 지금 InputSpeed 는 0 이라 다시 캐시하면 풀린 뒤에도 못 걷는다.
             if not self.hasCachedInputSpeed then self.cachedInputSpeed = movement.InputSpeed end
@@ -790,11 +868,18 @@ script SkillCaster extends Logic
         self.stateDisabled = false
         self.hasCachedInputSpeed = false
         self.lockIsBasic = false
+        -- 스킬 락이었으면 남은 공격 모션을 좌우 입력으로 끊을 수 있는 창을 연다(1.1.3 · MoveCutWindowSeconds).
+        local wasSkillLock = self.lockDefersMove
+        self.lockDefersMove = false
         self.castLockActive = false
         self.activeCastId = 0
+        self.moveCutUntil = -1
+        if wasSkillLock and why ~= "dead" and self.DeferMoveInputDuringCast then self.moveCutUntil = _UtilLogic.ElapsedSeconds + self.MoveCutWindowSeconds end
         if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " (" .. why .. ")") end
         if wasGroundLock and why ~= "dead" then self:ResumeHeldMove(castId) end
         if why ~= "dead" then self:ResumeHeldVertical(castId) end
+        -- 락 중에 눌렀다 뗀 좌우 키(1.1.3): 누르고 있던 시간만큼 지금 걷는다. 쓰러졌으면 버린다.
+        if why ~= "dead" then self:ReplayDeferredMove(castId) else self:ClearDeferredMove() end
     end
 
     @ExecSpace("ClientOnly")
@@ -827,8 +912,144 @@ script SkillCaster extends Logic
         end
         local key = leftKey
         if key == nil then key = rightKey end
+        -- 1.1.3: 스킬 락이었으면 남은 공격 모션을 먼저 끊는다 — 안 끊으면 모션이 끝날 때까지 다시 보낸 KeyDown 도 걷지 못한다(Play 실측).
+        local cut = self:CutMotionForMove()
+        self.resendingMove = true
         _InputService:SendEvent(KeyDownEvent(key))
-        if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — held " .. tostring(key) .. " → move resumed (KeyDown re-sent)") end
+        self.resendingMove = false
+        if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — held " .. tostring(key) .. " → move resumed (KeyDown re-sent · motion cut=" .. tostring(cut) .. ")") end
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean CutMotionForMove()
+        -- 스킬 락이 풀린 뒤 남은 공격 모션을 끊는다(1.1.3 · moveCutUntil 창 안 · 땅에 있을 때만): 상태기를 MOVE 로 — 컨트롤러가 그 자리에서 곧바로 걷는다.
+        --   창 밖(기본 공격 락 · 모션이 이미 끝남)이거나 공중이면 아무것도 안 한다. 한 번 끊으면 창을 닫는다. 끊었으면 true.
+        if self.moveCutUntil < 0 or _UtilLogic.ElapsedSeconds > self.moveCutUntil then return false end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return false end
+        local body = player.RigidbodyComponent
+        if isvalid(body) and not body:IsOnGround() then return false end
+        local state = player.StateComponent
+        if not isvalid(state) or not state.Enable then return false end
+        self.moveCutUntil = -1
+        if state.CurrentStateName ~= "MOVE" then state:ChangeState("MOVE") end
+        return true
+    end
+
+    @ExecSpace("ClientOnly")
+    method boolean IsSideMoveKey(any key)
+        -- 컨트롤러가 이 키를 좌우 이동(MoveLeft / MoveRight)에 묶었는가(1.1.3 · 기본 ← → · 사용자가 바꾼 키도 따라간다).
+        if key == nil then return false end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return false end
+        local controller = player.PlayerControllerComponent
+        if not isvalid(controller) then return false end
+        local action = controller:GetActionName(key)
+        return action == "MoveLeft" or action == "MoveRight"
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnLockMoveKeyDown(any key)
+        -- 좌우 키를 누른 순간(1.1.3): 좌우 입력을 기억하는 땅 락(lockDefersMove · hasCachedInputSpeed) 동안이면 마지막 누름으로 기억한다. 그 밖은 아무것도 안 한다(컨트롤러가 평소대로 처리).
+        --   락이 풀린 뒤 재생이 보내는 KeyDown 도 여기 오지만 그때는 락이 꺼져 있어 기억하지 않는다.
+        -- 1.1.3: 락이 풀린 뒤 남은 공격 모션 중(moveCutUntil 창)에 새로 누른 좌우 키 = 모션을 끊고 다음 프레임에 그 키를 다시 보낸다(이번 누름은 모션 때문에 버려졌을 수 있다).
+        if not self.castLockActive and not self.resendingMove and self.moveCutUntil >= 0 and self:IsSideMoveKey(key) then
+            if self:CutMotionForMove() then
+                _TimerService:SetTimerOnce(function()
+                    if not self.castLockActive and _InputService:IsKeyPressed(key) then
+                        self.resendingMove = true
+                        _InputService:SendEvent(KeyDownEvent(key))
+                        self.resendingMove = false
+                    end
+                end, 0)
+                if self.LogDiagnostics then log("SkillCaster: " .. tostring(key) .. " during the attack motion tail → motion cut, move re-sent") end
+            end
+            return
+        end
+        if not self.DeferMoveInputDuringCast or not self.castLockActive or not self.lockDefersMove or not self.hasCachedInputSpeed then return end
+        if not self:IsSideMoveKey(key) then return end
+        self.deferredMoveKey = key
+        self.deferredMoveDownAt = _UtilLogic.ElapsedSeconds
+        self.deferredMoveUpAt = -1
+        if self.LogDiagnostics then log("SkillCaster: cast lock #" .. tostring(self.activeCastId) .. " — " .. tostring(key) .. " pressed during the lock (deferred)") end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void OnLockMoveKeyUp(any key)
+        -- 기억한 좌우 키를 뗀 순간(1.1.3): 뗀 시각을 남긴다(락이 풀릴 때 누르고 있던 시간만큼 걷는다). 다른 키는 무시.
+        if self.deferredMoveKey == nil or key ~= self.deferredMoveKey then return end
+        if self.deferredMoveUpAt < 0 then self.deferredMoveUpAt = _UtilLogic.ElapsedSeconds end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ClearDeferredMove()
+        -- 기억한 좌우 입력을 지운다(새 락 시작 · 재생 시작 · 사망).
+        self.deferredMoveKey = nil
+        self.deferredMoveDownAt = -1
+        self.deferredMoveUpAt = -1
+    end
+
+    @ExecSpace("ClientOnly")
+    method void ReplayDeferredMove(integer castId)
+        -- 락이 풀린 순간(1.1.3 · ReleaseCastLock 에서만 부른다): 락 중에 눌렀다 뗀 좌우 키를 누르고 있던 시간만큼 걷게 한다(KeyDown → 매 프레임 KeyHold(StepMoveReplay) → KeyUp).
+        --   좌우 키를 지금 누르고 있으면 아무것도 안 한다 — 그 걷기는 ResumeHeldMove 몫(누르고 있는 쪽이 이긴다).
+        local key = self.deferredMoveKey
+        local downAt = self.deferredMoveDownAt
+        local upAt = self.deferredMoveUpAt
+        self:ClearDeferredMove()
+        if key == nil then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local controller = player.PlayerControllerComponent
+        if not isvalid(controller) then return end
+        for _, k in ipairs({ KeyboardKey.LeftArrow, KeyboardKey.RightArrow, key }) do
+            if _InputService:IsKeyPressed(k) and self:IsSideMoveKey(k) then
+                if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — deferred " .. tostring(key) .. " skipped (a side key is held)") end
+                return
+            end
+        end
+        -- 누른 시간: 뗀 시각을 못 받았으면(KeyUp 유실) 한 걸음(다음 프레임에 멈춤).
+        local seconds = 0
+        if upAt >= 0 and downAt >= 0 then seconds = math.max(0, upAt - downAt) end
+        self.replayMoveKey = key
+        self.replayMoveSeconds = seconds
+        self.replayMoveElapsed = 0
+        self:CutMotionForMove()
+        self.resendingMove = true
+        _InputService:SendEvent(KeyDownEvent(key))
+        self.resendingMove = false
+        if self.LogDiagnostics then log("SkillCaster: cast lock OFF #" .. tostring(castId) .. " — deferred " .. tostring(key) .. " → walk " .. string.format("%.2f", seconds) .. "s") end
+    end
+
+    @ExecSpace("ClientOnly")
+    method void StepMoveReplay(number delta)
+        -- 미룬 걷기 한 프레임(1.1.3 · OnUpdate): 누르고 있던 시간이 찰 때까지 KeyHold 를 보내 걷기를 잇고, 차면 EndMoveReplay. 새 락이 걸리면 LockPresentation 이 이미 끝내고 남은 시간을 넘긴다.
+        if self.replayMoveKey == nil then return end
+        self.replayMoveElapsed = self.replayMoveElapsed + delta
+        if self.replayMoveElapsed >= self.replayMoveSeconds then
+            self:EndMoveReplay("done")
+            return
+        end
+        _InputService:SendEvent(KeyHoldEvent(self.replayMoveKey))
+    end
+
+    @ExecSpace("ClientOnly")
+    method void EndMoveReplay(string why)
+        -- 미룬 걷기를 끝낸다(1.1.3 · 시간이 됨 · 다음 락이 시작됨): KeyUp 을 보내 멈춘다. 그사이 사용자가 그 키를 다시 누르고 있으면 그 걷기를 끊지 않는다.
+        local key = self.replayMoveKey
+        self.replayMoveKey = nil
+        self.replayMoveSeconds = 0
+        self.replayMoveElapsed = 0
+        if key == nil then return end
+        if _InputService:IsKeyPressed(key) then return end
+        _InputService:SendEvent(KeyUpEvent(key))
+        -- 컨트롤러가 보낸 KeyUp 으로 멈추지 않는 경우까지 막는다(런타임 미확인) — 단 사용자가 지금 좌우 키를 누르고 있으면(반대쪽으로 새로 걷는 중) 멈추지 않는다.
+        for _, k in ipairs({ KeyboardKey.LeftArrow, KeyboardKey.RightArrow }) do
+            if _InputService:IsKeyPressed(k) and self:IsSideMoveKey(k) then return end
+        end
+        local player = _UserService.LocalPlayer
+        if isvalid(player) and isvalid(player.MovementComponent) then player.MovementComponent:Stop() end
+        if self.LogDiagnostics then log("SkillCaster: deferred move " .. tostring(key) .. " ended (" .. why .. ")") end
     end
 
     @ExecSpace("Server")

@@ -371,11 +371,19 @@ script SkillExecutors extends Logic
     --                       1 이상이면 바닥 동전이 0 개여도 시전된다(PreCheck).
     --   MesoMaxCoins        한 번에 세는 동전 상한(바닥 + 소환). 0 = 상한 없음 — 기획 답 6번 "상한은 없습니다"(원작 최신 15 · 고전 20). 넘치는 바닥 동전은 남는다.
     -- 반경 = CSV Range(6 · 원작 최신 range 640 px ≈ 6.4).
+    -- 1.1.3(사용자 2026-10-22 "동전 찾는 반경은 맵 전체로 · 캐릭터 주위 반경은 없는 거로 · 메소 없는데 터지면 이상하니까 궁 쓰면 캐릭터 주변에 메소 7개를 -3.0 부터 3.0 까지 추가로 뿌려"):
+    --   MesoSearchWholeMap  true = 반경을 보지 않고 그 맵의 내 픽파켓 동전 전부를 센다(CSV Range 는 MesoSearchWholeMap 이 false 일 때만).
+    --   MesoSummonCount 0 → 7 · 자리는 시전자 x − MesoSummonSpread ~ + MesoSummonSpread 에 고르게(7개면 1.0 간격 · 예전 = 반경 × 0.8 안 무작위). 소환 동전도 동전 하나 = 한 번 폭발(대상 고정 · 50% 1타).
+    --   → 바닥 동전이 0 개여도 시전된다(PreCheck) · 캐릭터 주변 적도 소환 동전 폭발로 맞는다.
     property boolean MesoUseFloorCoins = true
 
     property boolean MesoPickpocketCoinsOnly = true
 
-    property integer MesoSummonCount = 0
+    property boolean MesoSearchWholeMap = true
+
+    property integer MesoSummonCount = 7
+
+    property number MesoSummonSpread = 3.0
 
     property integer MesoMaxCoins = 0
 
@@ -3075,7 +3083,7 @@ script SkillExecutors extends Logic
         if hitCount == nil or hitCount < 1 then hitCount = 1 end
         local function spawnNow()
             if not isvalid(casterEntity) or not isvalid(skillAttack) then return end
-            -- 한 번만 쓰는 값(SkillAttack.SpawnProjectile 첫 줄이 읽고 비운다): 관통 수 · 회전 · 동전 몫(1.0.11: 합계 피해 유지 · 표시/판정 타수 절반 · 타격당 메소 3배).
+            -- 한 번만 쓰는 값(SkillAttack.SpawnProjectile 첫 줄이 읽고 비운다): 관통 수 · 회전 · 동전 몫(1.0.11: 합계 피해 유지 · 표시/판정 타수 절반 · 타격당 메소 3배 → 1.1.3 부터 같은 값 동전 3개 · SkillBuffs.AvengerPickpocketCoins).
             skillAttack.PendingProjectilePierce = entry.pierce
             skillAttack.PendingProjectileSpin = entry.spinSec or 0
             skillAttack.PendingProjectileEffectKey = key
@@ -3300,6 +3308,7 @@ script SkillExecutors extends Logic
     method table PreCheck(string skillId, table skill, Entity casterEntity)
         -- 실행기 사전 조건. SkillCaster.RequestCast 가 MP 차감 앞에서 부른다 — 여기서 거절되면 아무것도 소모되지 않는다.
         -- 메소 익스플로전(SK_T31): 반경 안 시전자가 주울 수 있는 메소 동전이 0 개면 거절(궁 비용 영혼석 5개 · 쿨타임 2분을 헛되이 쓰지 않게 · SkillCaster 게이트 5-1 이 5-2 영혼석보다 앞).
+        --   1.1.3 부터 MesoSummonCount 7 이라 늘 통과한다(동전이 없어도 주변 7개가 터진다).
         if self.originModes[skillId] == "meso" then
             if not isvalid(casterEntity.PlayerComponent) then return { ok = false, reason = "no PlayerComponent" } end
             local radius = skill.range
@@ -6678,7 +6687,8 @@ script SkillExecutors extends Logic
                         local cp = coin.TransformComponent.WorldPosition
                         local dx = cp.x - p.x
                         local dy = cp.y - p.y
-                        if dx * dx + dy * dy <= r2 then
+                        -- 1.1.3: MesoSearchWholeMap 이면 거리와 무관하게 그 맵의 동전 전부(같은 맵만 · 주인 · 주운 동전 검사는 그대로).
+                        if self.MesoSearchWholeMap or dx * dx + dy * dy <= r2 then
                             table.insert(found, coin)
                         end
                     end
@@ -6716,9 +6726,11 @@ script SkillExecutors extends Logic
         if cap > 0 and #coins + summonN > cap then summonN = cap - #coins end
         if summonN > 0 then
             local cp0 = casterEntity.TransformComponent.WorldPosition
+            local spread = math.max(0, self.MesoSummonSpread)
             for i = 1, summonN do
-                -- 시전자 발 높이의 좌우로 반경 안에 고르게 흩뿌린다(바닥 동전과 같은 높이 · 층 판정 없이 연출만).
-                local sx = cp0.x + (_UtilLogic:RandomDouble() * 2 - 1) * radius * 0.8
+                -- 1.1.3: 시전자 발 높이의 x − spread ~ + spread 에 같은 간격으로(7개 · 3.0 이면 −3 · −2 · −1 · 0 · +1 · +2 · +3 · 층 판정 없이 연출 자리). 하나면 시전자 자리.
+                local sx = cp0.x
+                if summonN > 1 then sx = cp0.x - spread + (i - 1) * (2 * spread / (summonN - 1)) end
                 table.insert(summonPoints, Vector3(sx, cp0.y, cp0.z))
             end
         end
